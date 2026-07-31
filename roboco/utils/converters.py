@@ -78,6 +78,61 @@ def to_python_uuid(value: Any) -> PythonUUID | None:
     return PythonUUID(str(value))
 
 
+def compute_file_range(
+    *,
+    total: int,
+    line: int | None,
+    context: int,
+    explicit_range: tuple[int, int] | None,
+    max_lines: int,
+) -> tuple[int, int, bool]:
+    """Resolve the (start, end, truncated) slice for a file-content read.
+
+    An explicit ``explicit_range`` (start, end) wins; else ``line`` centers a
+    context window; else the whole file. Whichever branch resolves the
+    window, it is capped at ``max_lines`` lines afterward. Returns 1-based
+    inclusive [start, end] and whether the slice is shorter than the file.
+    """
+    if explicit_range is not None:
+        s, e_ = explicit_range
+    elif line is not None:
+        s = max(1, line - context)
+        e_ = min(total, line + context)
+    else:
+        s, e_ = 1, total
+
+    s = max(1, min(s, total))
+    e_ = max(s, min(e_, total))
+
+    truncated = e_ < total
+    if e_ - s + 1 > max_lines:
+        e_ = s + max_lines - 1
+        truncated = True
+    return s, e_, truncated
+
+
+def parse_branch_line(line: str) -> tuple[str, bool, str | None] | None:
+    """Classify one `%(refname)|%(objectname:short)` line as (name, is_remote,
+    last_commit), or None for skippable entries (blank, origin/HEAD, other ref
+    namespaces). Full refname, not `:short` — a remote-tracking ref shortens to
+    `origin/<branch>`, indistinguishable from a local branch literally named
+    that; classify on the `refs/heads/` vs `refs/remotes/` prefix instead.
+    """
+    if not line:
+        return None
+    parts = line.split("|")
+    ref = parts[0]
+    last_commit = parts[1] if len(parts) > 1 else None
+    if ref.startswith("refs/heads/"):
+        return ref.removeprefix("refs/heads/"), False, last_commit
+    if ref.startswith("refs/remotes/"):
+        _remote_name, _, name = ref.removeprefix("refs/remotes/").partition("/")
+        if not name or name == "HEAD":
+            return None  # origin/HEAD is a symbolic pointer, not a branch
+        return name, True, last_commit
+    return None
+
+
 def to_python_uuid_list(values: list[Any] | None) -> list[PythonUUID]:
     """
     Convert list of SQLAlchemy UUIDs to Python UUIDs.

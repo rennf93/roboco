@@ -6,7 +6,7 @@ cancels the proposal (freeing the one-open dedup for a fresh re-assessment).
 Nothing here publishes without the CEO's explicit POST.
 """
 
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -15,56 +15,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.release import (
     ReleaseExecuteResponse,
-    ReleaseGapModel,
     ReleaseProposalResponse,
     ReleaseRejectRequest,
-    ReleaseReportModel,
 )
-from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.release_proposal import (
     dispatch_approve,
     get_release_proposal_service,
-    is_approve_in_flight,
+    task_to_proposal_response,
 )
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on release proposals")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> ReleaseProposalResponse:
-    report = markers.get_release_report(task) or {}
-    outcome = markers.get_release_execute_outcome(task)
-    return ReleaseProposalResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        required_changes=markers.get_release_required_changes(task),
-        execute_status=outcome[0] if outcome else None,
-        execute_detail=outcome[1] if outcome else None,
-        execute_in_flight=is_approve_in_flight(UUID(str(task.id))),
-        report=ReleaseReportModel(
-            proposed_version=report.get("proposed_version", ""),
-            bump_kind=report.get("bump_kind", ""),
-            change_summary=report.get("change_summary", []),
-            drafted_changelog=report.get("drafted_changelog", ""),
-            version_bump_plan=report.get("version_bump_plan", []),
-            gaps=[ReleaseGapModel(**gap) for gap in report.get("gaps", [])],
-            migration_notes=report.get("migration_notes", []),
-            gate_state=report.get("gate_state", "unknown"),
-        ),
-    )
 
 
 @router.get("/proposal", response_model=ReleaseProposalResponse)
@@ -72,13 +33,13 @@ async def get_release_proposal(
     db: DbSession, agent: CurrentAgentContext
 ) -> ReleaseProposalResponse:
     """The single held release proposal awaiting the CEO (404 when none)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on release proposals")
     task = await get_release_proposal_service(db).open_proposal()
     if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
         )
-    return _to_response(task)
+    return task_to_proposal_response(task)
 
 
 @router.post(
@@ -103,7 +64,7 @@ async def approve_release_proposal(
     published/already_published, else the proposal stays open for retry). A
     second click is refused by the Redis mutex (``already_in_progress``).
     """
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on release proposals")
     svc = get_release_proposal_service(db)
     task = await svc.open_proposal()
     if task is None:
@@ -141,7 +102,7 @@ async def reject_release_proposal(
 ) -> ReleaseProposalResponse:
     """Reject the held proposal with required changes; it is cancelled so the
     release manager re-assesses and may originate a fresh proposal next cycle."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on release proposals")
     svc = get_release_proposal_service(db)
     task = await svc.open_proposal()
     if task is None:
@@ -160,4 +121,4 @@ async def reject_release_proposal(
             ),
         )
     await db.commit()
-    return _to_response(revised)
+    return task_to_proposal_response(revised)

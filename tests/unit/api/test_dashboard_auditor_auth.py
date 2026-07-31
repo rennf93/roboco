@@ -1,7 +1,7 @@
 """Dashboard auditor flag/report mutating routes (``create_auditor_flag``,
 ``resolve_auditor_flag``, ``create_auditor_report``, ``send_auditor_report``)
-are gated to AUDITOR or CEO via a ``CurrentAgentContext`` dependency plus a
-coarse role gate, mirroring ``roboco/api/routes/playbooks.py::_require_curator``.
+are gated to AUDITOR or CEO via a ``CurrentAgentContext`` dependency plus
+``roboco.api.deps.require_auditor_or_ceo`` — the same check playbooks.py uses.
 """
 
 from __future__ import annotations

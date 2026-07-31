@@ -17,11 +17,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fastapi import status
+from fastapi.responses import JSONResponse
+
 from roboco.models.permissions import KB_PERMISSIONS
 from roboco.services.gateway.envelope import Envelope
 
 if TYPE_CHECKING:
     from roboco.models.permissions import AgentContext
+    from roboco.services.base import UnauthorizedError
     from roboco.services.permissions import PermissionService
 
 
@@ -62,6 +66,28 @@ def authorize_kb_action(
     )
 
 
+def kb_denial_response(
+    permissions: PermissionService,
+    agent: AgentContext,
+    action: str,
+) -> JSONResponse | None:
+    """Gateway Envelope (HTTP 403) when the KB action is denied, else None.
+
+    The authorization decision itself lives in ``authorize_kb_action``; this
+    only renders a denial verdict at the HTTP boundary. The body is the
+    Envelope wire-dict at top level — not nested under ``detail`` — so the
+    agent receives a non-null ``remediate`` it can act on, matching the
+    gateway Envelope contract.
+    """
+    denial = authorize_kb_action(permissions, agent, action)
+    if denial is None:
+        return None
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=denial.as_dict(),
+    )
+
+
 _DOCS_WRITE_ACTIONS = frozenset({"write_doc", "delete_doc"})
 
 
@@ -87,4 +113,19 @@ def docs_denial_envelope(action: str, reason: str | None) -> Envelope:
     return Envelope.not_authorized(
         message=reason or f"not authorized: {action}",
         remediate=remediate,
+    )
+
+
+def docs_unauthorized_response(err: UnauthorizedError) -> JSONResponse:
+    """Render a docs-service denial as the gateway Envelope (HTTP 403).
+
+    The RBAC decision is made in ``DocsService`` (it raises
+    ``UnauthorizedError``); this only renders that denial at the HTTP
+    boundary. The body is the Envelope wire-dict at top level so the agent
+    receives a non-null ``remediate`` instead of a bare ``detail`` string.
+    """
+    envelope = docs_denial_envelope(err.action, err.reason)
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=envelope.as_dict(),
     )

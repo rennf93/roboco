@@ -22,10 +22,8 @@ Workspace Structure:
 """
 
 from datetime import datetime
-from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.git import (
@@ -57,7 +55,7 @@ from roboco.api.schemas.git import (
     GitRebaseResponse,
     GitStatusResponse,
 )
-from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
+from roboco.exceptions import GitError
 from roboco.logging import get_logger
 from roboco.models.base import AgentRole
 from roboco.security import (
@@ -65,15 +63,11 @@ from roboco.security import (
     prompt_injection_validator,
     secret_exfil_validator,
 )
-from roboco.services.base import (
-    NotFoundError,
-    ServiceError,
-    UnauthorizedError,
-    ValidationError,
-)
-from roboco.services.git import get_git_service
+from roboco.services.base import ServiceError
+from roboco.services.git import get_git_service, translate_git_error
 from roboco.services.project import get_project_service
 from roboco.services.task import get_task_service
+from roboco.utils.converters import compute_file_range, parse_branch_line
 
 logger = get_logger(__name__)
 
@@ -92,40 +86,6 @@ _TranslatableError = (ServiceError, GitError)
 # Cap an unbounded whole-file read so a huge file can't flood the panel.
 _FILE_MAX_LINES = 2000
 
-
-def _compute_file_range(
-    *,
-    total: int,
-    line: int | None,
-    context: int,
-    start: int | None,
-    end: int | None,
-) -> tuple[int, int, bool]:
-    """Resolve the (start, end, truncated) slice for a file-content read.
-
-    Explicit ``start``/``end`` win; else ``line`` centers a context window;
-    else the whole file. Whichever branch resolves the window, it is capped
-    at ``_FILE_MAX_LINES`` lines afterward. Returns 1-based inclusive
-    [start, end] and whether the slice is shorter than the file.
-    """
-    if start is not None and end is not None:
-        s, e_ = start, end
-    elif line is not None:
-        s = max(1, line - context)
-        e_ = min(total, line + context)
-    else:
-        s, e_ = 1, total
-
-    s = max(1, min(s, total))
-    e_ = max(s, min(e_, total))
-
-    truncated = e_ < total
-    if e_ - s + 1 > _FILE_MAX_LINES:
-        e_ = s + _FILE_MAX_LINES - 1
-        truncated = True
-    return s, e_, truncated
-
-
 # Roles permitted to rebase branches via the /rebase endpoint.
 # Rebase is a history-rewriting operation that should be authorised only by
 # PM-level or CEO-level callers. Developers are intentionally excluded:
@@ -135,51 +95,6 @@ def _compute_file_range(
 _REBASE_ALLOWED_ROLES: frozenset[AgentRole] = frozenset(
     {AgentRole.CEO, AgentRole.CELL_PM, AgentRole.MAIN_PM}
 )
-
-
-def _translate_error(e: ServiceError | GitError) -> HTTPException:
-    """Translate service errors to HTTP exceptions."""
-    if isinstance(e, NotFoundError):
-        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
-    if isinstance(e, UnauthorizedError):
-        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
-    if isinstance(e, ValidationError):
-        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
-    if isinstance(e, GitTimeoutError):
-        return HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=e.message
-        )
-    if isinstance(e, GitCommandError):
-        return HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
-        )
-    return HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
-    )
-
-
-async def _resolve_project_slug(identifier: str, db: AsyncSession) -> str:
-    """Resolve a project identifier (UUID string or slug) to its slug.
-
-    Callers pass whatever string they have — a human-readable slug like
-    "roboco" or a UUID like "3fa85f64-5717-4562-b3fc-2c963f66afa6".
-    We try UUID first; if the string is not a valid UUID we treat it as
-    a slug directly.  In both cases we verify the project exists and
-    return the canonical slug so downstream git-service calls work.
-    """
-    service = get_project_service(db)
-    try:
-        uuid = UUID(identifier)
-        project = await service.get(uuid)
-    except ValueError:
-        project = await service.get_by_slug(identifier)
-
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project not found: {identifier}",
-        )
-    return str(project.slug)
 
 
 # =============================================================================
@@ -195,7 +110,7 @@ async def get_git_status(
     _task_id: str | None = Query(default=None),
 ) -> GitStatusResponse:
     """Get git status for a project."""
-    project_slug = await _resolve_project_slug(project_slug, db)
+    project_slug = await get_project_service(db).resolve_slug_or_404(project_slug)
     git_service = get_git_service(db)
 
     try:
@@ -210,7 +125,7 @@ async def get_git_status(
             behind,
         ) = await git_service.get_status(workspace)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitStatusResponse(
         project_slug=project_slug,
@@ -233,7 +148,7 @@ async def get_git_log(
     branch: str | None = Query(default=None),
 ) -> GitLogResponse:
     """Get git log for a project."""
-    project_slug = await _resolve_project_slug(project_slug, db)
+    project_slug = await get_project_service(db).resolve_slug_or_404(project_slug)
     git_service = get_git_service(db)
 
     try:
@@ -277,7 +192,7 @@ async def get_git_log(
             )
             return GitLogResponse(project_slug=project_slug, branch=branch, commits=[])
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     commits = []
     for line in log_result.stdout.strip().split("\n"):
@@ -302,28 +217,6 @@ async def get_git_log(
     )
 
 
-def _parse_branch_line(line: str) -> tuple[str, bool, str | None] | None:
-    """Classify one `%(refname)|%(objectname:short)` line as (name, is_remote,
-    last_commit), or None for skippable entries (blank, origin/HEAD, other ref
-    namespaces). Full refname, not `:short` — a remote-tracking ref shortens to
-    `origin/<branch>`, indistinguishable from a local branch literally named
-    that; classify on the `refs/heads/` vs `refs/remotes/` prefix instead.
-    """
-    if not line:
-        return None
-    parts = line.split("|")
-    ref = parts[0]
-    last_commit = parts[1] if len(parts) > 1 else None
-    if ref.startswith("refs/heads/"):
-        return ref.removeprefix("refs/heads/"), False, last_commit
-    if ref.startswith("refs/remotes/"):
-        _remote_name, _, name = ref.removeprefix("refs/remotes/").partition("/")
-        if not name or name == "HEAD":
-            return None  # origin/HEAD is a symbolic pointer, not a branch
-        return name, True, last_commit
-    return None
-
-
 @router.get("/branches", response_model=GitBranchListResponse)
 async def list_branches(
     db: DbSession,
@@ -332,7 +225,7 @@ async def list_branches(
     include_remote: bool = Query(default=False),
 ) -> GitBranchListResponse:
     """List git branches for a project."""
-    project_slug = await _resolve_project_slug(project_slug, db)
+    project_slug = await get_project_service(db).resolve_slug_or_404(project_slug)
     git_service = get_git_service(db)
 
     try:
@@ -350,11 +243,11 @@ async def list_branches(
 
         branch_result = await git_service._run_git(workspace, args)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     branches = []
     for line in branch_result.stdout.strip().split("\n"):
-        parsed = _parse_branch_line(line)
+        parsed = parse_branch_line(line)
         if parsed is None:
             continue
         name, is_remote, last_commit = parsed
@@ -383,7 +276,7 @@ async def get_git_diff(
     file_path: str | None = Query(default=None),
 ) -> GitDiffResponse:
     """Get git diff for a project."""
-    project_slug = await _resolve_project_slug(project_slug, db)
+    project_slug = await get_project_service(db).resolve_slug_or_404(project_slug)
     git_service = get_git_service(db)
 
     try:
@@ -403,7 +296,7 @@ async def get_git_diff(
             stat_args.append("--staged")
         stat_result = await git_service._run_git(workspace, stat_args)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     files_changed = stat_result.stdout.count("\n") - 1 if stat_result.stdout else 0
 
@@ -444,7 +337,7 @@ async def get_git_file(
             branch_name=branch, path=path, actor_agent_id=agent.agent_id
         )
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     if content is None:
         raise HTTPException(
@@ -455,8 +348,12 @@ async def get_git_file(
     all_lines = content.splitlines()
     total = len(all_lines)
 
-    s, e_, truncated = _compute_file_range(
-        total=total, line=line, context=context, start=start, end=end
+    s, e_, truncated = compute_file_range(
+        total=total,
+        line=line,
+        context=context,
+        explicit_range=(start, end) if start is not None and end is not None else None,
+        max_lines=_FILE_MAX_LINES,
     )
 
     sliced = all_lines[s - 1 : e_]
@@ -497,7 +394,7 @@ async def create_commit(
             deletions,
         ) = await git_service.commit_for_task(agent.agent_id, data)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitCommitResponse(
         commit_hash=commit_hash,
@@ -525,7 +422,7 @@ async def push_commits(
             agent.agent_id, agent.role, data
         )
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitPushResponse(
         branch=branch,
@@ -555,7 +452,7 @@ async def create_branch(
             agent.agent_id, data
         )
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitCreateBranchResponse(
         branch_name=branch_name,
@@ -585,7 +482,7 @@ async def checkout_branch(
     try:
         await git_service.checkout_branch_for_agent(agent.agent_id, data)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitCheckoutResponse(
         branch=data.branch,
@@ -615,7 +512,7 @@ async def create_pull_request(
             target_branch,
         ) = await git_service.create_pr_for_task(agent.agent_id, data)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitCreatePRResponse(
         pr_number=pr_number,
@@ -643,7 +540,7 @@ async def merge_pull_request(
             agent.agent_id, agent.role, data
         )
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitMergePRResponse(
         pr_number=data.pr_number,
@@ -664,7 +561,7 @@ async def pull_commits(
     agent: CurrentAgentContext,
 ) -> GitPullResponse:
     """Pull latest changes from origin into the agent workspace."""
-    project_slug = await _resolve_project_slug(data.project_slug, db)
+    project_slug = await get_project_service(db).resolve_slug_or_404(data.project_slug)
     git_service = get_git_service(db)
 
     try:
@@ -679,7 +576,7 @@ async def pull_commits(
             behind,
         ) = await git_service.pull(workspace)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitPullResponse(
         project_slug=project_slug,
@@ -704,7 +601,7 @@ async def fetch_commits(
     agent: CurrentAgentContext,
 ) -> GitFetchResponse:
     """Fetch changes from origin without merging."""
-    project_slug = await _resolve_project_slug(data.project_slug, db)
+    project_slug = await get_project_service(db).resolve_slug_or_404(data.project_slug)
     git_service = get_git_service(db)
 
     try:
@@ -719,7 +616,7 @@ async def fetch_commits(
             behind,
         ) = await git_service.fetch(workspace)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitFetchResponse(
         project_slug=project_slug,
@@ -782,7 +679,7 @@ async def rebase_branch(
                     "you. Only the task's assigned agent or CEO may rebase it."
                 ),
             )
-    project_slug = await _resolve_project_slug(data.project_slug, db)
+    project_slug = await get_project_service(db).resolve_slug_or_404(data.project_slug)
     git_service = get_git_service(db)
 
     try:
@@ -791,7 +688,7 @@ async def rebase_branch(
             workspace, data.target_branch, project_slug
         )
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitRebaseResponse(
         project_slug=project_slug,
@@ -829,7 +726,7 @@ async def cleanup_stale_branches(
                 "main_pm) may use this endpoint."
             ),
         )
-    project_slug = await _resolve_project_slug(data.project_slug, db)
+    project_slug = await get_project_service(db).resolve_slug_or_404(data.project_slug)
     git_service = get_git_service(db)
 
     try:
@@ -844,7 +741,7 @@ async def cleanup_stale_branches(
             project_slug, after_task_id=data.after_cursor
         )
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise translate_git_error(e) from e
 
     return GitBranchCleanupResponse(
         project_slug=project_slug,

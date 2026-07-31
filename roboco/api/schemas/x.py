@@ -1,10 +1,16 @@
 """Schemas for the X (Twitter) engine's CEO surface."""
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from roboco.api.schemas.project_fields import task_project_fields
+from roboco.foundation.policy.content import markers
 from roboco.services.x_client import MAX_TWEET_CHARS
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 
 class XMentionRefModel(BaseModel):
@@ -61,6 +67,38 @@ class XPostResponse(BaseModel):
     project_name: str | None = None
 
 
+def _task_status_value(task: "TaskTable") -> str:
+    """Render a task's status as a plain string, enum or raw value alike."""
+    raw = task.status
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def task_to_post_response(task: "TaskTable") -> XPostResponse:
+    """Render a held/open X-draft task as the CEO-facing queue entry."""
+    body = markers.get_x_draft_body(task) or task.description or ""
+    mention = markers.get_x_mention_ref(task)
+    feature = markers.get_x_feature_ref(task)
+    campaign = markers.get_x_campaign_ref(task)
+    barfly = markers.get_barfly_reply_ref(task)
+    project_slug, project_name = task_project_fields(task)
+    return XPostResponse(
+        task_id=str(task.id),
+        source=task.source,
+        title=task.title,
+        status=_task_status_value(task),
+        body=body,
+        char_count=len(body),
+        release_version=markers.get_x_release_version(task),
+        mention=XMentionRefModel(**mention) if mention else None,
+        feature=XFeatureRefModel(**feature) if feature else None,
+        campaign=XCampaignRefModel(**campaign) if campaign else None,
+        barfly=XBarflyRefModel(**barfly) if barfly else None,
+        reject_reason=markers.get_x_reject_reason(task),
+        project_slug=project_slug,
+        project_name=project_name,
+    )
+
+
 class XPostApproveRequest(BaseModel):
     """Approve a draft, optionally overwriting the body first."""
 
@@ -100,6 +138,34 @@ class XPostHistoryResponse(BaseModel):
     acted_at: datetime
     project_slug: str | None = None
     project_name: str | None = None
+
+
+def task_to_post_history_response(task: "TaskTable") -> XPostHistoryResponse:
+    """Render a posted/rejected X-draft task as the CEO-facing history entry."""
+    body = markers.get_x_draft_body(task) or task.description or ""
+    mention = markers.get_x_mention_ref(task)
+    feature = markers.get_x_feature_ref(task)
+    campaign = markers.get_x_campaign_ref(task)
+    barfly = markers.get_barfly_reply_ref(task)
+    project_slug, project_name = task_project_fields(task)
+    return XPostHistoryResponse(
+        task_id=str(task.id),
+        source=task.source,
+        title=task.title,
+        status=_task_status_value(task),
+        body=body,
+        char_count=len(body),
+        release_version=markers.get_x_release_version(task),
+        mention=XMentionRefModel(**mention) if mention else None,
+        feature=XFeatureRefModel(**feature) if feature else None,
+        campaign=XCampaignRefModel(**campaign) if campaign else None,
+        barfly=XBarflyRefModel(**barfly) if barfly else None,
+        tweet_id=markers.get_x_posted_tweet_id(task),
+        reject_reason=markers.get_x_reject_reason(task),
+        acted_at=task.updated_at or task.created_at,
+        project_slug=project_slug,
+        project_name=project_name,
+    )
 
 
 class XCredentialsStatus(BaseModel):

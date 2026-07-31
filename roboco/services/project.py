@@ -9,6 +9,7 @@ from typing import ClassVar
 from typing import cast as typing_cast
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -209,6 +210,33 @@ class ProjectService(BaseService):
         if not project:
             raise NotFoundError("Project", str(project_id))
         return project
+
+    async def get_by_id_or_slug_or_404(self, project_id: str) -> ProjectTable:
+        """Resolve a project by UUID or slug, raising HTTP 404 when absent.
+
+        Used by the conventions endpoints, which accept either form in the
+        ``project_id`` path parameter.
+        """
+        try:
+            project = await self.get(UUID(project_id))
+        except ValueError:
+            project = await self.get_by_slug(project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}",
+            )
+        return project
+
+    async def resolve_slug_or_404(self, identifier: str) -> str:
+        """Resolve a project identifier (UUID string or slug) to its slug.
+
+        Callers pass whatever string they have — a human-readable slug like
+        "roboco" or a UUID. Verifies the project exists and returns the
+        canonical slug so downstream git-service calls work.
+        """
+        project = await self.get_by_id_or_slug_or_404(identifier)
+        return str(project.slug)
 
     async def update(
         self,

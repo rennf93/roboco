@@ -15,6 +15,7 @@ from roboco.models.base import Team
 
 if TYPE_CHECKING:
     from roboco.db.tables import ProjectTable
+    from roboco.services.conventions import ScaffoldResult
 
 
 # =============================================================================
@@ -324,6 +325,15 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         is_active=bool(project.is_active),
         created_at=project.created_at,
         updated_at=project.updated_at,
+    )
+
+
+def conventions_action_to_response(
+    result: "ScaffoldResult",
+) -> ConventionsActionResponse:
+    """Convert a conventions scaffold/restore/save ``ScaffoldResult``."""
+    return ConventionsActionResponse(
+        pr_number=result.pr_number, branch=result.branch, created=result.created
     )
 
 

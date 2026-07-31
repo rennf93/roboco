@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import redis.asyncio as redis
+from fastapi import HTTPException, status
 
 from roboco.config import settings
 
@@ -76,3 +77,18 @@ class ResearchQuotaTracker:
         if self._redis is not None:
             await self._redis.aclose()
             self._redis = None
+
+
+async def enforce_research_quota(
+    tracker: ResearchQuotaTracker, agent_id: str, daily_quota: int
+) -> None:
+    """Consume one unit of ``agent_id``'s daily research quota, or raise 429."""
+    result = await tracker.check_and_consume(agent_id, daily_quota)
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"daily research quota exhausted "
+                f"({result.limit}/day, resets {result.day} 24:00 UTC)"
+            ),
+        )

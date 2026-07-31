@@ -21,11 +21,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 
 from roboco.config import settings
 from roboco.db.tables import PitchTable
-from roboco.foundation.identity import Team
+from roboco.foundation.identity import CELL_TEAMS, Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.pitch import PitchCreate, PitchStatus
 from roboco.models.product import ProductCellMapping, ProductCreate, ProductUpdate
@@ -40,6 +41,7 @@ from roboco.services.base import (
 )
 from roboco.services.github_provisioning import (
     ProvisioningDisabledError,
+    ProvisioningError,
     get_github_provisioning_service,
 )
 from roboco.services.product import get_product_service
@@ -55,6 +57,47 @@ if TYPE_CHECKING:
     from roboco.services.github_provisioning import GitHubProvisioningService
 
 _DESCRIPTION_CAP = 500
+
+# Known pitch-flow exceptions, in priority order (ProvisioningDisabledError
+# before its parent ProvisioningError so the more specific 400 wins).
+_SERVICE_ERROR_HTTP: tuple[tuple[type[Exception], int], ...] = (
+    (NotFoundError, status.HTTP_404_NOT_FOUND),
+    (ProvisioningDisabledError, status.HTTP_400_BAD_REQUEST),
+    (ProvisioningError, status.HTTP_502_BAD_GATEWAY),
+    (ConflictError, status.HTTP_409_CONFLICT),
+    (ValidationError, status.HTTP_400_BAD_REQUEST),
+)
+
+
+def pitch_error_to_http_exc(exc: Exception) -> HTTPException:
+    """Translate a known pitch service/provisioning error into an HTTPException."""
+    detail = getattr(exc, "message", None) or str(exc)
+    for exc_type, code in _SERVICE_ERROR_HTTP:
+        if isinstance(exc, exc_type):
+            return HTTPException(status_code=code, detail=detail)
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail
+    )
+
+
+def parse_cell_teams(raw: list[str]) -> list[Team]:
+    """Validate + convert pitch ``target_cells`` strings into ``Team`` members."""
+    cells: list[Team] = []
+    for c in raw:
+        try:
+            team = Team(c)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"unknown cell '{c}'",
+            ) from exc
+        if team not in CELL_TEAMS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"'{c}' is not a cell team",
+            )
+        cells.append(team)
+    return cells
 
 
 class PitchService(BaseService):

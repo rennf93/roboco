@@ -15,18 +15,15 @@ from roboco.api.schemas.product import (
     ProductResponse,
     ProductSummaryResponse,
     ProductUpdateRequest,
+    cell_mappings_from_request,
     product_to_response,
     product_to_summary,
 )
-from roboco.models.product import ProductCellMapping, ProductCreate, ProductUpdate
+from roboco.models.product import ProductCreate, ProductUpdate
 from roboco.services.base import ConflictError
 from roboco.services.product import get_product_service
 
 router = APIRouter()
-
-
-def _to_mappings(cells: list) -> list[ProductCellMapping]:
-    return [ProductCellMapping(team=c.team, project_id=c.project_id) for c in cells]
 
 
 @router.get("", response_model=list[ProductSummaryResponse])
@@ -68,7 +65,7 @@ async def create_product(
         name=data.name,
         slug=data.slug,
         description=data.description,
-        cells=_to_mappings(data.cells),
+        cells=cell_mappings_from_request(data.cells),
     )
     # The service raises ConflictError (slug already taken) before any flush.
     # Replacing cells then flushes child rows that can violate the
@@ -128,7 +125,9 @@ async def update_product(
     update_data = ProductUpdate(
         name=data.name,
         description=data.description,
-        cells=_to_mappings(data.cells) if data.cells is not None else None,
+        cells=cell_mappings_from_request(data.cells)
+        if data.cells is not None
+        else None,
     )
     # Replacing cells flushes child rows that can violate the
     # uq_product_projects_product_team UNIQUE (two cells with the same team in

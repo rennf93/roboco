@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from roboco.foundation.identity import Team
+from roboco.models.product import ProductCellMapping
 
 if TYPE_CHECKING:
     from roboco.db.tables import ProductTable
@@ -82,6 +83,11 @@ class ProductUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     cells: list[CellMapping] | None = None
+
+
+def cell_mappings_from_request(cells: list[CellMapping]) -> list[ProductCellMapping]:
+    """Convert request-body cell mappings into the service-layer model."""
+    return [ProductCellMapping(team=c.team, project_id=c.project_id) for c in cells]
 
 
 def product_to_response(product: "ProductTable") -> ProductResponse:

@@ -10,7 +10,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_panel_token
+from roboco.api.deps import (
+    CurrentAgentContext,
+    DbSession,
+    require_auditor_or_ceo,
+    require_panel_token,
+)
 from roboco.api.schemas.dashboard import (
     AuditorDashboard,
     AuditorFlag,
@@ -22,7 +27,6 @@ from roboco.api.schemas.dashboard import (
     TeamHealth,
     UsageSummary,
 )
-from roboco.models import AgentRole
 from roboco.models.base import Team
 from roboco.models.dashboard import CreateFlagParams
 from roboco.services.dashboard import get_dashboard_service
@@ -37,19 +41,12 @@ router = APIRouter(dependencies=[Depends(require_panel_token)])
 
 # The auditor flag/report mutating routes are gated to the Auditor and the
 # CEO. The Auditor is the silent-observer role whose flags/reports feed the
-# CEO; the CEO overrides. Mirrors ``_require_curator`` in playbooks.py and
-# ``_require_ceo`` in release.py. Read-only auditor views (``GET
-# /auditor/flags``, ``GET /auditor/reports``, ``GET /auditor``) stay open —
-# the dashboard is observable by any authenticated operator.
-_AUDITOR_OR_CEO_ROLES = frozenset({AgentRole.AUDITOR, AgentRole.CEO})
-
-
-def _require_auditor_or_ceo(agent: CurrentAgentContext) -> None:
-    if agent.role not in _AUDITOR_OR_CEO_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the Auditor or CEO may mutate auditor flags or reports",
-        )
+# CEO; the CEO overrides. Read-only auditor views (``GET /auditor/flags``,
+# ``GET /auditor/reports``, ``GET /auditor``) stay open — the dashboard is
+# observable by any authenticated operator.
+_MUTATE_FLAGS_OR_REPORTS_DETAIL = (
+    "Only the Auditor or CEO may mutate auditor flags or reports"
+)
 
 
 # =============================================================================
@@ -162,7 +159,7 @@ async def create_auditor_flag(
     agent: CurrentAgentContext,
 ) -> AuditorFlag:
     """Create a new auditor flag."""
-    _require_auditor_or_ceo(agent)
+    require_auditor_or_ceo(agent.role, _MUTATE_FLAGS_OR_REPORTS_DETAIL)
     service = get_dashboard_service(db)
     params = CreateFlagParams(
         severity=data.severity.value,
@@ -195,7 +192,7 @@ async def resolve_auditor_flag(
     notes: str | None = None,
 ) -> dict[str, str]:
     """Resolve an auditor flag."""
-    _require_auditor_or_ceo(agent)
+    require_auditor_or_ceo(agent.role, _MUTATE_FLAGS_OR_REPORTS_DETAIL)
     service = get_dashboard_service(db)
     if not service.resolve_flag(flag_id, notes):
         raise HTTPException(
@@ -238,7 +235,7 @@ async def create_auditor_report(
     agent: CurrentAgentContext,
 ) -> AuditorReport:
     """Create a new auditor report."""
-    _require_auditor_or_ceo(agent)
+    require_auditor_or_ceo(agent.role, _MUTATE_FLAGS_OR_REPORTS_DETAIL)
     service = get_dashboard_service(db)
     report = service.create_report(
         report_type=data.report_type,
@@ -264,7 +261,7 @@ async def send_auditor_report(
     agent: CurrentAgentContext,
 ) -> dict[str, str]:
     """Mark a report as sent to CEO."""
-    _require_auditor_or_ceo(agent)
+    require_auditor_or_ceo(agent.role, _MUTATE_FLAGS_OR_REPORTS_DETAIL)
     service = get_dashboard_service(db)
     if not service.send_report(report_id):
         raise HTTPException(

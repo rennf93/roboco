@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession
+from roboco.api.deps import CurrentAgentContext, DbSession, require_role_in
 from roboco.api.schemas.secretary import (
     CompanyStateResponse,
     DirectiveDecision,
@@ -26,20 +26,16 @@ from roboco.services.secretary import get_secretary_service
 router = APIRouter()
 
 _SECRETARY_OR_CEO = frozenset({AgentRole.SECRETARY, AgentRole.CEO})
-
-
-def _require(agent: CurrentAgentContext, allowed: frozenset[AgentRole]) -> None:
-    if agent.role not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"role '{agent.role}' not permitted on the Secretary surface",
-        )
+_CEO_ONLY = frozenset({AgentRole.CEO})
+_SURFACE_DETAIL = "role '{role}' not permitted on the Secretary surface"
 
 
 @router.get("/state", response_model=CompanyStateResponse)
 async def read_state(db: DbSession, agent: CurrentAgentContext) -> CompanyStateResponse:
     """Compact company-state snapshot (Secretary or CEO)."""
-    _require(agent, _SECRETARY_OR_CEO)
+    require_role_in(
+        agent.role, _SECRETARY_OR_CEO, _SURFACE_DETAIL.format(role=agent.role)
+    )
     state = await get_secretary_service(db).read_company_state()
     return CompanyStateResponse(**state)
 
@@ -56,7 +52,9 @@ async def search_tasks(
     The CEO refers to tasks by NAME in the Secretary chat; this resolves a
     name to concrete ids so a directive can target the right task.
     """
-    _require(agent, _SECRETARY_OR_CEO)
+    require_role_in(
+        agent.role, _SECRETARY_OR_CEO, _SURFACE_DETAIL.format(role=agent.role)
+    )
     from roboco.services.task import get_task_service
 
     rows = await get_task_service(db).search_tasks(q, limit=limit)
@@ -78,7 +76,9 @@ async def read_task(
 ) -> dict[str, object]:
     """Read one task's full detail — content, notes, plan, progress, PR ref
     (Secretary or CEO). Secretary FULL task access."""
-    _require(agent, _SECRETARY_OR_CEO)
+    require_role_in(
+        agent.role, _SECRETARY_OR_CEO, _SURFACE_DETAIL.format(role=agent.role)
+    )
     try:
         return await get_secretary_service(db).read_task(task_id)
     except NotFoundError as exc:
@@ -101,7 +101,9 @@ async def submit_directive(
     data: DirectiveSubmit, db: DbSession, agent: CurrentAgentContext
 ) -> DirectiveResponse:
     """Submit a directive (Secretary or CEO). Gated kinds queue; others run."""
-    _require(agent, _SECRETARY_OR_CEO)
+    require_role_in(
+        agent.role, _SECRETARY_OR_CEO, _SURFACE_DETAIL.format(role=agent.role)
+    )
     try:
         kind = DirectiveKind(data.kind)
     except ValueError as exc:
@@ -125,7 +127,7 @@ async def list_directives(
     db: DbSession, agent: CurrentAgentContext, status_filter: str | None = None
 ) -> list[DirectiveResponse]:
     """List directives (CEO only); optional status filter."""
-    _require(agent, frozenset({AgentRole.CEO}))
+    require_role_in(agent.role, _CEO_ONLY, _SURFACE_DETAIL.format(role=agent.role))
     parsed: DirectiveStatus | None = None
     if status_filter:
         try:
@@ -147,7 +149,7 @@ async def confirm_directive(
     directive_id: UUID, db: DbSession, agent: CurrentAgentContext
 ) -> DirectiveResponse:
     """CEO confirms a pending directive — it executes with CEO authority."""
-    _require(agent, frozenset({AgentRole.CEO}))
+    require_role_in(agent.role, _CEO_ONLY, _SURFACE_DETAIL.format(role=agent.role))
     service = get_secretary_service(db)
     try:
         row = await service.confirm_directive(directive_id, agent.agent_id)
@@ -174,7 +176,7 @@ async def reject_directive(
     agent: CurrentAgentContext,
 ) -> DirectiveResponse:
     """CEO rejects a pending directive."""
-    _require(agent, frozenset({AgentRole.CEO}))
+    require_role_in(agent.role, _CEO_ONLY, _SURFACE_DETAIL.format(role=agent.role))
     service = get_secretary_service(db)
     try:
         row = await service.reject_directive(directive_id, agent.agent_id, data.reason)

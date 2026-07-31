@@ -28,7 +28,7 @@ from roboco.services.research import (
     ResearchUnsupportedError,
     get_research_service,
 )
-from roboco.services.research_quota import ResearchQuotaTracker
+from roboco.services.research_quota import ResearchQuotaTracker, enforce_research_quota
 
 router = APIRouter()
 
@@ -48,28 +48,6 @@ RESEARCH_ROLES = frozenset(
 _quota_tracker = ResearchQuotaTracker()
 
 
-def _require_research_role(agent: CurrentAgentContext) -> None:
-    if agent.role not in RESEARCH_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"role '{agent.role}' may not use web research",
-        )
-
-
-async def _enforce_quota(agent: CurrentAgentContext) -> None:
-    result = await _quota_tracker.check_and_consume(
-        str(agent.agent_id), settings.research_daily_quota_per_agent
-    )
-    if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                f"daily research quota exhausted "
-                f"({result.limit}/day, resets {result.day} 24:00 UTC)"
-            ),
-        )
-
-
 @router.post("/search", response_model=SearchResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
@@ -80,8 +58,14 @@ async def research_search(
     data: SearchRequest, agent: CurrentAgentContext
 ) -> SearchResponse:
     """Search the public web via the configured provider (Board + PM only)."""
-    _require_research_role(agent)
-    await _enforce_quota(agent)
+    if agent.role not in RESEARCH_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"role '{agent.role}' may not use web research",
+        )
+    await enforce_research_quota(
+        _quota_tracker, str(agent.agent_id), settings.research_daily_quota_per_agent
+    )
     service = get_research_service()
     try:
         outcome = await service.search(data.query, data.max_results)
@@ -118,8 +102,14 @@ async def research_fetch(
     data: FetchRequest, agent: CurrentAgentContext
 ) -> FetchResponse:
     """Extract readable content for a URL via the provider (Board + PM only)."""
-    _require_research_role(agent)
-    await _enforce_quota(agent)
+    if agent.role not in RESEARCH_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"role '{agent.role}' may not use web research",
+        )
+    await enforce_research_quota(
+        _quota_tracker, str(agent.agent_id), settings.research_daily_quota_per_agent
+    )
     service = get_research_service()
     try:
         outcome = await service.fetch(data.url, data.max_chars)
