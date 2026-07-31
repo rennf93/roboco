@@ -27,10 +27,18 @@ The task was unblocked and escalated. Main PM independently confirmed via GitHub
 
 ## Next step
 
-Owner: be-pm is driving task a9a030d8's resubmit. be-dev-1 will fold in the
-reviewer's optional nit (missing source URL), commit, and push to re-trigger CI on
-PR #718; be-pm will run the verifying `pr_pass` once the Python quality gate check
-goes green.
+Task 976a22aa ("Fix PR #718 gate findings: add source citation and sync branch") is
+**completed** (landed 2026-07-30 18:40 UTC) — it folded in the reviewer's optional
+nit (missing source URL), committed, and synced the branch. The remaining blocker on
+PR #718, finding 53ce191d (Python quality gate check red), is being cleared by
+in-flight task 261e7585 ("Diagnose and clear PR #718's red Python quality-gate
+check"), owned by be-dev-2, currently `awaiting_qa`.
+
+Once 261e7585 lands and CI on PR #718 goes green, the next step splits in two:
+be-pm drives task a9a030d8's resubmit and dispatch; the backend PR reviewer
+(be-pr-reviewer) runs the verifying `pr_pass` on PR #718 to close finding
+53ce191d, since `pr_pass` is a PR-reviewer verb, not a Cell PM one — be-pr-reviewer
+has been notified/assigned to run that pass once CI is green.
 
 ## Lifecycle-wiring gap found during triage
 
