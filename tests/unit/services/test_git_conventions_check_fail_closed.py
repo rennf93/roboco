@@ -141,7 +141,13 @@ async def test_validator_timeout_fails_closed_and_reaps(
         return fake_proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
-    monkeypatch.setattr(git_module, "_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS", 0.01)
+    # The fixed module constant became a settings-backed accessor (task
+    # #62845be1: bounded well under the outer 120s gateway-verb budget
+    # instead of matching it) — patch the setting, not the removed module
+    # attribute.
+    monkeypatch.setattr(
+        git_module.settings, "conventions_validator_timeout_seconds", 0.01
+    )
 
     svc = _service()
     result = await svc._run_conventions_validator(tmp_path, ["a.py"])
