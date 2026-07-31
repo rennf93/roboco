@@ -6646,20 +6646,33 @@ class TaskService(BaseService):
             # by submit_for_qa's handoff), so the explicit audit_agent_id from
             # the caller wins.
             captured_dev_id = audit_agent_id or to_python_uuid(task.claimed_by)
+            # Capture the prior claimant (the dev) before it's overwritten
+            # below, mirroring _maybe_advance_to_pm_review's own capture —
+            # this is the mirror-image entry into the same parallel-completion
+            # transition (pr_created arriving second instead of docs_complete).
+            prior_claimant = to_python_uuid(task.active_claimant_id)
             self._validate_and_set_status(
                 task,
                 TaskStatus.AWAITING_PM_REVIEW,
                 "developer",
                 audit_agent_id=captured_dev_id,
             )
-            # Clear assignment so PM can claim the task for review
-            task.assigned_to = None
-            task.claimed_by = None
+            # Assign to the owning PM (walks the parent chain — see
+            # _resolve_pm_for_review) instead of clearing to None: CLAIM_RULES
+            # has no claim() edge into AWAITING_PM_REVIEW, so an unassigned
+            # task here has no way back to a PM (the pr_pass ownership-
+            # clearing wedge, same bug class, same fix).
+            owning_pm = await self._resolve_pm_for_review(task)
+            task.assigned_to = cast("Any", owning_pm) if owning_pm else None
+            task.claimed_by = cast("Any", owning_pm) if owning_pm else None
+            task.active_claimant_id = cast("Any", owning_pm) if owning_pm else None
+            await self._clear_agent_current_task(prior_claimant, task_id)
             self.log.info(
                 "PR created, awaiting PM review",
                 task_id=str(task_id),
                 pr_number=pr_number,
                 docs_complete=task.docs_complete,
+                routed_to_pm=str(owning_pm) if owning_pm else None,
             )
         else:
             # PR created but docs not yet complete
@@ -11301,9 +11314,15 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """Reviewer passes the gate: awaiting_pr_review -> awaiting_pm_review.
 
-        Clears the claim so the PM-closure dispatcher routes the now-unassigned
-        task to the owning PM to merge — the same path a leaf takes after
-        docs_complete. Mirrors qa_pass.
+        Hands off to the owning PM (cell PM for a cell team, else the Main
+        PM — the same resolution ``pr_fail`` uses) instead of clearing
+        ownership: CLAIM_RULES deliberately excludes AWAITING_PM_REVIEW (no
+        claim() edge into it — the i_will_plan re-claim-loop fix), so an
+        unassigned task here has no way back to a PM and wedges the closure
+        dispatcher's complete() ownership guard (assigned_to != pm_agent_id)
+        forever. active_claimant_id still clears — the reviewer's claim on
+        THIS task ends here, and the PM's ownership is assigned_to/claimed_by
+        only (mirrors pr_fail exactly).
         """
         task = await self.get(task_id)
         if task is None or task.status != TaskStatus.AWAITING_PR_REVIEW:
@@ -11320,8 +11339,9 @@ class TaskService(BaseService):
             )
         captured = to_python_uuid(task.claimed_by)
         self._record_pr_review(task, summary=notes, verdict="passed")
-        task.assigned_to = None
-        task.claimed_by = None
+        pm = await self._revision_pm_for_task(task)
+        task.assigned_to = cast("Any", pm.id) if pm is not None else None
+        task.claimed_by = cast("Any", pm.id) if pm is not None else None
         task.active_claimant_id = cast("Any", None)
         # The gate reviewer's claim on THIS task ends here — release the
         # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking).
@@ -11333,7 +11353,58 @@ class TaskService(BaseService):
             audit_agent_id=captured,
         )
         await self.session.flush()
-        self.log.info("Assembled PR passed review", task_id=str(task_id))
+        self.log.info(
+            "Assembled PR passed review",
+            task_id=str(task_id),
+            routed_to_pm=str(pm.id) if pm is not None else None,
+        )
+        return task
+
+    async def assign_review_pm(self, task_id: UUID) -> TaskTable | None:
+        """Recovery seam: (re)assign an ``awaiting_pm_review`` task to its
+        owning PM.
+
+        CLAIM_RULES deliberately excludes AWAITING_PM_REVIEW (no claim()
+        edge into it — the i_will_plan re-claim-loop fix), so the normal
+        claim() route can't place an unassigned review task with its real
+        owner, and a task that went through a block/escalate/
+        unblock(restore=True) round trip can come back with status restored
+        but ownership stuck on the stale escalation target. Called by the
+        orchestrator's pm-review dispatchers right before spawning, using
+        the same team-based resolution ``pr_fail``/``pr_pass`` use. Also
+        sets ``active_claimant_id`` (unlike pr_pass/pr_fail, which leave it
+        to a subsequent claim() that AWAITING_PM_REVIEW has none of) so the
+        newly-assigned PM's own note()/commit() calls don't bounce off
+        ``_active_claim_violation`` before ever claiming — mirrors
+        ``_maybe_advance_to_pm_review``'s identical concern. A no-op outside
+        awaiting_pm_review, and when the resolved owner already matches.
+        """
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
+        if task is None or task.status != TaskStatus.AWAITING_PM_REVIEW:
+            return None
+        pm = await self._revision_pm_for_task(task)
+        pm_id = cast("Any", pm.id) if pm is not None else None
+        if to_python_uuid(task.assigned_to) == to_python_uuid(pm_id) and to_python_uuid(
+            task.active_claimant_id
+        ) == to_python_uuid(pm_id):
+            return task
+        prior_claimant = to_python_uuid(task.active_claimant_id)
+        task.assigned_to = pm_id
+        task.claimed_by = pm_id
+        task.active_claimant_id = pm_id
+        if prior_claimant is not None and prior_claimant != to_python_uuid(pm_id):
+            await self._clear_agent_current_task(prior_claimant, task_id)
+        await self.session.flush()
+        self.log.info(
+            "Reassigned awaiting_pm_review task to owning PM",
+            task_id=str(task_id),
+            pm_id=str(pm.id) if pm is not None else None,
+        )
         return task
 
     async def pr_fail(

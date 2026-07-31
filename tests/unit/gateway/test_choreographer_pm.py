@@ -496,6 +496,47 @@ async def test_cell_pm_complete_not_assigned_returns_not_authorized() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cell_pm_complete_passes_ownership_guard_after_pr_pass_handoff() -> None:
+    """#740 (d87e2d9b) removed the illegal awaiting_pm_review -> claimed
+    re-claim edge, which used to be the PM's only way back to ownership
+    after the PR gate — pr_pass cleared assigned_to to None, so the owning
+    PM's complete() dead-ended on this exact guard forever
+    (not_authorized). pr_pass now hands off to the resolved owning PM
+    instead (see TaskService.pr_pass), so a task in the real post-gate
+    shape — assigned_to == the calling PM, no subtasks — must clear this
+    guard rather than bounce."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=None,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
+    git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "merge-abc"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="reviewed and approved")
+    assert env.as_dict().get("error") != "not_authorized"
+    assert env.error is None
+
+
+@pytest.mark.asyncio
 async def test_cell_pm_complete_in_progress_steers_to_submit_up() -> None:
     """Mirror of the main-PM submit_root steer: a cell task still in_progress
     must enter the gate via submit_up first. The rejection must NAME submit_up
