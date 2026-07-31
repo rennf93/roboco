@@ -156,6 +156,40 @@ async def test_dispatch_blocker_work_spawns_non_hitl_blocked_task(
     spawn.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_dispatch_blocker_work_skips_dependency_held_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-07-29: a blocked task waiting on a non-terminal dependency must
+    be skipped BEFORE the respawn gate — spawn_agent's readiness gate was
+    going to refuse anyway, and each refused attempt burned a breaker strike
+    plus, once tripped, a CEO escalation notification."""
+    orch = _orch()
+    task: dict[str, Any] = {
+        "id": "t1",
+        "status": "blocked",
+        "blocker_resolver_type": None,
+        "team": "backend",
+        "assigned_to": AGENT_UUIDS["be-pm"],
+        "dependency_ids": ["d1"],
+    }
+    monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=[task]))
+    monkeypatch.setattr(
+        orch,
+        "_check_dependencies_terminal",
+        AsyncMock(return_value="Task t1 waiting on non-terminal dependency d1"),
+    )
+    gate = AsyncMock(return_value=False)
+    monkeypatch.setattr(orch, "_pm_respawn_should_gate", gate)
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._dispatch_blocker_work(client=MagicMock())
+
+    spawn.assert_not_awaited()
+    gate.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # _claimed_task_needs_agent — claimed-but-no-agent detection
 # ---------------------------------------------------------------------------

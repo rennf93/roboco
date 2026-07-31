@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-29
+
 ### Added
 
 - **The eval harness real-spawn path is wired (#701).** `python -m roboco.eval run` now works end-to-end for a developer-role cohort: `OrchestratorStageSpawner.__init__` replaces its `NotImplementedError` with a real `AgentOrchestrator()` constructed the same way the production dispatcher builds it, so `run_stage` drives a real `spawn_agent` per turn. The no-production-reach guarantee lives in `_generate_mcp_config`, which now prefers `settings.api_url` when set (both `PROJECT_HOST_PATH` branches) — the harness's `_bench_environment` patches `settings.api_url` to the disposable stack URL, so a spawned container's MCP servers resolve to the throwaway orchestrator instead of the real production hostname or `127.0.0.1:{port}`, even though `_seed_company` seeds agents under their real production UUIDs (correct — orchestrator-internal helpers keyed by the static registry resolve as in a real deployment; the isolation is the URL, not the UUID). A new `tests/unit/runtime/test_eval_mcp_config_isolation.py` pins the guarantee without a Docker daemon. The injectable scripted `StageSpawner` (`tests/e2e_smoke/test_eval_bench.py`) is unaffected — it injects its own `make_spawner` — and remains the unit-test fallback. The real spawn needs a Docker daemon + built agent images.

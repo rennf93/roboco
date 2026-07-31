@@ -130,6 +130,63 @@ async def test_provision_labels_are_correct() -> None:
 
 
 @pytest.mark.asyncio
+async def test_provision_adds_compose_labels_when_orchestrator_is_compose_managed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the orchestrator resolves its own compose project, every sandbox
+    sidecar carries it too — so `docker compose down --remove-orphans` sweeps
+    the sidecar away with the stack, and UGOS groups it under the same
+    project."""
+
+    async def _fake_label_args(service: str) -> list[str]:
+        return [
+            "--label",
+            "com.docker.compose.project=roboco-nas",
+            "--label",
+            f"com.docker.compose.service={service}",
+            "--label",
+            "com.docker.compose.oneoff=False",
+            "--label",
+            "com.docker.compose.config-hash=roboco-sidecar",
+        ]
+
+    monkeypatch.setattr(sandbox_module, "compose_label_args", _fake_label_args)
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision("dev-3", ["postgres"])
+
+    run_call = next(c for c in runner.calls if c[0] == "run")
+    label_indices = [i for i, a in enumerate(run_call) if a == "--label"]
+    labels = [run_call[i + 1] for i in label_indices]
+    assert "com.docker.compose.project=roboco-nas" in labels
+    expected_service = sandbox_module.SANDBOX_ENGINES["postgres"].container_name(
+        "dev-3"
+    )
+    assert f"com.docker.compose.service={expected_service}" in labels
+
+
+@pytest.mark.asyncio
+async def test_provision_omits_compose_labels_outside_compose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real discovery helper returns [] outside a compose stack (dev
+    machines, CI, the eval harness) — no com.docker.compose.* label leaks in."""
+
+    async def _no_labels(_service: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr(sandbox_module, "compose_label_args", _no_labels)
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision("dev-4", ["postgres"])
+
+    run_call = next(c for c in runner.calls if c[0] == "run")
+    assert not any(a.startswith("com.docker.compose.") for a in run_call)
+
+
+@pytest.mark.asyncio
 async def test_provision_mongo_engine() -> None:
     runner = _FakeRunner(run_rc=0, exec_rc=0)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)

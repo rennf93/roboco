@@ -477,7 +477,7 @@ def _should_remint(token: str) -> bool:
             },
         )
         exp = data.get("exp")
-        if isinstance(exp, (int, float)):
+        if isinstance(exp, int | float):
             return (exp - time.time()) < settings.cloud_auth_remint_threshold_seconds
     except Exception:
         return True

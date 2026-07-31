@@ -59,7 +59,7 @@ _USAGE_FIELDS = (
 
 
 def _as_int(value: object) -> int:
-    return int(value) if isinstance(value, (int, float)) else 0
+    return int(value) if isinstance(value, int | float) else 0
 
 
 def _usage_from_event(event: dict[str, Any]) -> dict[str, int] | None:

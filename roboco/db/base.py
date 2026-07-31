@@ -102,6 +102,23 @@ def get_engine() -> AsyncEngine:
     """Get or create the async engine (rebound per event loop — see holder)."""
     _rebind_holder_to_current_loop()
     if _DbHolder.engine is None:
+        # Server-side timeouts, applied per asyncpg connection: a transaction
+        # left idle (its coroutine parked on git I/O or an asyncio lock) is
+        # killed by Postgres itself, releasing its row locks and pool slot;
+        # a statement queued on someone else's row lock errors instead of
+        # holding a pool connection for the wait. Alembic's env.py builds its
+        # own engine, so migrations never carry these.
+        server_settings = {
+            key: str(value)
+            for key, value in (
+                (
+                    "idle_in_transaction_session_timeout",
+                    settings.database_idle_in_transaction_timeout_ms,
+                ),
+                ("lock_timeout", settings.database_lock_timeout_ms),
+            )
+            if value > 0
+        }
         _DbHolder.engine = create_async_engine(
             settings.database_url,
             echo=settings.database_echo,
@@ -110,6 +127,9 @@ def get_engine() -> AsyncEngine:
             pool_timeout=settings.database_pool_timeout,
             pool_recycle=settings.database_pool_recycle,
             pool_pre_ping=True,
+            connect_args={"server_settings": server_settings}
+            if server_settings
+            else {},
         )
         current = _running_loop()
         _DbHolder.loop = weakref.ref(current) if current is not None else None

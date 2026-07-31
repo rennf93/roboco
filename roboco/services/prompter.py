@@ -509,7 +509,7 @@ class PrompterService:
         if not raw:
             return ()
         deps: list[int] = []
-        for item in raw if isinstance(raw, (list, tuple)) else [raw]:
+        for item in raw if isinstance(raw, list | tuple) else [raw]:
             try:
                 deps.append(int(str(item).strip()))
             except (TypeError, ValueError) as exc:

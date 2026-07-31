@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from roboco.foundation.policy import lifecycle as spec
 from roboco.models.base import TaskStatus
-from roboco.services.task import _default_claim_statuses, _get_valid_claim_statuses
+from roboco.services.task import (
+    _ROLE_CLAIM_STATUSES,
+    _default_claim_statuses,
+    _get_valid_claim_statuses,
+)
 
 if TYPE_CHECKING:
     from roboco.db.tables import AgentTable
@@ -52,3 +56,26 @@ def test_runtime_pm_claim_mapping_covers_spec_claim_rules(role: spec.Role) -> No
             f"runtime claim mapping for {role.value} is missing spec-allowed "
             f"status '{status.value}'"
         )
+
+
+@pytest.mark.parametrize("role", [spec.Role.CELL_PM, spec.Role.MAIN_PM])
+def test_claim_rules_and_role_statuses_are_identical(role: spec.Role) -> None:
+    """Genuine bidirectional cross-check between the two claim tables.
+
+    ``test_runtime_pm_claim_mapping_covers_spec_claim_rules`` above only
+    checks spec ⊆ runtime — it would still pass if ``_ROLE_CLAIM_STATUSES``
+    carried an EXTRA status the spec doesn't grant (e.g. AWAITING_PM_REVIEW
+    re-added to the runtime table alone, with lifecycle.CLAIM_RULES left
+    untouched). That silent one-sided drift — "the service table already
+    granted this on the belief that the spec granted it too" — is exactly the
+    shape that caused the awaiting_pm_review re-claim loop
+    (``lifecycle.py``'s ``CLAIM_RULES`` comment covers the incident). This
+    test imports both tables directly and asserts the per-role sets are
+    IDENTICAL, not just one-way-covering.
+    """
+    spec_values = {s.value for s in spec.CLAIM_RULES[role]}
+    runtime_values = {s.value for s in _ROLE_CLAIM_STATUSES[role.value]}
+    assert spec_values == runtime_values, (
+        f"spec.CLAIM_RULES[{role.value}]={spec_values} != "
+        f"task._ROLE_CLAIM_STATUSES[{role.value!r}]={runtime_values}"
+    )
