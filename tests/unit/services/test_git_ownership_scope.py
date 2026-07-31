@@ -195,6 +195,72 @@ async def test_full_scope_op_calls_full_repair_not_git_repair(
 
 
 @pytest.mark.asyncio
+async def test_read_only_op_does_not_invalidate_owned_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read-only op writes nothing, so the ownership-sentinel marker
+    (`_ensure_agent_owned`'s root short-circuit) stays valid — invalidating
+    it here would force a needless full walk on the very next call."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        "roboco.services.git.subprocess.run", lambda *_a, **_k: _ok(["status"])
+    )
+    invalidate = MagicMock()
+    monkeypatch.setattr("roboco.services.workspace.invalidate_owned_marker", invalidate)
+
+    await _svc()._run_git(tmp_path, ["status", "--porcelain"])
+
+    invalidate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_git_scoped_op_invalidates_owned_marker_before_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `.git`-only-writing op (commit) can still create new root-owned
+    files, so it must invalidate the marker too, not just checkout/reset/
+    etc. — and it must do so BEFORE the subprocess runs, so a marker still
+    trusted by a concurrent `_ensure_agent_owned` call can never straddle
+    the write."""
+    (tmp_path / ".git").mkdir()
+    order: list[str] = []
+
+    def _run_subprocess(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+        order.append("subprocess.run")
+        return _ok(["commit"])
+
+    monkeypatch.setattr("roboco.services.git.subprocess.run", _run_subprocess)
+    monkeypatch.setattr(
+        "roboco.services.workspace.invalidate_owned_marker",
+        lambda _ws: order.append("invalidate_owned_marker"),
+    )
+    monkeypatch.setattr("roboco.services.workspace._ensure_git_dir_owned", MagicMock())
+
+    await _svc()._run_git(tmp_path, ["commit", "-m", "msg"])
+
+    assert order == ["invalidate_owned_marker", "subprocess.run"]
+
+
+@pytest.mark.asyncio
+async def test_full_scope_op_invalidates_owned_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """checkout/reset/rebase/pull can create root-owned working-tree files
+    too — the marker invalidation isn't scoped to `.git`-only writes."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        "roboco.services.git.subprocess.run", lambda *_a, **_k: _ok(["checkout"])
+    )
+    invalidate = MagicMock()
+    monkeypatch.setattr("roboco.services.workspace.invalidate_owned_marker", invalidate)
+    monkeypatch.setattr("roboco.services.workspace._ensure_agent_owned", MagicMock())
+
+    await _svc()._run_git(tmp_path, ["checkout", "some-branch"])
+
+    invalidate.assert_called_once_with(tmp_path)
+
+
+@pytest.mark.asyncio
 async def test_reown_after_git_op_returns_zero_ms_when_skipped() -> None:
     """The instrumentation must see a true near-zero cost for a skipped repair,
     not a stale/garbage value."""

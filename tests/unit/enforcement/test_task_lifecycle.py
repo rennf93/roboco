@@ -277,6 +277,40 @@ def test_status_classification_is_mutually_disjoint() -> None:
     assert waiting & terminal == set()
 
 
+# ---------------------------------------------------------------------------
+# awaiting_pm_review -> claimed is closed (the i_will_plan re-claim loop):
+# a PM re-entering its own review-queue task is steered by the choreographer
+# straight to complete/request_changes, never via a claim that resets the
+# task and re-runs submit_up -> pr_pass -> awaiting_pm_review forever. This
+# legacy shim (_LEGACY_OPERATIONAL_EDGES / _LEGACY_ROLE_GATES) used to grant
+# the same edge lifecycle.CLAIM_RULES had already closed — the identical
+# two-tables-drift shape that caused the incident.
+# ---------------------------------------------------------------------------
+
+
+def test_awaiting_pm_review_claim_no_longer_allowed_for_pm_roles() -> None:
+    assert can_agent_transition("awaiting_pm_review", "claimed", "cell_pm") is False
+    assert can_agent_transition("awaiting_pm_review", "claimed", "main_pm") is False
+    with pytest.raises(TaskLifecycleError):
+        validate_task_transition("awaiting_pm_review", "claimed", "cell_pm")
+    with pytest.raises(TaskLifecycleError):
+        validate_task_transition("awaiting_pm_review", "claimed", "main_pm")
+
+
+def test_awaiting_pm_review_needs_revision_still_allowed() -> None:
+    """The PM reject-back-to-dev path (request_changes) is untouched."""
+    assert (
+        can_agent_transition("awaiting_pm_review", "needs_revision", "cell_pm") is True
+    )
+    assert (
+        can_agent_transition("awaiting_pm_review", "needs_revision", "main_pm") is True
+    )
+    assert (
+        validate_task_transition("awaiting_pm_review", "needs_revision", "cell_pm")
+        is True
+    )
+
+
 def test_status_classification_covers_every_enum_member() -> None:
     """Every Status enum member must be classified by EXACTLY one of
     is_terminal_state / is_active_state / is_waiting_state — the coverage
