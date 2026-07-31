@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from roboco.config import settings
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.batch import is_batch_root_subtask
@@ -29,6 +30,10 @@ from roboco.foundation.policy.content import (
 )
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer.collision import build_collision_context
+from roboco.services.gateway.choreographer.evidence_legs import (
+    LegBudget,
+    run_bounded_leg,
+)
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import render_findings
 from roboco.services.gateway.merge_chain import resolve_parent_branch
@@ -1243,16 +1248,40 @@ class PRGateMixin(_Base):
         criteria + the task's OPEN findings (so they aren't crowded out by
         the full ledger's cap) + the full findings ledger (every status,
         newest round first) so the reviewer verifies prior rounds
-        item-by-item — parity with QA's ``_build_qa_claim_evidence``."""
+        item-by-item — parity with QA's ``_build_qa_claim_evidence``.
+
+        The diff + changed-files legs run bounded via ``run_bounded_leg``
+        against ONE shared ``LegBudget`` for this build — a timeout skips
+        that piece and records a note in ``evidence_gaps`` instead of
+        hanging this advisory (non-gating) verb.
+        """
         diff = ""
         files_changed: list[str] = []
+        evidence_gaps: list[str] = []
         if t.branch_name:
             gate_parent = await self._gate_diff_parent(t)
-            diff = await self.git.diff(
-                branch_name=t.branch_name,
-                preferred_parent=gate_parent,
+            budget = LegBudget(settings.evidence_assembly_timeout_seconds)
+            diff = await run_bounded_leg(
+                self.git.diff(
+                    branch_name=t.branch_name,
+                    preferred_parent=gate_parent,
+                ),
+                default="",
+                budget=budget,
+                leg="pr diff",
+                hint="review the PR diff on GitHub directly",
+                task_id=t.id,
+                gaps=evidence_gaps,
             )
-            files_changed = await self._gate_changed_files(t, gate_parent)
+            files_changed = await run_bounded_leg(
+                self._gate_changed_files(t, gate_parent),
+                default=[],
+                budget=budget,
+                leg="files_changed",
+                hint="review the PR diff on GitHub directly",
+                task_id=t.id,
+                gaps=evidence_gaps,
+            )
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, t.id
         )
@@ -1287,4 +1316,6 @@ class PRGateMixin(_Base):
         collision = await self._gate_collision_evidence(t, files_changed)
         if collision:
             evidence["collision_context"] = collision
+        if evidence_gaps:
+            evidence["evidence_gaps"] = evidence_gaps
         return evidence

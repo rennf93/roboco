@@ -1726,6 +1726,33 @@ class Settings(BaseSettings):
             "the branch reached the remote."
         ),
     )
+    evidence_assembly_timeout_seconds: float = Field(
+        default=45.0,
+        ge=1.0,
+        description=(
+            "TOTAL budget for one advisory-evidence build (branch fetch, "
+            "diff, list_changed_files — every slow leg) on claim_review / "
+            "claim_doc_task / claim_gate_review / evidence() / i_am_done's "
+            "success envelope. A `LegBudget` (roboco.services.gateway."
+            "choreographer.evidence_legs) is created once per build and "
+            "shared across every leg in it — each leg's wait_for gets only "
+            "what's left of this total, shrinking as legs consume it, so "
+            "summing per-leg budgets can never exceed this cap (and stays "
+            "well under flow_verb_timeout_seconds). A hung leg degrades "
+            "(evidence_gaps) instead of taking the whole verb down with it."
+        ),
+    )
+    conventions_validator_advisory_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        description=(
+            "Ceiling for the conventions-validator subprocess on the "
+            "ADVISORY claim path (claim_review) — the actual budget used is "
+            "min(this, the build's remaining evidence_assembly_timeout_seconds), "
+            "so it also shrinks with the shared LegBudget. Fail-closed paths "
+            "(i_am_done, pr_pass) keep their own hardcoded cap unchanged."
+        ),
+    )
 
     protected_git_urls: list[str] = Field(
         default_factory=list,

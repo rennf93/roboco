@@ -169,7 +169,6 @@ async def test_create_rejects_cell_pm_assignee_plus_code() -> None:
 
 @pytest.mark.asyncio
 async def test_create_allows_cell_pm_assignee_plus_planning() -> None:
-
     be_pm_uuid = AGENTS["be-pm"].uuid
     svc = TaskService(
         MagicMock(add=MagicMock(), flush=AsyncMock(), execute=AsyncMock())

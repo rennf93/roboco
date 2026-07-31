@@ -325,7 +325,6 @@ async def test_send_message_with_task_id_response(a2a_route_client: dict) -> Non
 async def test_send_message_response_invalid_task_id(
     a2a_route_client: dict,
 ) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -352,7 +351,6 @@ async def test_send_message_response_invalid_task_id(
 async def test_send_message_response_task_not_found(
     a2a_route_client: dict,
 ) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -379,7 +377,6 @@ async def test_send_message_response_task_not_found(
 async def test_send_message_create_notification_success(
     a2a_route_client: dict,
 ) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -403,7 +400,6 @@ async def test_send_message_create_notification_success(
 
 @pytest.mark.asyncio
 async def test_send_message_permission_error(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -427,7 +423,6 @@ async def test_send_message_permission_error(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_send_message_value_error(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -454,7 +449,6 @@ async def test_send_message_value_error(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_task_success(a2a_route_client: dict) -> None:
-
     a2a_task = A2ATask.model_validate(
         {
             "id": str(a2a_route_client["task"].id),
@@ -484,7 +478,6 @@ async def test_cancel_task_success(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_task_already_terminal(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     _set_pm_context(a2a_route_client["app"], a2a_route_client["dev"])
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
@@ -502,7 +495,6 @@ async def test_cancel_task_already_terminal(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_task_not_found(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     _set_pm_context(a2a_route_client["app"], a2a_route_client["dev"])
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
@@ -638,7 +630,6 @@ async def test_send_message_uses_authenticated_identity_not_client_from_agent(
 async def test_chat_create_conversation_access_denied(
     a2a_route_client: dict,
 ) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -667,7 +658,6 @@ async def test_chat_create_conversation_access_denied(
 async def test_chat_create_conversation_success(
     a2a_route_client: dict,
 ) -> None:
-
     client = a2a_route_client["client"]
     conv_id = uuid4()
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
@@ -707,7 +697,6 @@ async def test_chat_create_conversation_success(
 async def test_chat_create_conversation_refresh_failed(
     a2a_route_client: dict,
 ) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -744,7 +733,6 @@ async def test_chat_create_conversation_refresh_failed(
 
 @pytest.mark.asyncio
 async def test_get_conversation_not_found(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -758,7 +746,6 @@ async def test_get_conversation_not_found(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_get_conversation_success(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     conv_id = uuid4()
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
@@ -790,7 +777,6 @@ async def test_get_conversation_success(a2a_route_client: dict) -> None:
 async def test_close_conversation_value_error(
     a2a_route_client: dict,
 ) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -806,7 +792,6 @@ async def test_close_conversation_value_error(
 
 @pytest.mark.asyncio
 async def test_close_conversation_success(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -822,7 +807,6 @@ async def test_close_conversation_success(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_list_chat_messages(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     msg = SimpleNamespace(
         id=uuid4(),
@@ -853,7 +837,6 @@ async def test_list_chat_messages(a2a_route_client: dict) -> None:
 async def test_send_chat_message_value_error(
     a2a_route_client: dict,
 ) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -869,7 +852,6 @@ async def test_send_chat_message_value_error(
 
 @pytest.mark.asyncio
 async def test_send_chat_message_success(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     msg = SimpleNamespace(
         id=uuid4(),
@@ -926,7 +908,6 @@ async def test_send_chat_message_over_budget_returns_403(
 
 @pytest.mark.asyncio
 async def test_mark_read(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -941,7 +922,6 @@ async def test_mark_read(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_get_task_conversations(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
@@ -956,7 +936,6 @@ async def test_get_task_conversations(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_chat_list_with_status_filter(a2a_route_client: dict) -> None:
-
     client = a2a_route_client["client"]
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()

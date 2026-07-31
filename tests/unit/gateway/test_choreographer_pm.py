@@ -978,18 +978,27 @@ async def test_escalate_up_survives_journal_write_lock_timeout() -> None:
     with no rollback/savepoint, poisoning the session so the very next
     attribute touch (``_escalate_up_preflight`` reading ``t.id``) raised an
     unhandled ``PendingRollbackError``. The write is now savepoint-guarded
-    (``begin_nested()``): the failure is contained, the verb falls through
-    cleanly to the normal tracing_gap rejection (no decision was actually
-    persisted), and the task stays fully readable — no unhandled exception
-    escapes ``escalate_up``."""
+    (``begin_nested()``): the failure is contained and no unhandled
+    exception escapes ``escalate_up``.
+
+    Round-2 fix (transient-failure gate bypass): a lock-timeout with a
+    non-empty rationale already in hand (``reason``) no longer falls through
+    to a tracing_gap rejection either — the PM answered the gate's actual
+    question (why); the write was only ever a convenience. Laundering
+    transient DB congestion into a rejected/blocked PM verb is exactly the
+    bug this closes — see test_pm_decision_transient_failure_* below for the
+    gate-helper-level unit coverage.
+    """
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="blocked", assigned_to=pm_id, team="backend")
+    after = MagicMock(**{**t.__dict__, "assigned_to": uuid4()})
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(
         role="cell_pm", escalation_target="main-pm"
     )
+    task_svc.escalate.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
     journal_svc.latest_decision_at.return_value = None
@@ -1006,11 +1015,11 @@ async def test_escalate_up_survives_journal_write_lock_timeout() -> None:
     # The savepoint was actually engaged — proves the fix is wired in, not
     # merely that AsyncMock happened to swallow the raise on its own.
     task_svc.session.begin_nested.assert_called()
-    # No unhandled exception escaped escalate_up: the gate falls through to
-    # its normal clean rejection since the decision write never landed.
+    # No unhandled exception escaped escalate_up, AND the gate is satisfied
+    # by the verb's own rationale instead of rejecting a DB hiccup.
     body = env.as_dict()
-    assert body["error"] == "tracing_gap"
-    assert "journal:decision" in body["missing"]
+    assert body["error"] is None, body
+    task_svc.escalate.assert_awaited_once()
     # The task is still fully readable afterward — this is exactly where
     # the production trace crashed with PendingRollbackError on t.id.
     assert t.id == task_id

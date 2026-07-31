@@ -1182,7 +1182,6 @@ async def test_unblock_task_not_blocked_returns_400(task_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_unblock_task_forbidden(task_client: dict) -> None:
-
     other = await _seed_agent(task_client)
     task = _seed_task(task_client, status=TaskStatus.BLOCKED, assigned_to=other.id)
     await task_client["db"].flush()
@@ -1615,7 +1614,6 @@ async def test_activate_unknown_returns_4xx(task_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_activate_developer_forbidden(task_client: dict) -> None:
-
     app = task_client["client"]._transport.app
 
     async def _override_agent() -> AgentContext:
@@ -1668,7 +1666,6 @@ async def test_get_team_tasks_unauthorized(task_client: dict) -> None:
 async def test_get_task_stats_by_team_developer_forbidden(
     task_client: dict,
 ) -> None:
-
     app = task_client["client"]._transport.app
 
     async def _override_agent() -> AgentContext:
@@ -1779,7 +1776,6 @@ async def test_delete_task_forbidden_non_creator(task_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_developer_forbidden(task_client: dict) -> None:
-
     task = _seed_task(task_client)
     await task_client["db"].flush()
     app = task_client["client"]._transport.app

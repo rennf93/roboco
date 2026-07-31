@@ -989,6 +989,19 @@ async def test_escalate_up_matches_spec(role: str, status: str) -> None:
         id=agent_id, role=role, team="backend", slug=None, escalation_target="main-pm"
     )
     task_svc.escalate.return_value = after
+    # escalate_up's own _ensure_pm_decision write-then-gate opens a
+    # session.begin_nested() savepoint unconditionally (even on the
+    # fresh-decision no-write path below) — an unshaped AsyncMock's
+    # auto-attribute return doesn't support `async with`, which orphans
+    # the mock's internal coroutine (AsyncMockMixin._execute_mock_call
+    # never awaited).
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     journal_svc = AsyncMock()
     # journal:decision is not on the spec — satisfy it so the verb-specific
     # preflight does not surface a non-spec tracing_gap on the allowed branch.

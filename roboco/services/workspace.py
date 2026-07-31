@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.config import settings
 from roboco.db.tables import AgentTable
+from roboco.exceptions import GitTimeoutError
 from roboco.logging import get_logger
 from roboco.models.base import Team
 from roboco.models.env_branches import head_branch
@@ -2260,6 +2261,7 @@ class WorkspaceService:
         *,
         agent_id: UUID,
         branch_name: str,
+        subprocess_timeout: float | None = None,
     ) -> Path:
         """Fetch `branch_name` into the inspecting agent's workspace.
 
@@ -2268,9 +2270,21 @@ class WorkspaceService:
 
         1. Resolves the project from the branch (via the owning task).
         2. Ensures a healthy workspace for `agent_id` on that project
-           (clones if missing — same path as the agent's first claim).
+           (clones if missing — same path as the agent's first claim). This
+           CLONE-CREATION step always keeps its own `workspace_clone_timeout`
+           (300s) budget regardless of `subprocess_timeout` below — a fresh
+           clone genuinely needs that much room.
         3. Runs `git fetch origin <branch>` with the project token so the
            branch ref is locally available for `git diff`.
+
+        `subprocess_timeout` overrides ONLY the fetch subprocess in step 3
+        (default `settings.workspace_clone_timeout`, 300s, for every
+        existing caller that omits it). The advisory `evidence()` call site
+        passes its own leg budget so a hung fetch self-terminates near that
+        window instead of occupying a thread on the shared DEFAULT asyncio
+        executor (`asyncio.to_thread` here, NOT git.py's dedicated
+        `_GIT_EXECUTOR`) for up to 300s after the caller already gave up
+        waiting on it.
 
         Returns the workspace path so the caller can chain checkout/diff
         operations if needed.
@@ -2306,17 +2320,31 @@ class WorkspaceService:
             basic = base64.b64encode(f"x-access-token:{git_token}".encode()).decode()
             prefix = ["-c", f"http.extraheader=Authorization: Basic {basic}"]
 
+        effective_timeout = (
+            subprocess_timeout
+            if subprocess_timeout is not None
+            else settings.workspace_clone_timeout
+        )
+
         def _do_fetch() -> subprocess.CompletedProcess[str]:
             return subprocess.run(
                 ["git", *prefix, "fetch", "origin", branch_name],
                 cwd=str(workspace),
                 capture_output=True,
                 text=True,
-                timeout=settings.workspace_clone_timeout,
+                timeout=effective_timeout,
                 check=False,
             )
 
-        result = await asyncio.to_thread(_do_fetch)
+        try:
+            result = await asyncio.to_thread(_do_fetch)
+        except subprocess.TimeoutExpired as exc:
+            # Mirrors _run_git's own TimeoutExpired -> GitTimeoutError
+            # conversion (git.py) so a bounded caller (run_bounded_leg)
+            # catches this the same way as every other git-touching leg.
+            raise GitTimeoutError(
+                f"fetch origin {branch_name}", int(effective_timeout)
+            ) from exc
         if result.returncode != 0:
             logger.warning(
                 "fetch_branch_for_inspection: fetch returned non-zero",

@@ -31,7 +31,12 @@ async def test_findings_surfaced_when_flag_on(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(settings, "conventions_enabled", True)
     findings = [{"file": "x.py", "line": 1, "level": "warn", "fix_hint": "h"}]
     c = _make_choreographer(check_result={"findings": findings, "could_not_run": False})
-    assert await c._qa_convention_findings(uuid4(), MagicMock()) == findings
+    gaps: list[str] = []
+    assert (
+        await c._qa_convention_findings(uuid4(), MagicMock(), timeout=30.0, gaps=gaps)
+        == findings
+    )
+    assert gaps == []
 
 
 @pytest.mark.asyncio
@@ -40,21 +45,32 @@ async def test_empty_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
     c = _make_choreographer(
         check_result={"findings": [{"file": "x"}], "could_not_run": False}
     )
-    assert await c._qa_convention_findings(uuid4(), MagicMock()) == []
+    gaps: list[str] = []
+    assert (
+        await c._qa_convention_findings(uuid4(), MagicMock(), timeout=30.0, gaps=gaps)
+        == []
+    )
+    assert gaps == []
 
 
 @pytest.mark.asyncio
 async def test_could_not_run_surfaced_as_single_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A non-timeout could_not_run reason ("boom") stays fail-open in
+    convention_findings but must NOT also spam evidence_gaps — only a
+    detected timeout does (see test_claim_review_conventions_timeout_
+    degrades_with_gap in test_evidence_assembly_bounded_legs.py)."""
     monkeypatch.setattr(settings, "conventions_enabled", True)
     c = _make_choreographer(
         check_result={"findings": [], "could_not_run": True, "reason": "boom"}
     )
-    out = await c._qa_convention_findings(uuid4(), MagicMock())
+    gaps: list[str] = []
+    out = await c._qa_convention_findings(uuid4(), MagicMock(), timeout=30.0, gaps=gaps)
     assert len(out) == 1
     assert out[0]["could_not_run"] is True
     assert out[0]["reason"] == "boom"
+    assert gaps == []
 
 
 def _stub_task() -> MagicMock:
