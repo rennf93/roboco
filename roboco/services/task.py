@@ -1681,6 +1681,44 @@ class TaskService(BaseService):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_open_env_sync_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal env_sync tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one project's ``git_url`` so a repo never gets
+        a second env-sync task while the first (a conflict-paused cascade)
+        is still open.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == ENV_SYNC_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(
+                ProjectTable, TaskTable.project_id == ProjectTable.id
+            ).where(ProjectTable.git_url == git_url)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def resolve_scales_task_ref(self, task_ref: str) -> TaskTable | None:
+        """Resolve a Scales rebalance item's ``task_ref`` — the id8 prefix
+        or exact title of a live BACKLOG/PENDING task — to that task, or
+        None when it matches none. Scales only ever acts on backlog items
+        that haven't started, so other statuses are never candidates."""
+        ref = task_ref.strip()
+        if not ref:
+            return None
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.status.in_([TaskStatus.BACKLOG, TaskStatus.PENDING])
+            )
+        )
+        for task in result.scalars().all():
+            if str(task.id)[:8] == ref or task.title == ref:
+                return task
+        return None
+
     async def list_open_release_proposals(self) -> list[TaskTable]:
         """Non-terminal release-manager proposals — the one-open-at-a-time basis.
 
@@ -3133,6 +3171,20 @@ class TaskService(BaseService):
         TaskStatus.AWAITING_PM_REVIEW,
     }
 
+    # _inherit_upstream_base gating: only real WORK claims (never QA/doc/gate
+    # — a fresh cut there already branches from the live base), and only the
+    # two re-claim statuses where a pre-existing branch is known stale rather
+    # than already-reviewed (excludes a PM's own AWAITING_PM_REVIEW re-claim).
+    _INHERIT_UPSTREAM_BASE_ROLES: ClassVar[set[str]] = {
+        "developer",
+        "cell_pm",
+        "main_pm",
+    }
+    _INHERIT_UPSTREAM_BASE_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.PENDING,
+        TaskStatus.NEEDS_REVISION,
+    }
+
     async def _claim_blocked_by_dependencies(self, task: TaskTable) -> bool:
         """True when a PENDING task can't be claimed yet — a ``depends_on`` task
         is still non-terminal (the sequence guardrail).
@@ -3478,11 +3530,111 @@ class TaskService(BaseService):
             raise
         await self.session.refresh(task)
 
+        # Re-claim of a pre-existing branch on a WORK claim: merge the
+        # resolved parent branch in so the branch picks up upstream work
+        # merged since it was cut. Excludes QA/doc/gate claims (a fresh cut
+        # already branches from the live base) and a PM's own
+        # AWAITING_PM_REVIEW re-claim (that branch already passed QA + the
+        # PR gate — a silent base merge there would put unreviewed content
+        # under the merge decision).
+        if (
+            original_branch_name
+            and task.project_id is not None
+            and agent_role in self._INHERIT_UPSTREAM_BASE_ROLES
+            and original_status in self._INHERIT_UPSTREAM_BASE_STATUSES
+        ):
+            await self._inherit_upstream_base(task, agent_id)
+
         await self._create_work_session_if_needed(task, agent_id, agent_role)
 
         bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
+
+    async def _inherit_upstream_base(self, task: TaskTable, agent_id: UUID) -> None:
+        """Merge the resolved parent branch into a pre-existing task branch on
+        a WORK re-claim (developer / cell_pm / main_pm), so a branch cut at an
+        earlier claim picks up upstream work merged since (a sibling cell
+        landing on the root, master advancing under a root) that never
+        reached it. Best-effort — logs and never fails the claim. A clean
+        merge is silent; a conflict or a failed push notes the task (marker +
+        dev_notes, since dev_notes rides evidence() and the marker alone
+        doesn't) so the dev can resolve it via sync_branch.
+        """
+        try:
+            from roboco.services.git import get_git_service
+            from roboco.services.project import get_project_service
+
+            project = await get_project_service(self.session).get(
+                UUID(str(task.project_id))
+            )
+            if project is None:
+                return
+            parent_branch = await self._resolve_parent_branch(task, project)
+            branch = str(task.branch_name)
+            if not parent_branch or parent_branch == branch:
+                return
+            git_service = get_git_service(self.session)
+            workspace = await git_service.get_workspace(project.slug, agent_id)
+            result = await git_service.merge_dependency_lineage(
+                workspace,
+                require_uuid(task.id),
+                branch,
+                parent_branch,
+                project_slug=project.slug,
+            )
+            status = result.get("status")
+            if status == "conflict":
+                self._note_base_inheritance_conflict(task, parent_branch, result)
+            elif status == "merged_push_failed":
+                self._note_base_inheritance_push_failed(task, parent_branch)
+            elif status not in ("already_ancestor", "merged"):
+                self.log.warning(
+                    "base inheritance merge incomplete",
+                    task_id=str(task.id),
+                    parent_branch=parent_branch,
+                    status=status,
+                )
+        except Exception as exc:
+            self.log.warning(
+                "base inheritance merge errored",
+                task_id=str(task.id),
+                error=str(exc),
+            )
+
+    def _note_base_inheritance_conflict(
+        self, task: TaskTable, parent_branch: str, result: dict[str, Any]
+    ) -> None:
+        """Log + note a base-inheritance merge conflict for human follow-up."""
+        files = ", ".join(result.get("files") or []) or "unknown files"
+        note = (
+            f"Merging {parent_branch!r} into this branch ({task.branch_name!r}) "
+            f"conflicts in: {files}. Resolve by hand, then run sync_branch."
+        )
+        markers.set_transition_note(task, "base_inheritance_conflict", note)
+        task.dev_notes = _append_capped(task.dev_notes, f"[BASE INHERITANCE] {note}")
+        self.log.warning(
+            "base inheritance merge conflict",
+            task_id=str(task.id),
+            parent_branch=parent_branch,
+            files=files,
+        )
+
+    def _note_base_inheritance_push_failed(
+        self, task: TaskTable, parent_branch: str
+    ) -> None:
+        """Note a successful local merge whose push to origin failed."""
+        note = (
+            f"Merged {parent_branch!r} into this branch locally, but the push "
+            "to origin failed — the remote branch is now behind your local "
+            "worktree. Run sync_branch to retry the push."
+        )
+        task.dev_notes = _append_capped(task.dev_notes, f"[BASE INHERITANCE] {note}")
+        self.log.warning(
+            "base inheritance merge push failed",
+            task_id=str(task.id),
+            parent_branch=parent_branch,
+        )
 
     async def acquire_claim_lock(self, agent_id: UUID) -> None:
         """Take a per-agent transaction-scoped advisory lock.
@@ -7024,6 +7176,36 @@ class TaskService(BaseService):
                 error=str(e),
             )
 
+    async def _close_task_pr_best_effort(self, task: TaskTable) -> None:
+        """Close the task's own open PR on cancel — the remote branch and
+        worktree are already force-deleted (``_delete_task_branch_best_effort``),
+        but nothing previously closed a still-open PR, leaving it dangling on
+        the forge forever. No-op when the task never opened a PR
+        (``pr_number`` unset). Best-effort, never raises.
+        """
+        pr_number = task.pr_number
+        if pr_number is None:
+            return
+        try:
+            project_result = await self.session.execute(
+                select(ProjectTable.slug).where(ProjectTable.id == task.project_id)
+            )
+            project_slug = project_result.scalar_one_or_none()
+            if not project_slug:
+                return
+            from roboco.services.git import get_git_service
+
+            await get_git_service(self.session).close_task_pr_best_effort(
+                project_slug, pr_number
+            )
+        except Exception as e:
+            self.log.warning(
+                "PR close skipped",
+                task_id=str(task.id),
+                pr_number=pr_number,
+                error=str(e),
+            )
+
     async def _remove_task_worktree_best_effort(
         self, task: TaskTable, project_slug: str
     ) -> None:
@@ -7205,6 +7387,7 @@ class TaskService(BaseService):
                 descendant, reason="parent task cancelled"
             )
             await self._delete_task_branch_best_effort(descendant)
+            await self._close_task_pr_best_effort(descendant)
 
         if cancelled_count > 0:
             self.log.info(
@@ -7218,6 +7401,7 @@ class TaskService(BaseService):
         cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
         await self._delete_task_branch_best_effort(task)
+        await self._close_task_pr_best_effort(task)
         await self.session.flush()
 
         # Origin fix: a cancelled child may have declared parent_ac_refs that
