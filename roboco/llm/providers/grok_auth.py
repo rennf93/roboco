@@ -202,7 +202,7 @@ def _exp_from_access_token(access_token: str) -> datetime | None:
     if not isinstance(payload, dict):
         return None
     exp = payload.get("exp")
-    if not isinstance(exp, (int, float)):
+    if not isinstance(exp, int | float):
         return None
     return datetime.fromtimestamp(float(exp), tz=UTC)
 
@@ -215,7 +215,7 @@ def _apply_refreshed_token(
     if token.get("refresh_token"):
         creds["refresh_token"] = token["refresh_token"]
     expires_in = token.get("expires_in")
-    if isinstance(expires_in, (int, float)):
+    if isinstance(expires_in, int | float):
         creds["expires_at"] = _to_iso_z(now + timedelta(seconds=float(expires_in)))
     else:
         # xAI's refresh response sometimes omits expires_in. The access token

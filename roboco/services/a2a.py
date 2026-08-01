@@ -2073,17 +2073,24 @@ class A2AService:
             )
 
             delivery = get_notification_delivery_service(self.session)
-            pending = await delivery.list_for_agent(
-                agent_id=agent_id,
-                unread_only=False,
-                pending_ack_only=True,
-                type_filter=NotificationType.A2A_REQUEST,
-                limit=10,
-            )
-            if pending:
-                await delivery.bulk_acknowledge(
-                    [cast("UUID", n.id) for n in pending], agent_id, "received"
+            # Savepoint: `bulk_acknowledge`'s per-row `acknowledge` flushes
+            # write to this shared session — a DB-level failure (e.g. a
+            # lock timeout) aborts the whole Postgres transaction regardless
+            # of which statement here trips it (SELECT included), and the
+            # bare except below would otherwise swallow that into a poisoned
+            # session that blows up the caller's later commit-at-send.
+            async with self.session.begin_nested():
+                pending = await delivery.list_for_agent(
+                    agent_id=agent_id,
+                    unread_only=False,
+                    pending_ack_only=True,
+                    type_filter=NotificationType.A2A_REQUEST,
+                    limit=10,
                 )
+                if pending:
+                    await delivery.bulk_acknowledge(
+                        [cast("UUID", n.id) for n in pending], agent_id, "received"
+                    )
         except Exception as e:
             logger.warning(
                 "Failed to ack pending A2A wake notifications",

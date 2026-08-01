@@ -149,3 +149,80 @@ async def test_validator_timeout_fails_closed_and_reaps(
     assert "timed out" in (result.get("reason") or "")
     fake_proc.kill.assert_called_once()
     fake_proc.wait.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_conventions_validator_timeout_override_used_over_hardcoded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ``timeout`` kwarg wins over the module-level hardcoded
+    default — the advisory claim_review path's shorter budget must actually
+    reach the subprocess wait, not the fail-closed 120s cap. Sets the module
+    constant to something LONG (would never fire in the test's real time
+    budget) so a failure here would prove the override was ignored, not a
+    coincidence of both values being short."""
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+
+    async def _communicate() -> tuple[bytes, bytes]:
+        await asyncio.sleep(30)
+        return (b"", b"")
+
+    fake_proc.communicate = _communicate
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock(return_value=-9)
+
+    async def _fake_exec(*_args: object, **_kwargs: object) -> object:
+        return fake_proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(git_module, "_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS", 300)
+
+    svc = _service()
+    result = await svc._run_conventions_validator(tmp_path, ["a.py"], timeout=0.01)
+    assert result["could_not_run"] is True
+    assert "timed out after 0.01s" in (result.get("reason") or "")
+
+
+def _task_with_id(branch_name: str) -> MagicMock:
+    """Like ``_task`` but with a real UUID id — ``conventions_check_for_task``
+    calls ``require_uuid(task.id)`` outside the resolution try/except, so a
+    bare MagicMock id would raise before reaching the validator call."""
+    return MagicMock(branch_name=branch_name, id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_conventions_check_for_task_forwards_timeout_override() -> None:
+    """``conventions_check_for_task``'s ``timeout`` kwarg must reach
+    ``_run_conventions_validator`` — the seam ``claim_review`` uses to pin
+    the ADVISORY (shorter) budget instead of the fail-closed default."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "list_changed_files", AsyncMock(return_value=["a.py"]))
+    _bind(svc, "_worktree_for_task", MagicMock(return_value=Path("/tmp/wt")))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock(return_value=None))
+    validator = AsyncMock(return_value={"findings": [], "could_not_run": False})
+    _bind(svc, "_run_conventions_validator", validator)
+
+    await svc.conventions_check_for_task(
+        uuid4(), _task_with_id("feature/backend/abc"), timeout=30.0
+    )
+    validator.assert_awaited_once_with(Path("/tmp/wt"), ["a.py"], timeout=30.0)
+
+
+@pytest.mark.asyncio
+async def test_conventions_check_for_task_default_timeout_is_none() -> None:
+    """The fail-closed callers (i_am_done's ``_conventions_gate``, pr_pass's
+    ``_conventions_guard``) never pass ``timeout`` — confirming the default
+    forwards ``None`` so ``_run_conventions_validator`` falls back to its
+    hardcoded fail-closed cap, unchanged."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "list_changed_files", AsyncMock(return_value=["a.py"]))
+    _bind(svc, "_worktree_for_task", MagicMock(return_value=Path("/tmp/wt")))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock(return_value=None))
+    validator = AsyncMock(return_value={"findings": [], "could_not_run": False})
+    _bind(svc, "_run_conventions_validator", validator)
+
+    await svc.conventions_check_for_task(uuid4(), _task_with_id("feature/backend/abc"))
+    validator.assert_awaited_once_with(Path("/tmp/wt"), ["a.py"], timeout=None)

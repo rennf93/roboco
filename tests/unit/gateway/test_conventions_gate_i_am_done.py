@@ -109,3 +109,18 @@ async def test_gate_records_findings_even_when_blocking(
     env = await c._conventions_gate(_ctx())
     assert env is not None  # still blocks
     assert recorded and recorded[0] is _BLOCK_RESULT
+
+
+@pytest.mark.asyncio
+async def test_gate_never_overrides_the_fail_closed_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """i_am_done's conventions gate is fail-closed and must keep the
+    validator's hardcoded 120s cap — unlike claim_review's advisory path, it
+    must never pass a ``timeout`` override down to ``conventions_check_for_task``."""
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    c = _make_choreographer(check_result={"findings": [], "could_not_run": False})
+    await c._conventions_gate(_ctx())
+    check = c.git.conventions_check_for_task
+    check.assert_awaited_once()
+    assert "timeout" not in check.await_args.kwargs

@@ -18,7 +18,7 @@ def _enclosing_function(tree: ast.AST, lineno: int) -> str | None:
     candidate: str | None = None
     candidate_start = -1
     for node in ast.walk(tree):
-        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
             start = node.lineno
             end = getattr(node, "end_lineno", None) or start
             if start <= lineno <= end and start > candidate_start:

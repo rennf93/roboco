@@ -158,7 +158,7 @@ async def test_conventions_check_runs_validator_in_worktree_not_clone() -> None:
     captured: list[Path] = []
 
     async def _capture_validator(
-        workspace: Path, _files: list[str]
+        workspace: Path, _files: list[str], **_kwargs: object
     ) -> dict[str, object]:
         captured.append(Path(workspace))
         return {"findings": [], "could_not_run": False}

@@ -23,6 +23,14 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 
 
 def _make_choreographer(*, task_service: AsyncMock, git: AsyncMock) -> Choreographer:
+    # `_project_slug_for`/`ReviewFindingsRepository.list_for_task` both read
+    # via session.execute — an unconfigured AsyncMock's awaited result is
+    # itself an AsyncMock, so a plain sync `.scalars()`/`.scalar_one_or_none()`
+    # call on it leaks an unawaited coroutine. A bare MagicMock's `.scalars()
+    # .all()` already returns `[]` by default; these tests don't assert on
+    # the resolved project/slug, so a default (truthy) `.scalar_one_or_none()`
+    # is harmless too.
+    task_service.session.execute = AsyncMock(return_value=MagicMock())
     return Choreographer(
         ChoreographerDeps(
             task=task_service,

@@ -7,6 +7,12 @@ gate runs. This removes the dominant stall where a loaded/weak-model PM
 forgot the separate note(scope='decision') call and looped on a
 tracing_gap → respawn. The gate itself is unchanged (see
 test_pm_decision_window.py) — this only ensures a fresh decision exists.
+
+``_ensure_pm_decision`` returns a ``PmDecisionOutcome`` ("fresh" / "wrote" /
+"transient_failure" / "absent") the caller threads into the gate helper that
+runs right after (see test_pm_decision_transient_failure.py for the
+gate-satisfaction behavior itself) — these tests pin the outcome value for
+each branch.
 """
 
 from __future__ import annotations
@@ -54,8 +60,11 @@ async def test_writes_decision_when_none_exists() -> None:
     journal.latest_decision_at.return_value = None
     c = Choreographer(_make_deps(journal=journal))
 
-    await c._ensure_pm_decision(agent_id, task_id, "Merging PR #120; all ACs verified")
+    outcome = await c._ensure_pm_decision(
+        agent_id, task_id, "Merging PR #120; all ACs verified"
+    )
 
+    assert outcome == "wrote"
     journal.write_decision.assert_awaited_once()
     _args, kwargs = journal.write_decision.call_args
     assert kwargs["agent_id"] == agent_id
@@ -69,8 +78,9 @@ async def test_skips_when_fresh_decision_already_exists() -> None:
     journal.latest_decision_at.return_value = datetime.now(UTC) - timedelta(seconds=60)
     c = Choreographer(_make_deps(journal=journal))
 
-    await c._ensure_pm_decision(uuid4(), uuid4(), "rationale text here")
+    outcome = await c._ensure_pm_decision(uuid4(), uuid4(), "rationale text here")
 
+    assert outcome == "fresh"
     journal.write_decision.assert_not_awaited()
 
 
@@ -82,8 +92,11 @@ async def test_writes_when_existing_decision_is_stale() -> None:
     )
     c = Choreographer(_make_deps(journal=journal))
 
-    await c._ensure_pm_decision(uuid4(), uuid4(), "fresh rationale around this point")
+    outcome = await c._ensure_pm_decision(
+        uuid4(), uuid4(), "fresh rationale around this point"
+    )
 
+    assert outcome == "wrote"
     journal.write_decision.assert_awaited_once()
 
 
@@ -92,21 +105,29 @@ async def test_noop_on_empty_rationale() -> None:
     journal = AsyncMock()
     c = Choreographer(_make_deps(journal=journal))
 
-    await c._ensure_pm_decision(uuid4(), uuid4(), "   ")
-    await c._ensure_pm_decision(uuid4(), uuid4(), None)
+    outcome_blank = await c._ensure_pm_decision(uuid4(), uuid4(), "   ")
+    outcome_none = await c._ensure_pm_decision(uuid4(), uuid4(), None)
 
+    assert outcome_blank == "absent"
+    assert outcome_none == "absent"
     journal.latest_decision_at.assert_not_awaited()
     journal.write_decision.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_swallows_write_failure_best_effort() -> None:
-    """A journal write failure must not crash the verb — the gate then
-    rejects normally (the pre-fix behaviour), never a 500."""
+    """A journal write failure must not crash the verb. Round-2 fix: the
+    outcome is "transient_failure" (not swallowed into a bare None) so the
+    caller's gate can treat a DB hiccup as satisfied by the rationale
+    already in hand — see test_pm_decision_transient_failure.py for the
+    gate-satisfaction behavior itself."""
     journal = AsyncMock()
     journal.latest_decision_at.return_value = None
     journal.write_decision.side_effect = RuntimeError("db down")
     c = Choreographer(_make_deps(journal=journal))
 
     # Must not raise.
-    await c._ensure_pm_decision(uuid4(), uuid4(), "rationale that triggers a write")
+    outcome = await c._ensure_pm_decision(
+        uuid4(), uuid4(), "rationale that triggers a write"
+    )
+    assert outcome == "transient_failure"

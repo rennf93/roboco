@@ -66,7 +66,7 @@ async def revoke_and_logout(
             )
             jti = data.get("jti")
             exp = data.get("exp")
-            if isinstance(jti, str) and isinstance(exp, (int, float)):
+            if isinstance(jti, str) and isinstance(exp, int | float):
                 await revocation.revoke_jti(jti, max(int(exp - time.time()), 1))
         except Exception:
             _logger.warning("logout jti revocation skipped", exc_info=True)
