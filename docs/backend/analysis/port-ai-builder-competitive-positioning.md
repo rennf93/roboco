@@ -15,10 +15,10 @@ RoboCo is equivalent, superior, or genuinely behind on each.
 
 **RoboCo surface: the CEO-approval workflow.**
 
-- The single source of truth for the CEO check is `require_ceo_role()` in
-  `roboco/api/deps.py:627` — both the router-level gate and the release
-  handler previously drifted apart on this comparison; they now delegate to
-  one function.
+- RoboCo has a shared CEO-check helper, `require_ceo_role()`
+  (`roboco/api/deps.py:627`), which unifies the orchestrator-router and
+  release-handler gates; the task-approval endpoints below enforce the same
+  CEO-only rule inline.
 - The lifecycle spec (`roboco/foundation/policy/lifecycle.py:358-369`) encodes
   `AWAITING_CEO_APPROVAL -> COMPLETED` (`ceo_approve`) and
   `AWAITING_CEO_APPROVAL -> NEEDS_REVISION` (`ceo_reject`) as
@@ -92,8 +92,10 @@ does not.
   the `roboco_get_standards` MCP tool, backed by `StandardsIndexPlugin`
   (`roboco/services/optimal_brain/indexes/standards.py`).
 - Architectural governance is enforced, not advisory: `.roboco/conventions.yml`
-  (`ROBOCO_CONVENTIONS_ENABLED`) defines which module kinds may hold which
-  definitions; the validator (`roboco/conventions/runner.py:42`) classifies
+  (`ROBOCO_CONVENTIONS_ENABLED` - default-off for new projects, on in
+  RoboCo's own deployment, which ships a canonical `.roboco/conventions.yml`)
+  defines which module kinds may hold which definitions; the validator
+  (`roboco/conventions/runner.py:42`) classifies
   every changed definition and raises `Finding`s. A `block`-level finding
   (a model in a router, a suppressed lint/type check) hard-refuses both
   `i_am_done` (`_conventions_gate`,
