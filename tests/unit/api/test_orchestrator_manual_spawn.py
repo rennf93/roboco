@@ -20,9 +20,9 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 import roboco.services.task as task_service_module
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
-from roboco.api.deps import _ServiceHolder, set_orchestrator
+from roboco.api.deps import _ServiceHolder, set_orchestrator, validate_agent_id_param
 from roboco.api.routes.orchestrator import (
     router as orch_router,
 )
@@ -275,3 +275,62 @@ async def test_spawn_offline_agent_not_flagged_already_running(
     )
     assert response.status_code == HTTPStatus.CREATED
     assert response.json()["already_running"] is False
+
+
+# ---------------------------------------------------------------------------
+# validate_agent_id_param — path-traversal guard (agent_id flows into
+# per-agent filesystem paths downstream, e.g. the grok usage dir)
+# ---------------------------------------------------------------------------
+
+
+def test_validated_agent_id_still_rejects_traversal() -> None:
+    """Regression: every traversal vector — empty, '.'/'..' , a path
+    separator, or an embedded NUL — must still 422 at the HTTP boundary
+    after any refactor of the orchestrator routes, since agent_id is a
+    raw request path parameter flowing into per-agent paths downstream."""
+    for bad in ("", ".", "..", "a/b", "a\\b", "a\x00b"):
+        with pytest.raises(HTTPException) as exc_info:
+            validate_agent_id_param(bad)
+        assert exc_info.value.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+def test_validate_agent_id_param_accepts_plain_slug() -> None:
+    assert validate_agent_id_param("be-dev-1") == "be-dev-1"
+
+
+@pytest.mark.asyncio
+async def test_spawn_route_rejects_traversal_agent_id(
+    orch_client: tuple[AsyncClient, MagicMock],
+) -> None:
+    """The traversal guard still runs at the spawn route itself, not just
+    when called directly — a backslash-bearing agent_id must never reach
+    ``orchestrator.spawn_agent``."""
+    client, orch = orch_client
+    orch.spawn_agent = AsyncMock()
+    response = await client.post(
+        "/api/orchestrator/agents/a%5Cb/spawn",
+        json={"agent_id": "a\\b"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    orch.spawn_agent.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Non-CEO callers are forbidden on every orchestrator control route
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_non_ceo_is_forbidden(
+    orch_client: tuple[AsyncClient, MagicMock],
+) -> None:
+    client, orch = orch_client
+    orch.spawn_agent = AsyncMock()
+    response = await client.post(
+        "/api/orchestrator/agents/be-dev-1/spawn",
+        json={"agent_id": "be-dev-1"},
+        headers={"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"},
+    )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    orch.spawn_agent.assert_not_called()

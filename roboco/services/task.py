@@ -412,6 +412,30 @@ def _ceo_reject_finding_texts(reason: str) -> tuple[str, str | None]:
     return actual, evidence
 
 
+def _reconcile_ac_ids(
+    *, old_criteria: list[str], old_ids: list[str], new_criteria: list[str]
+) -> list[str]:
+    """Map an edited ``new_criteria`` list to stable ids: unchanged text
+    keeps its old id (matched in call order, so duplicate text reuses ids
+    front-to-back rather than collapsing onto one), reworded/new text mints
+    a fresh id, and a dropped criterion's id simply disappears with it.
+
+    Used when a task's ``acceptance_criteria`` is edited post-creation, so
+    a child's ``covers_parent_criteria`` reference (by id) survives a minor
+    rewording instead of the ref silently going stale.
+    """
+    from collections import deque
+
+    pools: dict[str, deque[str]] = {}
+    for criterion_text, old_id in zip(old_criteria, old_ids, strict=False):
+        pools.setdefault(criterion_text, deque()).append(old_id)
+    reconciled: list[str] = []
+    for criterion_text in new_criteria:
+        pool = pools.get(criterion_text)
+        reconciled.append(pool.popleft() if pool else uuid4().hex)
+    return reconciled
+
+
 def _compose_review_body(summary: str | None, issues: list[str] | None) -> str:
     """Combine a PR-review summary with issue bullets into one body string."""
     body = (summary or "").strip()
@@ -682,6 +706,9 @@ MEGAPHONE_SOURCE = "board_megaphone"
 MIRROR_SOURCE = "board_mirror"
 WAR_ROOM_SOURCE = "board_war_room"
 CORONER_SOURCE = "board_coroner"
+# Coroner's "bounced" incident kind fires on the Nth bounce into
+# needs_revision, not every one — see _emit_status_transition_audit.
+CORONER_BOUNCE_THRESHOLD = 3
 LIBRARIAN_SOURCE = "board_librarian"
 SENTINEL_SOURCE = "board_sentinel"
 BARFLY_SOURCE = "board_barfly"
@@ -934,6 +961,7 @@ class TaskService(BaseService):
             and from_status != TaskStatus.NEEDS_REVISION.value
         ):
             task.revision_count = (task.revision_count or 0) + 1
+            self._schedule_coroner_bounce_hook(task)
 
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
@@ -969,6 +997,27 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    def _schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
+        """Schedule the Coroner bounce-incident hook at the Nth bounce into
+        ``needs_revision`` (``CORONER_BOUNCE_THRESHOLD``) — a no-op on any
+        other bounce. Best-effort: a scheduling failure must never fail the
+        real transition that triggered it (``_emit_status_transition_audit``,
+        mid-commit)."""
+        if task.revision_count != CORONER_BOUNCE_THRESHOLD:
+            return
+        try:
+            bg_task = asyncio.create_task(
+                _fire_coroner_bounce_hook(cast("UUID", task.id))
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+        except Exception as e:
+            self.log.debug(
+                "Coroner bounce-hook scheduling skipped",
+                task_id=str(task.id),
+                error=str(e),
+            )
 
     def _touch_vault_frontmatter(
         self, task: TaskTable, *, to_status: str, team: str
@@ -1657,6 +1706,44 @@ class TaskService(BaseService):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_open_env_sync_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal env_sync tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one project's ``git_url`` so a repo never gets
+        a second env-sync task while the first (a conflict-paused cascade)
+        is still open.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == ENV_SYNC_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(
+                ProjectTable, TaskTable.project_id == ProjectTable.id
+            ).where(ProjectTable.git_url == git_url)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def resolve_scales_task_ref(self, task_ref: str) -> TaskTable | None:
+        """Resolve a Scales rebalance item's ``task_ref`` — the id8 prefix
+        or exact title of a live BACKLOG/PENDING task — to that task, or
+        None when it matches none. Scales only ever acts on backlog items
+        that haven't started, so other statuses are never candidates."""
+        ref = task_ref.strip()
+        if not ref:
+            return None
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.status.in_([TaskStatus.BACKLOG, TaskStatus.PENDING])
+            )
+        )
+        for task in result.scalars().all():
+            if str(task.id)[:8] == ref or task.title == ref:
+                return task
+        return None
+
     async def list_open_release_proposals(self) -> list[TaskTable]:
         """Non-terminal release-manager proposals — the one-open-at-a-time basis.
 
@@ -1812,6 +1899,124 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def _list_open_by_source(self, source: str) -> list[TaskTable]:
+        """Non-terminal tasks for ``source`` — the shared one-open-cycle
+        dedup basis every Board Program's ``run_cycle`` consults. Ordered
+        oldest-first, mirroring ``list_open_roadmap_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == source,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_pest_control_cycles(self) -> list[TaskTable]:
+        """Non-terminal Pest Control exploration tasks (one-open-cycle dedup
+        + ``propose_bug_hunt``'s task lookup)."""
+        return await self._list_open_by_source(PEST_CONTROL_SOURCE)
+
+    async def list_open_spackle_cycles(self) -> list[TaskTable]:
+        """Non-terminal Spackle exploration tasks (one-open-cycle dedup +
+        ``propose_gap_fill``'s task lookup)."""
+        return await self._list_open_by_source(SPACKLE_SOURCE)
+
+    async def list_open_scales_cycles(self) -> list[TaskTable]:
+        """Non-terminal Scales exploration tasks (one-open-cycle dedup +
+        ``propose_rebalance``'s task lookup)."""
+        return await self._list_open_by_source(SCALES_SOURCE)
+
+    async def list_open_dogfood_cycles(self) -> list[TaskTable]:
+        """Non-terminal Dogfood exploration tasks (one-open-cycle dedup +
+        ``propose_friction_fixes``'s task lookup)."""
+        return await self._list_open_by_source(DOGFOOD_SOURCE)
+
+    async def list_open_periscope_cycles(self) -> list[TaskTable]:
+        """Non-terminal Periscope exploration tasks (one-open-cycle dedup +
+        ``propose_market_brief``'s task lookup)."""
+        return await self._list_open_by_source(PERISCOPE_SOURCE)
+
+    async def list_open_megaphone_cycles(self) -> list[TaskTable]:
+        """Non-terminal Megaphone exploration tasks (one-open-cycle dedup +
+        ``propose_editorial_post``'s task lookup)."""
+        return await self._list_open_by_source(MEGAPHONE_SOURCE)
+
+    async def list_open_mirror_cycles(self) -> list[TaskTable]:
+        """Non-terminal Mirror exploration tasks (one-open-cycle dedup +
+        ``propose_messaging_fixes``'s task lookup)."""
+        return await self._list_open_by_source(MIRROR_SOURCE)
+
+    async def list_open_barfly_cycles(self) -> list[TaskTable]:
+        """Non-terminal Barfly exploration tasks (one-open-cycle dedup +
+        ``propose_conversation_replies``'s task lookup)."""
+        return await self._list_open_by_source(BARFLY_SOURCE)
+
+    async def list_open_war_room_cycles(self) -> list[TaskTable]:
+        """Non-terminal War Room exploration tasks (one-open-cycle dedup +
+        ``propose_campaign``'s task lookup)."""
+        return await self._list_open_by_source(WAR_ROOM_SOURCE)
+
+    async def list_open_coroner_cycles(self) -> list[TaskTable]:
+        """Non-terminal Coroner exploration tasks (one-open-cycle dedup +
+        ``propose_postmortem``'s task lookup)."""
+        return await self._list_open_by_source(CORONER_SOURCE)
+
+    async def list_completed_coroner_postmortems(self) -> list[TaskTable]:
+        """Every completed Coroner postmortem, newest first — the CEO's
+        ``GET /coroner/postmortems`` list. A postmortem completes atomically
+        at ``propose_postmortem`` time, so COMPLETED alone is the full set."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == CORONER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def list_open_librarian_cycles(self) -> list[TaskTable]:
+        """Non-terminal Librarian exploration tasks (one-open-cycle dedup +
+        ``propose_playbook_drafts``'s task lookup)."""
+        return await self._list_open_by_source(LIBRARIAN_SOURCE)
+
+    async def list_open_sentinel_cycles(self) -> list[TaskTable]:
+        """Non-terminal Sentinel exploration tasks (one-open-cycle dedup +
+        ``propose_quality_report``'s task lookup)."""
+        return await self._list_open_by_source(SENTINEL_SOURCE)
+
+    async def list_sentinel_reports(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on (completed) Sentinel exploration tasks, newest-first —
+        the panel's quality-reports list basis. Mirrors
+        ``list_video_post_history``'s acted-on filter."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SENTINEL_SOURCE,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_periscope_briefs(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on (completed) Periscope exploration tasks, newest-first —
+        the panel's market-briefs list basis, and the roadmap prompt's
+        ``latest_brief_context`` cross-role injection (``limit=1``)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -3005,6 +3210,20 @@ class TaskService(BaseService):
         TaskStatus.AWAITING_PM_REVIEW,
     }
 
+    # _inherit_upstream_base gating: only real WORK claims (never QA/doc/gate
+    # — a fresh cut there already branches from the live base), and only the
+    # two re-claim statuses where a pre-existing branch is known stale rather
+    # than already-reviewed (excludes a PM's own AWAITING_PM_REVIEW re-claim).
+    _INHERIT_UPSTREAM_BASE_ROLES: ClassVar[set[str]] = {
+        "developer",
+        "cell_pm",
+        "main_pm",
+    }
+    _INHERIT_UPSTREAM_BASE_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.PENDING,
+        TaskStatus.NEEDS_REVISION,
+    }
+
     async def _claim_blocked_by_dependencies(self, task: TaskTable) -> bool:
         """True when a PENDING task can't be claimed yet — a ``depends_on`` task
         is still non-terminal (the sequence guardrail).
@@ -3076,6 +3295,114 @@ class TaskService(BaseService):
             blocked_by=blocker,
         )
         return blocker
+
+    async def sequence_hold_reason(self, task: TaskTable) -> str | None:
+        """Public wrapper over ``_claim_blocked_by_sequence``: the same-
+        parent sibling blocking ``task``'s claim right now, or ``None``.
+
+        Used by the gateway's proactive ``_sequencing_claim_guard`` so a
+        sequence hold surfaces as a clean, named ``sequence_held`` envelope
+        BEFORE the composed claim verb runs, instead of ``claim()``'s bare
+        ``None`` return reaching the verb runner and being misdiagnosed as
+        a concurrent-transition race.
+        """
+        return await self._claim_blocked_by_sequence(task)
+
+    async def terminal_children_count(self, task_id: UUID) -> int:
+        """Count of ``task_id``'s direct children currently COMPLETED or
+        CANCELLED — the cheap per-round progress-fingerprint component the
+        escalate/unblock oscillation-trip guard uses (a PM coordination
+        root never commits itself; child completions are its real
+        progress signal)."""
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(TaskTable)
+            .where(
+                TaskTable.parent_task_id == task_id,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
+        return int(result.scalar() or 0)
+
+    async def task_spend_usd(self, task_id: UUID) -> float:
+        """This task's accumulated agent-spawn spend: summed closed-session
+        ``estimated_cost_usd`` plus live-priced open sessions (a DB-only
+        read off the token columns ``_sweep_token_snapshots`` keeps current
+        on the open ``agent_spawn_sessions`` row — no fresh SDK round-trip
+        needed). Used by the per-task budget sweep and the ``unblock``
+        budget re-check."""
+        from roboco.billing.pricing import calculate_cost
+        from roboco.db.tables import AgentSpawnSessionTable
+
+        rows = (
+            await self.session.execute(
+                select(
+                    AgentSpawnSessionTable.estimated_cost_usd,
+                    AgentSpawnSessionTable.model,
+                    AgentSpawnSessionTable.tokens_input,
+                    AgentSpawnSessionTable.tokens_output,
+                    AgentSpawnSessionTable.tokens_cache_read,
+                    AgentSpawnSessionTable.tokens_cache_write,
+                ).where(AgentSpawnSessionTable.task_id == str(task_id))
+            )
+        ).all()
+        total = 0.0
+        for r in rows:
+            if r.estimated_cost_usd is not None:
+                total += r.estimated_cost_usd
+            else:
+                total += calculate_cost(
+                    model=r.model,
+                    tokens_input=r.tokens_input,
+                    tokens_output=r.tokens_output,
+                    tokens_cache_read=r.tokens_cache_read,
+                    tokens_cache_write=r.tokens_cache_write,
+                )
+        return total
+
+    async def project_month_spend_usd(self, project_id: UUID) -> float:
+        """This calendar month's summed agent-spawn spend across
+        ``project_id``'s tasks — the project-budget claim guard's spend-vs-
+        cap comparison, and the project response's ``monthly_spend_usd``.
+        Mirrors ``task_spend_usd``'s closed+live-open pricing per session."""
+        from roboco.billing.pricing import calculate_cost
+        from roboco.db.tables import AgentSpawnSessionTable
+
+        month_start = datetime.now(UTC).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        task_id_str = cast("Any", TaskTable.id).cast(String)
+        rows = (
+            await self.session.execute(
+                select(
+                    AgentSpawnSessionTable.estimated_cost_usd,
+                    AgentSpawnSessionTable.model,
+                    AgentSpawnSessionTable.tokens_input,
+                    AgentSpawnSessionTable.tokens_output,
+                    AgentSpawnSessionTable.tokens_cache_read,
+                    AgentSpawnSessionTable.tokens_cache_write,
+                )
+                .select_from(AgentSpawnSessionTable)
+                .join(TaskTable, task_id_str == AgentSpawnSessionTable.task_id)
+                .where(
+                    TaskTable.project_id == project_id,
+                    AgentSpawnSessionTable.started_at >= month_start,
+                )
+            )
+        ).all()
+        total = 0.0
+        for r in rows:
+            if r.estimated_cost_usd is not None:
+                total += r.estimated_cost_usd
+            else:
+                total += calculate_cost(
+                    model=r.model,
+                    tokens_input=r.tokens_input,
+                    tokens_output=r.tokens_output,
+                    tokens_cache_read=r.tokens_cache_read,
+                    tokens_cache_write=r.tokens_cache_write,
+                )
+        return total
 
     async def _claim_blocked_by_sequencing(self, task: TaskTable) -> bool:
         """True when either sequencing guard blocks this PENDING claim.
@@ -3242,11 +3569,127 @@ class TaskService(BaseService):
             raise
         await self.session.refresh(task)
 
+        # Re-claim of a pre-existing branch on a WORK claim: merge the
+        # resolved parent branch in so the branch picks up upstream work
+        # merged since it was cut. Excludes QA/doc/gate claims (a fresh cut
+        # already branches from the live base) and a PM's own
+        # AWAITING_PM_REVIEW re-claim (that branch already passed QA + the
+        # PR gate — a silent base merge there would put unreviewed content
+        # under the merge decision).
+        if self._should_inherit_upstream_base(
+            original_branch_name, task, agent_role, original_status
+        ):
+            await self._inherit_upstream_base(task, agent_id)
+
         await self._create_work_session_if_needed(task, agent_id, agent_role)
 
         bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
+
+    def _should_inherit_upstream_base(
+        self,
+        original_branch_name: str | None,
+        task: TaskTable,
+        agent_role: str | None,
+        original_status: TaskStatus,
+    ) -> bool:
+        """Whether ``_finalize_claim`` should merge the resolved parent
+        branch into a pre-existing task branch on this re-claim. Extracted
+        (pure, no side effects) to keep ``_finalize_claim`` under the
+        complexity budget — see the call site's comment for the full
+        exclusion rationale."""
+        return bool(
+            original_branch_name
+            and task.project_id is not None
+            and agent_role in self._INHERIT_UPSTREAM_BASE_ROLES
+            and original_status in self._INHERIT_UPSTREAM_BASE_STATUSES
+        )
+
+    async def _inherit_upstream_base(self, task: TaskTable, agent_id: UUID) -> None:
+        """Merge the resolved parent branch into a pre-existing task branch on
+        a WORK re-claim (developer / cell_pm / main_pm), so a branch cut at an
+        earlier claim picks up upstream work merged since (a sibling cell
+        landing on the root, master advancing under a root) that never
+        reached it. Best-effort — logs and never fails the claim. A clean
+        merge is silent; a conflict or a failed push notes the task (marker +
+        dev_notes, since dev_notes rides evidence() and the marker alone
+        doesn't) so the dev can resolve it via sync_branch.
+        """
+        try:
+            from roboco.services.git import get_git_service
+            from roboco.services.project import get_project_service
+
+            project = await get_project_service(self.session).get(
+                UUID(str(task.project_id))
+            )
+            if project is None:
+                return
+            parent_branch = await self._resolve_parent_branch(task, project)
+            branch = str(task.branch_name)
+            if not parent_branch or parent_branch == branch:
+                return
+            git_service = get_git_service(self.session)
+            workspace = await git_service.get_workspace(project.slug, agent_id)
+            result = await git_service.merge_dependency_lineage(
+                workspace,
+                require_uuid(task.id),
+                branch,
+                parent_branch,
+                project_slug=project.slug,
+            )
+            status = result.get("status")
+            if status == "conflict":
+                self._note_base_inheritance_conflict(task, parent_branch, result)
+            elif status == "merged_push_failed":
+                self._note_base_inheritance_push_failed(task, parent_branch)
+            elif status not in ("already_ancestor", "merged"):
+                self.log.warning(
+                    "base inheritance merge incomplete",
+                    task_id=str(task.id),
+                    parent_branch=parent_branch,
+                    status=status,
+                )
+        except Exception as exc:
+            self.log.warning(
+                "base inheritance merge errored",
+                task_id=str(task.id),
+                error=str(exc),
+            )
+
+    def _note_base_inheritance_conflict(
+        self, task: TaskTable, parent_branch: str, result: dict[str, Any]
+    ) -> None:
+        """Log + note a base-inheritance merge conflict for human follow-up."""
+        files = ", ".join(result.get("files") or []) or "unknown files"
+        note = (
+            f"Merging {parent_branch!r} into this branch ({task.branch_name!r}) "
+            f"conflicts in: {files}. Resolve by hand, then run sync_branch."
+        )
+        markers.set_transition_note(task, "base_inheritance_conflict", note)
+        task.dev_notes = _append_capped(task.dev_notes, f"[BASE INHERITANCE] {note}")
+        self.log.warning(
+            "base inheritance merge conflict",
+            task_id=str(task.id),
+            parent_branch=parent_branch,
+            files=files,
+        )
+
+    def _note_base_inheritance_push_failed(
+        self, task: TaskTable, parent_branch: str
+    ) -> None:
+        """Note a successful local merge whose push to origin failed."""
+        note = (
+            f"Merged {parent_branch!r} into this branch locally, but the push "
+            "to origin failed — the remote branch is now behind your local "
+            "worktree. Run sync_branch to retry the push."
+        )
+        task.dev_notes = _append_capped(task.dev_notes, f"[BASE INHERITANCE] {note}")
+        self.log.warning(
+            "base inheritance merge push failed",
+            task_id=str(task.id),
+            parent_branch=parent_branch,
+        )
 
     async def acquire_claim_lock(self, agent_id: UUID) -> None:
         """Take a per-agent transaction-scoped advisory lock.
@@ -6788,6 +7231,36 @@ class TaskService(BaseService):
                 error=str(e),
             )
 
+    async def _close_task_pr_best_effort(self, task: TaskTable) -> None:
+        """Close the task's own open PR on cancel — the remote branch and
+        worktree are already force-deleted (``_delete_task_branch_best_effort``),
+        but nothing previously closed a still-open PR, leaving it dangling on
+        the forge forever. No-op when the task never opened a PR
+        (``pr_number`` unset). Best-effort, never raises.
+        """
+        pr_number = task.pr_number
+        if pr_number is None:
+            return
+        try:
+            project_result = await self.session.execute(
+                select(ProjectTable.slug).where(ProjectTable.id == task.project_id)
+            )
+            project_slug = project_result.scalar_one_or_none()
+            if not project_slug:
+                return
+            from roboco.services.git import get_git_service
+
+            await get_git_service(self.session).close_task_pr_best_effort(
+                project_slug, pr_number
+            )
+        except Exception as e:
+            self.log.warning(
+                "PR close skipped",
+                task_id=str(task.id),
+                pr_number=pr_number,
+                error=str(e),
+            )
+
     async def _remove_task_worktree_best_effort(
         self, task: TaskTable, project_slug: str
     ) -> None:
@@ -6969,6 +7442,7 @@ class TaskService(BaseService):
                 descendant, reason="parent task cancelled"
             )
             await self._delete_task_branch_best_effort(descendant)
+            await self._close_task_pr_best_effort(descendant)
 
         if cancelled_count > 0:
             self.log.info(
@@ -6982,7 +7456,10 @@ class TaskService(BaseService):
         cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
         await self._delete_task_branch_best_effort(task)
+        await self._close_task_pr_best_effort(task)
         await self.session.flush()
+
+        await self._fire_coroner_cancel_hook_if_work_started(task)
 
         # Origin fix: a cancelled child may have declared parent_ac_refs that
         # no surviving sibling covers, leaving the roll-up gate
@@ -7021,6 +7498,27 @@ class TaskService(BaseService):
         bg_task.add_done_callback(self._background_tasks.discard)
 
         return task
+
+    async def _fire_coroner_cancel_hook_if_work_started(self, task: TaskTable) -> None:
+        """Coroner event hook: cancelled after real work had started (commits
+        exist) — an autopsy candidate the same way a 3rd bounce is. Runs in
+        the caller's own session (``cancel()`` is already async, unlike the
+        sync bounce chokepoint) so its own flush/commit carries it;
+        best-effort, never fails the cancel itself."""
+        if not task.commits:
+            return
+        try:
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            await get_coroner_engine(self.session).open_for_incident(
+                cast("UUID", task.id), kind="cancelled"
+            )
+        except Exception as e:
+            self.log.warning(
+                "Coroner cancel-hook failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
 
     async def _detect_orphaned_parent_acs(
         self, cancelled: list[TaskTable]
@@ -9060,7 +9558,15 @@ class TaskService(BaseService):
         submit/supersede by construction.
         """
         parent = await self.get(task_id)
-        if not parent or not parent.acceptance_criteria_ids:
+        if not parent:
+            return None
+        if parent.acceptance_criteria:
+            # Legacy/drifted parent (real criteria text, but ids empty or
+            # mismatched — e.g. an update rewrote criteria without
+            # reconciling ids): self-heal in place so the coverage digest
+            # reports for real instead of staying permanently inert.
+            await self.self_heal_ac_ids(parent)
+        if not parent.acceptance_criteria_ids:
             return None
         result = await self.session.execute(
             select(TaskTable.status, TaskTable.parent_ac_refs).where(
@@ -9141,6 +9647,28 @@ class TaskService(BaseService):
         valid_ids = set(parent.acceptance_criteria_ids or [])
         valid_texts = set(parent.acceptance_criteria or [])
         return [r for r in refs if r not in valid_ids and r not in valid_texts]
+
+    async def self_heal_ac_ids(self, parent: TaskTable) -> None:
+        """Backfill/repair ``parent.acceptance_criteria_ids`` in place so it
+        is 1:1 with ``parent.acceptance_criteria``.
+
+        A legacy/drifted parent (created before stable per-criterion ids
+        existed, or edited since so the two lists' lengths diverged)
+        otherwise renders an unusable ``'<id>'`` placeholder in coverage-gap
+        hints (``hint_for_missing_ac_coverage``). Missing/blank slots get a
+        fresh ``uuid4().hex`` id, mirroring ``create``'s own id generation;
+        already-valid ids are left untouched. A no-op when already healed.
+        """
+        texts = parent.acceptance_criteria or []
+        ids = parent.acceptance_criteria_ids or []
+        if len(ids) == len(texts) and all(ids):
+            return
+        healed = [
+            ids[i] if i < len(ids) and ids[i] else uuid4().hex
+            for i in range(len(texts))
+        ]
+        parent.acceptance_criteria_ids = healed
+        await self.session.flush()
 
     async def add_parent_ac_refs(
         self, task_id: UUID, refs: list[str], declared_by: UUID | None = None
@@ -11286,6 +11814,26 @@ async def resolve_manual_spawn_prompt(
     if task is None:
         return ceo_message
     return build_manual_spawn_prompt(task, ceo_message)
+
+
+async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
+    """Event hook: task's Nth bounce into ``needs_revision``
+    (``CORONER_BOUNCE_THRESHOLD``) — open a Coroner autopsy for it.
+
+    Scheduled via ``asyncio.create_task`` from
+    ``_emit_status_transition_audit``, so it runs OUTSIDE that chokepoint's
+    transaction — opens its own fresh session (module-level lookups, not the
+    top-level import, so tests can monkeypatch both ``get_db_context`` and
+    ``get_coroner_engine`` cleanly) and commits it directly. Best-effort by
+    construction: the caller wraps the scheduling itself in a try/except, so
+    a failure here never fails the real transition that triggered it.
+    """
+    from roboco.db.base import get_db_context
+    from roboco.services.coroner_engine import get_coroner_engine
+
+    async with get_db_context() as db:
+        await get_coroner_engine(db).open_for_incident(task_id, kind="bounced")
+        await db.commit()
 
 
 # =============================================================================
