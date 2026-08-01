@@ -25,8 +25,10 @@ The first time you open a pull request, the CLA Assistant bot will comment with 
 3. Run the full quality gate before opening a PR:
 
    ```bash
-   make quality   # ruff format check, ruff check, mypy, pytest --cov-fail-under=80
+   make quality   # ruff format, ruff check, markdown reflow, mypy, pytest --cov-fail-under=80, xenon, radon
    ```
+
+   The gate includes a markdown prose reflow check (`scripts/reflow_md.py --check`) that rejects hard-wrapped text in `docs/` and `README.md` — prose must follow a one-sentence-per-line standard. If it fails, run `make reflow-docs` to auto-fix, then re-run `make quality`. See `docs/rag/standards/markdown-reflow-quality-gate.md` for details.
 
 For the frontend (`panel/`):
 
