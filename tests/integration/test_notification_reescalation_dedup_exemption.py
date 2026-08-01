@@ -161,4 +161,27 @@ async def test_two_sequential_due_reescalations_both_deliver(
     )
     expected_total_rows = 3  # the seeded original + both re-escalation attempts
     assert count == expected_total_rows
-    assert cast("UUID", target.id) is not None  # target row exists + resolvable
+    # Both re-escalation rows must be addressed to target.id (the escalation
+    # target), proving the ladder re-fired to the right recipient — not a
+    # tautology on target.id which was uuid4() at construction.
+    all_rows = (
+        (
+            await db_session.execute(
+                select(NotificationTable).where(
+                    NotificationTable.from_agent == cast("UUID", sender.id),
+                    NotificationTable.type == NotificationType.BLOCKER_ESCALATION,
+                    NotificationTable.related_task_id == task_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    re_escalation_rows = [
+        r for r in all_rows if cast("UUID", target.id) in (r.to_agents or [])
+    ]
+    expected_re_escalation_rows = 2  # one per _re_escalate_recipient call
+    assert len(re_escalation_rows) == expected_re_escalation_rows, (
+        f"expected {expected_re_escalation_rows} re-escalation rows addressed "
+        f"to target ({target.slug}), got {len(re_escalation_rows)}"
+    )
