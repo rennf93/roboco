@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.video import (
+    PreviewFrameResponse,
     TikTokCredentialsSetRequest,
     TikTokCredentialsStatus,
     VideoPipelineItemResponse,
@@ -22,6 +23,7 @@ from roboco.api.schemas.video import (
     VideoPostHistoryResponse,
     VideoPostRejectRequest,
     VideoPostResponse,
+    VideoPreviewFramesResponse,
     VideoRequestBody,
     VideoRequestResponse,
     task_to_pipeline_item,
@@ -29,6 +31,7 @@ from roboco.api.schemas.video import (
     task_to_video_post_response,
 )
 from roboco.config import settings
+from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services import minio_client
 from roboco.services.project import get_project_service
@@ -45,6 +48,7 @@ from roboco.services.video_post_service import (
     resolve_video_cut,
 )
 from roboco.services.workspace import WorkspaceError, get_workspace_service
+from roboco.utils.video import list_orientation_frames, previews_root
 
 router = APIRouter()
 tiktok_router = APIRouter()
@@ -149,6 +153,84 @@ async def rerender_video_task(
         )
     await db.commit()
     return task_to_pipeline_item(task)
+
+
+@router.get("/preview-frames/{task_id}", response_model=VideoPreviewFramesResponse)
+async def list_preview_frames(
+    task_id: UUID, db: DbSession, agent: CurrentAgentContext
+) -> VideoPreviewFramesResponse:
+    """A video-authoring task's ``request_render`` preview frames — the CEO's
+    only look at the rendered artifact before the post-completion render loop
+    produces the real MP4. Frame listing is parsed from the self-describing
+    ``.previews/{task8}/{orientation}/frame-<idx>-of-<n>-at-<t>s.png``
+    filenames on disk; metadata (composition_id, duration, head_sha, dirty,
+    rendered_at) comes from the last ``render_preview`` marker. CEO-only."""
+    require_ceo_role(agent.role, action="view or act on the video engine")
+    task = await get_task_service(db).get(task_id)
+    if task is None or task.source != VIDEO_SOURCE or task.project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such video task"
+        )
+    project = await get_project_service(db).get(cast("UUID", task.project_id))
+    if project is None or not project.slug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+    root = previews_root(task_id, project.slug)
+    frames: dict[str, list[PreviewFrameResponse]] = {}
+    for orientation in _VALID_CUTS:
+        parsed = list_orientation_frames(root / orientation)
+        if parsed:
+            frames[orientation] = [
+                PreviewFrameResponse(
+                    index=f.frame_index,
+                    file=f.file,
+                    timestamp_seconds=f.timestamp_seconds,
+                )
+                for f in parsed
+            ]
+    meta = markers.get_render_preview(task) or {}
+    return VideoPreviewFramesResponse(
+        task_id=str(task_id),
+        composition_id=meta.get("composition_id"),
+        duration_seconds=meta.get("duration_seconds"),
+        head_sha=meta.get("head_sha"),
+        dirty=meta.get("dirty"),
+        rendered_at=meta.get("at"),
+        frames=frames,
+    )
+
+
+@router.get("/preview-frames/{task_id}/{orientation}/{filename}", response_model=None)
+async def get_preview_frame(
+    task_id: UUID,
+    orientation: str,
+    filename: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> FileResponse:
+    """Serve one ``request_render`` preview-frame PNG — the panel preview
+    card's ``<img src>. Confined to the task's ``.previews/{task8}/`` root via
+    ``resolve_preview_path`` so a symlink or ``..`` can't traverse out.
+    CEO-only."""
+    require_ceo_role(agent.role, action="view or act on the video engine")
+    task = await get_task_service(db).get(task_id)
+    if task is None or task.source != VIDEO_SOURCE or task.project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such video task"
+        )
+    project = await get_project_service(db).get(cast("UUID", task.project_id))
+    if project is None or not project.slug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+    root = previews_root(task_id, project.slug)
+    resolved = resolve_preview_path(root, f"{orientation}/{filename}")
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such preview frame"
+        )
+    return FileResponse(resolved, media_type="image/png")
 
 
 @router.get("/preview/{task_id}/{file_path:path}", response_model=None)
