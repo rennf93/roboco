@@ -2,7 +2,7 @@
 
 On June 15, 2026, Factory.ai rebranded from "coding agents" to "software factories," describing an end-to-end signals → triage → build/test/review/secure/ship → monitor loop built on three pillars: model independence, sovereign intelligence, and continual self-improvement. The rebrand is backed by named production customers — NVIDIA, EY, Adobe, Palo Alto Networks, Adyen, Blackstone, Wipro, and Comarch — the commercial-traction half of this signal.
 
-Source: https://factory.ai/news/software-factory
+Source: [Factory.ai — Software Factory](https://factory.ai/news/software-factory)
 
 **Response decision:** no product change is warranted. RoboCo's shipped architecture already holds parity on the pillars that matter — AGPL self-hosting gives the same sovereign-intelligence parity Factory names as a pillar, and multi-provider LLM routing gives the same model-independence parity — plus a governance differentiator (a CEO-approval gate on every merge to master) that Factory's rebrand description does not claim to have. This note records RoboCo's verified posture against that framing, checked directly against this codebase rather than assumed.
 
