@@ -23,6 +23,7 @@ Workspace Structure:
 
 import asyncio
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -395,26 +396,30 @@ async def get_git_diff(
     timeout = settings.evidence_assembly_timeout_seconds
 
     try:
-        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        # Wrap workspace resolution + diff + stat subprocesses in one bounded
+        # timeout so a slow workspace fetch or diff computation returns a
+        # structured 504 instead of hanging indefinitely.
+        async def _resolve_and_diff() -> tuple[Any, Any]:
+            workspace = await git_service.get_workspace(project_slug, agent.agent_id)
 
-        args = ["diff"]
-        if staged:
-            args.append("--staged")
-        if file_path:
-            args.extend(["--", file_path])
+            args = ["diff"]
+            if staged:
+                args.append("--staged")
+            if file_path:
+                args.extend(["--", file_path])
 
-        # Count files changed
-        stat_args = ["diff", "--stat"]
-        if staged:
-            stat_args.append("--staged")
+            stat_args = ["diff", "--stat"]
+            if staged:
+                stat_args.append("--staged")
 
-        # Run diff + stat concurrently within the bounded timeout
-        diff_result, stat_result = await asyncio.wait_for(
-            asyncio.gather(
+            diff_result, stat_result = await asyncio.gather(
                 git_service._run_git(workspace, args),
                 git_service._run_git(workspace, stat_args),
-            ),
-            timeout=timeout,
+            )
+            return diff_result, stat_result
+
+        diff_result, stat_result = await asyncio.wait_for(
+            _resolve_and_diff(), timeout=timeout
         )
     except _TranslatableError as e:
         raise _translate_error(e) from e
