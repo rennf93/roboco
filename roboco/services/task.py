@@ -312,6 +312,24 @@ _PM_OWNED_CELL_TASK_TYPES: frozenset[str] = frozenset(
     }
 )
 
+# Review-pipeline handoff states. Per CLAIM_RULES these are owned by a
+# non-PM role (QA / documenter / PR reviewer), so the cell-PM ownership
+# redirect must NOT fire when a cell-PM-owned task is mid-handoff into one
+# of them. The redirect exists to route *delegation/escalation* ownership
+# (PENDING / CLAIMED / NEEDS_REVISION) away from main-pm and onto the cell
+# PM; applying it to a QA/documenter/PR-reviewer handoff clobbers the
+# review's rightful claimant with the cell PM, who has no claim right on
+# these states — the task then deadlocks until a human manually reassigns.
+# AWAITING_PM_REVIEW is deliberately excluded: there the cell PM *is* the
+# rightful owner, so the redirect still applies.
+_REVIEW_HANDOFF_STATUSES: frozenset[str] = frozenset(
+    {
+        TaskStatus.AWAITING_QA.value,
+        TaskStatus.AWAITING_DOCUMENTATION.value,
+        TaskStatus.AWAITING_PR_REVIEW.value,
+    }
+)
+
 
 def _is_cell_pm_owned_task(task: TaskTable) -> bool:
     """True for a descendant cell-team task that must be owned by its cell PM.
@@ -3643,6 +3661,10 @@ class TaskService(BaseService):
         descendants = await self.get_all_descendants(task_id)
         descendants.reverse()  # Delete deepest children first
 
+        # Capture ids before deletion — the row is gone after flush, and
+        # we need them to prune every surviving dependent's dependency_ids.
+        removed_ids = [task_id, *(getattr(d, "id", None) for d in descendants)]
+
         for descendant in descendants:
             await self.session.delete(descendant)
 
@@ -3655,6 +3677,15 @@ class TaskService(BaseService):
 
         await self.session.delete(task)
         await self.session.flush()
+
+        # Cascade the dependency cleanup the COMPLETE path runs. Without
+        # this, a task BLOCKED on the deleted one is never auto-revived and
+        # the stale id lingers in every dependent's dependency_ids forever
+        # (the claim gate treats a missing row as "met", but BLOCKED
+        # dependents are past the gate and only _unblock_dependents revives).
+        for removed_id in removed_ids:
+            if removed_id is not None:
+                await self._unblock_dependents(removed_id)
 
         self.log.info("Task deleted", task_id=str(task_id))
         return True
@@ -8132,6 +8163,16 @@ class TaskService(BaseService):
         await self.session.flush()
         await self._alert_coroner_of_cancel(task)
 
+        # Cascade the dependency cleanup the COMPLETE path runs. Without
+        # this, a task BLOCKED on the cancelled one is never auto-revived
+        # and the stale id lingers in every dependent's dependency_ids
+        # forever. Prune for the whole subtree (root + all descendants);
+        # idempotent for already-terminal descendants whose edges may have
+        # been pruned before — a second prune just finds no matching edge.
+        for cancelled_id in (task_id, *(getattr(d, "id", None) for d in descendants)):
+            if cancelled_id is not None:
+                await self._unblock_dependents(cancelled_id)
+
         # Origin fix: a cancelled child may have declared parent_ac_refs that
         # no surviving sibling covers, leaving the roll-up gate
         # (_parent_acs_covered_envelope) demanding coverage for already-
@@ -10873,6 +10914,17 @@ class TaskService(BaseService):
             dev_notes_line=None,
         )
         if not _is_cell_pm_owned_task(task):
+            return noop
+        # A cell-PM-owned task that is already mid-handoff into a review
+        # state (QA / documenter / PR reviewer per CLAIM_RULES) must keep
+        # that handoff target — the ownership redirect is for routing
+        # delegation/escalation, not for clobbering the review claimant.
+        status_value = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        if status_value in _REVIEW_HANDOFF_STATUSES:
             return noop
         assert task.team is not None  # guarded by _is_cell_pm_owned_task
         team_enum = Team(str(getattr(task.team, "value", task.team)))
