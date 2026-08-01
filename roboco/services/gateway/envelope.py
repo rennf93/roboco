@@ -245,19 +245,27 @@ class Envelope:
         component: str,
         timeout_seconds: float,
         remediate: str,
+        task_id: str | None = None,
         context_briefing: dict[str, Any] | None = None,
     ) -> Envelope:
-        """A bounded inner-work timeout tripped (e.g. evidence assembly),
-        well under the outer server-side ``flow_verb_timeout_seconds``
-        rollback (``api.middleware``'s own ``gateway_timeout``). Names the
-        slow ``component`` so the agent isn't left guessing which segment
-        (git fetch, diff computation, conventions validation, a DB read)
-        stalled, instead of a bare 504 that reads as the whole verb failing.
+        """A bounded inner-work timeout tripped — the evidence-assembly segment
+        (git diff/fetch, conventions validation, or a DB read) exceeded
+        ``evidence_assembly_timeout_seconds`` without completing.
+
+        Distinct from the outer ``flow_verb_timeout_seconds`` rollback: that
+        one cancels the whole request transaction with no indication of which
+        piece stuck. This returns a structured, named error so the agent (and
+        the audit log) sees exactly which component stalled and can retry or
+        escalate accordingly. On a trip the verb's own state change (e.g.
+        ``qa_claim``) has already committed, so the remediate points at
+        ``evidence(task_id)`` rather than re-running the whole verb.
         """
         return cls(
             error="gateway_timeout",
+            task_id=task_id,
             message=(
-                f"{component} exceeded the {timeout_seconds:.0f}s bounded timeout"
+                f"evidence assembly timed out after {timeout_seconds}s — "
+                f"the {component} segment did not complete in time"
             ),
             remediate=remediate,
             context_briefing=context_briefing or {},
