@@ -23,9 +23,10 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi_users.password import PasswordHelper
 from httpx import ASGITransport, AsyncClient
+from roboco.api.app import _mount_telegram_miniapp_auth
 from roboco.api.auth.backend import SESSION_COOKIE_NAME
 from roboco.api.deps import get_db
-from roboco.api.routes.telegram import mount_telegram_miniapp_auth, webapp_auth_router
+from roboco.api.routes.telegram import webapp_auth_router
 from roboco.config import settings
 from roboco.db.tables import UserTable
 from roboco.services.telegram_credentials import get_telegram_credentials_service
@@ -129,7 +130,7 @@ async def test_mount_skipped_when_miniapp_flag_off(
 ) -> None:
     monkeypatch.setattr(settings, "telegram_miniapp_enabled", False)
     app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
+    _mount_telegram_miniapp_auth(app, "/api/telegram")
     assert await _post_unmounted_probe(app) == HTTPStatus.NOT_FOUND
 
 
@@ -139,14 +140,14 @@ async def test_mount_skipped_when_cloud_auth_off(
 ) -> None:
     monkeypatch.setattr(settings, "cloud_auth_enabled", False)
     app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
+    _mount_telegram_miniapp_auth(app, "/api/telegram")
     assert await _post_unmounted_probe(app) == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio
 async def test_mount_included_when_both_armed(db_session: AsyncSession) -> None:
     app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
+    _mount_telegram_miniapp_auth(app, "/api/telegram")
 
     async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
