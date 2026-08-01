@@ -6,7 +6,14 @@ to the target task instead."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field
+
+from roboco.foundation.policy.content import markers
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 
 class RebalanceItemResponse(BaseModel):
@@ -46,3 +53,19 @@ class RebalanceItemActionResponse(BaseModel):
     item_id: str
     executed_detail: str | None = None
     detail: str
+
+
+def scales_status_value(task: TaskTable) -> str:
+    raw = task.status
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def task_to_rebalance_cycle_response(task: TaskTable) -> RebalanceCycleResponse:
+    payload = markers.get_rebalance_plan(task) or {}
+    items = [RebalanceItemResponse(**item) for item in payload.get("items", [])]
+    return RebalanceCycleResponse(
+        task_id=str(task.id),
+        title=task.title,
+        status=scales_status_value(task),
+        items=items,
+    )

@@ -4,7 +4,6 @@ materializes it as a BACKLOG task; nothing here starts it — normal PM
 activation takes it from there. Mirrors ``roboco.api.routes.roadmap``.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -13,37 +12,14 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.pest_control import (
     PestHuntCycleResponse,
     PestHuntItemActionResponse,
-    PestHuntItemResponse,
     PestHuntRejectRequest,
+    task_to_pest_hunt_cycle_response,
 )
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.pest_control_service import get_pest_control_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the pest-control queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> PestHuntCycleResponse:
-    payload = markers.get_pest_hunt(task) or {}
-    items = [PestHuntItemResponse(**item) for item in payload.get("items", [])]
-    return PestHuntCycleResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        items=items,
-    )
 
 
 @router.get("/cycles", response_model=list[PestHuntCycleResponse])
@@ -55,9 +31,11 @@ async def list_pest_control_cycles(
     A cycle the PO hasn't authored yet (no items drafted) is omitted — there
     is nothing for the CEO to review until ``propose_bug_hunt`` lands.
     """
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the pest-control queue")
     tasks = await get_pest_control_service(db).list_open_cycles()
-    return [_to_response(t) for t in tasks if markers.get_pest_hunt(t)]
+    return [
+        task_to_pest_hunt_cycle_response(t) for t in tasks if markers.get_pest_hunt(t)
+    ]
 
 
 @router.post(
@@ -73,7 +51,7 @@ async def approve_pest_hunt_item(
     agent: CurrentAgentContext,
 ) -> PestHuntItemActionResponse:
     """Materialize one proposed item as a BACKLOG task (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the pest-control queue")
     result = await get_pest_control_service(db).approve_item(
         task_id, item_id, created_by=agent.agent_id
     )
@@ -107,7 +85,7 @@ async def reject_pest_hunt_item(
     agent: CurrentAgentContext,
 ) -> PestHuntItemActionResponse:
     """Reject one proposed item with a reason (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the pest-control queue")
     result = await get_pest_control_service(db).reject_item(
         task_id, item_id, data.reason
     )

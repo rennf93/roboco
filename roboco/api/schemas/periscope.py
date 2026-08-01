@@ -9,7 +9,14 @@ that per-finding queue, mirrored on ``roboco.api.schemas.roadmap``."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field
+
+from roboco.foundation.policy.content import markers
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 
 class MarketBriefFindingResponse(BaseModel):
@@ -52,3 +59,20 @@ class MarketBriefFindingActionResponse(BaseModel):
     finding_id: str
     materialized_task_id: str | None = None
     detail: str
+
+
+def task_to_market_brief_response(task: TaskTable) -> MarketBriefResponse | None:
+    payload = markers.get_market_brief(task)
+    if payload is None:
+        return None
+    findings = [MarketBriefFindingResponse(**f) for f in payload.get("findings", [])]
+    return MarketBriefResponse(
+        task_id=str(task.id),
+        title=task.title,
+        completed_at=task.updated_at.isoformat() if task.updated_at else None,
+        headline=payload.get("headline", ""),
+        findings=findings,
+        threats=payload.get("threats", []),
+        opportunities=payload.get("opportunities", []),
+        positioning_note=payload.get("positioning_note", ""),
+    )

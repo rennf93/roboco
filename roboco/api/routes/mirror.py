@@ -4,7 +4,6 @@ materializes it as a BACKLOG docs task; nothing here starts it — normal PM
 activation takes it from there. Mirrors ``roboco.api.routes.spackle``.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -12,38 +11,15 @@ from fastapi import APIRouter, HTTPException, status
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.mirror import (
     MessagingFixItemActionResponse,
-    MessagingFixItemResponse,
     MessagingFixRejectRequest,
     MirrorCycleResponse,
+    task_to_mirror_cycle_response,
 )
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.mirror_service import get_mirror_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the mirror queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> MirrorCycleResponse:
-    payload = markers.get_messaging_fixes(task) or {}
-    items = [MessagingFixItemResponse(**item) for item in payload.get("items", [])]
-    return MirrorCycleResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        items=items,
-    )
 
 
 @router.get("/cycles", response_model=list[MirrorCycleResponse])
@@ -55,9 +31,13 @@ async def list_mirror_cycles(
     A cycle the HoM hasn't authored yet (no items drafted) is omitted — there
     is nothing for the CEO to review until ``propose_messaging_fixes`` lands.
     """
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the mirror queue")
     tasks = await get_mirror_service(db).list_open_cycles()
-    return [_to_response(t) for t in tasks if markers.get_messaging_fixes(t)]
+    return [
+        task_to_mirror_cycle_response(t)
+        for t in tasks
+        if markers.get_messaging_fixes(t)
+    ]
 
 
 @router.post(
@@ -73,7 +53,7 @@ async def approve_messaging_fix_item(
     agent: CurrentAgentContext,
 ) -> MessagingFixItemActionResponse:
     """Materialize one proposed item as a BACKLOG docs task (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the mirror queue")
     result = await get_mirror_service(db).approve_item(
         task_id, item_id, created_by=agent.agent_id
     )
@@ -107,7 +87,7 @@ async def reject_messaging_fix_item(
     agent: CurrentAgentContext,
 ) -> MessagingFixItemActionResponse:
     """Reject one proposed item with a reason (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the mirror queue")
     result = await get_mirror_service(db).reject_item(task_id, item_id, data.reason)
     if result is None:
         raise HTTPException(

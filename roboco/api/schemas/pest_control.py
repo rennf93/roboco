@@ -4,7 +4,14 @@ Mirrors ``roboco.api.schemas.roadmap`` — ``rationale`` becomes the required
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field
+
+from roboco.foundation.policy.content import markers
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 
 class PestHuntItemResponse(BaseModel):
@@ -45,3 +52,19 @@ class PestHuntItemActionResponse(BaseModel):
     item_id: str
     materialized_task_id: str | None = None
     detail: str
+
+
+def pest_control_status_value(task: TaskTable) -> str:
+    raw = task.status
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def task_to_pest_hunt_cycle_response(task: TaskTable) -> PestHuntCycleResponse:
+    payload = markers.get_pest_hunt(task) or {}
+    items = [PestHuntItemResponse(**item) for item in payload.get("items", [])]
+    return PestHuntCycleResponse(
+        task_id=str(task.id),
+        title=task.title,
+        status=pest_control_status_value(task),
+        items=items,
+    )

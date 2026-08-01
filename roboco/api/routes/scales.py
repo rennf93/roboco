@@ -5,7 +5,6 @@ cancel it) — nothing here creates a task. Mirrors
 ``roboco.api.routes.pest_control``.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -14,37 +13,14 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.scales import (
     RebalanceCycleResponse,
     RebalanceItemActionResponse,
-    RebalanceItemResponse,
     RebalanceRejectRequest,
+    task_to_rebalance_cycle_response,
 )
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.scales_service import get_scales_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the Scales queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> RebalanceCycleResponse:
-    payload = markers.get_rebalance_plan(task) or {}
-    items = [RebalanceItemResponse(**item) for item in payload.get("items", [])]
-    return RebalanceCycleResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        items=items,
-    )
 
 
 @router.get("/cycles", response_model=list[RebalanceCycleResponse])
@@ -56,9 +32,13 @@ async def list_scales_cycles(
     A cycle the PO hasn't authored yet (no items drafted) is omitted — there
     is nothing for the CEO to review until ``propose_rebalance`` lands.
     """
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the Scales queue")
     tasks = await get_scales_service(db).list_open_cycles()
-    return [_to_response(t) for t in tasks if markers.get_rebalance_plan(t)]
+    return [
+        task_to_rebalance_cycle_response(t)
+        for t in tasks
+        if markers.get_rebalance_plan(t)
+    ]
 
 
 @router.post(
@@ -74,7 +54,7 @@ async def approve_rebalance_item(
     agent: CurrentAgentContext,
 ) -> RebalanceItemActionResponse:
     """Execute one proposed item against its live target task (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the Scales queue")
     result = await get_scales_service(db).approve_item(
         task_id, item_id, created_by=agent.agent_id
     )
@@ -108,7 +88,7 @@ async def reject_rebalance_item(
     agent: CurrentAgentContext,
 ) -> RebalanceItemActionResponse:
     """Reject one proposed item with a reason (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the Scales queue")
     result = await get_scales_service(db).reject_item(task_id, item_id, data.reason)
     if result is None:
         raise HTTPException(

@@ -3,7 +3,14 @@ Mirrors ``roboco.api.schemas.pest_control`` exactly."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field
+
+from roboco.foundation.policy.content import markers
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 
 class GapFillItemResponse(BaseModel):
@@ -44,3 +51,19 @@ class GapFillItemActionResponse(BaseModel):
     item_id: str
     materialized_task_id: str | None = None
     detail: str
+
+
+def spackle_status_value(task: TaskTable) -> str:
+    raw = task.status
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def task_to_spackle_cycle_response(task: TaskTable) -> SpackleCycleResponse:
+    payload = markers.get_gap_fill(task) or {}
+    items = [GapFillItemResponse(**item) for item in payload.get("items", [])]
+    return SpackleCycleResponse(
+        task_id=str(task.id),
+        title=task.title,
+        status=spackle_status_value(task),
+        items=items,
+    )
