@@ -9,6 +9,10 @@ Outputs (deterministic):
 
 Run as part of `make lifecycle`. CI gate: `make lifecycle && git diff
 --exit-code` fails if regeneration produces a diff.
+
+A stale CI 'Python quality gate' status can persist when only doc-only
+commits follow a sync — docs/ is outside the CI workflow's paths filter,
+so no new run triggers on the updated head.
 """
 
 from __future__ import annotations
