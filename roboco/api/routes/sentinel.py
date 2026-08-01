@@ -5,7 +5,6 @@ propose time), but each item carries its own per-item approve/reject,
 mirroring ``roboco.api.routes.periscope``'s shape.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -14,39 +13,14 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.sentinel import (
     QualityReportItemActionResponse,
     QualityReportItemRejectRequest,
-    QualityReportItemResponse,
     QualityReportResponse,
+    task_to_quality_report_response,
 )
-from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.sentinel_service import get_sentinel_service
 from roboco.services.task import get_task_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(
-        agent.role, action="view or act on the Sentinel quality-reports list"
-    )
-
-
-def _to_response(task: "TaskTable") -> QualityReportResponse | None:
-    payload = markers.get_quality_report(task)
-    if payload is None:
-        return None
-    items = [QualityReportItemResponse(**i) for i in payload.get("items", [])]
-    return QualityReportResponse(
-        task_id=str(task.id),
-        title=task.title,
-        completed_at=task.updated_at.isoformat() if task.updated_at else None,
-        headline=payload.get("headline", ""),
-        items=items,
-        overall_assessment=payload.get("overall_assessment", ""),
-    )
 
 
 @router.get("/reports", response_model=list[QualityReportResponse])
@@ -56,9 +30,11 @@ async def list_quality_reports(
     """Recent filed quality reports, newest-first. A completed Sentinel
     exploration without a marker (shouldn't happen — the verb always sets
     one before completing) is omitted rather than rendered blank."""
-    _require_ceo(agent)
+    require_ceo_role(
+        agent.role, action="view or act on the Sentinel quality-reports list"
+    )
     tasks = await get_task_service(db).list_sentinel_reports()
-    return [r for t in tasks if (r := _to_response(t)) is not None]
+    return [r for t in tasks if (r := task_to_quality_report_response(t)) is not None]
 
 
 @router.post(
@@ -74,7 +50,9 @@ async def approve_quality_report_item(
     agent: CurrentAgentContext,
 ) -> QualityReportItemActionResponse:
     """Materialize one drift item as a Main-PM-owned root task (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(
+        agent.role, action="view or act on the Sentinel quality-reports list"
+    )
     result = await get_sentinel_service(db).approve_item(
         task_id, item_id, created_by=agent.agent_id
     )
@@ -108,7 +86,9 @@ async def reject_quality_report_item(
     agent: CurrentAgentContext,
 ) -> QualityReportItemActionResponse:
     """Dismiss one drift item with a reason (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(
+        agent.role, action="view or act on the Sentinel quality-reports list"
+    )
     result = await get_sentinel_service(db).reject_item(task_id, item_id, data.reason)
     if result is None:
         raise HTTPException(

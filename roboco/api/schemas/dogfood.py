@@ -3,7 +3,14 @@ Mirrors ``roboco.api.schemas.spackle`` exactly."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field
+
+from roboco.foundation.policy.content import markers
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 
 class FrictionFixItemResponse(BaseModel):
@@ -44,3 +51,19 @@ class FrictionFixItemActionResponse(BaseModel):
     item_id: str
     materialized_task_id: str | None = None
     detail: str
+
+
+def dogfood_status_value(task: TaskTable) -> str:
+    raw = task.status
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def task_to_dogfood_cycle_response(task: TaskTable) -> DogfoodCycleResponse:
+    payload = markers.get_friction_fixes(task) or {}
+    items = [FrictionFixItemResponse(**item) for item in payload.get("items", [])]
+    return DogfoodCycleResponse(
+        task_id=str(task.id),
+        title=task.title,
+        status=dogfood_status_value(task),
+        items=items,
+    )

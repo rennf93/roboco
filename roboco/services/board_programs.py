@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
+from roboco.api.schemas.board_programs import BoardProgramResponse
 from roboco.config import settings
 from roboco.db.tables import BoardProgramCycleTable, ProjectTable, TaskTable
 from roboco.foundation.policy.board_programs import (
@@ -317,6 +318,29 @@ class BoardProgramEngine(BaseService):
     async def enabled(self, key: str) -> bool:
         """Per-program settings-store override, else the legacy flag."""
         return await program_armed(self.session, key)
+
+    async def to_response(self, key: str) -> BoardProgramResponse:
+        """Render one registry entry's live status for the CEO surface —
+        the panel card + edit-project dialog's opt-in controls both read
+        this shape."""
+        program = PROGRAMS[key]
+        enabled = await self.enabled(key)
+        open_cycle, last_opened_at = await self.cycle_state(key)
+        summary = await self.prior_cycle_context(key, limit=1)
+        opted_in = await self.opted_in_projects(program)
+        return BoardProgramResponse(
+            key=key,
+            title=program.title or key,
+            description=program.description,
+            role=program.role,
+            trigger=program.trigger.value,
+            scope=program.scope,
+            enabled=enabled,
+            opted_in_project_slugs=[p.slug for p in opted_in],
+            last_opened_at=last_opened_at.isoformat() if last_opened_at else None,
+            open_cycle=open_cycle,
+            last_cycle_summary=summary or None,
+        )
 
     async def run_due_programs(self) -> list[str]:
         """Originate a cycle for every enabled, due CRON program, PLUS every

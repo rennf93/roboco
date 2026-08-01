@@ -34,16 +34,12 @@ from roboco.services.github_app_credentials import (
 router = APIRouter()
 
 
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="manage the GitHub App integration")
-
-
 @router.get("/credentials", response_model=GitHubAppCredentialsStatus)
 async def get_github_app_credentials(
     db: DbSession, agent: CurrentAgentContext
 ) -> GitHubAppCredentialsStatus:
     """Whether the App id + private key are stored. Never the key."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="manage the GitHub App integration")
     has_creds = await get_github_app_credentials_service(db).has_credentials()
     return GitHubAppCredentialsStatus(has_credentials=has_creds)
 
@@ -59,7 +55,7 @@ async def set_github_app_credentials(
     data: GitHubAppCredentialsSetRequest, db: DbSession, agent: CurrentAgentContext
 ) -> GitHubAppCredentialsStatus:
     """Set the App id + private key together (PEM paste)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="manage the GitHub App integration")
     svc = get_github_app_credentials_service(db)
     try:
         has_creds = await svc.set_credentials(
@@ -78,7 +74,7 @@ async def clear_github_app_credentials(
     db: DbSession, agent: CurrentAgentContext
 ) -> GitHubAppCredentialsStatus:
     """Clear the App id + private key."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="manage the GitHub App integration")
     has_creds = await get_github_app_credentials_service(db).set_credentials(
         app_id="", private_key=""
     )
@@ -93,7 +89,7 @@ async def get_installations(
     db: DbSession, agent: CurrentAgentContext
 ) -> list[InstallationResponse]:
     """List every installation of the configured App."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="manage the GitHub App integration")
     try:
         installations = await list_installations(db)
     except GitHubAppNotConfiguredError as e:
@@ -117,7 +113,7 @@ async def get_installation_repositories(
     installation_id: int, db: DbSession, agent: CurrentAgentContext
 ) -> list[InstallationRepositoryResponse]:
     """List every repository the given installation can access."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="manage the GitHub App integration")
     try:
         repos = await list_installation_repositories(db, installation_id)
     except GitHubAppNotConfiguredError as e:

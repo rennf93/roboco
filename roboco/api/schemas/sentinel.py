@@ -7,7 +7,14 @@ CEO decides on afterward."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field
+
+from roboco.foundation.policy.content import markers
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 
 class QualityReportItemResponse(BaseModel):
@@ -49,3 +56,18 @@ class QualityReportItemActionResponse(BaseModel):
     item_id: str
     materialized_task_id: str | None = None
     detail: str
+
+
+def task_to_quality_report_response(task: TaskTable) -> QualityReportResponse | None:
+    payload = markers.get_quality_report(task)
+    if payload is None:
+        return None
+    items = [QualityReportItemResponse(**i) for i in payload.get("items", [])]
+    return QualityReportResponse(
+        task_id=str(task.id),
+        title=task.title,
+        completed_at=task.updated_at.isoformat() if task.updated_at else None,
+        headline=payload.get("headline", ""),
+        items=items,
+        overall_assessment=payload.get("overall_assessment", ""),
+    )

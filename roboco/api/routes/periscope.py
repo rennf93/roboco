@@ -5,7 +5,6 @@ propose time), but each finding carries its own per-item approve/reject,
 mirroring ``roboco.api.routes.roadmap``'s shape.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -14,41 +13,14 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.periscope import (
     MarketBriefFindingActionResponse,
     MarketBriefFindingRejectRequest,
-    MarketBriefFindingResponse,
     MarketBriefResponse,
+    task_to_market_brief_response,
 )
-from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.periscope_service import get_periscope_service
 from roboco.services.task import get_task_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(
-        agent.role, action="view or act on the Periscope market-briefs list"
-    )
-
-
-def _to_response(task: "TaskTable") -> MarketBriefResponse | None:
-    payload = markers.get_market_brief(task)
-    if payload is None:
-        return None
-    findings = [MarketBriefFindingResponse(**f) for f in payload.get("findings", [])]
-    return MarketBriefResponse(
-        task_id=str(task.id),
-        title=task.title,
-        completed_at=task.updated_at.isoformat() if task.updated_at else None,
-        headline=payload.get("headline", ""),
-        findings=findings,
-        threats=payload.get("threats", []),
-        opportunities=payload.get("opportunities", []),
-        positioning_note=payload.get("positioning_note", ""),
-    )
 
 
 @router.get("/briefs", response_model=list[MarketBriefResponse])
@@ -58,9 +30,11 @@ async def list_market_briefs(
     """Recent filed market briefs, newest-first. A completed Periscope
     exploration without a marker (shouldn't happen — the verb always sets
     one before completing) is omitted rather than rendered blank."""
-    _require_ceo(agent)
+    require_ceo_role(
+        agent.role, action="view or act on the Periscope market-briefs list"
+    )
     tasks = await get_task_service(db).list_periscope_briefs()
-    return [r for t in tasks if (r := _to_response(t)) is not None]
+    return [r for t in tasks if (r := task_to_market_brief_response(t)) is not None]
 
 
 @router.post(
@@ -76,7 +50,9 @@ async def approve_market_brief_finding(
     agent: CurrentAgentContext,
 ) -> MarketBriefFindingActionResponse:
     """Materialize one finding as a Main-PM-owned root task (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(
+        agent.role, action="view or act on the Periscope market-briefs list"
+    )
     result = await get_periscope_service(db).approve_finding(
         task_id, finding_id, created_by=agent.agent_id
     )
@@ -110,7 +86,9 @@ async def reject_market_brief_finding(
     agent: CurrentAgentContext,
 ) -> MarketBriefFindingActionResponse:
     """Dismiss one finding with a reason (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(
+        agent.role, action="view or act on the Periscope market-briefs list"
+    )
     result = await get_periscope_service(db).reject_finding(
         task_id, finding_id, data.reason
     )

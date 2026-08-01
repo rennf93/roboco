@@ -46,16 +46,12 @@ _logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="manage Telegram credentials")
-
-
 @router.get("/credentials", response_model=TelegramCredentialsStatus)
 async def get_telegram_credentials(
     db: DbSession, agent: CurrentAgentContext
 ) -> TelegramCredentialsStatus:
     """Whether the bot token + chat id are stored. Never the secrets."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="manage Telegram credentials")
     has_creds = await get_telegram_credentials_service(db).has_credentials()
     return TelegramCredentialsStatus(has_credentials=has_creds)
 
@@ -71,7 +67,7 @@ async def set_telegram_credentials(
     data: TelegramCredentialsSetRequest, db: DbSession, agent: CurrentAgentContext
 ) -> TelegramCredentialsStatus:
     """Set (or, passing both empty, clear) the bot token + chat id together."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="manage Telegram credentials")
     svc = get_telegram_credentials_service(db)
     try:
         has_creds = await svc.set_credentials(

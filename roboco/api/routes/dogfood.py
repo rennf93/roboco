@@ -4,7 +4,6 @@ materializes it as a BACKLOG task; nothing here starts it — normal PM
 activation takes it from there. Mirrors ``roboco.api.routes.spackle``.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -13,37 +12,14 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.dogfood import (
     DogfoodCycleResponse,
     FrictionFixItemActionResponse,
-    FrictionFixItemResponse,
     FrictionFixRejectRequest,
+    task_to_dogfood_cycle_response,
 )
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.dogfood_service import get_dogfood_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the dogfood queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> DogfoodCycleResponse:
-    payload = markers.get_friction_fixes(task) or {}
-    items = [FrictionFixItemResponse(**item) for item in payload.get("items", [])]
-    return DogfoodCycleResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        items=items,
-    )
 
 
 @router.get("/cycles", response_model=list[DogfoodCycleResponse])
@@ -55,9 +31,13 @@ async def list_dogfood_cycles(
     A cycle the PO hasn't authored yet (no items drafted) is omitted — there
     is nothing for the CEO to review until ``propose_friction_fixes`` lands.
     """
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the dogfood queue")
     tasks = await get_dogfood_service(db).list_open_cycles()
-    return [_to_response(t) for t in tasks if markers.get_friction_fixes(t)]
+    return [
+        task_to_dogfood_cycle_response(t)
+        for t in tasks
+        if markers.get_friction_fixes(t)
+    ]
 
 
 @router.post(
@@ -73,7 +53,7 @@ async def approve_friction_fix_item(
     agent: CurrentAgentContext,
 ) -> FrictionFixItemActionResponse:
     """Materialize one proposed item as a BACKLOG task (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the dogfood queue")
     result = await get_dogfood_service(db).approve_item(
         task_id, item_id, created_by=agent.agent_id
     )
@@ -107,7 +87,7 @@ async def reject_friction_fix_item(
     agent: CurrentAgentContext,
 ) -> FrictionFixItemActionResponse:
     """Reject one proposed item with a reason (idempotent)."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or act on the dogfood queue")
     result = await get_dogfood_service(db).reject_item(task_id, item_id, data.reason)
     if result is None:
         raise HTTPException(
