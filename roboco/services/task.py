@@ -706,6 +706,9 @@ MEGAPHONE_SOURCE = "board_megaphone"
 MIRROR_SOURCE = "board_mirror"
 WAR_ROOM_SOURCE = "board_war_room"
 CORONER_SOURCE = "board_coroner"
+# Coroner's "bounced" incident kind fires on the Nth bounce into
+# needs_revision, not every one — see _emit_status_transition_audit.
+CORONER_BOUNCE_THRESHOLD = 3
 LIBRARIAN_SOURCE = "board_librarian"
 SENTINEL_SOURCE = "board_sentinel"
 BARFLY_SOURCE = "board_barfly"
@@ -958,6 +961,7 @@ class TaskService(BaseService):
             and from_status != TaskStatus.NEEDS_REVISION.value
         ):
             task.revision_count = (task.revision_count or 0) + 1
+            self._schedule_coroner_bounce_hook(task)
 
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
@@ -993,6 +997,27 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    def _schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
+        """Schedule the Coroner bounce-incident hook at the Nth bounce into
+        ``needs_revision`` (``CORONER_BOUNCE_THRESHOLD``) — a no-op on any
+        other bounce. Best-effort: a scheduling failure must never fail the
+        real transition that triggered it (``_emit_status_transition_audit``,
+        mid-commit)."""
+        if task.revision_count != CORONER_BOUNCE_THRESHOLD:
+            return
+        try:
+            bg_task = asyncio.create_task(
+                _fire_coroner_bounce_hook(cast("UUID", task.id))
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+        except Exception as e:
+            self.log.debug(
+                "Coroner bounce-hook scheduling skipped",
+                task_id=str(task.id),
+                error=str(e),
+            )
 
     def _touch_vault_frontmatter(
         self, task: TaskTable, *, to_status: str, team: str
@@ -1940,6 +1965,20 @@ class TaskService(BaseService):
         """Non-terminal Coroner exploration tasks (one-open-cycle dedup +
         ``propose_postmortem``'s task lookup)."""
         return await self._list_open_by_source(CORONER_SOURCE)
+
+    async def list_completed_coroner_postmortems(self) -> list[TaskTable]:
+        """Every completed Coroner postmortem, newest first — the CEO's
+        ``GET /coroner/postmortems`` list. A postmortem completes atomically
+        at ``propose_postmortem`` time, so COMPLETED alone is the full set."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == CORONER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+        )
+        return list(result.scalars().all())
 
     async def list_open_librarian_cycles(self) -> list[TaskTable]:
         """Non-terminal Librarian exploration tasks (one-open-cycle dedup +
@@ -3537,11 +3576,8 @@ class TaskService(BaseService):
         # AWAITING_PM_REVIEW re-claim (that branch already passed QA + the
         # PR gate — a silent base merge there would put unreviewed content
         # under the merge decision).
-        if (
-            original_branch_name
-            and task.project_id is not None
-            and agent_role in self._INHERIT_UPSTREAM_BASE_ROLES
-            and original_status in self._INHERIT_UPSTREAM_BASE_STATUSES
+        if self._should_inherit_upstream_base(
+            original_branch_name, task, agent_role, original_status
         ):
             await self._inherit_upstream_base(task, agent_id)
 
@@ -3550,6 +3586,25 @@ class TaskService(BaseService):
         bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
+
+    def _should_inherit_upstream_base(
+        self,
+        original_branch_name: str | None,
+        task: TaskTable,
+        agent_role: str | None,
+        original_status: TaskStatus,
+    ) -> bool:
+        """Whether ``_finalize_claim`` should merge the resolved parent
+        branch into a pre-existing task branch on this re-claim. Extracted
+        (pure, no side effects) to keep ``_finalize_claim`` under the
+        complexity budget — see the call site's comment for the full
+        exclusion rationale."""
+        return bool(
+            original_branch_name
+            and task.project_id is not None
+            and agent_role in self._INHERIT_UPSTREAM_BASE_ROLES
+            and original_status in self._INHERIT_UPSTREAM_BASE_STATUSES
+        )
 
     async def _inherit_upstream_base(self, task: TaskTable, agent_id: UUID) -> None:
         """Merge the resolved parent branch into a pre-existing task branch on
@@ -7404,6 +7459,8 @@ class TaskService(BaseService):
         await self._close_task_pr_best_effort(task)
         await self.session.flush()
 
+        await self._fire_coroner_cancel_hook_if_work_started(task)
+
         # Origin fix: a cancelled child may have declared parent_ac_refs that
         # no surviving sibling covers, leaving the roll-up gate
         # (_parent_acs_covered_envelope) demanding coverage for already-
@@ -7441,6 +7498,27 @@ class TaskService(BaseService):
         bg_task.add_done_callback(self._background_tasks.discard)
 
         return task
+
+    async def _fire_coroner_cancel_hook_if_work_started(self, task: TaskTable) -> None:
+        """Coroner event hook: cancelled after real work had started (commits
+        exist) — an autopsy candidate the same way a 3rd bounce is. Runs in
+        the caller's own session (``cancel()`` is already async, unlike the
+        sync bounce chokepoint) so its own flush/commit carries it;
+        best-effort, never fails the cancel itself."""
+        if not task.commits:
+            return
+        try:
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            await get_coroner_engine(self.session).open_for_incident(
+                cast("UUID", task.id), kind="cancelled"
+            )
+        except Exception as e:
+            self.log.warning(
+                "Coroner cancel-hook failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
 
     async def _detect_orphaned_parent_acs(
         self, cancelled: list[TaskTable]
@@ -11736,6 +11814,26 @@ async def resolve_manual_spawn_prompt(
     if task is None:
         return ceo_message
     return build_manual_spawn_prompt(task, ceo_message)
+
+
+async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
+    """Event hook: task's Nth bounce into ``needs_revision``
+    (``CORONER_BOUNCE_THRESHOLD``) — open a Coroner autopsy for it.
+
+    Scheduled via ``asyncio.create_task`` from
+    ``_emit_status_transition_audit``, so it runs OUTSIDE that chokepoint's
+    transaction — opens its own fresh session (module-level lookups, not the
+    top-level import, so tests can monkeypatch both ``get_db_context`` and
+    ``get_coroner_engine`` cleanly) and commits it directly. Best-effort by
+    construction: the caller wraps the scheduling itself in a try/except, so
+    a failure here never fails the real transition that triggered it.
+    """
+    from roboco.db.base import get_db_context
+    from roboco.services.coroner_engine import get_coroner_engine
+
+    async with get_db_context() as db:
+        await get_coroner_engine(db).open_for_incident(task_id, kind="bounced")
+        await db.commit()
 
 
 # =============================================================================
