@@ -7,7 +7,7 @@ Bug:
     commit's delta, even when GitHub showed a multi-commit change set.
 
 Fix:
-    Pull files via ``git.list_changed_files(branch_name=...)`` (no base
+    Pull files via ``git.diff_and_files(branch_name=...)`` (no base
     → full diff vs parent branch). Pull diff with ``base=None`` so the
     full PR diff comes through. Both use git as the authoritative source
     instead of the legacy ``work_session.files_modified`` field, which
@@ -65,8 +65,10 @@ async def test_evidence_populates_files_changed_from_git() -> None:
     task_svc = AsyncMock()
     task_svc.get.return_value = _task_with_pr(task_id, commits=["abc", "def"])
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "diff --git a/README.md b/README.md\n+added line\n"
-    git_svc.list_changed_files.return_value = ["README.md", "docs/guide.md"]
+    git_svc.diff_and_files.return_value = (
+        "diff --git a/README.md b/README.md\n+added line\n",
+        ["README.md", "docs/guide.md"],
+    )
     workspace_svc = AsyncMock()
     evidence_repo = AsyncMock()
     evidence_repo.journal_highlights_for_task.return_value = []
@@ -80,12 +82,12 @@ async def test_evidence_populates_files_changed_from_git() -> None:
     assert body["error"] is None
     assert body["evidence"]["files_changed"] == ["README.md", "docs/guide.md"]
     assert "diff --git" in body["evidence"]["pr_diff_summary"]
-    git_svc.list_changed_files.assert_awaited_once()
+    git_svc.diff_and_files.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_evidence_uses_full_pr_diff_not_head_minus_one() -> None:
-    """git.diff must be called with base=None (full PR diff vs parent),
+    """diff_and_files must be called with base=None (full PR diff vs parent),
     not base='HEAD~1' (only the last commit)."""
     agent_id = uuid4()
     task_id = uuid4()
@@ -94,8 +96,7 @@ async def test_evidence_uses_full_pr_diff_not_head_minus_one() -> None:
     # task.commits was non-empty, masking earlier commits' changes.
     task_svc.get.return_value = _task_with_pr(task_id, commits=["sha1", "sha2", "sha3"])
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "full diff"
-    git_svc.list_changed_files.return_value = []
+    git_svc.diff_and_files.return_value = ("full diff", [])
     workspace_svc = AsyncMock()
     evidence_repo = AsyncMock()
     evidence_repo.journal_highlights_for_task.return_value = []
@@ -105,13 +106,13 @@ async def test_evidence_uses_full_pr_diff_not_head_minus_one() -> None:
     )
     await ca.evidence(agent_id=agent_id, task_id=task_id)
 
-    git_svc.diff.assert_awaited_once()
-    call_kwargs = git_svc.diff.await_args.kwargs
+    git_svc.diff_and_files.assert_awaited_once()
+    call_kwargs = git_svc.diff_and_files.await_args.kwargs
     # Pre-fix bug: kwargs['base'] would be 'HEAD~1' for any multi-commit
     # branch. Post-fix: base is omitted (or explicitly None).
     base = call_kwargs.get("base")
     assert base in (None, ""), (
-        f"git.diff must use full-PR diff (base=None), got base={base!r}"
+        f"diff_and_files must use full-PR diff (base=None), got base={base!r}"
     )
     assert call_kwargs.get("branch_name") == "feature/backend/abc12345--def67890"
 
@@ -125,8 +126,7 @@ async def test_evidence_populates_journal_highlights() -> None:
     task_svc = AsyncMock()
     task_svc.get.return_value = _task_with_pr(task_id, commits=["abc"])
     git_svc = AsyncMock()
-    git_svc.diff.return_value = ""
-    git_svc.list_changed_files.return_value = []
+    git_svc.diff_and_files.return_value = ("", [])
     workspace_svc = AsyncMock()
     evidence_repo = AsyncMock()
     highlights = [
@@ -179,5 +179,4 @@ async def test_evidence_no_branch_skips_git_calls() -> None:
     assert body["error"] is None
     assert body["evidence"]["files_changed"] == []
     assert body["evidence"]["pr_diff_summary"] == ""
-    git_svc.diff.assert_not_awaited()
-    git_svc.list_changed_files.assert_not_awaited()
+    git_svc.diff_and_files.assert_not_awaited()

@@ -41,10 +41,12 @@ def _over_cap_project() -> MagicMock:
 
 
 def _make_deps(task_svc: AsyncMock, **overrides: Any) -> ChoreographerDeps:
+    git = AsyncMock()
+    git.diff_and_files.return_value = ("", [])
     base: dict[str, Any] = {
         "task": task_svc,
         "work_session": AsyncMock(),
-        "git": AsyncMock(),
+        "git": git,
         "a2a": AsyncMock(),
         "journal": AsyncMock(),
         "audit": AsyncMock(),
