@@ -312,24 +312,6 @@ _PM_OWNED_CELL_TASK_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# Review-pipeline handoff states. Per CLAIM_RULES these are owned by a
-# non-PM role (QA / documenter / PR reviewer), so the cell-PM ownership
-# redirect must NOT fire when a cell-PM-owned task is mid-handoff into one
-# of them. The redirect exists to route *delegation/escalation* ownership
-# (PENDING / CLAIMED / NEEDS_REVISION) away from main-pm and onto the cell
-# PM; applying it to a QA/documenter/PR-reviewer handoff clobbers the
-# review's rightful claimant with the cell PM, who has no claim right on
-# these states — the task then deadlocks until a human manually reassigns.
-# AWAITING_PM_REVIEW is deliberately excluded: there the cell PM *is* the
-# rightful owner, so the redirect still applies.
-_REVIEW_HANDOFF_STATUSES: frozenset[str] = frozenset(
-    {
-        TaskStatus.AWAITING_QA.value,
-        TaskStatus.AWAITING_DOCUMENTATION.value,
-        TaskStatus.AWAITING_PR_REVIEW.value,
-    }
-)
-
 
 def _is_cell_pm_owned_task(task: TaskTable) -> bool:
     """True for a descendant cell-team task that must be owned by its cell PM.
@@ -3660,9 +3642,6 @@ class TaskService(BaseService):
         # Process in reverse order to delete leaves before parents
         descendants = await self.get_all_descendants(task_id)
         descendants.reverse()  # Delete deepest children first
-
-        # Capture ids before deletion — the row is gone after flush, and
-        # we need them to prune every surviving dependent's dependency_ids.
         removed_ids = [task_id, *(getattr(d, "id", None) for d in descendants)]
 
         for descendant in descendants:
@@ -3678,11 +3657,9 @@ class TaskService(BaseService):
         await self.session.delete(task)
         await self.session.flush()
 
-        # Cascade the dependency cleanup the COMPLETE path runs. Without
-        # this, a task BLOCKED on the deleted one is never auto-revived and
-        # the stale id lingers in every dependent's dependency_ids forever
-        # (the claim gate treats a missing row as "met", but BLOCKED
-        # dependents are past the gate and only _unblock_dependents revives).
+        # Cascade the dependency cleanup so BLOCKED dependents auto-revive.
+        # Must run after the flush so deleted rows are gone before dependents
+        # are re-checked. Idempotent — a second prune finds no matching edge.
         for removed_id in removed_ids:
             if removed_id is not None:
                 await self._unblock_dependents(removed_id)
@@ -8095,12 +8072,7 @@ class TaskService(BaseService):
             return None
 
         if cancellation_note:
-            task.dev_notes = (
-                f"{task.dev_notes}\n{cancellation_note}"
-                if task.dev_notes
-                else cancellation_note
-            )
-            await self.session.flush()
+            await self._append_cancel_note(task, cancellation_note)
 
         # Cancel all descendants first (children, grandchildren, etc.)
         # Skip tasks already in terminal states (completed or cancelled).
@@ -8113,6 +8085,52 @@ class TaskService(BaseService):
         # this; the narrow catch + refusal keeps a future per-edge role
         # gate from silently orphaning.) Non-validation errors propagate.
         descendants = await self.get_all_descendants(task_id)
+        cancelled_count, cancelled_now = await self._cascade_cancel_descendants(
+            task_id, descendants, agent_role
+        )
+
+        # Validate transition with PM role requirement
+        await self._cancel_task_self(task, agent_role, cancelled_now)
+
+        # Cascade the dependency cleanup the COMPLETE path runs. Without
+        # this, a task BLOCKED on the cancelled one is never auto-revived
+        # and the stale id lingers in every dependent's dependency_ids
+        # forever.
+        await self._prune_cancelled_dependencies(task_id, descendants)
+
+        # Origin fix: a cancelled child may have declared parent_ac_refs that
+        # no surviving sibling covers, leaving the roll-up gate
+        # (_parent_acs_covered_envelope) demanding coverage for already-
+        # finished work once a replacement is delegated. Warn-and-surface
+        # only — no hard gate; the PM re-declares via declare_coverage.
+        orphaned = await self._audit_orphaned_acs(task_id, task, cancelled_now)
+
+        await self._index_cancel_event(
+            task_id, task, agent_role, cancelled_count, orphaned
+        )
+
+        return task
+
+    async def _append_cancel_note(
+        self, task: TaskTable, cancellation_note: str
+    ) -> None:
+        """Append the cancellation note to ``dev_notes`` and flush."""
+        task.dev_notes = (
+            f"{task.dev_notes}\n{cancellation_note}"
+            if task.dev_notes
+            else cancellation_note
+        )
+        await self.session.flush()
+
+    async def _cascade_cancel_descendants(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+        agent_role: str,
+    ) -> tuple[int, list[TaskTable]]:
+        """Cascade-cancel every non-terminal descendant, refusing the whole
+        cancel on a role-validation failure so an orphaned subtree is never
+        left under a cancelled parent."""
         cancelled_count = 0
         cancelled_now: list[TaskTable] = []
         for descendant in descendants:
@@ -8153,8 +8171,17 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 cancelled_count=cancelled_count,
             )
+        return cancelled_count, cancelled_now
 
-        # Validate transition with PM role requirement
+    async def _cancel_task_self(
+        self,
+        task: TaskTable,
+        agent_role: str,
+        cancelled_now: list[TaskTable],
+    ) -> None:
+        """Validate+set the task itself to CANCELLED, abandon its work
+        session, close its PR, delete its branch, flush, and alert the
+        coroner."""
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
@@ -8163,21 +8190,27 @@ class TaskService(BaseService):
         await self.session.flush()
         await self._alert_coroner_of_cancel(task)
 
-        # Cascade the dependency cleanup the COMPLETE path runs. Without
-        # this, a task BLOCKED on the cancelled one is never auto-revived
-        # and the stale id lingers in every dependent's dependency_ids
-        # forever. Prune for the whole subtree (root + all descendants);
-        # idempotent for already-terminal descendants whose edges may have
-        # been pruned before — a second prune just finds no matching edge.
+    async def _prune_cancelled_dependencies(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+    ) -> None:
+        """Prune dependency edges for the whole cancelled subtree (root +
+        all descendants) so blocked dependents auto-revive. Idempotent for
+        already-terminal descendants whose edges may have been pruned
+        before — a second prune just finds no matching edge."""
         for cancelled_id in (task_id, *(getattr(d, "id", None) for d in descendants)):
             if cancelled_id is not None:
                 await self._unblock_dependents(cancelled_id)
 
-        # Origin fix: a cancelled child may have declared parent_ac_refs that
-        # no surviving sibling covers, leaving the roll-up gate
-        # (_parent_acs_covered_envelope) demanding coverage for already-
-        # finished work once a replacement is delegated. Warn-and-surface
-        # only — no hard gate; the PM re-declares via declare_coverage.
+    async def _audit_orphaned_acs(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        cancelled_now: list[TaskTable],
+    ) -> list[str]:
+        """Detect parent ACs orphaned by the cancel, warn + emit audit, and
+        stash the transient result on the task for same-request callers."""
         orphaned = await self._detect_orphaned_parent_acs(cancelled_now)
         if orphaned:
             self.log.warning(
@@ -8191,8 +8224,17 @@ class TaskService(BaseService):
         # schema change; upgrade to a real field if a caller needs it
         # across a request boundary.
         task.orphaned_parent_acs = orphaned
+        return orphaned
 
-        # Index lifecycle event (fire-and-forget)
+    async def _index_cancel_event(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        agent_role: str,
+        cancelled_count: int,
+        orphaned: list[str],
+    ) -> None:
+        """Fire-and-forget lifecycle-event index for the cancel."""
         bg_task = asyncio.create_task(
             self._index_lifecycle_event_background(
                 task_id=task_id,
@@ -8208,8 +8250,6 @@ class TaskService(BaseService):
         )
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
-
-        return task
 
     async def _detect_orphaned_parent_acs(
         self, cancelled: list[TaskTable]
@@ -10889,6 +10929,14 @@ class TaskService(BaseService):
         reason: str
         dev_notes_line: str | None
 
+    _REVIEW_HANDOFF_STATUSES = frozenset(
+        {
+            TaskStatus.AWAITING_QA,
+            TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.AWAITING_PR_REVIEW,
+        }
+    )
+
     async def _resolve_cell_pm_redirect(
         self, task: TaskTable, requested_assignee: UUID | None
     ) -> "TaskService._CellPmRedirect":
@@ -10913,18 +10961,9 @@ class TaskService(BaseService):
             reason="noop",
             dev_notes_line=None,
         )
-        if not _is_cell_pm_owned_task(task):
+        if task.status in self._REVIEW_HANDOFF_STATUSES:
             return noop
-        # A cell-PM-owned task that is already mid-handoff into a review
-        # state (QA / documenter / PR reviewer per CLAIM_RULES) must keep
-        # that handoff target — the ownership redirect is for routing
-        # delegation/escalation, not for clobbering the review claimant.
-        status_value = (
-            task.status.value
-            if isinstance(task.status, TaskStatus)
-            else str(task.status)
-        )
-        if status_value in _REVIEW_HANDOFF_STATUSES:
+        if not _is_cell_pm_owned_task(task):
             return noop
         assert task.team is not None  # guarded by _is_cell_pm_owned_task
         team_enum = Team(str(getattr(task.team, "value", task.team)))
