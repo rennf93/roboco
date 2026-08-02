@@ -58,6 +58,17 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     )
 
 
+def _stub_empty_ledger(session: MagicMock) -> None:
+    """Configure a mock session's ``execute`` so ``ReviewFindingsRepository``
+    finds no rows — covers evidence()'s findings-ledger read, which a bare
+    ``AsyncMock`` session doesn't configure and leaves unawaited coroutines."""
+    session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # commit
 # ---------------------------------------------------------------------------
@@ -647,6 +658,7 @@ async def test_evidence_valid_task_returns_ok_with_pr_diff() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
+    _stub_empty_ledger(task_svc.session)
     git_svc = AsyncMock()
     git_svc.diff_and_files.return_value = (
         "diff --git a/foo.py b/foo.py\n+added line",
@@ -711,6 +723,7 @@ async def test_evidence_returns_gateway_timeout_on_slow_git(
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
+    _stub_empty_ledger(task_svc.session)
 
     async def _slow_diff_and_files(**_kwargs: object) -> tuple[str, list[str]]:
         await asyncio.sleep(1)
@@ -755,6 +768,7 @@ async def test_evidence_returns_gateway_timeout_on_slow_db_read(
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
+    _stub_empty_ledger(task_svc.session)
     git_svc = AsyncMock()
     git_svc.diff_and_files.return_value = ("diff", ["f.py"])
     workspace_svc = AsyncMock()
