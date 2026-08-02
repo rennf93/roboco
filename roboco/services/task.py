@@ -3642,6 +3642,7 @@ class TaskService(BaseService):
         # Process in reverse order to delete leaves before parents
         descendants = await self.get_all_descendants(task_id)
         descendants.reverse()  # Delete deepest children first
+        removed_ids = [task_id, *(getattr(d, "id", None) for d in descendants)]
 
         for descendant in descendants:
             await self.session.delete(descendant)
@@ -3655,6 +3656,13 @@ class TaskService(BaseService):
 
         await self.session.delete(task)
         await self.session.flush()
+
+        # Cascade the dependency cleanup so BLOCKED dependents auto-revive.
+        # Must run after the flush so deleted rows are gone before dependents
+        # are re-checked. Idempotent — a second prune finds no matching edge.
+        for removed_id in removed_ids:
+            if removed_id is not None:
+                await self._unblock_dependents(removed_id)
 
         self.log.info("Task deleted", task_id=str(task_id))
         return True
@@ -10921,6 +10929,14 @@ class TaskService(BaseService):
         reason: str
         dev_notes_line: str | None
 
+    _REVIEW_HANDOFF_STATUSES = frozenset(
+        {
+            TaskStatus.AWAITING_QA,
+            TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.AWAITING_PR_REVIEW,
+        }
+    )
+
     async def _resolve_cell_pm_redirect(
         self, task: TaskTable, requested_assignee: UUID | None
     ) -> "TaskService._CellPmRedirect":
@@ -10945,6 +10961,8 @@ class TaskService(BaseService):
             reason="noop",
             dev_notes_line=None,
         )
+        if task.status in self._REVIEW_HANDOFF_STATUSES:
+            return noop
         if not _is_cell_pm_owned_task(task):
             return noop
         assert task.team is not None  # guarded by _is_cell_pm_owned_task
