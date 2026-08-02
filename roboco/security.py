@@ -608,6 +608,11 @@ def build_security_config() -> SecurityConfig:
     """Assemble roboco's global guard config from settings (behind nginx)."""
     return SecurityConfig(
         # Real client IP behind nginx (single hop) + the docker bridge ranges.
+        # INVARIANT: trusted_proxies must mirror _INTERNAL_NETWORKS exactly
+        # (loopback + 172.16/12). Adding LAN ranges (10.0.0.0/8, 192.168.0.0/16)
+        # here lets guard peel forwarded LAN IPs as trusted hops and fall back to
+        # the whitelisted docker-bridge peer, bypassing the block — see
+        # test_nginx_forwarded_lan_client_is_not_whitelisted.
         trusted_proxies=[
             "127.0.0.1",
             "::1",
