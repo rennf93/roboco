@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **`cancel()` refactored to clear the xenon rank-C quality gate (#809, task 83bc9a4b).** `TaskService.cancel()` in `roboco/services/task.py` was reduced from ~130 inline lines (xenon rank C) to a short sequence of 6 private async helper calls (xenon rank B): `_append_cancel_note`, `_cascade_cancel_descendants`, `_cancel_task_self`, `_prune_cancelled_dependencies`, `_audit_orphaned_acs`, and `_index_cancel_event`. Pure extraction — identical await ordering and side effects, no behavior change. Unblocks PR #806's Python quality gate, which was red because xenon reported the `cancel` block at rank C (the gate requires `--max-absolute B`).
+
 ## [0.28.0] - 2026-07-29
 
 ### Added
