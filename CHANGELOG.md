@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`cancel()` refactored to clear the xenon rank-C quality gate (#809, task 83bc9a4b).** `TaskService.cancel()` in `roboco/services/task.py` was reduced from ~130 inline lines (xenon rank C) to a short sequence of 6 private async helper calls (xenon rank B): `_append_cancel_note`, `_cascade_cancel_descendants`, `_cancel_task_self`, `_prune_cancelled_dependencies`, `_audit_orphaned_acs`, and `_index_cancel_event`. Pure extraction — identical await ordering and side effects, no behavior change. Unblocks PR #806's Python quality gate, which was red because xenon reported the `cancel` block at rank C (the gate requires `--max-absolute B`).
 
+### Fixed
+
+- **Restored `delete()` dependency-pruning and `_resolve_cell_pm_redirect` review-handoff guard (#812).** A prior cancel()-extraction commit accidentally deleted two behavior-bearing code blocks outside the cancel() scope in `roboco/services/task.py`: `delete()` stopped capturing `removed_ids` and calling `_unblock_dependents` after the flush (so BLOCKED dependents no longer auto-revived on delete, and stale dependency ids lingered), and `_resolve_cell_pm_redirect` lost its `_REVIEW_HANDOFF_STATUSES` frozenset + early noop guard (so `reassign()` redirected `AWAITING_QA`/`AWAITING_DOCUMENTATION`/`AWAITING_PR_REVIEW` tasks to the cell PM, clobbering the reviewer claimant and deadlocking). Both blocks are restored to match the original `dba23147` behavior; `AWAITING_PM_REVIEW` stays excluded so the cell-PM redirect still fires there. The regression was caught at the in-path PR-review gate before shipping.
+
 ## [0.28.0] - 2026-07-29
 
 ### Added
