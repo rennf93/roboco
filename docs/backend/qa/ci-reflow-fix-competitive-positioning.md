@@ -38,3 +38,5 @@ rejects because it creates noisy diffs.
 ```
 
 If the reflow-check fails on a doc you edited, run `make quality` locally — the failing file and the reflow expectation will be in the output. Join the hard-wrapped lines and re-run the gate.
+
+**The pre-submit gate does not catch this.** `make gate` (the dev pre-submit gate, Makefile lines 345-350) runs ruff format, ruff check, mypy, and xenon only — it does NOT include reflow-check. Only `make quality` (the full merge gate, Makefile line 294) runs `scripts/reflow_md.py --check`. So wrapped docs can pass the desk and fail CI. Before submitting a docs-touching change, run `make reflow-check` (or the full `make quality`) manually — the `i_am_done` auto-gate will not catch a reflow regression.
