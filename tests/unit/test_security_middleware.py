@@ -20,14 +20,17 @@ from __future__ import annotations
 
 import contextlib
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from guard import SecurityMiddleware
+from guard.adapters import StarletteGuardRequest
 from guard.lifespan import make_lifespan
+from guard_core.utils import extract_client_ip, is_ip_allowed
 from roboco import security
+from starlette.requests import Request
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -218,3 +221,48 @@ class TestDecoyPaths:
         with _client(_guarded_app(passive=True)) as client:
             resp = client.get("/.git/config")
         assert resp.status_code == HTTPStatus.OK
+
+
+# ---------------------------------------------------------------------------
+# Direct unit tests for the IP-resolution path the stale PR-review finding
+# keeps questioning. These call guard_core's extract_client_ip / is_ip_allowed
+# directly (no running server) to make the security boundary self-evident.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_client_ip_forwarded_lan_not_peeled() -> None:
+    """With trusted_proxies narrowed to the docker-bridge/loopback mesh (no
+    LAN ranges), a docker-bridge peer forwarding a LAN client's IP via
+    X-Forwarded-For resolves to the real LAN IP — not peeled to the peer."""
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/task",
+        "query_string": b"",
+        "headers": [(b"x-forwarded-for", b"192.168.1.50")],
+        "client": ("172.18.0.5", 12345),
+    }
+    request = StarletteGuardRequest(Request(scope))
+
+    class _Cfg:
+        trusted_proxies: ClassVar[list[str]] = ["127.0.0.1", "::1", "172.16.0.0/12"]
+        trusted_proxy_depth = 1
+
+    assert await extract_client_ip(request, _Cfg()) == "192.168.1.50"
+
+
+@pytest.mark.asyncio
+async def test_is_ip_allowed_rejects_lan_ranges() -> None:
+    """The narrowed whitelist (loopback + docker-bridge only) does NOT cover
+    RFC1918 LAN ranges, so a resolved LAN client IP is rejected."""
+    _WHITELIST = ["127.0.0.1", "::1", "172.16.0.0/12"]
+
+    class _Cfg:
+        whitelist: ClassVar[list[str]] = _WHITELIST
+        blacklist: ClassVar[list[str]] = []
+        blocked_countries: ClassVar[list[str]] = []
+        block_cloud_providers: ClassVar[list[str]] = []
+
+    assert await is_ip_allowed("192.168.1.50", _Cfg()) is False
+    assert await is_ip_allowed("10.0.0.5", _Cfg()) is False

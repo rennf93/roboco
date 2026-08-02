@@ -333,13 +333,18 @@ def test_full_walk_when_marker_absent(
     assert str(tmp_path / "README.md") in _record_touched
 
 
-def test_marker_written_only_on_zero_failure_pass(tmp_path: Path) -> None:
+def test_marker_written_only_on_zero_failure_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _build_workspace(tmp_path)
     marker = tmp_path / ".git" / "roboco-owned"
     assert not marker.exists()
 
-    # A real pass: chown to uid 1000 fails under the test's real (non-root)
-    # uid, exactly like a rootless/userns host — so no marker should land.
+    # Simulate a rootless/userns host where chown is rejected — the marker
+    # must NOT land when any entry's chown fails. Mocking _chown_entry avoids
+    # relying on the process uid (the test runs as uid 1000 and files are
+    # already owned by uid 1000, so a real chown would be a no-op success).
+    monkeypatch.setattr(workspace_module, "_chown_entry", lambda _entry, _st: False)
     _ensure_agent_owned(tmp_path)
     assert not marker.exists()
 
