@@ -22,7 +22,7 @@ A new `settings.evidence_assembly_timeout_seconds` (default 90s, well under the 
 
 - `ContentActions.evidence()` — wraps the `asyncio.gather` of the git-diff coroutine and `_evidence_db_reads`.
 - `QAMixin.claim_review()` — wraps the call to `_build_qa_claim_evidence`; the claim itself (`qa_claim` + `mark_evidence_inspected`) has already committed by this point, so a trip here means only evidence assembly is slow, not that the claim failed.
-- `GET /api/git/diff` (`roboco/api/routes/git.py`, `roboco_git_diff`) — wraps the diff + `--stat` subprocess pair.
+- `GET /api/git/diff` (`roboco/api/routes/git.py`, `roboco_git_diff`) — wraps workspace resolution *plus* the diff + `--stat` subprocess pair in one bounded guard, so a slow workspace fetch trips the 504 too — not just a slow diff. (The workspace resolution is enclosed because an unbounded `get_workspace` is the step the integration test makes slow; leaving it outside the guard would let the whole request hang past the timeout anyway.)
 
 On a trip, each site returns a structured `Envelope.gateway_timeout(component, timeout_seconds, remediate)` (new classmethod on `roboco/services/gateway/envelope.py`'s `Envelope`) naming which segment stalled (e.g. `"git diff/fetch or a journal/ancestor/findings DB read"`) and a remediation hint, instead of the outer 120s rollback with no indication of which piece stuck. The route's HTTP path raises a `504 Gateway Timeout` with the equivalent detail message.
 
@@ -40,7 +40,7 @@ Each segment logs its own duration (structlog `.info()` calls) so a slow request
 - `GitService.diff_and_files` logs `resolve_ms` (workspace/token/head/base resolution) and `diff_ms` (the concurrent diff subprocesses) as "evidence diff_and_files timing".
 - `conventions_check_for_task` logs `total_ms` plus whether it reused the passed-in file list, as "conventions_check_for_task timing".
 - `evidence()` logs `git_diff_and_fetch_ms` ("evidence git diff/fetch timing") and the DB-reads batch logs `db_reads_ms` ("evidence db reads timing").
-- `claim_review`'s two segment helpers (`_qa_git_and_conventions`, `_qa_db_reads`) log `git_diff_and_fetch_ms`/`conventions_ms` ("claim_review git+conventions timing") and `db_reads_ms` ("claim_review db reads timing") respectively.
+- `claim_review`'s two segment helpers (`_qa_git_and_conventions`, `_qa_db_reads`) log `git_diff_and_fetch_ms` ("claim_review git+conventions timing", covering the whole git+conventions block as one measurement) and `db_reads_ms` ("claim_review db reads timing") respectively.
 
 ## Related files
 
