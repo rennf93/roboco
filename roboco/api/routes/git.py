@@ -33,6 +33,8 @@ from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.git import (
     BranchInfo,
     CommitInfo,
+    GitBranchCleanupRequest,
+    GitBranchCleanupResponse,
     GitBranchListResponse,
     GitCheckoutRequest,
     GitCheckoutResponse,
@@ -45,6 +47,7 @@ from roboco.api.schemas.git import (
     GitDiffResponse,
     GitFetchRequest,
     GitFetchResponse,
+    GitFileContentResponse,
     GitLogResponse,
     GitMergePRRequest,
     GitMergePRResponse,
@@ -88,6 +91,43 @@ _LOG_FORMAT_PARTS = 5
 # git timeouts/command failures to be translated to 504/500 instead of
 # bubbling as 500 Internal Server Errors with no `detail`.
 _TranslatableError = (ServiceError, GitError)
+
+# Cap an unbounded whole-file read so a huge file can't flood the panel.
+_FILE_MAX_LINES = 2000
+
+
+def _compute_file_range(
+    *,
+    total: int,
+    line: int | None,
+    context: int,
+    start: int | None,
+    end: int | None,
+) -> tuple[int, int, bool]:
+    """Resolve the (start, end, truncated) slice for a file-content read.
+
+    Explicit ``start``/``end`` win; else ``line`` centers a context window;
+    else the whole file. Whichever branch resolves the window, it is capped
+    at ``_FILE_MAX_LINES`` lines afterward. Returns 1-based inclusive
+    [start, end] and whether the slice is shorter than the file.
+    """
+    if start is not None and end is not None:
+        s, e_ = start, end
+    elif line is not None:
+        s = max(1, line - context)
+        e_ = min(total, line + context)
+    else:
+        s, e_ = 1, total
+
+    s = max(1, min(s, total))
+    e_ = max(s, min(e_, total))
+
+    truncated = e_ < total
+    if e_ - s + 1 > _FILE_MAX_LINES:
+        e_ = s + _FILE_MAX_LINES - 1
+        truncated = True
+    return s, e_, truncated
+
 
 # Roles permitted to rebase branches via the /rebase endpoint.
 # Rebase is a history-rewriting operation that should be authorised only by
@@ -206,6 +246,18 @@ async def get_git_log(
         if not branch:
             branch = await git_service.get_current_branch(workspace)
 
+        # This is the CALLER's own clone, which is never the branch's own
+        # author when inspecting another agent's task (QA/PM/documenter
+        # reading a dev's branch) — a local ref left over from an earlier
+        # inspection can be pinned stale (behind, or diverged after a
+        # routine rebase force-push) while origin has since moved. Resolve
+        # through _resolve_head_ref (fetch + prefer origin) instead of the
+        # bare branch name so this reads the same authoritative tip diff()/
+        # read_file_at_branch() do, not whatever this clone happened to
+        # have on disk from the last time it looked.
+        token = await git_service._token_for_branch(branch)
+        head_ref = await git_service._resolve_head_ref(workspace, branch, token=token)
+
         # Get log with format. Don't raise if the branch doesn't exist in
         # this workspace yet — that's a normal race (branch created in a
         # different agent's clone, not yet fetched here). Return empty.
@@ -216,7 +268,7 @@ async def get_git_log(
         log_format = "%H%x1f%h%x1f%s%x1f%an%x1f%aI"
         log_result = await git_service._run_git(
             workspace,
-            ["log", f"--format={log_format}", f"-n{limit}", branch],
+            ["log", f"--format={log_format}", f"-n{limit}", head_ref],
             check=False,
         )
         if log_result.returncode != 0:
@@ -253,6 +305,28 @@ async def get_git_log(
     )
 
 
+def _parse_branch_line(line: str) -> tuple[str, bool, str | None] | None:
+    """Classify one `%(refname)|%(objectname:short)` line as (name, is_remote,
+    last_commit), or None for skippable entries (blank, origin/HEAD, other ref
+    namespaces). Full refname, not `:short` — a remote-tracking ref shortens to
+    `origin/<branch>`, indistinguishable from a local branch literally named
+    that; classify on the `refs/heads/` vs `refs/remotes/` prefix instead.
+    """
+    if not line:
+        return None
+    parts = line.split("|")
+    ref = parts[0]
+    last_commit = parts[1] if len(parts) > 1 else None
+    if ref.startswith("refs/heads/"):
+        return ref.removeprefix("refs/heads/"), False, last_commit
+    if ref.startswith("refs/remotes/"):
+        _remote_name, _, name = ref.removeprefix("refs/remotes/").partition("/")
+        if not name or name == "HEAD":
+            return None  # origin/HEAD is a symbolic pointer, not a branch
+        return name, True, last_commit
+    return None
+
+
 @router.get("/branches", response_model=GitBranchListResponse)
 async def list_branches(
     db: DbSession,
@@ -268,8 +342,12 @@ async def list_branches(
         workspace = await git_service.get_workspace(project_slug, agent.agent_id)
         current_branch = await git_service.get_current_branch(workspace)
 
-        # Get branches
-        args = ["branch", "--format=%(refname:short)|%(objectname:short)"]
+        if include_remote:
+            # Self-heal orphaned remote-tracking refs (branches deleted
+            # upstream via the forge API) before listing them.
+            await git_service.prune_remote_best_effort(workspace)
+
+        args = ["branch", "--format=%(refname)|%(objectname:short)"]
         if include_remote:
             args.append("-a")
 
@@ -279,16 +357,10 @@ async def list_branches(
 
     branches = []
     for line in branch_result.stdout.strip().split("\n"):
-        if not line:
+        parsed = _parse_branch_line(line)
+        if parsed is None:
             continue
-        parts = line.split("|")
-        name = parts[0]
-        last_commit = parts[1] if len(parts) > 1 else None
-
-        is_remote = name.startswith("remotes/")
-        if is_remote:
-            name = name.replace("remotes/origin/", "")
-
+        name, is_remote, last_commit = parsed
         branches.append(
             BranchInfo(
                 name=name,
@@ -315,49 +387,50 @@ async def get_git_diff(
 ) -> GitDiffResponse:
     """Get git diff for a project.
 
-    The diff + stat subprocesses run inside a bounded
-    ``settings.evidence_assembly_timeout_seconds`` guard — well under the
-    outer gateway verb budget — so a genuinely slow diff computation (a
-    huge working-tree change, a hung git process) returns a structured 504
-    naming the slow component instead of hanging indefinitely.
+    The diff + stat subprocess pair is wrapped in a bounded
+    ``evidence_assembly_timeout_seconds`` guard so a genuinely slow diff
+    computation returns a structured 504 instead of hanging indefinitely.
     """
     project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
-
-    async def _run_diff_and_stat() -> tuple[Any, Any]:
-        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
-
-        args = ["diff"]
-        if staged:
-            args.append("--staged")
-        if file_path:
-            args.extend(["--", file_path])
-        diff_res = await git_service._run_git(workspace, args)
-
-        # Count files changed
-        stat_args = ["diff", "--stat"]
-        if staged:
-            stat_args.append("--staged")
-        stat_res = await git_service._run_git(workspace, stat_args)
-        return diff_res, stat_res
+    timeout = settings.evidence_assembly_timeout_seconds
 
     try:
+        # Wrap workspace resolution + diff + stat subprocesses in one bounded
+        # timeout so a slow workspace fetch or diff computation returns a
+        # structured 504 instead of hanging indefinitely.
+        async def _resolve_and_diff() -> tuple[Any, Any]:
+            workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+
+            args = ["diff"]
+            if staged:
+                args.append("--staged")
+            if file_path:
+                args.extend(["--", file_path])
+
+            stat_args = ["diff", "--stat"]
+            if staged:
+                stat_args.append("--staged")
+
+            diff_result, stat_result = await asyncio.gather(
+                git_service._run_git(workspace, args),
+                git_service._run_git(workspace, stat_args),
+            )
+            return diff_result, stat_result
+
         diff_result, stat_result = await asyncio.wait_for(
-            _run_diff_and_stat(),
-            timeout=settings.evidence_assembly_timeout_seconds,
+            _resolve_and_diff(), timeout=timeout
         )
-    except TimeoutError as e:
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+    except TimeoutError:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=(
-                "diff computation exceeded the "
-                f"{settings.evidence_assembly_timeout_seconds:.0f}s bounded "
-                "timeout — retry, or scope the request with file_path to a "
-                "single file"
+                f"git diff timed out after {timeout}s — the bounded "
+                "evidence_assembly_timeout_seconds guard tripped"
             ),
-        ) from e
-    except _TranslatableError as e:
-        raise _translate_error(e) from e
+        ) from None
 
     files_changed = stat_result.stdout.count("\n") - 1 if stat_result.stdout else 0
 
@@ -367,6 +440,60 @@ async def get_git_diff(
         file_path=file_path,
         diff=diff_result.stdout,
         files_changed=max(0, files_changed),
+    )
+
+
+@router.get("/file", response_model=GitFileContentResponse)
+async def get_git_file(
+    *,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    branch: str = Query(..., description="Task branch holding the file"),
+    path: str = Query(..., description="Repo-relative file path"),
+    line: int | None = Query(default=None, ge=1, description="Target line"),
+    context: int = Query(default=10, ge=0, le=100, description="Context around line"),
+    start: int | None = Query(default=None, ge=1, description="Explicit start line"),
+    end: int | None = Query(default=None, ge=1, description="Explicit end line"),
+) -> GitFileContentResponse:
+    """Return a file's content at a branch tip, optionally sliced to a range.
+
+    Reads straight out of the branch with ``git show`` (``read_file_at_branch``)
+    so a reviewer/CEO can read a finding's source lines without a workspace
+    mount. A missing file or bad ref yields 404. When `line` is given the
+    slice is centered on it (`line - context` .. `line + context`); explicit
+    `start`/`end` override. With none of the three, the whole file returns
+    (capped at 2000 lines to bound the payload — `truncated` flags the cut).
+    """
+    git_service = get_git_service(db)
+
+    try:
+        content = await git_service.read_file_at_branch(
+            branch_name=branch, path=path, actor_agent_id=agent.agent_id
+        )
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found at {branch}:{path}",
+        )
+
+    all_lines = content.splitlines()
+    total = len(all_lines)
+
+    s, e_, truncated = _compute_file_range(
+        total=total, line=line, context=context, start=start, end=end
+    )
+
+    sliced = all_lines[s - 1 : e_]
+    return GitFileContentResponse(
+        branch=branch,
+        path=path,
+        content="\n".join(sliced),
+        start_line=s,
+        total_lines=total,
+        truncated=truncated,
     )
 
 
@@ -688,7 +815,7 @@ async def rebase_branch(
     try:
         workspace = await git_service.get_workspace(project_slug, agent.agent_id)
         conflict, conflicted_files = await git_service.rebase(
-            workspace, data.target_branch
+            workspace, data.target_branch, project_slug
         )
     except _TranslatableError as e:
         raise _translate_error(e) from e
@@ -697,4 +824,61 @@ async def rebase_branch(
         project_slug=project_slug,
         conflict=conflict,
         conflicted_files=conflicted_files,
+    )
+
+
+@router.post("/branches/cleanup", response_model=GitBranchCleanupResponse)
+@guard_deco.rate_limit(requests=5, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+async def cleanup_stale_branches(
+    data: GitBranchCleanupRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GitBranchCleanupResponse:
+    """Sweep a project's terminal-task branches (PM/CEO only).
+
+    Deletes the remote + local branch of every completed/cancelled task in
+    the project (capped per call — see ``GitService.cleanup_stale_branches``),
+    skipping the default branch and any environment-ladder rung so a live
+    integration/prod branch is never touched. Role-gated identically to
+    ``/rebase`` — a history-affecting bulk operation shouldn't be open to
+    developers either. Purely a read + external-git-op endpoint: no task rows
+    are mutated, so there's nothing for this request to commit.
+    """
+    if agent.role not in _REBASE_ALLOWED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"BRANCH_CLEANUP_ROLE_RESTRICTED: Role '{agent.role}' is not "
+                "permitted to sweep branches. Only CEO and PM roles (cell_pm, "
+                "main_pm) may use this endpoint."
+            ),
+        )
+    project_slug = await _resolve_project_slug(data.project_slug, db)
+    git_service = get_git_service(db)
+
+    try:
+        (
+            remote_deleted,
+            local_deleted,
+            skipped,
+            errors,
+            truncated,
+            next_cursor,
+        ) = await git_service.cleanup_stale_branches(
+            project_slug, after_task_id=data.after_cursor
+        )
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    return GitBranchCleanupResponse(
+        project_slug=project_slug,
+        remote_deleted=remote_deleted,
+        local_deleted=local_deleted,
+        skipped=skipped,
+        errors=errors,
+        truncated=truncated,
+        next_cursor=next_cursor,
     )

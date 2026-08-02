@@ -107,8 +107,7 @@ async def test_claim_review_evidence_carries_prior_findings(
     task_svc.list_paused_for_agent.return_value = []
     task_svc.qa_claim.return_value = t_claimed
     git_svc = AsyncMock()
-    git_svc.diff.return_value = ""
-    git_svc.list_changed_files.return_value = []
+    git_svc.diff_and_files.return_value = ("", [])
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 

@@ -32,6 +32,9 @@ def _make_deps(task_svc: Any = None) -> ChoreographerDeps:
         "audit": AsyncMock(),
         "evidence_repo": AsyncMock(),
     }
+    # diff_and_files returns a (diff_summary, files_changed) 2-tuple; without
+    # this the await resolves to a MagicMock and qa.py:330 unpacking fails.
+    base["git"].diff_and_files.return_value = ("", [])
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",

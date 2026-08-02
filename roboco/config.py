@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.27.0"
+    app_version: str = "0.28.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -1649,6 +1649,28 @@ class Settings(BaseSettings):
             "legitimate verbs are unaffected."
         ),
     )
+    evidence_assembly_timeout_seconds: float = Field(
+        default=90.0,
+        ge=1.0,
+        description=(
+            "Bounded inner-work timeout for the evidence-assembly segment of "
+            "claim_review / evidence() / roboco_git_diff — git diff/fetch, "
+            "conventions validation, and the DB reads that accompany them. "
+            "Kept comfortably below flow_verb_timeout_seconds so a slow "
+            "assembly returns a structured gateway_timeout envelope naming "
+            "the stalled component instead of hitting the outer 120s rollback."
+        ),
+    )
+    conventions_validator_timeout_seconds: int = Field(
+        default=45,
+        ge=1,
+        description=(
+            "Timeout for the conventions-validator subprocess "
+            "(python -m roboco.conventions check), kept comfortably below "
+            "evidence_assembly_timeout_seconds so a hung validator can't by "
+            "itself exhaust the outer verb's budget."
+        ),
+    )
     flow_verb_slow_timeout_seconds: int = Field(
         default=900,
         ge=1,
@@ -1704,30 +1726,6 @@ class Settings(BaseSettings):
             "Repo URL substrings a project may not point at (e.g. the roboco "
             "source repo). Blocks agent commits/merges from reaching a protected "
             "repository; set this to sandbox smoke-test projects."
-        ),
-    )
-    evidence_assembly_timeout_seconds: float = Field(
-        default=90.0,
-        ge=1.0,
-        description=(
-            "Bounded inner-work timeout for the evidence-assembly segment of "
-            "claim_review / evidence() / roboco_git_diff (git fetch, diff "
-            "computation, conventions validation, DB reads). Well under "
-            "flow_verb_timeout_seconds (120s default) so a genuinely slow "
-            "sub-component returns a structured, named gateway_timeout "
-            "envelope instead of the whole verb hitting the outer server-side "
-            "rollback with no indication of which segment stalled."
-        ),
-    )
-    conventions_validator_timeout_seconds: int = Field(
-        default=45,
-        ge=5,
-        description=(
-            "Timeout in seconds for the conventions-validator subprocess "
-            "(``python -m roboco.conventions check``) run inside "
-            "claim_review / i_am_done / pr_pass. Kept comfortably below "
-            "evidence_assembly_timeout_seconds so a hung validator can't by "
-            "itself exhaust the outer verb's whole server-side budget."
         ),
     )
 
