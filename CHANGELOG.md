@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **CONTRIBUTING.md reflowed to clear the reflow-check CI gate (#800, task f4529578).** The markdown prose reflow check (`scripts/reflow_md.py --check`, wired into `make quality`) failed on a hard-wrapped blockquote and a 3-space-indented continuation paragraph in CONTRIBUTING.md. Both were joined to one-sentence-per-line prose with no wording changes, so the check exits 0 ("OK: no hard-wrapped markdown prose in scope"). (Blockquotes are reflow-passthrough — the real failure was the indented continuation at line 31.) This unblocked the competitive-positioning PR (#755) whose CI was red on the reflow step alone.
+
 ## [0.28.0] - 2026-07-29
 
 ### Added
