@@ -8095,12 +8095,7 @@ class TaskService(BaseService):
             return None
 
         if cancellation_note:
-            task.dev_notes = (
-                f"{task.dev_notes}\n{cancellation_note}"
-                if task.dev_notes
-                else cancellation_note
-            )
-            await self.session.flush()
+            await self._append_cancel_note(task, cancellation_note)
 
         # Cancel all descendants first (children, grandchildren, etc.)
         # Skip tasks already in terminal states (completed or cancelled).
@@ -8113,6 +8108,52 @@ class TaskService(BaseService):
         # this; the narrow catch + refusal keeps a future per-edge role
         # gate from silently orphaning.) Non-validation errors propagate.
         descendants = await self.get_all_descendants(task_id)
+        cancelled_count, cancelled_now = await self._cascade_cancel_descendants(
+            task_id, descendants, agent_role
+        )
+
+        # Validate transition with PM role requirement
+        await self._cancel_task_self(task, agent_role, cancelled_now)
+
+        # Cascade the dependency cleanup the COMPLETE path runs. Without
+        # this, a task BLOCKED on the cancelled one is never auto-revived
+        # and the stale id lingers in every dependent's dependency_ids
+        # forever.
+        await self._prune_cancelled_dependencies(task_id, descendants)
+
+        # Origin fix: a cancelled child may have declared parent_ac_refs that
+        # no surviving sibling covers, leaving the roll-up gate
+        # (_parent_acs_covered_envelope) demanding coverage for already-
+        # finished work once a replacement is delegated. Warn-and-surface
+        # only — no hard gate; the PM re-declares via declare_coverage.
+        orphaned = await self._audit_orphaned_acs(task_id, task, cancelled_now)
+
+        await self._index_cancel_event(
+            task_id, task, agent_role, cancelled_count, orphaned
+        )
+
+        return task
+
+    async def _append_cancel_note(
+        self, task: TaskTable, cancellation_note: str
+    ) -> None:
+        """Append the cancellation note to ``dev_notes`` and flush."""
+        task.dev_notes = (
+            f"{task.dev_notes}\n{cancellation_note}"
+            if task.dev_notes
+            else cancellation_note
+        )
+        await self.session.flush()
+
+    async def _cascade_cancel_descendants(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+        agent_role: str,
+    ) -> tuple[int, list[TaskTable]]:
+        """Cascade-cancel every non-terminal descendant, refusing the whole
+        cancel on a role-validation failure so an orphaned subtree is never
+        left under a cancelled parent."""
         cancelled_count = 0
         cancelled_now: list[TaskTable] = []
         for descendant in descendants:
@@ -8153,8 +8194,17 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 cancelled_count=cancelled_count,
             )
+        return cancelled_count, cancelled_now
 
-        # Validate transition with PM role requirement
+    async def _cancel_task_self(
+        self,
+        task: TaskTable,
+        agent_role: str,
+        cancelled_now: list[TaskTable],
+    ) -> None:
+        """Validate+set the task itself to CANCELLED, abandon its work
+        session, close its PR, delete its branch, flush, and alert the
+        coroner."""
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
@@ -8163,21 +8213,27 @@ class TaskService(BaseService):
         await self.session.flush()
         await self._alert_coroner_of_cancel(task)
 
-        # Cascade the dependency cleanup the COMPLETE path runs. Without
-        # this, a task BLOCKED on the cancelled one is never auto-revived
-        # and the stale id lingers in every dependent's dependency_ids
-        # forever. Prune for the whole subtree (root + all descendants);
-        # idempotent for already-terminal descendants whose edges may have
-        # been pruned before — a second prune just finds no matching edge.
+    async def _prune_cancelled_dependencies(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+    ) -> None:
+        """Prune dependency edges for the whole cancelled subtree (root +
+        all descendants) so blocked dependents auto-revive. Idempotent for
+        already-terminal descendants whose edges may have been pruned
+        before — a second prune just finds no matching edge."""
         for cancelled_id in (task_id, *(getattr(d, "id", None) for d in descendants)):
             if cancelled_id is not None:
                 await self._unblock_dependents(cancelled_id)
 
-        # Origin fix: a cancelled child may have declared parent_ac_refs that
-        # no surviving sibling covers, leaving the roll-up gate
-        # (_parent_acs_covered_envelope) demanding coverage for already-
-        # finished work once a replacement is delegated. Warn-and-surface
-        # only — no hard gate; the PM re-declares via declare_coverage.
+    async def _audit_orphaned_acs(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        cancelled_now: list[TaskTable],
+    ) -> list[str]:
+        """Detect parent ACs orphaned by the cancel, warn + emit audit, and
+        stash the transient result on the task for same-request callers."""
         orphaned = await self._detect_orphaned_parent_acs(cancelled_now)
         if orphaned:
             self.log.warning(
@@ -8191,8 +8247,17 @@ class TaskService(BaseService):
         # schema change; upgrade to a real field if a caller needs it
         # across a request boundary.
         task.orphaned_parent_acs = orphaned
+        return orphaned
 
-        # Index lifecycle event (fire-and-forget)
+    async def _index_cancel_event(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        agent_role: str,
+        cancelled_count: int,
+        orphaned: list[str],
+    ) -> None:
+        """Fire-and-forget lifecycle-event index for the cancel."""
         bg_task = asyncio.create_task(
             self._index_lifecycle_event_background(
                 task_id=task_id,
@@ -8208,8 +8273,6 @@ class TaskService(BaseService):
         )
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
-
-        return task
 
     async def _detect_orphaned_parent_acs(
         self, cancelled: list[TaskTable]
