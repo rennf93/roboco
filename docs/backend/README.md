@@ -9,6 +9,7 @@ Documentation for the Backend Cell team.
 
 ## Contents
 
+- `framework-comparison-2026.md` - Factual LangGraph / CrewAI / AutoGPT vs. RoboCo comparison mapping each framework's model to a real RoboCo mechanism (task lifecycle, role hierarchy, per-agent git isolation, PR-review gates, CEO-approval gate), with code citations
 - `/api/` - API documentation
 - `/qa/` - QA-related docs
 - `/services/` - Internal service architecture & patterns
