@@ -8084,6 +8084,12 @@ class TaskService(BaseService):
         # Validate transition with PM role requirement
         await self._cancel_task_self(task, agent_role, cancelled_now)
 
+        # Cascade the dependency cleanup the COMPLETE path runs. Without
+        # this, a task BLOCKED on the cancelled one is never auto-revived
+        # and the stale id lingers in every dependent's dependency_ids
+        # forever.
+        await self._prune_cancelled_dependencies(task_id, descendants)
+
         # Origin fix: a cancelled child may have declared parent_ac_refs that
         # no surviving sibling covers, leaving the roll-up gate
         # (_parent_acs_covered_envelope) demanding coverage for already-
@@ -8175,6 +8181,19 @@ class TaskService(BaseService):
         await self._delete_task_branch_best_effort(task)
         await self.session.flush()
         await self._alert_coroner_of_cancel(task)
+
+    async def _prune_cancelled_dependencies(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+    ) -> None:
+        """Prune dependency edges for the whole cancelled subtree (root +
+        all descendants) so blocked dependents auto-revive. Idempotent for
+        already-terminal descendants whose edges may have been pruned
+        before — a second prune just finds no matching edge."""
+        for cancelled_id in (task_id, *(getattr(d, "id", None) for d in descendants)):
+            if cancelled_id is not None:
+                await self._unblock_dependents(cancelled_id)
 
     async def _audit_orphaned_acs(
         self,
