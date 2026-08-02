@@ -11,6 +11,7 @@
 | awaiting_documentation | claimed | claim | documenter |
 | awaiting_pm_review | awaiting_ceo_approval | escalate_to_ceo | head_marketing, main_pm, product_owner |
 | awaiting_pm_review | cancelled | cancel | cell_pm, ceo, main_pm |
+| awaiting_pm_review | claimed | claim | cell_pm, main_pm |
 | awaiting_pm_review | completed | complete | cell_pm, main_pm |
 | awaiting_pm_review | needs_revision | request_changes | cell_pm, main_pm |
 | awaiting_pr_review | awaiting_pm_review | pr_pass | pr_reviewer |
