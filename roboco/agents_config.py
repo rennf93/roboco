@@ -122,7 +122,7 @@ def _verify_expiring_token(
     except (ValueError, KeyError):
         return False
     exp = payload.get("exp")
-    if not isinstance(exp, (int, float)):
+    if not isinstance(exp, int | float):
         return False
     # Short-circuit like the original: time.time() is read only when the
     # (id, role, team) fields already match, never on every call.

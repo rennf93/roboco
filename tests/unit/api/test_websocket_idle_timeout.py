@@ -89,7 +89,6 @@ async def test_system_stream_reaps_silent_socket_after_idle_timeout() -> None:
 async def test_notification_stream_reaps_silent_socket_after_idle_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     agent_id = uuid4()
     mgr = ConnectionManager()
     hang_future: asyncio.Future[str] = asyncio.Future()
@@ -109,7 +108,6 @@ async def test_notification_stream_reaps_silent_socket_after_idle_timeout(
 async def test_agent_stream_reaps_silent_socket_after_idle_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     target_id = uuid4()
     viewer_id = uuid4()
     mgr = ConnectionManager()

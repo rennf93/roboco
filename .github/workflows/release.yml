@@ -31,14 +31,14 @@ jobs:
           df -h /
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.5.2
         with:
           username: renzof93
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -122,6 +122,12 @@ jobs:
             # (unlike roboco-agent-grok above) it needs no special build-order
             # carve-out and is just another entry here.
             [roboco-agent-gemini]=docker/agent-gemini.Dockerfile
+            # Kimi (Moonshot, official kimi-code CLI) — same shape as gemini/
+            # codex: one-shot delivery roles only, plain FROM agent-base.
+            # Missing from this map on v0.28.0 shipped the release without the
+            # image; pull-smoke went red on exactly that pull. Every new
+            # docker/agent-*.Dockerfile MUST land here in the same PR.
+            [roboco-agent-kimi]=docker/agent-kimi.Dockerfile
           )
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"
@@ -183,7 +189,7 @@ jobs:
           df -h /
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

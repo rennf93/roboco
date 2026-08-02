@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings
+from roboco.exceptions import GitTimeoutError
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 
 
@@ -29,6 +31,15 @@ def _deps_for_evidence(
     workspace_svc: AsyncMock,
     evidence_repo: AsyncMock,
 ) -> ContentActionsDeps:
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     return ContentActionsDeps(
         task=task_svc,
         git=git_svc,
@@ -214,3 +225,143 @@ async def test_evidence_no_branch_skips_git_calls() -> None:
     assert body["evidence"]["pr_diff_summary"] == ""
     git_svc.diff.assert_not_awaited()
     git_svc.list_changed_files.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Bounded advisory-evidence legs: evidence() must not hang on a slow branch
+# fetch / diff / list_changed_files leg — it degrades and records a note in
+# evidence_gaps instead (same run_bounded_leg treatment as claim_review /
+# claim_doc_task / claim_gate_review). Every timeout-shaped test is
+# parametrized over both real timeout shapes: asyncio's own
+# cancellation-converted TimeoutError, and GitTimeoutError (_run_git's own
+# internal subprocess bound — a GitError/RobocoError subclass, NOT a
+# TimeoutError subclass, and the most common real-world single-hung-git-call
+# shape since it defaults to a SHORTER window than a leg's own budget).
+# ---------------------------------------------------------------------------
+
+_TIMEOUT_EXCEPTIONS = (
+    TimeoutError("hung"),
+    GitTimeoutError("git diff", 30),
+)
+_TIMEOUT_IDS = ("asyncio_timeout", "git_timeout")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", _TIMEOUT_EXCEPTIONS, ids=_TIMEOUT_IDS)
+async def test_evidence_diff_timeout_degrades_with_gap(exc: Exception) -> None:
+    """A hung git.diff must not hang evidence(): it degrades to an empty
+    diff, records the gap, and list_changed_files (the other leg) still
+    comes through untouched."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = _task_with_pr(task_id, commits=["abc"])
+    git_svc = AsyncMock()
+    git_svc.diff.side_effect = exc
+    git_svc.list_changed_files.return_value = ["README.md"]
+    workspace_svc = AsyncMock()
+    evidence_repo = AsyncMock()
+    evidence_repo.journal_highlights_for_task.return_value = []
+
+    ca = ContentActions(
+        _deps_for_evidence(task_svc, git_svc, workspace_svc, evidence_repo)
+    )
+    env = await ca.evidence(agent_id=agent_id, task_id=task_id)
+    body = env.as_dict()
+    assert body["error"] is None, body
+    ev = body["evidence"]
+    assert ev["pr_diff_summary"] == ""
+    assert ev["files_changed"] == ["README.md"]
+    assert "evidence_gaps" in ev
+    assert any("pr diff unavailable" in g for g in ev["evidence_gaps"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", _TIMEOUT_EXCEPTIONS, ids=_TIMEOUT_IDS)
+async def test_evidence_branch_fetch_timeout_degrades_with_gap(exc: Exception) -> None:
+    """A hung workspace branch-fetch must not hang evidence() either — the
+    subsequent diff/list_changed_files legs still run (against whatever the
+    workspace already has) and the gap is recorded."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = _task_with_pr(task_id, commits=["abc"])
+    git_svc = AsyncMock()
+    git_svc.diff.return_value = "diff content"
+    git_svc.list_changed_files.return_value = ["README.md"]
+    workspace_svc = AsyncMock()
+    workspace_svc.fetch_branch_for_inspection.side_effect = exc
+    evidence_repo = AsyncMock()
+    evidence_repo.journal_highlights_for_task.return_value = []
+
+    ca = ContentActions(
+        _deps_for_evidence(task_svc, git_svc, workspace_svc, evidence_repo)
+    )
+    env = await ca.evidence(agent_id=agent_id, task_id=task_id)
+    body = env.as_dict()
+    assert body["error"] is None, body
+    ev = body["evidence"]
+    assert ev["pr_diff_summary"] == "diff content"
+    assert ev["files_changed"] == ["README.md"]
+    assert "evidence_gaps" in ev
+    assert any("branch fetch unavailable" in g for g in ev["evidence_gaps"])
+
+
+@pytest.mark.asyncio
+async def test_evidence_branch_fetch_passes_subprocess_timeout_from_budget() -> None:
+    """The branch-fetch leg passes its own remaining LegBudget share down as
+    fetch_branch_for_inspection's subprocess_timeout, so a hung fetch
+    subprocess self-terminates near the leg's own budget instead of
+    occupying a thread on the shared default executor for up to
+    workspace_clone_timeout (300s) after evidence() already gave up on it."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = _task_with_pr(task_id, commits=["abc"])
+    git_svc = AsyncMock()
+    git_svc.diff.return_value = "diff content"
+    git_svc.list_changed_files.return_value = ["README.md"]
+    workspace_svc = AsyncMock()
+    workspace_svc.fetch_branch_for_inspection.return_value = None
+    evidence_repo = AsyncMock()
+    evidence_repo.journal_highlights_for_task.return_value = []
+
+    ca = ContentActions(
+        _deps_for_evidence(task_svc, git_svc, workspace_svc, evidence_repo)
+    )
+    env = await ca.evidence(agent_id=agent_id, task_id=task_id)
+    assert env.as_dict()["error"] is None
+
+    workspace_svc.fetch_branch_for_inspection.assert_awaited_once()
+    call_kwargs = workspace_svc.fetch_branch_for_inspection.await_args.kwargs
+    assert (
+        call_kwargs["subprocess_timeout"] <= settings.evidence_assembly_timeout_seconds
+    )
+    assert call_kwargs["subprocess_timeout"] > 0
+
+
+@pytest.mark.asyncio
+async def test_evidence_normal_path_has_no_evidence_gaps() -> None:
+    """Byte-for-byte unchanged normal path: no evidence_gaps key at all when
+    nothing times out."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = _task_with_pr(task_id, commits=["abc"])
+    git_svc = AsyncMock()
+    git_svc.diff.return_value = "diff content"
+    git_svc.list_changed_files.return_value = ["README.md"]
+    workspace_svc = AsyncMock()
+    evidence_repo = AsyncMock()
+    evidence_repo.journal_highlights_for_task.return_value = []
+
+    ca = ContentActions(
+        _deps_for_evidence(task_svc, git_svc, workspace_svc, evidence_repo)
+    )
+    env = await ca.evidence(agent_id=agent_id, task_id=task_id)
+    body = env.as_dict()
+    assert body["error"] is None, body
+    ev = body["evidence"]
+    assert ev["pr_diff_summary"] == "diff content"
+    assert ev["files_changed"] == ["README.md"]
+    assert "evidence_gaps" not in ev

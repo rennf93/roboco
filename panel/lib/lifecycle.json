@@ -2,7 +2,6 @@
   "claim_rules": {
     "auditor": [],
     "cell_pm": [
-      "awaiting_pm_review",
       "needs_revision",
       "pending"
     ],
@@ -17,7 +16,6 @@
     ],
     "head_marketing": [],
     "main_pm": [
-      "awaiting_pm_review",
       "needs_revision",
       "pending"
     ],
@@ -530,15 +528,6 @@
       ],
       "source": "awaiting_pm_review",
       "target": "cancelled"
-    },
-    {
-      "action": "claim",
-      "roles": [
-        "cell_pm",
-        "main_pm"
-      ],
-      "source": "awaiting_pm_review",
-      "target": "claimed"
     },
     {
       "action": "complete",

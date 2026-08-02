@@ -115,6 +115,18 @@ def _make_deps(agent_id: object, task_id: object) -> ChoreographerDeps:
     task_svc.agent_for.return_value = MagicMock(
         id=agent_id, role="developer", team="backend", slug="be-dev-1"
     )
+    # VerbRunner uses task.session.begin_nested() as a savepoint context
+    # manager — an unconfigured AsyncMock's `begin_nested()` call returns a
+    # raw unawaited coroutine, which `async with` cannot use (real failure,
+    # not just a warning: it was silently turning into a masking
+    # "verb runner failed" invalid_state envelope instead of exercising the
+    # real block path below).
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     evidence_repo = AsyncMock()
     for m in (
         "list_unread_a2a",

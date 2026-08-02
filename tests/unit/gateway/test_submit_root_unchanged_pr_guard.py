@@ -89,6 +89,15 @@ def _resubmit_root(
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
     )
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     c = Choreographer(_make_deps(task=task_svc, git=AsyncMock()))
     # Real _project_slug_for would walk a mock session into a MagicMock slug; the
     # gate under test needs a real string slug + a controllable head SHA. Alias to

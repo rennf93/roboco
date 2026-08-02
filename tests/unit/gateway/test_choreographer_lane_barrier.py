@@ -40,6 +40,15 @@ def _dev_agent_task_svc() -> tuple[AsyncMock, UUID]:
     task_svc.list_in_progress_for_agent.return_value = []
     # Default: lane clear (no earlier incomplete sibling).
     task_svc.has_earlier_incomplete_code_sibling.return_value = False
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     return task_svc, uuid4()
 
 

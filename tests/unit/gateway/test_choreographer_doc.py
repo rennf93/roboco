@@ -22,6 +22,15 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    base["task"].session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -215,6 +224,7 @@ async def test_i_documented_succeeds_and_transitions() -> None:
     task_svc.cell_pm_for_team.return_value = MagicMock(id=uuid4())
     task_svc.session = MagicMock()
     task_svc.session.flush = AsyncMock()
+    task_svc.session.refresh = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=None),
@@ -252,6 +262,7 @@ def _doc_success_task_svc(task_id: Any, doc_id: Any) -> AsyncMock:
     task_svc.cell_pm_for_team.return_value = MagicMock(id=uuid4())
     task_svc.session = MagicMock()
     task_svc.session.flush = AsyncMock()
+    task_svc.session.refresh = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=None),
@@ -352,6 +363,7 @@ async def test_i_documented_survives_handoff_failure() -> None:
     task_svc.cell_pm_for_team.return_value = MagicMock(id=uuid4())
     task_svc.session = MagicMock()
     task_svc.session.flush = AsyncMock()
+    task_svc.session.refresh = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=None),

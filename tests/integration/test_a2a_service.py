@@ -43,7 +43,7 @@ from roboco.models.base import (
 from roboco.models.events import EventType
 from roboco.services.a2a import _LIVE_VIEW_EXCERPT_CHARS, A2AService
 from roboco.services.gateway.evidence_repo import EvidenceRepo
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy import select as _sel
 from sqlalchemy.sql.dml import Update
 
@@ -2636,3 +2636,55 @@ async def test_read_a2a_acks_pending_wake_notification(a2a_setup: dict) -> None:
     refreshed = await db.get(NotificationTable, notif_id)
     assert refreshed is not None
     assert qa.id in refreshed.acked_by
+
+
+@pytest.mark.asyncio
+async def test_ack_pending_wake_notifications_savepoint_isolates_db_failure(
+    a2a_setup: dict,
+) -> None:
+    """A genuine Postgres-level failure inside `_ack_pending_wake_notifications`
+    (e.g. `bulk_acknowledge`'s flush hitting a lock timeout) must not poison
+    the shared session for whatever the caller does next. Force a REAL DB
+    error — not a bare Python exception, which alone never aborts the
+    underlying Postgres transaction — via a failing raw statement patched
+    into `bulk_acknowledge`, then prove the session is still usable
+    afterwards (no `PendingRollbackError`)."""
+    svc: A2AService = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    qa = a2a_setup["qa"]
+    dev = a2a_setup["dev"]
+
+    notif = NotificationTable(
+        type=NotificationType.A2A_REQUEST,
+        priority=NotificationPriority.NORMAL,
+        from_agent=dev.id,
+        to_agents=[qa.id],
+        subject="A2A: ceo_dm",
+        body="pending wake",
+        requires_ack=True,
+    )
+    db.add(notif)
+    await db.flush()
+    notif_id = notif.id
+
+    async def _boom(_self: object, *_args: object, **_kwargs: object) -> None:
+        await db.execute(text("SELECT 1/0"))
+
+    with patch(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "bulk_acknowledge",
+        _boom,
+    ):
+        await svc._ack_pending_wake_notifications(qa.id)  # must not raise
+
+    # The savepoint rolled back the poisoned statement — the shared session
+    # is still usable for later work. Must be a real round trip (`.get()` on
+    # an already-identity-mapped, unexpired object would just return the
+    # cached instance without touching the DB, silently hiding a poisoned
+    # transaction) — `execute(select(...))` always issues the query.
+    refreshed = (
+        await db.execute(
+            select(NotificationTable).where(NotificationTable.id == notif_id)
+        )
+    ).scalar_one()
+    assert qa.id not in refreshed.acked_by  # the swallowed failure never acked

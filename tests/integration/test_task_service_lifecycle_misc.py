@@ -884,7 +884,6 @@ async def test_soft_block_task_for_agent_full_flow(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.assigned_to = task_setup["agent_id"]
@@ -929,7 +928,6 @@ async def test_soft_block_task_for_agent_full_flow(
 async def test_docs_complete_for_task_invokes_notification(
     task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-
     svc = task_setup["svc"]
     doc = AgentTable(
         id=uuid4(),
@@ -988,7 +986,6 @@ async def test_docs_complete_for_task_invokes_notification(
 async def test_escalate_to_ceo_for_agent_invokes_notification(
     task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-
     svc = task_setup["svc"]
     pm = AgentTable(
         id=uuid4(),
@@ -1054,7 +1051,6 @@ async def test_escalate_to_ceo_for_agent_invokes_notification(
 async def test_claim_task_for_agent_commits_and_returns(
     task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.branch_name = "feature/backend/x"
@@ -1088,7 +1084,6 @@ async def test_claim_task_for_agent_commits_and_returns(
 async def test_complete_task_for_agent_commits(
     task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-
     svc = task_setup["svc"]
     pm = AgentTable(
         id=uuid4(),
@@ -1138,7 +1133,6 @@ async def test_complete_task_for_agent_commits(
 async def test_substitute_task_for_agent_runs_update(
     task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.assigned_to = task_setup["agent_id"]
