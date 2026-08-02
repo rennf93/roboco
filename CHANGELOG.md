@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- **Forwarded LAN IPs no longer ride the internal-mesh whitelist (#811).** `trusted_proxies` in `build_security_config` had drifted to include `10.0.0.0/8` and `192.168.0.0/16` — LAN ranges the `_INTERNAL_NETWORKS` whitelist already excluded. With `trusted_proxy_depth=1`, a docker-bridge nginx forwarding `X-Forwarded-For: 192.168.1.50` (a real LAN client) made guard peel the LAN IP as a "trusted hop," fall back to the whitelisted `172.18.x` connecting peer, and return `200 OK` — the narrowed whitelist was never consulted for the LAN IP. `trusted_proxies` now contains only `127.0.0.1`, `::1`, `172.16.0.0/12` (identical to the whitelist), so the forwarded LAN IP resolves as the real client and is blocked; a docker-bridge peer with no XFF still resolves to itself and stays exempt. The two lists are one policy split across two guard-core knobs and must move together.
+
+### Fixed
+
+- **`make quality` slave CI regression unblocked (#804).** `test_marker_written_only_on_zero_failure_pass` assumed `chown` to uid 1000 fails under the test process's own non-root uid — but `_chown_entry` returns `True` when the files are already owned by `_AGENT_UID` (uid 1000, same as the test process), so the expected chown failure never materialized and the marker landed anyway. On CI (running as root) the `chown` to uid 1000 also succeeds, so the test failed there too. The test now mocks `_chown_entry` to return `False` via `monkeypatch`, deterministically simulating a rootless/userns host where `chown` is rejected — preserving the original test intent (marker written only on a zero-failure pass) without relying on the process uid. Test-only change; no production behavior affected.
+
 ## [0.28.0] - 2026-07-29
 
 ### Added
