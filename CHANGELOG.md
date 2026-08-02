@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **CONTRIBUTING.md reflowed to clear the reflow-check CI gate (#800).** The markdown prose reflow check (`scripts/reflow_md.py --check`, wired into `make quality`) failed on a hard-wrapped blockquote and a 3-space-indented continuation paragraph in CONTRIBUTING.md. Both were joined to one-sentence-per-line prose with no wording changes, so the check exits clean.
+
 ## [0.28.0] - 2026-07-29
 
 ### Added
