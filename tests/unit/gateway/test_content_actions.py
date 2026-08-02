@@ -768,6 +768,7 @@ async def test_evidence_returns_gateway_timeout_on_slow_db_read(
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
+    _stub_empty_ledger(task_svc.session)
     git_svc = AsyncMock()
     git_svc.diff_and_files.return_value = ("diff", ["f.py"])
     workspace_svc = AsyncMock()
