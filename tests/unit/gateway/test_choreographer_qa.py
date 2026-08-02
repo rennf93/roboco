@@ -83,6 +83,7 @@ async def test_claim_review_returns_evidence_inline() -> None:
     work_svc = AsyncMock()
     git_svc = AsyncMock()
     git_svc.diff_and_files.return_value = ("+++ diff content", ["README.md"])
+    _stub_empty_ledger(task_svc.session)
     deps = _make_deps(task=task_svc, work_session=work_svc, git=git_svc)
     c = Choreographer(deps)
 
@@ -149,6 +150,7 @@ async def test_claim_review_marks_evidence_inspected() -> None:
     task_svc.qa_claim.return_value = t_claimed
     git_svc = AsyncMock()
     git_svc.diff_and_files.return_value = ("", [])
+    _stub_empty_ledger(task_svc.session)
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 
@@ -218,6 +220,7 @@ async def test_claim_review_returns_gateway_timeout_on_slow_evidence(
         return "+++ diff content", ["README.md"]
 
     git_svc.diff_and_files.side_effect = _slow_diff_and_files
+    _stub_empty_ledger(task_svc.session)
     deps = _make_deps(task=task_svc, work_session=work_svc, git=git_svc)
     c = Choreographer(deps)
 
