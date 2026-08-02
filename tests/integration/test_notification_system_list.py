@@ -152,6 +152,63 @@ async def test_pending_ack_only_slices_to_limit(db_session: AsyncSession) -> Non
 
 
 @pytest.mark.asyncio
+async def test_get_notification_count_matches_in_memory_computation_at_scale(
+    db_session: AsyncSession,
+) -> None:
+    """SQL COUNT rewrite must match the old in-memory sum() for a large, mixed seed.
+
+    Seeds >1000 rows for one agent, mixing read/unread, acked/unacked, and
+    requires_ack true/false so all three counters exercise non-trivial values,
+    then asserts the service's result equals what the OLD Python-side
+    computation (``len(rows)`` / ``sum(agent_id not in read_by)`` /
+    ``sum(requires_ack and agent_id not in acked_by)``) would produce.
+    """
+    sender_id = await _seed_sender(db_session)
+    recipient_id = await _seed_recipient(db_session)
+    other_id = uuid4()  # noise recipient — must not affect recipient_id's counts
+
+    base = datetime(2026, 4, 1, tzinfo=UTC)
+    rows: list[NotificationTable] = []
+    seed_size = 1050
+    for i in range(seed_size):
+        read = i % 2 == 0
+        acked = i % 3 == 0
+        requires_ack = i % 5 != 0
+        n = NotificationTable(
+            type=NotificationType.REVIEW_REQUEST,
+            priority=NotificationPriority.NORMAL,
+            from_agent=sender_id,
+            to_agents=[recipient_id, other_id] if i % 7 == 0 else [recipient_id],
+            subject=f"Notification {i}",
+            body="Body text",
+            requires_ack=requires_ack,
+            acked_by=[recipient_id] if acked else [],
+            read_by=[recipient_id] if read else [],
+            timestamp=base + timedelta(seconds=i),
+        )
+        rows.append(n)
+    db_session.add_all(rows)
+    await db_session.flush()
+
+    expected_total = len(rows)
+    expected_unread = sum(1 for n in rows if recipient_id not in n.read_by)
+    expected_pending_ack = sum(
+        1 for n in rows if n.requires_ack and recipient_id not in n.acked_by
+    )
+    assert expected_unread not in (0, expected_total)
+    assert expected_pending_ack not in (0, expected_total)
+
+    service = get_notification_delivery_service(db_session)
+    counts = await service.get_notification_count(recipient_id)
+
+    assert counts == {
+        "total": expected_total,
+        "unread": expected_unread,
+        "pending_ack": expected_pending_ack,
+    }
+
+
+@pytest.mark.asyncio
 async def test_non_pending_branch_keeps_sql_limit(db_session: AsyncSession) -> None:
     """Without pending_ack_only the SQL limit still bounds the result."""
     sender_id = await _seed_sender(db_session)
