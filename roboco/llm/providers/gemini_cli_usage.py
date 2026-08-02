@@ -95,7 +95,7 @@ _RATE_LIMIT_EXIT_CODE = 75
 
 
 def _coerce_int(value: object) -> int:
-    return int(value) if isinstance(value, (int, float)) else 0
+    return int(value) if isinstance(value, int | float) else 0
 
 
 def _model_tokens(entry: dict[str, Any]) -> tuple[int, int]:

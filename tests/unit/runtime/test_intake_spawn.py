@@ -790,6 +790,54 @@ class TestSpawnIntakeSession:
         assert "ROBOCO_WORKSPACE=/data/workspaces/roboco/board/intake-1" in run_calls[0]
 
     @pytest.mark.asyncio
+    async def test_spawn_adds_compose_labels_before_image(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the orchestrator resolves its own compose project, the
+        persistent intake container carries it too — spliced in right before
+        the trailing image element (docker run flags must precede the
+        image)."""
+        orch = _make_minimal_orchestrator()
+        run_calls: list[list[str]] = []
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
+
+        async def _fake_label_args(service: str) -> list[str]:
+            return ["--label", f"com.docker.compose.service={service}"]
+
+        monkeypatch.setattr(
+            "roboco.runtime.orchestrator.compose_label_args", _fake_label_args
+        )
+
+        await orch.spawn_intake_session("sess-labels", project_slug="roboco")
+
+        assert len(run_calls) == 1
+        cmd = run_calls[0]
+        assert cmd[-3] == "--label"
+        assert cmd[-2] == f"com.docker.compose.service={INTAKE_AGENT_ID}"
+
+    @pytest.mark.asyncio
+    async def test_spawn_omits_compose_labels_outside_compose(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real helper returns [] outside a compose stack — the cmd
+        shape (image last) is byte-for-byte unchanged from today."""
+        orch = _make_minimal_orchestrator()
+        run_calls: list[list[str]] = []
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
+
+        async def _no_labels(_service: str) -> list[str]:
+            return []
+
+        monkeypatch.setattr(
+            "roboco.runtime.orchestrator.compose_label_args", _no_labels
+        )
+
+        await orch.spawn_intake_session("sess-no-labels", project_slug="roboco")
+
+        assert len(run_calls) == 1
+        assert not any(a.startswith("com.docker.compose.") for a in run_calls[0])
+
+    @pytest.mark.asyncio
     async def test_scope_must_be_exactly_one(self) -> None:
         orch = _make_minimal_orchestrator()
         with pytest.raises(ValueError, match="exactly one"):

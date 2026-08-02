@@ -125,6 +125,35 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=20, ge=0)
     database_pool_timeout: int = Field(default=10, ge=1)
     database_pool_recycle: int = Field(default=1800, ge=60)
+    # Server-side guards against the lock-convoy incident class (2026-07-29):
+    # a session parked mid-transaction on non-DB work (git subprocess, an
+    # asyncio lock queue) holds its row locks + pooled connection until
+    # Postgres kills it; a statement queued on someone else's row lock gives
+    # up instead of camping on a pool slot. 0 disables (Postgres semantics).
+    # The idle default MUST clear the longest legitimate in-transaction
+    # window: a cold-workspace claim holds its transaction across the clone
+    # (workspace_clone_timeout, 300s) + dep install
+    # (workspace_dep_install_timeout_seconds, 600s) under the 900s
+    # flow_verb_slow_timeout_seconds wall — hence 20 min, not tighter.
+    database_idle_in_transaction_timeout_ms: int = Field(
+        default=1_200_000,
+        ge=0,
+        description=(
+            "Postgres idle_in_transaction_session_timeout for app "
+            "connections, in ms; 0 disables. Keep above "
+            "flow_verb_slow_timeout_seconds — claim verbs legitimately hold "
+            "a transaction across cold clone + dep install"
+        ),
+    )
+    database_lock_timeout_ms: int = Field(
+        default=60_000,
+        ge=0,
+        description=(
+            "Postgres lock_timeout for app connections, in ms; 0 disables. "
+            "A blocked statement burns a pool connection for the whole wait, "
+            "so this stays tight; losers get a clean retryable error"
+        ),
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -1144,6 +1173,16 @@ class Settings(BaseSettings):
         le=1.0,
         description="Cosine-similarity floor for injected memory; below it, none.",
     )
+    institutional_memory_timeout_seconds: float = Field(
+        default=8.0,
+        gt=0,
+        description=(
+            "Deadline for the institutional-memory RAG search (embed + query) "
+            "during a claim briefing. RAG memory is a nice-to-have enrichment "
+            "— tight on purpose, so a saturated embedder can never burn the "
+            "verb's whole timeout budget and 504 the claim."
+        ),
+    )
 
     # Sandboxed per-agent-spawn DB/Redis — orchestrator-provisioned throwaway
     # Postgres/Redis sibling containers so a dev agent's gate runs against an
@@ -1695,6 +1734,33 @@ class Settings(BaseSettings):
             "self-hosted runner can far exceed the sub-second local-op "
             "default; short-budgeting it is what made open_pr time out before "
             "the branch reached the remote."
+        ),
+    )
+    evidence_assembly_timeout_seconds: float = Field(
+        default=45.0,
+        ge=1.0,
+        description=(
+            "TOTAL budget for one advisory-evidence build (branch fetch, "
+            "diff, list_changed_files — every slow leg) on claim_review / "
+            "claim_doc_task / claim_gate_review / evidence() / i_am_done's "
+            "success envelope. A `LegBudget` (roboco.services.gateway."
+            "choreographer.evidence_legs) is created once per build and "
+            "shared across every leg in it — each leg's wait_for gets only "
+            "what's left of this total, shrinking as legs consume it, so "
+            "summing per-leg budgets can never exceed this cap (and stays "
+            "well under flow_verb_timeout_seconds). A hung leg degrades "
+            "(evidence_gaps) instead of taking the whole verb down with it."
+        ),
+    )
+    conventions_validator_advisory_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        description=(
+            "Ceiling for the conventions-validator subprocess on the "
+            "ADVISORY claim path (claim_review) — the actual budget used is "
+            "min(this, the build's remaining evidence_assembly_timeout_seconds), "
+            "so it also shrinks with the shared LegBudget. Fail-closed paths "
+            "(i_am_done, pr_pass) keep their own hardcoded cap unchanged."
         ),
     )
 

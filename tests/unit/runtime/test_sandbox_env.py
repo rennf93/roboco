@@ -120,3 +120,53 @@ async def test_spawn_container_stale_clear_runs_with_teardown_sandbox_false(
         teardown_sandbox=False,
         stop_reason="pre_spawn_stale_clear",
     )
+
+
+@pytest.mark.asyncio
+async def test_spawn_container_adds_compose_labels_before_image_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the orchestrator resolves its own compose project, the spawned
+    agent container carries it too — inserted before
+    `_append_image_and_claude_args` runs, so the label flags precede the
+    image argument in the final docker run cmd."""
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    calls: list[str] = []
+    _stub_spawn_container_collaborators(monkeypatch, orch, calls)
+
+    async def _fake_label_args(service: str) -> list[str]:
+        return ["--label", f"com.docker.compose.service={service}"]
+
+    monkeypatch.setattr(
+        "roboco.runtime.orchestrator.compose_label_args", _fake_label_args
+    )
+    exec_mock = AsyncMock(return_value=_fake_proc())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_mock)
+
+    await orch._spawn_container(_config(["postgres"]))
+
+    cmd = list(exec_mock.call_args.args)
+    assert cmd == ["--label", "com.docker.compose.service=dev-1"]
+
+
+@pytest.mark.asyncio
+async def test_spawn_container_omits_compose_labels_outside_compose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real helper returns [] outside a compose stack (dev machines, CI,
+    the eval harness) — the cmd is byte-for-byte unchanged from today."""
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    calls: list[str] = []
+    _stub_spawn_container_collaborators(monkeypatch, orch, calls)
+
+    async def _no_labels(_service: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr("roboco.runtime.orchestrator.compose_label_args", _no_labels)
+    exec_mock = AsyncMock(return_value=_fake_proc())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_mock)
+
+    await orch._spawn_container(_config(["postgres"]))
+
+    cmd = list(exec_mock.call_args.args)
+    assert cmd == []

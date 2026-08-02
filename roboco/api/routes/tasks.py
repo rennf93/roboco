@@ -1615,6 +1615,44 @@ async def unblock_task(
     return task_to_response(task)
 
 
+@router.post("/{task_id}/assign-review-pm", response_model=TaskResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+async def assign_review_pm(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> TaskResponse:
+    """Recovery seam: (re)assign an awaiting_pm_review task to its owning PM.
+
+    CLAIM_RULES deliberately excludes AWAITING_PM_REVIEW — no claim() edge
+    into it (the i_will_plan re-claim-loop fix) — so the orchestrator's
+    pm-review dispatchers call this instead of the claim route to place an
+    unassigned or stale-assigned review task with its real owner before
+    spawning it. Gated on the same ASSIGN permission that guards ownership
+    fields on the generic task PATCH.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    if not permissions.can_perform_task_action(agent, TaskAction.ASSIGN, task.team):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to assign this task",
+        )
+    task = await service.assign_review_pm(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot assign review PM - task not awaiting_pm_review",
+        )
+    await db.commit()
+    return task_to_response(task)
+
+
 @router.post("/{task_id}/pause", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=30, window=60)
 async def pause_task(

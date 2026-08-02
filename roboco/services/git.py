@@ -448,6 +448,13 @@ class GitService(BaseService):
         with "unable to append to .git/logs/refs/heads/...". A read-only
         op (status, log, diff, ...) never writes, so it skips the repair
         entirely.
+
+        This is also the ONE chokepoint every root-side git write routes
+        through, so it's where the ownership-repair root-sentinel marker
+        (``_ensure_agent_owned``'s ``.git/roboco-owned``, workspace.py) gets
+        invalidated — BEFORE the op runs, since the op is what's about to
+        create new root-owned files a live marker would otherwise let a
+        later ``_ensure_agent_owned`` call wrongly skip.
         """
         effective_timeout = timeout if timeout is not None else _default_git_timeout()
 
@@ -477,6 +484,12 @@ class GitService(BaseService):
 
         loop = asyncio.get_running_loop()
         op = " ".join(args[:2])
+        if _git_ownership_scope(args) != "none":
+            from roboco.services.workspace import invalidate_owned_marker
+
+            await loop.run_in_executor(
+                _GIT_EXECUTOR, invalidate_owned_marker, workspace
+            )
         t0 = time.monotonic()
         try:
             result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
@@ -1074,19 +1087,24 @@ class GitService(BaseService):
         """
         task_service = get_task_service(self.session)
         try:
-            task = await task_service.get(task_uuid)
-            await task_service.add_commit(
-                task_id=task_uuid,
-                hash=commit_hash,
-                message=message,
-                agent_id=agent_id,
-            )
-            if task and task.work_session_id:
-                work_session_service = get_work_session_service(self.session)
-                await work_session_service.add_commit(
-                    require_uuid(task.work_session_id), commit_hash
+            # Savepoint: the flush below would otherwise poison the shared
+            # session on a mid-flush failure — this runs on every commit
+            # (POST /git/commit), and the route has no explicit commit of
+            # its own; DbCommitMiddleware commits the response regardless.
+            async with self.session.begin_nested():
+                task = await task_service.get(task_uuid)
+                await task_service.add_commit(
+                    task_id=task_uuid,
+                    hash=commit_hash,
+                    message=message,
+                    agent_id=agent_id,
                 )
-            await self.session.flush()
+                if task and task.work_session_id:
+                    work_session_service = get_work_session_service(self.session)
+                    await work_session_service.add_commit(
+                        require_uuid(task.work_session_id), commit_hash
+                    )
+                await self.session.flush()
         except Exception as e:
             self.log.warning(
                 "Commit linking failed; commit present on branch but "
@@ -6133,6 +6151,7 @@ class GitService(BaseService):
         task: Any,
         *,
         preferred_parent: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Run the conventions validator on a task's changed files.
 
@@ -6147,6 +6166,13 @@ class GitService(BaseService):
 
         ``preferred_parent`` threads to ``list_changed_files`` — the in-path
         PR-review gate's cross-team parent (see ``diff``'s docstring).
+
+        ``timeout`` overrides the validator subprocess's default budget
+        (``_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS``) — the advisory
+        ``claim_review`` path passes ``settings.
+        conventions_validator_advisory_timeout_seconds`` here; every
+        fail-closed caller (``i_am_done``, ``pr_pass``) omits it and keeps
+        the longer hardcoded cap.
 
         The changed-file LIST above comes from git objects (``list_changed_files``
         fetches + diffs ``origin/<branch>``); the validator below reads CONTENT
@@ -6196,11 +6222,16 @@ class GitService(BaseService):
         # content and false-passes on newly-added files.
         workspace = self._worktree_for_task(clone_root, require_uuid(task.id))
         await self._ensure_worktree_for_commit(clone_root, workspace, branch)
-        return await self._run_conventions_validator(workspace, changed)
+        return await self._run_conventions_validator(
+            workspace, changed, timeout=timeout
+        )
 
     async def _run_conventions_validator(
-        self, workspace: Path, files: list[str]
+        self, workspace: Path, files: list[str], *, timeout: float | None = None
     ) -> dict[str, Any]:
+        effective_timeout = (
+            timeout if timeout is not None else _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS
+        )
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -6216,7 +6247,7 @@ class GitService(BaseService):
         try:
             out, err = await asyncio.wait_for(
                 proc.communicate(),
-                timeout=_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS,
+                timeout=effective_timeout,
             )
         except TimeoutError:
             # Fail closed (could_not_run=True → block gate refuses the submit),
@@ -6227,10 +6258,7 @@ class GitService(BaseService):
             return {
                 "findings": [],
                 "could_not_run": True,
-                "reason": (
-                    f"validator timed out after "
-                    f"{_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS}s"
-                ),
+                "reason": (f"validator timed out after {effective_timeout}s"),
             }
         if proc.returncode != 0:
             reason = err.decode(errors="replace").strip() or "validator crashed"

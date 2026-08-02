@@ -45,6 +45,10 @@ from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.content import markers
 from roboco.models.task import DocRef
 from roboco.services.gateway.choreographer import findings as findings_lib
+from roboco.services.gateway.choreographer.evidence_legs import (
+    LegBudget,
+    run_bounded_leg,
+)
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
@@ -196,13 +200,29 @@ class DocMixin(_Base):
         # the task branch already exists (dev created it) so no checkout
         # ran in the doc's workspace. Put the doc on the task branch now
         # so roboco_docs_write / commit don't fail BRANCH_MISMATCH.
-        # Best-effort — a checkout hiccup must not fail the claim.
+        # Best-effort — a checkout hiccup must not fail the claim. Bounded
+        # against the SAME shared LegBudget the evidence legs below use
+        # (one budget per build), so this leg + diff + list_changed_files
+        # can never sum past the total evidence-assembly budget.
+        budget = LegBudget(settings.evidence_assembly_timeout_seconds)
+        gaps: list[str] = []
         if t.branch_name:
             with contextlib.suppress(Exception):
-                await self.git.checkout_branch_in_agent_workspace(
-                    t.branch_name, actor_agent_id=doc_agent_id
+                await run_bounded_leg(
+                    self.git.checkout_branch_in_agent_workspace(
+                        t.branch_name, actor_agent_id=doc_agent_id
+                    ),
+                    default=None,
+                    budget=budget,
+                    leg="workspace checkout",
+                    hint=(
+                        "the diff below may reflect a stale worktree; "
+                        "re-run roboco_git_diff to confirm"
+                    ),
+                    task_id=task_id,
+                    gaps=gaps,
                 )
-        ev = await self._claim_doc_evidence(t, task_id)
+        ev = await self._claim_doc_evidence(t, task_id, budget=budget, extra_gaps=gaps)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -211,19 +231,49 @@ class DocMixin(_Base):
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
 
-    async def _claim_doc_evidence(self, task: Any, task_id: UUID) -> dict[str, Any]:
+    async def _claim_doc_evidence(
+        self,
+        task: Any,
+        task_id: UUID,
+        *,
+        budget: LegBudget,
+        extra_gaps: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Build the evidence dict surfaced inline on claim_doc_task ok envelopes.
 
         files_changed sourced from git (authoritative) instead
         of ``work_session.files_modified``, which the gateway commit()
         does not populate. The docs writer sees an accurate file list.
+
+        The diff/list_changed_files legs run bounded via ``run_bounded_leg``
+        against ``budget`` — the SAME shared instance the caller's checkout
+        leg already drew from, so a timeout skips that piece and records a
+        note in ``evidence_gaps`` instead of hanging this advisory verb, and
+        the whole build (checkout + diff + list_changed_files) stays under
+        one total. ``extra_gaps`` folds in the caller's own pre-evidence
+        gaps (the checkout leg above).
         """
         files_changed: list[str] = []
         diff = ""
+        evidence_gaps: list[str] = list(extra_gaps or [])
         if task.branch_name:
-            diff = await self.git.diff(branch_name=task.branch_name)
-            files_changed = await self.git.list_changed_files(
-                branch_name=task.branch_name
+            diff = await run_bounded_leg(
+                self.git.diff(branch_name=task.branch_name),
+                default="",
+                budget=budget,
+                leg="pr diff",
+                hint="review the PR diff on GitHub directly",
+                task_id=task_id,
+                gaps=evidence_gaps,
+            )
+            files_changed = await run_bounded_leg(
+                self.git.list_changed_files(branch_name=task.branch_name),
+                default=[],
+                budget=budget,
+                leg="files_changed",
+                hint="review the PR diff on GitHub directly",
+                task_id=task_id,
+                gaps=evidence_gaps,
             )
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
@@ -237,6 +287,7 @@ class DocMixin(_Base):
             files_changed=files_changed,
             pr_diff_summary=diff,
             revision_findings=open_findings,
+            evidence_gaps=evidence_gaps,
         ).as_dict()
 
     async def _verify_doc_owner(
@@ -537,8 +588,25 @@ class DocMixin(_Base):
 
         warning: str | None = None
         try:
-            await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
+            # Savepoint: reassign()'s flush would otherwise poison the
+            # shared session on a mid-flush failure — the response commit
+            # (DbCommitMiddleware) reuses it right after this returns.
+            async with self.task.session.begin_nested():
+                await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
         except Exception as exc:
+            # The savepoint rollback on ANY exception here — not just a DB
+            # error, e.g. a2a.send failing — fully expires every attribute
+            # of `t` (the same identity-map object reassign() mutated
+            # inside the block). Reading t.status / with_introspection(t)
+            # below without refreshing first raises MissingGreenlet (an
+            # async lazy-refresh attempted where this code isn't awaiting
+            # it), which propagates uncaught past this except and rolls
+            # back the WHOLE request — discarding the docs_complete
+            # transition this very warning claims survived. A refresh
+            # failure here means the DB is genuinely broken; let it raise —
+            # that 500 is honest, unlike silently building an envelope off
+            # a request that will itself blow up on read.
+            await self.task.session.refresh(t)
             logger.warning(
                 "i_documented side-effect failed - transition committed, "
                 "PM handoff did not fire",

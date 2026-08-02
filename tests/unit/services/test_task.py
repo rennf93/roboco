@@ -619,6 +619,23 @@ async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collision_sequencing_notify_rides_task_service_session() -> None:
+    """2026-07-29: the held-back task row is uncommitted in this transaction —
+    the notification must ride the SAME session or its related_task_id FK
+    fails (ForeignKeyViolationError seen live in cell_pm/delegate)."""
+    session = MagicMock(flush=AsyncMock())
+    svc = TaskService(session)
+    mock_ns = MagicMock()
+    mock_ns.send_collision_sequencing_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc._notify_collision_sequencing(uuid4(), uuid4(), None)
+    kwargs = mock_ns.send_collision_sequencing_notification.await_args.kwargs
+    assert kwargs["db_session"] is session
+
+
+@pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
     agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE, current_task_id=uuid4())
     result = MagicMock()
@@ -1146,6 +1163,182 @@ async def test_request_changes_rejects_wrong_status() -> None:
     svc = TaskService(MagicMock(flush=AsyncMock()))
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.request_changes(uuid4(), task.id, "notes", ["issue"])
+    assert out is None
+
+
+# ---------------------------------------------------------------------------
+# pr_pass / assign_review_pm — the #740 fix (d87e2d9b) removed the illegal
+# awaiting_pm_review -> claimed re-claim edge, which was also load-bearing:
+# it was the only way a PM re-acquired ownership after the PR gate cleared
+# it. pr_pass now hands off to the owning PM instead (mirrors pr_fail); the
+# unassigned-or-stale recovery seam is assign_review_pm.
+# ---------------------------------------------------------------------------
+
+
+def _pr_pass_svc(task: MagicMock, *, owning_pm: object) -> TaskService:
+    """A TaskService with pr_pass's helper calls stubbed — isolates the
+    ownership-handoff logic from `_validate_and_set_status`'s real
+    enforcement-layer transition/git-requirement checks (already covered
+    elsewhere) and from `_record_pr_review`'s note-writing side effect."""
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_validate_and_set_status", MagicMock())
+    _bind(svc, "_record_pr_review", MagicMock())
+    _bind(svc, "_clear_agent_current_task", AsyncMock())
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=owning_pm))
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_assigns_owning_cell_pm() -> None:
+    """A cell-team assembled task hands off to the resolved cell PM instead
+    of clearing ownership — AWAITING_PM_REVIEW has no claim() edge back in."""
+    reviewer = uuid4()
+    cell_pm = SimpleNamespace(id=uuid4())
+    task = _build_task(
+        status=TaskStatus.AWAITING_PR_REVIEW,
+        claimed_by=reviewer,
+        active_claimant_id=reviewer,
+    )
+    svc = _pr_pass_svc(task, owning_pm=cell_pm)
+    out = await svc.pr_pass(reviewer, task.id, "clean, ship it")
+    assert out is task
+    assert task.assigned_to == cell_pm.id
+    assert task.claimed_by == cell_pm.id
+    # The reviewer's own claim ends here — active_claimant_id stays cleared
+    # (mirrors pr_fail exactly; the PM's ownership is assigned_to/claimed_by).
+    assert task.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_assigns_main_pm_for_root_task() -> None:
+    """A root (main_pm-team) assembled task routes to the Main PM — same
+    `_revision_pm_for_task` resolution, just a different team branch."""
+    reviewer = uuid4()
+    main_pm = SimpleNamespace(id=uuid4())
+    task = _build_task(
+        status=TaskStatus.AWAITING_PR_REVIEW,
+        claimed_by=reviewer,
+        active_claimant_id=reviewer,
+    )
+    svc = _pr_pass_svc(task, owning_pm=main_pm)
+    out = await svc.pr_pass(reviewer, task.id, "clean, ship it")
+    assert out is task
+    assert task.assigned_to == main_pm.id
+    assert task.claimed_by == main_pm.id
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_falls_back_to_none_when_pm_unresolvable() -> None:
+    """An unresolvable owning PM leaves the task unassigned rather than
+    crashing — matches pr_fail's own fallback."""
+    reviewer = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PR_REVIEW,
+        claimed_by=reviewer,
+        active_claimant_id=reviewer,
+    )
+    svc = _pr_pass_svc(task, owning_pm=None)
+    out = await svc.pr_pass(reviewer, task.id, "clean, ship it")
+    assert out is task
+    assert task.assigned_to is None
+    assert task.claimed_by is None
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_assigns_unassigned_task() -> None:
+    """The orchestrator's pm-review dispatch seam: an unassigned
+    awaiting_pm_review task (pr_pass resolved no PM, or legacy pre-fix data)
+    gets placed with its real owner, including active_claimant_id so the
+    newly-assigned PM's own note()/commit() calls don't bounce."""
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=None,
+        claimed_by=None,
+        active_claimant_id=None,
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    cell_pm = SimpleNamespace(id=uuid4())
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=cell_pm))
+    clear_mock = AsyncMock()
+    _bind(svc, "_clear_agent_current_task", clear_mock)
+    out = await svc.assign_review_pm(task.id)
+    assert out is task
+    assert task.assigned_to == cell_pm.id
+    assert task.claimed_by == cell_pm.id
+    assert task.active_claimant_id == cell_pm.id
+    clear_mock.assert_not_awaited()  # nothing to release — was never claimed
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_corrects_stale_assignment() -> None:
+    """A block/escalate/unblock(restore=True) round trip can leave a review
+    task pointed at the wrong (escalation-target) owner with a stale active
+    claim — this must correct BOTH to the real team-resolved PM, releasing
+    the stale claimant's fleet marker."""
+    stale_pm = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=stale_pm,
+        claimed_by=stale_pm,
+        active_claimant_id=stale_pm,
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    real_pm = SimpleNamespace(id=uuid4())
+    clear_mock = AsyncMock()
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=real_pm))
+    _bind(svc, "_clear_agent_current_task", clear_mock)
+    out = await svc.assign_review_pm(task.id)
+    assert out is task
+    assert task.assigned_to == real_pm.id
+    assert task.claimed_by == real_pm.id
+    assert task.active_claimant_id == real_pm.id
+    clear_mock.assert_awaited_once_with(stale_pm, task.id)
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_noop_when_already_correct() -> None:
+    """Already correctly owned — no redundant write/notify every dispatch tick."""
+    pm = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=pm,
+        claimed_by=pm,
+        active_claimant_id=pm,
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=SimpleNamespace(id=pm)))
+    clear_mock = AsyncMock()
+    _bind(svc, "_clear_agent_current_task", clear_mock)
+    out = await svc.assign_review_pm(task.id)
+    assert out is task
+    clear_mock.assert_not_awaited()
+    session.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_rejects_wrong_status() -> None:
+    """A no-op outside awaiting_pm_review — CLAIM_RULES already covers a
+    real claim status; this seam is scoped to the review-only gap."""
+    task = _build_task(status=TaskStatus.IN_PROGRESS)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    out = await svc.assign_review_pm(task.id)
     assert out is None
 
 

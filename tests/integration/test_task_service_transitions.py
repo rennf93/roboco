@@ -1781,6 +1781,79 @@ async def test_unblock_dependents_keeps_blocked_when_other_deps_remain(
 
 
 # ---------------------------------------------------------------------------
+# delete / cancel must cascade the dependency prune + revive blocked dependents
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_unblocks_blocked_dependent(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A task BLOCKED on a deleted task must be auto-revived — the delete
+    path cascades the same _unblock_dependents prune the COMPLETE path runs.
+    Without it the BLOCKED dependent is never revived (it is past the claim
+    gate, which only treats a missing dep row as "met" for PENDING claims)."""
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    dependent = await svc.create(_req(task_setup))
+    dependent.status = TaskStatus.BLOCKED
+    dependent.dependency_ids = [blocker.id]
+    await db_session.flush()
+
+    deleted = await svc.delete(blocker.id)
+    assert deleted is True
+
+    refreshed = await svc.get(dependent.id)
+    assert refreshed is not None
+    assert blocker.id not in refreshed.dependency_ids
+    # Revived out of BLOCKED — back to workable state.
+    assert refreshed.status != TaskStatus.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_delete_prunes_stale_dependency_from_pending_dependent(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A PENDING dependent's stale dep id is pruned on delete (data hygiene);
+    it is not revived because it was never BLOCKED."""
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    dependent = await svc.create(_req(task_setup))
+    dependent.dependency_ids = [blocker.id]
+    await db_session.flush()
+
+    await svc.delete(blocker.id)
+
+    refreshed = await svc.get(dependent.id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.PENDING
+    assert blocker.id not in refreshed.dependency_ids
+
+
+@pytest.mark.asyncio
+async def test_cancel_unblocks_blocked_dependent(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Cancelling a blocker revives a BLOCKED dependent the same way — the
+    cancelled id is pruned and the dependent resumes. A cancelled task is
+    terminal, so it must never hold a dependent in BLOCKED forever."""
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    dependent = await svc.create(_req(task_setup))
+    dependent.status = TaskStatus.BLOCKED
+    dependent.dependency_ids = [blocker.id]
+    await db_session.flush()
+
+    cancelled = await svc.cancel(blocker.id, agent_role="cell_pm")
+    assert cancelled is not None
+
+    refreshed = await svc.get(dependent.id)
+    assert refreshed is not None
+    assert blocker.id not in refreshed.dependency_ids
+    assert refreshed.status != TaskStatus.BLOCKED
+
+
+# ---------------------------------------------------------------------------
 # claim — gate validations (team mismatch, role mismatch, self-review)
 # ---------------------------------------------------------------------------
 

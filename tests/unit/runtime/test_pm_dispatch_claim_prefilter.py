@@ -14,12 +14,13 @@ round-tripping the claim endpoint.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-from roboco.runtime.orchestrator import AgentOrchestrator
+from roboco.runtime.orchestrator import _CREATOR_ROUTE_GRACE_SECONDS, AgentOrchestrator
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -94,6 +95,124 @@ async def test_ready_task_still_dispatches() -> None:
 
     claim.assert_awaited_once_with(client, task["id"], "be-dev-1")
     spawn.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _creator_route_should_skip / _route_unassigned_pm_task — the creator-skip
+# guard is age-gated: young means "the creator-PM is about to assign it one
+# tool-call later," old means the creator's session is long gone and the
+# skip would otherwise wedge the task pending-unassigned forever.
+# ---------------------------------------------------------------------------
+
+
+def _iso_age(seconds: float) -> str:
+    return (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat()
+
+
+async def _route_with_creator_task(
+    orch: AgentOrchestrator, task: dict[str, Any]
+) -> Any:
+    """Run `_route_unassigned_pm_task` with routing/claim/spawn stubbed so only
+    the creator-skip guard's own age logic decides the outcome. Returns the
+    (claim, spawn) mocks for assertion."""
+    client = cast("httpx.AsyncClient", object())
+    with (
+        patch.object(orch, "_pending_claim_blocked", new=AsyncMock(return_value=False)),
+        patch.object(orch, "_classify_task_routing", return_value="cell_pm"),
+        patch.object(orch, "_get_routing_target", return_value="be-pm"),
+        patch.object(orch, "_resolve_agent_slug", return_value="be-pm"),
+        patch.object(orch, "_is_agent_active", return_value=False),
+        patch.object(orch, "_task_git_context", return_value=None),
+        patch.object(
+            orch, "_claim_task_for_agent", new=AsyncMock(return_value=True)
+        ) as claim,
+        patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
+    ):
+        await orch._route_unassigned_pm_task(client, task)
+    return claim, spawn
+
+
+@pytest.mark.asyncio
+async def test_young_creator_task_still_skipped() -> None:
+    """(a) Fresh task, creator == routing target: skip, no claim/spawn."""
+    orch = _orch()
+    task = _pending_task(created_by=str(uuid4()), created_at=_iso_age(30))
+
+    claim, spawn = await _route_with_creator_task(orch, task)
+
+    claim.assert_not_awaited()
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_old_creator_task_falls_through_to_routing() -> None:
+    """(b) 11+ minutes past creation, creator == routing target: the grace
+    has elapsed, so normal claim + spawn proceeds (the creator's session
+    exited without assigning — self-claim is safe for PM-routed work)."""
+    orch = _orch()
+    task = _pending_task(
+        created_by=str(uuid4()),
+        created_at=_iso_age(_CREATOR_ROUTE_GRACE_SECONDS + 60),
+    )
+
+    claim, spawn = await _route_with_creator_task(orch, task)
+
+    claim.assert_awaited_once()
+    spawn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unparseable_created_at_fails_open_to_routing() -> None:
+    """(c) A garbage created_at can't be aged, so the guard fails open
+    (treats it as OLD) rather than skip forever."""
+    orch = _orch()
+    task = _pending_task(created_by=str(uuid4()), created_at="not-a-timestamp")
+
+    claim, spawn = await _route_with_creator_task(orch, task)
+
+    claim.assert_awaited_once()
+    spawn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_missing_created_at_fails_open_to_routing() -> None:
+    """(c) No created_at at all — same fail-open treatment as unparseable."""
+    orch = _orch()
+    task = _pending_task(created_by=str(uuid4()))
+    task.pop("created_at", None)
+
+    claim, spawn = await _route_with_creator_task(orch, task)
+
+    claim.assert_awaited_once()
+    spawn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_different_creator_dispatches_regardless_of_age() -> None:
+    """(d) creator != routing target: the guard never engages, so behavior is
+    unchanged whether the task is brand new or ancient."""
+    orch = _orch()
+    for age_seconds in (5, _CREATOR_ROUTE_GRACE_SECONDS + 3600):
+        task = _pending_task(created_by=str(uuid4()), created_at=_iso_age(age_seconds))
+        client = cast("httpx.AsyncClient", object())
+        with (
+            patch.object(
+                orch, "_pending_claim_blocked", new=AsyncMock(return_value=False)
+            ),
+            patch.object(orch, "_classify_task_routing", return_value="cell_pm"),
+            patch.object(orch, "_get_routing_target", return_value="be-pm"),
+            patch.object(orch, "_resolve_agent_slug", return_value="main-pm"),
+            patch.object(orch, "_is_agent_active", return_value=False),
+            patch.object(orch, "_task_git_context", return_value=None),
+            patch.object(
+                orch, "_claim_task_for_agent", new=AsyncMock(return_value=True)
+            ) as claim,
+            patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
+        ):
+            await orch._route_unassigned_pm_task(client, task)
+
+        claim.assert_awaited_once()
+        spawn.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

@@ -350,7 +350,7 @@ def test_issue_agent_token_with_ttl_uses_expiring_format(
     assert payload["id"] == "be-dev-1"
     assert payload["role"] == "developer"
     assert payload["team"] == "backend"
-    assert isinstance(payload["iat"], (int, float))
+    assert isinstance(payload["iat"], int | float)
     assert payload["exp"] == payload["iat"] + 3600
 
 

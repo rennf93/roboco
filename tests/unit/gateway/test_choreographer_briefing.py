@@ -37,6 +37,15 @@ def _choreographer(
         repo.similar_memory = AsyncMock(return_value=similar_memory_out)
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="developer")
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     choreo = object.__new__(Choreographer)
     choreo._deps = MagicMock(evidence_repo=repo, task=task_svc)
     return choreo, repo

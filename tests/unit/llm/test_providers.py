@@ -266,6 +266,34 @@ async def test_grok_spawn_wires_gateway_env_and_image_last() -> None:
     )
 
 
+async def test_grok_spawn_adds_compose_labels_before_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the orchestrator resolves its own compose project, the sibling
+    agent container carries it too (UGOS grouping + `down --remove-orphans`)
+    — and the labels land BEFORE the image, never after (docker parses
+    anything past the image as the container command, not a flag)."""
+
+    async def _fake_label_args(service: str) -> list[str]:
+        return ["--label", f"com.docker.compose.service={service}"]
+
+    monkeypatch.setattr(
+        "roboco.llm.providers.grok.compose_label_args", _fake_label_args
+    )
+    host = _FakeHost()
+    provider = GrokCliProvider(host, image="roboco-agent-grok:test")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_config())
+    cmd = list(exec_mock.call_args.args)
+    assert "com.docker.compose.service=be-dev-1" in cmd
+    assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
+        "roboco-agent-grok:test"
+    )
+    assert cmd[-1] == "roboco-agent-grok:test"
+
+
 async def test_grok_spawn_mounts_auth_when_present(_isolate_grok_auth: Path) -> None:
     (_isolate_grok_auth / "auth.json").write_text("{}", encoding="utf-8")
     host = _FakeHost()
@@ -421,6 +449,29 @@ async def test_codex_spawn_wires_gateway_env_and_image_last() -> None:
     )
 
 
+async def test_codex_spawn_adds_compose_labels_before_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_label_args(service: str) -> list[str]:
+        return ["--label", f"com.docker.compose.service={service}"]
+
+    monkeypatch.setattr(
+        "roboco.llm.providers.codex.compose_label_args", _fake_label_args
+    )
+    host = _FakeHost()
+    provider = CodexCliProvider(host, image="roboco-agent-codex:test")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_codex_config())
+    cmd = list(exec_mock.call_args.args)
+    assert "com.docker.compose.service=be-dev-1" in cmd
+    assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
+        "roboco-agent-codex:test"
+    )
+    assert cmd[-1] == "roboco-agent-codex:test"
+
+
 async def test_codex_spawn_mounts_auth_when_present(
     _isolate_codex_auth: Path,
 ) -> None:
@@ -569,6 +620,29 @@ async def test_kimi_spawn_wires_gateway_env_and_image_last() -> None:
         instance_id="roboco-agent-be-dev-1",
         extra={"container_id": "cid", "model": "kimi-code/k3"},
     )
+
+
+async def test_kimi_spawn_adds_compose_labels_before_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_label_args(service: str) -> list[str]:
+        return ["--label", f"com.docker.compose.service={service}"]
+
+    monkeypatch.setattr(
+        "roboco.llm.providers.kimi.compose_label_args", _fake_label_args
+    )
+    host = _FakeHost()
+    provider = KimiCliProvider(host, image="roboco-agent-kimi:test")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_kimi_config())
+    cmd = list(exec_mock.call_args.args)
+    assert "com.docker.compose.service=be-dev-1" in cmd
+    assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
+        "roboco-agent-kimi:test"
+    )
+    assert cmd[-1] == "roboco-agent-kimi:test"
 
 
 async def test_kimi_spawn_mounts_auth_when_present(_isolate_kimi_auth: Path) -> None:
