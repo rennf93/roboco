@@ -31,14 +31,14 @@ jobs:
           df -h /
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4.5.2
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4.5.2
+        uses: docker/login-action@v4.6.0
         with:
           username: renzof93
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -189,7 +189,7 @@ jobs:
           df -h /
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4.5.2
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
