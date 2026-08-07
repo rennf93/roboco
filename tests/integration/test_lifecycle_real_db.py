@@ -899,10 +899,22 @@ async def test_pr_review_gate_pass_path(
     assert reviewer_row.status == AgentStatus.ACTIVE
     assert reviewer_row.current_task_id == task.id
 
+    # Resolved via the same team-based query pr_pass itself uses (rather than
+    # assumed to be this fixture's own cell_pm_agent) — the shared/cumulative
+    # integration DB may carry other BACKEND/CELL_PM agents from earlier
+    # tests, and _agent_with_role_and_team has no ordering guarantee.
+    expected_pm = await svc.cell_pm_for_team(Team.BACKEND)
+    assert expected_pm is not None
+
     passed = await svc.pr_pass(reviewer_id, task.id, notes="integration verified")
     assert passed is not None
     assert str(passed.status) == Status.AWAITING_PM_REVIEW.value
-    assert passed.assigned_to is None  # cleared so the PM-closure dispatch routes
+    # Hands off to the owning cell PM (team-resolved) rather than clearing —
+    # AWAITING_PM_REVIEW has no claim() edge, so an unassigned task here has
+    # no way back to a PM.
+    assert passed.assigned_to == expected_pm.id
+    assert passed.claimed_by == expected_pm.id
+    assert passed.active_claimant_id is None
     # pr_pass releases the reviewer's fleet marker too.
     reviewer_row = await db_session.get(AgentTable, reviewer_id)
     assert reviewer_row is not None

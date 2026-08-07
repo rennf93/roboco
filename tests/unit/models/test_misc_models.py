@@ -88,7 +88,6 @@ def test_agent_instance_default_factory_assigns_id() -> None:
 
 
 def test_orchestrator_agent_config_defaults() -> None:
-
     cfg = OrchestratorAgentConfig(
         agent_id="be-dev-1",
         blueprint_path=Path("/tmp/blueprint"),

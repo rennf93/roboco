@@ -35,6 +35,10 @@ from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.models.base import TaskStatus
 from roboco.services.content_notes import content_type_for_role
 from roboco.services.gateway.choreographer import findings as findings_lib
+from roboco.services.gateway.choreographer.evidence_legs import (
+    LegBudget,
+    run_bounded_leg,
+)
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -5387,6 +5391,13 @@ class ContentActions:
         ``files_changed`` and ``pr_diff_summary`` are pulled from git (against
         the branch's parent — the authoritative source) rather than the latest
         commit's delta, so reviewers see the full multi-commit change set.
+
+        The three slow legs (workspace branch fetch, diff, list_changed_files)
+        each run bounded via ``run_bounded_leg`` against ONE shared
+        ``LegBudget`` for this call — a timeout skips that piece and records
+        a note in ``evidence_gaps`` instead of hanging this advisory
+        (read-only, non-gating) verb for the whole ``flow_verb_timeout_seconds``
+        budget.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -5416,18 +5427,53 @@ class ContentActions:
             await self.task.session.commit()
         except PendingRollbackError:
             await self.task.session.rollback()
+        evidence_gaps: list[str] = []
+        budget = LegBudget(settings.evidence_assembly_timeout_seconds)
         if t.branch_name and t.work_session_id:
-            await self.workspace.fetch_branch_for_inspection(
-                agent_id=agent_id, branch_name=t.branch_name
+            # subprocess_timeout self-bounds the underlying git-fetch
+            # subprocess (on the shared DEFAULT asyncio executor, not
+            # git.py's dedicated pool) to roughly this leg's own share of
+            # the budget, so an abandoned wait_for doesn't leave the
+            # subprocess occupying a thread for up to workspace_clone_timeout
+            # (300s) after we've already given up on it.
+            await run_bounded_leg(
+                self.workspace.fetch_branch_for_inspection(
+                    agent_id=agent_id,
+                    branch_name=t.branch_name,
+                    subprocess_timeout=budget.remaining(),
+                ),
+                default=None,
+                budget=budget,
+                leg="branch fetch",
+                hint=(
+                    "the diff below may reflect a stale workspace; review "
+                    "the PR diff on GitHub directly"
+                ),
+                task_id=task_id,
+                gaps=evidence_gaps,
             )
         diff = ""
         files_changed: list[str] = []
         if t.branch_name:
-            diff = await self.git.diff(
-                branch_name=t.branch_name, actor_agent_id=agent_id
+            diff = await run_bounded_leg(
+                self.git.diff(branch_name=t.branch_name, actor_agent_id=agent_id),
+                default="",
+                budget=budget,
+                leg="pr diff",
+                hint="review the PR diff on GitHub directly",
+                task_id=task_id,
+                gaps=evidence_gaps,
             )
-            files_changed = await self.git.list_changed_files(
-                branch_name=t.branch_name, actor_agent_id=agent_id
+            files_changed = await run_bounded_leg(
+                self.git.list_changed_files(
+                    branch_name=t.branch_name, actor_agent_id=agent_id
+                ),
+                default=[],
+                budget=budget,
+                leg="files_changed",
+                hint="review the PR diff on GitHub directly",
+                task_id=task_id,
+                gaps=evidence_gaps,
             )
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id, include_ancestors=True
@@ -5443,6 +5489,7 @@ class ContentActions:
             pr_diff_summary=diff,
             revision_findings=open_findings,
             parent_context=parent_context,
+            evidence_gaps=evidence_gaps,
         )
         return Envelope.ok(
             status=str(t.status),

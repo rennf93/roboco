@@ -146,6 +146,13 @@ _SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 5.0
 # to whatever exit the monitor is now looking at, rather than mis-attributed.
 _EXPECTED_STOP_FRESH_SECONDS = 120.0
 _EXPECTED_STOP_MAX_ENTRIES = 200
+# _route_unassigned_pm_task's creator-skip guard: a PM that just created a task
+# is about to assign it one tool-call later, so racing in and claiming it for
+# the PM would hijack the delegation. That's only true for a few seconds —
+# past this grace the creator's session is long gone and the skip would hold
+# the task pending-unassigned forever. Generous enough to cover the PM's next
+# tool call; short enough that a genuinely abandoned task recovers fast.
+_CREATOR_ROUTE_GRACE_SECONDS = 600
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
@@ -11418,6 +11425,46 @@ Start by:
             logger.error("Claim task error", task_id=task_id, error=str(e))
         return False
 
+    async def _ensure_review_pm_assigned(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> str | None:
+        """POST assign-review-pm; return the resulting owner's agent slug.
+
+        CLAIM_RULES has no claim() edge into AWAITING_PM_REVIEW (the
+        i_will_plan re-claim-loop fix), so an unassigned task (pr_pass
+        resolved no PM) or a stale one (an escalate/unblock(restore=True)
+        round trip restores status but not ownership — see the pr_pass
+        ownership-clearing fix) needs this instead of ``_claim_task_for_agent``.
+
+        ``None`` on ANY rejection or transport error — this reports the
+        route's own outcome only and does NOT fall back to the task's own
+        (possibly stale) ``assigned_to``. A blind fallback here would let a
+        transient failure silently clobber a caller's independently-known-
+        correct default (``_maybe_spawn_pm_closure``'s team-resolved
+        ``pm_id`` — see ``_closure_review_pm``); callers that have no better
+        default than the task's own ``assigned_to`` (``_dispatch_pm_review_
+        work`` — see ``_review_pm_slug``) apply that fallback themselves.
+        """
+        try:
+            resp = await client.post(
+                f"{self._api_url}/tasks/{task['id']}/assign-review-pm"
+            )
+            if resp.status_code == http_status.HTTP_200_OK:
+                assigned_to = resp.json().get("assigned_to")
+                return self._resolve_agent_slug(assigned_to) if assigned_to else None
+            logger.warning(
+                "assign-review-pm rejected",
+                task_id=task.get("id"),
+                status=resp.status_code,
+            )
+        except Exception as e:
+            logger.error(
+                "assign-review-pm error",
+                task_id=task.get("id"),
+                error=str(e),
+            )
+        return None
+
     async def _fetch_tasks(
         self,
         client: httpx.AsyncClient,
@@ -11629,9 +11676,15 @@ Start by:
         "ux_ui": "ux-pm",
     }
 
-    def _get_routing_target(self, routing: str, task: dict[str, Any]) -> str | None:
+    def _resolve_routing_target(self, routing: str, task: dict[str, Any]) -> str | None:
         """
-        Resolve a routing decision to a specific agent slug.
+        Resolve a routing decision to a specific agent slug (never-strand
+        fallbacks default to main-pm — code-task safety lives in the async
+        wrapper ``_get_routing_target``: main_pm+code must not coexist by
+        org invariant, so the dispatcher's pre-claim route refuses it
+        (``_raise_if_main_pm_code_claim``, needs_revision recovery exempt);
+        the lifecycle spec's broader ``i_will_plan`` claim allowance covers
+        cell PMs planning code parents, not this dispatch path).
 
         Args:
             routing: One of "board", "main_pm", "cell_pm", "dev", "marketing"
@@ -11680,6 +11733,84 @@ Start by:
             task_id=task.get("id"),
         )
         return "main-pm"
+
+    @staticmethod
+    def _is_code_task(task: dict[str, Any]) -> bool:
+        return str(task.get("task_type") or "").lower() == "code"
+
+    async def _nearest_cell_team(self, task: dict[str, Any]) -> str | None:
+        """Walk the parent chain for the nearest ancestor's cell team.
+
+        Mirrors ``TaskService._resolve_pm_for_review`` (task.py:6493) but
+        keys on ``team`` rather than ``assigned_to`` — this runs before any
+        assignment exists. Best-effort: any lookup failure returns None so
+        the caller falls back to the deterministic default cell.
+        """
+        parent_id = task.get("parent_task_id")
+        if not parent_id:
+            return None
+        from uuid import UUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import get_task_service
+
+        cell_teams = frozenset(t.value for t in CELL_TEAMS)
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                task_svc = get_task_service(db)
+                while parent_id:
+                    parent = await task_svc.get(UUID(str(parent_id)))
+                    if not parent:
+                        return None
+                    parent_team = getattr(parent.team, "value", parent.team)
+                    if parent_team in cell_teams:
+                        return str(parent_team)
+                    parent_id = parent.parent_task_id
+        except Exception as exc:
+            logger.warning(
+                "cell-team parent walk failed; using default cell",
+                task_id=task.get("id"),
+                error=str(exc),
+            )
+        return None
+
+    async def _cell_pm_for_stranded_code_task(self, task: dict[str, Any]) -> str:
+        """Redirect a code task that would strand on main-pm to a cell PM.
+
+        The dispatcher's pre-claim (``_raise_if_main_pm_code_claim``, the
+        MAIN_PM_NO_CODE org invariant: main_pm+code must not coexist —
+        intake coerces such roots to planning) refuses a Main-PM claim of a
+        pending code task, so a stranded one loops claim-reject forever at
+        ~30s cadence instead of failing loud. A code task belongs to a
+        cell: resolve the nearest ancestor cell team first; a parentless/
+        unresolvable chain defaults to backend (ponytail: no signal to pick
+        a better default among the three cells).
+        """
+        team = await self._nearest_cell_team(task)
+        target = self._TEAM_PM_MAP.get(team or "", "be-pm")
+        logger.warning(
+            "code task would strand on main-pm (MAIN_PM_NO_CODE); "
+            "redirecting to cell pm",
+            task_id=task.get("id"),
+            resolved_team=team,
+            agent_id=target,
+        )
+        return target
+
+    async def _get_routing_target(
+        self, routing: str, task: dict[str, Any]
+    ) -> str | None:
+        """Resolve a routing decision to a specific agent slug.
+
+        Wraps ``_resolve_routing_target``: when that would strand a code
+        task on main-pm (a claim MAIN_PM_NO_CODE refuses forever), redirects
+        to a cell PM instead — see ``_cell_pm_for_stranded_code_task``.
+        """
+        target = self._resolve_routing_target(routing, task)
+        if target == "main-pm" and self._is_code_task(task):
+            return await self._cell_pm_for_stranded_code_task(task)
+        return target
 
     def _build_main_pm_triage_prompt(
         self, task: dict[str, Any], *, bounced_block: str = ""
@@ -13985,6 +14116,42 @@ Start now: evidence(task_id="{task_id}")
             )
             return False
 
+    def _creator_route_should_skip(
+        self, task: dict[str, Any], agent_id: str, routing: str
+    ) -> bool:
+        """The creator-skip guard for ``_route_unassigned_pm_task``.
+
+        A PM that just created this task is about to assign it (e.g. be-pm
+        creating a code subtask to hand to be-dev-1 one tool-call later);
+        racing in and claiming for the PM would hijack that delegation. True
+        only while the task is still within ``_CREATOR_ROUTE_GRACE_SECONDS``
+        of creation — past that the creator's session is long gone (it
+        exited without assigning), so this falls through (False) to normal
+        routing instead of skipping forever. Fails open on an
+        unparseable/missing ``created_at`` (treated as OLD) — routing is the
+        safe default, the skip is only an optimization.
+        """
+        created_by = task.get("created_by")
+        if not created_by or self._resolve_agent_slug(str(created_by)) != agent_id:
+            return False
+        age = self._get_task_age(task)
+        if age is not None and age.total_seconds() < _CREATOR_ROUTE_GRACE_SECONDS:
+            logger.info(
+                "Skipping auto-claim: routing target is the creator",
+                task_id=task.get("id"),
+                creator=agent_id,
+                routing=routing,
+            )
+            return True
+        logger.info(
+            "Creator-skip grace elapsed; routing task to its creator",
+            task_id=task.get("id"),
+            creator=agent_id,
+            routing=routing,
+            age_seconds=None if age is None else int(age.total_seconds()),
+        )
+        return False
+
     async def _route_unassigned_pm_task(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
@@ -13992,7 +14159,7 @@ Start now: evidence(task_id="{task_id}")
         if await self._pending_claim_blocked(task.get("id")):
             return
         routing = self._classify_task_routing(task)
-        agent_id = self._get_routing_target(routing, task)
+        agent_id = await self._get_routing_target(routing, task)
 
         if not agent_id:
             logger.warning(
@@ -14012,24 +14179,10 @@ Start now: evidence(task_id="{task_id}")
             await self._handle_board_assigned_task(task, agent_id)
             return
 
-        # Don't auto-claim back to the creator. A PM that just created this
-        # task is about to assign it (e.g. be-pm creating a code subtask to
-        # hand to be-dev-1 one tool-call later). Racing in and claiming for
-        # the PM hijacks the delegation — the PM ends up owning a code task
-        # it never intended to work on itself. Skip this tick and let the
-        # next dispatch pick it up once assigned_to is set, OR re-evaluate
-        # when we have a clearer signal the creator won't route it.
-        created_by = task.get("created_by")
-        if created_by:
-            creator_slug = self._resolve_agent_slug(str(created_by))
-            if creator_slug == agent_id:
-                logger.info(
-                    "Skipping auto-claim: routing target is the creator",
-                    task_id=task.get("id"),
-                    creator=creator_slug,
-                    routing=routing,
-                )
-                return
+        # Don't auto-claim back to the creator while the task is fresh — see
+        # _creator_route_should_skip.
+        if self._creator_route_should_skip(task, agent_id, routing):
+            return
 
         logger.info(
             "Routing task",
@@ -14402,6 +14555,8 @@ Start now: evidence(task_id="{task_id}")
         if handled:
             return
 
+        pm_id = await self._closure_review_pm(client, task, pm_id)
+
         prompt = self._build_pm_closure_prompt(
             task, descendants, auto_submit_reason=auto_submit_reason
         )
@@ -14412,6 +14567,28 @@ Start now: evidence(task_id="{task_id}")
             git_context=self._task_git_context(task),
             spawned_by="_maybe_spawn_pm_closure",
         )
+
+    async def _closure_review_pm(
+        self, client: httpx.AsyncClient, task: dict[str, Any], default_pm: str
+    ) -> str:
+        """The PM to spawn for a closure parent already at awaiting_pm_review.
+
+        CLAIM_RULES has no claim() edge into this status, so pr_pass's/
+        mark_pr_created's own PM resolution, or a stale escalate/
+        unblock(restore=True) round trip, may have left assigned_to wrong
+        or unset — assign_review_pm corrects it. ``default_pm`` (the
+        caller's already-correct ``_closure_pm_for_team`` value) is kept on
+        ANY failure: ``_ensure_review_pm_assigned`` returns ``None`` on both
+        an unresolvable owner and a transient route/transport error, and
+        adopting a stale fallback there would spawn the wrong PM in exactly
+        the incident shape this fix targets (a task mis-assigned to main-pm
+        that should be be-pm). A no-op for any other status — ownership
+        there already came from the normal claim/delegate flow.
+        """
+        if task.get("status") != "awaiting_pm_review":
+            return default_pm
+        resolved = await self._ensure_review_pm_assigned(client, task)
+        return resolved or default_pm
 
     async def _dispatch_pm_closure_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -15337,6 +15514,31 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             and getattr(sib, "status", None) not in terminal
         )
 
+    async def _review_pm_slug(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> str | None:
+        """Owning PM slug for an awaiting_pm_review task.
+
+        Skips the assign-review-pm round trip (a row lock + internal HTTP
+        call) when the task's own ``assigned_to`` already matches the
+        team-resolved owner (the same ``_closure_pm_for_team`` mapping) —
+        every review task hitting that route on every tick even when
+        already correct is needless DB-lock pressure on a stack with
+        documented lock-contention incidents (#721/#726). The route stays
+        authoritative for the mismatch/unassigned case (it re-resolves
+        under its own row lock). Falls back to the task's own (possibly
+        stale) ``assigned_to`` when the route itself fails/rejects — unlike
+        ``_closure_review_pm``, there is no independently-known-better
+        default here to protect.
+        """
+        expected = self._closure_pm_for_team(task.get("team"))
+        current = task.get("assigned_to")
+        current_slug = self._resolve_agent_slug(current) if current else None
+        if current_slug == expected:
+            return expected
+        resolved = await self._ensure_review_pm_assigned(client, task)
+        return resolved or current_slug
+
     async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
         """
         Dispatch PM review work to cell PMs or Main PM.
@@ -15347,74 +15549,46 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         tasks = await self._fetch_tasks(client, "awaiting_pm_review")
 
         for task in tasks:
-            team = task.get("team")
-            assigned_to = task.get("assigned_to")
-
             # Sequence-ordered merge: don't review/merge a leaf until its
             # earlier same-team siblings have landed, so they merge into the
             # shared cell branch in order instead of racing and wedging.
             if await self._blocked_by_earlier_sibling(task):
                 continue
 
-            # If already assigned, check if that agent is running
-            if assigned_to:
-                assigned_slug = self._resolve_agent_slug(assigned_to)
-                # Human-only roles (CEO / prompter / secretary) are never
-                # containers — there is no reviewer agent to respawn. Leave
-                # the task for the human (the CEO approves via the panel).
-                # A stale/ex-human slug is also skipped: is_spawnable_agent_slug
-                # is False for it, so a renamed secretary slug can't slip past
-                # the layered guard to a doomed spawn (#49). Mirrors the
-                # spawn_agent human-role guard; a skip here keeps a mis-assigned
-                # human task from aborting this dispatcher's whole tick.
-                if not is_spawnable_agent_slug(assigned_slug):
-                    continue
-                if self._is_agent_active(assigned_slug):
-                    continue
-                # Loop guard: a review task that keeps re-surfacing without
-                # advancing (e.g. an unmergeable PR that re-blocks every cycle)
-                # must stop respawning the reviewer, else it burns tokens
-                # forever. The gate notifies the CEO once it trips.
-                if await self._pm_respawn_should_gate(assigned_slug, task):
-                    continue
-                # Agent not running - spawn them to continue
-                await self.spawn_agent(
-                    agent_id=assigned_slug,
-                    task_id=task["id"],
-                    initial_prompt=self._build_pm_review_prompt(task),
-                    git_context=self._task_git_context(task),
-                    spawned_by="_dispatch_pm_review_work",
-                )
-                continue
-
-            # Unassigned task - select PM based on team
-            # Cell tasks go to Cell PM, cross-cell/main_pm tasks go to Main PM
-            if team in ["backend", "frontend", "ux_ui"]:
-                pm_id = self._TEAM_PM_MAP.get(team, "be-pm")
-            else:
-                # main_pm, board, or no team → Main PM handles it
-                pm_id = "main-pm"
-
-            if self._is_agent_active(pm_id):
-                continue
-
-            # Claim the task for PM BEFORE spawning
-            if not await self._claim_task_for_agent(client, task["id"], pm_id):
+            assigned_slug = await self._review_pm_slug(client, task)
+            if not assigned_slug:
                 logger.warning(
-                    "Failed to claim awaiting_pm_review task for PM",
+                    "Could not resolve/assign an owning PM for awaiting_pm_review task",
                     task_id=task["id"],
-                    agent_id=pm_id,
                 )
                 continue
 
+            # Human-only roles (CEO / prompter / secretary) are never
+            # containers — there is no reviewer agent to respawn. Leave
+            # the task for the human (the CEO approves via the panel).
+            # A stale/ex-human slug is also skipped: is_spawnable_agent_slug
+            # is False for it, so a renamed secretary slug can't slip past
+            # the layered guard to a doomed spawn (#49). Mirrors the
+            # spawn_agent human-role guard; a skip here keeps a mis-assigned
+            # human task from aborting this dispatcher's whole tick.
+            if not is_spawnable_agent_slug(assigned_slug):
+                continue
+            if self._is_agent_active(assigned_slug):
+                continue
+            # Loop guard: a review task that keeps re-surfacing without
+            # advancing (e.g. an unmergeable PR that re-blocks every cycle)
+            # must stop respawning the reviewer, else it burns tokens
+            # forever. The gate notifies the CEO once it trips.
+            if await self._pm_respawn_should_gate(assigned_slug, task):
+                continue
+            # Agent not running - spawn them to continue
             await self.spawn_agent(
-                agent_id=pm_id,
+                agent_id=assigned_slug,
                 task_id=task["id"],
                 initial_prompt=self._build_pm_review_prompt(task),
                 git_context=self._task_git_context(task),
                 spawned_by="_dispatch_pm_review_work",
             )
-            break
 
     async def _dispatch_marketing_work(self, client: httpx.AsyncClient) -> None:
         """

@@ -6151,6 +6151,7 @@ class GitService(BaseService):
         task: Any,
         *,
         preferred_parent: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Run the conventions validator on a task's changed files.
 
@@ -6165,6 +6166,13 @@ class GitService(BaseService):
 
         ``preferred_parent`` threads to ``list_changed_files`` — the in-path
         PR-review gate's cross-team parent (see ``diff``'s docstring).
+
+        ``timeout`` overrides the validator subprocess's default budget
+        (``_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS``) — the advisory
+        ``claim_review`` path passes ``settings.
+        conventions_validator_advisory_timeout_seconds`` here; every
+        fail-closed caller (``i_am_done``, ``pr_pass``) omits it and keeps
+        the longer hardcoded cap.
 
         The changed-file LIST above comes from git objects (``list_changed_files``
         fetches + diffs ``origin/<branch>``); the validator below reads CONTENT
@@ -6214,11 +6222,16 @@ class GitService(BaseService):
         # content and false-passes on newly-added files.
         workspace = self._worktree_for_task(clone_root, require_uuid(task.id))
         await self._ensure_worktree_for_commit(clone_root, workspace, branch)
-        return await self._run_conventions_validator(workspace, changed)
+        return await self._run_conventions_validator(
+            workspace, changed, timeout=timeout
+        )
 
     async def _run_conventions_validator(
-        self, workspace: Path, files: list[str]
+        self, workspace: Path, files: list[str], *, timeout: float | None = None
     ) -> dict[str, Any]:
+        effective_timeout = (
+            timeout if timeout is not None else _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS
+        )
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -6234,7 +6247,7 @@ class GitService(BaseService):
         try:
             out, err = await asyncio.wait_for(
                 proc.communicate(),
-                timeout=_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS,
+                timeout=effective_timeout,
             )
         except TimeoutError:
             # Fail closed (could_not_run=True → block gate refuses the submit),
@@ -6245,10 +6258,7 @@ class GitService(BaseService):
             return {
                 "findings": [],
                 "could_not_run": True,
-                "reason": (
-                    f"validator timed out after "
-                    f"{_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS}s"
-                ),
+                "reason": (f"validator timed out after {effective_timeout}s"),
             }
         if proc.returncode != 0:
             reason = err.decode(errors="replace").strip() or "validator crashed"

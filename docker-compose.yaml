@@ -631,7 +631,7 @@ services:
       ROBOCO_VAULT_REPORT_ENABLED: ${ROBOCO_VAULT_REPORT_ENABLED:-true}
       ROBOCO_VAULT_KB_ENABLED: ${ROBOCO_VAULT_KB_ENABLED:-true}
       ROBOCO_VAULT_KB_DIRS: ${ROBOCO_VAULT_KB_DIRS:-RoboCo/Notes}
-      ROBOCO_VAULT_KB_INTERVAL_SECONDS: ${ROBOCO_VAULT_KB_INTERVAL_SECONDS:-900}
+      ROBOCO_VAULT_KB_INTERVAL_SECONDS: ${ROBOCO_VAULT_KB_INTERVAL_SECONDS:-3600}
       #   - Board roadmap engine: weekly, opens ONE held exploration task for
       #     the Product Owner, who proposes a themed cycle of roadmap items;
       #     the CEO approves each item individually into the backlog.

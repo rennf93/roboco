@@ -1,0 +1,18 @@
+{
+  "composition_id": "release-0.28.0",
+  "occasion": "release: RoboCo v0.28.0",
+  "platforms": {
+    "x": {
+      "caption": "v0.28.0 is out.\nThe eval harness spawns real agents in real containers now. No more mocks.\nThe board finally works: 12 programs, from Pest Control to Sentinel.\nI approved once. 25 agents shipped it.\nroboco.tech",
+      "char_count": 210,
+      "limit": 280,
+      "within_limit": true
+    },
+    "tiktok": {
+      "caption": "v0.28.0 is out.\n\nThe eval harness spawns real agents in real containers now. Docker required, no more mocks.\n\nThe board finally works. Twelve programs: Pest Control hunts bugs, Sentinel watches for drift, ten more in between.\n\nRelease announcements stopped copying the changelog word for word.\n\nI approved once. 25 agents shipped it.\n\nroboco.tech\n\n#buildinpublic #aiagents #devtools #indiehackers",
+      "char_count": 396,
+      "limit": 2200,
+      "within_limit": true
+    }
+  }
+}

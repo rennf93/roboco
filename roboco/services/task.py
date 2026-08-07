@@ -3642,6 +3642,7 @@ class TaskService(BaseService):
         # Process in reverse order to delete leaves before parents
         descendants = await self.get_all_descendants(task_id)
         descendants.reverse()  # Delete deepest children first
+        removed_ids = [task_id, *(getattr(d, "id", None) for d in descendants)]
 
         for descendant in descendants:
             await self.session.delete(descendant)
@@ -3655,6 +3656,13 @@ class TaskService(BaseService):
 
         await self.session.delete(task)
         await self.session.flush()
+
+        # Cascade the dependency cleanup so BLOCKED dependents auto-revive.
+        # Must run after the flush so deleted rows are gone before dependents
+        # are re-checked. Idempotent — a second prune finds no matching edge.
+        for removed_id in removed_ids:
+            if removed_id is not None:
+                await self._unblock_dependents(removed_id)
 
         self.log.info("Task deleted", task_id=str(task_id))
         return True
@@ -6646,20 +6654,33 @@ class TaskService(BaseService):
             # by submit_for_qa's handoff), so the explicit audit_agent_id from
             # the caller wins.
             captured_dev_id = audit_agent_id or to_python_uuid(task.claimed_by)
+            # Capture the prior claimant (the dev) before it's overwritten
+            # below, mirroring _maybe_advance_to_pm_review's own capture —
+            # this is the mirror-image entry into the same parallel-completion
+            # transition (pr_created arriving second instead of docs_complete).
+            prior_claimant = to_python_uuid(task.active_claimant_id)
             self._validate_and_set_status(
                 task,
                 TaskStatus.AWAITING_PM_REVIEW,
                 "developer",
                 audit_agent_id=captured_dev_id,
             )
-            # Clear assignment so PM can claim the task for review
-            task.assigned_to = None
-            task.claimed_by = None
+            # Assign to the owning PM (walks the parent chain — see
+            # _resolve_pm_for_review) instead of clearing to None: CLAIM_RULES
+            # has no claim() edge into AWAITING_PM_REVIEW, so an unassigned
+            # task here has no way back to a PM (the pr_pass ownership-
+            # clearing wedge, same bug class, same fix).
+            owning_pm = await self._resolve_pm_for_review(task)
+            task.assigned_to = cast("Any", owning_pm) if owning_pm else None
+            task.claimed_by = cast("Any", owning_pm) if owning_pm else None
+            task.active_claimant_id = cast("Any", owning_pm) if owning_pm else None
+            await self._clear_agent_current_task(prior_claimant, task_id)
             self.log.info(
                 "PR created, awaiting PM review",
                 task_id=str(task_id),
                 pr_number=pr_number,
                 docs_complete=task.docs_complete,
+                routed_to_pm=str(owning_pm) if owning_pm else None,
             )
         else:
             # PR created but docs not yet complete
@@ -8051,12 +8072,7 @@ class TaskService(BaseService):
             return None
 
         if cancellation_note:
-            task.dev_notes = (
-                f"{task.dev_notes}\n{cancellation_note}"
-                if task.dev_notes
-                else cancellation_note
-            )
-            await self.session.flush()
+            await self._append_cancel_note(task, cancellation_note)
 
         # Cancel all descendants first (children, grandchildren, etc.)
         # Skip tasks already in terminal states (completed or cancelled).
@@ -8069,6 +8085,52 @@ class TaskService(BaseService):
         # this; the narrow catch + refusal keeps a future per-edge role
         # gate from silently orphaning.) Non-validation errors propagate.
         descendants = await self.get_all_descendants(task_id)
+        cancelled_count, cancelled_now = await self._cascade_cancel_descendants(
+            task_id, descendants, agent_role
+        )
+
+        # Validate transition with PM role requirement
+        await self._cancel_task_self(task, agent_role, cancelled_now)
+
+        # Cascade the dependency cleanup the COMPLETE path runs. Without
+        # this, a task BLOCKED on the cancelled one is never auto-revived
+        # and the stale id lingers in every dependent's dependency_ids
+        # forever.
+        await self._prune_cancelled_dependencies(task_id, descendants)
+
+        # Origin fix: a cancelled child may have declared parent_ac_refs that
+        # no surviving sibling covers, leaving the roll-up gate
+        # (_parent_acs_covered_envelope) demanding coverage for already-
+        # finished work once a replacement is delegated. Warn-and-surface
+        # only — no hard gate; the PM re-declares via declare_coverage.
+        orphaned = await self._audit_orphaned_acs(task_id, task, cancelled_now)
+
+        await self._index_cancel_event(
+            task_id, task, agent_role, cancelled_count, orphaned
+        )
+
+        return task
+
+    async def _append_cancel_note(
+        self, task: TaskTable, cancellation_note: str
+    ) -> None:
+        """Append the cancellation note to ``dev_notes`` and flush."""
+        task.dev_notes = (
+            f"{task.dev_notes}\n{cancellation_note}"
+            if task.dev_notes
+            else cancellation_note
+        )
+        await self.session.flush()
+
+    async def _cascade_cancel_descendants(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+        agent_role: str,
+    ) -> tuple[int, list[TaskTable]]:
+        """Cascade-cancel every non-terminal descendant, refusing the whole
+        cancel on a role-validation failure so an orphaned subtree is never
+        left under a cancelled parent."""
         cancelled_count = 0
         cancelled_now: list[TaskTable] = []
         for descendant in descendants:
@@ -8109,8 +8171,17 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 cancelled_count=cancelled_count,
             )
+        return cancelled_count, cancelled_now
 
-        # Validate transition with PM role requirement
+    async def _cancel_task_self(
+        self,
+        task: TaskTable,
+        agent_role: str,
+        cancelled_now: list[TaskTable],
+    ) -> None:
+        """Validate+set the task itself to CANCELLED, abandon its work
+        session, close its PR, delete its branch, flush, and alert the
+        coroner."""
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
@@ -8119,11 +8190,27 @@ class TaskService(BaseService):
         await self.session.flush()
         await self._alert_coroner_of_cancel(task)
 
-        # Origin fix: a cancelled child may have declared parent_ac_refs that
-        # no surviving sibling covers, leaving the roll-up gate
-        # (_parent_acs_covered_envelope) demanding coverage for already-
-        # finished work once a replacement is delegated. Warn-and-surface
-        # only — no hard gate; the PM re-declares via declare_coverage.
+    async def _prune_cancelled_dependencies(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+    ) -> None:
+        """Prune dependency edges for the whole cancelled subtree (root +
+        all descendants) so blocked dependents auto-revive. Idempotent for
+        already-terminal descendants whose edges may have been pruned
+        before — a second prune just finds no matching edge."""
+        for cancelled_id in (task_id, *(getattr(d, "id", None) for d in descendants)):
+            if cancelled_id is not None:
+                await self._unblock_dependents(cancelled_id)
+
+    async def _audit_orphaned_acs(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        cancelled_now: list[TaskTable],
+    ) -> list[str]:
+        """Detect parent ACs orphaned by the cancel, warn + emit audit, and
+        stash the transient result on the task for same-request callers."""
         orphaned = await self._detect_orphaned_parent_acs(cancelled_now)
         if orphaned:
             self.log.warning(
@@ -8137,8 +8224,17 @@ class TaskService(BaseService):
         # schema change; upgrade to a real field if a caller needs it
         # across a request boundary.
         task.orphaned_parent_acs = orphaned
+        return orphaned
 
-        # Index lifecycle event (fire-and-forget)
+    async def _index_cancel_event(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        agent_role: str,
+        cancelled_count: int,
+        orphaned: list[str],
+    ) -> None:
+        """Fire-and-forget lifecycle-event index for the cancel."""
         bg_task = asyncio.create_task(
             self._index_lifecycle_event_background(
                 task_id=task_id,
@@ -8154,8 +8250,6 @@ class TaskService(BaseService):
         )
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
-
-        return task
 
     async def _detect_orphaned_parent_acs(
         self, cancelled: list[TaskTable]
@@ -10835,6 +10929,14 @@ class TaskService(BaseService):
         reason: str
         dev_notes_line: str | None
 
+    _REVIEW_HANDOFF_STATUSES = frozenset(
+        {
+            TaskStatus.AWAITING_QA,
+            TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.AWAITING_PR_REVIEW,
+        }
+    )
+
     async def _resolve_cell_pm_redirect(
         self, task: TaskTable, requested_assignee: UUID | None
     ) -> "TaskService._CellPmRedirect":
@@ -10859,6 +10961,8 @@ class TaskService(BaseService):
             reason="noop",
             dev_notes_line=None,
         )
+        if task.status in self._REVIEW_HANDOFF_STATUSES:
+            return noop
         if not _is_cell_pm_owned_task(task):
             return noop
         assert task.team is not None  # guarded by _is_cell_pm_owned_task
@@ -11301,9 +11405,15 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """Reviewer passes the gate: awaiting_pr_review -> awaiting_pm_review.
 
-        Clears the claim so the PM-closure dispatcher routes the now-unassigned
-        task to the owning PM to merge — the same path a leaf takes after
-        docs_complete. Mirrors qa_pass.
+        Hands off to the owning PM (cell PM for a cell team, else the Main
+        PM — the same resolution ``pr_fail`` uses) instead of clearing
+        ownership: CLAIM_RULES deliberately excludes AWAITING_PM_REVIEW (no
+        claim() edge into it — the i_will_plan re-claim-loop fix), so an
+        unassigned task here has no way back to a PM and wedges the closure
+        dispatcher's complete() ownership guard (assigned_to != pm_agent_id)
+        forever. active_claimant_id still clears — the reviewer's claim on
+        THIS task ends here, and the PM's ownership is assigned_to/claimed_by
+        only (mirrors pr_fail exactly).
         """
         task = await self.get(task_id)
         if task is None or task.status != TaskStatus.AWAITING_PR_REVIEW:
@@ -11320,8 +11430,9 @@ class TaskService(BaseService):
             )
         captured = to_python_uuid(task.claimed_by)
         self._record_pr_review(task, summary=notes, verdict="passed")
-        task.assigned_to = None
-        task.claimed_by = None
+        pm = await self._revision_pm_for_task(task)
+        task.assigned_to = cast("Any", pm.id) if pm is not None else None
+        task.claimed_by = cast("Any", pm.id) if pm is not None else None
         task.active_claimant_id = cast("Any", None)
         # The gate reviewer's claim on THIS task ends here — release the
         # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking).
@@ -11333,7 +11444,58 @@ class TaskService(BaseService):
             audit_agent_id=captured,
         )
         await self.session.flush()
-        self.log.info("Assembled PR passed review", task_id=str(task_id))
+        self.log.info(
+            "Assembled PR passed review",
+            task_id=str(task_id),
+            routed_to_pm=str(pm.id) if pm is not None else None,
+        )
+        return task
+
+    async def assign_review_pm(self, task_id: UUID) -> TaskTable | None:
+        """Recovery seam: (re)assign an ``awaiting_pm_review`` task to its
+        owning PM.
+
+        CLAIM_RULES deliberately excludes AWAITING_PM_REVIEW (no claim()
+        edge into it — the i_will_plan re-claim-loop fix), so the normal
+        claim() route can't place an unassigned review task with its real
+        owner, and a task that went through a block/escalate/
+        unblock(restore=True) round trip can come back with status restored
+        but ownership stuck on the stale escalation target. Called by the
+        orchestrator's pm-review dispatchers right before spawning, using
+        the same team-based resolution ``pr_fail``/``pr_pass`` use. Also
+        sets ``active_claimant_id`` (unlike pr_pass/pr_fail, which leave it
+        to a subsequent claim() that AWAITING_PM_REVIEW has none of) so the
+        newly-assigned PM's own note()/commit() calls don't bounce off
+        ``_active_claim_violation`` before ever claiming — mirrors
+        ``_maybe_advance_to_pm_review``'s identical concern. A no-op outside
+        awaiting_pm_review, and when the resolved owner already matches.
+        """
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
+        if task is None or task.status != TaskStatus.AWAITING_PM_REVIEW:
+            return None
+        pm = await self._revision_pm_for_task(task)
+        pm_id = cast("Any", pm.id) if pm is not None else None
+        if to_python_uuid(task.assigned_to) == to_python_uuid(pm_id) and to_python_uuid(
+            task.active_claimant_id
+        ) == to_python_uuid(pm_id):
+            return task
+        prior_claimant = to_python_uuid(task.active_claimant_id)
+        task.assigned_to = pm_id
+        task.claimed_by = pm_id
+        task.active_claimant_id = pm_id
+        if prior_claimant is not None and prior_claimant != to_python_uuid(pm_id):
+            await self._clear_agent_current_task(prior_claimant, task_id)
+        await self.session.flush()
+        self.log.info(
+            "Reassigned awaiting_pm_review task to owning PM",
+            task_id=str(task_id),
+            pm_id=str(pm.id) if pm is not None else None,
+        )
         return task
 
     async def pr_fail(

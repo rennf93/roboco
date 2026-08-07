@@ -496,6 +496,47 @@ async def test_cell_pm_complete_not_assigned_returns_not_authorized() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cell_pm_complete_passes_ownership_guard_after_pr_pass_handoff() -> None:
+    """#740 (d87e2d9b) removed the illegal awaiting_pm_review -> claimed
+    re-claim edge, which used to be the PM's only way back to ownership
+    after the PR gate — pr_pass cleared assigned_to to None, so the owning
+    PM's complete() dead-ended on this exact guard forever
+    (not_authorized). pr_pass now hands off to the resolved owning PM
+    instead (see TaskService.pr_pass), so a task in the real post-gate
+    shape — assigned_to == the calling PM, no subtasks — must clear this
+    guard rather than bounce."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=None,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
+    git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "merge-abc"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="reviewed and approved")
+    assert env.as_dict().get("error") != "not_authorized"
+    assert env.error is None
+
+
+@pytest.mark.asyncio
 async def test_cell_pm_complete_in_progress_steers_to_submit_up() -> None:
     """Mirror of the main-PM submit_root steer: a cell task still in_progress
     must enter the gate via submit_up first. The rejection must NAME submit_up
@@ -978,18 +1019,27 @@ async def test_escalate_up_survives_journal_write_lock_timeout() -> None:
     with no rollback/savepoint, poisoning the session so the very next
     attribute touch (``_escalate_up_preflight`` reading ``t.id``) raised an
     unhandled ``PendingRollbackError``. The write is now savepoint-guarded
-    (``begin_nested()``): the failure is contained, the verb falls through
-    cleanly to the normal tracing_gap rejection (no decision was actually
-    persisted), and the task stays fully readable — no unhandled exception
-    escapes ``escalate_up``."""
+    (``begin_nested()``): the failure is contained and no unhandled
+    exception escapes ``escalate_up``.
+
+    Round-2 fix (transient-failure gate bypass): a lock-timeout with a
+    non-empty rationale already in hand (``reason``) no longer falls through
+    to a tracing_gap rejection either — the PM answered the gate's actual
+    question (why); the write was only ever a convenience. Laundering
+    transient DB congestion into a rejected/blocked PM verb is exactly the
+    bug this closes — see test_pm_decision_transient_failure_* below for the
+    gate-helper-level unit coverage.
+    """
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="blocked", assigned_to=pm_id, team="backend")
+    after = MagicMock(**{**t.__dict__, "assigned_to": uuid4()})
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(
         role="cell_pm", escalation_target="main-pm"
     )
+    task_svc.escalate.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = False
     journal_svc.latest_decision_at.return_value = None
@@ -1006,11 +1056,11 @@ async def test_escalate_up_survives_journal_write_lock_timeout() -> None:
     # The savepoint was actually engaged — proves the fix is wired in, not
     # merely that AsyncMock happened to swallow the raise on its own.
     task_svc.session.begin_nested.assert_called()
-    # No unhandled exception escaped escalate_up: the gate falls through to
-    # its normal clean rejection since the decision write never landed.
+    # No unhandled exception escaped escalate_up, AND the gate is satisfied
+    # by the verb's own rationale instead of rejecting a DB hiccup.
     body = env.as_dict()
-    assert body["error"] == "tracing_gap"
-    assert "journal:decision" in body["missing"]
+    assert body["error"] is None, body
+    task_svc.escalate.assert_awaited_once()
     # The task is still fully readable afterward — this is exactly where
     # the production trace crashed with PendingRollbackError on t.id.
     assert t.id == task_id

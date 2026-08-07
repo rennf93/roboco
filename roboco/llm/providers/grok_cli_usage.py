@@ -86,9 +86,9 @@ def _extract_total_tokens(event: dict[str, Any]) -> int:
     for meta in (update_meta, params_meta):
         if isinstance(meta, dict) and "totalTokens" in meta:
             value = meta["totalTokens"]
-            return int(value) if isinstance(value, (int, float)) else 0
+            return int(value) if isinstance(value, int | float) else 0
     value = event.get("totalTokens", 0)
-    return int(value) if isinstance(value, (int, float)) else 0
+    return int(value) if isinstance(value, int | float) else 0
 
 
 def find_updates_path(grok_home: Path, cwd: str, session_id: str) -> Path | None:

@@ -11,10 +11,11 @@ injection so later phases just fill in the bodies.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from uuid import UUID
 
 import structlog
@@ -33,6 +34,10 @@ from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.choreographer._verb_runner import VerbRunner
 from roboco.services.gateway.choreographer.collision import build_collision_context
+from roboco.services.gateway.choreographer.evidence_legs import (
+    LegBudget,
+    run_bounded_leg,
+)
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
@@ -80,6 +85,17 @@ if TYPE_CHECKING:
     # The cast below reaches the typed view the mixins use (``_Base`` pattern).
     from roboco.models.base import TaskNature
     from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
+
+# _ensure_pm_decision's result: "fresh" (a recent decision already satisfies
+# the window, nothing written), "wrote" (recorded now), "transient_failure"
+# (the write raised WITH a non-empty rationale in hand — a DB-contention
+# lock-timeout, not a real absence), "absent" (no rationale AND the window
+# check never ran — legacy default for every call site that hasn't been
+# threaded through yet). Every PM-decision gate helper accepts this as an
+# optional param so "transient_failure" can satisfy the gate for THIS call
+# (the rationale is in the verb payload; the write is a convenience, not the
+# substance) without changing every verb's own public signature.
+PmDecisionOutcome = Literal["fresh", "wrote", "transient_failure", "absent"]
 
 # Minimum character length enforced on rich_plan["approach"] by the PM
 # sub-tasks gate. Must match the Pydantic min_length on
@@ -1166,7 +1182,8 @@ class Choreographer:
 
         Returns ``{"status": ..., "lessons": [...]}`` where status is one of
         ``disabled`` (subsystem off / no task — ponytail: both mean no search ran),
-        ``error`` (search raised), ``empty`` (search yielded nothing),
+        ``error`` (search raised), ``timeout`` (searched, but the memory search
+        didn't answer in time), ``empty`` (search yielded nothing),
         ``below_floor`` (searched, nothing met the floor), ``ok`` (lessons
         injected). Lessons is empty unless status is ``ok`` — the status is
         additive, the injection behavior is unchanged."""
@@ -1185,11 +1202,22 @@ class Choreographer:
         else:
             task_type = str(raw_type)
         query = shape_memory_query(role, title, task_type)
-        result = await self._deps.evidence_repo.similar_memory(
-            query=query,
-            top_k=_settings.org_memory_top_k,
-            min_score=_settings.org_memory_min_score,
-        )
+        try:
+            result = await asyncio.wait_for(
+                self._deps.evidence_repo.similar_memory(
+                    query=query,
+                    top_k=_settings.org_memory_top_k,
+                    min_score=_settings.org_memory_min_score,
+                ),
+                timeout=_settings.institutional_memory_timeout_seconds,
+            )
+        except TimeoutError:
+            logger.warning(
+                "institutional_memory_timeout",
+                agent_id=str(agent_id),
+                task_id=str(getattr(task, "id", "")),
+            )
+            return {"status": "timeout", "lessons": []}
         return {
             "status": str(result.get("status", "error")),
             "lessons": list(result.get("items", [])),
@@ -3384,7 +3412,7 @@ class Choreographer:
 
     async def _ensure_pm_decision(
         self, agent_id: UUID, task_id: UUID, rationale: str | None
-    ) -> None:
+    ) -> PmDecisionOutcome:
         """Auto-record a journal:decision from a PM verb's own rationale.
 
         The write-then-gate pattern (mirrors i_am_blocked → write_struggle):
@@ -3399,7 +3427,10 @@ class Choreographer:
         Idempotent within the decision window: when a fresh decision already
         satisfies the gate, no duplicate is written. Best-effort — a journal
         write failure is logged and swallowed so the verb falls through to
-        the normal gate (which rejects as before), never crashing the verb.
+        the normal gate — which the caller can now short-circuit to PASS
+        (see ``PmDecisionOutcome`` / the gate helpers below) instead of
+        laundering a transient DB hiccup into a rejection the PM's own
+        rationale already answers.
 
         Savepoint-guarded: the journal INSERT can lock-timeout on a
         concurrent claim holding the task row's FK share lock (live
@@ -3413,12 +3444,19 @@ class Choreographer:
         below rolls back to, leaving the outer transaction — and every
         object this call didn't itself touch, e.g. the caller's ``t`` —
         exactly as usable as if the write had never been attempted.
+
+        Returns the outcome so the caller can thread it into the gate that
+        runs right after: "fresh" / "wrote" both mean a decision genuinely
+        exists; "transient_failure" means the write raised but a rationale
+        WAS in hand (the caller may treat the gate as satisfied for this
+        call); "absent" means there was no rationale to record at all (the
+        gate should reject exactly as before).
         """
         from roboco.config import settings as _settings
 
         text = (rationale or "").strip()
         if not text:
-            return
+            return "absent"
         try:
             async with self.task.session.begin_nested():
                 latest = await self.journal.latest_decision_at(agent_id, task_id)
@@ -3427,19 +3465,27 @@ class Choreographer:
                     latest is not None
                     and (datetime.now(UTC) - latest).total_seconds() <= window
                 ):
-                    return
+                    return "fresh"
                 await self.journal.write_decision(
                     agent_id=agent_id, task_id=task_id, content=text
                 )
-        except Exception as exc:  # best-effort; gate rejects normally on failure
+                return "wrote"
+        except Exception as exc:  # best-effort; caller's gate handles the fallout
             logger.warning(
                 "auto-record pm decision failed",
                 error=str(exc),
                 task_id=str(task_id),
             )
+            return "transient_failure"
 
     async def _check_pm_decision_required(
-        self, verb: str, agent_id: UUID, task_id: UUID, t: Any
+        self,
+        verb: str,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        *,
+        pm_decision_outcome: PmDecisionOutcome | None = None,
     ) -> Envelope | None:
         """Standard PM-verb tracing gate driven by VERB_REQUIREMENTS.
 
@@ -3454,6 +3500,15 @@ class Choreographer:
         than ``settings.pm_decision_window_seconds``. Older decisions are
         treated as missing so PMs write a fresh decision around each
         decision point rather than once at task creation.
+
+        ``pm_decision_outcome`` (from the caller's own
+        ``_ensure_pm_decision`` call, defaulting to ``None`` for legacy
+        parity) short-circuits the freshness check to satisfied when it is
+        ``"transient_failure"`` — the write lock-timed out under DB
+        contention, but the verb's own rationale WAS in hand and is the
+        substance the gate actually cares about; the write was only ever a
+        convenience. Any other value (or ``None``) leaves this check
+        byte-for-byte unchanged.
         """
         from roboco.config import settings as _settings
         from roboco.foundation.policy import tracing as _tr
@@ -3468,6 +3523,14 @@ class Choreographer:
             latest is not None
             and (datetime.now(UTC) - latest).total_seconds() <= window_seconds
         )
+        gate_satisfied_by_rationale = pm_decision_outcome == "transient_failure"
+        if gate_satisfied_by_rationale:
+            logger.warning(
+                "pm decision auto-record failed transiently; gate satisfied "
+                "by verb rationale",
+                task_id=str(task_id),
+                verb=verb,
+            )
 
         # QUICK_CONTEXT_MIN_CHARS applies only to ``delegate`` (its
         # required-set is the only one carrying it); the PM pre-writes the
@@ -3475,7 +3538,7 @@ class Choreographer:
         # Setting the threshold here is inert for unblock / escalate, which do
         # not require it.
         ctx = _tr.GateContext(
-            journal_decision_present=fresh,
+            journal_decision_present=fresh or gate_satisfied_by_rationale,
             quick_context_min_chars=_settings.quick_context_min_chars,
         )
         result = _tr.check_requirements(
@@ -3488,7 +3551,12 @@ class Choreographer:
         return await self._build_tracing_gap(agent_id, task_id, result.missing, task=t)
 
     async def _check_complete_gates(
-        self, agent_id: UUID, task_id: UUID, notes: str
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        *,
+        pm_decision_outcome: PmDecisionOutcome | None = None,
     ) -> Envelope | None:
         """Tracing gate for cell-PM and main-PM ``complete`` verbs.
 
@@ -3498,6 +3566,13 @@ class Choreographer:
         guards because that gate emits a richer remediation message
         listing the non-terminal subtasks; keeping it inline preserves
         that UX.
+
+        ``pm_decision_outcome`` mirrors ``_check_pm_decision_required``'s
+        param: ``"transient_failure"`` (the caller's ``_ensure_pm_decision``
+        write lock-timed out but a rationale WAS provided) satisfies both
+        the decision and reflect legs for this call — same substitution
+        already applied to a genuinely-written decision below — instead of
+        rejecting a DB hiccup as a missing decision.
         """
         from types import SimpleNamespace
 
@@ -3506,9 +3581,17 @@ class Choreographer:
 
         has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
         has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
+        gate_satisfied_by_rationale = pm_decision_outcome == "transient_failure"
+        if gate_satisfied_by_rationale:
+            logger.warning(
+                "pm decision auto-record failed transiently; gate satisfied "
+                "by verb rationale",
+                task_id=str(task_id),
+                verb="complete",
+            )
         task_view = SimpleNamespace(notes=notes)
         ctx = _tr.GateContext(
-            journal_decision_present=has_decision,
+            journal_decision_present=has_decision or gate_satisfied_by_rationale,
             # A PM closing/submitting a task documents it in its *decision* note;
             # a separate *reflect* adds little for a coordination/review close and
             # is exactly the artifact weak-model PMs forget — looping on the
@@ -3516,7 +3599,9 @@ class Choreographer:
             # decision as satisfying reflect for the PM complete/submit_up close;
             # the gate still requires a decision + substantive notes, so the close
             # stays documented — only the redundant second-artifact demand drops.
-            journal_reflect_present=has_reflect or has_decision,
+            journal_reflect_present=(
+                has_reflect or has_decision or gate_satisfied_by_rationale
+            ),
             notes_min_chars=getattr(_settings, "notes_min_chars", 20),
         )
         result = _tr.check_requirements(
@@ -3529,7 +3614,12 @@ class Choreographer:
         return await self._build_tracing_gap(agent_id, task_id, result.missing)
 
     async def _check_submit_up_gates(
-        self, agent_id: UUID, task_id: UUID, notes: str
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        *,
+        pm_decision_outcome: PmDecisionOutcome | None = None,
     ) -> Envelope | None:
         """Tracing gate for ``submit_up`` (cell PM bubble-up).
 
@@ -3543,6 +3633,11 @@ class Choreographer:
         ``submit_root`` (both route through ``_submit_up_guard``), so
         ``open_finding_ids`` covers pr_gate/pm/ceo-origin findings on either
         a cell root or a Main-PM root.
+
+        ``pm_decision_outcome`` mirrors ``_check_complete_gates``'s param —
+        ``"transient_failure"`` satisfies the decision + reflect legs for
+        this call instead of rejecting a DB-contention write hiccup as a
+        missing decision.
         """
         from types import SimpleNamespace
 
@@ -3552,9 +3647,17 @@ class Choreographer:
         has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
         has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
         open_finding_ids = await self._open_finding_ids(task_id)
+        gate_satisfied_by_rationale = pm_decision_outcome == "transient_failure"
+        if gate_satisfied_by_rationale:
+            logger.warning(
+                "pm decision auto-record failed transiently; gate satisfied "
+                "by verb rationale",
+                task_id=str(task_id),
+                verb="submit_up",
+            )
         task_view = SimpleNamespace(notes=notes)
         ctx = _tr.GateContext(
-            journal_decision_present=has_decision,
+            journal_decision_present=has_decision or gate_satisfied_by_rationale,
             # A PM closing/submitting a task documents it in its *decision* note;
             # a separate *reflect* adds little for a coordination/review close and
             # is exactly the artifact weak-model PMs forget — looping on the
@@ -3562,7 +3665,9 @@ class Choreographer:
             # decision as satisfying reflect for the PM complete/submit_up close;
             # the gate still requires a decision + substantive notes, so the close
             # stays documented — only the redundant second-artifact demand drops.
-            journal_reflect_present=has_reflect or has_decision,
+            journal_reflect_present=(
+                has_reflect or has_decision or gate_satisfied_by_rationale
+            ),
             notes_min_chars=getattr(_settings, "notes_min_chars", 20),
             open_finding_ids=open_finding_ids,
         )
@@ -3622,13 +3727,31 @@ class Choreographer:
         files_changed sourced from git (authoritative) so the
         i_am_done envelope shows the same file list QA / docs / PMs will
         see — independent of legacy ``add_files_modified`` plumbing.
+
+        Runs strictly AFTER the composed transition already committed (the
+        caller already ran submit_verification/submit_qa) — this is purely
+        informational, not a gate — so the list_changed_files leg runs
+        bounded via ``run_bounded_leg``: a timeout must not strand the
+        dev's already-succeeded submit behind a hung response.
         """
+        from roboco.config import settings as _settings
+
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )
         files_changed: list[str] = []
+        evidence_gaps: list[str] = []
         if t.branch_name:
-            files_changed = await self.git.list_changed_files(branch_name=t.branch_name)
+            budget = LegBudget(_settings.evidence_assembly_timeout_seconds)
+            files_changed = await run_bounded_leg(
+                self.git.list_changed_files(branch_name=t.branch_name),
+                default=[],
+                budget=budget,
+                leg="files_changed",
+                hint="review the PR diff on GitHub directly",
+                task_id=task_id,
+                gaps=evidence_gaps,
+            )
         # Normally empty here — i_am_done's FINDINGS_ADDRESSED gate already
         # required every open finding resolved before this point — but wired
         # in for consistency with every other evidence call site.
@@ -3640,6 +3763,7 @@ class Choreographer:
             journal_highlights=journal_highlights,
             files_changed=files_changed,
             revision_findings=open_findings,
+            evidence_gaps=evidence_gaps,
         )
         agent = await self.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
@@ -5486,7 +5610,7 @@ class Choreographer:
         # Write-then-gate: the delegated subtask's title + description (the
         # PM's own articulation of the work) is recorded as the
         # journal:decision the tracing guard below requires.
-        await self._ensure_pm_decision(
+        pm_decision_outcome = await self._ensure_pm_decision(
             pm_agent_id,
             parent_task_id,
             f"Delegating subtask '{inputs.title}': {inputs.description}",
@@ -5496,7 +5620,12 @@ class Choreographer:
         # coercion + assignee-vs-task_type, parent-ownership/subtask-cap, and
         # (last) decomposition-coverage.
         guard = await self._delegate_post_spec_guards(
-            pm_agent_id, parent_task_id, parent, role_str, inputs
+            pm_agent_id,
+            parent_task_id,
+            parent,
+            role_str,
+            inputs,
+            pm_decision_outcome=pm_decision_outcome,
         )
         if guard is not None:
             return await self._emit_rejection(
@@ -5516,6 +5645,8 @@ class Choreographer:
         parent: Any,
         role_str: str,
         inputs: DelegateInputs,
+        *,
+        pm_decision_outcome: PmDecisionOutcome,
     ) -> Envelope | None:
         """``_delegate_extra_guards``, then the decomposition-coverage gate.
 
@@ -5526,7 +5657,12 @@ class Choreographer:
         gate only ever fires on an otherwise-valid delegate.
         """
         guard = await self._delegate_extra_guards(
-            pm_agent_id, parent_task_id, parent, role_str, inputs
+            pm_agent_id,
+            parent_task_id,
+            parent,
+            role_str,
+            inputs,
+            pm_decision_outcome=pm_decision_outcome,
         )
         if guard is not None:
             return guard
@@ -5608,6 +5744,8 @@ class Choreographer:
         parent: Any,
         role_str: str,
         inputs: DelegateInputs,
+        *,
+        pm_decision_outcome: PmDecisionOutcome,
     ) -> Envelope | None:
         """Delegate-specific guards the spec doesn't model.
 
@@ -5621,7 +5759,11 @@ class Choreographer:
         """
         # Pre-gateway PM.md required journal:decision before each delegate.
         if env := await self._check_pm_decision_required(
-            "delegate", pm_agent_id, parent_task_id, parent
+            "delegate",
+            pm_agent_id,
+            parent_task_id,
+            parent,
+            pm_decision_outcome=pm_decision_outcome,
         ):
             return env
         chain_error = self._validate_delegation_chain(role_str, inputs.assigned_to)
@@ -6970,8 +7112,12 @@ class Choreographer:
         """
         # Write-then-gate: the bubble-up rationale (notes, already validated
         # >= min by the ownership guard) becomes the journal:decision.
-        await self._ensure_pm_decision(pm_agent_id, task_id, notes)
-        if env := await self._check_submit_up_gates(pm_agent_id, task_id, notes):
+        pm_decision_outcome = await self._ensure_pm_decision(
+            pm_agent_id, task_id, notes
+        )
+        if env := await self._check_submit_up_gates(
+            pm_agent_id, task_id, notes, pm_decision_outcome=pm_decision_outcome
+        ):
             return env
         if env := await self._subtasks_not_terminal_envelope(
             pm_agent_id, task_id, context_phrase="bubbling up"
@@ -7197,9 +7343,11 @@ class Choreographer:
         # journal:decision the gate below requires, so a PM that didn't
         # pre-call note(scope='decision') doesn't stall in a tracing_gap
         # respawn loop.
-        await self._ensure_pm_decision(pm_agent_id, task_id, reason)
+        pm_decision_outcome = await self._ensure_pm_decision(
+            pm_agent_id, task_id, reason
+        )
         if env := await self._check_pm_decision_required(
-            "unblock", pm_agent_id, task_id, t
+            "unblock", pm_agent_id, task_id, t, pm_decision_outcome=pm_decision_outcome
         ):
             return await self._emit_rejection(
                 env.with_introspection(task=t, role=role),
@@ -7456,8 +7604,12 @@ class Choreographer:
             )
         # Write-then-gate: the PM's merge rationale (notes) becomes the
         # journal:decision the gate requires — no separate note() call needed.
-        await self._ensure_pm_decision(pm_agent_id, task_id, notes)
-        if env := await self._check_complete_gates(pm_agent_id, task_id, notes):
+        pm_decision_outcome = await self._ensure_pm_decision(
+            pm_agent_id, task_id, notes
+        )
+        if env := await self._check_complete_gates(
+            pm_agent_id, task_id, notes, pm_decision_outcome=pm_decision_outcome
+        ):
             return env
         if env := (
             await self._subtasks_not_terminal_envelope(
@@ -8236,9 +8388,14 @@ class Choreographer:
             )
         # Write-then-gate: the Main PM's root-close rationale (notes) becomes
         # the journal:decision the gate requires.
-        await self._ensure_pm_decision(main_pm_agent_id, root_task_id, notes)
-        if env := await self._check_complete_gates(
+        pm_decision_outcome = await self._ensure_pm_decision(
             main_pm_agent_id, root_task_id, notes
+        )
+        if env := await self._check_complete_gates(
+            main_pm_agent_id,
+            root_task_id,
+            notes,
+            pm_decision_outcome=pm_decision_outcome,
         ):
             return env
         if env := (
@@ -8731,9 +8888,16 @@ class Choreographer:
 
         # Write-then-gate: the escalation reason becomes the journal:decision
         # the preflight gate requires.
-        await self._ensure_pm_decision(pm_agent_id, task_id, reason)
+        pm_decision_outcome = await self._ensure_pm_decision(
+            pm_agent_id, task_id, reason
+        )
         preflight = await self._escalate_up_preflight(
-            pm_agent_id, t, me, briefing, role_str
+            pm_agent_id,
+            t,
+            me,
+            briefing,
+            role_str,
+            pm_decision_outcome=pm_decision_outcome,
         )
         if preflight is not None:
             return await self._emit_rejection(
@@ -8778,6 +8942,8 @@ class Choreographer:
         me: Any,
         briefing: dict[str, Any],
         role_str: str,
+        *,
+        pm_decision_outcome: PmDecisionOutcome,
     ) -> Envelope | None:
         """Verb-specific preflight gates for escalate_up.
 
@@ -8789,7 +8955,11 @@ class Choreographer:
         ``VERB_REQUIREMENTS["escalate_up"]``.
         """
         if env := await self._check_pm_decision_required(
-            "escalate_up", pm_agent_id, t.id, t
+            "escalate_up",
+            pm_agent_id,
+            t.id,
+            t,
+            pm_decision_outcome=pm_decision_outcome,
         ):
             return env.with_introspection(task=t, role=role_str)
         target_slug = me.escalation_target if me else None
@@ -8909,9 +9079,13 @@ class Choreographer:
         # completed subtask covered — inert until coverage is declared).
         # Write-then-gate: the escalation reason becomes the journal:decision
         # the gate below requires.
-        await self._ensure_pm_decision(agent_id, task_id, reason)
+        pm_decision_outcome = await self._ensure_pm_decision(agent_id, task_id, reason)
         env = await self._check_pm_decision_required(
-            "escalate_to_ceo", agent_id, task_id, t
+            "escalate_to_ceo",
+            agent_id,
+            task_id,
+            t,
+            pm_decision_outcome=pm_decision_outcome,
         ) or await self._parent_acs_covered_envelope(
             agent_id, task_id, context_phrase="escalating to CEO"
         )
