@@ -9,7 +9,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+import structlog
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
@@ -29,7 +30,14 @@ from roboco.models.base import (
     Team,
 )
 from roboco.models.product import ProductCellMapping
-from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
+from roboco.utils.converters import (
+    InvalidIdentifierError,
+    require_uuid,
+    to_python_uuid,
+    to_python_uuid_list,
+)
+
+logger = structlog.get_logger()
 
 # =============================================================================
 # NESTED RESPONSE MODELS
@@ -891,7 +899,9 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
     return TaskResponse(
         id=require_uuid(task.id),
         title=task.title,
-        description=task.description,
+        # NOT NULL in the ORM, but a DB restore can bring back legacy rows that
+        # predate the constraint — coalesce so one bad row can't 500 the list.
+        description=task.description or "",
         constraints=getattr(task, "constraints", None),
         acceptance_criteria=task.acceptance_criteria or [],
         status=task.status,
@@ -962,8 +972,28 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
 
 
 def task_list_to_response(tasks: list["TaskTable"]) -> list[TaskResponse]:
-    """Convert list of TaskTable to list of TaskResponse."""
-    return [task_to_response(t) for t in tasks]
+    """Convert list of TaskTable to list of TaskResponse.
+
+    Per-row isolation (mirrors the notification sweep's per-row commits):
+    a single legacy/restored row that fails TaskResponse validation (a NULL
+    in a column the modern write path treats as required, e.g. description
+    pre-dating the completeness gate) is logged and skipped rather than
+    500ing the whole list. The single-task GET route calls task_to_response
+    directly and is NOT wrapped — a broken row's own detail failing loudly
+    is honest; only the list, which serves every OTHER row too, needs to
+    survive one bad one.
+    """
+    out = []
+    for t in tasks:
+        try:
+            out.append(task_to_response(t))
+        except (ValidationError, InvalidIdentifierError) as exc:
+            logger.warning(
+                "task row failed response validation, skipping",
+                task_id=str(getattr(t, "id", None)),
+                error=str(exc),
+            )
+    return out
 
 
 def finding_to_response(row: "TaskReviewFindingTable") -> TaskFindingResponse:
