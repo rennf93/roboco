@@ -28,6 +28,7 @@ from sqlalchemy import select
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+from roboco.foundation.identity import PM_ROLES
 from roboco.foundation.identity import Role as _FoundationRole
 from roboco.foundation.policy.communications import NOTIFY_SENDER_ROLES
 from roboco.models import AgentRole, Team
@@ -40,6 +41,20 @@ from roboco.models.permissions import (
     TaskAction,
 )
 from roboco.services.base import SingletonService
+
+# PM_ROLES is canonical in foundation.identity; re-exported here for
+# backwards compatibility with existing `from roboco.services.permissions
+# import PM_ROLES` consumers. __all__ lists the module's real public
+# surface: PermissionService and is_pm_role are defined here, AgentContext
+# and TaskAction are re-exported from roboco.models.permissions, and
+# api/deps.py + routes/tasks.py import all of these by name.
+__all__ = [
+    "PM_ROLES",
+    "AgentContext",
+    "PermissionService",
+    "TaskAction",
+    "is_pm_role",
+]
 
 # =============================================================================
 # NOTIFICATION PERMISSIONS (derived from foundation.NOTIFY_SENDER_ROLES)
@@ -263,10 +278,6 @@ async def has_privileged_access(db: "AsyncSession", agent_id: UUID) -> bool:
     role = result.scalar_one_or_none()
     return role in PRIVILEGED_ROLES if role else False
 
-
-# PM_ROLES is canonical in foundation.identity. Re-export for backwards
-# compatibility; new consumers import from foundation directly.
-from roboco.foundation.identity import PM_ROLES  # noqa: F401, E402
 
 MANAGEMENT_ROLES = frozenset(
     {AgentRole.CEO, AgentRole.PRODUCT_OWNER, AgentRole.CELL_PM, AgentRole.MAIN_PM}

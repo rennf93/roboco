@@ -157,9 +157,12 @@ class TgCockpitService(BaseService):
                 tokens_by_day,
                 models_by_day,
             ) = await self._session_metrics_by_day(days)
+            _MIN_DAYS_FOR_PRIOR_COMPARISON = 2
             series = [round(cost_by_day.get(d, 0.0), 4) for d in days]
             today_cost = series[-1] if series else 0.0
-            prior_cost = series[-2] if len(series) >= 2 else 0.0  # noqa: PLR2004
+            prior_cost = (
+                series[-2] if len(series) >= _MIN_DAYS_FOR_PRIOR_COMPARISON else 0.0
+            )
             today_tokens = tokens_by_day.get(days[-1], 0) if days else 0
             today_models = models_by_day.get(days[-1], set()) if days else set()
             # $0 with real tokens spent, on a subscription-billed-but-

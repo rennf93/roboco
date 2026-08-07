@@ -138,3 +138,30 @@ export function TaskDetail({ taskId }: { taskId: string | undefined }) {
 ```
 
 No manual guard is needed before calling the hook — the `enabled: !!taskId` guard is built in and prevents wasted API calls and race conditions.
+
+## Mount-only effect audit
+
+**Scope: this section is a frontend-only accounting.** It covers lint suppressions (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`) found in `panel/` alone — it is not the company-wide suppression ledger. Backend's [`docs/backend/lint-suppression-reconciliation.md`](../backend/lint-suppression-reconciliation.md) is the canonical 32-item reconciliation (2 waived + 9 framework-exempt + 2 fixed-at-source + 19 already-resolved) covering every suppression Sentinel's `no_lint_suppressions` hygiene scan originally flagged company-wide; this single frontend `eslint-disable` is already accounted for there as item 12, and this section is the detailed narrative writeup for that one item.
+
+A direct grep of `panel/` for `eslint-disable`, `@ts-ignore`, and `@ts-expect-error` (excluding `node_modules`) historically found exactly **one** frontend suppression, documented below. It was fixed at the source in a later round (see disposition below); re-running the same grep against `panel/` today returns zero hits.
+
+### `eslint-disable` formerly in `journals-view.tsx`, now removed — fixed at the source, no waiver needed
+
+Sentinel's `no_lint_suppressions` hygiene scan flagged `// eslint-disable-next-line react-hooks/exhaustive-deps` guarding the mount-only localStorage-restore effect in `JournalsViewContent` (`panel/src/components/journals/journals-view.tsx`). That effect restores the `agent`/`type`/`task` filters saved from a prior visit into the URL, but only on a fresh `/agents?tab=journals` visit that carries no query params yet — it must run exactly once per mount, never again, or it would clobber a later intentional "clear filters" action with stale saved state.
+
+The suppression was removed by replacing the empty `[]` dependency array with a `useRef` mount-guard:
+
+```tsx
+const hasRestoredRef = useRef(false);
+useEffect(() => {
+  if (hasRestoredRef.current) return;
+  hasRestoredRef.current = true;
+  // ...restore-from-localStorage logic, reading urlAgentId/urlType/urlTask/searchParams/router
+}, [urlAgentId, urlType, urlTask, searchParams, router]);
+```
+
+The ref guard, not the (now honest and complete) dependency array, is what enforces "exactly once per mount" — so `react-hooks/exhaustive-deps` is satisfied without changing the effect's actual behavior. This is the same idiom already used elsewhere in the panel for mount-only effects: `panel/src/components/scroll-restoration.tsx` (`hasRestored`) and `panel/src/components/a2a/a2a-transcript.tsx` (`hasScrolledRef`). Prefer this pattern over `eslint-disable` + `[]` for any new mount-only effect — it keeps the dependency array truthful for future maintainers while still only firing once.
+
+A naive fix that just added `router`/`searchParams` to the deps array **without** the ref guard would have been wrong: those values change across every navigation, so the effect would re-run on every subsequent URL change and re-apply the stale saved filters over a user's later, intentional filter clear. A regression suite, `panel/src/components/journals/__tests__/journals-view.test.tsx`, locks in the correct behavior: the restore fires once on a fresh no-param visit, is skipped when the URL already carries params, and — the key regression guard — never re-fires after mount even once the URL round-trips through params and back to empty.
+
+No entry was added to `.roboco/conventions.yml`'s `waivers:` list — the suppression was eliminated at the source, not exempted. (The backend cell's unrelated waiver entries already committed to that file were left untouched.)

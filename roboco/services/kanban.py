@@ -198,7 +198,7 @@ class KanbanService(BaseService):
 
         return KanbanBoard(
             id=f"{board_type.value}-{team.value if team else 'all'}",
-            title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",  # noqa: E501
+            title=self._board_title(team, board_type),
             board_type=board_type,
             team=team,
             columns=column_list,
@@ -206,6 +206,11 @@ class KanbanService(BaseService):
             blocked_count=blocked_count,
             last_updated=datetime.now(UTC),
         )
+
+    def _board_title(self, team: Team | None, board_type: KanbanBoardType) -> str:
+        """Shared board title: '<Team|All> <BoardType> Board'."""
+        team_label = team.value.title() if team else "All"
+        return f"{team_label} {board_type.value.title()} Board"
 
     def _get_swimlane_key(self, task: TaskTable, swimlane_by: str) -> str:
         """Get the swimlane key for a task."""
@@ -319,7 +324,7 @@ class KanbanService(BaseService):
 
         return KanbanBoard(
             id=f"{board_type.value}-{team.value if team else 'all'}-swimlane",
-            title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",  # noqa: E501
+            title=self._board_title(team, board_type),
             board_type=board_type,
             team=team,
             swimlanes=swimlanes,

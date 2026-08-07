@@ -111,6 +111,9 @@ AgentConfig = OrchestratorAgentConfig
 AGENT_NETWORK = "roboco_default"
 AGENT_BASE_IMAGE = "roboco-agent-base"
 
+# Minutes in an hour, for formatting an elapsed duration as "Xh Ym".
+_MINUTES_PER_HOUR = 60
+
 # Port on which each agent's Claude Code SDK server listens inside its container.
 # Referenced by write-hooks (_finalize_spawn_session, _sweep_token_snapshots,
 # _sweep_budget_exceeded) to build the SDK health/usage URL.
@@ -10960,10 +10963,13 @@ Start by:
                 activated_at = datetime.fromisoformat(activated_at_str)
                 elapsed = datetime.now(UTC) - activated_at
                 total_minutes = int(elapsed.total_seconds() / 60)
-                if total_minutes < 60:  # noqa: PLR2004
+                if total_minutes < _MINUTES_PER_HOUR:
                     duration_desc = f"{total_minutes} minute(s)"
                 else:
-                    duration_desc = f"{total_minutes // 60}h {total_minutes % 60}m"
+                    duration_desc = (
+                        f"{total_minutes // _MINUTES_PER_HOUR}h "
+                        f"{total_minutes % _MINUTES_PER_HOUR}m"
+                    )
             except (ValueError, TypeError):
                 pass
 
