@@ -8772,15 +8772,15 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `CompanyGoalsService.resolve_product_name` | method | company_goals.py:79 | The shared product-name fallback chain: `project.name` if set, else the charter's `company_name`, else the "RoboCo" literal — single source so `XEngine`/`VideoEngine` can't drift apart on branding |
 | `task_project_fields` | func | api/schemas/project_fields.py:19 | `(project_slug, project_name)` or `(None, None)` for a task response — `sa_inspect(task).unloaded` guard before touching `task.project` (a freshly-created task can have an unloaded relationship); shared by the X and video queue response builders so a multi-project CEO can tell drafts apart via the panel's `ProjectBadge` |
 | `BoardProgram` | dataclass | foundation/policy/board_programs.py:31 | Frozen registry entry: `key`/`role`/`trigger`/`source`/`default_interval_seconds`/`max_items_per_cycle`/`scope` |
-| `PROGRAMS` | dict | foundation/policy/board_programs.py:45 | All 14 registered programs, keyed by `key` |
-| `program_due` | func | foundation/policy/board_programs.py:225 | Pure cron-due check; METRIC/EVENT programs always return False (opened by their own hooks, never the loop) |
-| `project_participates` | func | foundation/policy/board_programs.py:241 | Dual-polarity scope predicate — affirmative opt-in for `scope="project"`, opt-out (`"!key"`) for `scope="org"` |
-| `validate_board_programs_field` | func | foundation/policy/board_programs.py:258 | Rejects an unknown key or a polarity mismatched to the program's own scope |
-| `BoardProgramEngine` | class | services/board_programs.py:293 | Trigger/dedup/originate/LEARN over every registered program |
-| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:302 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
-| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:373 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
-| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:422 / 466 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
-| `program_armed` | func | services/board_programs.py:274 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
+| `PROGRAMS` | dict | foundation/policy/board_programs.py:51 | All 14 registered programs, keyed by `key` |
+| `program_due` | func | foundation/policy/board_programs.py:324 | Pure cron-due check; METRIC/EVENT programs always return False (opened by their own hooks, never the loop) |
+| `project_participates` | func | foundation/policy/board_programs.py:340 | Dual-polarity scope predicate — affirmative opt-in for `scope="project"`, opt-out (`"!key"`) for `scope="org"` |
+| `validate_board_programs_field` | func | foundation/policy/board_programs.py:357 | Rejects an unknown key or a polarity mismatched to the program's own scope |
+| `BoardProgramEngine` | class | services/board_programs.py:312 | Trigger/dedup/originate/LEARN over every registered program |
+| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:321 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
+| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:392 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
+| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:441 / 516 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
+| `program_armed` | func | services/board_programs.py:293 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
 | `pick_rotation_target` | func | services/board_programs.py:191 | Shared round-robin for project-scoped programs (Pest Control/Spackle/Mirror/Dogfood): never-explored first, else oldest `last_opened_at` |
 | `PestControlEngine.run_cycle` / `evidence_context` | method | pest_control_engine.py:79 / 152 | Weekly+metric cron; server-assembles rework-hotspot/recurring/waived-finding evidence for the PO's prompt |
 | `SpackleEngine.run_cycle` | method | spackle_engine.py:71 | Biweekly cron, project-scoped gap-fill audit |
@@ -9104,7 +9104,7 @@ product-strategy-research-pitch
 - **CLAUDE.md does not mention `ROBOCO_PROTECTED_GIT_URLS`** (the project denylist, config.py:770, project.py:40). Doc omission.
 - **CLAUDE.md's service table does not list `KanbanService`, `CompanyGoalsService`, `StrategyEngine`, `ResearchService`, `PitchService`, `GitHubProvisioningService`.** The CLAUDE.md "Services" table is explicitly a non-exhaustive "Core services" list, so this is an acknowledged omission rather than drift.
 - **No contradictions between CLAUDE.md claims and actual code were found in this slice.** All documented flags, defaults, and behaviors (default-off strategy engine, server-side- only keys, notify-only engine, pitch→provision→normal-lifecycle, CEO-only approve) match the code.
-- **CLAUDE.md's "Board Program registry" entry documents the shipped scope accurately, including the `stranded_blocked`→Coroner gap.** Code matches: `program_armed` has no master flag (services/board_programs.py:274), the strategy-engine fold is `idle`-only (strategy_engine.py:95-101). No drift.
+- **CLAUDE.md's "Board Program registry" entry documents the shipped scope accurately, including the `stranded_blocked`→Coroner gap.** Code matches: `program_armed` has no master flag (services/board_programs.py:293), the strategy-engine fold is `idle`-only (strategy_engine.py:95-101). No drift.
 
 ## Changes Since Baseline
 
