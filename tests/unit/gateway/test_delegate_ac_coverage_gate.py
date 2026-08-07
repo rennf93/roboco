@@ -64,6 +64,18 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
     _ldef = base["journal"].latest_decision_at.return_value
     if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
         base["journal"].latest_decision_at.return_value = datetime.now(UTC)
+    # _ensure_pm_decision's journal write is savepoint-guarded — an
+    # unconfigured AsyncMock's begin_nested() call returns a raw unawaited
+    # coroutine, which `async with` cannot use. Only stub it for a mocked
+    # task service: one test below passes a REAL TaskService (get_task_service)
+    # over a live db_session, whose genuine begin_nested must stay intact.
+    if isinstance(base["task"], AsyncMock | MagicMock):
+        base["task"].session.begin_nested = MagicMock(
+            return_value=MagicMock(
+                __aenter__=AsyncMock(return_value=None),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
     return ChoreographerDeps(**base)
 
 

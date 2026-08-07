@@ -644,6 +644,15 @@ async def test_evidence_valid_task_returns_ok_with_pr_diff() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     git_svc = AsyncMock()
     git_svc.diff.return_value = "diff --git a/foo.py b/foo.py\n+added line"
     workspace_svc = AsyncMock()

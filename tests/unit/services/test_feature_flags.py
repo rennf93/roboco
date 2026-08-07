@@ -49,7 +49,6 @@ async def test_get_bool_parses_and_defaults() -> None:
 async def test_apply_overrides_stored_flags_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     # Baseline env defaults.
     monkeypatch.setattr(cfg, "external_pr_enabled", False)
     monkeypatch.setattr(cfg, "research_enabled", True)
@@ -73,7 +72,6 @@ async def test_apply_overrides_stored_flags_only(
 async def test_effective_values_use_env_default_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     monkeypatch.setattr(cfg, "strategy_engine_enabled", True)
 
     async def fake_get(_self: SettingsService, _key: str) -> str | None:

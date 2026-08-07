@@ -31,6 +31,15 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    base["task"].session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     repo = base["evidence_repo"]
     for m in (
         "list_unread_a2a",
@@ -75,6 +84,16 @@ def test_claim_verb_hint_qa_for_awaiting_qa() -> None:
 def test_claim_verb_hint_pm_for_planning() -> None:
     hint = Choreographer._claim_verb_hint("cell_pm", _task("pending"))
     assert "i_will_plan" in hint
+
+
+def test_claim_verb_hint_pm_for_awaiting_pm_review_steers_to_complete() -> None:
+    """A PM's own review-queue task must never hint i_will_plan — that verb
+    used to legally re-claim and reset it, looping submit_up -> pr_pass ->
+    awaiting_pm_review forever."""
+    for role in ("cell_pm", "main_pm"):
+        hint = Choreographer._claim_verb_hint(role, _task("awaiting_pm_review"))
+        assert "complete" in hint
+        assert "call i_will_plan(" not in hint
 
 
 def test_claim_verb_hint_dev_default() -> None:

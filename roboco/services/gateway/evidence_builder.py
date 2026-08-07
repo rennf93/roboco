@@ -27,6 +27,7 @@ _EVIDENCE_OMIT_WHEN_EMPTY = (
     "description",
     "collision_context",
     "video_context",
+    "evidence_gaps",
 )
 
 
@@ -69,6 +70,11 @@ class EvidencePayload:
     # the latest request_render preview + a verification instruction). None
     # for every non-video task; omitted from the dict when empty.
     video_context: dict[str, Any] | None = None
+    # Human-readable notes for an advisory-evidence leg (branch fetch, diff,
+    # conventions validator) that timed out and was skipped rather than
+    # hanging the verb — claim_review / claim_doc_task / claim_gate_review
+    # only. Empty (and omitted) on the normal path.
+    evidence_gaps: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -173,6 +179,7 @@ def build_evidence_for_task(
     parent_context: list[dict[str, Any]] | None = None,
     collision_context: list[dict[str, Any]] | None = None,
     video_context: dict[str, Any] | None = None,
+    evidence_gaps: list[str] | None = None,
 ) -> EvidencePayload:
     """Compose an EvidencePayload from a Task model + supplemental data.
 
@@ -186,6 +193,9 @@ def build_evidence_for_task(
     verbatim so this module stays DB-free. ``video_context`` is the
     prebuilt video-artifact block (caller-assembled from the task's
     ``video_draft`` marker + render preview); passed through verbatim.
+    ``evidence_gaps`` carries the caller's bounded-leg timeout notes
+    (``choreographer.evidence_legs.run_bounded_leg``); empty on the normal
+    path.
     """
     return EvidencePayload(
         pr_number=task.pr_number,
@@ -203,6 +213,7 @@ def build_evidence_for_task(
         prior_findings=render_findings(prior_findings),
         collision_context=list(collision_context or []),
         video_context=video_context,
+        evidence_gaps=list(evidence_gaps or []),
     )
 
 

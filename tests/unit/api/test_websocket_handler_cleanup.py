@@ -84,7 +84,6 @@ async def test_system_stream_disconnects_on_cancelled_error() -> None:
 async def test_notification_stream_disconnects_on_non_disconnect_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     agent_id = uuid4()
     mgr = ConnectionManager()
     ws = _mock_ws_for_receive(RuntimeError("transport reset"))
@@ -109,7 +108,6 @@ async def test_notification_stream_disconnects_on_non_disconnect_exception(
 async def test_agent_stream_disconnects_on_non_disconnect_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     target_id = uuid4()
     viewer_id = uuid4()
     mgr = ConnectionManager()
