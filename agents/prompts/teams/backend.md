@@ -23,7 +23,7 @@
 # The Makefile sets UV_NO_SYNC=1 + a private UV_CACHE_DIR to prevent venv
 # corruption; bare `uv run` bypasses both.
 make lint        # ruff format + ruff check + mypy + vulture (formats in place)
-make gate        # fast pre-submit: ruff format --check + ruff check + mypy + xenon
+make gate        # fast pre-submit: ruff format --check + ruff check + mypy + xenon + lint-imports
 make quality     # full merge gate (lint+types+tests+cov+xenon+bandit+audit+...)
 make test        # pytest with coverage
 

@@ -66,6 +66,9 @@ dmypy.json
 # Ruff
 .ruff_cache/
 
+# import-linter (lint-imports)
+.import_linter_cache/
+
 # Environment
 .env
 .env.local
