@@ -84,6 +84,18 @@ async def test_has_unpushed_commits_false_when_session_missing() -> None:
     assert await svc.has_unpushed_commits(uuid4()) is False
 
 
+@pytest.mark.asyncio
+async def test_add_commit_appends_when_commits_is_none() -> None:
+    """A restored/reconstructed session row with NULL commits must not crash
+    the append (same defect class as TaskService.add_progress)."""
+    svc = _service()
+    fake_session = MagicMock(commits=None)
+    _bind(svc, "get", AsyncMock(return_value=fake_session))
+    out = await svc.add_commit(uuid4(), "abc123def456")
+    assert out is fake_session
+    assert fake_session.commits == ["abc123def456"]
+
+
 # ---------------------------------------------------------------------------
 # merge_pr must be idempotent + active-guarded like close()/complete()
 # ---------------------------------------------------------------------------

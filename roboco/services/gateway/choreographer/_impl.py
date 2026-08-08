@@ -1329,7 +1329,7 @@ class Choreographer:
 
         Extracted from ``_run_claim_guards`` (xenon return-count budget).
         """
-        dep_ids = list(task.dependency_ids)
+        dep_ids = list(task.dependency_ids or [])
         if not dep_ids:
             return None
         unmet = await self.task.unmet_dependency_ids(dep_ids)

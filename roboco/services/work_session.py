@@ -406,8 +406,8 @@ class WorkSessionService(BaseService):
         if not work_session:
             return None
 
-        if commit_sha not in work_session.commits:
-            work_session.commits = [*work_session.commits, commit_sha]
+        if commit_sha not in (work_session.commits or []):
+            work_session.commits = [*(work_session.commits or []), commit_sha]
             await self.session.flush()
 
             self.log.debug(
