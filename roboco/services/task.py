@@ -1215,6 +1215,8 @@ class TaskService(BaseService):
         """
         from roboco.db.tables import AuditLogTable
 
+        self._clear_stale_stalled_marker(task)
+
         # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
         # rework cycle. Incremented at this single chokepoint — every transition
         # path funnels its audit through here exactly once — so the rework rate
@@ -1262,6 +1264,25 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    @staticmethod
+    def _clear_stale_stalled_marker(task: TaskTable) -> None:
+        """Any status transition is genuine task movement, so a stale
+        breaker-tripped stalled marker (set by
+        ``AgentOrchestrator._pm_respawn_should_gate``) no longer applies —
+        clear it here unconditionally rather than relying solely on the
+        dispatcher's narrower same-key re-observation path
+        (``_respawn_status_change_resets`` -> ``_clear_task_stalled_marker``),
+        which never re-fires once the task's status leaves the dispatcher's
+        own fetch scope (e.g. a dev's task advancing to ``awaiting_qa``).
+        Direct attribute assignment (not the async ``clear_stalled_marker``
+        helper) since the caller is synchronous and already holds the ORM
+        object mid-transaction — it commits/rolls back atomically with the
+        transition itself. Split out of ``_emit_status_transition_audit`` to
+        keep its own complexity down (xenon budget)."""
+        if task.stalled_reason is not None:
+            task.stalled_reason = None
+            task.stalled_since = None
 
     def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
         """Coroner (Board Program) bounce trigger (spec §4): fire exactly
@@ -3520,13 +3541,14 @@ class TaskService(BaseService):
         Backs the `GET` read endpoint — all query/classification logic lives
         here per the architectural standard (routes stay thin).
 
-        Excludes terminal (completed/cancelled) tasks at the query level: the
-        only marker-clear path, ``AgentOrchestrator._clear_task_stalled_marker``,
-        runs solely from the dispatcher's re-observation branch, which never
-        fires once a task reaches a terminal status — so a task marked stalled
-        that later completes or is cancelled (by whatever path resolved it)
-        would otherwise leak into this list forever. Mirrors the terminal-status
-        pair ``_is_terminal_task`` checks.
+        Excludes terminal (completed/cancelled) tasks at the query level as a
+        defensive backstop: ``_emit_status_transition_audit`` (the single
+        chokepoint every status transition funnels through) now clears the
+        marker unconditionally on any transition, so a completed/cancelled
+        task should never actually carry a marker in practice — but this
+        filter keeps a terminal task out of the list even if some future path
+        sets terminal status without going through that chokepoint. Mirrors
+        the terminal-status pair ``_is_terminal_task`` checks.
         """
         result = await self.session.execute(
             select(
