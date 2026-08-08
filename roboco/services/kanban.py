@@ -27,6 +27,11 @@ from roboco.services.base import BaseService
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 
+def _count(values: Sequence[Any] | None) -> int:
+    """len() tolerant of NULL list columns on restored/imported rows."""
+    return len(values) if values else 0
+
+
 class KanbanService(BaseService):
     """
     Service for generating kanban board views.
@@ -101,9 +106,9 @@ class KanbanService(BaseService):
             target_date=task.target_date,
             complexity=task.estimated_complexity,
             is_blocked=task.status == TaskStatus.BLOCKED,
-            blocker_count=len(task.dependency_ids),
+            blocker_count=_count(task.dependency_ids),
             progress_percentage=progress,
-            commit_count=len(task.commits),
+            commit_count=_count(task.commits),
             has_subtasks=subtask_count > 0,
             subtask_count=subtask_count,
             quick_context=task.quick_context,

@@ -39,6 +39,7 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
 from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import Table, select
+from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -96,6 +97,30 @@ def _req(setup: dict, **overrides: Any) -> TaskCreateRequest:
         estimated_complexity=overrides.pop("estimated_complexity", Complexity.MEDIUM),
         **overrides,
     )
+
+
+# ---------------------------------------------------------------------------
+# JSON columns bind None as SQL NULL, not the JSON scalar `null`
+#
+# `checkpoints`/`progress_updates`/`commits`/`documents` are JSON, not ARRAY,
+# so a plain NOT NULL constraint does NOT stop a Python None from persisting
+# — the default SQLAlchemy JSON binding writes it as the JSON scalar `null`,
+# which satisfies NOT NULL while still deserializing back to Python `None`.
+# That silent path is exactly how the corrupted `progress_updates` row that
+# crashed `add_progress` in production got written. `JSON(none_as_null=True)`
+# closes it: a None write now hits the real NOT NULL constraint at flush.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_progress_updates_none_raises_not_null_at_flush(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.progress_updates = None
+    with pytest.raises(IntegrityError, match="not-null constraint"):
+        await db_session.flush()
 
 
 # ---------------------------------------------------------------------------
