@@ -3519,6 +3519,14 @@ class TaskService(BaseService):
 
         Backs the `GET` read endpoint — all query/classification logic lives
         here per the architectural standard (routes stay thin).
+
+        Excludes terminal (completed/cancelled) tasks at the query level: the
+        only marker-clear path, ``AgentOrchestrator._clear_task_stalled_marker``,
+        runs solely from the dispatcher's re-observation branch, which never
+        fires once a task reaches a terminal status — so a task marked stalled
+        that later completes or is cancelled (by whatever path resolved it)
+        would otherwise leak into this list forever. Mirrors the terminal-status
+        pair ``_is_terminal_task`` checks.
         """
         result = await self.session.execute(
             select(
@@ -3531,7 +3539,10 @@ class TaskService(BaseService):
                 TaskTable.stalled_since,
             )
             .outerjoin(AgentTable, AgentTable.id == TaskTable.assigned_to)
-            .where(TaskTable.stalled_reason.is_not(None))
+            .where(
+                TaskTable.stalled_reason.is_not(None),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
             .order_by(TaskTable.stalled_since.asc())
         )
         now = datetime.now(UTC)
@@ -5838,7 +5849,7 @@ class TaskService(BaseService):
 
         # Update the blocker task to reference this as blocked
         blocker = await self.get(blocker_task_id)
-        if blocker and task_id not in (blocker.blocker_ids or []):
+        if blocker:
             blocker.blocker_ids = _append_missing(blocker.blocker_ids, task_id)
             await self.session.flush()
 

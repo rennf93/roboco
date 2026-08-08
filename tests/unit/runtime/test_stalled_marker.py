@@ -192,6 +192,4 @@ async def test_retrip_after_cooldown_is_one_shot_not_double_counted() -> None:
 
     fresh_trip_call_count = 2  # first trip + one re-trip after cooldown self-heal
     assert task_service.mark_stalled.await_count == fresh_trip_call_count
-    assert (
-        notifier.send_stuck_agent_notification.await_count == fresh_trip_call_count
-    )
+    assert notifier.send_stuck_agent_notification.await_count == fresh_trip_call_count
