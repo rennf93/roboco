@@ -7620,7 +7620,10 @@ class Choreographer:
             )
         ):
             return env
-        if t.pr_number is None:
+        # A PR-waived task (zero commits relative to its parent — report-only
+        # work the verb runner skipped create_pr for) legitimately has no PR
+        # to merge; every other task must have one by this point.
+        if t.pr_number is None and not markers.is_pr_waived(t):
             return Envelope.invalid_state(
                 message="task has no PR; cannot merge",
                 remediate=(
