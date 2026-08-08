@@ -45,3 +45,7 @@ If any branch-protection rule matched the old workflow by its display name (`Cod
 ## When both workflows run
 
 A PR that touches both backend and frontend files (for example, `roboco/**` and `panel/**`) will trigger both workflows, as intended.
+
+## Scope-gating against a task's declared file scope
+
+CodeQL analyzes an entire language surface each time it runs (everything under the `paths:` filter above), not just the diff — so a check-run can fail on a pre-existing alert in a file a task never touched. The in-path PR-review gate's CI-status guard (`pr_pass` -> `_ci_status_guard` in `roboco/services/gateway/choreographer/pr_gate.py`) accounts for this: when a failing `Analyze (python)` or `Analyze (javascript-typescript)` check has zero overlap between its analyzed-language paths (the same list above) and the reviewed task's declared `intends_to_touch` scope, that check no longer blocks `pr_pass` on its own. A task with no declared scope, or a genuinely in-scope CodeQL failure, still blocks exactly as before; any other failing check (tests, lint, an in-scope CodeQL alert) still blocks regardless.
