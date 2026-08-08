@@ -15,13 +15,13 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.tasks import (
-    _translate_error,
     get_awaiting_ceo_approval_tasks,
     get_awaiting_pm_review_tasks,
 )
 from roboco.api.routes.tasks import (
     router as tasks_router,
 )
+from roboco.api.utils.tasks import _translate_error
 from roboco.config import settings
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
 from roboco.exceptions import GitError, TaskLifecycleError
