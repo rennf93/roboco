@@ -9,19 +9,41 @@ with PR creation waived instead of 422ing GitHub's "No commits between".
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from tests.e2e_smoke.arcs import (
     seed_company,
     seed_hierarchy,
     seed_project,
-    set_task_status_directly,
     task_state,
 )
 from tests.e2e_smoke.harness import ScriptedAgent, expect_ok
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
     from tests.e2e_smoke.harness import E2EStack
+
+
+def _set_task_status_directly(stack: E2EStack, task_id: Any, status: Any) -> None:
+    """Directly set a task's status — a data field, not a lifecycle
+    transition (mirrors ``arcs.set_branch_name``'s style: standing in for a
+    resolution a PM would otherwise reach via an admin/out-of-band action
+    that has no scripted flow verb, e.g. a "report-only, nothing to change"
+    leaf reaching a terminal status with zero commits). Kept local to this
+    test file rather than the shared ``arcs.py`` module — ``arcs.wire_dependency``
+    documents "a real dependency edge ... not a direct status write" as the
+    shared-module contract, so a general-purpose lifecycle bypass has no
+    business living there."""
+    from roboco.db.tables import TaskTable
+    from sqlalchemy import select
+
+    async def _run(session: AsyncSession) -> None:
+        row = (
+            await session.execute(select(TaskTable).where(TaskTable.id == task_id))
+        ).scalar_one()
+        row.status = status
+
+    stack.run_db(_run)
 
 
 def test_zero_commit_cell_task_completes_without_pr(e2e_stack: E2EStack) -> None:
@@ -38,7 +60,7 @@ def test_zero_commit_cell_task_completes_without_pr(e2e_stack: E2EStack) -> None
     # set directly, standing in for whatever out-of-band action produces it.
     from roboco.models.base import TaskStatus
 
-    set_task_status_directly(stack, h["child_id"], TaskStatus.COMPLETED)
+    _set_task_status_directly(stack, h["child_id"], TaskStatus.COMPLETED)
 
     pm = ScriptedAgent(stack, company.cell_pm_id, "be-pm", "cell_pm")
 

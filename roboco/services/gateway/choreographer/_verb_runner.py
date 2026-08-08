@@ -21,8 +21,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
+
 from roboco.foundation.policy import lifecycle as spec
 from roboco.foundation.policy.content import markers
+
+logger = structlog.get_logger()
 
 _AtomicHandler = Callable[[Any, Any, Any, spec.Context], Awaitable[Any]]
 _SideEffectHandler = Callable[[Any, Any, Any], Awaitable[Any]]
@@ -195,7 +199,13 @@ class VerbRunner:
             _behind, ahead = await self.git_service.is_behind_base(
                 task, base_branch=parent, actor_agent_id=agent.id
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "pr_waiver_check_failed_open",
+                task_id=str(task.id),
+                branch_name=getattr(task, "branch_name", None),
+                error=str(exc),
+            )
             return False
         if ahead > 0:
             return False
