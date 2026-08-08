@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -10,6 +12,7 @@ import pytest_asyncio
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
+    Complexity,
     TaskNature,
     TaskStatus,
     TaskType,
@@ -267,6 +270,48 @@ async def test_card_no_percentage_when_updates_lack_it(kanban_setup: dict) -> No
     cards = [c for col in board.columns for c in col.cards]
     matched = next(c for c in cards if c.id == task.id)
     assert matched.progress_percentage is None
+
+
+@pytest.mark.asyncio
+async def test_card_handles_null_dependency_ids_and_commits(
+    kanban_setup: dict,
+) -> None:
+    """A restored/reconstructed row with NULL dependency_ids/commits must not
+    crash card rendering — both counts degrade to 0.
+
+    Built via MagicMock rather than a real DB row: the two columns are
+    protected differently. `dependency_ids` is ARRAY — Postgres has no
+    NULL-but-not-NULL representation for it, so the NOT NULL constraint
+    genuinely blocks a real DB write and a NULL can only arise in-memory.
+    `commits` is JSON — before `JSON(none_as_null=True)` (roboco/db/tables.py)
+    a Python None bound to it as the JSON scalar `null`, which SATISFIES NOT
+    NULL while still reading back as Python None (exactly how the production
+    row that crashed `add_progress` got written); now `none_as_null=True`
+    closes that at the DB layer too, so this read guard is the second line
+    of defense, not the only one.
+    """
+    svc = kanban_setup["svc"]
+    task = MagicMock(
+        id=uuid4(),
+        title="t",
+        description="d",
+        quick_context=None,
+        priority=2,
+        status=TaskStatus.IN_PROGRESS,
+        team=Team.BACKEND,
+        assigned_to=None,
+        assignee=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        target_date=None,
+        estimated_complexity=Complexity.MEDIUM,
+        progress_updates=[],
+        dependency_ids=None,
+        commits=None,
+    )
+    card = await svc._task_to_card(task)  # must not raise
+    assert card.blocker_count == 0
+    assert card.commit_count == 0
 
 
 # ---------------------------------------------------------------------------

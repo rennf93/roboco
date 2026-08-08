@@ -2780,3 +2780,170 @@ def test_ceo_reject_finding_texts_strips_whitespace() -> None:
     actual, evidence = _ceo_reject_finding_texts("  redo it  ")
     assert actual == "redo it"
     assert evidence is None
+
+
+# ---------------------------------------------------------------------------
+# NULL-list append sites — a restored/reconstructed task row can carry a NULL
+# JSON/ARRAY column instead of `[]` (live incident: `add_progress` crashed
+# with `TypeError: Value after * must be an iterable, not NoneType` on such a
+# row). Each append site must degrade a NULL column to `[]` instead of
+# crashing the spread.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_progress_appends_when_progress_updates_is_none() -> None:
+    task = _build_task(progress_updates=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.add_progress(task.id, uuid4(), "working")
+    assert out is task
+    assert task.progress_updates is not None
+    assert len(task.progress_updates) == 1
+    assert task.progress_updates[0]["message"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_record_plan_progress_appends_when_progress_updates_is_none() -> None:
+    task = _build_task(progress_updates=None, plan=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.record_plan_progress(task.id, uuid4(), "narrative update")
+    assert out is not None
+    assert len(task.progress_updates) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_checkpoint_appends_when_checkpoints_is_none() -> None:
+    task = _build_task(checkpoints=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.add_checkpoint(task.id, uuid4(), "state summary", ["step"])
+    assert out is task
+    assert len(task.checkpoints) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_commit_appends_when_commits_is_none() -> None:
+    task = _build_task(commits=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.add_commit(task.id, "abc123", "fix bug")
+    assert out is task
+    assert len(task.commits) == 1
+    assert task.commits[0]["hash"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_appends_when_dependency_ids_is_none() -> None:
+    task = _build_task(dependency_ids=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_would_create_cycle", AsyncMock(return_value=False))
+    dep_id = uuid4()
+    out = await svc.add_dependency(task.id, dep_id)
+    assert out is True
+    assert task.dependency_ids == [dep_id]
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_appends_merge_commit_when_commits_is_none() -> None:
+    task = _build_task(commits=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    complete_mock = AsyncMock(return_value=task)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "complete", complete_mock)
+    pm_id = uuid4()
+    await svc.cell_pm_complete(pm_id, task.id, "all good", merge_commit="deadbeef")
+    assert task.commits[-1]["hash"] == "deadbeef"
+    assert task.commits[-1]["kind"] == "merge"
+    complete_mock.assert_awaited_once_with(task.id, agent_id=pm_id)
+
+
+@pytest.mark.asyncio
+async def test_block_appends_when_dependency_ids_and_blocker_ids_are_none() -> None:
+    task = _build_task(dependency_ids=None, status=TaskStatus.IN_PROGRESS)
+    blocker = _build_task(blocker_ids=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(side_effect=[task, blocker]))
+    _bind(svc, "_validate_and_set_status", MagicMock())
+    out = await svc.block(task.id, blocker.id)
+    assert out is task
+    assert task.dependency_ids == [blocker.id]
+    assert blocker.blocker_ids == [task.id]
+
+
+@pytest.mark.asyncio
+async def test_wire_cell_task_wave_chain_handles_null_root_dependency_ids() -> None:
+    """A restored/reconstructed root-subtask row with NULL ``dependency_ids``
+    must not crash the wave-chain wiring — no predecessors, no edges."""
+    cell_task = _build_task(parent_task_id=uuid4())
+    root = _build_task(dependency_ids=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(side_effect=[cell_task, root]))
+    add_dep_mock = AsyncMock()
+    _bind(svc, "add_dependency", add_dep_mock)
+    await svc.wire_cell_task_wave_chain(cell_task.id)  # must not raise
+    add_dep_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wire_by_osmosis_edge_handles_null_root_dependency_ids() -> None:
+    """Same NULL-safety as above, one level deeper (root -> cell-task -> dev)."""
+    dev_task = _build_task(parent_task_id=uuid4(), sequence=0)
+    cell_task = _build_task(parent_task_id=uuid4())
+    root = _build_task(dependency_ids=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(side_effect=[dev_task, cell_task, root]))
+    add_dep_mock = AsyncMock()
+    _bind(svc, "add_dependency", add_dep_mock)
+    await svc.wire_by_osmosis_edge(dev_task.id)  # must not raise
+    add_dep_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unblock_dependents_appends_when_completed_dependency_ids_is_none() -> (
+    None
+):
+    """A restored/reconstructed dependent row with NULL
+    completed_dependency_ids must not crash the append at this chokepoint."""
+    blocker_id = uuid4()
+    other_id = uuid4()
+    dependent = _build_task(
+        dependency_ids=[blocker_id, other_id],
+        completed_dependency_ids=None,
+        status=TaskStatus.BLOCKED,
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(all=MagicMock(return_value=[dependent]))
+            )
+        )
+    )
+    session.flush = AsyncMock()
+    svc = TaskService(session)
+    await svc._unblock_dependents(blocker_id)  # must not raise
+    assert dependent.completed_dependency_ids == [blocker_id]
+    assert dependent.dependency_ids == [other_id]
+
+
+@pytest.mark.asyncio
+async def test_list_pending_for_agent_handles_null_dependency_ids() -> None:
+    """A restored/reconstructed PENDING task with NULL dependency_ids must
+    not crash the claim-availability listing (treated as no dependencies)."""
+    task = _build_task(dependency_ids=None)
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(all=MagicMock(return_value=[task]))
+            )
+        )
+    )
+    svc = TaskService(session)
+    _bind(svc, "unmet_dependency_ids", AsyncMock(return_value=[]))
+    _bind(svc, "_claim_blocked_by_sequence", AsyncMock(return_value=None))
+    available = await svc.list_pending_for_agent(uuid4())  # must not raise
+    assert available == [task]
