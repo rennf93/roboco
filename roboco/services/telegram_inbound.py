@@ -780,12 +780,14 @@ class TelegramInboundEngine(BaseService):
         if sess is None or sess.pending_draft is None:
             return False, "No draft is pending."
         try:
-            task_id = await get_prompter_service(self.session).confirm_live_draft(
+            service = get_prompter_service(self.session)
+            task_id = await service.confirm_live_draft(
                 sess.pending_draft,
                 _CEO_UUID,
                 project_id=UUID(sess.project_id) if sess.project_id else None,
                 route="board",
             )
+            await service.mark_live_drafts_consumed(sess.session_id, task_id)
             await self.session.commit()
         except Exception as exc:
             # A mid-write failure here poisons the shared session for every
