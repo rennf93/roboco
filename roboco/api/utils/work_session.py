@@ -23,6 +23,20 @@ from roboco.services.work_session import WorkSessionService
 # =============================================================================
 
 
+async def _assert_cell_pm_owns_session(
+    service: WorkSessionService, session_id: UUID, agent: AgentContext
+) -> None:
+    """Raise 403 unless ``agent`` is a cell PM who owns the session's task cell."""
+    if agent.role != AgentRole.CELL_PM:
+        return
+    team = await service.task_team_for_session(session_id)
+    if agent.team is None or team is None or team != agent.team:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="cell PM does not own this session's task cell",
+        )
+
+
 async def _assert_ownership(
     service: WorkSessionService,
     session_id: UUID,
@@ -44,14 +58,9 @@ async def _assert_ownership(
             detail=f"Work session not found: {session_id}",
         )
     if pm_op:
-        if agent.role == AgentRole.CELL_PM:
-            team = await service.task_team_for_session(session_id)
-            if agent.team is None or team is None or team != agent.team:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="cell PM does not own this session's task cell",
-                )
-    elif session.agent_id != agent.agent_id:
+        await _assert_cell_pm_owns_session(service, session_id, agent)
+        return
+    if session.agent_id != agent.agent_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="not the owner of this work session",

@@ -5,13 +5,12 @@ Route-glue helpers backing roboco/api/routes/tasks.py.
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.api.schemas.tasks import TaskUpdate
 from roboco.db.tables import TaskTable
 from roboco.exceptions import GitError
 from roboco.models.base import AgentRole, TaskStatus
@@ -23,6 +22,9 @@ from roboco.services.base import (
 )
 from roboco.services.permissions import AgentContext
 from roboco.services.task import TaskService
+
+if TYPE_CHECKING:
+    from roboco.api.schemas.tasks import TaskUpdate
 
 # #13: lifecycle-bypass hatch states — a privileged PATCH into one of these is a
 # forced override that must carry the explicit ``force`` acknowledgement flag.

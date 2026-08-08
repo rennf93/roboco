@@ -55,22 +55,24 @@ def _compute_file_range(
     return s, e_, truncated
 
 
+# Ordered (exception type, HTTP status) pairs — first match wins. Kept as a
+# lookup table rather than an if/elif chain so _translate_error stays a
+# single, low-complexity dispatch (mirrors roboco/api/utils/pitch.py's
+# _SERVICE_ERROR_HTTP).
+_ERROR_STATUS_MAP: tuple[tuple[type[Exception], int], ...] = (
+    (NotFoundError, status.HTTP_404_NOT_FOUND),
+    (UnauthorizedError, status.HTTP_403_FORBIDDEN),
+    (ValidationError, status.HTTP_400_BAD_REQUEST),
+    (GitTimeoutError, status.HTTP_504_GATEWAY_TIMEOUT),
+    (GitCommandError, status.HTTP_500_INTERNAL_SERVER_ERROR),
+)
+
+
 def _translate_error(e: ServiceError | GitError) -> HTTPException:
     """Translate service errors to HTTP exceptions."""
-    if isinstance(e, NotFoundError):
-        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
-    if isinstance(e, UnauthorizedError):
-        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
-    if isinstance(e, ValidationError):
-        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
-    if isinstance(e, GitTimeoutError):
-        return HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=e.message
-        )
-    if isinstance(e, GitCommandError):
-        return HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
-        )
+    for exc_type, code in _ERROR_STATUS_MAP:
+        if isinstance(e, exc_type):
+            return HTTPException(status_code=code, detail=e.message)
     return HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
     )
@@ -100,6 +102,16 @@ async def _resolve_project_slug(identifier: str, db: AsyncSession) -> str:
     return str(project.slug)
 
 
+def _parse_remote_ref(
+    ref: str, last_commit: str | None
+) -> tuple[str, bool, str | None] | None:
+    """Classify a `refs/remotes/...` ref, or None for the origin/HEAD pointer."""
+    _remote_name, _, name = ref.removeprefix("refs/remotes/").partition("/")
+    if not name or name == "HEAD":
+        return None  # origin/HEAD is a symbolic pointer, not a branch
+    return name, True, last_commit
+
+
 def _parse_branch_line(line: str) -> tuple[str, bool, str | None] | None:
     """Classify one `%(refname)|%(objectname:short)` line as (name, is_remote,
     last_commit), or None for skippable entries (blank, origin/HEAD, other ref
@@ -115,8 +127,5 @@ def _parse_branch_line(line: str) -> tuple[str, bool, str | None] | None:
     if ref.startswith("refs/heads/"):
         return ref.removeprefix("refs/heads/"), False, last_commit
     if ref.startswith("refs/remotes/"):
-        _remote_name, _, name = ref.removeprefix("refs/remotes/").partition("/")
-        if not name or name == "HEAD":
-            return None  # origin/HEAD is a symbolic pointer, not a branch
-        return name, True, last_commit
+        return _parse_remote_ref(ref, last_commit)
     return None

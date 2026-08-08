@@ -59,7 +59,6 @@ from roboco.api.utils.tasks import (
     _StatusOverride,
     _translate_error,
 )
-from roboco.db.tables import TaskTable
 from roboco.enforcement import get_valid_transitions
 from roboco.exceptions import GitError, TaskLifecycleError
 from roboco.foundation.policy import task_completeness as tc

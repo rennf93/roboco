@@ -28,7 +28,7 @@ from roboco.api.schemas.work_session import (
 )
 from roboco.api.utils.work_session import _assert_ownership
 from roboco.models.work_session import WorkSessionCreate, WorkSessionStatus
-from roboco.services.work_session import WorkSessionService, get_work_session_service
+from roboco.services.work_session import get_work_session_service
 
 router = APIRouter()
 

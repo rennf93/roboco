@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
 
 from fastapi import HTTPException, status
 
@@ -32,6 +31,8 @@ from roboco.services.x_credentials import get_x_credentials_service
 from roboco.services.x_video_client import build_x_video_poster
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import ProjectTable, TaskTable
