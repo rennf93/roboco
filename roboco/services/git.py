@@ -5673,9 +5673,18 @@ class GitService(BaseService):
                 f"origin/{base_branch}...origin/{task.branch_name}",
             ],
         )
-        left, _, right = count.stdout.strip().partition(" ")
-        behind = int(left) if left.strip().isdigit() else 0
-        ahead = int(right) if right.strip().isdigit() else 0
+        # `git rev-list --left-right --count` separates the two counts with a
+        # TAB, not a space — `.partition(" ")` (the original parse here) never
+        # found one and silently fell through to 0/0 on every real branch,
+        # masking every genuine ahead count behind this method (harmless for
+        # the pre-existing `behind`-only callers, since a false "0 behind"
+        # just skips an unneeded freshen; not harmless for a caller that
+        # needs `ahead`). `.split()` is whitespace-agnostic, matching the
+        # already-correct sibling parse in `_ahead_behind` above.
+        parts = count.stdout.split()
+        valid = len(parts) == _REV_LIST_PARTS
+        behind = int(parts[0]) if valid and parts[0].isdigit() else 0
+        ahead = int(parts[1]) if valid and parts[1].isdigit() else 0
         return behind, ahead
 
     async def close_pull_request(
