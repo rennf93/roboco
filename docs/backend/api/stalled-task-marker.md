@@ -69,6 +69,8 @@ The clear is fire-and-forget via `_schedule_bg`, mirroring the counter write-thr
 
 Returns the current stalled set, every task with a non-null `stalled_reason`, ordered oldest-stalled-first. The route is a thin handler; all query and duration-classification logic lives in `TaskService.list_stalled_tasks`.
 
+The query excludes terminal (`COMPLETED`/`CANCELLED`) tasks: the only marker-clear path, `AgentOrchestrator._clear_task_stalled_marker`, runs solely from the dispatcher's re-observation branch, which never fires once a task reaches a terminal status. Without the exclusion, a task marked stalled that later completed or was cancelled by some other path (not a genuine-progress re-observation) would stay in this list forever even though there is nothing left to act on.
+
 **Response** (`list[StalledTaskResponse]`, `roboco/api/schemas/dashboard.py`):
 
 ```json
@@ -99,7 +101,7 @@ This endpoint sits on the existing `/api/dashboard` router, which is router-leve
 
 ## Testing
 
-- `tests/unit/services/test_task_stalled_marker.py`: `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks` in isolation (set, clear-when-set, no-op clear-when-unset, duration computation).
+- `tests/unit/services/test_task_stalled_marker.py`: `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks` in isolation (set, clear-when-set, no-op clear-when-unset, duration computation, and `test_list_stalled_tasks_excludes_terminal_statuses_at_query_level` pinning the `status NOT IN ('completed', 'cancelled')` predicate on the compiled SQL).
 - `tests/unit/runtime/test_stalled_marker.py`: the orchestrator wiring; a breaker trip calls `mark_stalled` alongside `_notify_stuck_agent`, one-shot per trip.
 - `tests/unit/runtime/test_pm_respawn_reset.py`: the genuine-forward-progress branch clears the marker via `_schedule_bg`.
 - `tests/integration/test_dashboard_routes.py`: `GET /api/dashboard/stalled-tasks` end to end against a real DB.
