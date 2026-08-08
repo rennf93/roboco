@@ -121,7 +121,7 @@ function DeliverySection({ delivery }: DeliverySectionProps) {
         <DeliveryMetric
           label="Done (30 d)"
           value={delivery.completed_30d ?? 0}
-          hint="Tasks completed in the last 30 days"
+          hint="Root delivery tasks completed in the last 30 days — same population as the Speed section's median lead time"
         />
       </div>
     </div>
@@ -221,7 +221,7 @@ function SpeedSection({ medianLeadTimeHours }: SpeedSectionProps) {
       <SectionLabel>Speed</SectionLabel>
       <div className="rounded-lg border p-3">
         <div className="flex items-center justify-between text-sm">
-          <HelpTip label="Hours from task creation to completion, over tasks completed in the last 30 days">
+          <HelpTip label="Hours from creation to completion, over root delivery tasks completed in the last 30 days — excludes held CEO-approval drafts (X posts, video posts, release proposals), administrative tasks, and board-program exploration cycles">
             <span className="text-muted-foreground">Median lead time</span>
           </HelpTip>
           {hasData ? (

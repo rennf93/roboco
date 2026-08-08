@@ -968,6 +968,35 @@ VAULT_NOTE_SOURCE = "vault_note"
 # explicit exemption.
 EVAL_BENCH_SOURCE = "eval_bench"
 
+# Sources excluded from the delivery lead-time population
+# (``get_delivery_stats_30d`` below): held CEO-approval drafts and standing
+# reports that complete the instant a Board role files/the CEO approves them,
+# not when real delivery work ships. X_SOURCES + the feature-spotlight
+# exploration cover x_post/x_reply/x_feature (+ equivalents x_editorial/
+# x_campaign/x_barfly); VIDEO_HELD_SOURCES covers the held video_post draft
+# (mp4s + captions ready for CEO approval — never dispatched, exactly like
+# X_SOURCES). RELEASE_MANAGER_SOURCE covers held release proposals. A
+# "ceo_report" (Periscope/Sentinel) is never a TaskTable row at all — filed
+# as a report, not a task — so it needs no entry here. Every board-program
+# exploration cycle (board_roadmap, board_pest_control, ...) is excluded
+# separately, by task_type == ADMINISTRATIVE, not by source.
+#
+# VIDEO_SOURCE (the video-authoring task itself) is deliberately NOT in this
+# set: per the comment on VIDEO_SOURCE above, it IS dispatched — a normal,
+# pre-assigned UX/UI code task like any other cell delivery task
+# (video_engine.open_video_task creates it task_type=CODE, status=PENDING,
+# with a real assignee) — so excluding it would drop genuine delivery work
+# from the lead-time population, the same way excluding a regular backend
+# code task would.
+LEAD_TIME_EXCLUDED_SOURCES: frozenset[str] = frozenset(
+    {
+        *X_SOURCES,
+        X_FEATURE_EXPLORATION_SOURCE,
+        *VIDEO_HELD_SOURCES,
+        RELEASE_MANAGER_SOURCE,
+    }
+)
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -9458,11 +9487,37 @@ class TaskService(BaseService):
         return {row[0].value: row[1] for row in result.all()}
 
     async def get_delivery_stats_30d(self) -> dict[str, Any]:
-        """Return completed-task count and median lead time for the last 30 days.
+        """Return completed-task count and median lead time for real delivery
+        work completed in the last 30 days.
+
+        The population is scoped to one well-defined unit per piece of work —
+        **root delivery tasks** (``parent_task_id IS NULL``) — so a Main-PM
+        coordination root is counted once, never again for each of its cell
+        tasks and dev subtasks. For a MegaTask, that root is the branchless
+        umbrella (its root-subtasks are children of the umbrella and are
+        excluded); a single-task delivery's root is the coordination root
+        itself.
+
+        It further excludes non-delivery rows that would otherwise pollute
+        "intake to merged" with completions that carry no real delivery
+        lead time:
+
+        - ``task_type == administrative`` — process/administrative tasks and
+          every board-program exploration cycle (board_roadmap,
+          board_pest_control, ...), which complete the moment a Board role
+          files its proposal, not when anything ships.
+        - :data:`LEAD_TIME_EXCLUDED_SOURCES` — held CEO-approval drafts (X
+          posts, video posts, release proposals) that complete the instant
+          the CEO approves them, seconds after being drafted.
+
+        ``completed_30d`` and ``median_lead_time_hours`` are computed from
+        the SAME filtered row set, so the two figures always describe the
+        same population.
 
         Queries tasks WHERE status=completed AND completed_at IS NOT NULL AND
-        completed_at >= now()-30d.  Lead time is ``completed_at - created_at``
-        expressed in hours; the median is computed with :func:`statistics.median`.
+        completed_at >= now()-30d, plus the scoping above.  Lead time is
+        ``completed_at - created_at`` expressed in hours; the median is
+        computed with :func:`statistics.median`.
 
         Returns::
 
@@ -9479,6 +9534,9 @@ class TaskService(BaseService):
                 TaskTable.status == TaskStatus.COMPLETED,
                 TaskTable.completed_at.is_not(None),
                 TaskTable.completed_at >= cutoff,
+                TaskTable.parent_task_id.is_(None),
+                TaskTable.task_type != TaskType.ADMINISTRATIVE,
+                TaskTable.source.notin_(LEAD_TIME_EXCLUDED_SOURCES),
             )
         )
         rows = result.all()
