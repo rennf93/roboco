@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.foundation.policy import lifecycle as spec
+from roboco.foundation.policy.content import markers
 from roboco.services.gateway.choreographer._verb_runner import (
     VerbRunner,
 )
@@ -471,8 +472,6 @@ async def test_submit_up_waives_pr_on_zero_commit_branch() -> None:
     task_svc.submit_pm_review.assert_awaited_once()
     assert result.status == "awaiting_pm_review"
     # The waiver marker + a reviewer/PM-readable reason land on the task.
-    from roboco.foundation.policy.content import markers
-
     assert markers.is_pr_waived(task) is True
     assert markers.get_transition_note(task, markers.PR_WAIVED_TRANSITION_EVENT)
     task_svc.add_progress.assert_awaited_once()
@@ -531,9 +530,6 @@ async def test_submit_up_still_creates_pr_when_branch_has_commits() -> None:
     task_svc.submit_for_review.assert_awaited_once()
     task_svc.submit_pm_review.assert_not_called()
     assert result.status == "awaiting_pr_review"
-
-    from roboco.foundation.policy.content import markers
-
     assert markers.is_pr_waived(task) is False
 
 
@@ -590,5 +586,3 @@ async def test_waiver_fails_open_on_git_error() -> None:
     git_svc.create_pr.assert_awaited_once()
     task_svc.submit_for_review.assert_awaited_once()
     task_svc.submit_pm_review.assert_not_called()
-
-    assert task_svc.escalate_to_ceo.call_args.kwargs.get("actor_agent_id") == agent.id

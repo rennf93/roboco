@@ -78,14 +78,54 @@ class VerbRunner:
                 "re-issue your claim verb."
             )
         intent = spec._INTENT_VERBS[intent_name]
+        pr_waived = await self._run_pre_side_effects(intent, task, agent)
+        task = await self._run_composed_actions(intent, task, agent, context, pr_waived)
+        # A TRAILING None (the last composed action returned None because its
+        # source-status check failed under a concurrent transition) is the
+        # verb's own result and flows out as the runner's return value. The
+        # side_effects loop must NOT run on that None — a side effect
+        # dereferences task.branch_name / task.pr_number and crashes
+        # (_do_push_branch(None) -> None.branch_name AttributeError), turning
+        # the clean INVALID_STATE the entry/intermediate guards give into a
+        # 500/respawn loop. Skip side effects so the caller's `if task is None`
+        # handler surfaces the verb-specific message.
+        if task is not None:
+            for side_effect_name in intent.side_effects:
+                await self._dispatch_side_effect(side_effect_name, task, agent)
+        return task
+
+    async def _run_pre_side_effects(self, intent: Any, task: Any, agent: Any) -> bool:
+        """Run ``intent.pre_side_effects``, detecting + waiving a zero-diff
+        PR creation along the way. Extracted from ``run_intent`` to keep
+        that method's own cyclomatic complexity within the xenon gate.
+
+        Returns whether PR creation was waived (threaded into
+        ``_run_composed_actions`` to reroute the gate-entry action).
+        """
         pr_waived = False
         for side_effect_name in intent.pre_side_effects:
-            if side_effect_name in _PR_CREATION_SIDE_EFFECTS:
-                waived = await self._maybe_waive_pr_creation(task, agent)
-                if waived:
-                    pr_waived = True
-                    continue
+            if (
+                side_effect_name in _PR_CREATION_SIDE_EFFECTS
+                and await self._maybe_waive_pr_creation(task, agent)
+            ):
+                pr_waived = True
+                continue
             await self._dispatch_side_effect(side_effect_name, task, agent)
+        return pr_waived
+
+    async def _run_composed_actions(
+        self,
+        intent: Any,
+        task: Any,
+        agent: Any,
+        context: spec.Context,
+        pr_waived: bool,
+    ) -> Any:
+        """Run ``intent.composes`` inside a savepoint, rerouting the
+        gate-entry action when PR creation was waived. Extracted from
+        ``run_intent`` to keep that method's own cyclomatic complexity
+        within the xenon gate.
+        """
         async with self.task_service.session.begin_nested():
             for position, action_name in enumerate(intent.composes):
                 # A composed atomic action (claim/set_plan/start) returns None when
@@ -109,7 +149,7 @@ class VerbRunner:
                 if position > 0 and task is None:
                     raise ValueError(
                         f"INVALID_STATE: a composed action before '{action_name}' in "
-                        f"'{intent_name}' returned no task — its source status was "
+                        f"'{intent.name}' returned no task — its source status was "
                         "invalid, most likely because a concurrent transition changed "
                         "the task between the precondition gate and execution. "
                         "Re-fetch with evidence(task_id) and re-issue your verb."
@@ -123,19 +163,9 @@ class VerbRunner:
                 if pr_waived and action_name == _GATE_ENTRY_ACTION:
                     task = await self._do_submit_pm_review(task, agent, context)
                 else:
-                    task = await self._dispatch_atomic(action_name, task, agent, context)
-        # A TRAILING None (the last composed action returned None because its
-        # source-status check failed under a concurrent transition) is the
-        # verb's own result and flows out as the runner's return value. The
-        # side_effects loop must NOT run on that None — a side effect
-        # dereferences task.branch_name / task.pr_number and crashes
-        # (_do_push_branch(None) -> None.branch_name AttributeError), turning
-        # the clean INVALID_STATE the entry/intermediate guards give into a
-        # 500/respawn loop. Skip side effects so the caller's `if task is None`
-        # handler surfaces the verb-specific message.
-        if task is not None:
-            for side_effect_name in intent.side_effects:
-                await self._dispatch_side_effect(side_effect_name, task, agent)
+                    task = await self._dispatch_atomic(
+                        action_name, task, agent, context
+                    )
         return task
 
     async def _maybe_waive_pr_creation(self, task: Any, agent: Any) -> bool:
