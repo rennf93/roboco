@@ -18,7 +18,7 @@ Runs inside `VerbRunner._run_pre_side_effects`, intercepted for exactly two pre-
 2. Call `GitService.is_behind_base(task, base_branch=parent, ...)` and read its `ahead` count.
 3. `ahead == 0` → waive: stamp the marker, write the transition note + a progress entry, and skip the `create_pr`/`create_root_pr` call entirely.
 4. `ahead > 0` → proceed normally; no waiver, no behavior change.
-5. Any exception (network blip, missing workspace, unresolvable parent) → **fail open**: treat as not-waived and let the normal `create_pr`/`create_root_pr` attempt run and surface its own error. A flaky check must never silently waive a PR that a retry would have created fine.
+5. Any exception (network blip, missing workspace, unresolvable parent) → **fail open**: treat as not-waived and let the normal `create_pr`/`create_root_pr` attempt run and surface its own error. A flaky check must never silently waive a PR that a retry would have created fine. This path logs a `structlog` warning (task id, branch, exception) before returning, so a persistently broken workspace/git no longer degrades back to the GitHub 422 path with no trace of the skipped waiver check.
 
 The detection happens **before** the GitHub call is attempted — not as post-hoc handling of the 422 — so a waived task never makes the doomed API call at all.
 
@@ -39,7 +39,7 @@ When `pr_waived=True`, the composed `submit_for_review` action — which would o
 
   > `PR creation waived: branch 'feature/backend/...' has zero commits relative to its parent branch '...' — report-only work with no diff to review.`
 
-  This rides the existing `TRANSITION_NOTES` marker infrastructure, and a matching entry is also written via `TaskService.add_progress` so it shows on the task's Progress tab, not just its transition history.
+This rides the existing `TRANSITION_NOTES` marker infrastructure, and a matching entry is also written via `TaskService.add_progress` so it shows on the task's Progress tab, not just its transition history.
 
 ## Downstream gate exemptions
 
@@ -59,6 +59,8 @@ Every PR-required gate a normal task would hit on its way to `completed` now als
 **Location:** `roboco/services/git.py`
 
 `git rev-list --left-right --count` separates its two counts with a **TAB**, not a space. The pre-existing parse used `.partition(" ")`, which never found a match and silently fell through to `behind=0, ahead=0` on every real branch. This was harmless for the method's only pre-existing callers (which only read `behind`, where a false "0 behind" just skipped an unneeded freshen) but would have made the zero-diff detection above **false-positive on every non-empty branch** — waiving PR creation for branches that genuinely had commits. Fixed to `.split()` (whitespace-agnostic), matching the already-correct sibling parse in `_ahead_behind`.
+
+**This is a bigger behavior change than the PR-waiver acceptance criteria describe.** Two pre-existing `is_behind_base` callers were previously reading a permanently-false "0 behind" against real git output and are now genuinely activated by this fix: the assembled-PM-submit freshen check (`_impl.py:2807`, `_freshen_assembled_branch_if_behind`, the docstring right above it) and the `i_am_done` behind-base submit gate (`_impl.py:2912`). Both existed before this PR and were silently inert — this fix makes them actually fire on a genuinely-behind branch for the first time, which is a correctness fix, not new functionality.
 
 ## Tests
 

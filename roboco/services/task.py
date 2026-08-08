@@ -274,6 +274,16 @@ def _board_cannot_own(task: TaskTable) -> bool:
     )
 
 
+def _append_missing(values: list[Any] | None, item: Any) -> list[Any]:
+    """NULL-tolerant append-if-absent for list columns.
+
+    Restored/imported rows can carry ``None`` where the ORM default promises a
+    list; returns a list containing ``item`` exactly once either way.
+    """
+    vals = values or []
+    return vals if item in vals else [*vals, item]
+
+
 def _task_type_is_code(task_type: Any) -> bool:
     """True when ``task_type`` is ``TaskType.CODE`` (enum member or its value).
 
@@ -5723,9 +5733,7 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        if blocker_task_id not in task.dependency_ids:
-            new_deps = [*task.dependency_ids, blocker_task_id]
-            task.dependency_ids = new_deps
+        task.dependency_ids = _append_missing(task.dependency_ids, blocker_task_id)
         # Task-dependency blocks always resolve when the blocker task
         # completes — that's inherently an agent-resolvable condition.
         task.blocker_resolver_type = BlockerResolverType.AGENT
@@ -5740,8 +5748,8 @@ class TaskService(BaseService):
 
         # Update the blocker task to reference this as blocked
         blocker = await self.get(blocker_task_id)
-        if blocker and task_id not in blocker.blocker_ids:
-            blocker.blocker_ids = [*blocker.blocker_ids, task_id]
+        if blocker:
+            blocker.blocker_ids = _append_missing(blocker.blocker_ids, task_id)
             await self.session.flush()
 
         self.log.info(
@@ -8402,9 +8410,9 @@ class TaskService(BaseService):
             task.dependency_ids = [
                 dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
             ]
-            if completed_task_id not in task.completed_dependency_ids:
+            if completed_task_id not in (task.completed_dependency_ids or []):
                 task.completed_dependency_ids = [
-                    *task.completed_dependency_ids,
+                    *(task.completed_dependency_ids or []),
                     completed_task_id,
                 ]
             # If no more dependencies, unblock (system action - no role validation)
@@ -8512,7 +8520,7 @@ class TaskService(BaseService):
             "message": message,
             "percentage": percentage,
         }
-        task.progress_updates = [*task.progress_updates, update]
+        task.progress_updates = [*(task.progress_updates or []), update]
         await self.session.flush()
 
         return task
@@ -8556,7 +8564,7 @@ class TaskService(BaseService):
 
         percentage = _derive_plan_pct(sub_tasks, fallback_percentage)
         task.progress_updates = [
-            *task.progress_updates,
+            *(task.progress_updates or []),
             {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "agent_id": str(agent_id),
@@ -8586,14 +8594,14 @@ class TaskService(BaseService):
             return None
 
         checkpoint = {
-            "id": str(UUID(int=len(task.checkpoints))),
+            "id": str(UUID(int=len(task.checkpoints or []))),
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(agent_id),
             "state_summary": state_summary,
             "remaining_work": remaining_work,
             "notes": notes,
         }
-        task.checkpoints = [*task.checkpoints, checkpoint]
+        task.checkpoints = [*(task.checkpoints or []), checkpoint]
         await self.session.flush()
 
         return task
@@ -8616,7 +8624,7 @@ class TaskService(BaseService):
             "timestamp": datetime.now(UTC).isoformat(),
             "author_agent_id": str(agent_id) if agent_id else None,
         }
-        task.commits = [*task.commits, commit]
+        task.commits = [*(task.commits or []), commit]
         await self.session.flush()
 
         return task
@@ -9021,7 +9029,7 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return False
-        if depends_on_id in task.dependency_ids:
+        if depends_on_id in (task.dependency_ids or []):
             return False  # idempotent re-add
         if await self._would_create_cycle(task_id, depends_on_id):
             raise ConflictError(
@@ -9029,7 +9037,7 @@ class TaskService(BaseService):
                 "close a dependency cycle",
                 resource_type="task_dependency",
             )
-        task.dependency_ids = [*task.dependency_ids, depends_on_id]
+        task.dependency_ids = [*(task.dependency_ids or []), depends_on_id]
         await self.session.flush()
         return True
 
@@ -9148,7 +9156,7 @@ class TaskService(BaseService):
         root = await self.get(UUID(str(cell_task.parent_task_id)))
         if root is None:
             return
-        predecessor_root_ids = list(root.dependency_ids)
+        predecessor_root_ids = list(root.dependency_ids or [])
         cell_tasks_by_root: dict = {}
         for pred_root_id in predecessor_root_ids:
             cell_tasks_by_root[pred_root_id] = await self.get_subtasks(
@@ -9189,7 +9197,7 @@ class TaskService(BaseService):
         if root is None:
             return
         groups: list = []
-        for pred_root_id in list(root.dependency_ids):
+        for pred_root_id in list(root.dependency_ids or []):
             for pred_ct in await self.get_subtasks(UUID(str(pred_root_id))):
                 groups.append(await self.get_subtasks(UUID(str(pred_ct.id))))
         for dep_id in by_osmosis_tail_dev_tasks(is_first, groups):
@@ -10376,7 +10384,7 @@ class TaskService(BaseService):
         tasks = list(result.scalars().all())
         available: list[TaskTable] = []
         for task in tasks:
-            if await self.unmet_dependency_ids(list(task.dependency_ids)):
+            if await self.unmet_dependency_ids(list(task.dependency_ids or [])):
                 continue
             if await self._claim_blocked_by_sequence(task) is not None:
                 continue
@@ -11990,7 +11998,7 @@ class TaskService(BaseService):
                 "author_agent_id": str(pm_agent_id),
                 "kind": "merge",
             }
-            task.commits = [*task.commits, merge_entry]
+            task.commits = [*(task.commits or []), merge_entry]
             await self.session.flush()
         return await self.complete(task_id, agent_id=pm_agent_id)
 
