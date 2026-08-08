@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Zero-progress spawn-waste metric + `GET /dashboard/metrics/spawn-waste` (task fe47da3d).** `MetricsService.get_spawn_waste_metrics(days)` prices ended, task-scoped `agent_spawn_sessions` rows that left no forward-progress signal — no `audit_log` `task.*` status advance, no commit, no `progress_updates` entry, no journal entry — inside that session's own `[started_at, ended_at]` window, reusing the same progress-signal reconstruction the respawn breaker already relies on. Returns total/zero-progress session counts, zero-progress cost and its share of total spawn cost for the window, plus `by_agent`/`by_team` breakdowns so a systematically looping role or cell is identifiable. The doctrine note that measurement "rides the existing rework/spawn-waste/`revision_count` dashboard" now names the real endpoint instead of an aspirational one.
+
 - **CodeQL check failures are scope-gated against a task's declared file scope (task 04f606d3).** The in-path PR-review gate's CI-status check (`pr_pass` -> `_ci_status_guard`) no longer blocks on a failing `Analyze (python)` / `Analyze (javascript-typescript)` check-run when the task's declared `intends_to_touch` scope has zero overlap with that check's analyzed language paths — CodeQL scans the whole language on every run, not the diff, so a pre-existing alert outside a task's declared scope isn't that task's defect to fix. A task with no declared scope, a genuinely in-scope CodeQL failure, or any other failing check (tests, lint) still blocks exactly as before.
 
 ### Security
