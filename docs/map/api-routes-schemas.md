@@ -51,6 +51,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/v1/flow_board.py | Board (product_owner/head_marketing) triage/escalate_to_ceo. |
 | roboco/api/routes/v1/flow_auditor.py | Auditor triage/i_am_idle. |
 | roboco/api/routes/v1/flow_pr_reviewer.py | PR-reviewer verbs incl. gate pr_pass/pr_fail. |
+| roboco/api/utils/*.py | Per-route-file non-`@router` helper modules (guards, response/status mappers, error translation) extracted out of `roboco/api/routes/` in the 2026-08-08 `no_helpers_in_routes` cleanup (batches A + B) — see `docs/map/_complete_map.md`'s "Route-helper extraction" entries for the full file-by-file breakdown. |
 | roboco/api/schemas/*.py | Per-domain Pydantic request/response models (one per route file). |
 | roboco/api/schemas/v1/flow.py | All flow-verb request bodies + `StrList` coercion validator. |
 | roboco/api/schemas/v1/do.py | All do-verb request bodies. |

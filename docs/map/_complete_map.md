@@ -5670,6 +5670,8 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 
 **Route-helper extraction (2026-08-08, `no_helpers_in_routes` cleanup, batch A).** `roboco/api/utils/` gained 13 new per-route-file modules (`a2a.py`, `coroner.py`, `dogfood.py`, `git.py`, `pitch.py`, `release.py`, `sentinel.py`, `spackle.py`, `system.py`, `tasks.py`, `telegram.py`, `video.py`, `work_session.py`) holding the non-`@router` module-level helpers that `roboco/api/routes/{same name}.py` used to define inline — a retry of the reverted `d48463f7`/PR#769/#793 extraction, done this time one file at a time with the `@router` inventory verified unchanged after each. `telegram.py`'s `mount_telegram_miniapp_auth` moved too (app-wiring, not a route helper; `app.py` and its integration test now import it from here). Batch B (the remaining `roboco/api/routes/` files) is a separate, disjoint-file follow-up.
 
+**Route-helper extraction, batch B (2026-08-08, same cleanup, the batch-A follow-up).** `roboco/api/utils/` gained 18 more per-route-file modules (`board_programs.py`, `dashboard.py`, `docs.py`, `github_app.py`, `mirror.py`, `optimal.py`, `periscope.py`, `pest_control.py`, `playbooks.py`, `product.py`, `project.py`, `prompter_live.py`, `provider.py`, `research.py`, `roadmap.py`, `scales.py`, `secretary.py`, `x.py`) — every remaining `roboco/api/routes/` file that still reported a `no_helpers_in_routes` finding after batch A, same one-file-at-a-time discipline and the same never-touch-`@router`/schemas rule. `board_programs.py`'s `BoardProgramResponse` response model stays defined in the route module untouched (`to_response()` resolves it via a deferred import to avoid a circular import); that pre-existing model placement is waived (`.roboco/conventions.yml`) rather than moved, per the task's explicit instruction not to repeat the reverted `d48463f7`/#769/#793 regression. `research.py`'s module-level quota tracker singleton moved along with `_enforce_quota`, so `test_research_routes.py`'s monkeypatch target repoints to `roboco.api.utils.research`. Between the two batches every `roboco/api/routes/` file now reports 0 `no_helpers_in_routes` findings except `orchestrator.py`, which batch A deliberately left untouched (4 remaining hits, tracked separately).
+
 ## Files
 
 | Path | Role | approx LOC |
@@ -5696,6 +5698,24 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `roboco/api/utils/dogfood.py` | Helpers extracted from `routes/dogfood.py`: CEO-only guard, status/response mapping for Dogfood cycle tasks | ~34 |
 | `roboco/api/utils/spackle.py` | Helpers extracted from `routes/spackle.py`: CEO-only guard, status/response mapping for Spackle cycle tasks | ~34 |
 | `roboco/api/utils/system.py` | Helper extracted from `routes/system.py`: rate-limit resume-at computation | ~18 |
+| `roboco/api/utils/prompter_live.py` | Helpers extracted from `routes/prompter_live.py`: service-error translation, intake-scope resolution, batch re-interview kickoff | ~88 |
+| `roboco/api/utils/x.py` | Helpers extracted from `routes/x.py`: CEO-only guard, status/response/history-response mapping for X post-queue tasks | ~83 |
+| `roboco/api/utils/provider.py` | Helpers extracted from `routes/provider.py`: provider-remediation lookup (+ dict), complexity-override parsing | ~64 |
+| `roboco/api/utils/research.py` | Helpers extracted from `routes/research.py`: role guard, `RESEARCH_ROLES`, module-level quota tracker + `_enforce_quota` | ~49 |
+| `roboco/api/utils/board_programs.py` | Helpers extracted from `routes/board_programs.py`: CEO-only guard, response mapping (deferred import of the route module's `BoardProgramResponse` to dodge a circular import) | ~45 |
+| `roboco/api/utils/project.py` | Helpers extracted from `routes/project.py`: project-or-404 lookup, action-response mapping | ~39 |
+| `roboco/api/utils/periscope.py` | Helpers extracted from `routes/periscope.py`: CEO-only guard, response mapping | ~37 |
+| `roboco/api/utils/roadmap.py` | Helpers extracted from `routes/roadmap.py`: CEO-only guard, status/response mapping for roadmap-cycle-item tasks | ~35 |
+| `roboco/api/utils/mirror.py` | Helpers extracted from `routes/mirror.py`: CEO-only guard, status/response mapping for messaging-fix tasks | ~34 |
+| `roboco/api/utils/pest_control.py` | Helpers extracted from `routes/pest_control.py`: CEO-only guard, status/response mapping for bug-hunt tasks | ~34 |
+| `roboco/api/utils/scales.py` | Helpers extracted from `routes/scales.py`: CEO-only guard, status/response mapping for rebalance-plan tasks | ~34 |
+| `roboco/api/utils/optimal.py` | Helper extracted from `routes/optimal.py`: KB-denial response builder | ~33 |
+| `roboco/api/utils/docs.py` | Helper extracted from `routes/docs.py`: unauthorized-response builder | ~26 |
+| `roboco/api/utils/dashboard.py` | Helper extracted from `routes/dashboard.py`: auditor-or-CEO guard (+ role frozenset) | ~26 |
+| `roboco/api/utils/playbooks.py` | Helper extracted from `routes/playbooks.py`: curator-role guard (+ role frozenset) | ~20 |
+| `roboco/api/utils/secretary.py` | Helper extracted from `routes/secretary.py`: secretary-or-CEO guard (renamed `_require`→`require`, + role frozenset) | ~20 |
+| `roboco/api/utils/github_app.py` | Helper extracted from `routes/github_app.py`: CEO-only guard | ~11 |
+| `roboco/api/utils/product.py` | Helper extracted from `routes/product.py`: mapping-list response builder | ~11 |
 | `roboco/api/__init__.py` | Deliberately does NOT re-export `app` (circular-import guard, documented) | ~14 |
 | `roboco/security.py` | fastapi-guard 7.2.1 / guard-core 3.3.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~407 |
 
