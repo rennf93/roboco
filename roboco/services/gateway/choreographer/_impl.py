@@ -2731,13 +2731,20 @@ class Choreographer:
 
     async def _assembled_submit_guards(
         self, t: Any, task_id: UUID, verb: str
-    ) -> Envelope | None:
+    ) -> tuple[Envelope | None, int | None]:
         """Assembly integrity (#11) then behind-base auto-sync (B2) for the
         assembled PM submits. Base resolution fails open (a malformed parent
-        ref must not strand the submit — the merge layer keeps its checks)."""
+        ref must not strand the submit — the merge layer keeps its checks).
+
+        Returns ``(rejection_envelope, ahead)`` — see
+        ``_freshen_assembled_branch`` for what ``ahead`` means and when it is
+        ``None``. The caller threads a non-``None`` ``ahead`` into
+        ``VerbRunner.run_intent`` so the PR-waiver check reuses this same
+        probe's fetch instead of running its own.
+        """
         guard = await self._assembly_integrity_guard(t, verb=verb)
         if guard is not None:
-            return guard
+            return guard, None
         try:
             base_branch = await resolve_parent_branch(t, self.task)
         except Exception as exc:
@@ -2787,7 +2794,7 @@ class Choreographer:
 
     async def _freshen_assembled_branch(
         self, t: Any, *, base_branch: str, verb: str
-    ) -> Envelope | None:
+    ) -> tuple[Envelope | None, int | None]:
         """Behind-base auto-sync for the assembled PM submits (B2).
 
         Re-submitting a cell/root head whose base moved re-reviews stale work
@@ -2800,28 +2807,39 @@ class Choreographer:
         PM's own clone and origin each carry unique commits) is likewise a
         hard reject, so the PM routes a conflict-resolution revision instead
         of re-submitting blind.
+
+        Returns ``(rejection_envelope, ahead)``. ``ahead`` is this probe's own
+        ``is_behind_base`` ahead-count, handed back to the caller so the
+        downstream PR-waiver check (``VerbRunner._maybe_waive_pr_creation``)
+        can reuse it instead of a second ``git fetch origin`` for the same
+        branch/base pair — but only when it is still trustworthy: ``None`` no
+        branch/base to probe, the probe itself failed, OR a rebase ran. A
+        rebase moves the branch tip onto a new base and can drop now-empty
+        commits, so the pre-rebase ahead count is not guaranteed to match the
+        post-rebase branch — the waiver check must re-fetch fresh in that
+        case (the one deliberate second fetch this fix leaves in place).
         """
         if not getattr(t, "branch_name", None) or not base_branch:
-            return None
+            return None, None
         try:
-            behind, _ahead = await self.git.is_behind_base(t, base_branch=base_branch)
+            behind, ahead = await self.git.is_behind_base(t, base_branch=base_branch)
         except Exception as exc:
             logger.warning("assembled_freshen_skip", task_id=str(t.id), error=str(exc))
-            return None
+            return None, None
         if behind <= 0:
-            return None
+            return None, ahead
         try:
             result = await self.git.sync_task_branch(t, base_branch=base_branch)
         except Exception as exc:
             logger.warning(
                 "assembled_freshen_sync_failed", task_id=str(t.id), error=str(exc)
             )
-            return None
+            return None, None
         reject = self._freshen_rejection_for(
             result, behind=behind, base_branch=base_branch, verb=verb
         )
         if reject is not None:
-            return reject
+            return reject, None
         logger.info(
             "assembled_branch_freshened",
             task_id=str(t.id),
@@ -2830,7 +2848,10 @@ class Choreographer:
             behind=behind,
             status=result.get("status"),
         )
-        return None
+        # A rebase just ran — see the ahead-staleness note in the docstring
+        # above. Return None so the caller's downstream waiver check fetches
+        # its own fresh ahead-count against the just-rebased branch.
+        return None, None
 
     @staticmethod
     def _freshen_rejection_for(
@@ -6961,9 +6982,15 @@ class Choreographer:
         # head-sha comparison runs (mirroring submit_root).
         if guard is None:
             guard = await self._submit_up_unchanged_pr_guard(t, briefing)
+        precomputed_ahead: int | None = None
         if guard is None:
-            # Assembly integrity (#11) + behind-base auto-sync (B2).
-            guard = await self._assembled_submit_guards(t, task_id, "submit_up")
+            # Assembly integrity (#11) + behind-base auto-sync (B2). Reuses
+            # this probe's `ahead` count for the PR-waiver check inside
+            # run_intent instead of a second `git fetch origin` against the
+            # same branch/base pair.
+            guard, precomputed_ahead = await self._assembled_submit_guards(
+                t, task_id, "submit_up"
+            )
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
@@ -6974,7 +7001,7 @@ class Choreographer:
             )
 
         outcome = await self._submit_up_run_intent(
-            t, agent, spec_ctx, briefing, role_str
+            t, agent, spec_ctx, briefing, role_str, precomputed_ahead=precomputed_ahead
         )
         if isinstance(outcome, Envelope):
             return await self._emit_rejection(
@@ -7003,6 +7030,8 @@ class Choreographer:
         spec_ctx: spec_module.Context,
         briefing: dict[str, Any],
         role_str: str,
+        *,
+        precomputed_ahead: int | None = None,
     ) -> Any:
         """Dispatch the submit_up composition through VerbRunner.
 
@@ -7012,7 +7041,9 @@ class Choreographer:
         """
         runner = self._verb_runner()
         try:
-            after = await runner.run_intent("submit_up", t, agent, spec_ctx)
+            after = await runner.run_intent(
+                "submit_up", t, agent, spec_ctx, precomputed_ahead=precomputed_ahead
+            )
         except Exception as exc:
             return Envelope.invalid_state(
                 message=f"verb runner failed: {exc}",
@@ -8230,9 +8261,15 @@ class Choreographer:
         # relies on the reviewer to re-fail if the diff is still bad.
         if guard is None:
             guard = await self._submit_root_unchanged_pr_guard(t, briefing)
+        precomputed_ahead: int | None = None
         if guard is None:
-            # Assembly integrity (#11) + behind-base auto-sync (B2).
-            guard = await self._assembled_submit_guards(t, task_id, "submit_root")
+            # Assembly integrity (#11) + behind-base auto-sync (B2). Reuses
+            # this probe's `ahead` count for the PR-waiver check inside
+            # run_intent instead of a second `git fetch origin` against the
+            # same branch/base pair.
+            guard, precomputed_ahead = await self._assembled_submit_guards(
+                t, task_id, "submit_root"
+            )
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
@@ -8243,7 +8280,13 @@ class Choreographer:
             )
         runner = self._verb_runner()
         try:
-            t = await runner.run_intent("submit_root", t, agent, spec_ctx)
+            t = await runner.run_intent(
+                "submit_root",
+                t,
+                agent,
+                spec_ctx,
+                precomputed_ahead=precomputed_ahead,
+            )
         except Exception as exc:
             return await self._emit_rejection(
                 Envelope.invalid_state(

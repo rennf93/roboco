@@ -58,12 +58,23 @@ class VerbRunner:
         task: Any,
         agent: Any,
         context: spec.Context,
+        *,
+        precomputed_ahead: int | None = None,
     ) -> Any:
         """Run pre-side-effects, then composed atomic actions, then side effects.
 
         Most verbs only need composes→side_effects. A few (submit_up) need a
         git op to run BEFORE the DB transition it gates — those declare
         ``pre_side_effects`` which run first, outside the savepoint.
+
+        ``precomputed_ahead`` — when the caller (submit_up/submit_root's
+        behind-base freshen probe, ``_assembled_submit_guards`` in
+        ``_impl.py``) already fetched origin and computed a trustworthy
+        ahead-count for this same branch/base pair earlier in this same
+        submit, it is threaded through here so the PR-waiver check below
+        reuses it instead of a second ``git fetch origin``. ``None`` (the
+        default, and every non-submit_up/root caller) means the waiver
+        check fetches fresh itself.
 
         Returns the final task object (post-composition). Raises whatever
         the underlying TaskService methods raise; the savepoint context
@@ -82,7 +93,9 @@ class VerbRunner:
                 "re-issue your claim verb."
             )
         intent = spec._INTENT_VERBS[intent_name]
-        pr_waived = await self._run_pre_side_effects(intent, task, agent)
+        pr_waived = await self._run_pre_side_effects(
+            intent, task, agent, precomputed_ahead
+        )
         task = await self._run_composed_actions(intent, task, agent, context, pr_waived)
         # A TRAILING None (the last composed action returned None because its
         # source-status check failed under a concurrent transition) is the
@@ -98,7 +111,13 @@ class VerbRunner:
                 await self._dispatch_side_effect(side_effect_name, task, agent)
         return task
 
-    async def _run_pre_side_effects(self, intent: Any, task: Any, agent: Any) -> bool:
+    async def _run_pre_side_effects(
+        self,
+        intent: Any,
+        task: Any,
+        agent: Any,
+        precomputed_ahead: int | None = None,
+    ) -> bool:
         """Run ``intent.pre_side_effects``, detecting + waiving a zero-diff
         PR creation along the way. Extracted from ``run_intent`` to keep
         that method's own cyclomatic complexity within the xenon gate.
@@ -108,12 +127,16 @@ class VerbRunner:
         """
         pr_waived = False
         for side_effect_name in intent.pre_side_effects:
-            if (
-                side_effect_name in _PR_CREATION_SIDE_EFFECTS
-                and await self._maybe_waive_pr_creation(task, agent)
-            ):
-                pr_waived = True
-                continue
+            if side_effect_name in _PR_CREATION_SIDE_EFFECTS:
+                if await self._maybe_waive_pr_creation(task, agent, precomputed_ahead):
+                    pr_waived = True
+                    continue
+                # ahead > 0: create_pr/create_root_pr is about to open a REAL
+                # PR this round. Clear any stale pr_waived marker left by a
+                # prior round (waived -> request_changes -> re-submit with
+                # real commits) — the one-way latch must not keep disabling
+                # the PR-merged backstops once a real PR exists.
+                markers.clear_pr_waived(task)
             await self._dispatch_side_effect(side_effect_name, task, agent)
         return pr_waived
 
@@ -172,7 +195,9 @@ class VerbRunner:
                     )
         return task
 
-    async def _maybe_waive_pr_creation(self, task: Any, agent: Any) -> bool:
+    async def _maybe_waive_pr_creation(
+        self, task: Any, agent: Any, precomputed_ahead: int | None = None
+    ) -> bool:
         """Detect a zero-commit branch ahead of create_pr/create_root_pr.
 
         Report-only work (an audit/findings subtree — the Board Program
@@ -182,6 +207,12 @@ class VerbRunner:
         elsewhere). Detecting it here — BEFORE the create_pr/create_root_pr
         call — means the runner skips the side effect outright instead of
         letting GitHub 422 on "No commits between".
+
+        ``precomputed_ahead``, when supplied, is a trustworthy ahead-count a
+        caller already fetched for this same branch/base pair earlier in
+        this submit (see ``run_intent``'s docstring) — reusing it avoids a
+        second ``git fetch origin`` for the same information. ``None`` means
+        no reusable value exists; this method fetches fresh.
 
         Returns True when PR creation was waived (the caller must skip the
         side effect); records the pr_waived marker plus a reviewer/PM-
@@ -196,9 +227,12 @@ class VerbRunner:
 
         try:
             parent = await resolve_parent_branch(task, self.task_service)
-            _behind, ahead = await self.git_service.is_behind_base(
-                task, base_branch=parent, actor_agent_id=agent.id
-            )
+            if precomputed_ahead is not None:
+                ahead = precomputed_ahead
+            else:
+                _behind, ahead = await self.git_service.is_behind_base(
+                    task, base_branch=parent, actor_agent_id=agent.id
+                )
         except Exception as exc:
             logger.warning(
                 "pr_waiver_check_failed_open",
