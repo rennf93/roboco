@@ -261,6 +261,24 @@ def set_branch_name(stack: E2EStack, task_id: Any, branch_name: str) -> None:
     stack.run_db(_run)
 
 
+def set_task_status_directly(stack: E2EStack, task_id: Any, status: Any) -> None:
+    """Directly set a task's status — a data field, not a lifecycle
+    transition (mirrors ``set_branch_name``'s style: standing in for a
+    resolution a PM would otherwise reach via an admin/out-of-band action
+    that has no scripted flow verb, e.g. a "report-only, nothing to change"
+    leaf reaching a terminal status with zero commits)."""
+    from roboco.db.tables import TaskTable
+    from sqlalchemy import select
+
+    async def _run(session: AsyncSession) -> None:
+        row = (
+            await session.execute(select(TaskTable).where(TaskTable.id == task_id))
+        ).scalar_one()
+        row.status = status
+
+    stack.run_db(_run)
+
+
 def wire_dependency(stack: E2EStack, dependent_id: Any, depends_on_id: Any) -> None:
     """Wire a real dependency edge the same way production sequencing does
     (``TaskService.add_dependency``) — not a direct status write."""
