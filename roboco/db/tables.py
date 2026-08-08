@@ -454,6 +454,19 @@ class TaskTable(Base):
         Boolean, nullable=False, default=False
     )
 
+    # Durable stalled/needs-human marker (migration 092). Set when the
+    # dispatcher's respawn breaker gives up on this task (see
+    # ``_pm_respawn_should_gate`` in roboco/runtime/orchestrator.py) so the
+    # give-up decision is readable on the task row itself, not just a
+    # container log line + a bell notification that ages out. A plain
+    # string (not a DB enum — see StalledReason) so a new reason value
+    # needs no ALTER TYPE migration. Both null = never stalled or since
+    # cleared by genuine forward progress.
+    stalled_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    stalled_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Relationships
     creator: Mapped["AgentTable"] = relationship(
         "AgentTable", foreign_keys=[created_by], lazy="joined"

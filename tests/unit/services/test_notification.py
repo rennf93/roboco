@@ -607,3 +607,134 @@ async def test_send_stale_claim_reaped_notification(
     assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
     assert any(r.priority == NotificationPriority.HIGH for r in rows)
     assert any("stale claim reaped" in r.subject for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# bypass_purpose_dedup — notification-spawn-cap notifications must not
+# collapse distinct (agent_slug, notification_id) trips into one dedup
+# bucket via a shared null related_task_id (F-8ba108e4).
+# ---------------------------------------------------------------------------
+
+_EXPECTED_CAP_TRIP_CEO_ROWS = 2  # two distinct cap trips → two CEO rows
+
+
+class _StatefulDedup:
+    """Replays ``duplicate_unacked_notification_exists``'s real semantics
+    against a fake DB: a second call with the SAME (from_agent, type,
+    related_task_id, exact recipient set) is a duplicate of an unacked prior
+    one; anything else is not. Every notification created via this double is
+    treated as still unacked, matching what the caller-under-test never acks."""
+
+    def __init__(self) -> None:
+        self.seen: set[tuple[Any, Any, Any, frozenset[Any]]] = set()
+
+    async def __call__(
+        self,
+        _db: Any,
+        *,
+        from_agent: Any,
+        notification_type: Any,
+        related_task_id: Any,
+        to_agents: Any,
+    ) -> bool:
+        key = (from_agent, notification_type, related_task_id, frozenset(to_agents))
+        if key in self.seen:
+            return True
+        self.seen.add(key)
+        return False
+
+
+@pytest.mark.asyncio
+async def test_spawn_cap_trips_on_different_keys_both_reach_ceo(
+    svc: NotificationService,
+) -> None:
+    """Two notification-spawn-cap trips on DIFFERENT (agent_slug,
+    notification_id) pairs must both persist and reach the CEO, even though
+    both share from_agent="system"/type=BLOCKER_ESCALATION/related_task_id=
+    None/to_agents=["ceo"] — the exact shape the purpose-dedup would
+    otherwise collapse into one bucket. Regression for F-8ba108e4."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    dedup = _StatefulDedup()
+    with (
+        _patch_db_context(db),
+        patch(
+            "roboco.services.notification.duplicate_unacked_notification_exists",
+            dedup,
+        ),
+    ):
+        await svc.send_notification_spawn_cap_notification(
+            agent_slug="fe-pm", notification_id="stuck-1", to_agent="ceo", attempts=3
+        )
+        await svc.send_notification_spawn_cap_notification(
+            agent_slug="fe-qa", notification_id="stuck-2", to_agent="ceo", attempts=3
+        )
+    ceo_rows = [r for r in db.added if r.type == NotificationType.BLOCKER_ESCALATION]
+    assert len(ceo_rows) == _EXPECTED_CAP_TRIP_CEO_ROWS, (
+        "both distinct cap trips must reach the CEO — the second must not be "
+        "silently dropped as a 'duplicate' of the first unacked notification"
+    )
+    assert all(r.related_task_id is None for r in ceo_rows)
+    assert any("stuck-1" in r.subject for r in ceo_rows)
+    assert any("stuck-2" in r.subject for r in ceo_rows)
+
+
+@pytest.mark.asyncio
+async def test_spawn_cap_notification_sets_bypass_purpose_dedup(
+    svc: NotificationService,
+) -> None:
+    """Even a THIRD trip re-using the exact same (agent_slug,
+    notification_id) key as an already-unacked prior trip must still reach
+    the CEO — bypass_purpose_dedup exempts this caller entirely rather than
+    keying dedup on the pair, matching the fix's chosen approach."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    dedup = _StatefulDedup()
+    with (
+        _patch_db_context(db),
+        patch(
+            "roboco.services.notification.duplicate_unacked_notification_exists",
+            dedup,
+        ),
+    ):
+        await svc.send_notification_spawn_cap_notification(
+            agent_slug="fe-pm", notification_id="stuck-1", to_agent="ceo", attempts=3
+        )
+        await svc.send_notification_spawn_cap_notification(
+            agent_slug="fe-pm", notification_id="stuck-1", to_agent="ceo", attempts=4
+        )
+    ceo_rows = [r for r in db.added if r.type == NotificationType.BLOCKER_ESCALATION]
+    assert len(ceo_rows) == _EXPECTED_CAP_TRIP_CEO_ROWS
+
+
+@pytest.mark.asyncio
+async def test_other_callers_purpose_dedup_still_suppresses_duplicates(
+    svc: NotificationService,
+) -> None:
+    """Every other notification caller's dedup behavior is unchanged: a
+    second send_blocker_notification for the same task/sender/recipient
+    while the first is unacked is still suppressed (bypass_purpose_dedup
+    defaults to False everywhere except the cap-trip caller)."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    dedup = _StatefulDedup()
+    with (
+        _patch_db_context(db),
+        patch(
+            "roboco.services.notification.duplicate_unacked_notification_exists",
+            dedup,
+        ),
+    ):
+        await svc.send_blocker_notification(
+            task_id="t1", blocker_reason="r", from_agent="system", to_pm="cell-pm"
+        )
+        await svc.send_blocker_notification(
+            task_id="t1", blocker_reason="r again", from_agent="system", to_pm="cell-pm"
+        )
+    blocker_rows = [
+        r for r in db.added if r.type == NotificationType.BLOCKER_ESCALATION
+    ]
+    assert len(blocker_rows) == 1, (
+        "the second same-purpose blocker notification must still be "
+        "suppressed as a duplicate of the unacked first"
+    )

@@ -110,3 +110,20 @@ class CreateReportRequest(BaseModel):
     title: str
     summary: str
     sections: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class StalledTaskResponse(BaseModel):
+    """One task the dispatcher has given up respawning (durable marker set).
+
+    Backs `GET /dashboard/stalled-tasks` — see
+    `roboco.services.task.TaskService.list_stalled_tasks`.
+    """
+
+    task_id: UUID
+    title: str
+    assignee_id: UUID | None = None
+    assignee_slug: str | None = None
+    status: str
+    reason: str
+    stalled_since: datetime
+    stalled_seconds: float
