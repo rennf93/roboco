@@ -10,10 +10,11 @@ spawn/reap orchestration with docker + clone mocked (no daemon, no NAS).
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -954,17 +955,19 @@ class TestSpawnIntakeSession:
         orch = _make_minimal_orchestrator()
         run_calls: list[list[str]] = []
         _wire_spawn_mocks(monkeypatch, orch, run_calls)
-        scheduled: list[tuple[str, str]] = []
+        scheduled: list[tuple[str, str, bool]] = []
         monkeypatch.setattr(
             orch,
             "_schedule_intake_first_message",
-            lambda sid, text: scheduled.append((sid, text)),
+            lambda sid, text, *, persist=False: scheduled.append((sid, text, persist)),
         )
 
         await orch.spawn_intake_session(
             "sess-3", project_slug="roboco", initial_message="build X"
         )
-        assert scheduled == [("sess-3", "build X")]
+        # persist=True — the opening turn of an intake session must be
+        # durably recorded, unlike the Secretary's equivalent call site.
+        assert scheduled == [("sess-3", "build X", True)]
 
 
 class TestStartIntakeSession:
@@ -1127,6 +1130,81 @@ class TestDeliverWhenReady:
 
         await orch._deliver_when_ready("sess-y", "hi", attempts=5, delay=0)
         assert attempts["n"] == succeed_on  # stopped as soon as delivery succeeded
+
+    @pytest.mark.asyncio
+    async def test_persist_true_records_the_opening_turn_once_delivered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """closes F-fd0bd0d4: the opening turn (a fresh /live/start, a cold or
+        MegaTask re-interview brief, or a Telegram /newtask) must land in
+        prompter_messages exactly like every later turn."""
+        orch = _make_minimal_orchestrator()
+        registry = prompter_live.get_live_registry()
+        monkeypatch.setattr(registry, "deliver", AsyncMock(return_value=True))
+        persisted: list[tuple[str, str]] = []
+
+        async def _fake_persist(session_id: str, text: str) -> None:
+            persisted.append((session_id, text))
+
+        monkeypatch.setattr(orch, "_persist_intake_first_message", _fake_persist)
+
+        await orch._deliver_when_ready("sess-z", "build X", persist=True)
+
+        assert persisted == [("sess-z", "build X")]
+
+    @pytest.mark.asyncio
+    async def test_persist_false_never_records(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Secretary's call site passes persist=False (no durable-message
+        table wired for Secretary chats) — must not touch PrompterService."""
+        orch = _make_minimal_orchestrator()
+        registry = prompter_live.get_live_registry()
+        monkeypatch.setattr(registry, "deliver", AsyncMock(return_value=True))
+        persist_mock = AsyncMock()
+        monkeypatch.setattr(orch, "_persist_intake_first_message", persist_mock)
+
+        await orch._deliver_when_ready("sess-z2", "plan my day", persist=False)
+
+        persist_mock.assert_not_awaited()
+
+
+class TestPersistIntakeFirstMessage:
+    @pytest.mark.asyncio
+    async def test_records_via_prompter_service(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        fake_db = object()
+
+        @asynccontextmanager
+        async def _fake_ctx() -> Any:
+            yield fake_db
+
+        prompter = AsyncMock()
+        monkeypatch.setattr("roboco.db.base.get_db_context", _fake_ctx)
+        monkeypatch.setattr(
+            "roboco.services.prompter.get_prompter_service", lambda _db: prompter
+        )
+
+        await orch._persist_intake_first_message("sess-p", "build X")
+
+        prompter.record_live_message.assert_awaited_once_with(
+            "sess-p", "user", "build X"
+        )
+
+    @pytest.mark.asyncio
+    async def test_failure_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Best-effort: a persistence failure never raises into the delivery
+        path (the fire-and-forget bg task that calls this)."""
+        orch = _make_minimal_orchestrator()
+
+        def _boom_ctx() -> Any:
+            raise RuntimeError("db unreachable")
+
+        monkeypatch.setattr("roboco.db.base.get_db_context", _boom_ctx)
+
+        await orch._persist_intake_first_message("sess-p2", "text")  # must not raise
 
 
 # ---------------------------------------------------------------------------

@@ -5450,7 +5450,9 @@ class AgentOrchestrator:
             )
 
             if initial_message:
-                self._schedule_intake_first_message(session_id, initial_message)
+                self._schedule_intake_first_message(
+                    session_id, initial_message, persist=True
+                )
             return instance
 
     async def reap_intake_session(self, session_id: str) -> None:
@@ -6036,9 +6038,17 @@ class AgentOrchestrator:
             self._persist_respawn_record(agent_slug, task_id, dict(record))
         )
 
-    def _schedule_intake_first_message(self, session_id: str, text: str) -> None:
-        """Fire-and-forget the opening message once the container is reachable."""
-        self._schedule_bg(self._deliver_when_ready(session_id, text))
+    def _schedule_intake_first_message(
+        self, session_id: str, text: str, *, persist: bool = False
+    ) -> None:
+        """Fire-and-forget the opening message once the container is reachable.
+
+        ``persist`` is True only for intake sessions (durably recorded via
+        ``PrompterService``, matching every later turn) — the Secretary's
+        equivalent call site leaves it False since Secretary chats have no
+        durable-message table wired.
+        """
+        self._schedule_bg(self._deliver_when_ready(session_id, text, persist=persist))
 
     async def _deliver_when_ready(
         self,
@@ -6047,19 +6057,52 @@ class AgentOrchestrator:
         *,
         attempts: int = 30,
         delay: float = 1.0,
+        persist: bool = False,
     ) -> None:
-        """Retry-deliver the first message until the container receiver is up."""
+        """Retry-deliver the first message until the container receiver is up.
+
+        This is the single seam every intake opening turn (a fresh ``/live/start``,
+        a cold or MegaTask re-interview brief, and a Telegram-bridged
+        ``/newtask``) converges through — closing it here, rather than at each
+        caller, is what makes the fix cover all of them. ``persist=True``
+        durably records the turn in ``prompter_messages`` once delivered, so the
+        first message survives a restart exactly like every later one
+        (``send_message`` already does this for turn 2+).
+        """
         from roboco.services.prompter_live import get_live_registry
 
         registry = get_live_registry()
         for _ in range(attempts):
             if await registry.deliver(session_id, text):
+                if persist:
+                    await self._persist_intake_first_message(session_id, text)
                 return
             await asyncio.sleep(delay)
         logger.warning(
             "Intake first message never delivered (receiver never came up)",
             session_id=session_id,
         )
+
+    async def _persist_intake_first_message(self, session_id: str, text: str) -> None:
+        """Durably record a live intake session's opening human turn.
+
+        Best-effort (mirrors ``_inject_board_brief_into_parked_intake``): a
+        persistence failure is logged, never raised into the delivery path.
+        """
+        from roboco.db.base import get_db_context
+        from roboco.services.prompter import get_prompter_service
+
+        try:
+            async with get_db_context() as db:
+                await get_prompter_service(db).record_live_message(
+                    session_id, "user", text
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist intake opening message",
+                session_id=session_id,
+                error=str(exc),
+            )
 
     # =========================================================================
     # AGENT STOPPING
@@ -14060,8 +14103,14 @@ Start now: evidence(task_id="{task_id}")
         try:
             async with get_db_context() as db:
                 message = await self._compose_parked_intake_redraft(db, task_id)
-            if message is None:
-                return
+                if message is None:
+                    return
+                # Best-effort, its own try/except: a persistence hiccup (or, in
+                # tests, a non-UUID fake session id) must never block delivering
+                # the board's feedback back into the live conversation.
+                await self._persist_parked_redraft_message(
+                    db, session.session_id, message
+                )
             delivered = await get_live_registry().deliver(session.session_id, message)
             logger.info(
                 "Injected board feedback into parked intake",
@@ -14072,6 +14121,25 @@ Start now: evidence(task_id="{task_id}")
             logger.warning(
                 "Failed to inject board feedback into parked intake",
                 task_id=task_id,
+                error=str(exc),
+            )
+
+    async def _persist_parked_redraft_message(
+        self, db: "AsyncSession", session_id: str, message: str
+    ) -> None:
+        """Durably record the board-feedback message injected into a parked
+        intake session. Best-effort: never let a persistence failure block
+        delivering the feedback into the live conversation."""
+        from roboco.services.prompter import get_prompter_service
+
+        try:
+            await get_prompter_service(db).record_live_message(
+                session_id, "user", message
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist parked intake redraft message",
+                session_id=session_id,
                 error=str(exc),
             )
 

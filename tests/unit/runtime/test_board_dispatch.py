@@ -429,6 +429,72 @@ async def test_inject_board_brief_batch_umbrella_uses_batch_composer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_inject_board_brief_persists_the_message() -> None:
+    """closes F-5b9ebaa4: the board-feedback message injected into a parked
+    session is part of the conversation — it must land in prompter_messages
+    alongside being delivered, not just pushed onto the SSE relay."""
+    orch = _make_orch()
+    task_id = str(uuid4())
+    session_id = uuid4().hex
+    registry = _FakeLiveRegistry(_FakeParkedSession(session_id))
+
+    task = SimpleNamespace(
+        title="Original task",
+        description="Original description.",
+        acceptance_criteria=["do the thing"],
+        batch_id=None,
+        parent_task_id=None,
+    )
+    db_ctx, task_ctx, journal_ctx = _patch_inject_seams(task, [])
+    prompter = AsyncMock()
+    with (
+        patch("roboco.services.prompter_live.get_live_registry", return_value=registry),
+        patch("roboco.services.prompter.get_prompter_service", return_value=prompter),
+        db_ctx,
+        task_ctx,
+        journal_ctx,
+    ):
+        await orch._inject_board_brief_into_parked_intake(task_id)
+
+    assert len(registry.delivered) == 1  # persistence never blocks delivery
+    prompter.record_live_message.assert_awaited_once()
+    call = prompter.record_live_message.await_args
+    assert call.args[0] == session_id
+    assert call.args[1] == "user"
+    assert "Original task" in call.args[2]
+
+
+@pytest.mark.asyncio
+async def test_inject_board_brief_still_delivers_when_persistence_fails() -> None:
+    """A non-UUID / unreachable-DB persistence failure is swallowed — the
+    board's feedback must still reach the live conversation."""
+    orch = _make_orch()
+    task_id = str(uuid4())
+    # "live-session-1"-style ids (used elsewhere in this file) aren't valid
+    # UUIDs, so record_live_message's UUID(session_id) raises — exercising the
+    # best-effort catch inside _persist_parked_redraft_message.
+    registry = _FakeLiveRegistry(_FakeParkedSession("live-session-1"))
+
+    task = SimpleNamespace(
+        title="Original task",
+        description="Original description.",
+        acceptance_criteria=["do the thing"],
+        batch_id=None,
+        parent_task_id=None,
+    )
+    db_ctx, task_ctx, journal_ctx = _patch_inject_seams(task, [])
+    with (
+        patch("roboco.services.prompter_live.get_live_registry", return_value=registry),
+        db_ctx,
+        task_ctx,
+        journal_ctx,
+    ):
+        await orch._inject_board_brief_into_parked_intake(task_id)
+
+    assert len(registry.delivered) == 1
+
+
+@pytest.mark.asyncio
 async def test_inject_board_brief_no_parked_session_is_noop() -> None:
     """No session parked for the task → no-op, never raises."""
     orch = _make_orch()
