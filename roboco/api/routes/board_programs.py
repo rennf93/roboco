@@ -13,16 +13,14 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.deps import CurrentAgentContext, DbSession
+from roboco.api.utils.board_programs import require_ceo as _require_ceo
+from roboco.api.utils.board_programs import to_response as _to_response
 from roboco.foundation.policy.board_programs import PROGRAMS
 from roboco.security import guard_deco
-from roboco.services.board_programs import BoardProgramEngine, get_board_program_engine
+from roboco.services.board_programs import get_board_program_engine
 
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on Board Programs")
 
 
 class BoardProgramResponse(BaseModel):
@@ -40,27 +38,6 @@ class BoardProgramResponse(BaseModel):
     last_opened_at: str | None
     open_cycle: bool
     last_cycle_summary: str | None
-
-
-async def _to_response(engine: BoardProgramEngine, key: str) -> BoardProgramResponse:
-    program = PROGRAMS[key]
-    enabled = await engine.enabled(key)
-    open_cycle, last_opened_at = await engine.cycle_state(key)
-    summary = await engine.prior_cycle_context(key, limit=1)
-    opted_in = await engine.opted_in_projects(program)
-    return BoardProgramResponse(
-        key=key,
-        title=program.title or key,
-        description=program.description,
-        role=program.role,
-        trigger=program.trigger.value,
-        scope=program.scope,
-        enabled=enabled,
-        opted_in_project_slugs=[p.slug for p in opted_in],
-        last_opened_at=last_opened_at.isoformat() if last_opened_at else None,
-        open_cycle=open_cycle,
-        last_cycle_summary=summary or None,
-    )
 
 
 @router.get("", response_model=list[BoardProgramResponse])
