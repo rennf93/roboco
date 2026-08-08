@@ -17,6 +17,7 @@ from roboco.db.tables import (
     AgentSpawnSessionTable,
     AgentTable,
     AuditLogTable,
+    JournalEntryTable,
     MemberPerformanceDailyTable,
     TaskTable,
 )
@@ -27,6 +28,7 @@ from roboco.models.metrics import (
     CEO_UNBLOCK_DECISIONS,
     AgentMetrics,
     AgentReworkRate,
+    AgentSpawnWaste,
     BlockerMetrics,
     BottleneckReport,
     CeoScorecard,
@@ -34,11 +36,13 @@ from roboco.models.metrics import (
     OrgScorecard,
     ReworkReport,
     Scorecard,
+    SpawnWasteReport,
     StageBottleneck,
     StageTiming,
     TaskMetrics,
     TeamMetrics,
     TeamReworkRate,
+    TeamSpawnWaste,
     VelocityMetrics,
 )
 from roboco.services.base import BaseService
@@ -1381,6 +1385,177 @@ class MetricsService(BaseService):
             by_agent=by_agent,
             rework_cost_usd=cost,
         )
+
+    async def get_spawn_waste_metrics(self, days: int = 30) -> SpawnWasteReport:
+        """Spawn sessions that advanced nothing on their task, priced.
+
+        "No forward progress" for a session is judged against its own
+        ``[started_at, ended_at]`` window: it counts as zero-progress when
+        none of these already-captured signals falls inside that window for
+        its ``task_id`` — an ``audit_log`` ``task.*`` status-advance event,
+        a commit, a ``progress_updates`` entry, or a journal entry. Only
+        ENDED sessions with a ``task_id`` are judged: an in-flight session
+        hasn't finished yet, and a taskless spawn has nothing to check
+        progress against, so both are excluded from the denominator
+        entirely rather than being misclassified.
+
+        Batched per distinct ``task_id`` (one query per signal type, not one
+        per session) to match the rest of this service's aggregate-query
+        style.
+        """
+        since = datetime.now(UTC) - timedelta(days=days)
+        sessions = (
+            await self.session.execute(
+                select(
+                    AgentSpawnSessionTable.agent_slug,
+                    AgentSpawnSessionTable.team,
+                    AgentSpawnSessionTable.task_id,
+                    AgentSpawnSessionTable.started_at,
+                    AgentSpawnSessionTable.ended_at,
+                    AgentSpawnSessionTable.estimated_cost_usd,
+                ).where(
+                    AgentSpawnSessionTable.started_at >= since,
+                    AgentSpawnSessionTable.ended_at.isnot(None),
+                    AgentSpawnSessionTable.task_id.isnot(None),
+                )
+            )
+        ).all()
+        if not sessions:
+            return SpawnWasteReport(
+                total_sessions=0,
+                zero_progress_sessions=0,
+                zero_progress_cost_usd=0.0,
+                total_cost_usd=0.0,
+                by_agent=[],
+                by_team=[],
+            )
+
+        task_ids = {str(s.task_id) for s in sessions}
+        progress_times = await self._task_progress_signal_times(task_ids)
+
+        by_agent: dict[str, dict[str, float]] = {}
+        by_team: dict[str, dict[str, float]] = {}
+        total_cost = 0.0
+        zero_cost = 0.0
+        zero_count = 0
+        for s in sessions:
+            cost = float(s.estimated_cost_usd or 0.0)
+            total_cost += cost
+            times = progress_times.get(str(s.task_id), [])
+            is_zero = not any(s.started_at <= t <= s.ended_at for t in times)
+            agent_bucket = by_agent.setdefault(
+                s.agent_slug, {"sessions": 0, "zero": 0, "zero_cost": 0.0}
+            )
+            agent_bucket["sessions"] += 1
+            team_bucket = by_team.setdefault(
+                s.team, {"sessions": 0, "zero": 0, "zero_cost": 0.0}
+            )
+            team_bucket["sessions"] += 1
+            if is_zero:
+                zero_count += 1
+                zero_cost += cost
+                agent_bucket["zero"] += 1
+                agent_bucket["zero_cost"] += cost
+                team_bucket["zero"] += 1
+                team_bucket["zero_cost"] += cost
+
+        return SpawnWasteReport(
+            total_sessions=len(sessions),
+            zero_progress_sessions=zero_count,
+            zero_progress_cost_usd=zero_cost,
+            total_cost_usd=total_cost,
+            by_agent=[
+                AgentSpawnWaste(
+                    agent_slug=slug,
+                    sessions=int(v["sessions"]),
+                    zero_progress_sessions=int(v["zero"]),
+                    zero_progress_cost_usd=v["zero_cost"],
+                )
+                for slug, v in sorted(
+                    by_agent.items(), key=lambda kv: kv[1]["zero"], reverse=True
+                )
+            ],
+            by_team=[
+                TeamSpawnWaste(
+                    team=team,
+                    sessions=int(v["sessions"]),
+                    zero_progress_sessions=int(v["zero"]),
+                    zero_progress_cost_usd=v["zero_cost"],
+                )
+                for team, v in sorted(
+                    by_team.items(), key=lambda kv: kv[1]["zero"], reverse=True
+                )
+            ],
+        )
+
+    async def _task_progress_signal_times(
+        self, task_ids: set[str]
+    ) -> dict[str, list[datetime]]:
+        """Per-task_id timestamps of any forward-progress signal.
+
+        Merges four sources into one ``task_id -> [timestamp, ...]`` map:
+        audit_log status-advance events, commits, progress_updates, and
+        journal entries. A session is zero-progress iff none of its own
+        task's timestamps falls within the session's window.
+        """
+        out: dict[str, list[datetime]] = {tid: [] for tid in task_ids}
+        uuid_ids = [UUID(tid) for tid in task_ids]
+        await self._merge_audit_advance_times(out, uuid_ids)
+        await self._merge_journal_entry_times(out, uuid_ids)
+        await self._merge_json_column_times(out, uuid_ids)
+        return out
+
+    async def _merge_audit_advance_times(
+        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
+    ) -> None:
+        """Merge in audit_log ``task.*`` status-advance timestamps."""
+        rows = await self.session.execute(
+            select(AuditLogTable.target_id, AuditLogTable.timestamp).where(
+                AuditLogTable.target_id.in_(uuid_ids),
+                AuditLogTable.event_type.like("task.%"),
+            )
+        )
+        for target_id, ts in rows:
+            out[str(target_id)].append(ts)
+
+    async def _merge_journal_entry_times(
+        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
+    ) -> None:
+        """Merge in journal_entries timestamps."""
+        rows = await self.session.execute(
+            select(JournalEntryTable.task_id, JournalEntryTable.timestamp).where(
+                JournalEntryTable.task_id.in_(uuid_ids)
+            )
+        )
+        for task_id, ts in rows:
+            out[str(task_id)].append(ts)
+
+    async def _merge_json_column_times(
+        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
+    ) -> None:
+        """Merge in commit + progress_update JSON timestamps."""
+        rows = await self.session.execute(
+            select(TaskTable.id, TaskTable.commits, TaskTable.progress_updates).where(
+                TaskTable.id.in_(uuid_ids)
+            )
+        )
+        for task_id, commits, progress_updates in rows:
+            out[str(task_id)].extend(
+                self._json_entry_timestamps(commits, progress_updates)
+            )
+
+    @staticmethod
+    def _json_entry_timestamps(
+        commits: list[dict[str, Any]] | None,
+        progress_updates: list[dict[str, Any]] | None,
+    ) -> list[datetime]:
+        """Parse each entry's ISO ``timestamp`` string, skipping malformed ones."""
+        times: list[datetime] = []
+        for entry in (*(commits or []), *(progress_updates or [])):
+            ts = entry.get("timestamp") if isinstance(entry, dict) else None
+            if ts:
+                times.append(datetime.fromisoformat(ts))
+        return times
 
     async def _tokens_cost_for(
         self, *, agent_slug: str | None, team: Team | None, since: datetime
