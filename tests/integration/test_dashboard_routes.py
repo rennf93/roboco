@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
@@ -559,3 +560,101 @@ async def test_task_metrics_returns_shape_for_existing_task(
         "stages",
     }
     assert isinstance(body["stages"], list)
+
+
+# ---------------------------------------------------------------------------
+# Stalled-task read endpoint (durable dispatcher give-up marker)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stalled_tasks_endpoint_empty_when_none_stalled(
+    dashboard_client: AsyncClient,
+) -> None:
+    resp = await dashboard_client.get("/api/dashboard/stalled-tasks", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_stalled_tasks_endpoint_returns_marked_task(
+    db_session: AsyncSession, dashboard_client: AsyncClient
+) -> None:
+    creator = (await db_session.execute(select(AgentTable).limit(1))).scalar_one()
+    assignee = AgentTable(
+        id=uuid4(),
+        name="Dev",
+        slug=f"be-dev-{uuid4().hex[:6]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(assignee)
+    await db_session.flush()
+
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+
+    stalled_minutes = 45
+    stalled_since = datetime.now(UTC) - timedelta(minutes=stalled_minutes)
+    task = TaskTable(
+        id=uuid4(),
+        title="Wedged task",
+        description="d",
+        acceptance_criteria=["ac"],
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        status=TaskStatus.IN_PROGRESS,
+        team=Team.BACKEND,
+        project_id=project.id,
+        created_by=creator.id,
+        assigned_to=assignee.id,
+        estimated_complexity=Complexity.MEDIUM,
+        stalled_reason="breaker_tripped",
+        stalled_since=stalled_since,
+    )
+    db_session.add(task)
+    # A non-stalled task must not appear in the response.
+    other = TaskTable(
+        id=uuid4(),
+        title="Healthy task",
+        description="d",
+        acceptance_criteria=["ac"],
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        status=TaskStatus.IN_PROGRESS,
+        team=Team.BACKEND,
+        project_id=project.id,
+        created_by=creator.id,
+        estimated_complexity=Complexity.MEDIUM,
+    )
+    db_session.add(other)
+    await db_session.flush()
+
+    resp = await dashboard_client.get("/api/dashboard/stalled-tasks", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert len(body) == 1
+    entry = body[0]
+    assert entry["task_id"] == str(task.id)
+    assert entry["title"] == "Wedged task"
+    assert entry["assignee_id"] == str(assignee.id)
+    assert entry["assignee_slug"] == assignee.slug
+    assert entry["status"] == "in_progress"
+    assert entry["reason"] == "breaker_tripped"
+    expected_seconds = stalled_minutes * 60
+    slack_seconds = 100
+    assert abs(entry["stalled_seconds"] - expected_seconds) < slack_seconds

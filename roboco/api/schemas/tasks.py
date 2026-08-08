@@ -412,6 +412,11 @@ class TaskResponse(BaseModel):
     source: str = "manual"
     confirmed_by_human: bool = False
 
+    # Durable stalled/needs-human marker (migration 092). Null = never
+    # stalled or since cleared by genuine forward progress.
+    stalled_reason: str | None = None
+    stalled_since: datetime | None = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
