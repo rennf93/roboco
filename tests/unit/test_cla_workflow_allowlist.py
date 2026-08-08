@@ -38,6 +38,13 @@ def _allowlist() -> set[str]:
     return {entry.strip() for entry in raw.split(",")}
 
 
+def _pull_request_target_types() -> set[str]:
+    doc = cast("dict[Any, Any]", yaml.safe_load(_WORKFLOW.read_text()))
+    # PyYAML parses the bare `on:` key as boolean True under YAML 1.1 rules.
+    triggers = cast("dict[str, Any]", doc[True])
+    return set(triggers["pull_request_target"]["types"])
+
+
 def test_app_bot_is_allowlisted() -> None:
     # The App account authors/commits on essentially every fleet PR and can
     # never post the sign-off comment as itself — it must be exempt.
@@ -69,3 +76,13 @@ def test_arbitrary_untrusted_account_is_not_allowlisted() -> None:
     # allowlist must stay a specific, named set, not silently widen (e.g. a
     # future edit collapsing it to a wildcard) into exempting everyone.
     assert "some-untrusted-fork-account" not in _allowlist()
+
+
+def test_pull_request_target_fires_on_open_and_sync() -> None:
+    # The step's unconditional `if:` only self-satisfies when the workflow's
+    # `on:` trigger actually runs at PR creation/update — dropping "opened"
+    # or "synchronize" from `pull_request_target.types` would silently defer
+    # the check to a later event (e.g. only "closed"), reintroducing a
+    # window where an allowlisted author's fresh PR sits unchecked.
+    types = _pull_request_target_types()
+    assert {"opened", "synchronize"} <= types
