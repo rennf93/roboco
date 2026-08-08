@@ -28,9 +28,11 @@ from roboco.models.base import (
 )
 from roboco.services.task import (
     PEST_CONTROL_SOURCE,
+    VIDEO_POST_SOURCE,
     X_POST_SOURCE,
     TaskService,
 )
+from sqlalchemy import delete
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +45,21 @@ class _TaskSpec:
     created_at: datetime
     completed_at: datetime
     parent_task_id: UUID | None = None
+
+
+async def _isolate_delivery_stats_population(session: AsyncSession) -> None:
+    """Delete every existing row from ``tasks`` within this test's own
+    (uncommitted, rolled-back-at-teardown) transaction.
+
+    ``get_delivery_stats_30d`` is a deliberately unscoped, whole-table query
+    (no ``project_id`` filter — it's a company-wide metric), so it sees every
+    completed root task any OTHER test in a full-suite run has already
+    committed, not just this test's own seeds. Since ``db_session`` rolls
+    back on teardown (conftest.py), a delete here only ever hides those rows
+    from THIS test's read; nothing is permanently lost.
+    """
+    await session.execute(delete(TaskTable))
+    await session.flush()
 
 
 async def _seed_project(session: AsyncSession) -> tuple[UUID, UUID]:
@@ -113,9 +130,13 @@ async def test_excludes_held_draft_and_admin_includes_delivery_root(
     reported (not dragged down by the near-instant held/report completions).
     """
     project_id, agent_id = await _seed_project(db_session)
+    await _isolate_delivery_stats_population(db_session)
     now = datetime.now(UTC)
 
-    # Held draft: completes the instant the CEO approves it.
+    # Held draft: completes the instant the CEO approves it. task_type ==
+    # ADMINISTRATIVE here means the task_type filter alone would exclude it,
+    # so this seed does NOT isolate the source predicate — see the
+    # video_post seed below for that.
     await _seed_task(
         db_session,
         project_id,
@@ -135,6 +156,22 @@ async def test_excludes_held_draft_and_admin_includes_delivery_root(
         _TaskSpec(
             task_type=TaskType.ADMINISTRATIVE,
             source=PEST_CONTROL_SOURCE,
+            created_at=now - timedelta(seconds=5),
+            completed_at=now,
+        ),
+    )
+    # Held video-post draft: task_type=CODE (NOT administrative), so only
+    # the source predicate (source NOT IN LEAD_TIME_EXCLUDED_SOURCES)
+    # excludes this row — pins the source predicate in isolation, since
+    # deleting it would leak this row into completed_30d/median even though
+    # every other excluded seed above is already caught by task_type alone.
+    await _seed_task(
+        db_session,
+        project_id,
+        agent_id,
+        _TaskSpec(
+            task_type=TaskType.CODE,
+            source=VIDEO_POST_SOURCE,
             created_at=now - timedelta(seconds=5),
             completed_at=now,
         ),
@@ -165,6 +202,7 @@ async def test_excludes_child_task_double_counted_under_its_root(
     be counted a second time — only the parentless root enters the median.
     """
     project_id, agent_id = await _seed_project(db_session)
+    await _isolate_delivery_stats_population(db_session)
     now = datetime.now(UTC)
 
     root_id = await _seed_task(
