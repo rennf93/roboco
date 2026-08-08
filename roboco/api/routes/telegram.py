@@ -5,9 +5,11 @@ The bridge itself is a server-side fan-out from the CEO-notify producers; the
 credentials card is CEO-only, write-only (the API never returns plaintext,
 mirroring ``/x/credentials``). ``webapp_auth_router`` is a separate PUBLIC,
 pre-auth router mounted only when both ``telegram_miniapp_enabled`` and
-``cloud_auth_enabled`` are armed (see ``mount_telegram_miniapp_auth``,
-mirroring ``roboco.api.auth.routes.mount_cloud_auth``'s conditional mount) —
-its own signed ``initData`` is the authentication, not an agent/session header.
+``cloud_auth_enabled`` are armed — the conditional mount + rate-limit
+middleware live inline in ``roboco.api.app`` (mirroring
+``roboco.api.auth.routes.mount_cloud_auth``'s conditional-mount pattern; app
+wiring can't live in this module, which is helper/model-forbidden) — its own
+signed ``initData`` is the authentication, not an agent/session header.
 """
 
 from __future__ import annotations
@@ -92,8 +94,8 @@ async def get_today_brief(
 
 
 # ==========================================================================
-# Mini App sign-in — public, pre-auth. Conditionally mounted; see
-# ``mount_telegram_miniapp_auth`` below.
+# Mini App sign-in — public, pre-auth. Conditionally mounted inline in
+# ``roboco.api.app`` (see the module docstring above).
 # ==========================================================================
 
 webapp_auth_router = APIRouter()

@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from roboco.api.auth.login_limit import LoginRateLimiter
 from roboco.api.auth.routes import mount_cloud_auth
 from roboco.api.auth.seed import ensure_seed_user_startup
 from roboco.api.deps import _auth_required, get_orchestrator_or_none
@@ -56,6 +57,7 @@ from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.system import router as system_router
 from roboco.api.routes.tasks import router as tasks_router
 from roboco.api.routes.telegram import router as telegram_router
+from roboco.api.routes.telegram import webapp_auth_router
 from roboco.api.routes.usage import router as usage_router
 from roboco.api.routes.v1 import do as do_module
 from roboco.api.routes.v1 import flow_auditor as flow_auditor_module
@@ -70,7 +72,6 @@ from roboco.api.routes.video import router as video_router
 from roboco.api.routes.video import tiktok_router
 from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.routes.x import router as x_router
-from roboco.api.utils.telegram import mount_telegram_miniapp_auth
 from roboco.api.websocket import router as ws_router
 from roboco.config import settings
 from roboco.db.base import close_db, get_session_factory, init_db
@@ -553,8 +554,24 @@ def create_app() -> FastAPI:
         tags=["Telegram"],
     )
     # Telegram Mini App sign-in — public, pre-auth; mounted only when both
-    # telegram_miniapp_enabled and cloud_auth_enabled are armed.
-    mount_telegram_miniapp_auth(app, f"{api_prefix}/telegram")
+    # telegram_miniapp_enabled and cloud_auth_enabled are armed — mirrors
+    # mount_cloud_auth's conditional-mount pattern above. Off (either flag):
+    # the route doesn't exist at all.
+    if settings.telegram_miniapp_enabled and settings.cloud_auth_enabled:
+        telegram_miniapp_prefix = f"{api_prefix}/telegram"
+        app.include_router(
+            webapp_auth_router, prefix=telegram_miniapp_prefix, tags=["Telegram"]
+        )
+        # Unconditional per-IP limiter, same backstop /auth/login gets: the
+        # guard middleware's rate_limit decorator only bites when
+        # ROBOCO_GUARD_ENABLED is on, toggled independently — a public
+        # session-minting route must not depend on that coupling.
+        app.add_middleware(
+            LoginRateLimiter,
+            paths=(f"{telegram_miniapp_prefix}/webapp-auth",),
+            max_attempts=settings.login_max_attempts,
+            window=60,
+        )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.
     app.include_router(

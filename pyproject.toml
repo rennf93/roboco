@@ -199,6 +199,11 @@ select = [
 # with the modules they wire (same rationale as roboco/api/deps.py above).
 "roboco/api/utils/tasks.py" = ["PLC0415"]
 "roboco/api/utils/telegram.py" = ["PLC0415"]
+# v1_role_dep.py holds the role-guard/envelope helpers extracted verbatim from
+# roboco/api/routes/v1/_role_dep.py (no_helpers_in_routes cleanup) — same
+# lazy, call-time roboco.api.deps import the original used to dodge the
+# import cycle with deps.py, same rationale as roboco/api/deps.py above.
+"roboco/api/utils/v1_role_dep.py" = ["PLC0415"]
 # board_programs.py's to_response() defers importing BoardProgramResponse
 # from its route module — a genuine circular import (the route module
 # imports this module for its extracted helpers), not dodgeable by hoisting.
