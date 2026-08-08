@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
 
-from sqlalchemy import and_, bindparam, func, select, text
+from sqlalchemy import and_, bindparam, func, literal, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import (
@@ -40,6 +40,7 @@ from roboco.models.metrics import (
     StageBottleneck,
     StageTiming,
     TaskMetrics,
+    TaskSpawnWaste,
     TeamMetrics,
     TeamReworkRate,
     TeamSpawnWaste,
@@ -1428,6 +1429,7 @@ class MetricsService(BaseService):
                 total_cost_usd=0.0,
                 by_agent=[],
                 by_team=[],
+                by_task=[],
             )
 
         task_ids = {str(s.task_id) for s in sessions}
@@ -1435,6 +1437,7 @@ class MetricsService(BaseService):
 
         by_agent: dict[str, dict[str, float]] = {}
         by_team: dict[str, dict[str, float]] = {}
+        by_task: dict[str, dict[str, float]] = {}
         total_cost = 0.0
         zero_cost = 0.0
         zero_count = 0
@@ -1451,6 +1454,10 @@ class MetricsService(BaseService):
                 s.team, {"sessions": 0, "zero": 0, "zero_cost": 0.0}
             )
             team_bucket["sessions"] += 1
+            task_bucket = by_task.setdefault(
+                str(s.task_id), {"sessions": 0, "zero": 0, "zero_cost": 0.0}
+            )
+            task_bucket["sessions"] += 1
             if is_zero:
                 zero_count += 1
                 zero_cost += cost
@@ -1458,6 +1465,8 @@ class MetricsService(BaseService):
                 agent_bucket["zero_cost"] += cost
                 team_bucket["zero"] += 1
                 team_bucket["zero_cost"] += cost
+                task_bucket["zero"] += 1
+                task_bucket["zero_cost"] += cost
 
         return SpawnWasteReport(
             total_sessions=len(sessions),
@@ -1486,6 +1495,17 @@ class MetricsService(BaseService):
                     by_team.items(), key=lambda kv: kv[1]["zero"], reverse=True
                 )
             ],
+            by_task=[
+                TaskSpawnWaste(
+                    task_id=task_id,
+                    sessions=int(v["sessions"]),
+                    zero_progress_sessions=int(v["zero"]),
+                    zero_progress_cost_usd=v["zero_cost"],
+                )
+                for task_id, v in sorted(
+                    by_task.items(), key=lambda kv: kv[1]["zero"], reverse=True
+                )
+            ],
         )
 
     async def _task_progress_signal_times(
@@ -1508,11 +1528,22 @@ class MetricsService(BaseService):
     async def _merge_audit_advance_times(
         self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
     ) -> None:
-        """Merge in audit_log ``task.*`` status-advance timestamps."""
+        """Merge in audit_log status-ADVANCE timestamps only.
+
+        Mirrors ``get_cycle_time_by_stage``'s ``event_type = 'task.' ||
+        to_status`` narrowing: a genuine transition event's type is always
+        ``task.<to_status>``, so this excludes every named non-transition
+        ``task.*`` event (``task.qa_fail``, ``task.request_changes``,
+        ``task.scales_rebalance``, ``task.coverage_declared``, ...) whose
+        ``event_type`` never equals its own ``details.to_status`` — without
+        this, those events falsely counted as forward progress.
+        """
         rows = await self.session.execute(
             select(AuditLogTable.target_id, AuditLogTable.timestamp).where(
                 AuditLogTable.target_id.in_(uuid_ids),
                 AuditLogTable.event_type.like("task.%"),
+                AuditLogTable.event_type
+                == literal("task.") + AuditLogTable.details["to_status"].astext,
             )
         )
         for target_id, ts in rows:
@@ -1549,12 +1580,27 @@ class MetricsService(BaseService):
         commits: list[dict[str, Any]] | None,
         progress_updates: list[dict[str, Any]] | None,
     ) -> list[datetime]:
-        """Parse each entry's ISO ``timestamp`` string, skipping malformed ones."""
+        """Parse each entry's ISO ``timestamp`` string, skipping malformed ones.
+
+        A malformed string 500s ``fromisoformat`` (``ValueError``) and a
+        non-string ``timestamp`` value 500s it too (``TypeError``) — both are
+        skipped rather than propagating. A parsed-but-naive datetime is
+        normalised to UTC so it never crashes the tz-aware
+        ``started_at <= t <= ended_at`` window comparison in
+        ``get_spawn_waste_metrics``.
+        """
         times: list[datetime] = []
         for entry in (*(commits or []), *(progress_updates or [])):
             ts = entry.get("timestamp") if isinstance(entry, dict) else None
-            if ts:
-                times.append(datetime.fromisoformat(ts))
+            if not ts:
+                continue
+            try:
+                parsed = datetime.fromisoformat(ts)
+            except (ValueError, TypeError):
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            times.append(parsed)
         return times
 
     async def _tokens_cost_for(
