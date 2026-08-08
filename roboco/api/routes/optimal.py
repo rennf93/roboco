@@ -62,6 +62,7 @@ from roboco.api.schemas.optimal import (
     ValidateActionRequest,
     ValidateActionResponse,
 )
+from roboco.api.utils.optimal import kb_denial_response as _kb_denial_response
 from roboco.models.optimal import (
     CodeReviewRequest as ModelCodeReviewRequest,
 )
@@ -76,7 +77,6 @@ from roboco.security import (
     prompt_injection_validator,
     secret_exfil_validator,
 )
-from roboco.services.gateway.kb_authz import authorize_kb_action
 from roboco.services.optimal import (
     IndexType,
     QueryContext,
@@ -91,28 +91,6 @@ from roboco.services.optimal_brain import (
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-
-def _kb_denial_response(
-    permissions: PermissionServiceDep,
-    agent: CurrentAgentContext,
-    action: str,
-) -> JSONResponse | None:
-    """Gateway Envelope (HTTP 403) when the KB action is denied, else None.
-
-    The authorization decision itself lives in the gateway
-    (``authorize_kb_action``); this only renders a denial verdict at the HTTP
-    boundary. The body is the Envelope wire-dict at top level — not nested
-    under ``detail`` — so the agent receives a non-null ``remediate`` it can
-    act on, matching the gateway Envelope contract.
-    """
-    denial = authorize_kb_action(permissions, agent, action)
-    if denial is None:
-        return None
-    return JSONResponse(
-        status_code=status.HTTP_403_FORBIDDEN,
-        content=denial.as_dict(),
-    )
 
 
 # =============================================================================
