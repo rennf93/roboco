@@ -13,26 +13,14 @@ Currently exposed:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
 from fastapi import APIRouter, Depends
 
 from roboco.api.deps import require_panel_token
 from roboco.api.schemas.system import RateLimitEntry, RateLimitListResponse
+from roboco.api.utils.system import _resume_at
 from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 
 router = APIRouter(dependencies=[Depends(require_panel_token)])
-
-
-def _resume_at(hit_at: str | None, retry_after: float | None) -> str | None:
-    """Estimated lift time = hit_at + retry_after, ISO; falls back to hit_at."""
-    if not hit_at or retry_after is None:
-        return hit_at
-    try:
-        lifted = datetime.fromisoformat(hit_at) + timedelta(seconds=retry_after)
-    except (ValueError, TypeError):
-        return hit_at
-    return lifted.isoformat()
 
 
 @router.get(

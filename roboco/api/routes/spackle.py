@@ -4,46 +4,22 @@ materializes it as a BACKLOG task; nothing here starts it — normal PM
 activation takes it from there. Mirrors ``roboco.api.routes.pest_control``.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.spackle import (
     GapFillItemActionResponse,
-    GapFillItemResponse,
     GapFillRejectRequest,
     SpackleCycleResponse,
 )
+from roboco.api.utils.spackle import _require_ceo, _to_response
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.spackle_service import get_spackle_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the spackle queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> SpackleCycleResponse:
-    payload = markers.get_gap_fill(task) or {}
-    items = [GapFillItemResponse(**item) for item in payload.get("items", [])]
-    return SpackleCycleResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        items=items,
-    )
 
 
 @router.get("/cycles", response_model=list[SpackleCycleResponse])
