@@ -4,7 +4,7 @@
 
 `TaskService.get_delivery_stats_30d` (`roboco/services/task.py`, called by `CockpitService.summary` and rendered by the panel's `company-scorecard-card.tsx` Speed/Delivery sections) used to compute `completed_30d` and `median_lead_time_hours` over every `status=completed` task in the last 30 days, with no filter on task type, source, or tree position. That population mixed real delivery work with rows that carry no real delivery lead time:
 
-- Held CEO-approval drafts (X posts/replies/feature drafts, video-authoring and video-post drafts, release proposals) that complete the instant the CEO approves them, seconds after being drafted.
+- Held CEO-approval drafts (X posts/replies/feature drafts, video-post drafts, release proposals) that complete the instant the CEO approves them, seconds after being drafted.
 - Board-program exploration cycles and generic administrative tasks (`task_type=administrative`), which complete the moment a Board role files its proposal, not when anything ships.
 - Parent and child rows for the same piece of work (a Main-PM coordination root plus its own cell tasks and dev subtasks), double- and triple-counting a single delivery.
 
