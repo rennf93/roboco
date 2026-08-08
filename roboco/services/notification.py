@@ -148,7 +148,12 @@ class NotificationService:
         Raised by the no-task_id analogue of the respawn breaker
         (``_notification_spawn_over_cap``): unlike the task-keyed breaker
         there is no task to key on, so the trip is identified by
-        ``(agent_slug, notification_id)`` instead.
+        ``(agent_slug, notification_id)`` instead. ``related_task_id`` is
+        always None for this caller, so ``bypass_purpose_dedup=True`` is
+        required — without it, NotificationService's purpose-dedup (keyed on
+        sender/type/related_task_id/recipient-set) treats every distinct
+        (agent_slug, notification_id) cap trip as a duplicate of the first
+        unacked one and silently drops it.
         """
         logger.info(
             "Sending notification-spawn-cap notification",
@@ -170,6 +175,7 @@ class NotificationService:
                 to_agents=[to_agent],
                 subject=f"Agent {agent_slug} stuck on notification {notification_id}",
                 body=body,
+                bypass_purpose_dedup=True,
             )
         )
 
@@ -1049,7 +1055,11 @@ class NotificationService:
         # notification for the SAME purpose while a prior one is unacked. See
         # ``_duplicate_unacked_exists`` for the rationale + the action-only
         # scope (informational types carry distinct content per send).
-        if await self._duplicate_unacked_exists(
+        # ``bypass_purpose_dedup`` opts a caller out entirely — needed by
+        # callers whose ``related_task_id`` is always None, where the dedup
+        # key would otherwise collapse every distinct notification into one
+        # bucket (see CreateNotificationParams.bypass_purpose_dedup).
+        if not params.bypass_purpose_dedup and await self._duplicate_unacked_exists(
             db,
             from_agent_uuid=from_agent_uuid,
             params=params,
