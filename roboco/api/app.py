@@ -55,7 +55,6 @@ from roboco.api.routes.spackle import router as spackle_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.system import router as system_router
 from roboco.api.routes.tasks import router as tasks_router
-from roboco.api.routes.telegram import mount_telegram_miniapp_auth
 from roboco.api.routes.telegram import router as telegram_router
 from roboco.api.routes.usage import router as usage_router
 from roboco.api.routes.v1 import do as do_module
@@ -71,6 +70,7 @@ from roboco.api.routes.video import router as video_router
 from roboco.api.routes.video import tiktok_router
 from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.routes.x import router as x_router
+from roboco.api.utils.telegram import mount_telegram_miniapp_auth
 from roboco.api.websocket import router as ws_router
 from roboco.config import settings
 from roboco.db.base import close_db, get_session_factory, init_db

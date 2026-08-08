@@ -5,48 +5,22 @@ propose time), but each item carries its own per-item approve/reject,
 mirroring ``roboco.api.routes.periscope``'s shape.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.sentinel import (
     QualityReportItemActionResponse,
     QualityReportItemRejectRequest,
-    QualityReportItemResponse,
     QualityReportResponse,
 )
-from roboco.foundation.policy.content import markers
+from roboco.api.utils.sentinel import _require_ceo, _to_response
 from roboco.security import guard_deco
 from roboco.services.sentinel_service import get_sentinel_service
 from roboco.services.task import get_task_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(
-        agent.role, action="view or act on the Sentinel quality-reports list"
-    )
-
-
-def _to_response(task: "TaskTable") -> QualityReportResponse | None:
-    payload = markers.get_quality_report(task)
-    if payload is None:
-        return None
-    items = [QualityReportItemResponse(**i) for i in payload.get("items", [])]
-    return QualityReportResponse(
-        task_id=str(task.id),
-        title=task.title,
-        completed_at=task.updated_at.isoformat() if task.updated_at else None,
-        headline=payload.get("headline", ""),
-        items=items,
-        overall_assessment=payload.get("overall_assessment", ""),
-    )
 
 
 @router.get("/reports", response_model=list[QualityReportResponse])

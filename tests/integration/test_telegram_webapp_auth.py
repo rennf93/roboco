@@ -25,7 +25,8 @@ from fastapi_users.password import PasswordHelper
 from httpx import ASGITransport, AsyncClient
 from roboco.api.auth.backend import SESSION_COOKIE_NAME
 from roboco.api.deps import get_db
-from roboco.api.routes.telegram import mount_telegram_miniapp_auth, webapp_auth_router
+from roboco.api.routes.telegram import webapp_auth_router
+from roboco.api.utils.telegram import mount_telegram_miniapp_auth
 from roboco.config import settings
 from roboco.db.tables import UserTable
 from roboco.services.telegram_credentials import get_telegram_credentials_service

@@ -14,8 +14,8 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
-from roboco.api.routes.git import _translate_error
 from roboco.api.routes.git import router as git_router
+from roboco.api.utils.git import _translate_error
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.exceptions import GitCommandError, GitTimeoutError
 from roboco.models import AgentRole, AgentStatus, Team
