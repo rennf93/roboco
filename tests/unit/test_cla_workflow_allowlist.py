@@ -117,3 +117,11 @@ def test_workflow_has_statuses_write_permission() -> None:
     # `statuses` would leave an allowlisted author's PR without the green
     # check even though the sign-off step itself ran and skipped correctly.
     assert _workflow_permissions()["statuses"] == "write"
+
+
+def test_workflow_has_actions_write_permission() -> None:
+    # contributor-assistant/github-action re-triggers itself (e.g. after
+    # recording a signature) via the Actions API — dropping this permission
+    # would silently break that self-retrigger even though the other three
+    # permissions still let it read the PR and write the status/signature.
+    assert _workflow_permissions()["actions"] == "write"
