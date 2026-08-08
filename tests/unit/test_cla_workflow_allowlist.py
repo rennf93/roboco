@@ -100,3 +100,11 @@ def test_workflow_has_contents_write_permission() -> None:
     # ("Resource not accessible by integration") even for exempt authors,
     # per the inline comment at the top of the permissions block.
     assert _workflow_permissions()["contents"] == "write"
+
+
+def test_workflow_has_pull_requests_write_permission() -> None:
+    # The action posts the pass/fail status comment onto the PR itself, so
+    # an allowlisted author's PR only visibly self-satisfies (rather than
+    # silently succeeding with no user-facing confirmation) if the workflow
+    # can still write to the pull request.
+    assert _workflow_permissions()["pull-requests"] == "write"
