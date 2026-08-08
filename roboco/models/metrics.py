@@ -283,6 +283,28 @@ class TeamSpawnWaste:
 
 
 @dataclass
+class TaskSpawnWaste:
+    """Per-task zero-progress spawn rate + cost."""
+
+    task_id: str
+    sessions: int
+    zero_progress_sessions: int
+    zero_progress_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "sessions": self.sessions,
+            "zero_progress_sessions": self.zero_progress_sessions,
+            "zero_progress_cost_usd": round(self.zero_progress_cost_usd, 4),
+            "rate": round(
+                self.zero_progress_sessions / self.sessions if self.sessions else 0.0,
+                4,
+            ),
+        }
+
+
+@dataclass
 class SpawnWasteReport:
     """Spawn sessions that advanced nothing on their task, and what they cost.
 
@@ -291,6 +313,12 @@ class SpawnWasteReport:
     ``audit_log`` ``task.*`` status-advance event, a commit, a
     ``progress_updates`` entry, or a journal entry. Only ended, task-scoped
     sessions are judged (see ``MetricsService.get_spawn_waste_metrics``).
+
+    See also ``GET /api/usage/spawn-waste`` (``UsageService.get_spawn_waste``),
+    which prices a DIFFERENT notion of "unproductive" — zero output tokens on
+    an Anthropic session, not zero forward-progress signal. This report (the
+    one ``GET /api/dashboard/metrics/spawn-waste`` serves) is the one the
+    Fable-mode doctrine dashboard rides.
     """
 
     total_sessions: int
@@ -299,6 +327,7 @@ class SpawnWasteReport:
     total_cost_usd: float
     by_agent: list[AgentSpawnWaste]
     by_team: list[TeamSpawnWaste]
+    by_task: list[TaskSpawnWaste]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -314,6 +343,7 @@ class SpawnWasteReport:
             ),
             "by_agent": [a.to_dict() for a in self.by_agent],
             "by_team": [t.to_dict() for t in self.by_team],
+            "by_task": [t.to_dict() for t in self.by_task],
         }
 
 

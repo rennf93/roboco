@@ -192,7 +192,7 @@ async def test_status_advance_outside_window_still_counts_as_zero_progress(
             target_type="task",
             target_id=task.id,
             severity="info",
-            details={},
+            details={"to_status": "in_progress"},
             timestamp=_NOW - timedelta(hours=5),
         )
     )
@@ -253,6 +253,142 @@ async def test_empty_window_returns_all_zero_no_division_by_zero(
     assert report.to_dict()["zero_progress_cost_share"] == pytest.approx(0.0)
     assert report.by_agent == []
     assert report.by_team == []
+    assert report.by_task == []
+
+
+@pytest.mark.asyncio
+async def test_named_non_transition_event_does_not_count_as_progress(
+    waste_setup: dict,
+) -> None:
+    """A named audit event (task.qa_fail) lands inside the session window but
+    its event_type never equals 'task.' + its own details.to_status, so it
+    must not be mistaken for a genuine status-advance signal."""
+    db = waste_setup["db"]
+    task = _task(waste_setup["project_id"], waste_setup["dev_id"])
+    db.add(task)
+    await db.flush()
+    started = _NOW - timedelta(hours=1)
+    ended = _NOW
+    db.add(
+        AuditLogTable(
+            id=uuid4(),
+            event_type="task.qa_fail",
+            agent_id=waste_setup["dev_id"],
+            target_type="task",
+            target_id=task.id,
+            severity="info",
+            details={"to_status": "needs_revision"},
+            timestamp=started + timedelta(minutes=10),
+        )
+    )
+    db.add(
+        _session(
+            waste_setup["dev_slug"], task.id, started=started, ended=ended, cost=1.0
+        )
+    )
+    await db.flush()
+
+    report = await waste_setup["svc"].get_spawn_waste_metrics(days=30)
+    assert report.zero_progress_sessions == 1
+
+
+@pytest.mark.asyncio
+async def test_genuine_transition_in_window_counts_as_progress(
+    waste_setup: dict,
+) -> None:
+    """A generic task.<to_status> transition (event_type == 'task.' +
+    details.to_status) inside the window IS a real progress signal."""
+    db = waste_setup["db"]
+    task = _task(waste_setup["project_id"], waste_setup["dev_id"])
+    db.add(task)
+    await db.flush()
+    started = _NOW - timedelta(hours=1)
+    ended = _NOW
+    db.add(
+        AuditLogTable(
+            id=uuid4(),
+            event_type="task.needs_revision",
+            agent_id=waste_setup["dev_id"],
+            target_type="task",
+            target_id=task.id,
+            severity="info",
+            details={"to_status": "needs_revision"},
+            timestamp=started + timedelta(minutes=10),
+        )
+    )
+    db.add(
+        _session(
+            waste_setup["dev_slug"], task.id, started=started, ended=ended, cost=1.0
+        )
+    )
+    await db.flush()
+
+    report = await waste_setup["svc"].get_spawn_waste_metrics(days=30)
+    assert report.zero_progress_sessions == 0
+
+
+@pytest.mark.asyncio
+async def test_malformed_and_naive_timestamp_entries_are_skipped_not_fatal(
+    waste_setup: dict,
+) -> None:
+    """A malformed ISO string (ValueError) and a naive datetime (would 500 on
+    the tz-aware window comparison) must both be tolerated, not crash the
+    endpoint — the malformed one is dropped; the naive one is normalised to
+    UTC and still counts as a real progress signal."""
+    db = waste_setup["db"]
+    task = _task(waste_setup["project_id"], waste_setup["dev_id"])
+    started = _NOW - timedelta(hours=1)
+    ended = _NOW
+    task.commits = [
+        {
+            "hash": "a" * 40,
+            "message": "malformed",
+            "timestamp": "not-a-real-timestamp",
+            "author_agent_id": str(waste_setup["dev_id"]),
+        },
+        {
+            "hash": "b" * 40,
+            "message": "naive",
+            # No UTC offset — naive datetime, must not crash the comparison.
+            "timestamp": (started + timedelta(minutes=10))
+            .replace(tzinfo=None)
+            .isoformat(),
+            "author_agent_id": str(waste_setup["dev_id"]),
+        },
+    ]
+    db.add(task)
+    db.add(
+        _session(
+            waste_setup["dev_slug"], task.id, started=started, ended=ended, cost=1.0
+        )
+    )
+    await db.flush()
+
+    report = await waste_setup["svc"].get_spawn_waste_metrics(days=30)
+    assert report.total_sessions == 1
+    assert report.zero_progress_sessions == 0
+
+
+@pytest.mark.asyncio
+async def test_by_task_breakdown_reports_task_id_and_cost(waste_setup: dict) -> None:
+    db = waste_setup["db"]
+    task = _task(waste_setup["project_id"], waste_setup["dev_id"])
+    started = _NOW - timedelta(hours=1)
+    ended = _NOW
+    db.add(task)
+    db.add(
+        _session(
+            waste_setup["dev_slug"], task.id, started=started, ended=ended, cost=3.0
+        )
+    )
+    await db.flush()
+
+    report = await waste_setup["svc"].get_spawn_waste_metrics(days=30)
+    task_row = next(t for t in report.by_task if t.task_id == str(task.id))
+    assert task_row.sessions == 1
+    assert task_row.zero_progress_sessions == 1
+    assert task_row.zero_progress_cost_usd == pytest.approx(3.0)
+    assert report.to_dict()["by_task"][0]["task_id"] == str(task.id)
 
 
 @pytest.mark.asyncio
