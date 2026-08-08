@@ -62,3 +62,10 @@ def test_cla_step_still_allows_the_human_recheck_trigger() -> None:
     # existing PR still has to retrigger the check.
     step = _cla_step()
     assert "github.event.comment.body == 'recheck'" in step["if"]
+
+
+def test_arbitrary_untrusted_account_is_not_allowlisted() -> None:
+    # Guards the opposite failure mode from the one this task fixes: the
+    # allowlist must stay a specific, named set, not silently widen (e.g. a
+    # future edit collapsing it to a wildcard) into exempting everyone.
+    assert "some-untrusted-fork-account" not in _allowlist()
