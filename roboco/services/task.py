@@ -973,17 +973,25 @@ EVAL_BENCH_SOURCE = "eval_bench"
 # reports that complete the instant a Board role files/the CEO approves them,
 # not when real delivery work ships. X_SOURCES + the feature-spotlight
 # exploration cover x_post/x_reply/x_feature (+ equivalents x_editorial/
-# x_campaign/x_barfly); VIDEO_SOURCE + VIDEO_HELD_SOURCES cover the
-# video-authoring and video-post drafts; RELEASE_MANAGER_SOURCE covers held
-# release proposals. A "ceo_report" (Periscope/Sentinel) is never a TaskTable
-# row at all — filed as a report, not a task — so it needs no entry here.
-# Every board-program exploration cycle (board_roadmap, board_pest_control,
-# ...) is excluded separately, by task_type == ADMINISTRATIVE, not by source.
+# x_campaign/x_barfly); VIDEO_HELD_SOURCES covers the held video_post draft
+# (mp4s + captions ready for CEO approval — never dispatched, exactly like
+# X_SOURCES). RELEASE_MANAGER_SOURCE covers held release proposals. A
+# "ceo_report" (Periscope/Sentinel) is never a TaskTable row at all — filed
+# as a report, not a task — so it needs no entry here. Every board-program
+# exploration cycle (board_roadmap, board_pest_control, ...) is excluded
+# separately, by task_type == ADMINISTRATIVE, not by source.
+#
+# VIDEO_SOURCE (the video-authoring task itself) is deliberately NOT in this
+# set: per the comment on VIDEO_SOURCE above, it IS dispatched — a normal,
+# pre-assigned UX/UI code task like any other cell delivery task
+# (video_engine.open_video_task creates it task_type=CODE, status=PENDING,
+# with a real assignee) — so excluding it would drop genuine delivery work
+# from the lead-time population, the same way excluding a regular backend
+# code task would.
 LEAD_TIME_EXCLUDED_SOURCES: frozenset[str] = frozenset(
     {
         *X_SOURCES,
         X_FEATURE_EXPLORATION_SOURCE,
-        VIDEO_SOURCE,
         *VIDEO_HELD_SOURCES,
         RELEASE_MANAGER_SOURCE,
     }
