@@ -81,7 +81,7 @@ rules:
   # Comments are welcome in RoboCo — intent is documented in-code and in
   # docstrings. The rule only nudges (full-line comments are never flagged).
   #
-  # Retired-not-promoted (Main-PM decision, 2026-08-08): Sentinel's 2026-07-26
+  # Kept at warn, not promoted (Main-PM decision, 2026-08-08): Sentinel's 2026-07-26
   # report flagged 1,446 violations; the count organically dropped to 603 by
   # 2026-08-08 with no enforced sweep. Promoting to block would force a large,
   # low-value cleanup sweep that contradicts the rule's own stated intent
