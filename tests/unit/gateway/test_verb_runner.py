@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.foundation.policy import lifecycle as spec
+from roboco.foundation.policy.content import markers
 from roboco.services.gateway.choreographer._verb_runner import (
     VerbRunner,
 )
@@ -223,7 +224,12 @@ async def test_create_pr_base_is_parent_task_branch_across_team() -> None:
 
     await runner.run_intent("submit_up", task, agent, ctx)
 
-    task_svc.get.assert_awaited_once_with(root_id)
+    # resolve_parent_branch is now also consulted by the zero-commit-waiver
+    # check ahead of create_pr (both read the same parent branch), so
+    # task_svc.get is called at least once — not necessarily exactly once —
+    # with the parent's id; assert on the most recent call's args instead of
+    # the call count.
+    task_svc.get.assert_awaited_with(root_id)
     _, kwargs = git_svc.create_pr.call_args
     assert kwargs["parent"] == "feature/main_pm/ROOT0001", (
         "cell→root PR base must be the parent task's real branch, not the "
@@ -410,3 +416,173 @@ async def test_runner_forwards_actor_agent_id_to_escalate_to_ceo() -> None:
     await runner.run_intent("escalate_to_ceo", task, agent, ctx)
 
     assert task_svc.escalate_to_ceo.call_args.kwargs.get("actor_agent_id") == agent.id
+
+
+# ---------------------------------------------------------------------------
+# Zero-diff PR waiver: submit_up/submit_root skip create_pr/create_root_pr on
+# a zero-commit branch instead of letting GitHub 422 on "No commits between".
+# ---------------------------------------------------------------------------
+
+
+def _waiver_task_svc() -> AsyncMock:
+    """A task_service double wired for the zero-diff waiver scenarios:
+    ``is_behind_base`` lives on the git_service, but the runner's detection
+    also calls ``resolve_parent_branch``, which reads ``task_service.get``
+    for the parent (None parent_task_id short-circuits to
+    project_default_branch_for_task)."""
+    task_svc = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    task_svc.project_default_branch_for_task = AsyncMock(return_value="main")
+    task_svc.add_progress = AsyncMock()
+    task_svc.submit_for_review = AsyncMock(
+        return_value=MagicMock(status="awaiting_pr_review")
+    )
+    task_svc.submit_pm_review = AsyncMock(
+        return_value=MagicMock(status="awaiting_pm_review")
+    )
+    return task_svc
+
+
+@pytest.mark.asyncio
+async def test_submit_up_waives_pr_on_zero_commit_branch() -> None:
+    """A cell branch with zero commits relative to its parent skips create_pr
+    entirely and routes straight to awaiting_pm_review (submit_pm_review),
+    not the in-path review gate — there is no diff for a reviewer to check."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 0))
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/backend/AUDIT0001",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    ctx = spec.Context(notes="report-only audit subtree; no code changes needed")
+
+    result = await runner.run_intent("submit_up", task, agent, ctx)
+
+    git_svc.create_pr.assert_not_called()
+    task_svc.submit_for_review.assert_not_called()
+    task_svc.submit_pm_review.assert_awaited_once()
+    assert result.status == "awaiting_pm_review"
+    # The waiver marker + a reviewer/PM-readable reason land on the task.
+    assert markers.is_pr_waived(task) is True
+    assert markers.get_transition_note(task, markers.PR_WAIVED_TRANSITION_EVENT)
+    task_svc.add_progress.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_submit_root_waives_pr_on_zero_commit_branch() -> None:
+    """submit_root behaves identically to submit_up: a zero-commit root
+    branch skips create_root_pr and routes to awaiting_pm_review directly."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 0))
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/main_pm/AUDIT0001",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="main_pm")
+    ctx = spec.Context(notes="report-only audit root; no code changes needed")
+
+    result = await runner.run_intent("submit_root", task, agent, ctx)
+
+    git_svc.create_pr.assert_not_called()
+    task_svc.submit_for_review.assert_not_called()
+    task_svc.submit_pm_review.assert_awaited_once()
+    assert result.status == "awaiting_pm_review"
+
+
+@pytest.mark.asyncio
+async def test_submit_up_still_creates_pr_when_branch_has_commits() -> None:
+    """Regression: a non-empty cell branch (ahead > 0) is unaffected — the
+    existing create_pr -> submit_for_review ordering runs exactly as before."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 3))
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 55})
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/backend/REAL0001",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    ctx = spec.Context(notes="cell scope complete; bubbling up to main pm")
+
+    result = await runner.run_intent("submit_up", task, agent, ctx)
+
+    git_svc.create_pr.assert_awaited_once()
+    task_svc.submit_for_review.assert_awaited_once()
+    task_svc.submit_pm_review.assert_not_called()
+    assert result.status == "awaiting_pr_review"
+    assert markers.is_pr_waived(task) is False
+
+
+@pytest.mark.asyncio
+async def test_submit_root_still_creates_pr_when_branch_has_commits() -> None:
+    """Regression: submit_root's non-empty-diff path is unaffected."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 5))
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 56})
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/main_pm/REAL0001",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="main_pm")
+    ctx = spec.Context(notes="root scope complete; bubbling to master")
+
+    result = await runner.run_intent("submit_root", task, agent, ctx)
+
+    git_svc.create_pr.assert_awaited_once()
+    task_svc.submit_for_review.assert_awaited_once()
+    task_svc.submit_pm_review.assert_not_called()
+    assert result.status == "awaiting_pr_review"
+
+
+@pytest.mark.asyncio
+async def test_waiver_fails_open_on_git_error() -> None:
+    """A flaky is_behind_base (network blip, missing workspace) must not
+    silently waive a PR a retry would have created fine — create_pr still
+    runs and surfaces its own error/success as before."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    git_svc.is_behind_base = AsyncMock(side_effect=RuntimeError("workspace down"))
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 57})
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/backend/FLAKY001",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    ctx = spec.Context(notes="cell scope complete; bubbling up to main pm")
+
+    await runner.run_intent("submit_up", task, agent, ctx)
+
+    git_svc.create_pr.assert_awaited_once()
+    task_svc.submit_for_review.assert_awaited_once()
+    task_svc.submit_pm_review.assert_not_called()

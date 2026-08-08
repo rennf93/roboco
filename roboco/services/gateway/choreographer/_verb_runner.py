@@ -22,9 +22,23 @@ from dataclasses import dataclass
 from typing import Any
 
 from roboco.foundation.policy import lifecycle as spec
+from roboco.foundation.policy.content import markers
 
 _AtomicHandler = Callable[[Any, Any, Any, spec.Context], Awaitable[Any]]
 _SideEffectHandler = Callable[[Any, Any, Any], Awaitable[Any]]
+
+# submit_up / submit_root's pre_side_effects that open a PR ahead of the
+# in_progress -> awaiting_pr_review transition. A zero-commit branch (report-
+# only work — audit/findings subtrees) 422s GitHub's "No commits between"
+# instead of completing; these are the two names the runner checks for a
+# zero-diff waiver BEFORE attempting the call.
+_PR_CREATION_SIDE_EFFECTS = frozenset({"create_pr", "create_root_pr"})
+# The composed action a PR waiver reroutes: instead of submit_for_review
+# (in_progress -> awaiting_pr_review, the in-path gate a diff-less task has
+# nothing for a reviewer to check), a waived task skips straight to
+# submit_pm_review (in_progress -> awaiting_pm_review) — the same
+# gate-skipping transition a branchless coordination root already uses.
+_GATE_ENTRY_ACTION = "submit_for_review"
 
 
 @dataclass(frozen=True)
@@ -64,8 +78,54 @@ class VerbRunner:
                 "re-issue your claim verb."
             )
         intent = spec._INTENT_VERBS[intent_name]
+        pr_waived = await self._run_pre_side_effects(intent, task, agent)
+        task = await self._run_composed_actions(intent, task, agent, context, pr_waived)
+        # A TRAILING None (the last composed action returned None because its
+        # source-status check failed under a concurrent transition) is the
+        # verb's own result and flows out as the runner's return value. The
+        # side_effects loop must NOT run on that None — a side effect
+        # dereferences task.branch_name / task.pr_number and crashes
+        # (_do_push_branch(None) -> None.branch_name AttributeError), turning
+        # the clean INVALID_STATE the entry/intermediate guards give into a
+        # 500/respawn loop. Skip side effects so the caller's `if task is None`
+        # handler surfaces the verb-specific message.
+        if task is not None:
+            for side_effect_name in intent.side_effects:
+                await self._dispatch_side_effect(side_effect_name, task, agent)
+        return task
+
+    async def _run_pre_side_effects(self, intent: Any, task: Any, agent: Any) -> bool:
+        """Run ``intent.pre_side_effects``, detecting + waiving a zero-diff
+        PR creation along the way. Extracted from ``run_intent`` to keep
+        that method's own cyclomatic complexity within the xenon gate.
+
+        Returns whether PR creation was waived (threaded into
+        ``_run_composed_actions`` to reroute the gate-entry action).
+        """
+        pr_waived = False
         for side_effect_name in intent.pre_side_effects:
+            if (
+                side_effect_name in _PR_CREATION_SIDE_EFFECTS
+                and await self._maybe_waive_pr_creation(task, agent)
+            ):
+                pr_waived = True
+                continue
             await self._dispatch_side_effect(side_effect_name, task, agent)
+        return pr_waived
+
+    async def _run_composed_actions(
+        self,
+        intent: Any,
+        task: Any,
+        agent: Any,
+        context: spec.Context,
+        pr_waived: bool,
+    ) -> Any:
+        """Run ``intent.composes`` inside a savepoint, rerouting the
+        gate-entry action when PR creation was waived. Extracted from
+        ``run_intent`` to keep that method's own cyclomatic complexity
+        within the xenon gate.
+        """
         async with self.task_service.session.begin_nested():
             for position, action_name in enumerate(intent.composes):
                 # A composed atomic action (claim/set_plan/start) returns None when
@@ -89,25 +149,65 @@ class VerbRunner:
                 if position > 0 and task is None:
                     raise ValueError(
                         f"INVALID_STATE: a composed action before '{action_name}' in "
-                        f"'{intent_name}' returned no task — its source status was "
+                        f"'{intent.name}' returned no task — its source status was "
                         "invalid, most likely because a concurrent transition changed "
                         "the task between the precondition gate and execution. "
                         "Re-fetch with evidence(task_id) and re-issue your verb."
                     )
-                task = await self._dispatch_atomic(action_name, task, agent, context)
-        # A TRAILING None (the last composed action returned None because its
-        # source-status check failed under a concurrent transition) is the
-        # verb's own result and flows out as the runner's return value. The
-        # side_effects loop must NOT run on that None — a side effect
-        # dereferences task.branch_name / task.pr_number and crashes
-        # (_do_push_branch(None) -> None.branch_name AttributeError), turning
-        # the clean INVALID_STATE the entry/intermediate guards give into a
-        # 500/respawn loop. Skip side effects so the caller's `if task is None`
-        # handler surfaces the verb-specific message.
-        if task is not None:
-            for side_effect_name in intent.side_effects:
-                await self._dispatch_side_effect(side_effect_name, task, agent)
+                # A PR-waived submit_up/submit_root reroutes its gate-entry
+                # action: submit_for_review (-> awaiting_pr_review) has
+                # nothing for a reviewer to check on a diff-less branch, so
+                # route to submit_pm_review (-> awaiting_pm_review) instead —
+                # the same gate-skip a branchless coordination root already
+                # uses (main_pm_complete's own submit_pm_review call).
+                if pr_waived and action_name == _GATE_ENTRY_ACTION:
+                    task = await self._do_submit_pm_review(task, agent, context)
+                else:
+                    task = await self._dispatch_atomic(
+                        action_name, task, agent, context
+                    )
         return task
+
+    async def _maybe_waive_pr_creation(self, task: Any, agent: Any) -> bool:
+        """Detect a zero-commit branch ahead of create_pr/create_root_pr.
+
+        Report-only work (an audit/findings subtree — the Board Program
+        catalog generates this by design) produces a real branch with zero
+        commits relative to its resolved parent, distinct from a branchless
+        coordination task (no branch at all, already exempt from PR creation
+        elsewhere). Detecting it here — BEFORE the create_pr/create_root_pr
+        call — means the runner skips the side effect outright instead of
+        letting GitHub 422 on "No commits between".
+
+        Returns True when PR creation was waived (the caller must skip the
+        side effect); records the pr_waived marker plus a reviewer/PM-
+        readable transition note + progress entry. Fails OPEN on any git
+        error (network blip, missing workspace) — a flaky check must not
+        silently waive a PR that a retry would have created fine; the
+        unwaived create_pr call runs as before and surfaces its own error.
+        """
+        if not getattr(task, "branch_name", None):
+            return False
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        try:
+            parent = await resolve_parent_branch(task, self.task_service)
+            _behind, ahead = await self.git_service.is_behind_base(
+                task, base_branch=parent, actor_agent_id=agent.id
+            )
+        except Exception:
+            return False
+        if ahead > 0:
+            return False
+        reason = (
+            f"PR creation waived: branch '{task.branch_name}' has zero commits "
+            f"relative to its parent branch '{parent}' — report-only work with "
+            "no diff to review."
+        )
+        markers.mark_pr_waived(task)
+        markers.set_transition_note(task, markers.PR_WAIVED_TRANSITION_EVENT, reason)
+        await self.task_service.add_progress(task.id, agent.id, reason)
+        return True
 
     async def _dispatch_atomic(
         self, action_name: str, task: Any, agent: Any, context: spec.Context

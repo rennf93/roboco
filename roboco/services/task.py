@@ -274,16 +274,6 @@ def _board_cannot_own(task: TaskTable) -> bool:
     )
 
 
-def _append_missing(values: list[Any] | None, item: Any) -> list[Any]:
-    """NULL-tolerant append-if-absent for list columns.
-
-    Restored/imported rows can carry ``None`` where the ORM default promises a
-    list; returns a list containing ``item`` exactly once either way.
-    """
-    vals = values or []
-    return vals if item in vals else [*vals, item]
-
-
 def _task_type_is_code(task_type: Any) -> bool:
     """True when ``task_type`` is ``TaskType.CODE`` (enum member or its value).
 
@@ -1110,6 +1100,11 @@ class TaskService(BaseService):
             is_umbrella=is_batch_umbrella(
                 batch_id=task.batch_id, parent_task_id=task.parent_task_id
             ),
+            # A PR-waived task (zero commits relative to its parent —
+            # report-only work the verb runner skipped create_pr for) is
+            # exempt from the pr_number CEO-escalation gate the same way an
+            # umbrella is, even though it carries a real branch.
+            is_pr_waived=markers.is_pr_waived(task),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -5728,7 +5723,9 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        task.dependency_ids = _append_missing(task.dependency_ids, blocker_task_id)
+        if blocker_task_id not in task.dependency_ids:
+            new_deps = [*task.dependency_ids, blocker_task_id]
+            task.dependency_ids = new_deps
         # Task-dependency blocks always resolve when the blocker task
         # completes — that's inherently an agent-resolvable condition.
         task.blocker_resolver_type = BlockerResolverType.AGENT
@@ -5743,8 +5740,8 @@ class TaskService(BaseService):
 
         # Update the blocker task to reference this as blocked
         blocker = await self.get(blocker_task_id)
-        if blocker:
-            blocker.blocker_ids = _append_missing(blocker.blocker_ids, task_id)
+        if blocker and task_id not in blocker.blocker_ids:
+            blocker.blocker_ids = [*blocker.blocker_ids, task_id]
             await self.session.flush()
 
         self.log.info(
@@ -6713,6 +6710,11 @@ class TaskService(BaseService):
         batch umbrella — without this, umbrella completion deadlocks in
         in_progress (``submit_pm_review`` returns None, the Main PM loops on
         ``complete`` -> invalid_state forever).
+
+        A PR-waived task (real branch, zero commits relative to its parent —
+        report-only work the verb runner already skipped create_pr for) is
+        exempt from the pr_created/pr_number half the same way: it still
+        needs a branch (it is not branchless), but it legitimately has no PR.
         """
         if task.status != TaskStatus.IN_PROGRESS:
             self.log.warning(
@@ -6730,7 +6732,10 @@ class TaskService(BaseService):
                 task_id=str(task_id),
             )
             return False
-        if (not task.pr_created or not task.pr_number) and not is_umbrella:
+        pr_waived = markers.is_pr_waived(task)
+        if (not task.pr_created or not task.pr_number) and not (
+            is_umbrella or pr_waived
+        ):
             self.log.warning(
                 "Cannot submit for PM review - PR must be created first",
                 task_id=str(task_id),
@@ -6973,8 +6978,12 @@ class TaskService(BaseService):
         them completed — mirrors the CEO-approve guard but applies to
         the PM's own awaiting_pm_review → completed transition.
         Root parent tasks and tasks without a work_session skip this
-        check (escalation to CEO handles them).
+        check (escalation to CEO handles them). A PR-waived task (zero
+        commits relative to its parent — report-only work) has no PR to
+        merge by design, so it is exempt too.
         """
+        if markers.is_pr_waived(task):
+            return True
         if not task.work_session_id:
             return True
         result = await self.session.execute(
@@ -7213,6 +7222,50 @@ class TaskService(BaseService):
     # CEO APPROVAL WORKFLOW
     # =========================================================================
 
+    def _escalate_to_ceo_refusal(
+        self, task: TaskTable
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Eligibility checks for ``escalate_to_ceo``, extracted to keep that
+        method's own cyclomatic complexity within the xenon gate. Returns
+        ``(log_message, log_kwargs)`` when escalation must be refused, or
+        ``None`` when `task` is eligible."""
+        if task.status != TaskStatus.AWAITING_PM_REVIEW:
+            return (
+                "Cannot escalate to CEO - task not in PM review",
+                {"current_status": task.status.value},
+            )
+        # Only parent (root) tasks can be escalated to CEO (not subtasks) —
+        # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
+        # carries its own project/branch/PR and behaves as a root for
+        # git/CEO purposes (is_batch_root_subtask). A plain subtask (no
+        # batch_id) is still refused.
+        if task.parent_task_id and not is_batch_root_subtask(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
+            return (
+                "Cannot escalate subtask to CEO - only parent tasks allowed",
+                {"parent_task_id": str(task.parent_task_id)},
+            )
+        # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
+        # MegaTask umbrella, which is branchless by design (assembles no PR of
+        # its own; each root-subtask carries its own project/branch/PR). It
+        # escalates to the CEO with no pr_number once every root-subtask is
+        # done. A PR-waived root (zero commits relative to its parent —
+        # report-only work) is exempt the same way: it has a real branch, but
+        # legitimately no PR to point the CEO at.
+        if (
+            not task.pr_number
+            and not is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            )
+            and not markers.is_pr_waived(task)
+        ):
+            return (
+                "Cannot escalate to CEO - task has no PR",
+                {"pr_created": task.pr_created},
+            )
+        return None
+
     async def escalate_to_ceo(
         self,
         task_id: UUID,
@@ -7245,42 +7298,10 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Only allow escalation from awaiting_pm_review
-        if task.status != TaskStatus.AWAITING_PM_REVIEW:
-            self.log.warning(
-                "Cannot escalate to CEO - task not in PM review",
-                task_id=str(task_id),
-                current_status=task.status.value,
-            )
-            return None
-
-        # Only parent (root) tasks can be escalated to CEO (not subtasks) —
-        # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
-        # carries its own project/branch/PR and behaves as a root for
-        # git/CEO purposes (is_batch_root_subtask). A plain subtask (no
-        # batch_id) is still refused.
-        if task.parent_task_id and not is_batch_root_subtask(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
-        ):
-            self.log.warning(
-                "Cannot escalate subtask to CEO - only parent tasks allowed",
-                task_id=str(task_id),
-                parent_task_id=str(task.parent_task_id),
-            )
-            return None
-
-        # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
-        # MegaTask umbrella, which is branchless by design (assembles no PR of
-        # its own; each root-subtask carries its own project/branch/PR). It
-        # escalates to the CEO with no pr_number once every root-subtask is done.
-        if not task.pr_number and not is_batch_umbrella(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
-        ):
-            self.log.warning(
-                "Cannot escalate to CEO - task has no PR",
-                task_id=str(task_id),
-                pr_created=task.pr_created,
-            )
+        refusal = self._escalate_to_ceo_refusal(task)
+        if refusal:
+            message, kwargs = refusal
+            self.log.warning(message, task_id=str(task_id), **kwargs)
             return None
 
         # Store the escalation note as a marker, not quick_context soup.
@@ -7348,8 +7369,14 @@ class TaskService(BaseService):
             )
             return None
 
-        # Verify PR is merged (CEO merges as final action before approving)
-        if task.work_session_id:
+        # Verify PR is merged (CEO merges as final action before approving).
+        # A PR-waived task (real branch, zero commits relative to its parent —
+        # report-only work the verb runner already skipped create_pr for)
+        # keeps a real work_session whose pr_status never becomes "merged"
+        # (there was never a PR to merge) — exempt it the same way the
+        # umbrella/pr_number gates elsewhere are, or it strands in
+        # awaiting_ceo_approval needing manual status surgery.
+        if task.work_session_id and not markers.is_pr_waived(task):
             work_session_result = await self.session.execute(
                 select(WorkSessionTable).where(
                     WorkSessionTable.id == task.work_session_id
@@ -8375,9 +8402,9 @@ class TaskService(BaseService):
             task.dependency_ids = [
                 dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
             ]
-            if completed_task_id not in (task.completed_dependency_ids or []):
+            if completed_task_id not in task.completed_dependency_ids:
                 task.completed_dependency_ids = [
-                    *(task.completed_dependency_ids or []),
+                    *task.completed_dependency_ids,
                     completed_task_id,
                 ]
             # If no more dependencies, unblock (system action - no role validation)
@@ -8485,7 +8512,7 @@ class TaskService(BaseService):
             "message": message,
             "percentage": percentage,
         }
-        task.progress_updates = [*(task.progress_updates or []), update]
+        task.progress_updates = [*task.progress_updates, update]
         await self.session.flush()
 
         return task
@@ -8529,7 +8556,7 @@ class TaskService(BaseService):
 
         percentage = _derive_plan_pct(sub_tasks, fallback_percentage)
         task.progress_updates = [
-            *(task.progress_updates or []),
+            *task.progress_updates,
             {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "agent_id": str(agent_id),
@@ -8559,14 +8586,14 @@ class TaskService(BaseService):
             return None
 
         checkpoint = {
-            "id": str(UUID(int=len(task.checkpoints or []))),
+            "id": str(UUID(int=len(task.checkpoints))),
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(agent_id),
             "state_summary": state_summary,
             "remaining_work": remaining_work,
             "notes": notes,
         }
-        task.checkpoints = [*(task.checkpoints or []), checkpoint]
+        task.checkpoints = [*task.checkpoints, checkpoint]
         await self.session.flush()
 
         return task
@@ -8589,7 +8616,7 @@ class TaskService(BaseService):
             "timestamp": datetime.now(UTC).isoformat(),
             "author_agent_id": str(agent_id) if agent_id else None,
         }
-        task.commits = [*(task.commits or []), commit]
+        task.commits = [*task.commits, commit]
         await self.session.flush()
 
         return task
@@ -8994,7 +9021,7 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return False
-        if depends_on_id in (task.dependency_ids or []):
+        if depends_on_id in task.dependency_ids:
             return False  # idempotent re-add
         if await self._would_create_cycle(task_id, depends_on_id):
             raise ConflictError(
@@ -9002,7 +9029,7 @@ class TaskService(BaseService):
                 "close a dependency cycle",
                 resource_type="task_dependency",
             )
-        task.dependency_ids = [*(task.dependency_ids or []), depends_on_id]
+        task.dependency_ids = [*task.dependency_ids, depends_on_id]
         await self.session.flush()
         return True
 
@@ -9121,7 +9148,7 @@ class TaskService(BaseService):
         root = await self.get(UUID(str(cell_task.parent_task_id)))
         if root is None:
             return
-        predecessor_root_ids = list(root.dependency_ids or [])
+        predecessor_root_ids = list(root.dependency_ids)
         cell_tasks_by_root: dict = {}
         for pred_root_id in predecessor_root_ids:
             cell_tasks_by_root[pred_root_id] = await self.get_subtasks(
@@ -9162,7 +9189,7 @@ class TaskService(BaseService):
         if root is None:
             return
         groups: list = []
-        for pred_root_id in list(root.dependency_ids or []):
+        for pred_root_id in list(root.dependency_ids):
             for pred_ct in await self.get_subtasks(UUID(str(pred_root_id))):
                 groups.append(await self.get_subtasks(UUID(str(pred_ct.id))))
         for dep_id in by_osmosis_tail_dev_tasks(is_first, groups):
@@ -10349,7 +10376,7 @@ class TaskService(BaseService):
         tasks = list(result.scalars().all())
         available: list[TaskTable] = []
         for task in tasks:
-            if await self.unmet_dependency_ids(list(task.dependency_ids or [])):
+            if await self.unmet_dependency_ids(list(task.dependency_ids)):
                 continue
             if await self._claim_blocked_by_sequence(task) is not None:
                 continue
@@ -11963,7 +11990,7 @@ class TaskService(BaseService):
                 "author_agent_id": str(pm_agent_id),
                 "kind": "merge",
             }
-            task.commits = [*(task.commits or []), merge_entry]
+            task.commits = [*task.commits, merge_entry]
             await self.session.flush()
         return await self.complete(task_id, agent_id=pm_agent_id)
 
