@@ -5,6 +5,7 @@ the stream consumer's turn/draft forwarding, idle sweep, and the engine's
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -89,6 +90,90 @@ async def test_deliver_text_routes_only_bridged_chats(
     bridge._SESSIONS["777"] = sess
     assert await bridge.deliver_text("777", "hello") == ""
     assert registry.delivered == [(sess.session_id, "hello")]
+
+
+@pytest.mark.asyncio
+async def test_deliver_text_persists_intake_human_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """closes F-b9962432: a Telegram-bridged intake chat is a live prompter
+    session and its human turns must persist, mirroring the panel's own
+    send_message (prompter_live.py)."""
+    registry = FakeRegistry()
+    monkeypatch.setattr(
+        "roboco.services.prompter_live.get_live_registry", lambda: registry
+    )
+    fake_db = object()
+
+    @asynccontextmanager
+    async def _fake_ctx() -> Any:
+        yield fake_db
+
+    monkeypatch.setattr("roboco.db.base.get_db_context", _fake_ctx)
+    prompter = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.prompter.get_prompter_service", lambda _db: prompter
+    )
+
+    sess = _bridge_session("intake")
+    bridge._SESSIONS["777"] = sess
+
+    assert await bridge.deliver_text("777", "build the widget") == ""
+
+    prompter.record_live_message.assert_awaited_once_with(
+        sess.session_id, "user", "build the widget"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deliver_text_does_not_persist_secretary_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Secretary chats have no durable-message table wired — deliver_text must
+    not call PrompterService for a secretary-kind session."""
+    registry = FakeRegistry()
+    monkeypatch.setattr(
+        "roboco.services.prompter_live.get_live_registry", lambda: registry
+    )
+    prompter = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.prompter.get_prompter_service", lambda _s: prompter
+    )
+
+    sess = _bridge_session("secretary")
+    bridge._SESSIONS["777"] = sess
+
+    assert await bridge.deliver_text("777", "plan my day") == ""
+
+    prompter.record_live_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_text_persist_failure_does_not_break_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A persistence hiccup must never surface as a user-facing bridge error —
+    the message was already delivered to the live agent."""
+    registry = FakeRegistry()
+    monkeypatch.setattr(
+        "roboco.services.prompter_live.get_live_registry", lambda: registry
+    )
+
+    @asynccontextmanager
+    async def _fake_ctx() -> Any:
+        yield object()
+
+    monkeypatch.setattr("roboco.db.base.get_db_context", _fake_ctx)
+
+    def _boom(_db: Any) -> Any:
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr("roboco.services.prompter.get_prompter_service", _boom)
+
+    sess = _bridge_session("intake")
+    bridge._SESSIONS["777"] = sess
+
+    assert await bridge.deliver_text("777", "build the widget") == ""
 
 
 @pytest.mark.asyncio
@@ -261,7 +346,10 @@ async def test_intake_confirm_routes_board_and_parks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task_id = uuid4()
-    prompter = MagicMock(confirm_live_draft=AsyncMock(return_value=task_id))
+    prompter = MagicMock(
+        confirm_live_draft=AsyncMock(return_value=task_id),
+        mark_live_drafts_consumed=AsyncMock(),
+    )
     monkeypatch.setattr(
         "roboco.services.prompter.get_prompter_service", lambda _s: prompter
     )
@@ -282,6 +370,11 @@ async def test_intake_confirm_routes_board_and_parks(
     assert "Board review" in text
     prompter.confirm_live_draft.assert_awaited_once_with(
         {"title": "T"}, ti._CEO_UUID, project_id=project_id, route="board"
+    )
+    # closes F-e95664cc: every confirm path must mark the session's
+    # task_drafts rows consumed, not just the panel's own confirm_live route.
+    prompter.mark_live_drafts_consumed.assert_awaited_once_with(
+        sess.session_id, task_id
     )
     assert registry.parked == [(sess.session_id, str(task_id))]
     assert sess.parked is True

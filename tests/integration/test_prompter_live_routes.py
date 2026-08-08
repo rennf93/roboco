@@ -13,7 +13,7 @@ from http import HTTPStatus
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -24,14 +24,21 @@ from roboco.api import deps
 from roboco.api.deps import get_agent_context
 from roboco.api.routes.prompter_live import router
 from roboco.db.base import get_db
-from roboco.db.tables import ProjectTable, TaskTable
+from roboco.db.tables import (
+    ProjectTable,
+    PrompterMessageTable,
+    TaskDraftTable,
+    TaskTable,
+)
 from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.services import prompter_live
 from roboco.services.base import ValidationError
 from roboco.services.permissions import AgentContext
+from sqlalchemy import select
 
 from tests.unit.services.test_prompter import (
     _confirm_board_batch,
+    _seed_intake_agent,
     _seed_project_and_ceo,
     _seed_second_project,
 )
@@ -41,19 +48,29 @@ if TYPE_CHECKING:
 
 
 @pytest_asyncio.fixture
-async def live_client() -> AsyncIterator[dict[str, Any]]:
+async def live_client(db_session: Any) -> AsyncIterator[dict[str, Any]]:
+    """A real (Postgres-backed) DB session — ``/events``/``/messages`` now
+    durably persist drafts + chat turns, so a fake DB object can no longer
+    stand in."""
+
     def container_handler(_req: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True})
+
+    await _seed_intake_agent(db_session)
 
     mock_client = httpx.AsyncClient(transport=httpx.MockTransport(container_handler))
     registry = prompter_live.PrompterLiveRegistry(http_client=mock_client)
     prompter_live._RegistryHolder.instance = registry  # inject the singleton
 
+    async def _real_db() -> AsyncIterator[Any]:
+        yield db_session
+
     app = FastAPI()
     app.include_router(router, prefix="/api/prompter")
+    app.dependency_overrides[get_db] = _real_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield {"client": client, "registry": registry}
+        yield {"client": client, "registry": registry, "db": db_session}
 
     prompter_live._RegistryHolder.instance = None
     await mock_client.aclose()
@@ -102,13 +119,30 @@ async def test_status_reports_dead_for_unknown_session(live_client: dict) -> Non
 @pytest.mark.asyncio
 async def test_send_message_delivers_to_container(live_client: dict) -> None:
     client, registry = live_client["client"], live_client["registry"]
-    registry.open("s1", "intake-1")
+    session_id = uuid4().hex
+    registry.open(session_id, "intake-1")
 
     resp = await client.post(
-        "/api/prompter/live/s1/messages", json={"text": "hello there"}
+        f"/api/prompter/live/{session_id}/messages", json={"text": "hello there"}
     )
     assert resp.status_code == HTTPStatus.OK
     assert resp.json() == {"delivered": True}
+
+    # Durably persisted — the fix's second half (message-history persistence).
+    rows = (
+        (
+            await live_client["db"].execute(
+                select(PrompterMessageTable).where(
+                    PrompterMessageTable.session_id == UUID(session_id)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].role == "user"
+    assert rows[0].content == "hello there"
 
 
 @pytest.mark.asyncio
@@ -126,6 +160,146 @@ async def test_send_message_requires_text(live_client: dict) -> None:
         "/api/prompter/live/s1/messages", json={"text": ""}
     )
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+# ---------------------------------------------------------------------------
+# Durable draft/message persistence (the 2026-08-08 NAS-recovery fix).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_relay_draft_event_persists_before_push(live_client: dict) -> None:
+    """A ``draft`` event lands a ``task_drafts`` row BEFORE it is pushed onto
+    the SSE queue for the panel — the write-first ordering the fix requires."""
+    client, registry, db = (
+        live_client["client"],
+        live_client["registry"],
+        live_client["db"],
+    )
+    session_id = uuid4().hex
+    registry.open(session_id, "intake-1")
+    draft = {"title": "Add widgets", "acceptance_criteria": ["works"]}
+
+    resp = await client.post(
+        f"/api/prompter/live/{session_id}/events",
+        json={"kind": "draft", "tool": "propose_draft", "data": draft},
+    )
+
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {"pushed": True}
+    assert registry.get(session_id).queue.qsize() == 1  # still reaches the panel
+
+    rows = (
+        (
+            await db.execute(
+                select(TaskDraftTable).where(
+                    TaskDraftTable.session_id == UUID(session_id)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].draft_data == draft
+    assert rows[0].confirmed_at is None  # unconfirmed — not consumed yet
+
+
+@pytest.mark.asyncio
+async def test_relay_batch_event_persists_task_drafts_row(live_client: dict) -> None:
+    client, db = live_client["client"], live_client["db"]
+    session_id = uuid4().hex
+    live_client["registry"].open(session_id, "intake-1")
+    batch = {"drafts": [{"title": "A"}, {"title": "B"}], "title": "MegaTask"}
+
+    resp = await client.post(
+        f"/api/prompter/live/{session_id}/events",
+        json={"kind": "batch", "tool": "propose_batch", "data": batch},
+    )
+
+    assert resp.status_code == HTTPStatus.OK
+    row = (
+        await db.execute(
+            select(TaskDraftTable).where(TaskDraftTable.session_id == UUID(session_id))
+        )
+    ).scalar_one()
+    assert row.draft_data == batch
+
+
+@pytest.mark.asyncio
+async def test_relay_turn_end_flushes_buffered_text_as_assistant_message(
+    live_client: dict,
+) -> None:
+    """``text`` chunk deltas accumulate in-memory and land as ONE assistant
+    row in ``prompter_messages`` on ``turn_end`` — not one row per delta."""
+    client, db = live_client["client"], live_client["db"]
+    session_id = uuid4().hex
+    live_client["registry"].open(session_id, "intake-1")
+
+    for piece in ("Hello", ", ", "world!"):
+        resp = await client.post(
+            f"/api/prompter/live/{session_id}/events",
+            json={"kind": "text", "text": piece},
+        )
+        assert resp.status_code == HTTPStatus.OK
+
+    resp = await client.post(
+        f"/api/prompter/live/{session_id}/events",
+        json={"kind": "turn_end", "data": {}},
+    )
+    assert resp.status_code == HTTPStatus.OK
+
+    rows = (
+        (
+            await db.execute(
+                select(PrompterMessageTable).where(
+                    PrompterMessageTable.session_id == UUID(session_id)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].role == "assistant"
+    assert rows[0].content == "Hello, world!"
+
+
+@pytest.mark.asyncio
+async def test_draft_survives_a_simulated_orchestrator_restart(
+    live_client: dict,
+) -> None:
+    """A proposed draft outlives the in-memory relay registry.
+
+    Simulates an orchestrator restart by discarding the live in-memory
+    registry (the thing that used to be the draft's ONLY home) and reading
+    the draft back from a fresh query against the same durable Postgres —
+    proving the 2026-08-08 fix: the draft is recoverable even though every
+    piece of in-memory session state is gone.
+    """
+    client, db = live_client["client"], live_client["db"]
+    session_id = uuid4().hex
+    live_client["registry"].open(session_id, "intake-1")
+    draft = {"title": "Survive a restart", "acceptance_criteria": ["still here"]}
+
+    resp = await client.post(
+        f"/api/prompter/live/{session_id}/events",
+        json={"kind": "draft", "tool": "propose_draft", "data": draft},
+    )
+    assert resp.status_code == HTTPStatus.OK
+
+    # --- simulated restart: the in-memory registry (queue, container handle,
+    # buffered text) is gone; only the DB survives a real orchestrator restart.
+    prompter_live._RegistryHolder.instance = prompter_live.PrompterLiveRegistry()
+    assert prompter_live._RegistryHolder.instance.get(session_id) is None
+
+    recovered = (
+        await db.execute(
+            select(TaskDraftTable).where(TaskDraftTable.session_id == UUID(session_id))
+        )
+    ).scalar_one()
+    assert recovered.draft_data == draft
+    assert recovered.confirmed_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -324,10 +498,14 @@ async def confirm_client(
 async def test_confirm_creates_task_and_reaps(confirm_client: dict) -> None:
     client, orch = confirm_client["client"], confirm_client["orch"]
     task_id = uuid4()
+    consumed_calls: list[tuple[Any, ...]] = []
 
     class _FakeService:
         async def confirm_live_draft(self, _draft: Any, _agent: Any, **_kw: Any) -> Any:
             return task_id
+
+        async def mark_live_drafts_consumed(self, *args: Any, **_kw: Any) -> None:
+            consumed_calls.append(args)
 
     with patch(
         "roboco.api.routes.prompter_live.get_prompter_service",
@@ -343,6 +521,9 @@ async def test_confirm_creates_task_and_reaps(confirm_client: dict) -> None:
     assert resp.status_code == HTTPStatus.CREATED
     assert resp.json() == {"task_id": str(task_id)}
     assert orch.reaped == ["s1"]  # reap-on-confirm
+    # Every draft proposed in this session is marked consumed with the new
+    # task's id — never deleted (see PrompterService's own unit tests).
+    assert consumed_calls == [("s1", task_id)]
 
 
 @pytest.mark.asyncio
@@ -419,6 +600,9 @@ async def test_confirm_batch_main_pm_route_creates_and_reaps(
         async def confirm_live_batch(self, *_a: Any, **_kw: Any) -> Any:
             return result
 
+        async def mark_live_drafts_consumed(self, *_a: Any, **_kw: Any) -> None:
+            return None
+
     with patch(
         "roboco.api.routes.prompter_live.get_prompter_service",
         lambda _db: _FakeService(),
@@ -447,6 +631,9 @@ async def test_confirm_batch_board_route_parks_session(confirm_client: dict) -> 
     class _FakeService:
         async def confirm_live_batch(self, *_a: Any, **_kw: Any) -> Any:
             return result
+
+        async def mark_live_drafts_consumed(self, *_a: Any, **_kw: Any) -> None:
+            return None
 
     body = _batch_body()
     body["route"] = "board"
@@ -480,6 +667,9 @@ async def test_confirm_batch_redraft_always_reaps(confirm_client: dict) -> None:
     class _FakeService:
         async def update_live_batch(self, *_a: Any, **_kw: Any) -> Any:
             return result
+
+        async def mark_live_drafts_consumed(self, *_a: Any, **_kw: Any) -> None:
+            return None
 
     body = _batch_body()
     body["route"] = "board"
