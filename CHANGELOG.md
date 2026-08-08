@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **CodeQL check failures are scope-gated against a task's declared file scope (task 04f606d3).** The in-path PR-review gate's CI-status check (`pr_pass` -> `_ci_status_guard`) no longer blocks on a failing `Analyze (python)` / `Analyze (javascript-typescript)` check-run when the task's declared `intends_to_touch` scope has zero overlap with that check's analyzed language paths — CodeQL scans the whole language on every run, not the diff, so a pre-existing alert outside a task's declared scope isn't that task's defect to fix. A task with no declared scope, a genuinely in-scope CodeQL failure, or any other failing check (tests, lint) still blocks exactly as before.
+
 ### Security
 
 - **Forwarded LAN IPs no longer ride the internal-mesh whitelist (#811).** `trusted_proxies` in `build_security_config` had drifted to include `10.0.0.0/8` and `192.168.0.0/16` — LAN ranges the `_INTERNAL_NETWORKS` whitelist already excluded. With `trusted_proxy_depth=1`, a docker-bridge nginx forwarding `X-Forwarded-For: 192.168.1.50` (a real LAN client) made guard peel the LAN IP as a "trusted hop," fall back to the whitelisted `172.18.x` connecting peer, and return `200 OK` — the narrowed whitelist was never consulted for the LAN IP. `trusted_proxies` now contains only `127.0.0.1`, `::1`, `172.16.0.0/12` (identical to the whitelist), so the forwarded LAN IP resolves as the real client and is blocked; a docker-bridge peer with no XFF still resolves to itself and stays exempt. The two lists are one policy split across two guard-core knobs and must move together.
