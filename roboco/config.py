@@ -1736,6 +1736,18 @@ class Settings(BaseSettings):
             "the branch reached the remote."
         ),
     )
+    git_diff_timeout_seconds: int = Field(
+        default=60,
+        ge=5,
+        description=(
+            'Wall-clock timeout in seconds for GET /api/git/diff\'s "diff" '
+            "stage — the two sequential local `git diff` / `git diff --stat` "
+            "subprocess calls together. Each call is already bounded "
+            "individually by git_command_timeout_seconds inside "
+            "GitService._run_git; this is the outer bound on the pair so a "
+            "stalled diff route fails closed with a 504 instead of hanging."
+        ),
+    )
     evidence_assembly_timeout_seconds: float = Field(
         default=45.0,
         ge=1.0,
