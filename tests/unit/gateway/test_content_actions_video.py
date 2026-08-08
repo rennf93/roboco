@@ -73,6 +73,42 @@ def _mock_active_task(
 
 
 # --------------------------------------------------------------------------- #
+# pre-validation trace (2026-08-08 fix, mirrors
+# test_propose_roadmap_traces_payload_before_rejecting)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_propose_video_traces_payload_before_rejecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """propose_video is one of the board-program propose_* verbs: the raw
+    payload must be durably traced BEFORE the team-authorization check runs,
+    so a rejected proposal (a 200 carrying an error envelope) is still
+    replayable from the trace — same guarantee as propose_roadmap et al."""
+    traced: list[dict[str, Any]] = []
+
+    class _FakeAuditService:
+        async def log_event(self, **kwargs: Any) -> None:
+            traced.append(kwargs)
+
+    monkeypatch.setattr("roboco.services.audit.get_audit_service", _FakeAuditService)
+
+    env = await _actions("developer", "backend").propose_video(
+        agent_id=uuid4(), **_valid_kwargs()
+    )
+
+    assert env.error == "not_authorized"  # the call is still rejected
+    assert len(traced) == 1
+    assert traced[0]["event_type"] == "board_program.proposal_trace"
+    assert traced[0]["details"]["verb"] == "propose_video"
+    assert traced[0]["details"]["payload"] == {
+        **_valid_kwargs(),
+        "input_props": None,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # team gate
 # --------------------------------------------------------------------------- #
 

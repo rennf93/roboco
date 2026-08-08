@@ -4506,6 +4506,17 @@ class ContentActions:
         it with. commit + open_pr afterward sends the composition through
         the normal PR-review gate.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_video",
+            payload={
+                "composition_id": composition_id,
+                "x_caption": x_caption,
+                "tiktok_caption": tiktok_caption,
+                "platforms": platforms,
+                "input_props": input_props,
+            },
+        )
         from roboco.foundation.identity import Team
 
         team = await self._caller_team(agent_id)
