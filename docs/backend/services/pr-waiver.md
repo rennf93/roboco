@@ -18,7 +18,7 @@ Runs inside `VerbRunner._run_pre_side_effects`, intercepted for exactly two pre-
 2. Call `GitService.is_behind_base(task, base_branch=parent, ...)` and read its `ahead` count.
 3. `ahead == 0` → waive: stamp the marker, write the transition note + a progress entry, and skip the `create_pr`/`create_root_pr` call entirely.
 4. `ahead > 0` → proceed normally; no waiver, no behavior change.
-5. Any exception (network blip, missing workspace, unresolvable parent) → **fail open**: treat as not-waived and let the normal `create_pr`/`create_root_pr` attempt run and surface its own error. A flaky check must never silently waive a PR that a retry would have created fine.
+5. Any exception (network blip, missing workspace, unresolvable parent) → **fail open**: treat as not-waived and let the normal `create_pr`/`create_root_pr` attempt run and surface its own error. A flaky check must never silently waive a PR that a retry would have created fine. This path logs a `structlog` warning (task id, branch, exception) before returning, so a persistently broken workspace/git no longer degrades back to the GitHub 422 path with no trace of the skipped waiver check.
 
 The detection happens **before** the GitHub call is attempted — not as post-hoc handling of the 422 — so a waived task never makes the doomed API call at all.
 
