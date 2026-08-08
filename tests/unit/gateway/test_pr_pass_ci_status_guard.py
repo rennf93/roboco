@@ -198,6 +198,28 @@ async def test_pr_pass_scope_gate_narrows_message_to_remaining_failures() -> Non
 
 
 @pytest.mark.asyncio
+async def test_pr_pass_still_blocked_on_unmapped_codeql_check_name() -> None:
+    """A failing check name that LOOKS like CodeQL but isn't in
+    ``_CODEQL_CHECK_SCOPES`` (a renamed workflow, or a future third
+    language/matrix entry) must still block — the scope gate only excuses a
+    check it can actually map to an analyzed-language scope; an unmapped name
+    falls back to the old conservative (blocking) behavior rather than being
+    silently excused."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["panel/**"])
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["CodeQL"]}
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error == "invalid_state"
+    assert "CodeQL" in (env.message or "")
+
+
+@pytest.mark.asyncio
 async def test_pr_pass_blocked_on_pending_ci() -> None:
     reviewer_id = uuid4()
     t_before = _t()
