@@ -54,3 +54,11 @@ def test_cla_runs_unconditionally_on_pull_request_target() -> None:
     # PR would sit unchecked until someone manually commented "recheck".
     step = _cla_step()
     assert "github.event_name == 'pull_request_target'" in step["if"]
+
+
+def test_cla_step_still_allows_the_human_recheck_trigger() -> None:
+    # The unconditional pull_request_target clause must stay additive, not a
+    # replacement — a human contributor's "recheck"/sign-off comment on an
+    # existing PR still has to retrigger the check.
+    step = _cla_step()
+    assert "github.event.comment.body == 'recheck'" in step["if"]
