@@ -6,7 +6,7 @@ When the dispatcher's respawn breaker (`_pm_respawn_should_gate` in `roboco/runt
 
 Migration `092_task_stalled_marker` adds two columns to `tasks`, `stalled_reason` and `stalled_since`, so the give-up decision is durable and readable directly off the task row, without reading container logs. A new `GET /api/dashboard/stalled-tasks` endpoint exposes the current stalled set.
 
-This covers the `breaker_tripped` reason only (`_pm_respawn_should_gate`'s strike-cap path). The sibling `notification_cap` reason (the no-`task_id` `_notification_spawn_over_cap` path) is reserved on the `StalledReason` enum but not yet wired; see the parent task `ed14d2e1` for that follow-up.
+This covers the `breaker_tripped` reason only (`_pm_respawn_should_gate`'s strike-cap path). The sibling `_notification_spawn_over_cap` path (no `task_id` to key a marker on) notifies the CEO on trip (see the `_notification_spawn_over_cap` CHANGELOG entry, task 4e7f64c4) but sets no durable task marker — there is nothing to mark. `NOTIFICATION_CAP` remains on the `StalledReason` enum unused, reserved for a future task-keyed variant of that path.
 
 ## Data model
 
@@ -69,6 +69,8 @@ The clear is fire-and-forget via `_schedule_bg`, mirroring the counter write-thr
 
 Returns the current stalled set, every task with a non-null `stalled_reason`, ordered oldest-stalled-first. The route is a thin handler; all query and duration-classification logic lives in `TaskService.list_stalled_tasks`.
 
+The query excludes terminal (`COMPLETED`/`CANCELLED`) tasks: the only marker-clear path, `AgentOrchestrator._clear_task_stalled_marker`, runs solely from the dispatcher's re-observation branch, which never fires once a task reaches a terminal status. Without the exclusion, a task marked stalled that later completed or was cancelled by some other path (not a genuine-progress re-observation) would stay in this list forever even though there is nothing left to act on.
+
 **Response** (`list[StalledTaskResponse]`, `roboco/api/schemas/dashboard.py`):
 
 ```json
@@ -99,7 +101,7 @@ This endpoint sits on the existing `/api/dashboard` router, which is router-leve
 
 ## Testing
 
-- `tests/unit/services/test_task_stalled_marker.py`: `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks` in isolation (set, clear-when-set, no-op clear-when-unset, duration computation).
+- `tests/unit/services/test_task_stalled_marker.py`: `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks` in isolation (set, clear-when-set, no-op clear-when-unset, duration computation, and `test_list_stalled_tasks_excludes_terminal_statuses_at_query_level` pinning the `status NOT IN ('completed', 'cancelled')` predicate on the compiled SQL).
 - `tests/unit/runtime/test_stalled_marker.py`: the orchestrator wiring; a breaker trip calls `mark_stalled` alongside `_notify_stuck_agent`, one-shot per trip.
 - `tests/unit/runtime/test_pm_respawn_reset.py`: the genuine-forward-progress branch clears the marker via `_schedule_bg`.
 - `tests/integration/test_dashboard_routes.py`: `GET /api/dashboard/stalled-tasks` end to end against a real DB.
@@ -108,5 +110,5 @@ Together these cover the three acceptance-critical behaviors: a trip sets the ma
 
 ## Related
 
-- Parent task `ed14d2e1` ("Backend: durable stalled-task state, notification parity, read endpoint") also covers the `notification_cap` reason on the no-`task_id` `_notification_spawn_over_cap` path; tracked separately, not part of this change.
+- `_notification_spawn_over_cap` (no `task_id` path) notifies the CEO on trip but sets no task marker — there is no task to mark. `NOTIFICATION_CAP` stays unused on `StalledReason`, reserved for a future task-keyed variant.
 - `roboco/runtime/orchestrator.py`: `_pm_respawn_should_gate` (breaker trip), `_respawn_status_change_resets` (progress-based reset), `_pm_cooldown_gate` (cooldown self-heal / re-notify eligibility).

@@ -97,6 +97,30 @@ async def test_list_stalled_tasks_maps_rows_and_computes_duration() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_stalled_tasks_excludes_terminal_statuses_at_query_level() -> None:
+    """A stalled marker set on a task that later reaches COMPLETED or
+    CANCELLED must never leak back into the stalled set — the only clear
+    path (AgentOrchestrator._clear_task_stalled_marker) runs solely from the
+    dispatcher's re-observation branch, which never fires for a terminal
+    task. Pin the exclusion at the query level: the compiled SQL must filter
+    out both terminal statuses, since the mocked-session tests above can't
+    exercise real row filtering."""
+    result = MagicMock()
+    result.all = MagicMock(return_value=[])
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+
+    await svc.list_stalled_tasks()
+
+    stmt = session.execute.await_args.args[0]
+    rendered = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "status NOT IN" in rendered
+    assert "'completed'" in rendered
+    assert "'cancelled'" in rendered
+
+
+@pytest.mark.asyncio
 async def test_list_stalled_tasks_empty_when_none_stalled() -> None:
     result = MagicMock()
     result.all = MagicMock(return_value=[])
