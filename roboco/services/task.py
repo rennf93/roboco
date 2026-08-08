@@ -1110,6 +1110,11 @@ class TaskService(BaseService):
             is_umbrella=is_batch_umbrella(
                 batch_id=task.batch_id, parent_task_id=task.parent_task_id
             ),
+            # A PR-waived task (zero commits relative to its parent —
+            # report-only work the verb runner skipped create_pr for) is
+            # exempt from the pr_number CEO-escalation gate the same way an
+            # umbrella is, even though it carries a real branch.
+            is_pr_waived=markers.is_pr_waived(task),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -6713,6 +6718,11 @@ class TaskService(BaseService):
         batch umbrella — without this, umbrella completion deadlocks in
         in_progress (``submit_pm_review`` returns None, the Main PM loops on
         ``complete`` -> invalid_state forever).
+
+        A PR-waived task (real branch, zero commits relative to its parent —
+        report-only work the verb runner already skipped create_pr for) is
+        exempt from the pr_created/pr_number half the same way: it still
+        needs a branch (it is not branchless), but it legitimately has no PR.
         """
         if task.status != TaskStatus.IN_PROGRESS:
             self.log.warning(
@@ -6730,7 +6740,10 @@ class TaskService(BaseService):
                 task_id=str(task_id),
             )
             return False
-        if (not task.pr_created or not task.pr_number) and not is_umbrella:
+        pr_waived = markers.is_pr_waived(task)
+        if (not task.pr_created or not task.pr_number) and not (
+            is_umbrella or pr_waived
+        ):
             self.log.warning(
                 "Cannot submit for PM review - PR must be created first",
                 task_id=str(task_id),
@@ -6973,8 +6986,12 @@ class TaskService(BaseService):
         them completed — mirrors the CEO-approve guard but applies to
         the PM's own awaiting_pm_review → completed transition.
         Root parent tasks and tasks without a work_session skip this
-        check (escalation to CEO handles them).
+        check (escalation to CEO handles them). A PR-waived task (zero
+        commits relative to its parent — report-only work) has no PR to
+        merge by design, so it is exempt too.
         """
+        if markers.is_pr_waived(task):
+            return True
         if not task.work_session_id:
             return True
         result = await self.session.execute(
@@ -7272,9 +7289,16 @@ class TaskService(BaseService):
         # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
         # MegaTask umbrella, which is branchless by design (assembles no PR of
         # its own; each root-subtask carries its own project/branch/PR). It
-        # escalates to the CEO with no pr_number once every root-subtask is done.
-        if not task.pr_number and not is_batch_umbrella(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        # escalates to the CEO with no pr_number once every root-subtask is
+        # done. A PR-waived root (zero commits relative to its parent —
+        # report-only work) is exempt the same way: it has a real branch, but
+        # legitimately no PR to point the CEO at.
+        if (
+            not task.pr_number
+            and not is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            )
+            and not markers.is_pr_waived(task)
         ):
             self.log.warning(
                 "Cannot escalate to CEO - task has no PR",
@@ -7348,8 +7372,14 @@ class TaskService(BaseService):
             )
             return None
 
-        # Verify PR is merged (CEO merges as final action before approving)
-        if task.work_session_id:
+        # Verify PR is merged (CEO merges as final action before approving).
+        # A PR-waived task (real branch, zero commits relative to its parent —
+        # report-only work the verb runner already skipped create_pr for)
+        # keeps a real work_session whose pr_status never becomes "merged"
+        # (there was never a PR to merge) — exempt it the same way the
+        # umbrella/pr_number gates elsewhere are, or it strands in
+        # awaiting_ceo_approval needing manual status surgery.
+        if task.work_session_id and not markers.is_pr_waived(task):
             work_session_result = await self.session.execute(
                 select(WorkSessionTable).where(
                     WorkSessionTable.id == task.work_session_id
