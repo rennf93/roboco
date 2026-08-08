@@ -1314,6 +1314,20 @@ async def test_claim_review_matches_spec(role: str, status: str) -> None:
         )
     )
     deps = _make_deps(task_svc=task_svc)
+    # _build_qa_claim_evidence unpacks git.diff_and_files' return into
+    # (diff, files_changed) — an unconfigured AsyncMock's return_value is a
+    # bare MagicMock, which is not iterable and crashes the unpack.
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.return_value = ("", [])
+    deps = ChoreographerDeps(
+        task=deps.task,
+        work_session=deps.work_session,
+        git=git_svc,
+        a2a=deps.a2a,
+        journal=deps.journal,
+        audit=deps.audit,
+        evidence_repo=deps.evidence_repo,
+    )
     c = Choreographer(deps)
 
     ctx = spec.Context(actor_id=agent_id)
