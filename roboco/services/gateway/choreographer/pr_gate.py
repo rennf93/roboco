@@ -15,6 +15,7 @@ attributes via MRO (same pattern as ``QAMixin`` / ``PRReviewerMixin``).
 
 from __future__ import annotations
 
+from fnmatch import fnmatch
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -48,6 +49,63 @@ else:
     _Base = object
 
 logger = structlog.get_logger()
+
+# CodeQL scans by LANGUAGE, not by diff — the check name maps to the same
+# `paths:` filter that gates that language's workflow (code-ql.yml /
+# codeql-js-ts.yml), i.e. the scope CodeQL actually analyzed. A task whose
+# declared `intends_to_touch` scope never overlaps that filter can still see
+# the check fail on a pre-existing alert elsewhere in the codebase — that
+# failure is not this task's to fix.
+_CODEQL_CHECK_SCOPES: dict[str, tuple[str, ...]] = {
+    "Analyze (python)": (
+        "roboco/**",
+        "agents/**",
+        "alembic/**",
+        "scripts/**",
+        "pyproject.toml",
+    ),
+    "Analyze (javascript-typescript)": ("panel/**",),
+}
+
+
+def _codeql_glob_overlap(a: str, b: str) -> bool:
+    """Mirrors ``collision._glob_overlaps`` — kept local rather than imported
+    to avoid a private-module dependency (the same reasoning ``collision.py``
+    itself documents against ``SequencingService._globs_overlap``)."""
+    if a == b or fnmatch(a, b) or fnmatch(b, a):
+        return True
+    return a.startswith(b.rstrip("/") + "/") or b.startswith(a.rstrip("/") + "/")
+
+
+def _codeql_checks_out_of_scope(
+    failing_checks: list[str], intends_to_touch: list[str]
+) -> list[str]:
+    """Failing check names that are CodeQL checks whose analyzed-language
+    scope doesn't overlap the task's declared ``intends_to_touch`` globs.
+
+    Only fires when the task actually declares a scope — an undeclared scope
+    can't prove a finding is out of bounds, so every failing check still
+    blocks (the pre-existing, conservative behavior).
+    """
+    if not intends_to_touch:
+        return []
+    return [
+        name
+        for name in failing_checks
+        if (scope := _CODEQL_CHECK_SCOPES.get(name)) is not None
+        and not any(_codeql_glob_overlap(g, s) for g in intends_to_touch for s in scope)
+    ]
+
+
+def _task_intends_to_touch(t: Any) -> list[str]:
+    """``t.intends_to_touch``, defensively coerced to ``list[str]``.
+
+    A test double or an untouched field can hand back ``None`` or a
+    non-list mock attribute; either way an undeclared scope must resolve to
+    "no scope gate" (``[]``), not a crash.
+    """
+    val = getattr(t, "intends_to_touch", None)
+    return list(val) if isinstance(val, list) else []
 
 
 class PRGateMixin(_Base):
@@ -708,7 +766,9 @@ class PRGateMixin(_Base):
         (``None`` from ``_resolve_ci_status``) and also passes through —
         with an evidence stamp — when ``get_pr_ci_status`` itself classifies
         a missing project/git_url/token or an unreachable/nonexistent repo
-        as ``no_ci_configured``.
+        as ``no_ci_configured``, or when every failing check on a ``failure``
+        status is a CodeQL check outside the task's declared
+        ``intends_to_touch`` scope (see ``_scope_gate_codeql_failure``).
         """
         from roboco.config import settings as _settings
 
@@ -825,6 +885,15 @@ class PRGateMixin(_Base):
         a finding. A project with no CI configured at all passes through
         cleanly, returning an evidence note so the caller can stamp the
         verdict with why the guard did not block.
+
+        On a ``failure`` state, any failing CodeQL check whose analyzed
+        language falls outside the task's declared ``intends_to_touch`` scope
+        is scope-gated out first (``_codeql_checks_out_of_scope``) — CodeQL
+        scans the whole language, not the diff, so a pre-existing alert on
+        code this task never declared it would touch is not this task's to
+        fix. If every failing check was scope-gated out, the guard passes
+        through with an evidence note (parity with ``no_ci_configured``); if
+        some remain, they alone drive the block message.
         """
         status = await self._resolve_ci_status(task_id, t)
         if status is None:
@@ -832,6 +901,11 @@ class PRGateMixin(_Base):
             # signal, so the guard fails open rather than blocking.
             return None, None
         state = status.get("state")
+        if state == "failure":
+            status, scope_note = self._scope_gate_codeql_failure(t, status)
+            state = status.get("state")
+            if scope_note is not None:
+                return None, scope_note
         if state == "success":
             return None, None
         if state == "no_ci_configured":
@@ -849,6 +923,36 @@ class PRGateMixin(_Base):
                 verb="pr_pass",
             ),
             None,
+        )
+
+    @staticmethod
+    def _scope_gate_codeql_failure(
+        t: Any, status: dict[str, Any]
+    ) -> tuple[dict[str, Any], str | None]:
+        """Drop out-of-scope CodeQL checks from a ``failure`` status.
+
+        Returns ``(status, None)`` unchanged when nothing is scope-gated out
+        (no declared scope, or every failing check is either non-CodeQL or
+        genuinely in scope) — the caller's existing failure handling applies
+        as before. When at least one failing check is scope-gated out:
+        - some checks remain failing -> a NEW status dict carrying only the
+          remaining ``failing_checks`` (so ``_ci_status_block_message`` names
+          only the checks this task can actually act on), ``ci_note=None``.
+        - none remain -> ``({"state": "success", ...}, ci_note)`` so the
+          caller passes through cleanly with an evidence note, exactly like
+          the ``no_ci_configured`` case.
+        """
+        failing = list(status.get("failing_checks") or [])
+        out_of_scope = _codeql_checks_out_of_scope(failing, _task_intends_to_touch(t))
+        if not out_of_scope:
+            return status, None
+        remaining = [c for c in failing if c not in out_of_scope]
+        names = ", ".join(out_of_scope)
+        if remaining:
+            return {**status, "failing_checks": remaining}, None
+        return (
+            {"state": "success", "head_sha": status.get("head_sha")},
+            f"CodeQL finding(s) outside declared scope did not block: {names}",
         )
 
     @staticmethod
