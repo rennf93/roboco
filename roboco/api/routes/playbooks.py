@@ -11,22 +11,12 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.playbook import PlaybookRejectBody
-from roboco.models import AgentRole
+from roboco.api.utils.playbooks import require_curator as _require_curator
 from roboco.models.playbook import Playbook
 from roboco.services.base import ConflictError, NotFoundError
 from roboco.services.playbook import get_playbook_service
 
 router = APIRouter()
-
-_CURATOR_ROLES = frozenset({AgentRole.AUDITOR, AgentRole.CEO})
-
-
-def _require_curator(agent: CurrentAgentContext) -> None:
-    if agent.role not in _CURATOR_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the Auditor or CEO may curate playbooks",
-        )
 
 
 @router.get("", response_model=list[Playbook])

@@ -199,6 +199,10 @@ select = [
 # with the modules they wire (same rationale as roboco/api/deps.py above).
 "roboco/api/utils/tasks.py" = ["PLC0415"]
 "roboco/api/utils/telegram.py" = ["PLC0415"]
+# board_programs.py's to_response() defers importing BoardProgramResponse
+# from its route module — a genuine circular import (the route module
+# imports this module for its extracted helpers), not dodgeable by hoisting.
+"roboco/api/utils/board_programs.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
 # The e2e smoke harness defers every roboco import until the stack fixture
 # runs, so the default (skipped) suite never pays the app-surface import

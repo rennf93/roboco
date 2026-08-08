@@ -4,47 +4,23 @@ BACKLOG task; nothing here starts it — normal PM activation takes it from
 there.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.roadmap import (
     RoadmapCycleResponse,
     RoadmapItemActionResponse,
-    RoadmapItemResponse,
     RoadmapRejectRequest,
 )
+from roboco.api.utils.roadmap import require_ceo as _require_ceo
+from roboco.api.utils.roadmap import to_response as _to_response
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.roadmap_service import get_roadmap_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the roadmap queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> RoadmapCycleResponse:
-    payload = markers.get_roadmap_cycle(task) or {}
-    items = [RoadmapItemResponse(**item) for item in payload.get("items", [])]
-    return RoadmapCycleResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        goal=str(payload.get("goal") or ""),
-        items=items,
-    )
 
 
 @router.get("/cycles", response_model=list[RoadmapCycleResponse])
