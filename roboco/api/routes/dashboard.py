@@ -22,7 +22,7 @@ from roboco.api.schemas.dashboard import (
     TeamHealth,
     UsageSummary,
 )
-from roboco.models import AgentRole
+from roboco.api.utils.dashboard import require_auditor_or_ceo as _require_auditor_or_ceo
 from roboco.models.base import Team
 from roboco.models.dashboard import CreateFlagParams
 from roboco.services.dashboard import get_dashboard_service
@@ -34,22 +34,6 @@ from roboco.services.usage import get_usage_service
 # panel-facing — the metrics/scorecard handlers take only DbSession, so
 # without this they'd be reachable unauthenticated on a public origin.
 router = APIRouter(dependencies=[Depends(require_panel_token)])
-
-# The auditor flag/report mutating routes are gated to the Auditor and the
-# CEO. The Auditor is the silent-observer role whose flags/reports feed the
-# CEO; the CEO overrides. Mirrors ``_require_curator`` in playbooks.py and
-# ``_require_ceo`` in release.py. Read-only auditor views (``GET
-# /auditor/flags``, ``GET /auditor/reports``, ``GET /auditor``) stay open —
-# the dashboard is observable by any authenticated operator.
-_AUDITOR_OR_CEO_ROLES = frozenset({AgentRole.AUDITOR, AgentRole.CEO})
-
-
-def _require_auditor_or_ceo(agent: CurrentAgentContext) -> None:
-    if agent.role not in _AUDITOR_OR_CEO_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the Auditor or CEO may mutate auditor flags or reports",
-        )
 
 
 # =============================================================================
