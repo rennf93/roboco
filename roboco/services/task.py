@@ -274,16 +274,6 @@ def _board_cannot_own(task: TaskTable) -> bool:
     )
 
 
-def _append_missing(values: list[Any] | None, item: Any) -> list[Any]:
-    """NULL-tolerant append-if-absent for list columns.
-
-    Restored/imported rows can carry ``None`` where the ORM default promises a
-    list; returns a list containing ``item`` exactly once either way.
-    """
-    vals = values or []
-    return vals if item in vals else [*vals, item]
-
-
 def _task_type_is_code(task_type: Any) -> bool:
     """True when ``task_type`` is ``TaskType.CODE`` (enum member or its value).
 
@@ -549,6 +539,25 @@ class GatewayAgentView:
     team: str | None
     escalation_target: str | None
     skills: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class StalledTaskEntry:
+    """One row of the durable stalled-task set (`TaskService.list_stalled_tasks`).
+
+    Backs the read endpoint in ``roboco/api/routes`` — the route only
+    converts these into the response schema, all classification/query logic
+    lives here.
+    """
+
+    task_id: UUID
+    title: str
+    assignee_id: UUID | None
+    assignee_slug: str | None
+    status: str
+    reason: str
+    stalled_since: datetime
+    stalled_seconds: float
 
 
 def _default_claim_statuses(role: str | None) -> set[TaskStatus]:
@@ -1110,6 +1119,11 @@ class TaskService(BaseService):
             is_umbrella=is_batch_umbrella(
                 batch_id=task.batch_id, parent_task_id=task.parent_task_id
             ),
+            # A PR-waived task (zero commits relative to its parent —
+            # report-only work the verb runner skipped create_pr for) is
+            # exempt from the pr_number CEO-escalation gate the same way an
+            # umbrella is, even though it carries a real branch.
+            is_pr_waived=markers.is_pr_waived(task),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -3466,6 +3480,82 @@ class TaskService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def mark_stalled(self, task_id: UUID, reason: str) -> None:
+        """Set the durable stalled marker (see `roboco.models.base.StalledReason`).
+
+        Called by the orchestrator's respawn breaker (`_pm_respawn_should_gate`)
+        at the exact point it fires the one-shot CEO notification, so the
+        give-up decision is readable on the task row without container logs.
+        The caller already enforces one-shot-per-trip discipline via its own
+        in-memory `notified` flag — this always (re)stamps `stalled_since` to
+        now, which is correct for a fresh trip after a cooldown self-heal
+        attempt failed.
+        """
+        await self.session.execute(
+            update(TaskTable)
+            .where(TaskTable.id == task_id)
+            .values(stalled_reason=reason, stalled_since=datetime.now(UTC))
+        )
+
+    async def clear_stalled_marker(self, task_id: UUID) -> None:
+        """Clear the stalled marker on genuine forward progress.
+
+        Conditioned on `stalled_reason` already being set so the overwhelming
+        majority of calls (a task that was never stalled) skip the write.
+        """
+        await self.session.execute(
+            update(TaskTable)
+            .where(TaskTable.id == task_id, TaskTable.stalled_reason.is_not(None))
+            .values(stalled_reason=None, stalled_since=None)
+        )
+
+    async def list_stalled_tasks(self) -> list[StalledTaskEntry]:
+        """The current stalled set: every task with a durable stalled marker.
+
+        Backs the `GET` read endpoint — all query/classification logic lives
+        here per the architectural standard (routes stay thin).
+        """
+        result = await self.session.execute(
+            select(
+                TaskTable.id,
+                TaskTable.title,
+                TaskTable.assigned_to,
+                AgentTable.slug,
+                TaskTable.status,
+                TaskTable.stalled_reason,
+                TaskTable.stalled_since,
+            )
+            .outerjoin(AgentTable, AgentTable.id == TaskTable.assigned_to)
+            .where(TaskTable.stalled_reason.is_not(None))
+            .order_by(TaskTable.stalled_since.asc())
+        )
+        now = datetime.now(UTC)
+        entries = []
+        for row in result.all():
+            stalled_since = row.stalled_since
+            since_aware = (
+                stalled_since
+                if stalled_since is None or stalled_since.tzinfo is not None
+                else stalled_since.replace(tzinfo=UTC)
+            )
+            entries.append(
+                StalledTaskEntry(
+                    task_id=row.id,
+                    title=row.title,
+                    assignee_id=row.assigned_to,
+                    assignee_slug=row.slug,
+                    status=row.status.value
+                    if hasattr(row.status, "value")
+                    else row.status,
+                    reason=row.stalled_reason,
+                    stalled_since=since_aware,
+                    stalled_seconds=(now - since_aware).total_seconds()
+                    if since_aware
+                    else 0.0,
+                )
+            )
+        return entries
+
     async def record_section_note(
         self, task_id: UUID, content_type: str, payload: Any
     ) -> None:
@@ -5728,7 +5818,9 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        task.dependency_ids = _append_missing(task.dependency_ids, blocker_task_id)
+        if blocker_task_id not in task.dependency_ids:
+            new_deps = [*task.dependency_ids, blocker_task_id]
+            task.dependency_ids = new_deps
         # Task-dependency blocks always resolve when the blocker task
         # completes — that's inherently an agent-resolvable condition.
         task.blocker_resolver_type = BlockerResolverType.AGENT
@@ -5743,8 +5835,8 @@ class TaskService(BaseService):
 
         # Update the blocker task to reference this as blocked
         blocker = await self.get(blocker_task_id)
-        if blocker:
-            blocker.blocker_ids = _append_missing(blocker.blocker_ids, task_id)
+        if blocker and task_id not in blocker.blocker_ids:
+            blocker.blocker_ids = [*blocker.blocker_ids, task_id]
             await self.session.flush()
 
         self.log.info(
@@ -6713,6 +6805,11 @@ class TaskService(BaseService):
         batch umbrella — without this, umbrella completion deadlocks in
         in_progress (``submit_pm_review`` returns None, the Main PM loops on
         ``complete`` -> invalid_state forever).
+
+        A PR-waived task (real branch, zero commits relative to its parent —
+        report-only work the verb runner already skipped create_pr for) is
+        exempt from the pr_created/pr_number half the same way: it still
+        needs a branch (it is not branchless), but it legitimately has no PR.
         """
         if task.status != TaskStatus.IN_PROGRESS:
             self.log.warning(
@@ -6730,7 +6827,10 @@ class TaskService(BaseService):
                 task_id=str(task_id),
             )
             return False
-        if (not task.pr_created or not task.pr_number) and not is_umbrella:
+        pr_waived = markers.is_pr_waived(task)
+        if (not task.pr_created or not task.pr_number) and not (
+            is_umbrella or pr_waived
+        ):
             self.log.warning(
                 "Cannot submit for PM review - PR must be created first",
                 task_id=str(task_id),
@@ -6973,8 +7073,12 @@ class TaskService(BaseService):
         them completed — mirrors the CEO-approve guard but applies to
         the PM's own awaiting_pm_review → completed transition.
         Root parent tasks and tasks without a work_session skip this
-        check (escalation to CEO handles them).
+        check (escalation to CEO handles them). A PR-waived task (zero
+        commits relative to its parent — report-only work) has no PR to
+        merge by design, so it is exempt too.
         """
+        if markers.is_pr_waived(task):
+            return True
         if not task.work_session_id:
             return True
         result = await self.session.execute(
@@ -7272,9 +7376,16 @@ class TaskService(BaseService):
         # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
         # MegaTask umbrella, which is branchless by design (assembles no PR of
         # its own; each root-subtask carries its own project/branch/PR). It
-        # escalates to the CEO with no pr_number once every root-subtask is done.
-        if not task.pr_number and not is_batch_umbrella(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        # escalates to the CEO with no pr_number once every root-subtask is
+        # done. A PR-waived root (zero commits relative to its parent —
+        # report-only work) is exempt the same way: it has a real branch, but
+        # legitimately no PR to point the CEO at.
+        if (
+            not task.pr_number
+            and not is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            )
+            and not markers.is_pr_waived(task)
         ):
             self.log.warning(
                 "Cannot escalate to CEO - task has no PR",
@@ -8375,9 +8486,9 @@ class TaskService(BaseService):
             task.dependency_ids = [
                 dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
             ]
-            if completed_task_id not in (task.completed_dependency_ids or []):
+            if completed_task_id not in task.completed_dependency_ids:
                 task.completed_dependency_ids = [
-                    *(task.completed_dependency_ids or []),
+                    *task.completed_dependency_ids,
                     completed_task_id,
                 ]
             # If no more dependencies, unblock (system action - no role validation)
@@ -8485,7 +8596,7 @@ class TaskService(BaseService):
             "message": message,
             "percentage": percentage,
         }
-        task.progress_updates = [*(task.progress_updates or []), update]
+        task.progress_updates = [*task.progress_updates, update]
         await self.session.flush()
 
         return task
@@ -8529,7 +8640,7 @@ class TaskService(BaseService):
 
         percentage = _derive_plan_pct(sub_tasks, fallback_percentage)
         task.progress_updates = [
-            *(task.progress_updates or []),
+            *task.progress_updates,
             {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "agent_id": str(agent_id),
@@ -8559,14 +8670,14 @@ class TaskService(BaseService):
             return None
 
         checkpoint = {
-            "id": str(UUID(int=len(task.checkpoints or []))),
+            "id": str(UUID(int=len(task.checkpoints))),
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(agent_id),
             "state_summary": state_summary,
             "remaining_work": remaining_work,
             "notes": notes,
         }
-        task.checkpoints = [*(task.checkpoints or []), checkpoint]
+        task.checkpoints = [*task.checkpoints, checkpoint]
         await self.session.flush()
 
         return task
@@ -8589,7 +8700,7 @@ class TaskService(BaseService):
             "timestamp": datetime.now(UTC).isoformat(),
             "author_agent_id": str(agent_id) if agent_id else None,
         }
-        task.commits = [*(task.commits or []), commit]
+        task.commits = [*task.commits, commit]
         await self.session.flush()
 
         return task
@@ -8994,7 +9105,7 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return False
-        if depends_on_id in (task.dependency_ids or []):
+        if depends_on_id in task.dependency_ids:
             return False  # idempotent re-add
         if await self._would_create_cycle(task_id, depends_on_id):
             raise ConflictError(
@@ -9002,7 +9113,7 @@ class TaskService(BaseService):
                 "close a dependency cycle",
                 resource_type="task_dependency",
             )
-        task.dependency_ids = [*(task.dependency_ids or []), depends_on_id]
+        task.dependency_ids = [*task.dependency_ids, depends_on_id]
         await self.session.flush()
         return True
 
@@ -9121,7 +9232,7 @@ class TaskService(BaseService):
         root = await self.get(UUID(str(cell_task.parent_task_id)))
         if root is None:
             return
-        predecessor_root_ids = list(root.dependency_ids or [])
+        predecessor_root_ids = list(root.dependency_ids)
         cell_tasks_by_root: dict = {}
         for pred_root_id in predecessor_root_ids:
             cell_tasks_by_root[pred_root_id] = await self.get_subtasks(
@@ -9162,7 +9273,7 @@ class TaskService(BaseService):
         if root is None:
             return
         groups: list = []
-        for pred_root_id in list(root.dependency_ids or []):
+        for pred_root_id in list(root.dependency_ids):
             for pred_ct in await self.get_subtasks(UUID(str(pred_root_id))):
                 groups.append(await self.get_subtasks(UUID(str(pred_ct.id))))
         for dep_id in by_osmosis_tail_dev_tasks(is_first, groups):
@@ -10349,7 +10460,7 @@ class TaskService(BaseService):
         tasks = list(result.scalars().all())
         available: list[TaskTable] = []
         for task in tasks:
-            if await self.unmet_dependency_ids(list(task.dependency_ids or [])):
+            if await self.unmet_dependency_ids(list(task.dependency_ids)):
                 continue
             if await self._claim_blocked_by_sequence(task) is not None:
                 continue
@@ -11963,7 +12074,7 @@ class TaskService(BaseService):
                 "author_agent_id": str(pm_agent_id),
                 "kind": "merge",
             }
-            task.commits = [*(task.commits or []), merge_entry]
+            task.commits = [*task.commits, merge_entry]
             await self.session.flush()
         return await self.complete(task_id, agent_id=pm_agent_id)
 

@@ -354,6 +354,19 @@ class Task(TimestampMixin):
         description="Whether a human has confirmed this prompter-originated task.",
     )
 
+    # Durable stalled/needs-human marker (migration 092). Set when the
+    # dispatcher's respawn breaker gives up on this task; cleared on genuine
+    # forward progress. See roboco.models.base.StalledReason.
+    stalled_reason: str | None = Field(
+        default=None,
+        description="Why the dispatcher gave up respawning this task (e.g. "
+        "'breaker_tripped'). Null = never stalled or since cleared.",
+    )
+    stalled_since: datetime | None = Field(
+        default=None,
+        description="When the stalled marker was set; null when not stalled.",
+    )
+
     # NOTE: Task state mutations should be performed through TaskService,
     # not directly on the model. See roboco/services/task.py for:
     # - claim(), start(), block(), pause(), resume()

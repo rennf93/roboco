@@ -13009,6 +13009,11 @@ Start now: evidence(task_id="{task_id}")
             self._schedule_respawn_persist(
                 agent_slug, str(task_id), self._pm_respawn_tracker[key]
             )
+            # Genuine forward progress: clear any durable stalled marker set
+            # by a prior trip on this task. Fire-and-forget, same discipline
+            # as the counter write-through above — the hot dispatch path
+            # never blocks on this DB write.
+            self._schedule_bg(self._clear_task_stalled_marker(agent_slug, str(task_id)))
             return True
         record["last_status"] = current_status
         revisits = record.get("revisit_resets", 0)
@@ -13179,12 +13184,64 @@ Start now: evidence(task_id="{task_id}")
                 ),
             )
             # A skipped spawn pauses the loop but can't advance the task; alert
-            # an overseer once so a wedged agent isn't silently stranded.
+            # an overseer once so a wedged agent isn't silently stranded, and
+            # record a durable marker on the task itself (readable without
+            # container logs) alongside that one-shot notification. Both are
+            # one-shot per trip, gated by the same `notified` flag.
             if not record.get("notified"):
                 record["notified"] = True
                 self._schedule_respawn_persist(agent_slug, str(task_id), record)
+                await self._mark_task_stalled(task_id)
                 await self._notify_stuck_agent(agent_slug, task_id, current_status)
         return tripped
+
+    async def _mark_task_stalled(self, task_id: str) -> None:
+        """Record a durable stalled marker on the task (breaker-tripped path).
+
+        Best-effort: a write failure must not wedge dispatch, so any error is
+        logged and swallowed — the CEO notification still fires regardless.
+        """
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.models.base import StalledReason
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                await TaskService(db).mark_stalled(
+                    UUID(task_id), reason=StalledReason.BREAKER_TRIPPED.value
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to record stalled marker",
+                task_id=task_id,
+                error=str(exc),
+            )
+
+    async def _clear_task_stalled_marker(self, agent_slug: str, task_id: str) -> None:
+        """Clear the durable stalled marker on genuine forward progress.
+
+        Fire-and-forget (scheduled via `_schedule_bg`) so the hot dispatch
+        path never blocks on this DB write — mirroring
+        `_schedule_respawn_persist`'s write-through discipline. Best-effort:
+        a write failure is logged and swallowed.
+        """
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                await TaskService(db).clear_stalled_marker(UUID(task_id))
+        except Exception as exc:
+            logger.warning(
+                "Failed to clear stalled marker",
+                agent_id=agent_slug,
+                task_id=task_id,
+                error=str(exc),
+            )
 
     async def _notify_stuck_agent(
         self, agent_slug: str, task_id: str, task_status: str | None

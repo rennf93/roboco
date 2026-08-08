@@ -350,24 +350,13 @@ class TaskTable(Base):
         _str_enum(Complexity), nullable=False, default=Complexity.MEDIUM
     )
 
-    # Execution (stored as JSON). none_as_null=True: a Python None bound here
-    # hits the NOT NULL constraint instead of silently persisting as the JSON
-    # scalar `null` (the default SQLAlchemy JSON binding) — the exact write
-    # path that produced the corrupted `progress_updates` row in production.
-    checkpoints: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSON(none_as_null=True), default=list
-    )
-    progress_updates: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSON(none_as_null=True), default=list
-    )
+    # Execution (stored as JSON)
+    checkpoints: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    progress_updates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
-    # Artifacts (stored as JSON, same none_as_null rationale as above)
-    commits: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSON(none_as_null=True), default=list
-    )
-    documents: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSON(none_as_null=True), default=list
-    )
+    # Artifacts (stored as JSON)
+    commits: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    documents: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
     # Documentation
     dev_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -452,6 +441,19 @@ class TaskTable(Base):
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
     confirmed_by_human: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
+    )
+
+    # Durable stalled/needs-human marker (migration 092). Set when the
+    # dispatcher's respawn breaker gives up on this task (see
+    # ``_pm_respawn_should_gate`` in roboco/runtime/orchestrator.py) so the
+    # give-up decision is readable on the task row itself, not just a
+    # container log line + a bell notification that ages out. A plain
+    # string (not a DB enum — see StalledReason) so a new reason value
+    # needs no ALTER TYPE migration. Both null = never stalled or since
+    # cleared by genuine forward progress.
+    stalled_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    stalled_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # Relationships
