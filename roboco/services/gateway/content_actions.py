@@ -1187,6 +1187,30 @@ class ContentActions:
         except ValueError:
             return None
 
+    async def _trace_board_proposal(
+        self, *, agent_id: UUID, verb: str, payload: dict[str, Any]
+    ) -> None:
+        """Durably trace a board-program ``propose_*`` payload BEFORE any
+        validation runs.
+
+        The 2026-07-25 incident: a rejected/mis-persisted proposal came back
+        as a 200 carrying an error envelope, with the raw payload living
+        nowhere but that one HTTP response — unrecoverable once the caller
+        moved on. Uses ``AuditService``'s own independent session/commit
+        (never ``self.task.session``), so the trace survives even when this
+        verb's own validation rejects the call outright and no downstream
+        write ever happens. Best-effort — ``AuditService.log_event`` never
+        raises, so a trace failure can never block the proposal itself.
+        """
+        from roboco.services.audit import get_audit_service
+
+        await get_audit_service().log_event(
+            event_type="board_program.proposal_trace",
+            agent_id=agent_id,
+            details={"verb": verb, "payload": payload},
+            severity="info",
+        )
+
     async def draft_playbook(
         self,
         *,
@@ -1701,6 +1725,11 @@ class ContentActions:
         stays open (and this verb keeps refusing) until every item is
         terminal.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_roadmap",
+            payload={"cycle_goal": cycle_goal, "items": items},
+        )
         role = await self._caller_role(agent_id)
         if role not in _ROADMAP_ROLES:
             return Envelope.not_authorized(
@@ -1935,6 +1964,9 @@ class ContentActions:
         terminal. Mirrors ``propose_roadmap`` — no top-level theme goal here,
         just the items.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id, verb="propose_bug_hunt", payload={"items": items}
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2161,6 +2193,9 @@ class ContentActions:
         resolved to a real BACKLOG/PENDING task here) that approval MUTATES
         (reprioritize) or cancels, never creates.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id, verb="propose_rebalance", payload={"items": items}
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2386,6 +2421,9 @@ class ContentActions:
         terminal. Mirrors ``propose_bug_hunt`` — no top-level theme goal
         here, just the items.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id, verb="propose_gap_fill", payload={"items": items}
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2614,6 +2652,11 @@ class ContentActions:
         terminal. Mirrors ``propose_gap_fill`` — no top-level theme goal
         here, just the items.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_messaging_fixes",
+            payload={"items": items},
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2841,6 +2884,11 @@ class ContentActions:
         terminal. Mirrors ``propose_messaging_fixes`` — no top-level theme
         goal here, just the items.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_friction_fixes",
+            payload={"items": items},
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -3017,6 +3065,19 @@ class ContentActions:
         ``x_feature_ref`` marker for approve time to read. Defaults leave the
         flow byte-for-byte unchanged.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_feature_spotlight",
+            payload={
+                "feature_slug": feature_slug,
+                "feature_title": feature_title,
+                "body": body,
+                "wants_video": wants_video,
+                "video_script": video_script,
+                "skip": skip,
+                "skip_reason": skip_reason,
+            },
+        )
         role = await self._caller_role(agent_id)
         if role not in _FEATURE_SPOTLIGHT_ROLES:
             return Envelope.not_authorized(
@@ -3150,6 +3211,11 @@ class ContentActions:
         per-item CEO decision to leave the exploration open for, mirroring
         the x_feature complete-at-propose asymmetry. One call per cycle.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_editorial_post",
+            payload={"angle": angle, "body": body, "rationale": rationale},
+        )
         role = await self._caller_role(agent_id)
         if role not in _MEGAPHONE_ROLES:
             return Envelope.not_authorized(
@@ -3380,6 +3446,11 @@ class ContentActions:
         materialized draft individually in the existing X post queue, not on
         this task.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_conversation_replies",
+            payload={"items": items},
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -3617,6 +3688,17 @@ class ContentActions:
         prompt, same untrusted-text posture as X mentions / vault notes
         (screen-and-flag, never drop).
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_market_brief",
+            payload={
+                "headline": headline,
+                "findings": findings,
+                "threats": threats,
+                "opportunities": opportunities,
+                "positioning_note": positioning_note,
+            },
+        )
         role = await self._caller_role(agent_id)
         if role not in _PERISCOPE_ROLES:
             return Envelope.not_authorized(
@@ -3970,6 +4052,15 @@ class ContentActions:
         spend tables, the Auditor's own read of the codebase), never
         untrusted web/external text, so there is nothing to screen.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_quality_report",
+            payload={
+                "headline": headline,
+                "items": items,
+                "overall_assessment": overall_assessment,
+            },
+        )
         role = await self._caller_role(agent_id)
         if role not in _SENTINEL_ROLES:
             return Envelope.not_authorized(
@@ -4242,6 +4333,11 @@ class ContentActions:
         task in the same call — mirrors ``propose_market_brief``'s
         complete-at-propose shape, batched over N posts.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_campaign",
+            payload={"campaign_name": campaign_name, "posts": posts},
+        )
         role = await self._caller_role(agent_id)
         if role not in _WAR_ROOM_ROLES:
             return Envelope.not_authorized(
@@ -4790,6 +4886,11 @@ class ContentActions:
         spawn curates them — a deliberate, documented self-curation
         asymmetry (see ``agents/prompts/identities/auditor.md``).
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_playbook_drafts",
+            payload={"drafts": drafts},
+        )
         role = await self._caller_role(agent_id)
         if role not in _LIBRARIAN_ROLES:
             return Envelope.not_authorized(
@@ -4881,6 +4982,17 @@ class ContentActions:
         a report, not a list of items the CEO decides one by one). Call
         exactly once per autopsy cycle.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_postmortem",
+            payload={
+                "incident_summary": incident_summary,
+                "root_cause": root_cause,
+                "failed_stage": failed_stage,
+                "process_change": process_change,
+                "playbook": playbook,
+            },
+        )
         role = await self._caller_role(agent_id)
         if role not in _CORONER_ROLES:
             return Envelope.not_authorized(
