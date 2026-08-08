@@ -11,7 +11,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { ChevronDown, X } from "lucide-react";
+import { ChevronDown, X, AlertOctagon, AlertCircle } from "lucide-react";
 import { HelpTip } from "@/components/ui/help-tip";
 
 interface TaskFiltersProps {
@@ -31,6 +31,13 @@ interface TaskFiltersProps {
   productFilter?: string[];
   onProductChange?: (value: string[]) => void;
   productOptions?: { value: string; label: string }[];
+  // Stalled-only toggle, backed by GET /dashboard/stalled-tasks (see
+  // useStalledTasks) — stalledCount/stalledError describe the state of
+  // that fetch, not a client-derived stall condition.
+  stalledFilter?: boolean;
+  onStalledChange?: (value: boolean) => void;
+  stalledCount?: number;
+  stalledError?: boolean;
 }
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -84,6 +91,10 @@ export function TaskFilters({
   productFilter = [],
   onProductChange,
   productOptions = [],
+  stalledFilter = false,
+  onStalledChange,
+  stalledCount,
+  stalledError = false,
 }: TaskFiltersProps) {
   const toggleStatus = (status: TaskStatus) => {
     if (statusFilter.includes(status)) {
@@ -156,7 +167,10 @@ export function TaskFilters({
             <Popover>
               <HelpTip label="Multi-select — pick any number of statuses; the list shows tasks matching any of them.">
                 <PopoverTrigger asChild>
-                  <Button variant="outline" className="min-w-32 justify-between">
+                  <Button
+                    variant="outline"
+                    className="min-w-32 justify-between"
+                  >
                     <span className="truncate">
                       {statusFilter.length === 0
                         ? "All Statuses"
@@ -203,7 +217,10 @@ export function TaskFilters({
             <Popover>
               <HelpTip label="Multi-select — pick any number of teams; the list shows tasks matching any of them.">
                 <PopoverTrigger asChild>
-                  <Button variant="outline" className="min-w-32 justify-between">
+                  <Button
+                    variant="outline"
+                    className="min-w-32 justify-between"
+                  >
                     <span className="truncate">
                       {teamFilter.length === 0
                         ? "All Teams"
@@ -403,6 +420,37 @@ export function TaskFilters({
                 </PopoverContent>
               </Popover>
             )}
+
+            {/* Stalled-only toggle (optional) */}
+            {onStalledChange && (
+              <HelpTip
+                label={
+                  stalledError
+                    ? "Couldn't load the stalled-task set — try again shortly"
+                    : "Tasks the dispatcher's respawn breaker has given up on"
+                }
+              >
+                <Button
+                  type="button"
+                  variant={stalledFilter ? "default" : "outline"}
+                  className="min-w-32 justify-between"
+                  aria-pressed={stalledFilter}
+                  onClick={() => onStalledChange(!stalledFilter)}
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <AlertOctagon className="h-4 w-4 shrink-0" />
+                    Stalled
+                    {stalledError ? (
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                    ) : (
+                      typeof stalledCount === "number" && (
+                        <span className="text-xs">({stalledCount})</span>
+                      )
+                    )}
+                  </span>
+                </Button>
+              </HelpTip>
+            )}
           </div>
         </div>
 
@@ -411,7 +459,8 @@ export function TaskFilters({
           teamFilter.length > 0 ||
           taskTypeFilter.length > 0 ||
           projectFilter.length > 0 ||
-          productFilter.length > 0) && (
+          productFilter.length > 0 ||
+          stalledFilter) && (
           <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t">
             {statusFilter.map((status) => (
               <Badge key={status} variant="secondary" className="gap-1">
@@ -473,11 +522,24 @@ export function TaskFilters({
                 </HelpTip>
               </Badge>
             ))}
+            {stalledFilter && onStalledChange && (
+              <Badge variant="secondary" className="gap-1">
+                Stalled
+                <HelpTip label="Remove this filter">
+                  <X
+                    className="h-3 w-3 cursor-pointer hover:text-destructive"
+                    onClick={() => onStalledChange(false)}
+                    aria-label="Remove Stalled filter"
+                  />
+                </HelpTip>
+              </Badge>
+            )}
             {(statusFilter.length > 0 ||
               teamFilter.length > 0 ||
               taskTypeFilter.length > 0 ||
               projectFilter.length > 0 ||
-              productFilter.length > 0) && (
+              productFilter.length > 0 ||
+              stalledFilter) && (
               <HelpTip label="Removes every active filter above, restoring the unfiltered task list.">
                 <Button
                   variant="ghost"
@@ -489,6 +551,7 @@ export function TaskFilters({
                     clearTaskTypes();
                     clearProjects();
                     clearProducts();
+                    onStalledChange?.(false);
                   }}
                 >
                   Clear all

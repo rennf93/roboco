@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { useTasks } from "@/hooks/use-tasks";
 import { useProjects } from "@/hooks/use-projects";
 import { useProducts } from "@/hooks/use-products";
+import { useStalledTasks } from "@/hooks/use-dashboard";
 import { TaskStatus, Team, TaskType } from "@/types";
 import { OfflineState } from "@/components/ui/offline-state";
 import {
@@ -42,7 +43,10 @@ import {
 } from "lucide-react";
 
 type TasksViewTab = "list" | "kanban";
-const TASKS_VIEW_TABS = ["list", "kanban"] as const satisfies readonly TasksViewTab[];
+const TASKS_VIEW_TABS = [
+  "list",
+  "kanban",
+] as const satisfies readonly TasksViewTab[];
 type KanbanView = "dev" | "qa" | "pr-review" | "pm";
 const KANBAN_VIEWS = [
   "dev",
@@ -82,6 +86,7 @@ function TasksPageContent() {
     () => productParam?.split(",").filter(Boolean) || [],
     [productParam],
   );
+  const stalledFilter = searchParams.get("stalled") === "1";
 
   // Table state from URL
   const sortField = (searchParams.get("sortBy") as SortField) || "created_at";
@@ -188,6 +193,13 @@ function TasksPageContent() {
     [updateParams],
   );
 
+  const handleStalledChange = useCallback(
+    (value: boolean) => {
+      updateParams({ stalled: value ? "1" : null });
+    },
+    [updateParams],
+  );
+
   // Table state handlers
   const handleSortChange = useCallback(
     (field: SortField, direction: SortDirection | null) => {
@@ -263,6 +275,19 @@ function TasksPageContent() {
   const { data: projects, refetch: refetchProjects } = useProjects();
   const { data: products, refetch: refetchProducts } = useProducts();
 
+  // The stalled-task set — sourced from GET /dashboard/stalled-tasks via the
+  // shared useStalledTasks hook, never re-derived client-side. Backs the
+  // "Stalled" filter toggle below.
+  const {
+    data: stalledTasks,
+    isError: stalledError,
+    refetch: refetchStalled,
+  } = useStalledTasks();
+  const stalledTaskIds = useMemo(
+    () => new Set((stalledTasks ?? []).map((t) => t.task_id)),
+    [stalledTasks],
+  );
+
   const { register, unregister, refresh } = usePageRefresh();
 
   useEffect(() => {
@@ -276,12 +301,22 @@ function TasksPageContent() {
       () => {
         void refetchProducts();
       },
+      () => {
+        void refetchStalled();
+      },
     ];
     callbacks.forEach((cb) => register(cb));
     return () => {
       callbacks.forEach((cb) => unregister(cb));
     };
-  }, [register, unregister, refetch, refetchProjects, refetchProducts]);
+  }, [
+    register,
+    unregister,
+    refetch,
+    refetchProjects,
+    refetchProducts,
+    refetchStalled,
+  ]);
 
   const projectNames = useMemo(
     () => Object.fromEntries((projects ?? []).map((p) => [p.id, p.name])),
@@ -347,6 +382,13 @@ function TasksPageContent() {
         return false;
       }
 
+      // Stalled filter: membership in the backend's stalled set only — no
+      // client-side stall-condition logic. Skipped while that fetch has
+      // failed (handled as an explicit error state below instead).
+      if (stalledFilter && !stalledError && !stalledTaskIds.has(task.id)) {
+        return false;
+      }
+
       return true;
     });
   }, [
@@ -356,6 +398,9 @@ function TasksPageContent() {
     taskTypeFilter,
     projectFilter,
     productFilter,
+    stalledFilter,
+    stalledError,
+    stalledTaskIds,
   ]);
 
   // Check if it's a connection error (backend not running)
@@ -414,6 +459,10 @@ function TasksPageContent() {
               productFilter={productFilter}
               onProductChange={handleProductChange}
               productOptions={productOptions}
+              stalledFilter={stalledFilter}
+              onStalledChange={handleStalledChange}
+              stalledCount={stalledTasks?.length}
+              stalledError={stalledError}
             />
           </div>
 
@@ -423,6 +472,11 @@ function TasksPageContent() {
               description="Start the RoboCo orchestrator to manage tasks. Tasks you create will be picked up by agents when the backend is running."
               onRetry={() => void refresh()}
             />
+          ) : stalledFilter && stalledError ? (
+            <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              Failed to load stalled tasks — the stalled filter can&apos;t be
+              applied right now.
+            </div>
           ) : (
             <TaskTable
               tasks={filteredTasks}
@@ -496,8 +550,7 @@ function TasksPageContent() {
                   </TabsTrigger>
                 </TooltipTrigger>
                 <TooltipContent>
-                  In-path PR-review gate for assembled PRs, before the PM
-                  merges
+                  In-path PR-review gate for assembled PRs, before the PM merges
                 </TooltipContent>
               </Tooltip>
               <Tooltip>
@@ -512,8 +565,8 @@ function TasksPageContent() {
                   </TabsTrigger>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Project management overview — every lifecycle state,
-                  including recovery states
+                  Project management overview — every lifecycle state, including
+                  recovery states
                 </TooltipContent>
               </Tooltip>
             </TabsList>

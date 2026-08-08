@@ -13,6 +13,7 @@ import { TeamHealthCards } from "./team-health-cards";
 import { KeyMetricsPanel } from "./key-metrics-panel";
 import { AuditorAlertsPanel } from "./auditor-alerts-panel";
 import { ActiveBlockersPanel } from "./active-blockers-panel";
+import { StalledNeedsYouPanel } from "./stalled-needs-you-panel";
 import { RecentActivityFeed } from "./recent-activity-feed";
 import { QuickActionsCard } from "./quick-actions-card";
 import { CeoApprovalQueue } from "./ceo-approval-queue";
@@ -194,6 +195,9 @@ export function CommandCenter() {
         <CeoApprovalQueue />
         <StrategySignalsPanel />
       </div>
+
+      {/* Stalled / Needs You - work the dispatcher has given up on */}
+      <StalledNeedsYouPanel />
 
       {/* External-PR review decision queue + Social summary - side-by-side
           on lg+ (both hidden-when-empty / compact, so pairing them avoids
