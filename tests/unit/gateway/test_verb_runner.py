@@ -475,6 +475,14 @@ async def test_submit_up_waives_pr_on_zero_commit_branch() -> None:
     assert markers.is_pr_waived(task) is True
     assert markers.get_transition_note(task, markers.PR_WAIVED_TRANSITION_EVENT)
     task_svc.add_progress.assert_awaited_once()
+    # The waived path's next_hint must not claim a PR was opened for review —
+    # it never was. next_hint reads the marker off `task` (the row the
+    # pre-side-effect stamped); `result` is the mocked submit_pm_review
+    # return value, a separate object in this test double.
+    next_hint = spec._INTENT_VERBS["submit_up"].next_hint(task)
+    assert "waived" in next_hint
+    assert "complete(task_id)" in next_hint
+    assert "reviewer will pr_pass" not in next_hint
 
 
 @pytest.mark.asyncio
@@ -502,6 +510,14 @@ async def test_submit_root_waives_pr_on_zero_commit_branch() -> None:
     task_svc.submit_for_review.assert_not_called()
     task_svc.submit_pm_review.assert_awaited_once()
     assert result.status == "awaiting_pm_review"
+    # The waived path's next_hint must not claim a PR was opened for review —
+    # it never was. next_hint reads the marker off `task` (the row the
+    # pre-side-effect stamped); `result` is the mocked submit_pm_review
+    # return value, a separate object in this test double.
+    next_hint = spec._INTENT_VERBS["submit_root"].next_hint(task)
+    assert "waived" in next_hint
+    assert "complete(task_id)" in next_hint
+    assert "main reviewer will review" not in next_hint
 
 
 @pytest.mark.asyncio
@@ -531,6 +547,10 @@ async def test_submit_up_still_creates_pr_when_branch_has_commits() -> None:
     task_svc.submit_pm_review.assert_not_called()
     assert result.status == "awaiting_pr_review"
     assert markers.is_pr_waived(task) is False
+    # The non-waived path keeps claiming a real PR is under review.
+    next_hint = spec._INTENT_VERBS["submit_up"].next_hint(task)
+    assert "reviewer will pr_pass" in next_hint
+    assert "waived" not in next_hint
 
 
 @pytest.mark.asyncio
@@ -558,6 +578,10 @@ async def test_submit_root_still_creates_pr_when_branch_has_commits() -> None:
     task_svc.submit_for_review.assert_awaited_once()
     task_svc.submit_pm_review.assert_not_called()
     assert result.status == "awaiting_pr_review"
+    # The non-waived path keeps claiming a real PR is under review.
+    next_hint = spec._INTENT_VERBS["submit_root"].next_hint(task)
+    assert "main reviewer will review" in next_hint
+    assert "waived" not in next_hint
 
 
 @pytest.mark.asyncio
