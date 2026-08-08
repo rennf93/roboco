@@ -586,3 +586,183 @@ async def test_waiver_fails_open_on_git_error() -> None:
     git_svc.create_pr.assert_awaited_once()
     task_svc.submit_for_review.assert_awaited_once()
     task_svc.submit_pm_review.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# PR_WAIVED is a one-way latch unless a real create_pr/create_root_pr run
+# clears it — the F-7ba05e51 round trip: waive -> request_changes (no marker
+# reset) -> re-submit with real commits -> marker must be cleared so normal
+# PR-merged gates apply again.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_pr_waived_marker_cleared_on_real_resubmit() -> None:
+    """Full round trip: round 1 waives (zero commits) and stamps pr_waived;
+    round 2 (real commits landed after a request_changes bounce, which does
+    not itself touch the marker) must clear the stale marker the moment
+    create_pr actually runs, instead of leaving it latched forever."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/backend/ROUNDTRIP1",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+
+    # Round 1: zero-commit report-only submit — waives PR creation.
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 0))
+    ctx1 = spec.Context(notes="report-only audit subtree; no code changes needed")
+    await runner.run_intent("submit_up", task, agent, ctx1)
+    assert markers.is_pr_waived(task) is True
+
+    # Between rounds: a PM `request_changes` bounce (NEEDS_REVISION) does NOT
+    # reset the marker today — nothing in this test needs to simulate that
+    # explicitly, the marker simply stays set on the same task object, which
+    # is exactly the reachable path the finding describes.
+    assert markers.is_pr_waived(task) is True
+
+    # Round 2: real commits landed — ahead > 0 this time, so create_pr
+    # actually runs and must clear the stale marker.
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 2))
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 858})
+    ctx2 = spec.Context(notes="fixes landed; real diff ready for review")
+    result = await runner.run_intent("submit_up", task, agent, ctx2)
+
+    git_svc.create_pr.assert_awaited_once()
+    task_svc.submit_for_review.assert_awaited_once()
+    assert result.status == "awaiting_pr_review"
+    # The stale latch from round 1 is gone — normal PR-merged gates apply.
+    assert markers.is_pr_waived(task) is False
+
+
+@pytest.mark.asyncio
+async def test_submit_root_clears_stale_pr_waived_marker_too() -> None:
+    """submit_root mirrors submit_up's marker-clear behavior."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/main_pm/ROUNDTRIP2",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="main_pm")
+
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 0))
+    ctx1 = spec.Context(notes="report-only audit root; no code changes needed")
+    await runner.run_intent("submit_root", task, agent, ctx1)
+    assert markers.is_pr_waived(task) is True
+
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 4))
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 859})
+    ctx2 = spec.Context(notes="fixes landed; real diff ready for review")
+    result = await runner.run_intent("submit_root", task, agent, ctx2)
+
+    git_svc.create_pr.assert_awaited_once()
+    assert result.status == "awaiting_pr_review"
+    assert markers.is_pr_waived(task) is False
+
+
+@pytest.mark.asyncio
+async def test_pr_waived_marker_untouched_when_waived_again() -> None:
+    """A second waived round (still zero commits) must not touch the marker
+    via the clear path — it stays set through ``mark_pr_waived`` alone, since
+    ``clear_pr_waived`` only runs on the un-waived (real create_pr) branch."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    git_svc.is_behind_base = AsyncMock(return_value=(0, 0))
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/backend/STILLZERO",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    ctx = spec.Context(notes="still report-only; no code changes yet")
+
+    await runner.run_intent("submit_up", task, agent, ctx)
+    assert markers.is_pr_waived(task) is True
+
+    await runner.run_intent("submit_up", task, agent, ctx)
+    assert markers.is_pr_waived(task) is True
+
+
+# ---------------------------------------------------------------------------
+# F-bdfdce5d: ``precomputed_ahead`` lets the assembled-submit freshen probe's
+# own ``is_behind_base`` fetch be reused for the PR-waiver decision instead
+# of a second ``git fetch origin`` for the same branch/base pair.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_precomputed_ahead_skips_second_is_behind_base_call() -> None:
+    """When the caller (the freshen probe) already knows ``ahead``, the
+    waiver check must reuse it instead of calling ``is_behind_base`` again."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    git_svc.is_behind_base = AsyncMock(
+        side_effect=AssertionError(
+            "is_behind_base must not be called when precomputed_ahead is supplied"
+        )
+    )
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 60})
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/backend/REUSE0001",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    ctx = spec.Context(notes="cell scope complete; bubbling up to main pm")
+
+    result = await runner.run_intent("submit_up", task, agent, ctx, precomputed_ahead=3)
+
+    git_svc.is_behind_base.assert_not_called()
+    git_svc.create_pr.assert_awaited_once()
+    assert result.status == "awaiting_pr_review"
+
+
+@pytest.mark.asyncio
+async def test_precomputed_ahead_zero_still_waives_pr() -> None:
+    """A reused ``ahead == 0`` behaves identically to a freshly-fetched zero:
+    PR creation is waived, no ``is_behind_base`` call is made."""
+    task_svc = _waiver_task_svc()
+    git_svc = AsyncMock()
+    git_svc.is_behind_base = AsyncMock(
+        side_effect=AssertionError(
+            "is_behind_base must not be called when precomputed_ahead is supplied"
+        )
+    )
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/backend/REUSE0002",
+        orchestration_markers=None,
+    )
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    ctx = spec.Context(notes="report-only audit subtree; no code changes needed")
+
+    result = await runner.run_intent("submit_up", task, agent, ctx, precomputed_ahead=0)
+
+    git_svc.is_behind_base.assert_not_called()
+    git_svc.create_pr.assert_not_called()
+    assert result.status == "awaiting_pm_review"
+    assert markers.is_pr_waived(task) is True
