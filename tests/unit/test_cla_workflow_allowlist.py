@@ -108,3 +108,12 @@ def test_workflow_has_pull_requests_write_permission() -> None:
     # silently succeeding with no user-facing confirmation) if the workflow
     # can still write to the pull request.
     assert _workflow_permissions()["pull-requests"] == "write"
+
+
+def test_workflow_has_statuses_write_permission() -> None:
+    # The "CLA check passes" half of the acceptance criterion is the commit
+    # status the action sets on the PR's head SHA (what a required-status
+    # branch protection rule actually gates on) — a regression to read-only
+    # `statuses` would leave an allowlisted author's PR without the green
+    # check even though the sign-off step itself ran and skipped correctly.
+    assert _workflow_permissions()["statuses"] == "write"
