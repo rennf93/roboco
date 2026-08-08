@@ -5668,6 +5668,8 @@ The chain is linear and complete (001→076), with `init_db` running `upgrade he
 
 The FastAPI application shell, request pipeline, and real-time WebSocket fan-out layer for RoboCo. `app.py` builds the ASGI app, wires ~40 route routers, and runs the async lifespan (DB migrations, feature-flag overlay, transcription/extraction/RAG/learning service init, ordered shutdown). `middleware.py` adds correlation IDs, request logging, and a full exception-handler chain mapping domain/service/HTTP errors to structured JSON. `websocket.py` + `websocket_bridge.py` own the live panel streams (agents, notifications, system) with per-connection bounded send queues and an event-bus bridge. `deps.py` is the dependency-injection spine: agent header auth, role-gate helpers, and Choreographer/ContentActions wiring. `utils/` provides route-layer error factories and get-or-404/ownership helpers. `middleware_docs.py` enforces the docs-path permission matrix. `roboco/security.py` (outside `api/` but wired here) supplies the optional fastapi-guard HTTP security layer: `apply_guard(app)` mounts `SecurityMiddleware` last — outermost — in `create_app`, and `guarded_lifespan(lifespan)` wraps the async lifespan, both gated by `ROBOCO_GUARD_ENABLED` (default off, byte-for-byte unchanged request path while off).
 
+**Route-helper extraction (2026-08-08, `no_helpers_in_routes` cleanup, batch A).** `roboco/api/utils/` gained 13 new per-route-file modules (`a2a.py`, `coroner.py`, `dogfood.py`, `git.py`, `pitch.py`, `release.py`, `sentinel.py`, `spackle.py`, `system.py`, `tasks.py`, `telegram.py`, `video.py`, `work_session.py`) holding the non-`@router` module-level helpers that `roboco/api/routes/{same name}.py` used to define inline — a retry of the reverted `d48463f7`/PR#769/#793 extraction, done this time one file at a time with the `@router` inventory verified unchanged after each. `telegram.py`'s `mount_telegram_miniapp_auth` moved too (app-wiring, not a route helper; `app.py` and its integration test now import it from here). Batch B (the remaining `roboco/api/routes/` files) is a separate, disjoint-file follow-up.
+
 ## Files
 
 | Path | Role | approx LOC |
@@ -5681,6 +5683,19 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `roboco/api/utils/__init__.py` | Re-export surface for error factories + resource helpers | ~43 |
 | `roboco/api/utils/errors.py` | HTTPException factories + `handle_service_error` + `service_error_handler` decorator | ~214 |
 | `roboco/api/utils/resources.py` | `get_or_404`, `get_by_field_or_404`, `require_ownership`/`require_recipient`/`require_membership` | ~180 |
+| `roboco/api/utils/tasks.py` | Helpers extracted from `routes/tasks.py`: `_StatusOverride` dataclass, PM-editor scope/field enforcement, error translation, null-clears, batch-shape reassertion, cell-map/complete/merge helpers | ~462 |
+| `roboco/api/utils/video.py` | Helpers extracted from `routes/video.py`: cut/preview-path resolution, response/history builders, orientation-frame listing | ~223 |
+| `roboco/api/utils/git.py` | Helpers extracted from `routes/git.py`: file-range compute, service/git-error → HTTPException translation, branch-line parsing | ~131 |
+| `roboco/api/utils/pitch.py` | Helpers extracted from `routes/pitch.py`: exception/response translation, cell-list parsing | ~79 |
+| `roboco/api/utils/work_session.py` | Helpers extracted from `routes/work_session.py`: session-ownership assertions (dev + cell-PM) | ~67 |
+| `roboco/api/utils/coroner.py` | Helpers extracted from `routes/coroner.py`: CEO-only guard, postmortem-task → response mapping | ~53 |
+| `roboco/api/utils/release.py` | Helpers extracted from `routes/release.py`: CEO-only guard, status/response mapping for release-proposal tasks | ~53 |
+| `roboco/api/utils/telegram.py` | Helpers extracted from `routes/telegram.py`, incl. `mount_telegram_miniapp_auth` (app-wiring, called from `app.py`) | ~43 |
+| `roboco/api/utils/a2a.py` | Helpers extracted from `routes/a2a.py`: CEO-only guard, reply-target resolution | ~39 |
+| `roboco/api/utils/sentinel.py` | Helpers extracted from `routes/sentinel.py`: CEO-only guard, quality-report response mapping | ~38 |
+| `roboco/api/utils/dogfood.py` | Helpers extracted from `routes/dogfood.py`: CEO-only guard, status/response mapping for Dogfood cycle tasks | ~34 |
+| `roboco/api/utils/spackle.py` | Helpers extracted from `routes/spackle.py`: CEO-only guard, status/response mapping for Spackle cycle tasks | ~34 |
+| `roboco/api/utils/system.py` | Helper extracted from `routes/system.py`: rate-limit resume-at computation | ~18 |
 | `roboco/api/__init__.py` | Deliberately does NOT re-export `app` (circular-import guard, documented) | ~14 |
 | `roboco/security.py` | fastapi-guard 7.2.1 / guard-core 3.3.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~407 |
 
