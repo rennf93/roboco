@@ -37,7 +37,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     else:
         git = AsyncMock()
         git.commit.return_value = {"sha": "abc12345"}
-        git.diff.return_value = ""
+        git.diff_and_files.return_value = ("", [])
 
     a2a = overrides.get("a2a", AsyncMock())
     journal = overrides.get("journal", AsyncMock())
@@ -270,7 +270,7 @@ async def test_evidence_blocks_when_not_assignee() -> None:
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
     git_svc = AsyncMock()
-    git_svc.diff.return_value = ""
+    git_svc.diff_and_files.return_value = ("", [])
     workspace_svc = AsyncMock()
     deps = _make_deps(task=task_svc, git=git_svc, workspace=workspace_svc)
     ca = ContentActions(deps)
@@ -279,7 +279,7 @@ async def test_evidence_blocks_when_not_assignee() -> None:
     body = env.as_dict()
     assert body["error"] == "not_authorized"
     workspace_svc.fetch_branch_for_inspection.assert_not_awaited()
-    git_svc.diff.assert_not_awaited()
+    git_svc.diff_and_files.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +419,7 @@ async def test_evidence_unassigned_task_allows_inspection() -> None:
         )
     )
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "diff content"
+    git_svc.diff_and_files.return_value = ("diff content", [])
     workspace_svc = AsyncMock()
     deps = _make_deps(task=task_svc, git=git_svc, workspace=workspace_svc)
     ca = ContentActions(deps)
@@ -464,8 +464,7 @@ async def test_evidence_allows_dependency_inspection() -> None:
         )
     )
     git_svc = AsyncMock()
-    git_svc.diff.return_value = ""
-    git_svc.list_changed_files.return_value = []
+    git_svc.diff_and_files.return_value = ("", [])
     workspace_svc = AsyncMock()
     deps = _make_deps(task=task_svc, git=git_svc, workspace=workspace_svc)
     ca = ContentActions(deps)

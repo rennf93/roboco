@@ -5392,12 +5392,21 @@ class ContentActions:
         the branch's parent — the authoritative source) rather than the latest
         commit's delta, so reviewers see the full multi-commit change set.
 
-        The three slow legs (workspace branch fetch, diff, list_changed_files)
-        each run bounded via ``run_bounded_leg`` against ONE shared
-        ``LegBudget`` for this call — a timeout skips that piece and records
-        a note in ``evidence_gaps`` instead of hanging this advisory
+        The workspace-branch-fetch leg and the combined git diff leg
+        (``diff_and_files`` — one workspace/token/head/base resolution, the
+        full diff and the ``--name-only`` diff run concurrently as
+        subprocesses) each run bounded via ``run_bounded_leg`` against ONE
+        shared ``LegBudget`` for this call — a timeout skips that piece and
+        records a note in ``evidence_gaps`` instead of hanging this advisory
         (read-only, non-gating) verb for the whole ``flow_verb_timeout_seconds``
         budget.
+
+        The three independent DB-only reads (journal highlights, ancestor
+        context, open findings) are gathered together and run BEFORE the
+        pool-release commit below — not alongside the git legs — so they
+        still benefit from being one round of concurrent reads instead of
+        three sequential ones, without re-acquiring a connection that has
+        to sit checked out for the (potentially minutes-long) git work.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -5413,6 +5422,13 @@ class ContentActions:
             and not await self._is_caller_dependency(agent_id, t)
         ):
             return _ownership_violation(task_id)
+        journal_highlights, parent_context, open_findings = await asyncio.gather(
+            self.evidence_repo.journal_highlights_for_task(
+                task_id, include_ancestors=True
+            ),
+            self.evidence_repo.ancestor_context_for_task(task_id),
+            findings_lib.open_findings_for_task(self.task.session, task_id),
+        )
         # Release the request's transaction before the git work below: fetch +
         # diff can run for minutes (cold workspace, serialized behind the
         # per-workspace ensure lock), and an open transaction pins one of the
@@ -5455,33 +5471,17 @@ class ContentActions:
         diff = ""
         files_changed: list[str] = []
         if t.branch_name:
-            diff = await run_bounded_leg(
-                self.git.diff(branch_name=t.branch_name, actor_agent_id=agent_id),
-                default="",
+            diff, files_changed = await run_bounded_leg(
+                self.git.diff_and_files(
+                    branch_name=t.branch_name, actor_agent_id=agent_id
+                ),
+                default=("", []),
                 budget=budget,
                 leg="pr diff",
                 hint="review the PR diff on GitHub directly",
                 task_id=task_id,
                 gaps=evidence_gaps,
             )
-            files_changed = await run_bounded_leg(
-                self.git.list_changed_files(
-                    branch_name=t.branch_name, actor_agent_id=agent_id
-                ),
-                default=[],
-                budget=budget,
-                leg="files_changed",
-                hint="review the PR diff on GitHub directly",
-                task_id=task_id,
-                gaps=evidence_gaps,
-            )
-        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
-            task_id, include_ancestors=True
-        )
-        parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
-        open_findings = await findings_lib.open_findings_for_task(
-            self.task.session, task_id
-        )
         ev = build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,

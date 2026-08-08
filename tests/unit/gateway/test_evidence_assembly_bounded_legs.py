@@ -316,12 +316,15 @@ def _qa_task(task_id: Any) -> MagicMock:
     )
 
 
-def _qa_harness(git_svc: AsyncMock) -> tuple[Choreographer, Any, Any]:
+def _qa_harness(git_svc: AsyncMock, **overrides: Any) -> tuple[Choreographer, Any, Any]:
     """Does NOT touch ``settings.conventions_enabled`` — callers that care
     set it themselves via their own ``monkeypatch`` fixture; a shared
     forced-False here would silently clobber a caller's forced-True set
     moments earlier (``monkeypatch.setattr`` doesn't stack, last write
-    wins), which is exactly what broke the conventions-specific tests."""
+    wins), which is exactly what broke the conventions-specific tests.
+
+    ``**overrides`` forwards to ``_make_deps`` (e.g. a custom
+    ``evidence_repo`` for the latency-gather test below)."""
     qa_id = uuid4()
     task_id = uuid4()
     t_initial = _qa_task(task_id)
@@ -335,7 +338,7 @@ def _qa_harness(git_svc: AsyncMock) -> tuple[Choreographer, Any, Any]:
     task_svc.qa_claim.return_value = t_claimed
     _stub_empty_ledger(task_svc.session)
 
-    deps = _make_deps(task=task_svc, git=git_svc)
+    deps = _make_deps(task=task_svc, git=git_svc, **overrides)
     return Choreographer(deps), qa_id, task_id
 
 
@@ -344,13 +347,12 @@ def _qa_harness(git_svc: AsyncMock) -> tuple[Choreographer, Any, Any]:
 async def test_claim_review_diff_timeout_degrades_with_gap(
     monkeypatch: pytest.MonkeyPatch, exc: Exception
 ) -> None:
-    """A hung git.diff on claim_review must not hang the verb: it degrades
-    to an empty diff, records the gap, and the OTHER leg (list_changed_files)
-    still comes through untouched."""
+    """A hung git.diff_and_files on claim_review must not hang the verb: the
+    combined diff+files leg degrades to an empty diff AND an empty
+    files_changed together (one resolution, one leg) and records the gap."""
     monkeypatch.setattr(settings, "conventions_enabled", False)
     git_svc = AsyncMock()
-    git_svc.diff.side_effect = exc
-    git_svc.list_changed_files.return_value = ["README.md"]
+    git_svc.diff_and_files.side_effect = exc
     c, qa_id, task_id = _qa_harness(git_svc)
 
     env = await c.claim_review(qa_id, task_id)
@@ -358,7 +360,7 @@ async def test_claim_review_diff_timeout_degrades_with_gap(
     assert body["error"] is None, body
     ev = body["evidence"]
     assert ev["pr_diff_summary"] == ""
-    assert ev["files_changed"] == ["README.md"]
+    assert ev["files_changed"] == []
     assert "evidence_gaps" in ev
     assert len(ev["evidence_gaps"]) == 1
     assert "pr diff unavailable" in ev["evidence_gaps"][0]
@@ -376,8 +378,7 @@ async def test_claim_review_conventions_timeout_degrades_with_gap(
     module docstring point 2)."""
     monkeypatch.setattr(settings, "conventions_enabled", True)
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "diff content"
-    git_svc.list_changed_files.return_value = ["README.md"]
+    git_svc.diff_and_files.return_value = ("diff content", ["README.md"])
     git_svc.conventions_check_for_task.return_value = {
         "findings": [],
         "could_not_run": True,
@@ -405,6 +406,7 @@ async def test_claim_review_conventions_timeout_degrades_with_gap(
         <= settings.conventions_validator_advisory_timeout_seconds
     )
     assert call_kwargs["timeout"] > 0
+    assert call_kwargs["changed_files"] == ["README.md"]
 
 
 @pytest.mark.asyncio
@@ -416,8 +418,7 @@ async def test_claim_review_conventions_non_timeout_could_not_run_no_gap(
     evidence_gaps — that's reserved for actual degraded-advisory-leg notes."""
     monkeypatch.setattr(settings, "conventions_enabled", True)
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "diff content"
-    git_svc.list_changed_files.return_value = ["README.md"]
+    git_svc.diff_and_files.return_value = ("diff content", ["README.md"])
     git_svc.conventions_check_for_task.return_value = {
         "findings": [],
         "could_not_run": True,
@@ -471,8 +472,7 @@ async def test_claim_review_normal_path_has_no_evidence_gaps(
     nothing times out."""
     monkeypatch.setattr(settings, "conventions_enabled", False)
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "diff content"
-    git_svc.list_changed_files.return_value = ["README.md"]
+    git_svc.diff_and_files.return_value = ("diff content", ["README.md"])
     c, qa_id, task_id = _qa_harness(git_svc)
 
     env = await c.claim_review(qa_id, task_id)
@@ -482,6 +482,54 @@ async def test_claim_review_normal_path_has_no_evidence_gaps(
     assert ev["pr_diff_summary"] == "diff content"
     assert ev["files_changed"] == ["README.md"]
     assert "evidence_gaps" not in ev
+
+
+@pytest.mark.asyncio
+async def test_claim_review_gathers_git_leg_against_db_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The combined git leg (diff_and_files) and the two independent DB
+    reads (journal highlights, ancestor context) are gathered — a slow
+    0.15s leg on EACH side finishes in close to 0.15s total wall time, not
+    ~0.3s (what awaiting the git leg THEN the DB reads, one after another,
+    would cost). This is the measurable claim_review evidence-latency drop
+    the git-leg dedup + gather is for."""
+    monkeypatch.setattr(settings, "conventions_enabled", False)
+    leg_seconds = 0.15
+
+    async def _slow_diff_and_files(*_args: object, **_kwargs: object) -> Any:
+        await asyncio.sleep(leg_seconds)
+        return "diff content", ["README.md"]
+
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.side_effect = _slow_diff_and_files
+
+    async def _slow_journal(*_args: object, **_kwargs: object) -> list[Any]:
+        await asyncio.sleep(leg_seconds)
+        return []
+
+    async def _slow_ancestor(*_args: object, **_kwargs: object) -> list[Any]:
+        await asyncio.sleep(leg_seconds)
+        return []
+
+    evidence_repo = AsyncMock()
+    evidence_repo.journal_highlights_for_task.side_effect = _slow_journal
+    evidence_repo.ancestor_context_for_task.side_effect = _slow_ancestor
+
+    c, qa_id, task_id = _qa_harness(git_svc, evidence_repo=evidence_repo)
+
+    start = time.monotonic()
+    env = await c.claim_review(qa_id, task_id)
+    elapsed = time.monotonic() - start
+
+    body = env.as_dict()
+    assert body["error"] is None, body
+    ev = body["evidence"]
+    assert ev["pr_diff_summary"] == "diff content"
+    assert ev["files_changed"] == ["README.md"]
+    # Sequential (git leg, then DB reads — the pre-fix shape) would take
+    # ~2*leg_seconds; gathered execution stays close to ONE leg.
+    assert elapsed < leg_seconds * 1.8
 
 
 # ---------------------------------------------------------------------------

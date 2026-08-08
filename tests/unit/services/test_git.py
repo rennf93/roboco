@@ -8,6 +8,7 @@ mock the network and filesystem boundaries.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -731,6 +732,80 @@ async def test_diff_returns_diff_stdout() -> None:
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
     out = await svc.diff(branch_name="feature/backend/abc")
     assert "+hello" in out
+
+
+@pytest.mark.asyncio
+async def test_diff_and_files_resolves_once_and_returns_both_legs() -> None:
+    """``diff_and_files`` resolves workspace / token / head-ref / base-ref
+    EXACTLY ONCE (not the two separate resolutions calling ``diff()`` then
+    ``list_changed_files()`` would cost) and returns both the full diff and
+    the changed-file list from that single resolution."""
+    svc = _service()
+    workspace_mock = AsyncMock(return_value=Path("/tmp/ws"))
+    token_mock = AsyncMock(return_value=None)
+    head_mock = AsyncMock(return_value="origin/feature")
+    base_mock = AsyncMock(return_value="origin/master")
+    _bind(svc, "_workspace_for_branch", workspace_mock)
+    _bind(svc, "_token_for_branch", token_mock)
+    _bind(svc, "_resolve_head_ref", head_mock)
+    _bind(svc, "_resolve_diff_base", base_mock)
+
+    async def _run_git(
+        _workspace: Path, args: list[str], check: bool = True, token: str | None = None
+    ) -> MagicMock:
+        del check, token
+        if "--name-only" in args:
+            return MagicMock(stdout="a.py\nb.py\n", returncode=0)
+        return MagicMock(stdout="diff --git a b\n+x\n", returncode=0)
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    diff, files = await svc.diff_and_files(branch_name="feature/backend/abc")
+
+    assert "+x" in diff
+    assert files == ["a.py", "b.py"]
+    workspace_mock.assert_awaited_once()
+    token_mock.assert_awaited_once()
+    head_mock.assert_awaited_once()
+    base_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_diff_and_files_runs_subprocesses_concurrently() -> None:
+    """The full diff and the ``--name-only`` diff run as CONCURRENT
+    subprocesses off the single resolution: two 0.15s legs finish in close
+    to 0.15s total wall time, not ~0.3s (what running them one after the
+    other — the pre-fix ``diff()`` then ``list_changed_files()`` — would
+    cost) — this is the measurable latency win claim_review's evidence
+    build relies on."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
+
+    leg_seconds = 0.15
+
+    async def _run_git(
+        _workspace: Path, args: list[str], check: bool = True, token: str | None = None
+    ) -> MagicMock:
+        del check, token
+        await asyncio.sleep(leg_seconds)
+        if "--name-only" in args:
+            return MagicMock(stdout="a.py\n", returncode=0)
+        return MagicMock(stdout="diff\n", returncode=0)
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    start = time.monotonic()
+    diff, files = await svc.diff_and_files(branch_name="feature/backend/abc")
+    elapsed = time.monotonic() - start
+
+    assert diff == "diff\n"
+    assert files == ["a.py"]
+    # Sequential (diff() then list_changed_files(), the pre-fix shape) would
+    # take ~2*leg_seconds; concurrent execution stays close to ONE leg.
+    assert elapsed < leg_seconds * 1.5
 
 
 @pytest.mark.asyncio
