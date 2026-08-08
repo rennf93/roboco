@@ -45,6 +45,11 @@ def _pull_request_target_types() -> set[str]:
     return set(triggers["pull_request_target"]["types"])
 
 
+def _workflow_permissions() -> dict[str, str]:
+    doc = cast("dict[str, Any]", yaml.safe_load(_WORKFLOW.read_text()))
+    return cast("dict[str, str]", doc["permissions"])
+
+
 def test_app_bot_is_allowlisted() -> None:
     # The App account authors/commits on essentially every fleet PR and can
     # never post the sign-off comment as itself — it must be exempt.
@@ -86,3 +91,12 @@ def test_pull_request_target_fires_on_open_and_sync() -> None:
     # window where an allowlisted author's fresh PR sits unchecked.
     types = _pull_request_target_types()
     assert {"opened", "synchronize"} <= types
+
+
+def test_workflow_has_contents_write_permission() -> None:
+    # Self-satisfying for an allowlisted author still requires the action to
+    # successfully record a (skipped) signature entry on the cla-signatures
+    # branch; a regression to read-only contents permission 403s that write
+    # ("Resource not accessible by integration") even for exempt authors,
+    # per the inline comment at the top of the permissions block.
+    assert _workflow_permissions()["contents"] == "write"
