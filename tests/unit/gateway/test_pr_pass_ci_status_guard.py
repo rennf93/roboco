@@ -86,13 +86,19 @@ def _stub_gate_path(
     return record_spy
 
 
-def _t(*, status: str = "awaiting_pr_review", pr_number: int | None = 42) -> MagicMock:
+def _t(
+    *,
+    status: str = "awaiting_pr_review",
+    pr_number: int | None = 42,
+    intends_to_touch: list[str] | None = None,
+) -> MagicMock:
     return MagicMock(
         id=uuid4(),
         assigned_to=None,
         pr_number=pr_number,
         parent_task_id=uuid4(),
         status=status,
+        intends_to_touch=intends_to_touch,
     )
 
 
@@ -120,6 +126,97 @@ async def test_pr_pass_blocked_on_failing_ci() -> None:
     c.task.get.assert_not_called()  # never reached the runner
     cc: Any = c
     cc._record_gate_verdict.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_scope_gates_out_of_scope_codeql_failure() -> None:
+    """A failing CodeQL check for a language the task never declared it
+    touches (``intends_to_touch`` scope has zero overlap with that check's
+    analyzed paths) must not block — CodeQL scans the whole language, not
+    the diff, so this is a pre-existing finding outside the task's scope."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["panel/**"])
+    t_after = _t(status="awaiting_pm_review")
+    c = _make_choreographer()
+    record_spy = _stub_gate_path(
+        c, reviewer_id=reviewer_id, t_before=t_before, t_after=t_after
+    )
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["Analyze (python)"]}
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error is None, env.as_dict()
+    assert env.status == "awaiting_pm_review"
+    record_spy.assert_called_once()
+    ci_note = record_spy.call_args.kwargs.get("ci_note") or ""
+    assert "outside declared scope" in ci_note
+    assert "Analyze (python)" in ci_note
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_still_blocked_on_in_scope_codeql_failure() -> None:
+    """A failing CodeQL check whose declared scope DOES overlap the task's
+    intends_to_touch still blocks — the scope gate only excuses genuinely
+    out-of-bounds findings."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["roboco/services/foo.py"])
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["Analyze (python)"]}
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error == "invalid_state"
+    assert "Analyze (python)" in (env.message or "")
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_scope_gate_narrows_message_to_remaining_failures() -> None:
+    """A mix of an out-of-scope CodeQL check and a genuinely failing,
+    non-CodeQL check: the scope-gated check is dropped from the block
+    message, but the remaining failure still blocks."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["panel/**"])
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={
+            "state": "failure",
+            "failing_checks": ["Analyze (python)", "tests"],
+        }
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error == "invalid_state"
+    assert "tests" in (env.message or "")
+    assert "Analyze (python)" not in (env.message or "")
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_still_blocked_on_unmapped_codeql_check_name() -> None:
+    """A failing check name that LOOKS like CodeQL but isn't in
+    ``_CODEQL_CHECK_SCOPES`` (a renamed workflow, or a future third
+    language/matrix entry) must still block — the scope gate only excuses a
+    check it can actually map to an analyzed-language scope; an unmapped name
+    falls back to the old conservative (blocking) behavior rather than being
+    silently excused."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["panel/**"])
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["CodeQL"]}
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error == "invalid_state"
+    assert "CodeQL" in (env.message or "")
 
 
 @pytest.mark.asyncio
