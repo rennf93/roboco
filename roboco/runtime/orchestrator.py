@@ -4979,7 +4979,7 @@ class AgentOrchestrator:
 
     _NOTIFICATION_COOLDOWN_PRUNE_AT = 512
 
-    def _notification_spawn_cooled(
+    async def _notification_spawn_cooled(
         self, agent_slug: str, notification_id: str | None
     ) -> bool:
         """True when this (agent, notification) spawn is suppressed.
@@ -5013,7 +5013,7 @@ class AgentOrchestrator:
         last = store.get(key)
         if last is not None and (now - last) < cooldown:
             return True
-        if self._notification_spawn_over_cap(key, store, counts, now):
+        if await self._notification_spawn_over_cap(key, store, counts, now):
             return True
         counts[key] = counts.get(key, 0) + 1
         store[key] = now
@@ -5021,7 +5021,7 @@ class AgentOrchestrator:
             self._prune_notification_spawn_maps(now - cooldown)
         return False
 
-    def _notification_spawn_over_cap(
+    async def _notification_spawn_over_cap(
         self,
         key: tuple[str, str],
         store: dict[tuple[str, str], float],
@@ -5032,7 +5032,9 @@ class AgentOrchestrator:
         ``notification_spawn_max_attempts`` times without the notification being
         acknowledged — the no-task_id analogue of the PM respawn breaker.
         Re-stamps so the capped entry survives pruning (which would otherwise
-        drop the count and reset the cap); logs exactly once at the trip.
+        drop the count and reset the cap); logs and notifies the CEO exactly
+        once at the trip (matching ``_notify_stuck_agent``'s best-effort
+        pattern) — never re-fires on later suppressed spawns for the same key.
         """
         max_attempts = settings.notification_spawn_max_attempts
         attempts = counts.get(key, 0)
@@ -5050,7 +5052,36 @@ class AgentOrchestrator:
                 attempts=attempts,
                 max_attempts=max_attempts,
             )
+            await self._notify_notification_spawn_capped(
+                agent_slug=key[0], notification_id=key[1], attempts=attempts
+            )
         return True
+
+    async def _notify_notification_spawn_capped(
+        self, agent_slug: str, notification_id: str, attempts: int
+    ) -> None:
+        """One-shot alert to the CEO that the notification-spawn cap tripped.
+
+        Best-effort, mirroring ``_notify_stuck_agent``: a notification
+        failure must not wedge dispatch, so any error is logged and
+        swallowed.
+        """
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_notification_spawn_cap_notification(
+                agent_slug=agent_slug,
+                notification_id=notification_id,
+                to_agent="ceo",
+                attempts=attempts,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to send notification-spawn-cap notification",
+                agent_slug=agent_slug,
+                notification_id=notification_id,
+                error=str(exc),
+            )
 
     def _prune_notification_spawn_maps(self, cutoff: float) -> None:
         """Drop cooldown/count entries stamped before ``cutoff`` (both maps
@@ -15903,7 +15934,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 if self._is_agent_active(agent_slug):
                     continue
 
-                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
                     continue
                 if not await self._notification_has_live_work(client, notif):
                     continue
@@ -15936,7 +15967,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 if self._is_agent_active(agent_slug):
                     continue
 
-                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
                     continue
                 if not await self._notification_has_live_work(client, notif):
                     continue
@@ -15966,7 +15997,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             alert = await self._next_unobserved_audit_alert(client)
             if alert is not None:
                 alert_id = str(alert["id"])
-                if not self._notification_spawn_cooled("auditor", alert_id):
+                if not await self._notification_spawn_cooled("auditor", alert_id):
                     await self.spawn_agent(
                         agent_id="auditor",
                         initial_prompt=self._build_audit_prompt(
@@ -15990,7 +16021,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             return
         if not await self._has_recent_delivery_activity(client):
             return
-        if self._notification_spawn_cooled("auditor", "_scheduled_audit"):
+        if await self._notification_spawn_cooled("auditor", "_scheduled_audit"):
             return
         await self.spawn_agent(
             agent_id="auditor",
@@ -16379,7 +16410,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                     continue
 
                 # Agent is offline - spawn them with A2A context
-                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
                     continue
                 await self.spawn_agent(
                     agent_id=agent_slug,

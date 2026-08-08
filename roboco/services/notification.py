@@ -135,6 +135,44 @@ class NotificationService:
             )
         )
 
+    async def send_notification_spawn_cap_notification(
+        self,
+        agent_slug: str,
+        notification_id: str,
+        to_agent: str,
+        attempts: int,
+    ) -> None:
+        """Alert an overseer that a notification-spawn kept respawning its
+        target without ever being acknowledged.
+
+        Raised by the no-task_id analogue of the respawn breaker
+        (``_notification_spawn_over_cap``): unlike the task-keyed breaker
+        there is no task to key on, so the trip is identified by
+        ``(agent_slug, notification_id)`` instead.
+        """
+        logger.info(
+            "Sending notification-spawn-cap notification",
+            agent=agent_slug,
+            notification_id=notification_id,
+            to_agent=to_agent,
+        )
+        body = (
+            f"Notification {notification_id} kept respawning agent {agent_slug} "
+            f"without ever being acknowledged ({attempts} attempts), so further "
+            "automatic spawns for it have been paused. Please investigate and "
+            "acknowledge or resolve the notification manually."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.BLOCKER_ESCALATION,
+                priority=NotificationPriority.HIGH,
+                from_agent="system",
+                to_agents=[to_agent],
+                subject=f"Agent {agent_slug} stuck on notification {notification_id}",
+                body=body,
+            )
+        )
+
     async def send_block_flip_notification(
         self,
         task_id: str,
