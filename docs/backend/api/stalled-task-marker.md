@@ -14,7 +14,7 @@ This covers the `breaker_tripped` reason only (`_pm_respawn_should_gate`'s strik
 
 ```python
 class StalledReason(StrEnum):
-    BREAKER_TRIPPED = "breaker_tripped"    # _pm_respawn_should_gate strike cap hit
+    BREAKER_TRIPPED = "breaker_tripped"  # _pm_respawn_should_gate strike cap hit
     NOTIFICATION_CAP = "notification_cap"  # reserved: no-task_id spawn-cap path
 ```
 
@@ -39,7 +39,7 @@ Called from `_pm_respawn_should_gate`'s tripped block at the exact point it fire
 if not record.get("notified"):
     record["notified"] = True
     self._schedule_respawn_persist(agent_slug, str(task_id), record)
-    await self._mark_task_stalled(task_id)       # sets stalled_reason/stalled_since
+    await self._mark_task_stalled(task_id)  # sets stalled_reason/stalled_since
     await self._notify_stuck_agent(agent_slug, task_id, current_status)
 ```
 
@@ -54,7 +54,9 @@ Hooked into `_respawn_status_change_resets`, the same genuine-forward-progress b
 ```python
 if current_status not in seen:
     ...
-    self._schedule_respawn_persist(agent_slug, str(task_id), self._pm_respawn_tracker[key])
+    self._schedule_respawn_persist(
+        agent_slug, str(task_id), self._pm_respawn_tracker[key]
+    )
     self._schedule_bg(self._clear_task_stalled_marker(agent_slug, str(task_id)))
     return True
 ```
