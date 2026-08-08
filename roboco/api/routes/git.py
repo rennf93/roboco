@@ -21,7 +21,10 @@ Workspace Structure:
     each on their own branch, without file conflicts.
 """
 
+import asyncio
+from collections.abc import Coroutine
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -57,6 +60,7 @@ from roboco.api.schemas.git import (
     GitRebaseResponse,
     GitStatusResponse,
 )
+from roboco.config import settings
 from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
 from roboco.logging import get_logger
 from roboco.models.base import AgentRole
@@ -156,6 +160,29 @@ def _translate_error(e: ServiceError | GitError) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
     )
+
+
+async def _bounded_git_stage[T](
+    coro: Coroutine[Any, Any, T], *, timeout: float, stage: str
+) -> T:
+    """Await ``coro`` bounded by ``timeout``; fail closed with a stage-named 504.
+
+    Sibling to ``evidence_legs.run_bounded_leg`` but for a route that must
+    FAIL CLOSED (no soft degrade): both timeout shapes — asyncio's own
+    ``TimeoutError`` from ``wait_for``'s own cancellation, and
+    ``GitTimeoutError`` raised from inside ``GitService._run_git``'s own
+    internal subprocess bound — translate to the same stage-naming 504
+    instead of a bare/generic message. Cancelling a thread-backed git call
+    only stops AWAITING it, not necessarily the underlying subprocess — the
+    same caveat evidence_legs.py documents for its own soft-degrading legs.
+    """
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except (TimeoutError, GitTimeoutError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"git diff timed out during {stage} after {timeout:g}s",
+        ) from e
 
 
 async def _resolve_project_slug(identifier: str, db: AsyncSession) -> str:
@@ -386,15 +413,12 @@ async def get_git_diff(
     project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
-    try:
-        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
-
+    async def _run_diff_stage() -> tuple[Any, Any]:
         args = ["diff"]
         if staged:
             args.append("--staged")
         if file_path:
             args.extend(["--", file_path])
-
         diff_result = await git_service._run_git(workspace, args)
 
         # Count files changed
@@ -402,6 +426,19 @@ async def get_git_diff(
         if staged:
             stat_args.append("--staged")
         stat_result = await git_service._run_git(workspace, stat_args)
+        return diff_result, stat_result
+
+    try:
+        workspace = await _bounded_git_stage(
+            git_service.get_workspace(project_slug, agent.agent_id),
+            timeout=settings.workspace_clone_timeout,
+            stage="workspace resolution",
+        )
+        diff_result, stat_result = await _bounded_git_stage(
+            _run_diff_stage(),
+            timeout=settings.git_diff_timeout_seconds,
+            stage="diff",
+        )
     except _TranslatableError as e:
         raise _translate_error(e) from e
 
