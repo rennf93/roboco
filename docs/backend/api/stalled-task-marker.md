@@ -8,6 +8,8 @@ Migration `092_task_stalled_marker` adds two columns to `tasks`, `stalled_reason
 
 This covers the `breaker_tripped` reason only (`_pm_respawn_should_gate`'s strike-cap path). The sibling `_notification_spawn_over_cap` path (no `task_id` to key a marker on) notifies the CEO on trip (see the `_notification_spawn_over_cap` CHANGELOG entry, task 4e7f64c4) but sets no durable task marker — there is nothing to mark. `NOTIFICATION_CAP` remains on the `StalledReason` enum unused, reserved for a future task-keyed variant of that path.
 
+**PR #866 fix-forward (task `cbc0666d`).** The original delivery cleared the marker only from the dispatcher's own re-observation branch (`_respawn_status_change_resets`, see "Clearing the marker" below), which never re-fires once a task's status leaves the dispatcher's fetch scope for that role — e.g. a dev's task advancing from `in_progress` to `awaiting_qa`. A task that recovered from a stall this way kept `stalled_reason` set, and kept appearing in `GET /api/dashboard/stalled-tasks`, until it eventually reached a terminal status. `TaskService._emit_status_transition_audit`, the single chokepoint every status transition funnels through, now clears any stale marker unconditionally on every transition, closing that gap. See the updated "Clearing the marker" and "Testing" sections below for the current (post-fix) lifecycle.
+
 ## Data model
 
 ### `roboco.models.base.StalledReason`
@@ -47,9 +49,27 @@ if not record.get("notified"):
 
 `_mark_task_stalled` is best-effort: a DB write failure is logged and swallowed so it can never block the dispatch loop or suppress the CEO notification.
 
-### Clearing the marker: `TaskService.clear_stalled_marker(task_id)`
+### Clearing the marker (post-#866 fix): `TaskService._emit_status_transition_audit`
 
-Hooked into `_respawn_status_change_resets`, the same genuine-forward-progress branch that already resets the breaker's in-memory strike counter (`current_status not in seen`, a truly new status, not a revisit of one already seen this run):
+The **primary** clear path is now unconditional and lives in `TaskService`, not the orchestrator. `_emit_status_transition_audit` is the single chokepoint every task status transition funnels through (it also owns the rework-counter increment and the audit-log write), so it is guaranteed to run on any forward move, not just one observed by the dispatcher's own polling loop:
+
+```python
+def _emit_status_transition_audit(self, task, from_status, to_status, ...):
+    self._clear_stale_stalled_marker(task)
+    ...
+
+@staticmethod
+def _clear_stale_stalled_marker(task: TaskTable) -> None:
+    if task.stalled_reason is not None:
+        task.stalled_reason = None
+        task.stalled_since = None
+```
+
+This is a direct synchronous attribute assignment (not the async `clear_stalled_marker` helper below) because the caller already holds the ORM object mid-transaction, so the clear commits or rolls back atomically with the transition itself. It was split into its own static method (`_clear_stale_stalled_marker`) to keep `_emit_status_transition_audit`'s own complexity under the xenon budget.
+
+### The dispatcher-side clear: `TaskService.clear_stalled_marker(task_id)` (secondary, same-role path)
+
+Still hooked into `_respawn_status_change_resets`, the dispatcher's genuine-forward-progress branch that also resets the breaker's in-memory strike counter (`current_status not in seen`, a truly new status, not a revisit of one already seen this run):
 
 ```python
 if current_status not in seen:
@@ -61,7 +81,9 @@ if current_status not in seen:
     return True
 ```
 
-The clear is fire-and-forget via `_schedule_bg`, mirroring the counter write-through's discipline: the hot dispatch path never blocks on this DB write. `clear_stalled_marker`'s `UPDATE` is conditioned on `stalled_reason IS NOT NULL`, so the overwhelming majority of calls (a task that was never stalled) are a no-op write. There is no reason-specific clear: any genuine progress clears whatever `stalled_reason` is currently set.
+The clear is fire-and-forget via `_schedule_bg`, mirroring the counter write-through's discipline: the hot dispatch path never blocks on this DB write. `clear_stalled_marker`'s `UPDATE` (used by both paths) is conditioned on `stalled_reason IS NOT NULL`, so the overwhelming majority of calls (a task that was never stalled) are a no-op write. There is no reason-specific clear: any genuine progress clears whatever `stalled_reason` is currently set.
+
+**Why this alone wasn't sufficient (the #866 bug):** this branch only fires when the SAME `(agent, task)` tracker key is re-observed by `_dispatch_dev_work`, which fetches only `pending`/`claimed`/`needs_revision`/`in_progress`/`blocked` tasks. Once a wedged dev's task advances to `awaiting_qa` (or any status outside that dev-role fetch set), that tracker key is never polled again, so this branch alone left a resolved task's marker stuck until the task went terminal. It remains in place as a faster, same-role secondary clear; the `TaskService`-level clear above is what now guarantees correctness for every transition, including cross-role ones.
 
 ## Read endpoint
 
@@ -69,7 +91,7 @@ The clear is fire-and-forget via `_schedule_bg`, mirroring the counter write-thr
 
 Returns the current stalled set, every task with a non-null `stalled_reason`, ordered oldest-stalled-first. The route is a thin handler; all query and duration-classification logic lives in `TaskService.list_stalled_tasks`.
 
-The query excludes terminal (`COMPLETED`/`CANCELLED`) tasks: the only marker-clear path, `AgentOrchestrator._clear_task_stalled_marker`, runs solely from the dispatcher's re-observation branch, which never fires once a task reaches a terminal status. Without the exclusion, a task marked stalled that later completed or was cancelled by some other path (not a genuine-progress re-observation) would stay in this list forever even though there is nothing left to act on.
+The query excludes terminal (`COMPLETED`/`CANCELLED`) tasks. Since the #866 fix's unconditional `TaskService`-level clear (see "Clearing the marker" above) now guarantees a task's marker is gone by the time it reaches a terminal status through the normal transition chokepoint, this filter is a defensive backstop rather than the primary safeguard — kept in case some future path ever sets a terminal status without going through `_emit_status_transition_audit`.
 
 **Response** (`list[StalledTaskResponse]`, `roboco/api/schemas/dashboard.py`):
 
@@ -101,14 +123,16 @@ This endpoint sits on the existing `/api/dashboard` router, which is router-leve
 
 ## Testing
 
-- `tests/unit/services/test_task_stalled_marker.py`: `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks` in isolation (set, clear-when-set, no-op clear-when-unset, duration computation, and `test_list_stalled_tasks_excludes_terminal_statuses_at_query_level` pinning the `status NOT IN ('completed', 'cancelled')` predicate on the compiled SQL).
+- `tests/unit/services/test_task_stalled_marker.py`: `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks` in isolation (set, clear-when-set, no-op clear-when-unset, duration computation, and `test_list_stalled_tasks_excludes_terminal_statuses_at_query_level` pinning the `status NOT IN ('completed', 'cancelled')` predicate on the compiled SQL), plus two tests added in the #866 fix-forward revision: `test_emit_status_transition_audit_clears_stalled_marker` (a marker is cleared on an arbitrary transition, e.g. `in_progress` -> `awaiting_qa`, regardless of which tracker key drove it) and `test_emit_status_transition_audit_no_op_when_not_stalled` (a task with no marker set is left untouched, no accidental writes).
 - `tests/unit/runtime/test_stalled_marker.py`: the orchestrator wiring; a breaker trip calls `mark_stalled` alongside `_notify_stuck_agent`, one-shot per trip.
-- `tests/unit/runtime/test_pm_respawn_reset.py`: the genuine-forward-progress branch clears the marker via `_schedule_bg`.
+- `tests/unit/runtime/test_pm_respawn_reset.py`: the dispatcher's same-key genuine-forward-progress branch clears the marker via `_schedule_bg` (the secondary, same-role-recovery path).
 - `tests/integration/test_dashboard_routes.py`: `GET /api/dashboard/stalled-tasks` end to end against a real DB.
 
-Together these cover the three acceptance-critical behaviors: a trip sets the marker, genuine progress clears it, and a re-trip after the cooldown window re-marks/re-notifies exactly once rather than double-counting.
+Together these cover the acceptance-critical behaviors: a trip sets the marker, genuine progress clears it regardless of which path or role observes that progress, a re-trip after the cooldown window re-marks/re-notifies exactly once rather than double-counting, and a task that advances past its wedged agent's own dispatch window (the #866 bug) no longer appears in the read endpoint.
 
 ## Related
 
 - `_notification_spawn_over_cap` (no `task_id` path) notifies the CEO on trip but sets no task marker — there is no task to mark. `NOTIFICATION_CAP` stays unused on `StalledReason`, reserved for a future task-keyed variant.
-- `roboco/runtime/orchestrator.py`: `_pm_respawn_should_gate` (breaker trip), `_respawn_status_change_resets` (progress-based reset), `_pm_cooldown_gate` (cooldown self-heal / re-notify eligibility).
+- `roboco/runtime/orchestrator.py`: `_pm_respawn_should_gate` (breaker trip), `_respawn_status_change_resets` (secondary same-key progress-based reset), `_pm_cooldown_gate` (cooldown self-heal / re-notify eligibility).
+- `roboco/services/task.py`: `TaskService._emit_status_transition_audit` / `_clear_stale_stalled_marker` (primary, unconditional clear on any status transition — added in the #866 fix-forward revision, task `cbc0666d`), `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks`.
+- CHANGELOG.md's Unreleased `### Added` section also gained an entry for this feature (durable stalled marker + read endpoint, referencing PR #866) as part of the #866 fix-forward revision — the original delivery's diff had omitted it.
