@@ -5,20 +5,19 @@ The bridge itself is a server-side fan-out from the CEO-notify producers; the
 credentials card is CEO-only, write-only (the API never returns plaintext,
 mirroring ``/x/credentials``). ``webapp_auth_router`` is a separate PUBLIC,
 pre-auth router mounted only when both ``telegram_miniapp_enabled`` and
-``cloud_auth_enabled`` are armed (see ``mount_telegram_miniapp_auth``,
-mirroring ``roboco.api.auth.routes.mount_cloud_auth``'s conditional mount) —
-its own signed ``initData`` is the authentication, not an agent/session header.
+``cloud_auth_enabled`` are armed — the conditional mount + rate-limit
+middleware live inline in ``roboco.api.app`` (mirroring
+``roboco.api.auth.routes.mount_cloud_auth``'s conditional-mount pattern; app
+wiring can't live in this module, which is helper/model-forbidden) — its own
+signed ``initData`` is the authentication, not an agent/session header.
 """
 
 from __future__ import annotations
-
-from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 
 from roboco.api.auth.backend import cookie_transport, get_jwt_strategy
-from roboco.api.auth.login_limit import LoginRateLimiter
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.telegram import (
     TelegramCredentialsSetRequest,
@@ -38,9 +37,6 @@ from roboco.services.telegram_credentials import (
 )
 from roboco.services.tg_cockpit import get_tg_cockpit_service
 from roboco.utils.telegram_initdata import validate_init_data
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI
 
 _logger = get_logger(__name__)
 
@@ -98,8 +94,8 @@ async def get_today_brief(
 
 
 # ==========================================================================
-# Mini App sign-in — public, pre-auth. Conditionally mounted; see
-# ``mount_telegram_miniapp_auth`` below.
+# Mini App sign-in — public, pre-auth. Conditionally mounted inline in
+# ``roboco.api.app`` (see the module docstring above).
 # ==========================================================================
 
 webapp_auth_router = APIRouter()
@@ -176,22 +172,3 @@ async def webapp_auth(
     )
 
     return {"ok": True}
-
-
-def mount_telegram_miniapp_auth(app: FastAPI, prefix: str) -> None:
-    """Mount ``POST {prefix}/webapp-auth`` only when the Mini App switch AND
-    cloud auth are both armed — mirrors ``mount_cloud_auth``'s conditional
-    mount. Off (either flag): the route doesn't exist at all."""
-    if not (settings.telegram_miniapp_enabled and settings.cloud_auth_enabled):
-        return
-    app.include_router(webapp_auth_router, prefix=prefix, tags=["Telegram"])
-    # Unconditional per-IP limiter, same backstop /auth/login gets: the guard
-    # middleware's rate_limit decorator only bites when ROBOCO_GUARD_ENABLED
-    # is on, which is toggled independently — a public session-minting route
-    # must not depend on that coupling.
-    app.add_middleware(
-        LoginRateLimiter,
-        paths=(f"{prefix}/webapp-auth",),
-        max_attempts=settings.login_max_attempts,
-        window=60,
-    )

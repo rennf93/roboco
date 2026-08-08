@@ -24,8 +24,9 @@ from fastapi import FastAPI
 from fastapi_users.password import PasswordHelper
 from httpx import ASGITransport, AsyncClient
 from roboco.api.auth.backend import SESSION_COOKIE_NAME
+from roboco.api.auth.login_limit import LoginRateLimiter
 from roboco.api.deps import get_db
-from roboco.api.routes.telegram import mount_telegram_miniapp_auth, webapp_auth_router
+from roboco.api.routes.telegram import webapp_auth_router
 from roboco.config import settings
 from roboco.db.tables import UserTable
 from roboco.services.telegram_credentials import get_telegram_credentials_service
@@ -88,6 +89,25 @@ async def _seed_user(db: AsyncSession) -> UserTable:
     return user
 
 
+def _mount_miniapp_auth(app: FastAPI, prefix: str) -> None:
+    """Test-local mirror of ``roboco.api.app``'s inline conditional mount.
+
+    ``mount_telegram_miniapp_auth`` used to live in ``routes/telegram.py``
+    but was inlined into ``app.py`` instead (F-0dd758e7): that module is
+    app-wiring, not a side-effect-free helper, and ``roboco.api.routes`` is
+    helper-forbidden.
+    """
+    if not (settings.telegram_miniapp_enabled and settings.cloud_auth_enabled):
+        return
+    app.include_router(webapp_auth_router, prefix=prefix, tags=["Telegram"])
+    app.add_middleware(
+        LoginRateLimiter,
+        paths=(f"{prefix}/webapp-auth",),
+        max_attempts=settings.login_max_attempts,
+        window=60,
+    )
+
+
 def _build_app(db_session: AsyncSession) -> FastAPI:
     app = FastAPI()
     app.include_router(webapp_auth_router, prefix="/api/telegram")
@@ -129,7 +149,7 @@ async def test_mount_skipped_when_miniapp_flag_off(
 ) -> None:
     monkeypatch.setattr(settings, "telegram_miniapp_enabled", False)
     app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
+    _mount_miniapp_auth(app, "/api/telegram")
     assert await _post_unmounted_probe(app) == HTTPStatus.NOT_FOUND
 
 
@@ -139,14 +159,14 @@ async def test_mount_skipped_when_cloud_auth_off(
 ) -> None:
     monkeypatch.setattr(settings, "cloud_auth_enabled", False)
     app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
+    _mount_miniapp_auth(app, "/api/telegram")
     assert await _post_unmounted_probe(app) == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio
 async def test_mount_included_when_both_armed(db_session: AsyncSession) -> None:
     app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
+    _mount_miniapp_auth(app, "/api/telegram")
 
     async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
