@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -46,6 +46,8 @@ from roboco.services.gateway.choreographer.evidence_legs import (
     LegBudget,
     run_bounded_leg,
 )
+
+_T = TypeVar("_T")
 
 # Every timeout-shaped test is parametrized over both real timeout shapes:
 # asyncio's own cancellation-converted TimeoutError, and GitTimeoutError
@@ -505,7 +507,7 @@ async def test_claim_review_awaits_git_leg_sequential_to_db_reads(
     in_flight = 0
     peak = 0
 
-    async def _track(result: Any) -> Any:
+    async def _track(result: _T) -> _T:
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
