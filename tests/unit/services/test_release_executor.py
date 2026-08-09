@@ -20,7 +20,9 @@ from roboco.services import release_executor as re
 from roboco.services.release_executor import (
     ReleaseExecutor,
     ReleaseResult,
+    _bump_uv_lock,
     _GitReleaseOps,
+    _lock_package_name,
     _ReleaseContext,
     _resolve_release_ci_workflow,
 )
@@ -721,3 +723,72 @@ async def test_wait_for_ci_polls_the_prod_branch(
     ok = await ops.wait_for_ci("cafebabe")
     assert ok is True
     assert seen.get("branch") == "master"
+
+
+# ---------------------------------------------------------------------------
+# Portability: the executor must bump whatever manifest the repo actually
+# ships, and scope the uv.lock edit to that repo's OWN package. Both were
+# hardcoded to RoboCo (pyproject-only, plus a literal `name = "roboco"`), so a
+# third-party project got a version readiness had detected but the executor
+# could not bump, and a lockfile entry that was silently skipped.
+
+_UV_LOCK = """version = 1
+
+[[package]]
+name = "acme-api"
+version = "0.12.0"
+
+[[package]]
+name = "some-dep"
+version = "0.12.0"
+"""
+
+
+def test_lock_package_name_reads_project_name(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "acme-api"\nversion = "0.12.0"\n'
+    )
+    assert _lock_package_name(tmp_path) == "acme-api"
+
+
+def test_lock_package_name_empty_without_pyproject(tmp_path: Path) -> None:
+    assert _lock_package_name(tmp_path) == ""
+
+
+def test_bump_uv_lock_scopes_to_this_repos_own_package() -> None:
+    out = _bump_uv_lock(_UV_LOCK, "0.12.0", "0.13.0", "acme-api")
+    assert 'name = "acme-api"\nversion = "0.13.0"' in out
+    # A dependency pinned at the same version stays untouched.
+    assert 'name = "some-dep"\nversion = "0.12.0"' in out
+
+
+def test_bump_uv_lock_noops_on_unresolvable_package() -> None:
+    assert _bump_uv_lock(_UV_LOCK, "0.12.0", "0.13.0", "") == _UV_LOCK
+
+
+@pytest.mark.asyncio
+async def test_apply_version_bumps_reads_a_non_python_manifest(
+    tmp_path: Path,
+) -> None:
+    """A Node repo: readiness detects package.json's version, so the executor
+    must bump it instead of crashing on a missing pyproject.toml."""
+    (tmp_path / "package.json").write_text('{"name": "acme", "version": "0.12.0"}\n')
+    ops = _ops(MagicMock(), tmp_path)
+
+    await ops.apply_version_bumps(["package.json"], "0.13.0")
+
+    assert '"version": "0.13.0"' in (tmp_path / "package.json").read_text()
+
+
+@pytest.mark.asyncio
+async def test_apply_version_bumps_aborts_when_no_manifest(tmp_path: Path) -> None:
+    """Fail-closed: an empty current version makes str.replace insert the new
+    version between EVERY character of every planned file."""
+    victim = tmp_path / "notes.txt"
+    victim.write_text("untouched\n")
+    ops = _ops(MagicMock(), tmp_path)
+
+    with pytest.raises(RuntimeError, match="no current version"):
+        await ops.apply_version_bumps(["notes.txt"], "0.13.0")
+
+    assert victim.read_text() == "untouched\n"
