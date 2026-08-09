@@ -29,6 +29,7 @@ from roboco.api.schemas.work_session import (
 from roboco.models import AgentRole
 from roboco.models.permissions import AgentContext
 from roboco.models.work_session import WorkSessionCreate, WorkSessionStatus
+from roboco.security import guard_deco
 from roboco.services.work_session import WorkSessionService, get_work_session_service
 
 router = APIRouter()
@@ -160,6 +161,9 @@ async def get_active_session_for_task(
 @router.post(
     "", response_model=WorkSessionResponse, status_code=status.HTTP_201_CREATED
 )
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def create_session(
     data: WorkSessionCreateRequest,
     db: DbSession,
@@ -203,6 +207,9 @@ async def create_session(
 
 
 @router.post("/{session_id}/commits", response_model=WorkSessionResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def add_commit(
     session_id: UUID,
     data: AddCommitRequest,
@@ -228,6 +235,9 @@ async def add_commit(
 
 
 @router.post("/{session_id}/files", response_model=WorkSessionResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def add_files_modified(
     session_id: UUID,
     data: AddFilesRequest,
@@ -258,6 +268,9 @@ async def add_files_modified(
 
 
 @router.post("/{session_id}/pr", response_model=WorkSessionResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def create_pr(
     session_id: UUID,
     data: CreatePRRequest,
@@ -283,6 +296,9 @@ async def create_pr(
 
 
 @router.patch("/{session_id}/pr", response_model=WorkSessionResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def update_pr_status(
     session_id: UUID,
     data: UpdatePRStatusRequest,
@@ -308,6 +324,7 @@ async def update_pr_status(
 
 
 @router.post("/{session_id}/pr/merge", response_model=WorkSessionResponse)
+@guard_deco.rate_limit(requests=20, window=60)
 async def merge_pr(
     session_id: UUID,
     db: DbSession,
@@ -343,6 +360,7 @@ async def merge_pr(
 
 
 @router.post("/{session_id}/complete", response_model=WorkSessionResponse)
+@guard_deco.rate_limit(requests=30, window=60)
 async def complete_session(
     session_id: UUID,
     db: DbSession,
@@ -367,6 +385,7 @@ async def complete_session(
 
 
 @router.post("/{session_id}/abandon", response_model=WorkSessionResponse)
+@guard_deco.rate_limit(requests=30, window=60)
 async def abandon_session(
     session_id: UUID,
     db: DbSession,

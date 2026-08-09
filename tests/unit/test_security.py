@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from fastapi import FastAPI
 from guard import SecurityMiddleware
+from pydantic import ValidationError
 from roboco import security
-from roboco.config import settings
+from roboco.config import Settings, settings
 
 if TYPE_CHECKING:
     from guard_core.protocols.request_protocol import GuardRequest
@@ -244,3 +245,68 @@ def test_guard_whitelist_appends_emergency_extras(
     assert cfg.whitelist is not None
     assert "203.0.113.5" in cfg.whitelist
     assert "172.16.0.0/12" in cfg.whitelist
+
+
+# --- guard_log_suspicious_level ---------------------------------------------
+
+
+def test_build_security_config_reads_log_suspicious_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_log_suspicious_level", "ERROR")
+    assert security.build_security_config().log_suspicious_level == "ERROR"
+
+
+def test_build_security_config_defaults_log_suspicious_level_to_warning() -> None:
+    """guard-core's own default, so an operator who never sets this sees
+    byte-for-byte unchanged behavior."""
+    assert settings.guard_log_suspicious_level == "WARNING"
+    assert security.build_security_config().log_suspicious_level == "WARNING"
+
+
+def test_guard_log_suspicious_level_rejects_invalid_value() -> None:
+    """An invalid level fails config load instead of silently mis-configuring
+    the WAF (the whole point of the field: a typo must never pass through as
+    a quiet no-op). model_validate takes an untyped mapping, so this exercises
+    real runtime rejection of a value the field's own static type already
+    rules out at every normal call site."""
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"guard_log_suspicious_level": "BOGUS"})
+
+
+def test_guard_log_suspicious_level_empty_string_becomes_none() -> None:
+    """Env vars are always strings; empty is the only textual way to reach
+    None, which CRITICALLY silences IP-ban logging too, not just WAF noise."""
+    s = Settings.model_validate({"guard_log_suspicious_level": ""})
+    assert s.guard_log_suspicious_level is None
+
+
+# --- endpoint_rate_limits: the cookie-minting paths -------------------------
+
+
+def test_build_security_config_rate_limits_both_credential_endpoints() -> None:
+    """Both routes that mint a session cookie are capped, not just the password
+    one: /telegram/webapp-auth mints the identical cookie with no password."""
+    cfg = security.build_security_config()
+    window = (settings.login_max_attempts, 60)
+    assert cfg.endpoint_rate_limits["/api/auth/login"] == window
+    assert cfg.endpoint_rate_limits["/api/telegram/webapp-auth"] == window
+
+
+def test_endpoint_rate_limits_track_login_max_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cap reuses the operator's own setting. A constant here would quietly
+    override login_max_attempts and make raising it a no-op."""
+    monkeypatch.setattr(settings, "login_max_attempts", 3)
+    assert security._endpoint_rate_limits()["/api/auth/login"] == (3, 60)
+
+
+def test_build_security_config_does_not_rate_limit_other_paths() -> None:
+    """The override is scoped to the credential endpoints, not a blanket
+    tightening: every other path still rides the global baseline."""
+    cfg = security.build_security_config()
+    assert set(cfg.endpoint_rate_limits) == {
+        "/api/auth/login",
+        "/api/telegram/webapp-auth",
+    }

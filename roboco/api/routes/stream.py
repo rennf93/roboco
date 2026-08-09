@@ -20,6 +20,7 @@ from roboco.api.schemas.stream import (
 )
 from roboco.models import MessageType
 from roboco.models.message import RawStream
+from roboco.security import guard_deco
 
 router = APIRouter()
 
@@ -30,6 +31,9 @@ router = APIRouter()
 
 
 @router.post("/chunk", status_code=status.HTTP_202_ACCEPTED)
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def process_chunk(
     request: Request,
     body: StreamChunkRequest,
@@ -67,6 +71,9 @@ async def process_chunk(
 
 
 @router.post("/complete", status_code=status.HTTP_200_OK)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def complete_stream(
     request: Request,
     body: StreamCompleteRequest,
@@ -105,6 +112,9 @@ async def complete_stream(
 
 
 @router.post("/extract", response_model=ExtractionResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def extract_messages(
     request: Request,
     body: ExtractRequest,

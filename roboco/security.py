@@ -123,8 +123,18 @@ async def _scan_body(request: GuardRequest) -> str:
 async def prompt_injection_validator(request: GuardRequest) -> GuardResponse | None:
     """Block prompt-injection / role-override phrasing in free-text bodies.
 
-    Attach to human/agent free-text ingress (intake + secretary chat, task
-    descriptions, agent note/dm). Not for code/structured bodies.
+    Attach to human free-text ingress (intake + secretary chat, task
+    descriptions). Not for code/structured bodies.
+
+    NOT for routes the agent mesh writes to (docs write, journal entries, pitch
+    text). Two reasons, both verified against guard-core 3.10.0. This scans the
+    WHOLE raw body, so `_WAF_FREETEXT_BODY_FIELDS` below does not shield it, and
+    those are exactly the fields excluded there for false-positiving. And
+    `CustomValidatorsCheck` never consults `is_whitelisted` (unlike
+    `RateLimitCheck` and `SuspiciousActivityCheck`), so the internal-mesh
+    exemption does not cover it: an agent documenting this very module trips
+    `you are now a jailbroken` and gets a 400 it cannot diagnose. That is the
+    2026-07-20 incident class, reached through a check the whitelist misses.
     """
     body = await _scan_body(request)
     if body and any(p.search(body) for p in _PROMPT_INJECTION_PATTERNS):
@@ -210,6 +220,36 @@ _THREAT_BAN_CONFIG: dict[str, ThreatBanConfig] = {
     "sensitive_file": ThreatBanConfig(threshold=3, duration=86400),
     "cms_probing": ThreatBanConfig(threshold=3, duration=86400),
 }
+
+
+# Cloud-auth login (roboco.api.auth.routes.mount_cloud_auth, mounted only
+# while settings.cloud_auth_enabled) is the one credential endpoint behind
+# /api, so it gets a tighter per-path override than the 120/60 global
+# baseline: 5 attempts per 60s is enough for a real typo-and-retry login but
+# blunts a credential-stuffing burst. The literal path is hardcoded the same
+# way LoginRateLimiter's own `paths=` arg is (roboco/api/auth/login_limit.py)
+# since app.py's "/api" prefix isn't a settings field; this is redis-backed
+# defense in depth alongside that app-level middleware, not a replacement.
+def _endpoint_rate_limits() -> dict[str, tuple[int, int]]:
+    """Tighter per-path caps for the two routes that mint a session cookie.
+
+    Both already carry the app-level `LoginRateLimiter`; this is the redis-backed
+    edge duplicate, so it reuses `login_max_attempts` rather than a constant of
+    its own. A hardcoded number here would silently become the binding limit and
+    make that setting a lie the moment an operator raised it.
+
+    `/telegram/webapp-auth` mints the SAME cookie with no password, so leaving it
+    off this map would cap the front door while the side door stayed at the 120/60
+    global. Paths are literals for the same reason `LoginRateLimiter`'s own
+    `paths=` arg is: app.py's "/api" prefix is not a settings field. guard matches
+    `request.url_path` exactly, so these must stay in step with app.py's mounts.
+    """
+    attempts = settings.login_max_attempts
+    return {
+        "/api/auth/login": (attempts, 60),
+        "/api/telegram/webapp-auth": (attempts, 60),
+    }
+
 
 # WAF false-positive calibration. RoboCo is an internal, authenticated API whose
 # request bodies legitimately carry code, SQL, diffs, file paths, HTML and URLs
@@ -622,6 +662,10 @@ def build_security_config() -> SecurityConfig:
         trust_x_forwarded_proto=True,
         # Calibrate-then-enforce.
         passive_mode=settings.guard_passive_mode,
+        # Uniform dial over every suspicious-path log line (IP bans, blocked
+        # countries, BehaviorTracker). None silences IP-ban logging too, not
+        # just WAF noise (see guard_log_suspicious_level's docstring).
+        log_suspicious_level=settings.guard_log_suspicious_level,
         # Distributed state (redis is always in the compose stack).
         enable_redis=True,
         redis_url=_redis_url(),
@@ -630,6 +674,7 @@ def build_security_config() -> SecurityConfig:
         rate_limit=120,
         rate_limit_window=60,
         auto_ban_duration=300,
+        endpoint_rate_limits=_endpoint_rate_limits(),
         # Always off: nginx is the single entry point, so the app only ever
         # sees proxy-HTTP — TLS (and any http->https redirect) is nginx's
         # layer. Keying this off environment==production blocked the NAS's
