@@ -845,7 +845,7 @@ wheels = [
 
 [[package]]
 name = "fastapi-guard"
-version = "7.5.0"
+version = "7.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -853,9 +853,9 @@ dependencies = [
     { name = "starlette" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/70/cb/76b1a85b3a32b1fc47a7d36484629f7a3885d5007ec7d9a782b68b47edc8/fastapi_guard-7.5.0.tar.gz", hash = "sha256:70dd9f063e44d000f16013bcc94252f6ac91e85e2ea2833f9ab1463f20641eeb", size = 47278, upload-time = "2026-08-09T14:36:13.198Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/bc/c736988fe07b0cad1e3e6f4e52ccb2936ad962772cfe07e7a7c7caf76cc0/fastapi_guard-7.5.1.tar.gz", hash = "sha256:d9a278472094c6d87f281fbb04b0afb34c117c07c7f0501bc2f12a9126fb2fde", size = 48381, upload-time = "2026-08-09T17:17:01.251Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/c6/d451e33f8ab3beb939d8c194a040e28218dd9f47611242e21d0073629543/fastapi_guard-7.5.0-py3-none-any.whl", hash = "sha256:035196c658fea2de623e234d66a0b417a3800a34ab82da4ae0de3c6d4b2cb837", size = 25646, upload-time = "2026-08-09T14:36:12.008Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/7a/22aa185c54e4a503488307a5eeed2e87d6e44520f66a3dae53c134c1aa1d/fastapi_guard-7.5.1-py3-none-any.whl", hash = "sha256:b0f30b875b4876a5b10d9555c0af3913e18455073a653d0393c3383b571d0aec", size = 25744, upload-time = "2026-08-09T17:17:00.117Z" },
 ]
 
 [[package]]
@@ -1060,7 +1060,7 @@ wheels = [
 
 [[package]]
 name = "guard-core"
-version = "3.10.0"
+version = "3.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1071,9 +1071,9 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/81/f5/63fccf6aee6f0656b700af2f090d1f461137bdd43db06b27894ea9e1661f/guard_core-3.10.0.tar.gz", hash = "sha256:810c4906e9609afb39b2efe06432849674345de98f1170145eb884ef70c9c15d", size = 244714, upload-time = "2026-08-09T13:58:36.205Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/59/492a7f767c436abf84fcb4ef87de079ace8d581cd406647bff549a547d6b/guard_core-3.11.0.tar.gz", hash = "sha256:88fae44e1ee0818123b19ccb72ea48bb95cd692552db5c89be6c0ffebf6f2214", size = 248562, upload-time = "2026-08-09T17:30:24.529Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/4f/7cefb7b71bc053e0ff5355420ca52b3ce98b78e6814b41a422fbdbf14117/guard_core-3.10.0-py3-none-any.whl", hash = "sha256:922caefdf9aace4fcc79fbb39c2f173009e1045b56fccf92878666387d906ac3", size = 285846, upload-time = "2026-08-09T13:58:35.088Z" },
+    { url = "https://files.pythonhosted.org/packages/08/37/94aacf1d16b6373dea74e10bbde6f2da6f864db02e8f0c449472223c18b4/guard_core-3.11.0-py3-none-any.whl", hash = "sha256:942090b217697f6f87242e55b21572e488ef32cc9ed0efc5ea3697b923ad40ff", size = 288695, upload-time = "2026-08-09T17:30:23.258Z" },
 ]
 
 [package.optional-dependencies]
