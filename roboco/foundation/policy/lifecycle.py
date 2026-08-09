@@ -1680,6 +1680,14 @@ def _invalid_source_remediate(
             "are not blocked on it anymore. Call i_am_idle() to pick up new "
             "work. Do NOT retry i_am_blocked/unclaim against a task QA owns."
         )
+    if status is Status.NEEDS_REVISION and action == "block":
+        return (
+            f"the task has moved to '{status.value}' (an admin/reviewer "
+            "action) while you held it; you no longer hold the active claim "
+            "on it. Call unclaim() to release it, then give_me_work() to "
+            "pick up new work — do NOT retry i_am_blocked against a task "
+            "that has already moved on."
+        )
     return (
         f"call give_me_work() to find a task in"
         f" {sorted(s.value for s in spec_action.source_statuses)}"

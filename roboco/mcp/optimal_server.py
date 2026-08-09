@@ -68,6 +68,26 @@ def normalize_index_types(index_types: list[str] | None) -> list[str] | None:
 # (observed p90 payloads of ~37KB; results are for finding, not full reading).
 _RESULT_CONTENT_CAP = 800
 
+# Appended to any hit whose metadata marks it "live_write" (written by
+# roboco_docs_write / i_documented mid-task, before the task's PR merged) —
+# the live incident this guards against: a dev built UI against an API
+# contract that existed only in a still-open PR, because a search hit off an
+# in-flight doc read indistinguishably from one describing merged/deployed
+# reality. See DocsIndexPlugin.prepare_metadata for how the marker is set.
+#
+# ponytail: the marker never flips back to "repo_tree" on merge — there's no
+# lifecycle hook from PR-merge back into the KB, and the periodic re-scan
+# only walks docs/rag + docs/map (siblings of the team dirs roboco_docs_write
+# targets), so a caveat persists until an operator/startup reindex re-derives
+# the doc's metadata from the repo tree. Treat it as "verify against git",
+# not "this is unmerged". Upgrade path: stamp the doc's task_id (already
+# carried in metadata) and flip provenance to "repo_tree" when that task's
+# root chain reaches a terminal completed state.
+_LIVE_WRITE_CAVEAT = (
+    "[caveat: written during in-flight work — verify the contract exists on "
+    "the deployed tree/git before relying on it]"
+)
+
 
 def _cap_result_content(
     items: list[Any], *, cap: int = _RESULT_CONTENT_CAP, limit: int | None = None
@@ -82,6 +102,26 @@ def _cap_result_content(
             if isinstance(content, str) and len(content) > cap:
                 trimmed = {**item, "content": content[:cap] + "…"}
         out.append(trimmed)
+    return out
+
+
+def _append_live_write_caveat(items: list[Any]) -> list[Any]:
+    """Append the live-write caveat to any hit marked ``provenance:
+    live_write`` in its metadata. Every other hit (repo_tree, or an index
+    with no provenance concept) passes through unchanged."""
+    out: list[Any] = []
+    for item in items:
+        is_live_write = (
+            isinstance(item, dict)
+            and isinstance(item.get("content"), str)
+            and (item.get("metadata") or {}).get("provenance") == "live_write"
+        )
+        if is_live_write:
+            out.append(
+                {**item, "content": f"{item['content']}\n\n{_LIVE_WRITE_CAVEAT}"}
+            )
+        else:
+            out.append(item)
     return out
 
 
@@ -136,11 +176,14 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
 
         result = resp.json()
         total = result.get("total", 0)
+        # Caveat AFTER capping content, so the cap can never truncate it away.
+        capped = _cap_result_content(result.get("results", []))
+        results = _append_live_write_caveat(capped)
         response: dict[str, Any] = {
             "status": "success",
             "query": query,
             "total": total,
-            "results": _cap_result_content(result.get("results", [])),
+            "results": results,
         }
         if total == 0:
             response["hint"] = (
@@ -196,11 +239,14 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
         result = resp.json()
         answer = result.get("answer", "")
         context_used = result.get("context_used", 0)
+        # Caveat AFTER capping content, so the cap can never truncate it away.
+        capped_citations = _cap_result_content(result.get("citations", []), limit=8)
+        citations = _append_live_write_caveat(capped_citations)
         response: dict[str, Any] = {
             "status": "success",
             "query": query,
             "answer": answer,
-            "citations": _cap_result_content(result.get("citations", []), limit=8),
+            "citations": citations,
             "context_used": context_used,
         }
         # Guide to mentor for better results
@@ -445,10 +491,13 @@ def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
             )
 
         result = resp.json()
+        # Caveat AFTER capping content, so the cap can never truncate it away.
+        capped_sources = _cap_result_content(result.get("sources", []), limit=8)
+        sources = _append_live_write_caveat(capped_sources)
         return {
             "status": "success",
             "answer": result.get("answer", ""),
-            "sources": _cap_result_content(result.get("sources", []), limit=8),
+            "sources": sources,
             "conversation_id": result.get("conversation_id", ""),
             "suggested_followups": result.get("suggested_followups", []),
         }

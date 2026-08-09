@@ -5,6 +5,10 @@ A dev/code task whose text contains a board keyword ("launch", "architecture",
 "review" a dev code task) nor escalated to main_pm (which would own and
 deadlock it). The strategic board/cross-cell heuristics apply only to team-less
 top-level tasks.
+
+Within a cell, dev-vs-cell_pm is children-aware, not keyword-aware: a leaf
+task never routes to cell_pm just because its prose says "review" or
+"dependencies" (see the ``has_children`` tests below).
 """
 
 from __future__ import annotations
@@ -61,3 +65,32 @@ def test_teamless_code_with_board_keyword_still_routes_to_board() -> None:
     orch = _orch()
     task = _code(None, title="Quarterly roadmap and launch strategy")
     assert orch._classify_task_routing(task) == "board"
+
+
+def test_leaf_cell_code_task_with_pm_keywords_routes_to_dev() -> None:
+    """The live incident: a childless fix task whose prose says "review" and
+    "dependencies" must route to dev, not cell_pm — a cell_pm cannot execute
+    code and just plan/delegate/escalate-loops on it (task e0f7651f)."""
+    orch = _orch()
+    task = _code(
+        "backend",
+        title="Fix PR #866 revision findings",
+        desc="Address reviewer findings, sync branch, update dependencies per review",
+    )
+    assert orch._classify_task_routing(task, has_children=False) == "dev"
+
+
+def test_cell_code_task_with_children_routes_to_cell_pm() -> None:
+    """A task that already has subtasks is a coordination node, not a leaf —
+    it routes to cell_pm regardless of complexity or keywords."""
+    orch = _orch()
+    task = _code("backend", complexity="low")
+    assert orch._classify_task_routing(task, has_children=True) == "cell_pm"
+
+
+def test_high_complexity_leaf_cell_code_task_routes_to_cell_pm() -> None:
+    """A childless task still routes to cell_pm when complexity is high — a
+    decomposition candidate, independent of children."""
+    orch = _orch()
+    task = _code("backend", complexity="high")
+    assert orch._classify_task_routing(task, has_children=False) == "cell_pm"

@@ -5002,7 +5002,17 @@ class TaskService(BaseService):
                     doc_paths.append(self._resolve_doc_abspath(rel_path))
 
             if doc_paths:
-                count = await optimal.index_documentation(doc_paths, project="roboco")
+                # Same "not yet merged" provenance as roboco_docs_write's own
+                # index call — this re-indexes the task's own in-flight docs
+                # (including ones authored via Edit/Write and captured by
+                # _capture_workspace_docs above, which bypass roboco_docs_write
+                # entirely), so it must be marked live_write too.
+                count = await optimal.index_documentation(
+                    doc_paths,
+                    project="roboco",
+                    provenance="live_write",
+                    task_id=str(task_id),
+                )
                 self.log.debug(
                     "Indexed docs",
                     task_id=str(task_id),
@@ -10459,6 +10469,17 @@ class TaskService(BaseService):
         )
         statuses = result.scalars().all()
         return all(s in terminal for s in statuses)
+
+    async def has_children(self, task_id: UUID) -> bool:
+        """True iff this task has at least one subtask, any status.
+
+        Distinguishes a coordination node from a leaf for the PM/dev routing
+        classifier (``AgentOrchestrator._classify_cell_code_task``).
+        """
+        result = await self.session.execute(
+            select(TaskTable.id).where(TaskTable.parent_task_id == task_id).limit(1)
+        )
+        return result.first() is not None
 
     async def terminal_children_count(self, task_id: UUID) -> int:
         """Count of direct subtasks in a terminal status (COMPLETED/CANCELLED).

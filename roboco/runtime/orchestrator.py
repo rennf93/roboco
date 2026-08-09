@@ -11646,7 +11646,7 @@ Start by:
             return "cell_pm"
         return None
 
-    def _classify_cell_code_task(self, text: str, complexity: str) -> str:
+    def _classify_cell_code_task(self, complexity: str, has_children: bool) -> str:
         """Route a cell-owned code task WITHIN its cell (dev or cell_pm).
 
         Implementation work that belongs to a CELL never escalates to the
@@ -11655,8 +11655,19 @@ Start by:
         board/main_pm keyword heuristics fire on it is how a cell code task
         ended up "reviewed" by the board and a PM ended up owning (and
         deadlocking) a dev code task.
+
+        Keyword matching (``_has_pm_keywords``) was retired from this decision:
+        ordinary dev prose ("review", "dependencies", "sync") false-positived
+        a leaf fix task to cell_pm, which can't execute code and just
+        plan/delegate/escalate-looped. Only an actual coordination node
+        (already has children) or a genuine decomposition candidate (high
+        complexity) goes to cell_pm now.
+
+        Deliberate trade: a childless medium-complexity task now routes to
+        dev (the retired keyword net used to catch some of these); high
+        complexity remains the decomposition escape hatch to cell_pm.
         """
-        if self._has_pm_keywords(text) or complexity == "high":
+        if has_children or complexity == "high":
             return "cell_pm"
         return "dev"
 
@@ -11680,7 +11691,9 @@ Start by:
 
         return "dev"
 
-    def _classify_code_task(self, task: dict[str, Any]) -> str:
+    def _classify_code_task(
+        self, task: dict[str, Any], has_children: bool = False
+    ) -> str:
         """Classify a generic `code` task via keyword/complexity heuristics."""
         team = task.get("team")
         title = (task.get("title") or "").lower()
@@ -11690,11 +11703,13 @@ Start by:
 
         cell_teams = frozenset(t.value for t in CELL_TEAMS)
         if team in cell_teams:
-            return self._classify_cell_code_task(text, complexity)
+            return self._classify_cell_code_task(complexity, has_children)
 
         return self._classify_strategic_code_task(text, team, complexity)
 
-    def _classify_task_routing(self, task: dict[str, Any]) -> str:
+    def _classify_task_routing(
+        self, task: dict[str, Any], has_children: bool = False
+    ) -> str:
         """
         Classify a task for routing based on task_type, team, complexity, and keywords.
 
@@ -11710,7 +11725,7 @@ Start by:
         if team in self._TEAM_ROUTING_MAP:
             return self._TEAM_ROUTING_MAP[team]
 
-        return self._classify_code_task(task)
+        return self._classify_code_task(task, has_children)
 
     # Team to PM mapping for routing
     _TEAM_PM_MAP: ClassVar[dict[str, str]] = {
@@ -14220,13 +14235,51 @@ Start now: evidence(task_id="{task_id}")
         )
         return False
 
+    async def _task_has_children(self, task_id: str | None) -> bool:
+        """Dispatch-time probe: does ``task_id`` already have subtasks?
+
+        Feeds the cell code-task classifier — a task with children is a
+        coordination node (cell_pm); a childless leaf routes on complexity
+        alone. Fails closed (False) on any lookup error: an unclassifiable
+        leaf is safer routed to dev than mistakenly parked on a PM.
+        """
+        if not task_id:
+            return False
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                return await TaskService(db).has_children(UUID(task_id))
+        except Exception as exc:
+            logger.warning(
+                "Children probe failed; classifying as childless",
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
     async def _route_unassigned_pm_task(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
         """Classify and route an unassigned pending task to its target agent."""
         if await self._pending_claim_blocked(task.get("id")):
             return
-        routing = self._classify_task_routing(task)
+        # Only the cell code-task classifier consults has_children; skip the
+        # DB round-trip for every other task_type/team (planning, research,
+        # board, main_pm, marketing, ...) that never looks at it.
+        cell_teams = frozenset(t.value for t in CELL_TEAMS)
+        needs_children_probe = (
+            task.get("task_type", "code") == "code" and task.get("team") in cell_teams
+        )
+        has_children = (
+            await self._task_has_children(task.get("id"))
+            if needs_children_probe
+            else False
+        )
+        routing = self._classify_task_routing(task, has_children)
         agent_id = await self._get_routing_target(routing, task)
 
         if not agent_id:

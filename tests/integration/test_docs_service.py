@@ -904,6 +904,85 @@ async def test_index_doc_in_rag_success(docs_setup: dict, tmp_path: Path) -> Non
     mock_optimal.index_documentation.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_index_doc_in_rag_marks_live_write_provenance(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """roboco_docs_write's index call must mark the doc provenance=live_write
+    (it's written mid-task, before the PR merges — see the kb-tools.md /
+    optimal_server.py caveat) and carry the writing task's id through."""
+    svc = docs_setup["svc"]
+    task_id = docs_setup["task_id"]
+    mock_optimal = AsyncMock()
+    mock_optimal.index_documentation = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=mock_optimal),
+    ):
+        await svc._index_doc_in_rag(tmp_path / "x.md", task_id)
+
+    mock_optimal.index_documentation.assert_awaited_once_with(
+        sources=[str(tmp_path / "x.md")],
+        provenance="live_write",
+        task_id=str(task_id),
+    )
+
+
+@pytest.mark.asyncio
+async def test_index_doc_in_rag_no_task_id_still_marks_live_write(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """Even without a task_id, the doc is still marked live_write — only the
+    task_id field degrades to None."""
+    svc = docs_setup["svc"]
+    mock_optimal = AsyncMock()
+    mock_optimal.index_documentation = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=mock_optimal),
+    ):
+        await svc._index_doc_in_rag(tmp_path / "x.md")
+
+    _, kwargs = mock_optimal.index_documentation.await_args
+    assert kwargs["provenance"] == "live_write"
+    assert kwargs["task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_write_doc_creates_new_indexes_with_task_id(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """The write_doc create path forwards req.task_id into _index_doc_in_rag,
+    not just the file path — the full call site (not just the helper in
+    isolation)."""
+    svc = docs_setup["svc"]
+    task_id = docs_setup["task_id"]
+    mock_optimal = AsyncMock()
+    mock_optimal.index_documentation = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path),
+        patch.object(svc, "_find_similar_doc", AsyncMock(return_value=None)),
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=mock_optimal),
+        ),
+    ):
+        await svc.write_doc(
+            agent_id="be-doc",
+            req=WriteDocInput(
+                task_id=task_id,
+                filename="live.md",
+                doc_type="api",
+                title="Live Title",
+                content="# Hello",
+            ),
+        )
+
+    _, kwargs = mock_optimal.index_documentation.await_args
+    assert kwargs["provenance"] == "live_write"
+    assert kwargs["task_id"] == str(task_id)
+
+
 # ---------------------------------------------------------------------------
 # _get_existing_doc_ref
 # ---------------------------------------------------------------------------

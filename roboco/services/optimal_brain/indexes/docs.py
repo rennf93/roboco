@@ -48,13 +48,24 @@ class DocsIndexPlugin(BaseIndexPlugin):
         content: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Prepare metadata for documentation content."""
+        """Prepare metadata for documentation content.
+
+        ``provenance`` distinguishes a doc written mid-task (``live_write`` —
+        via ``roboco_docs_write``/``i_documented``, describing not-yet-merged
+        work) from one picked up by the repo-tree scan (``repo_tree`` — the
+        default; committed content already on disk, e.g. docs/rag, docs/map,
+        or a startup/manual reindex). ``roboco_kb_search`` renders a caveat on
+        any ``live_write`` hit (see ``mcp/optimal_server.py``) so an agent
+        doesn't mistake an in-flight contract for deployed reality.
+        """
         del content  # Unused - metadata comes from kwargs
         return {
             "type": "documentation",
             "project": kwargs.get("project", "default"),
             "doc_type": kwargs.get("doc_type", "general"),  # readme, api, guide, etc.
             "file_path": kwargs.get("file_path"),
+            "provenance": kwargs.get("provenance", "repo_tree"),
+            "task_id": kwargs.get("task_id"),
         }
 
     def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str:
@@ -145,6 +156,8 @@ class DocsIndexPlugin(BaseIndexPlugin):
     @staticmethod
     def _build_documents(
         files_data: list[dict[str, Any]],
+        provenance: str,
+        task_id: str | None,
     ) -> list[tuple[str, str | None, dict[str, Any]]]:
         """Shape the file records for `ingest_batch`."""
         return [
@@ -155,6 +168,8 @@ class DocsIndexPlugin(BaseIndexPlugin):
                     "file_path": str(data["file_path"]),
                     "doc_type": data["doc_type"],
                     "project": data["project"],
+                    "provenance": provenance,
+                    "task_id": task_id,
                 },
             )
             for data in files_data
@@ -183,6 +198,8 @@ class DocsIndexPlugin(BaseIndexPlugin):
         self,
         sources: list[str],
         project: str | None = None,
+        provenance: str = "repo_tree",
+        task_id: str | None = None,
     ) -> tuple[int, list[dict[str, Any]]]:
         """
         Index documentation files/directories with batch embedding.
@@ -193,6 +210,9 @@ class DocsIndexPlugin(BaseIndexPlugin):
         Args:
             sources: List of file paths, directories, URLs, or glob patterns
             project: Optional project identifier for filtering
+            provenance: "live_write" (written mid-task, not yet merged) or
+                "repo_tree" (default — content already on disk/committed)
+            task_id: The writing task's id, when provenance is "live_write"
 
         Returns:
             Tuple of (count, indexed_files) where indexed_files contains
@@ -203,7 +223,9 @@ class DocsIndexPlugin(BaseIndexPlugin):
             return 0, []
 
         logger.info(f"Batch processing {len(files_data)} documentation files")
-        results = await self.ingest_batch(self._build_documents(files_data))
+        results = await self.ingest_batch(
+            self._build_documents(files_data, provenance, task_id)
+        )
         count = sum(1 for r in results if r.success)
         indexed_files = self._build_indexed_files(files_data)
         logger.info(f"Batch indexing complete: {count} docs indexed")
