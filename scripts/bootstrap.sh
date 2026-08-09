@@ -205,8 +205,19 @@ check_api_routing() {
     curl -sf -o /dev/null "${BASE_URL}/api/auth/status"
 }
 
+# NOTE: deliberately no pipeline here. `... logs | grep -q PATTERN` looks
+# correct but cannot work under this script's `set -o pipefail`: grep -q exits
+# the moment it matches, the still-writing `docker compose logs` takes SIGPIPE
+# (141), and pipefail surfaces that as the pipeline's status — so a SUCCESSFUL
+# match reports failure. It only appears to work while the log still fits in
+# the 64K pipe buffer (logs finishes before grep exits), which makes it a
+# latent flake that turns solid as soon as the orchestrator gets chatty: the
+# readiness sweep then polls until timeout and falsely blames the migrations.
+# Capture first, match in-process instead.
 check_migrations() {
-    docker compose -f "$COMPOSE_FILE" logs orchestrator 2>/dev/null | grep -q "Alembic upgrade finished"
+    local logs
+    logs="$(docker compose -f "$COMPOSE_FILE" logs orchestrator 2>/dev/null)" || return 1
+    [[ "$logs" == *"Alembic upgrade finished"* ]]
 }
 
 check_ollama_models() {
