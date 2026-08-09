@@ -353,6 +353,10 @@ class GitContext:
     # root is is_coordination too but DOES get a pr_number (via submit_root), so
     # this is umbrella-specific, not all-coordination.
     is_umbrella: bool = False
+    # A PR-waived task (real branch, zero commits relative to its parent —
+    # report-only work the verb runner skipped create_pr for) is exempt from
+    # the same pr_number gate: it legitimately has no PR to point the CEO at.
+    is_pr_waived: bool = False
 
 
 def validate_git_requirements(
@@ -416,11 +420,13 @@ def _check_ceo_escalation_gate(
     transition: tuple[str, str], git_ctx: GitContext
 ) -> None:
     """awaiting_pm_review -> awaiting_ceo_approval needs a recorded pr_number,
-    EXCEPT a MegaTask umbrella, which is branchless and assembles no PR."""
+    EXCEPT a MegaTask umbrella (branchless, assembles no PR) or a PR-waived
+    task (real branch, zero commits — report-only work)."""
     if (
         transition == ("awaiting_pm_review", "awaiting_ceo_approval")
         and git_ctx.pr_number is None
         and not git_ctx.is_umbrella
+        and not git_ctx.is_pr_waived
     ):
         raise GitRequirementError(
             transition=transition,

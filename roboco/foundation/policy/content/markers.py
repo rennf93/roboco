@@ -67,6 +67,7 @@ PLAYBOOK_DRAFTS = "playbook_drafts"
 WAR_ROOM_BRIEF = "war_room_brief"
 BARFLY_CANDIDATES = "barfly_candidates"
 BARFLY_REPLY_REF = "barfly_reply_ref"
+PR_WAIVED = "pr_waived"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -804,6 +805,44 @@ def is_budget_blocked(task: HasMarkers) -> bool:
 
 def clear_budget_blocked(task: HasMarkers) -> None:
     clear_marker(task, BUDGET_BLOCKED)
+
+
+# --- PR waiver (zero-diff report-only work) ---------------------------------
+# submit_up / submit_root skip create_pr / create_root_pr when the task's
+# branch carries zero commits relative to its resolved parent branch (a
+# report-only audit/findings subtree with no code diff — the Board Program
+# catalog generates this by design). Stamped by the verb runner the moment it
+# waives PR creation so every downstream PR-required gate (the in-path
+# review gate, PM completion, the CEO-escalation pr_number check) recognizes
+# a legitimately PR-less task instead of wedging on a missing PR. The
+# human-readable reason rides the existing TRANSITION_NOTES marker under the
+# "pr_waived" event, alongside a progress entry for reviewer/PM visibility.
+
+PR_WAIVED_TRANSITION_EVENT = "pr_waived"
+
+
+def is_pr_waived(task: HasMarkers) -> bool:
+    return bool(get_marker(task, PR_WAIVED, False))
+
+
+def mark_pr_waived(task: HasMarkers) -> None:
+    set_marker(task, PR_WAIVED, True)
+
+
+def clear_pr_waived(task: HasMarkers) -> None:
+    """Un-latch a stale waiver once a REAL PR is about to be created.
+
+    ``PR_WAIVED`` is otherwise a one-way latch: nothing clears it once set,
+    so a waived task that later gets real commits (round trip: waived ->
+    ``request_changes`` -> NEEDS_REVISION -> re-submit with real work) keeps
+    disabling the PR-merged backstops (``TaskService.complete``'s
+    work-session-merged check, the CEO-escalation ``pr_number`` check) even
+    though a real PR now exists. Called from
+    ``VerbRunner._run_pre_side_effects`` the moment ``create_pr`` /
+    ``create_root_pr`` actually run (``ahead > 0``) — i.e. whenever this
+    round is NOT itself waiving PR creation.
+    """
+    clear_marker(task, PR_WAIVED)
 
 
 # --- escalate_up/unblock oscillation breaker -------------------------------
