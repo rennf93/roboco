@@ -670,6 +670,16 @@ def build_security_config() -> SecurityConfig:
         enable_redis=True,
         redis_url=_redis_url(),
         redis_prefix="roboco:guard:",
+        # Paired with fail_secure below, and the pairing is the whole point.
+        # fail_secure covers a BUG in a check: block, surface the 500, fix it.
+        # This covers redis being UNAVAILABLE, which is not a security signal at
+        # all. Left False (guard's default), a redis restart on this same host
+        # makes every check raise GuardRedisError and fail_secure turns that into
+        # a 500 on every guarded route until redis returns: a self-inflicted
+        # outage with no way in but ROBOCO_GUARD_EMERGENCY plus a restart. Open
+        # here means a redis blip degrades rate-limit and ban state to allow,
+        # while the WAF, IP lists and every stateless check keep enforcing.
+        redis_fail_open=True,
         # Baseline throttling; per-endpoint overrides tighten sensitive routes.
         rate_limit=120,
         rate_limit_window=60,

@@ -310,3 +310,20 @@ def test_build_security_config_does_not_rate_limit_other_paths() -> None:
         "/api/auth/login",
         "/api/telegram/webapp-auth",
     }
+
+
+# --- fail_secure / redis_fail_open must stay paired ---------------------------
+
+
+def test_redis_failure_never_takes_down_a_fail_secure_deployment() -> None:
+    """The two flags cover different failures and must not be read as one dial.
+
+    fail_secure blocks on a BUG in a check. redis_fail_open covers redis being
+    UNAVAILABLE, which is not a security signal. With redis_fail_open False, a
+    redis restart on the same host makes every stateful check raise and
+    fail_secure turns that into a 500 on every guarded route until redis is
+    back. That is a self-inflicted outage, so the pairing is load-bearing.
+    """
+    cfg = security.build_security_config()
+    assert cfg.redis_fail_open is True
+    assert cfg.enable_redis is True
