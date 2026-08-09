@@ -8,7 +8,6 @@ mock the network and filesystem boundaries.
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -773,39 +772,41 @@ async def test_diff_and_files_resolves_once_and_returns_both_legs() -> None:
 @pytest.mark.asyncio
 async def test_diff_and_files_runs_subprocesses_concurrently() -> None:
     """The full diff and the ``--name-only`` diff run as CONCURRENT
-    subprocesses off the single resolution: two 0.15s legs finish in close
-    to 0.15s total wall time, not ~0.3s (what running them one after the
-    other — the pre-fix ``diff()`` then ``list_changed_files()`` — would
-    cost) — this is the measurable latency win claim_review's evidence
-    build relies on."""
+    subprocesses off the single resolution — not sequentially (the pre-fix
+    ``diff()`` then ``list_changed_files()`` shape). Proven structurally via
+    an in-flight counter on the fake ``_run_git`` (peak concurrency reaches
+    2) rather than a wall-clock margin, which can flake under CI load."""
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
     _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
 
-    leg_seconds = 0.15
+    leg_seconds = 0.02
+    in_flight = 0
+    peak = 0
 
     async def _run_git(
         _workspace: Path, args: list[str], check: bool = True, token: str | None = None
     ) -> MagicMock:
+        nonlocal in_flight, peak
         del check, token
+        in_flight += 1
+        peak = max(peak, in_flight)
         await asyncio.sleep(leg_seconds)
+        in_flight -= 1
         if "--name-only" in args:
             return MagicMock(stdout="a.py\n", returncode=0)
         return MagicMock(stdout="diff\n", returncode=0)
 
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
 
-    start = time.monotonic()
     diff, files = await svc.diff_and_files(branch_name="feature/backend/abc")
-    elapsed = time.monotonic() - start
 
     assert diff == "diff\n"
     assert files == ["a.py"]
-    # Sequential (diff() then list_changed_files(), the pre-fix shape) would
-    # take ~2*leg_seconds; concurrent execution stays close to ONE leg.
-    assert elapsed < leg_seconds * 1.5
+    # Structural proof: both subprocess legs were in-flight at once.
+    assert peak == 2  # noqa: PLR2004
 
 
 @pytest.mark.asyncio

@@ -185,7 +185,9 @@ async def test_conventions_skipped_when_git_legs_already_timed_out(
         }
     ]
     gaps = body["evidence_gaps"]
-    assert any("pr diff unavailable" in g for g in gaps)
+    # A combined-leg timeout kills diff AND files_changed together — the
+    # gap note names both losses, not just "pr diff".
+    assert any("pr diff + files_changed unavailable" in g for g in gaps)
     assert any("conventions findings unavailable" in g for g in gaps)
 
 

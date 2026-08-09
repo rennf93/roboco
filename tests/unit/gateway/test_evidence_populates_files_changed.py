@@ -271,7 +271,10 @@ async def test_evidence_diff_timeout_degrades_with_gap(exc: Exception) -> None:
     assert ev["pr_diff_summary"] == ""
     assert ev["files_changed"] == []
     assert "evidence_gaps" in ev
-    assert any("pr diff unavailable" in g for g in ev["evidence_gaps"])
+    # A combined-leg timeout kills diff AND files_changed together — the
+    # gap note names both losses, not just "pr diff", so a reader can tell
+    # files_changed is empty because of a timeout, not genuinely empty.
+    assert any("pr diff + files_changed unavailable" in g for g in ev["evidence_gaps"])
 
 
 @pytest.mark.asyncio

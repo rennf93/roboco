@@ -5520,16 +5520,21 @@ class ContentActions:
         full diff and the ``--name-only`` diff run concurrently as
         subprocesses) each run bounded via ``run_bounded_leg`` against ONE
         shared ``LegBudget`` for this call — a timeout skips that piece and
-        records a note in ``evidence_gaps`` instead of hanging this advisory
-        (read-only, non-gating) verb for the whole ``flow_verb_timeout_seconds``
-        budget.
+        records a note (naming both the diff and files_changed losses — a
+        combined-leg timeout kills both together) in ``evidence_gaps``
+        instead of hanging this advisory (read-only, non-gating) verb for
+        the whole ``flow_verb_timeout_seconds`` budget.
 
         The three independent DB-only reads (journal highlights, ancestor
-        context, open findings) are gathered together and run BEFORE the
-        pool-release commit below — not alongside the git legs — so they
-        still benefit from being one round of concurrent reads instead of
-        three sequential ones, without re-acquiring a connection that has
-        to sit checked out for the (potentially minutes-long) git work.
+        context, open findings) run BEFORE the pool-release commit below —
+        not alongside the git legs — so a connection doesn't have to sit
+        checked out for the (potentially minutes-long) git work. They are
+        awaited SEQUENTIALLY, not gathered: ``evidence_repo`` and
+        ``self.task`` share the same request-scoped ``AsyncSession`` (see
+        ``deps.py``), and SQLAlchemy's ``AsyncSession`` does not support
+        concurrent queries — this matches the pre-dedup behavior (these
+        reads were sequential before the pool-release commit was added),
+        so latency is unchanged in practice.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -5545,12 +5550,12 @@ class ContentActions:
             and not await self._is_caller_dependency(agent_id, t)
         ):
             return _ownership_violation(task_id)
-        journal_highlights, parent_context, open_findings = await asyncio.gather(
-            self.evidence_repo.journal_highlights_for_task(
-                task_id, include_ancestors=True
-            ),
-            self.evidence_repo.ancestor_context_for_task(task_id),
-            findings_lib.open_findings_for_task(self.task.session, task_id),
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id, include_ancestors=True
+        )
+        parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
+        open_findings = await findings_lib.open_findings_for_task(
+            self.task.session, task_id
         )
         # Release the request's transaction before the git work below: fetch +
         # diff can run for minutes (cold workspace, serialized behind the
@@ -5600,7 +5605,7 @@ class ContentActions:
                 ),
                 default=("", []),
                 budget=budget,
-                leg="pr diff",
+                leg="pr diff + files_changed",
                 hint="review the PR diff on GitHub directly",
                 task_id=task_id,
                 gaps=evidence_gaps,
