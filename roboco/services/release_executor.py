@@ -164,8 +164,11 @@ class ReleaseExecutor:
         """Fresh-release pipeline: promote → bump → changelog → gate → commit.
 
         Returns ``(commit_sha, files)`` on success, or a ``ReleaseResult`` on a
-        fail-closed abort (promotion conflict / red gate / commit-push failure)
-        so ``execute`` surfaces it to the CEO as a structured outcome, not a 500.
+        fail-closed abort (promotion conflict / unresolvable version / red gate /
+        commit-push failure) so ``execute`` surfaces it to the CEO as a
+        structured outcome, not a 500. Every ops call that can raise is wrapped:
+        an uncaught one here reaches the caller's generic handler and loses the
+        status vocabulary this method exists to produce.
         """
         # Full-chain promotion: merge the env ladder head→…→prod into the prod
         # checkout before bumping, so the release commits the promoted state.
@@ -183,7 +186,24 @@ class ReleaseExecutor:
                     f"env-chain promotion failed — not published (fail-closed): {exc}"
                 )[:280],
             )
-        files = await self._ops.apply_version_bumps(report.version_bump_plan, version)
+        try:
+            files = await self._ops.apply_version_bumps(
+                report.version_bump_plan, version
+            )
+        except RuntimeError as exc:
+            # Raised when the repo's current version is unresolvable, which would
+            # otherwise let an empty-string replace corrupt every planned file.
+            logger.error("release version bump failed", error=str(exc)[:300])
+            return ReleaseResult(
+                status="bump_failed",
+                version=version,
+                files_changed=[],
+                commit_sha=None,
+                release_url=None,
+                detail=(f"version bump failed, not published (fail-closed): {exc}")[
+                    :280
+                ],
+            )
         await self._ops.write_changelog_entry(report.drafted_changelog)
 
         gate_ok, gate_detail = await self._ops.run_gate()

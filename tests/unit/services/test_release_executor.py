@@ -76,6 +76,8 @@ class _FakeOps:
         # env-chain promotion failure message; set on the instance (same arg-
         # count-gate reason) by the promotion-failure test.
         self._promote_raises: str | None = None
+        # unresolvable-current-version abort; same arg-count-gate reason.
+        self._bump_raises: str | None = None
         self.calls: list[str] = []
         self.bumped_plan: list[str] | None = None
         self.bumped_version: str | None = None
@@ -100,6 +102,8 @@ class _FakeOps:
 
     async def apply_version_bumps(self, plan: list[str], new_version: str) -> list[str]:
         self.calls.append("bump")
+        if self._bump_raises is not None:
+            raise RuntimeError(self._bump_raises)
         self.bumped_plan = list(plan)
         self.bumped_version = new_version
         return list(plan)
@@ -162,6 +166,24 @@ async def test_red_gate_aborts_before_commit() -> None:
     ops = _FakeOps(gate=False)
     result = await ReleaseExecutor(ops).execute(_report())
     assert result.status == "gate_failed"
+    assert "commit" not in ops.calls
+    assert "publish" not in ops.calls
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_version_returns_structured_bump_failed() -> None:
+    """An unresolvable current version aborts the bump, and that abort must
+    reach the CEO as a ReleaseResult like every other fail-closed branch, not
+    as an exception escaping execute() into the caller's generic handler."""
+    ops = _FakeOps()
+    ops._bump_raises = "release bump aborted: no current version found"
+
+    result = await ReleaseExecutor(ops).execute(_report())
+
+    assert result.status == "bump_failed"
+    assert result.commit_sha is None
+    assert result.files_changed == []
+    assert "changelog" not in ops.calls
     assert "commit" not in ops.calls
     assert "publish" not in ops.calls
 
