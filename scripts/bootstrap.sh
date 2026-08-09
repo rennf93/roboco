@@ -36,8 +36,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}/.."
+REPO_ROOT="$(pwd)"
 
 COMPOSE_FILE="docker-compose.registry.yml"
+# docker-compose.registry.yml's fallbacks for the two host-path vars. The
+# orchestrator runs in a container but bind-mounts these into every agent it
+# spawns, so they must name paths as the HOST sees them — not as the
+# orchestrator sees them.
+COMPOSE_DEFAULT_HOST_PROJECT_DIR="/opt/roboco"
+COMPOSE_DEFAULT_HOST_DATA_DIR="/opt/roboco/data"
 ENV_FILE=".env"
 ENV_EXAMPLE=".env.example"
 BASE_URL="http://localhost:3000"
@@ -65,6 +72,37 @@ require_nonempty_env_var() {
     value="$(grep -E "^${var}=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2-)"
     [ -n "$value" ] \
         || fail "${ENV_FILE} has no value for ${var} (docker-compose.registry.yml requires it non-empty to start). ${hint}"
+}
+
+# require_host_path_var <VAR> <want> <compose_default> — guards the silent,
+# total failure mode where compose's /opt/roboco fallback doesn't match where
+# this checkout actually lives. The orchestrator hands these paths to the
+# Docker daemon as bind-mount SOURCES for every agent it spawns; a source that
+# doesn't exist is not an error to Docker, it CREATES it as a directory. The
+# agent then finds a directory where its /app/system-prompt.md should be and
+# dies with IsADirectoryError before reading a single instruction — so every
+# spawn fails identically, with nothing in the compose logs pointing here.
+#
+# An explicitly-set value is trusted and never compared: a split host/daemon
+# setup (remote or rootless Docker, a bind-mounted checkout) legitimately names
+# paths this script cannot see. Only an ABSENT var is checked, and only against
+# the one case where absence is safe — the checkout already being at the
+# compose default.
+require_host_path_var() {
+    local var="$1" want="$2" compose_default="$3" value
+    # `|| true`: an unset var means grep exits 1, and under `set -o pipefail`
+    # that becomes the assignment's status, which `set -e` would turn into a
+    # bare exit — swallowing the very diagnosis this function exists to print.
+    value="$(grep -E "^${var}=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+    # Plain `if`, not `[ ... ] && return 0`: that list evaluates to 1 whenever
+    # the test is false, and `set -e` kills the script on it.
+    if [ -n "$value" ]; then
+        return 0
+    fi
+    if [ "$want" = "$compose_default" ]; then
+        return 0
+    fi
+    fail "${ENV_FILE} does not set ${var}, so docker compose falls back to ${compose_default} — but this checkout is at ${want}. Every agent spawn would fail (Docker would invent ${compose_default} as an empty directory and each agent would read its system prompt as a directory). Add to ${ENV_FILE}: ${var}=${want}"
 }
 
 # retry_until <deadline_epoch> <cmd...> — polls a boolean command every
@@ -109,6 +147,10 @@ if [ -f "$ENV_FILE" ]; then
         "Generate: python3 -c 'import secrets; print(secrets.token_hex(32))'"
     require_nonempty_env_var ROBOCO_PANEL_AGENT_TOKEN \
         "Mint with 'make panel-token' (after ROBOCO_AGENT_AUTH_SECRET is set) — see .env.example. Required even with cloud auth armed; docker-compose.registry.yml refuses an empty value either way."
+    require_host_path_var ROBOCO_HOST_PROJECT_DIR \
+        "$REPO_ROOT" "$COMPOSE_DEFAULT_HOST_PROJECT_DIR"
+    require_host_path_var ROBOCO_HOST_DATA_DIR \
+        "${REPO_ROOT}/data" "$COMPOSE_DEFAULT_HOST_DATA_DIR"
 else
     [ -f "$ENV_EXAMPLE" ] || fail "${ENV_EXAMPLE} not found — can't scaffold a fresh ${ENV_FILE}."
 
@@ -162,9 +204,21 @@ print(hmac.new(secret, msg, hashlib.sha256).hexdigest())
     sed -i.bak "s/^ROBOCO_ENCRYPTION_KEY=$/ROBOCO_ENCRYPTION_KEY=${ENCRYPTION_KEY}/" "$ENV_FILE"
     sed -i.bak "s/^ROBOCO_AGENT_AUTH_SECRET=$/ROBOCO_AGENT_AUTH_SECRET=${AGENT_AUTH_SECRET}/" "$ENV_FILE"
     sed -i.bak "s/^ROBOCO_PANEL_AGENT_TOKEN=$/ROBOCO_PANEL_AGENT_TOKEN=${PANEL_TOKEN}/" "$ENV_FILE"
+
+    # Pin the host paths to THIS checkout (see require_host_path_var above for
+    # why the /opt/roboco fallback is a silent, total spawn failure anywhere
+    # else). .env.example ships both commented out, so uncomment-and-set. `|`
+    # delimiters — these values contain slashes.
+    sed -i.bak \
+        "s|^# *ROBOCO_HOST_PROJECT_DIR=.*$|ROBOCO_HOST_PROJECT_DIR=${REPO_ROOT}|" \
+        "$ENV_FILE"
+    sed -i.bak \
+        "s|^# *ROBOCO_HOST_DATA_DIR=.*$|ROBOCO_HOST_DATA_DIR=${REPO_ROOT}/data|" \
+        "$ENV_FILE"
     rm -f "${ENV_FILE}.bak"
 
     log "Generated ROBOCO_ENCRYPTION_KEY, ROBOCO_AGENT_AUTH_SECRET, and ROBOCO_PANEL_AGENT_TOKEN into ${ENV_FILE}."
+    log "Pinned ROBOCO_HOST_PROJECT_DIR=${REPO_ROOT} and ROBOCO_HOST_DATA_DIR=${REPO_ROOT}/data (host-side bind-mount sources for spawned agents)."
     log "Edit ${ENV_FILE} now if you want a pinned ROBOCO_VERSION, Grok, or other optional settings — quickstart won't touch it again."
 
     if [ "$CLOUD_AUTH_HINT" = "true" ]; then
