@@ -68,6 +68,10 @@ WAR_ROOM_BRIEF = "war_room_brief"
 BARFLY_CANDIDATES = "barfly_candidates"
 BARFLY_REPLY_REF = "barfly_reply_ref"
 PR_WAIVED = "pr_waived"
+BRANCH_PENDING = "branch_pending"
+SUPERSEDE_COMMENT_POSTED = "supersede_comment_posted"
+BRANCH_CUT_FAILED = "branch_cut_failed"
+BRANCH_CUT_NEXT_RETRY_AT = "branch_cut_next_retry_at"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -843,6 +847,69 @@ def clear_pr_waived(task: HasMarkers) -> None:
     round is NOT itself waiving PR creation.
     """
     clear_marker(task, PR_WAIVED)
+
+
+# --- supersede branch-pending (async branch cut) --------------------------- #
+# The CEO's supersede-external-PR action commits the umbrella first, stamps
+# branch_pending, and returns within the 60s client window. The branch cut
+# (workspace resolve + fetch refs/pull/{n}/head + push) runs in a background
+# task; the dispatcher skips a branch_pending umbrella so Main PM is not
+# routed until the branch is ready. SUPERSEDE_COMMENT_POSTED tracks whether
+# the contributor-facing PR comment was delivered (fast-path or background).
+# BRANCH_CUT_FAILED stores the failure attempt count (int) so the sweep can
+# apply a backoff; after MAX_BRANCH_CUT_ATTEMPTS it escalates to BLOCKED.
+# BRANCH_CUT_NEXT_RETRY_AT is the epoch timestamp the sweep waits for before
+# retrying a failed cut.
+
+
+def is_branch_pending(task: HasMarkers) -> bool:
+    return bool(get_marker(task, BRANCH_PENDING, False))
+
+
+def mark_branch_pending(task: HasMarkers) -> None:
+    set_marker(task, BRANCH_PENDING, True)
+
+
+def clear_branch_pending(task: HasMarkers) -> None:
+    clear_marker(task, BRANCH_PENDING)
+
+
+def is_supersede_comment_posted(task: HasMarkers) -> bool:
+    return bool(get_marker(task, SUPERSEDE_COMMENT_POSTED, False))
+
+
+def mark_supersede_comment_posted(task: HasMarkers) -> None:
+    set_marker(task, SUPERSEDE_COMMENT_POSTED, True)
+
+
+def is_branch_cut_failed(task: HasMarkers) -> bool:
+    return bool(get_marker(task, BRANCH_CUT_FAILED, False))
+
+
+def get_branch_cut_attempts(task: HasMarkers) -> int:
+    val = get_marker(task, BRANCH_CUT_FAILED, 0)
+    return int(val) if isinstance(val, (int, float)) else 1
+
+
+def mark_branch_cut_failed(task: HasMarkers, attempts: int = 1) -> None:
+    set_marker(task, BRANCH_CUT_FAILED, attempts)
+
+
+def clear_branch_cut_failed(task: HasMarkers) -> None:
+    clear_marker(task, BRANCH_CUT_FAILED)
+
+
+def get_branch_cut_next_retry_at(task: HasMarkers) -> float | None:
+    val = get_marker(task, BRANCH_CUT_NEXT_RETRY_AT, None)
+    return float(val) if isinstance(val, (int, float)) else None
+
+
+def set_branch_cut_next_retry_at(task: HasMarkers, ts: float) -> None:
+    set_marker(task, BRANCH_CUT_NEXT_RETRY_AT, ts)
+
+
+def clear_branch_cut_next_retry_at(task: HasMarkers) -> None:
+    clear_marker(task, BRANCH_CUT_NEXT_RETRY_AT)
 
 
 # --- escalate_up/unblock oscillation breaker -------------------------------

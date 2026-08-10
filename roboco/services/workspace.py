@@ -1377,6 +1377,8 @@ class WorkspaceService:
         git_url: str | None = None,
         default_branch: str = "main",
         force: bool = False,
+        *,
+        skip_refresh: bool = False,
     ) -> Path:
         """
         Ensure workspace exists, cloning if necessary.
@@ -1396,6 +1398,11 @@ class WorkspaceService:
             force: When True, bypass the 30s refresh-fetch TTL cache and
                 always run ``git fetch origin`` on a healthy workspace.
                 Defaults to False so existing callers are unaffected.
+            skip_refresh: When True, skip the refresh-fetch entirely on a
+                healthy workspace. Used by the supersede branch-cut path,
+                which fetches ``refs/pull/{n}/head`` (not an existing local
+                branch), so the 60s origin refresh is wasted I/O. The clone
+                path (workspace does not exist) still runs.
 
         Returns:
             Path to the workspace directory
@@ -1440,7 +1447,9 @@ class WorkspaceService:
                 # -math.inf as default means "never fetched" — guarantees
                 # the first call always runs the fetch regardless of clock value.
                 last_fetch = self._fetch_cache.get(str(workspace), -math.inf)
-                if force or (now - last_fetch) >= _FETCH_CACHE_TTL_SECONDS:
+                if not skip_refresh and (
+                    force or (now - last_fetch) >= _FETCH_CACHE_TTL_SECONDS
+                ):
                     # Repair broken-ref debris first so the fetch (and the
                     # agent's later `git diff/log origin/...`) doesn't trip on a
                     # ref left corrupt by an interrupted recovery.

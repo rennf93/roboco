@@ -114,6 +114,27 @@ AGENT_BASE_IMAGE = "roboco-agent-base"
 # Minutes in an hour, for formatting an elapsed duration as "Xh Ym".
 _MINUTES_PER_HOUR = 60
 
+# Supersede contributor PR comments - a coherent pair. The at-supersede comment
+# posts when the CEO takes the PR over; the at-close comment posts when the
+# replacement lands and the contributor PR is retired.
+SUPERSEDE_PR_COMMENT = (
+    "Thanks for this contribution! We reviewed it and are taking the work "
+    "over internally to finish and harden it to our standards. The "
+    "implementation continues on branch `{branch}` as an internal task; "
+    "your PR informed the approach and is appreciated. This PR will be "
+    "closed once our replacement lands. Feel free to reach out if you "
+    "have questions."
+)
+SUPERSEDE_PR_CLOSE_COMMENT = (
+    "Superseded by our own PR - the work was finished and hardened to our "
+    "standards based on your contribution. Thanks for the contribution!"
+)
+
+# Max background branch-cut attempts before escalating to BLOCKED (HUMAN
+# resolver). The sweep retries with exponential backoff between attempts.
+_MAX_BRANCH_CUT_ATTEMPTS = 3
+_BRANCH_CUT_BACKOFF_BASE_SECONDS = 60.0
+
 # Port on which each agent's Claude Code SDK server listens inside its container.
 # Referenced by write-hooks (_finalize_spawn_session, _sweep_token_snapshots,
 # _sweep_budget_exceeded) to build the SDK health/usage URL.
@@ -949,6 +970,22 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     return source == SELF_HEAL_SOURCE and not task.get("confirmed_by_human")
 
 
+def _is_branch_pending(task: dict[str, Any]) -> bool:
+    """A supersede umbrella whose branch cut is still in progress or failed.
+
+    The dispatcher must NOT route it to Main PM until the background branch
+    cut completes and clears the marker. ``branch_cut_failed`` (set after a
+    failed cut, kept through the retry backoff or after a CEO unblock of a
+    BLOCKED umbrella) is treated the same way: the sweep re-runs the cut and
+    clears the marker on success. ``orchestration_markers`` is carried on the
+    task dict from ``task_to_response`` so the dispatcher sees it.
+    """
+    om = task.get("orchestration_markers")
+    if not isinstance(om, dict):
+        return False
+    return bool(om.get("branch_pending")) or bool(om.get("branch_cut_failed"))
+
+
 def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
@@ -1221,6 +1258,11 @@ class AgentOrchestrator:
         # spawn two umbrellas for the same PR (the check is read-then-write
         # with no DB-level uniqueness).
         self._supersede_lock = asyncio.Lock()
+        # In-flight branch cuts (umbrella id strings) so the reconciliation
+        # sweep does not double-spawn a second _cut_supersede_branch for an
+        # umbrella whose first cut is still running (~90-390s). Cleared in
+        # _cut_supersede_branch's finally block.
+        self._supersede_cuts_in_flight: set[str] = set()
         # Serialize concurrent live-chat starts for the single-id interactive
         # agents (intake / secretary). Each has a fixed agent id, so two
         # concurrent starts race on the container name (``docker run --name
@@ -8298,7 +8340,9 @@ Start by:
         await self._sweep_superseded_prs()
 
     async def _sweep_superseded_prs(self) -> None:
-        """Retire the contributor PR for any supersede umbrella that landed.
+        """Retire the contributor PR for any supersede umbrella that landed,
+        and reconcile branch_pending umbrellas stranded by an orchestrator
+        restart.
 
         Dormant in a standard deployment: when no ``external_pr_supersede``
         umbrellas exist the lookup returns nothing and no GitHub call is made,
@@ -8320,6 +8364,96 @@ Start by:
             except Exception as e:
                 await db.rollback()
                 logger.warning("Supersede close-on-land sweep failed", error=str(e))
+
+        # Reconcile branch_pending / branch_cut_failed umbrellas (restart-safe).
+        to_reconcile = await self._collect_supersede_reconciliations(session_factory)
+        for uid, slug, pr_num, pid, branch in to_reconcile:
+            # F2: claim the in-flight slot before spawning.
+            if uid in self._supersede_cuts_in_flight:
+                continue
+            self._supersede_cuts_in_flight.add(uid)
+            logger.info(
+                "supersede: reconciling branch_pending umbrella",
+                umbrella_id=uid,
+                pr_number=pr_num,
+            )
+            bg = asyncio.create_task(
+                self._cut_supersede_branch(
+                    umbrella_id=uid,
+                    project_slug=slug,
+                    pr_number=pr_num,
+                    project_id=pid,
+                    branch_name=branch,
+                )
+            )
+            self._bg_tasks.add(bg)
+            bg.add_done_callback(self._bg_tasks.discard)
+
+    async def _collect_supersede_reconciliations(
+        self, session_factory: Any
+    ) -> list[tuple[str, str, int, Any, str]]:
+        """Build the (uid, slug, pr, pid, branch) list for the sweep to spawn.
+
+        Handles in-flight dedup (F2), backoff (F3), and re-arm after CEO
+        unblock of a branch_cut_failed umbrella (F4). Returns [] on any
+        lookup error so the sweep tick is best-effort.
+        """
+        import time
+
+        from roboco.foundation.policy.content import markers as _sm
+        from roboco.services.project import get_project_service
+        from roboco.services.task import get_task_service
+
+        now = time.time()
+        try:
+            async with session_factory() as db:
+                task_service = get_task_service(db)
+                project_service = get_project_service(db)
+                pending = await task_service.supersede_umbrellas_branch_pending()
+                to_reconcile: list[tuple[str, str, int, Any, str]] = []
+                for umbrella in pending:
+                    entry = await self._reconcile_one_umbrella(
+                        umbrella, now, project_service, db, _sm
+                    )
+                    if entry is not None:
+                        to_reconcile.append(entry)
+        except Exception as e:
+            logger.warning("Supersede branch-pending sweep lookup failed", error=str(e))
+            return []
+        return to_reconcile
+
+    async def _reconcile_one_umbrella(
+        self, umbrella: Any, now: float, project_service: Any, db: Any, _sm: Any
+    ) -> tuple[str, str, int, Any, str] | None:
+        """Check one umbrella for sweep reconciliation. Returns the tuple to
+        spawn, or None if it should be skipped (in-flight, backoff, no PR)."""
+        uid = str(umbrella.id)
+        if uid in self._supersede_cuts_in_flight:
+            return None
+        retry_at = _sm.get_branch_cut_next_retry_at(umbrella)
+        if retry_at is not None and now < retry_at:
+            return None
+        # branch_cut_failed but NOT branch_pending: CEO unblocked after
+        # exhaustion. Re-arm for a fresh cut.
+        if _sm.is_branch_cut_failed(umbrella) and not _sm.is_branch_pending(umbrella):
+            _sm.mark_branch_pending(umbrella)
+            _sm.clear_branch_cut_failed(umbrella)
+            _sm.clear_branch_cut_next_retry_at(umbrella)
+            await db.flush()
+            await db.commit()
+        pr_number = self._parse_supersede_pr(umbrella.quick_context or "")
+        if pr_number is None:
+            return None
+        project = await project_service.get(cast("UUID", umbrella.project_id))
+        if project is None:
+            return None
+        return (
+            uid,
+            project.slug,
+            pr_number,
+            cast("UUID", umbrella.project_id),
+            umbrella.branch_name or "",
+        )
 
     async def _sweep_dangling_images(self) -> None:
         """Prune dangling (<none>) Docker images left by agent-image rebuilds.
@@ -10020,11 +10154,7 @@ Start by:
             try:
                 await git.close_pull_request(
                     pr_number,
-                    comment=(
-                        "Superseded by the roboco team's own PR — the work was "
-                        "finished and hardened to our standards. Thanks for the "
-                        "contribution!"
-                    ),
+                    comment=SUPERSEDE_PR_CLOSE_COMMENT,
                     delete_branch=False,
                     actor_agent_id=system_id,
                     # PR numbers are per-repo — scope the close to THIS
@@ -10087,18 +10217,28 @@ Start by:
         """CEO-authorized takeover of a reviewed external PR.
 
         Confirms the review task (this CEO action is the human confirmation that
-        authorizes running the contributor's code), cuts a roboco-owned branch
-        off the contributor's fork head (refs/pull/{n}/head — the only point
-        untrusted code enters a roboco branch), and creates the supersede
-        umbrella for Main PM to delegate to a cell. Returns a status dict.
+        authorizes running the contributor's code), creates the supersede
+        umbrella (committed with a ``branch_pending`` marker), and returns
+        immediately. The branch cut (workspace resolve + fetch
+        ``refs/pull/{n}/head`` + push) runs in a background task so the CEO
+        does not hit the 60s client timeout. The dispatcher skips a
+        ``branch_pending`` umbrella so Main PM is not routed until the branch
+        is ready. On success the marker is cleared and the dispatcher is
+        woken; on failure the sweep retries with exponential backoff up to
+        ``_MAX_BRANCH_CUT_ATTEMPTS`` times, after which the umbrella is
+        BLOCKED (HUMAN resolver) and the CEO is notified with the recovery
+        action (unblock to re-run the cut, or cancel). A reconciliation sweep
+        on the sweep tick recovers umbrellas stranded by an orchestrator
+        restart and retries failed cuts after the backoff window.
         """
         from roboco.db import get_db_context
+        from roboco.foundation.policy.content import markers
         from roboco.models.base import TaskStatus
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
         from roboco.services.task import get_task_service
 
-        # Serialize concurrent CEO calls (double-click) — the dedup check and
+        # Serialize concurrent CEO calls (double-click) - the dedup check and
         # the umbrella/branch creation are not atomic across DB sessions.
         async with self._supersede_lock, get_db_context() as db:
             task_service = get_task_service(db)
@@ -10114,15 +10254,16 @@ Start by:
             if review.status != TaskStatus.COMPLETED:
                 return {
                     "ok": False,
-                    "error": "review not complete — review the PR first",
+                    "error": "review not complete - review the PR first",
                 }
             project = await get_project_service(db).get(cast("UUID", review.project_id))
             if project is None:
                 return {"ok": False, "error": "project not found"}
             pr_number = int(review.pr_number)
             project_id = cast("UUID", review.project_id)
-            # Idempotent: a repeat call returns the existing umbrella — no second
-            # branch cut, no duplicate cell takeover.
+            # Idempotent: a repeat call returns the existing umbrella - no second
+            # branch cut, no duplicate cell takeover. Covers branch_pending
+            # umbrellas too (a retry during the cut short-circuits here).
             existing = await task_service.find_supersede_umbrella(project_id, pr_number)
             if existing is not None:
                 return {
@@ -10135,29 +10276,263 @@ Start by:
             branch_name = f"feature/main_pm/supersede-pr-{pr_number}"
             # The CEO authorized fetching + finishing the contributor's code.
             review.confirmed_by_human = True
-            # Create the umbrella BEFORE the push: a create failure then can't
-            # orphan a pushed branch. Only a commit failure after the push could
-            # (rare) — the branch is logged so an orphan stays discoverable.
+            # Create the umbrella with branch_pending marker BEFORE any git op.
+            # The commit here is the point of no return - the umbrella exists
+            # and the dispatcher gate (branch_pending) holds it until the
+            # background branch cut clears the marker.
             umbrella = await task_service.create_supersede_umbrella(
                 review_task_id=review_task_id,
                 branch_name=branch_name,
                 created_by=system_id,
             )
-            umbrella_id = str(umbrella.id) if umbrella is not None else None
+            # create_supersede_umbrella returns None only if the review task
+            # is missing or not a PR-review source - both already validated
+            # above. If a race deletes the review between the check and the
+            # create, the .id access raises (500, acceptable for that race).
+            umbrella = cast("Any", umbrella)
+            umbrella_id = str(umbrella.id)
+            markers.mark_branch_pending(umbrella)
+            await db.flush()
+            # Try the contributor comment in the fast path (skip_refresh: the
+            # comment only needs the remote URL, not fresh refs). If it fails
+            # (workspace not cloned yet, forge error), the background task
+            # retries via the supersede_comment_posted marker.
             git = GitService(db)
-            workspace = await git.get_workspace(project.slug, agent_id=system_id)
-            logger.warning(
-                "supersede: cutting roboco branch off untrusted fork PR head",
+            try:
+                await git.comment_pull_request(
+                    pr_number,
+                    project_id=project_id,
+                    comment=SUPERSEDE_PR_COMMENT.format(branch=branch_name),
+                )
+                markers.mark_supersede_comment_posted(umbrella)
+                await db.flush()
+            except Exception as exc:
+                logger.warning(
+                    "supersede: fast-path contributor comment failed, "
+                    "deferring to background task",
+                    pr_number=pr_number,
+                    error=str(exc),
+                )
+            await db.commit()
+            # Claim the in-flight slot BEFORE releasing the supersede lock so a
+            # reconciliation sweep tick landing between the commit and the
+            # spawn cannot double-spawn a concurrent branch cut.
+            self._supersede_cuts_in_flight.add(umbrella_id)
+        # Background the slow git ops (workspace clone up to 300s, fetch +
+        # checkout + push, each 30s). Fire-and-forget; the reconciliation
+        # sweep recovers on restart.
+        bg = asyncio.create_task(
+            self._cut_supersede_branch(
+                umbrella_id=umbrella_id,
+                project_slug=project.slug,
+                pr_number=pr_number,
+                project_id=project_id,
+                branch_name=branch_name,
+            )
+        )
+        self._bg_tasks.add(bg)
+        bg.add_done_callback(self._bg_tasks.discard)
+        return {
+            "ok": True,
+            "supersede_task_id": umbrella_id,
+            "branch": branch_name,
+            "status": "cutting_branch",
+        }
+
+    async def _cut_supersede_branch(
+        self,
+        *,
+        umbrella_id: str,
+        project_slug: str,
+        pr_number: int,
+        project_id: "UUID",
+        branch_name: str,
+    ) -> None:
+        """Background branch cut for a supersede umbrella.
+
+        Resolves the workspace (skip_refresh: the branch is cut from
+        ``refs/pull/{n}/head``, not an existing local branch), posts the
+        contributor PR comment if it was not posted in the fast path, fetches
+        the PR head ref, and pushes the roboco-owned branch. On success
+        clears ``branch_pending`` and wakes the dispatcher. On failure
+        increments the ``branch_cut_failed`` attempt count and applies a
+        backoff so the reconciliation sweep retries; after
+        ``_MAX_BRANCH_CUT_ATTEMPTS`` failures the umbrella is BLOCKED (HUMAN
+        resolver) and the CEO is notified. Called from
+        ``supersede_external_pr`` (asyncio task) and from the reconciliation
+        sweep (restart-safe).
+        """
+        from roboco.db import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.models.base import TaskStatus
+        from roboco.services.git import GitService
+        from roboco.services.task import get_task_service
+        from roboco.utils.converters import require_uuid
+
+        try:
+            async with get_db_context() as db:
+                task_service = get_task_service(db)
+                umbrella = await task_service.get(require_uuid(umbrella_id))
+                if umbrella is None or umbrella.status == TaskStatus.CANCELLED:
+                    return
+                # If branch_cut_failed but NOT branch_pending, this was
+                # unblocked by the CEO after exhaustion — reset for a fresh
+                # cut. (The sweep also does this, but guard here too in case
+                # the spawn came from supersede_external_pr's retry path.)
+                if markers.is_branch_cut_failed(
+                    umbrella
+                ) and not markers.is_branch_pending(umbrella):
+                    markers.mark_branch_pending(umbrella)
+                    markers.clear_branch_cut_failed(umbrella)
+                    markers.clear_branch_cut_next_retry_at(umbrella)
+                    await db.flush()
+                # Already completed by a prior run (race with sweep).
+                if not markers.is_branch_pending(umbrella):
+                    return
+                git = GitService(db)
+                system_id = _foundation.AGENTS["system"].uuid
+                # Post the contributor comment if the fast path did not.
+                if not markers.is_supersede_comment_posted(umbrella):
+                    try:
+                        await git.comment_pull_request(
+                            pr_number,
+                            project_id=project_id,
+                            comment=SUPERSEDE_PR_COMMENT.format(branch=branch_name),
+                        )
+                        markers.mark_supersede_comment_posted(umbrella)
+                        await db.flush()
+                    except Exception as exc:
+                        logger.warning(
+                            "supersede: background contributor comment failed",
+                            pr_number=pr_number,
+                            error=str(exc),
+                        )
+                logger.warning(
+                    "supersede: cutting roboco branch off untrusted fork PR head",
+                    branch=branch_name,
+                    pr_number=pr_number,
+                    project=project_slug,
+                )
+                workspace = await git.get_workspace(
+                    project_slug, agent_id=system_id, skip_refresh=True
+                )
+                await git.create_branch_from_pr_head(
+                    workspace, project_slug, pr_number, branch_name
+                )
+                # Success: clear the gate, clear any prior failure markers,
+                # and wake the dispatcher.
+                markers.clear_branch_pending(umbrella)
+                markers.clear_branch_cut_failed(umbrella)
+                markers.clear_branch_cut_next_retry_at(umbrella)
+                await db.commit()
+            self._dispatch_wake.set()
+        except Exception as exc:
+            logger.error(
+                "supersede: background branch cut failed",
+                umbrella_id=umbrella_id,
                 branch=branch_name,
                 pr_number=pr_number,
-                project=project.slug,
+                error=str(exc),
             )
-            await git.create_branch_from_pr_head(
-                workspace, project.slug, pr_number, branch_name
+            await self._fail_supersede_branch_cut(umbrella_id, branch_name, exc)
+        finally:
+            # F2: release the in-flight slot so the sweep can retry.
+            self._supersede_cuts_in_flight.discard(umbrella_id)
+
+    async def _fail_supersede_branch_cut(
+        self, umbrella_id: str, branch_name: str, exc: Exception
+    ) -> None:
+        """Handle a supersede branch-cut failure with retry + backoff.
+
+        On failures below ``_MAX_BRANCH_CUT_ATTEMPTS``: keep
+        ``branch_pending``, increment ``branch_cut_failed`` attempt count,
+        and set a ``branch_cut_next_retry_at`` backoff so the sweep retries
+        without hammering every 60s. On the final failure: clear
+        ``branch_pending``, set BLOCKED (HUMAN resolver), and notify the CEO.
+        The commit happens BEFORE the notification (F7) so a notify failure
+        can't roll back the status transition.
+        """
+        import time
+
+        from roboco.db import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.models.base import BlockerResolverType, TaskStatus
+        from roboco.services.task import get_task_service
+        from roboco.utils.converters import require_uuid
+
+        try:
+            async with get_db_context() as db:
+                task_service = get_task_service(db)
+                umbrella = await task_service.get(require_uuid(umbrella_id))
+                if umbrella is None:
+                    return
+                # If the marker was already cleared (a concurrent sweep
+                # succeeded), do not block a finished umbrella.
+                if not markers.is_branch_pending(umbrella):
+                    return
+                attempts = markers.get_branch_cut_attempts(umbrella) + 1
+                if attempts < _MAX_BRANCH_CUT_ATTEMPTS:
+                    # Retry with backoff: keep branch_pending so the sweep
+                    # re-runs the cut after the backoff window expires.
+                    backoff = _BRANCH_CUT_BACKOFF_BASE_SECONDS * (2 ** (attempts - 1))
+                    markers.mark_branch_cut_failed(umbrella, attempts)
+                    markers.set_branch_cut_next_retry_at(
+                        umbrella, time.time() + backoff
+                    )
+                    await db.commit()
+                    logger.warning(
+                        "supersede: branch cut failed, will retry",
+                        umbrella_id=umbrella_id,
+                        attempts=attempts,
+                        backoff_seconds=backoff,
+                        error=str(exc),
+                    )
+                    return
+                # Exhausted retries: escalate to BLOCKED.
+                umbrella.blocker_resolver_type = BlockerResolverType.HUMAN
+                markers.mark_branch_cut_failed(umbrella, attempts)
+                markers.clear_branch_pending(umbrella)
+                markers.clear_branch_cut_next_retry_at(umbrella)
+                await task_service.admin_set_status(
+                    require_uuid(umbrella_id),
+                    TaskStatus.BLOCKED,
+                    actor_role="system",
+                )
+                await db.commit()
+            # F7: notify CEO AFTER the commit so a notify failure can't
+            # roll back the BLOCKED transition. Best-effort in its own
+            # session.
+            try:
+                async with get_db_context() as notify_db:
+                    from roboco.services.notification_delivery import (
+                        get_notification_delivery_service,
+                    )
+
+                    notify_task_service = get_task_service(notify_db)
+                    umbrella_fresh = await notify_task_service.get(
+                        require_uuid(umbrella_id)
+                    )
+                    if umbrella_fresh is not None:
+                        delivery = get_notification_delivery_service(notify_db)
+                        await delivery.notify_ceo_of_supersede_branch_cut_failure(
+                            task=umbrella_fresh,
+                            task_id=require_uuid(umbrella_id),
+                            branch=branch_name,
+                            error=str(exc),
+                        )
+                        await notify_db.commit()
+            except Exception as notify_exc:
+                logger.warning(
+                    "supersede: CEO notify failed after branch cut failure",
+                    umbrella_id=umbrella_id,
+                    error=str(notify_exc),
+                )
+        except Exception as inner:
+            logger.warning(
+                "supersede: failed to handle branch cut failure",
+                umbrella_id=umbrella_id,
+                error=str(inner),
             )
-            await db.commit()
-        self._dispatch_wake.set()
-        return {"ok": True, "supersede_task_id": umbrella_id, "branch": branch_name}
 
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.
@@ -14434,6 +14809,11 @@ Start now: evidence(task_id="{task_id}")
             # (external-PR review, release proposals, X posts/replies, and a
             # not-yet-confirmed self-heal fix task) — see _is_held_ceo_source.
             if _is_held_ceo_source(task):
+                continue
+            # A supersede umbrella whose branch cut is still in progress
+            # (background task or pending reconciliation). Main PM must not
+            # be routed until the branch is ready.
+            if _is_branch_pending(task):
                 continue
             assigned_to = task.get("assigned_to")
             if assigned_to:

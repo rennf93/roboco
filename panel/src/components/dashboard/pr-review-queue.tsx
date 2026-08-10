@@ -67,11 +67,21 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
     mutationFn: (taskId: string) => tasksApi.supersedeExternalPr(taskId),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
-      toast.success(
-        res.ok
-          ? "Superseding — the org is taking the PR over"
-          : "Supersede did not start",
-      );
+      if (res.already_superseded) {
+        toast.success(
+          "Already superseded - the task was created by a prior call",
+        );
+      } else if (res.status === "cutting_branch") {
+        toast.success(
+          "Superseding - cutting the branch now, the org is taking the PR over",
+        );
+      } else {
+        toast.success(
+          res.ok
+            ? "Superseding - the org is taking the PR over"
+            : "Supersede did not start",
+        );
+      }
       close();
     },
     onError: (e) =>
