@@ -225,6 +225,10 @@ export interface Task {
   constraints?: string | null;
   acceptance_criteria: string[];
   status: TaskStatus;
+  // Who resolves a blocked task: "agent" (dispatcher can respawn) or
+  // "human" (dispatcher must skip — the task is stalled/needs you).
+  // None outside the "blocked" status. Matches backend TaskResponse.
+  blocker_resolver_type?: string | null;
   priority: number; // 0=P0(highest), 1=P1, 2=P2, 3=P3(lowest)
   // Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). null = use the task-type default.
   budget_usd?: number | null;

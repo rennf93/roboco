@@ -112,6 +112,9 @@ vi.mock("../scorecard-overview-panel", () => ({
 vi.mock("../cost-trend-chart", () => ({
   CostTrendChart: () => <div>CostTrendChartStub</div>,
 }));
+vi.mock("../stalled-needs-you-panel", () => ({
+  StalledNeedsYouPanel: () => <div>StalledNeedsYouPanelStub</div>,
+}));
 
 import { CommandCenter } from "../command-center";
 
@@ -135,6 +138,7 @@ describe("CommandCenter", () => {
       "TeamHealthCardsStub",
       "CeoApprovalQueueStub",
       "StrategySignalsPanelStub",
+      "StalledNeedsYouPanelStub",
       "PrReviewQueueStub",
       "SocialSummaryCardStub",
       "ReleaseProposalCardStub",
