@@ -1035,6 +1035,7 @@ class A2AService:
             unread = (
                 conv.unread_by_a if agent_slug == conv.agent_a else conv.unread_by_b
             )
+            preview = last_msg.content[:100] if last_msg and last_msg.content else None
 
             summaries.append(
                 A2AConversationSummary(
@@ -1046,7 +1047,7 @@ class A2AService:
                     message_count=conv.message_count,
                     unread_count=unread,
                     last_message_at=conv.last_message_at,
-                    last_message_preview=(last_msg.content[:100] if last_msg else None),
+                    last_message_preview=preview,
                 )
             )
 
@@ -1082,6 +1083,7 @@ class A2AService:
         summaries = []
         for conv in conversations:
             last_msg = await self._last_message(cast("UUID", conv.id))
+            preview = last_msg.content[:100] if last_msg and last_msg.content else None
             summaries.append(
                 A2AConversationAdminSummary(
                     id=str(conv.id),
@@ -1092,7 +1094,7 @@ class A2AService:
                     status=conv.status,
                     message_count=conv.message_count,
                     last_message_at=conv.last_message_at,
-                    last_message_preview=(last_msg.content[:100] if last_msg else None),
+                    last_message_preview=preview,
                     created_at=conv.created_at,
                     updated_at=conv.updated_at,
                 )
@@ -1626,7 +1628,7 @@ class A2AService:
             {
                 "conversation_id": str(m.conversation_id),
                 "from_agent": m.from_agent,
-                "content": m.content,
+                "content": m.content or "(message content unavailable)",
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
             for m in msgs
@@ -1767,7 +1769,12 @@ class A2AService:
             id=str(msg.id),
             conversation_id=str(msg.conversation_id),
             from_agent=msg.from_agent,
-            content=msg.content,
+            # ponytail: a2a_messages.content is nullable in the DB; 1815 pre-gap
+            # rows recovered from the Aug 2026 NAS outage carry NULL content (the
+            # heap extractor could not parse the varlena). The model requires a
+            # non-empty str, so coerce NULL to an honest placeholder instead of
+            # 500ing the whole conversation view.
+            content=msg.content or "(message content unavailable)",
             message_kind=msg.message_kind,
             skill=msg.skill,
             response_to_id=str(msg.response_to_id) if msg.response_to_id else None,
