@@ -106,6 +106,37 @@ Returns a `PageRefreshState` object:
 - `panel/src/components/providers.tsx` was renamed to `panel/src/components/app-providers.tsx` so that `@/components/providers` could be used as a barrel export for `PageRefreshProvider`. Update any direct import of the root providers component from `@/components/providers` to `@/components/app-providers`.
 - The earlier scope-keyed provider files (`panel/src/components/page-refresh-provider.tsx` and `panel/src/store/page-refresh-context.ts`) were deleted. The current implementation lives in `panel/src/components/providers/page-refresh-provider.tsx` and is consumed through `usePageRefresh` from `@/hooks`.
 
+## `useStalledTasks`
+
+Returns the current stalled-task set — blocked tasks whose `blocker_resolver_type` is `human` (the dispatcher has given up and won't respawn the assigned agent). Fetched once and shared across every surface on a page via TanStack Query's cache, so the Overview "Stalled / Needs You" section, the Tasks page stalled filter, and the task-detail header stalled chip do not make three separate requests.
+
+```tsx
+import { useStalledTasks } from "@/hooks/use-dashboard";
+
+const { data: stalledTasks, isLoading, isError, refetch } = useStalledTasks();
+```
+
+### Data source
+
+The hook does not call a dedicated stalled endpoint. `dashboardApi.getStalledTasks()` fetches `GET /tasks/blocked` (which returns `TaskResponse[]`) and filters to `blocker_resolver_type === "human"`, returning `Task[]`. The stall classification is the backend's own — the frontend never re-derives it. See [`stalled-needs-you.md`](./stalled-needs-you.md) for the full feature contract.
+
+### API reference
+
+| Return | Type | Notes |
+|--------|------|-------|
+| `data` | `Task[] \| undefined` | The current stalled set. Empty array when nothing is stalled. |
+| `isLoading` | `boolean` | First-fetch loading state. |
+| `isError` | `boolean` | Fetch failed. Consumers render a distinct error state, never the empty state. |
+| `refetch` | `function` | Re-runs the query. Registered with the page refresh coordinator on the Tasks page. |
+
+- **Query key:** `["dashboard", "stalled-tasks"]` (`dashboardKeys.stalledTasks()`).
+- **Refetch interval:** 60 seconds.
+- **Mock mode:** returns `[]`.
+
+### Consumer contract
+
+All labels shown to the user (status, `blocker_resolver_type`, stalled membership) come verbatim from the backend response — no client-side relabeling or fabricated text. The only client-computed display value is the duration string in the Overview panel, which is display formatting over `task.updated_at`, not a stall condition.
+
 ## Data-hook null-guard audit
 
 Every useQuery hook in `panel/src/hooks/` has been audited for missing `enabled` guards on undefined/null IDs, staleTime mismatches, and refetchInterval leaks on unmount.

@@ -9,6 +9,7 @@ import {
   useUpdateTask,
   useTaskValidTransitions,
 } from "@/hooks/use-tasks";
+import { useStalledTasks } from "@/hooks/use-dashboard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -52,6 +53,7 @@ import {
   ThumbsDown,
   RotateCcw,
   ArrowLeft,
+  AlertOctagon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { TaskTypeBadge } from "../task-type-badge";
@@ -125,7 +127,8 @@ const statusLabels: Record<TaskStatus, string> = {
 // route through an admin-override PATCH rather than a dedicated lifecycle
 // verb — the tip says so where that's the case.
 const ACTION_TIPS: Record<string, string> = {
-  claim: "Locks this task to you so no one else can claim it (pending → claimed).",
+  claim:
+    "Locks this task to you so no one else can claim it (pending → claimed).",
   start: "Begins active work on the task (claimed → in_progress).",
   "create-branch":
     "Creates the git branch for this task; status does not change.",
@@ -135,8 +138,10 @@ const ACTION_TIPS: Record<string, string> = {
     "Flags an external blocker (in_progress → blocked); only a PM can unblock it.",
   "create-pr":
     "Opens the pull request for this task's branch; status does not change.",
-  verify: "Marks work self-verified, the step before QA (in_progress → verifying).",
-  unblock: "PM-only: clears the blocker and resumes work (blocked → in_progress).",
+  verify:
+    "Marks work self-verified, the step before QA (in_progress → verifying).",
+  unblock:
+    "PM-only: clears the blocker and resumes work (blocked → in_progress).",
   resume: "Resumes paused work (paused → in_progress).",
   "submit-qa": "Hands the task to QA for review (verifying → awaiting_qa).",
   "pass-qa":
@@ -157,12 +162,15 @@ const ACTION_TIPS: Record<string, string> = {
     "CEO-only: approves and completes the task (→ completed); requires a note.",
   "approve-and-merge":
     "CEO-only: merges the PR and marks the task completed in one step.",
-  "ceo-reject": "CEO-only: sends the task back for revision (→ needs_revision).",
+  "ceo-reject":
+    "CEO-only: sends the task back for revision (→ needs_revision).",
   reopen: "Admin override: force-sets a cancelled task back to pending.",
-  activate: "PM-only: releases the task from backlog into the claim pool (→ pending).",
+  activate:
+    "PM-only: releases the task from backlog into the claim pool (→ pending).",
   "start-revision":
     "Admin override: forces the task straight to in_progress, skipping re-claim.",
-  cancel: "PM/CEO-only: cancels the task permanently; requires a documented reason.",
+  cancel:
+    "PM/CEO-only: cancels the task permanently; requires a documented reason.",
   "merge-pr":
     "Merges this task's PR on GitHub; the backend updates task state as a side effect.",
 };
@@ -199,6 +207,9 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
     (s) => s !== task.status && !nextStatuses.includes(s),
   );
   const revisionCount = task.revision_count ?? 0;
+  // Membership in the backend's stalled set only — see useStalledTasks.
+  const { data: stalledTasks } = useStalledTasks();
+  const stalledEntry = stalledTasks?.find((t) => t.id === task.id);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Inline editing states
@@ -695,6 +706,20 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                   </TooltipContent>
                 </Tooltip>
               )}
+
+              {/* Stalled chip — only when this task is in the backend's
+                  current stalled set (blocked + blocker_resolver_type=human). */}
+              {stalledEntry && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-red-300 bg-red-100 px-2 text-xs font-medium text-red-800 dark:border-red-800 dark:bg-red-900 dark:text-red-300">
+                      <AlertOctagon className="h-3 w-3" />
+                      stalled
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{stalledEntry.blocker_resolver_type}</TooltipContent>
+                </Tooltip>
+              )}
             </div>
           </div>
         </div>
@@ -725,7 +750,10 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                 {actions
                   .filter((a) => a.action !== "cancel")
                   .map((action) => (
-                    <HelpTip key={action.action} label={ACTION_TIPS[action.action]}>
+                    <HelpTip
+                      key={action.action}
+                      label={ACTION_TIPS[action.action]}
+                    >
                       <DropdownMenuItem
                         onClick={() => handleAction(action.action)}
                       >

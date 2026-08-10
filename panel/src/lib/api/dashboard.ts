@@ -579,4 +579,16 @@ export const dashboardApi = {
     const { data } = await api.get<KanbanBoard>(`/dashboard/kanban/${team}`);
     return data;
   },
+
+  // The current stalled set — blocked tasks whose blocker_resolver_type is
+  // "human" (the dispatcher has given up and won't respawn). Sourced from
+  // GET /tasks/blocked, filtered by the backend's own classification — no
+  // client-side stall-condition re-derivation.
+  getStalledTasks: async (): Promise<Task[]> => {
+    if (isMockMode()) {
+      return [];
+    }
+    const { data } = await api.get<Task[]>("/tasks/blocked");
+    return data.filter((t) => t.blocker_resolver_type === "human");
+  },
 };

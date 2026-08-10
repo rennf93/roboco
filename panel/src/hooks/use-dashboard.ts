@@ -9,6 +9,7 @@ import {
 } from "@/lib/api/dashboard";
 import type {
   Team,
+  Task,
   AuditorDashboard,
   AuditorFlag,
   AuditorReport,
@@ -29,6 +30,7 @@ export const dashboardKeys = {
   activity: (hours: number) =>
     [...dashboardKeys.all, "activity", hours] as const,
   agentStatus: () => [...dashboardKeys.all, "agent-status"] as const,
+  stalledTasks: () => [...dashboardKeys.all, "stalled-tasks"] as const,
   // Kanban keys
   kanbanDev: (team: Team) =>
     [...dashboardKeys.all, "kanban", "dev", team] as const,
@@ -172,6 +174,21 @@ export function useAgentStatus() {
     queryKey: dashboardKeys.agentStatus(),
     queryFn: () => dashboardApi.getAgentStatus(),
     refetchInterval: 10000,
+  });
+}
+
+/**
+ * The current stalled-task set — blocked tasks with
+ * blocker_resolver_type=human (the dispatcher has given up). Fetched once
+ * here and reused by the Overview "Stalled / Needs you" section, the Tasks
+ * page's stalled filter, and the task-detail header's stalled indicator, so
+ * none of them re-derive stall conditions client-side.
+ */
+export function useStalledTasks() {
+  return useQuery<Task[]>({
+    queryKey: dashboardKeys.stalledTasks(),
+    queryFn: () => dashboardApi.getStalledTasks(),
+    refetchInterval: 60000,
   });
 }
 
