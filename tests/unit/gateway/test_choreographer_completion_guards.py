@@ -183,6 +183,108 @@ async def test_cell_pm_complete_allows_decision_without_separate_reflect() -> No
     task_svc.cell_pm_complete.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_cell_pm_complete_routes_head_branch_leaf_to_ceo_approval() -> None:
+    """A leaf whose parent is a branchless coordination root resolves its
+    merge target to the project head env branch (slave/master), and pr_merge
+    is CEO-only for the head branch. cell_pm_complete must route such a leaf
+    to awaiting_ceo_approval (the CEO merge turn) instead of calling pr_merge
+    (which would CEO_ONLY-fail and bounce the cell PM escalate_up -> main-pm).
+    Live: 5612b225/PR 856 (blocked 3x), 5b780794/PR 840.
+    """
+    pm_id = uuid4()
+    leaf_id = uuid4()
+    parent_id = uuid4()
+    proj_id = uuid4()
+    t = MagicMock(
+        id=leaf_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=840,
+        team="backend",
+        branch_name="feature/backend/5b780794",
+        parent_task_id=parent_id,
+        project_id=proj_id,
+    )
+    parent = MagicMock(id=parent_id, branch_name=None)  # branchless coord root
+    after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid, _t=t, _p=parent, _pid=parent_id: (
+        _p if tid == _pid else _t
+    )
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.get_subtasks.return_value = []
+    task_svc.project_default_branch_for_task.return_value = "slave"
+    task_svc.escalate_to_ceo.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
+    deps = _make_deps(task=task_svc, journal=journal_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, leaf_id, "cell scope reviewed and approved")
+
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["status"] == "awaiting_ceo_approval"
+    task_svc.escalate_to_ceo.assert_awaited_once()
+    # The subtask guard bypass is the whole fix.
+    kwargs = task_svc.escalate_to_ceo.call_args.kwargs
+    assert kwargs.get("allow_subtask_ceo_merge") is True
+    git_svc.pr_merge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_merges_when_parent_has_branch() -> None:
+    """Negative: a leaf whose parent HAS a branch resolves target to that
+    branch (not the head branch), so the CEO routing does NOT fire and the
+    normal pr_merge path runs. Guards against the fix over-routing every
+    leaf merge.
+    """
+    pm_id = uuid4()
+    leaf_id = uuid4()
+    parent_id = uuid4()
+    proj_id = uuid4()
+    t = MagicMock(
+        id=leaf_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=841,
+        team="backend",
+        branch_name="feature/backend/leaf",
+        parent_task_id=parent_id,
+        project_id=proj_id,
+    )
+    parent = MagicMock(id=parent_id, branch_name="feature/main_pm/cellroot")
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid, _t=t, _p=parent, _pid=parent_id: (
+        _p if tid == _pid else _t
+    )
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.get_subtasks.return_value = []
+    task_svc.project_default_branch_for_task.return_value = "slave"
+    task_svc.cell_pm_complete.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
+    git_svc.pr_merge.return_value = {"merge_commit_sha": "abc"}
+    deps = _make_deps(task=task_svc, journal=journal_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, leaf_id, "cell scope reviewed and approved")
+
+    assert env.error is None
+    task_svc.escalate_to_ceo.assert_not_awaited()
+    git_svc.pr_merge.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # main_pm_complete subtask gate (root-task case)
 # ---------------------------------------------------------------------------
