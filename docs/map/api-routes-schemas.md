@@ -39,9 +39,9 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
 | roboco/api/routes/x.py | X (Twitter) engine — CEO-only: list/approve/reject held draft posts + set/status OAuth 1.0a credentials. |
 | roboco/api/routes/roadmap.py | Board roadmap engine — CEO-only: list open cycles + per-item approve/reject. |
-| roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` mounted only when `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both armed (`mount_telegram_miniapp_auth`); validates a Mini App's `initData` and mints the cloud-auth session cookie; adds its own unconditional `LoginRateLimiter`. |
+| roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` object, conditionally mounted (`telegram_miniapp_enabled` AND `cloud_auth_enabled`) directly inline in `app.py`'s `create_app()` (not by a helper function in this module or in `utils/telegram.py` — see the 2026-08-08 correction below); validates a Mini App's `initData` and mints the cloud-auth session cookie; the mount also installs its own unconditional `LoginRateLimiter`. |
 | roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
-| roboco/api/routes/v1/_role_dep.py | Per-role HMAC guards + `envelope_to_response` helper. |
+| roboco/api/routes/v1/_role_dep.py | Thin: builds the module-level per-role guard instances (`require_dev`, `require_qa`, ...) from `_require_roles` + `require_any_authenticated_agent` from `_require_authenticated_agent()` — both re-imported, along with `envelope_to_response`/`_log_rejection`/`_require_authenticated_agent`, from `roboco/api/utils/v1_role_dep.py` (extracted 2026-08-08, see below). |
 | roboco/api/routes/v1/do.py | Content verbs `/api/v1/do/*` (commit/note/say/dm/evidence/playbook...). |
 | roboco/api/routes/v1/flow_dev.py | Developer flow verbs. |
 | roboco/api/routes/v1/flow_qa.py | QA flow verbs (claim/pass/fail_review). |
@@ -51,6 +51,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/v1/flow_board.py | Board (product_owner/head_marketing) triage/escalate_to_ceo. |
 | roboco/api/routes/v1/flow_auditor.py | Auditor triage/i_am_idle. |
 | roboco/api/routes/v1/flow_pr_reviewer.py | PR-reviewer verbs incl. gate pr_pass/pr_fail. |
+| roboco/api/utils/*.py | Per-route-file non-`@router` helper modules (guards, response/status mappers, error translation) extracted out of `roboco/api/routes/` in the 2026-08-08 `no_helpers_in_routes` cleanup (batches A + B) — see `docs/map/_complete_map.md`'s "Route-helper extraction" entries for the full file-by-file breakdown. `utils/telegram.py` holds only the side-effect-free `_require_ceo` helper (its earlier tenant `mount_telegram_miniapp_auth` was app-wiring, not a helper, and was relocated inline into `app.py` in the round-2 fix below — not restored to `routes/telegram.py` either, since a plain function there still trips `no_helpers_in_routes`). `utils/v1_role_dep.py` (new, PR #846) holds the 4 helpers extracted out of `routes/v1/_role_dep.py`, a file left untouched by both prior batches. |
 | roboco/api/schemas/*.py | Per-domain Pydantic request/response models (one per route file). |
 | roboco/api/schemas/v1/flow.py | All flow-verb request bodies + `StrList` coercion validator. |
 | roboco/api/schemas/v1/do.py | All do-verb request bodies. |
@@ -97,14 +98,16 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `require_any_authenticated_agent` | dep | v1/_role_dep.py | HMAC-verify X-Agent-ID/role/team token; router-level guard on do + a2a. |
-| `require_<role>` (require_dev/qa/...) | dep | v1/_role_dep.py | Per-role guard: HMAC + role assertion, applied as router dependency. |
-| `envelope_to_response` | fn | v1/_role_dep.py | Convert Choreographer `Envelope` to JSON, set status from `envelope.status`. |
+| `require_any_authenticated_agent` | dep | v1/_role_dep.py (instance built from `_require_authenticated_agent()`, impl in utils/v1_role_dep.py) | HMAC-verify X-Agent-ID/role/team token; router-level guard on do + a2a. |
+| `require_<role>` (require_dev/qa/...) | dep | v1/_role_dep.py (instances built from `_require_roles`, impl in utils/v1_role_dep.py) | Per-role guard: HMAC + role assertion, applied as router dependency. |
+| `envelope_to_response` | fn | utils/v1_role_dep.py (re-imported into v1/_role_dep.py) | Convert Choreographer `Envelope` to JSON, set status from `envelope.status`. |
 | `_check_agent_auth_token` | fn | api/deps.py:217 | Core HMAC verify; rejects invalid tokens even in dev; required-only in prod. |
 | `require_panel_token` | dep | api/deps.py:251 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
 | `CurrentAgentContext` | dep | api/deps.py:376 | Resolves agent from headers + HMAC, injects `AgentContext`. |
-| `_require_ceo` | dep | routes/orchestrator.py:37 | Router-level CEO-HMAC guard on orchestrator control routes. |
-| `_validated_agent_id` | fn | routes/orchestrator.py:99 | Path-injection guard (rejects empty/`.`/`..`/`/`/`\`/NUL) then normalizes via `_resolve_to_slug` — spawn/stop/status/resolve-wait/mark-waiting accept either a DB UUID or a slug and address the runtime container by the resolved slug; an unknown UUID passes through unchanged. |
+| `_require_ceo` | dep | utils/orchestrator.py:35 (re-imported into routes/orchestrator.py, extracted 2026-08-08, finding F-6342aeab) | Router-level CEO-HMAC guard on orchestrator control routes. |
+| `_validated_agent_id` | fn | utils/orchestrator.py:70 (re-imported into routes/orchestrator.py, extracted 2026-08-08, finding F-6342aeab) | Path-injection guard (rejects empty/`.`/`..`/`/`/`\`/NUL) then normalizes via `_resolve_to_slug` — spawn/stop/status/resolve-wait/mark-waiting accept either a DB UUID or a slug and address the runtime container by the resolved slug; an unknown UUID passes through unchanged. |
+| `_build_manual_spawn_prompt` | fn | utils/orchestrator.py:102 (re-imported into routes/orchestrator.py) | Builds the initial prompt for a CEO-triggered manual (panel) spawn — points the agent at the task id/title/status and trusts the gateway envelope's `next`/`remediate` for the actual claim verb. |
+| `_resolve_manual_spawn_prompt` | fn | utils/orchestrator.py:126 (re-imported into routes/orchestrator.py) | Best-effort task-aware prompt for a manual panel spawn; falls back to the raw `ceo_message` unchanged on any lookup failure (bad `task_id`, DB hiccup, missing task) so enrichment never blocks a CEO-requested spawn. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
 | `request_validation_handler` | fn | api/middleware.py:407 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
 | `_scrub_secrets` | fn | api/middleware.py:389 | Deep-redact known secret fields from logged 422 bodies. |
@@ -183,7 +186,7 @@ roboco/api/
 │   │   ├── secretary_live.py    live Secretary chat
 │   │   └── provider.py          provider catalog/keys
 │   └── v1/ (agent-gateway)
-│       ├── _role_dep.py         HMAC role guards + envelope helper
+│       ├── _role_dep.py         thin: per-role guard instances built from utils/v1_role_dep.py
 │       ├── do.py                /api/v1/do/* content verbs
 │       ├── flow_dev.py          developer flow verbs
 │       ├── flow_qa.py           QA flow verbs
@@ -224,7 +227,7 @@ roboco/api/
 ## Config Flags
 - Auth-gate mode: `_auth_required()` (env-driven; HMAC mandatory in prod-ish, optional in dev) — `api/deps.py`.
 - Feature-flag routes are inert when their backing engine is off: `release.py` (ROBOCO_RELEASE_MANAGER_ENABLED), `prompter_live.py` MegaTask batch, `optimal.py` learnings (ROBOCO_ORG_MEMORY_ENABLED), `research.py` (ROBOCO_RESEARCH_ENABLED), `provider.py` grok/self-hosted (ROBOCO_GROK / self-hosted), CI-watch/dep-update originate elsewhere but surface via orchestrator/tasks.
-- `telegram.py`'s `webapp_auth_router` doesn't merely no-op off — the route doesn't exist at all unless `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both true (`mount_telegram_miniapp_auth`, called from `app.py`, mirrors `mount_cloud_auth`'s conditional mount).
+- `telegram.py`'s `webapp_auth_router` doesn't merely no-op off — the route doesn't exist at all unless `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both true. As of PR #846 the conditional mount (`app.include_router(webapp_auth_router, ...)` + the `LoginRateLimiter` middleware install) is inlined directly at its call site inside `create_app()` in `app.py`, mirroring `mount_cloud_auth`'s conditional-mount pattern — there is no `mount_telegram_miniapp_auth` function anymore (an earlier round moved it into `utils/telegram.py`, which forced a lazy back-import and still misplaced app-wiring in a helper-only module; a second round moved it into `routes/telegram.py` instead, which just relocated the same `no_helpers_in_routes` violation since routes is helper-forbidden too; inlining in `app.py`, which only forbids `model`, is what actually resolved it).
 
 ## Gotchas
 - `do` + `a2a` routers are token-only (any authenticated role), not role-asserted — any signed agent can call any content verb; service-layer scope is the only gate.
@@ -257,6 +260,7 @@ roboco/api/
 > - `baa87d58` (2026-07-19, PR #576, Telegram Mini App V4) adds `GET /api/telegram/today` (`require_ceo_role` + 30/60s rate limit) backed by new `TgCockpitService` + the `TelegramTodayResponse`/`TodayNeedsYou`/`TodayFleet`/`TodaySpend`/`TodayVelocity`/`TodayShip` schema family in `api/schemas/telegram.py` — see `docs/map/notification.md` for the service, `docs/map/panel.md` for the cockpit's Today tab.
 > - `461a6e1a`+`96401f4c`+`5f32d876` (2026-07-18/19, forge Phases 1-4, #571/#575/#581) — no new HTTP routes (the forge routing is internal to `GitService`), but `roboco/api/schemas/project.py`/`project_fields.py` gain `git_provider` (project CRUD schemas) and the shared `task_project_fields` helper the X/video routes now call — see `docs/map/worksession-git.md` and `docs/map/product-strategy-research-pitch.md`.
 > - ("panel-perf-p3-p4") adds `GET /api/dashboard/metrics/members` (batch scorecard fetch) — see `docs/map/metrics-observability.md`.
+> - `6c1a3b18`+`95114553` (2026-08-08, PR #846, `no_helpers_in_routes` placement fix) resolves two pr_gate findings the 2026-08-08 route-helper-extraction cleanup left open: (1) `mount_telegram_miniapp_auth` — app/route wiring, not a helper — is removed from both `utils/telegram.py` (where it forced a lazy back-import of `webapp_auth_router`) and, after a QA-caught round-2 relocation attempt into `routes/telegram.py` (still helper-forbidden), inlined directly into `app.py`'s `create_app()` at the existing mount call site; `utils/telegram.py` now holds only `_require_ceo`. (2) `routes/v1/_role_dep.py`'s 4 module-level helpers (`_require_roles`, `_require_authenticated_agent`, `envelope_to_response`, `_log_rejection`) — untouched by the prior batch-A/B cleanup — are extracted verbatim into new `utils/v1_role_dep.py`; `_role_dep.py` now only re-imports them and builds the per-role guard instances. No `@router` handler, path, or response schema changed in either fix.
 
 ## Regression Risks
 
@@ -264,7 +268,7 @@ roboco/api/
 |-------|-----------|-------|----------|
 | do/a2a any-role token gate | v1/do.py:43, a2a.py:114 | `require_any_authenticated_agent` only verifies HMAC + that the agent exists; it does NOT assert the role matches the verb's intended role family — a QA-signed token could call `do/commit`, or any agent could call the participant-scoped `a2a` routes (send/conversations) for a pair it has no policy access to (only the gateway's `can_a2a_direct`/`validate_a2a_access` matrix, a service-layer check, stops it). Service-layer scope is the sole guard on these paths; a missed service check = privilege escape. **Correction:** the `/chat/admin/*` routes (org-wide live view + reply-as-CEO) are NOT on this gate — they carry their own router-level `_require_ceo` guard, added in wave 2 (`da563487`) and extended to `/chat/admin/pairs` in wave 2c (`876e19b3`); a non-CEO agent 403s before reaching the service layer on those. | High |
 | 422 response echoes secrets | middleware.py:407 | `_scrub_secrets` redacts only the **log** body; the JSON response still contains `body` with the caller's original secret fields. A 422 on `git_token`/`api_key` returns the secret back to the client (and to any MITM/log of the response). | High |
-| orchestrator CEO gate vs release CEO gate divergence | orchestrator.py:37 vs release.py:32 | Two independent `_require_ceo` implementations: orchestrator uses HMAC header verification, release uses `agent.role == CEO` from `CurrentAgentContext`. If one path's HMAC/context resolution drifts, the two CEO surfaces enforce different identities. | Medium |
+| orchestrator CEO gate vs release CEO gate divergence | utils/orchestrator.py:35 vs release.py:32 | Two independent `_require_ceo` implementations: orchestrator uses HMAC header verification, release uses `agent.role == CEO` from `CurrentAgentContext`. If one path's HMAC/context resolution drifts, the two CEO surfaces enforce different identities. | Medium |
 | SSE transport errors swallowed | prompter_live.py:122, secretary_live.py:61, a2a.py:195 | `EventSourceResponse` streams run long-lived; a Choreographer/orchestrator raise mid-stream is caught by `contextlib` suppress but can drop the stream silently without a terminal event to the panel. | Medium |
 | Cross-repo PR collision via /api/work-sessions/{id}/pr/merge | work_session.py:259 | PR merge by global `pr_number` (no project_id scoping in the route signature) — the same class of cross-repo collision already fixed in `cell_pm_complete` could recur if this endpoint is wired to merge. | Medium |
 | Dashboard/metrics endpoints role-gating | dashboard.py:58+ | `/ceo`, `/auditor`, `/scorecard/*` rely on `CurrentAgentContext` but the route-level gating is weak (no explicit `require_pm_or_above`); a non-CEO agent calling `/dashboard/ceo` is filtered only by service-layer logic, not the router. | Medium |

@@ -5,46 +5,23 @@ cancel it) — nothing here creates a task. Mirrors
 ``roboco.api.routes.pest_control``.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.scales import (
     RebalanceCycleResponse,
     RebalanceItemActionResponse,
-    RebalanceItemResponse,
     RebalanceRejectRequest,
 )
+from roboco.api.utils.scales import require_ceo as _require_ceo
+from roboco.api.utils.scales import to_response as _to_response
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.scales_service import get_scales_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the Scales queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> RebalanceCycleResponse:
-    payload = markers.get_rebalance_plan(task) or {}
-    items = [RebalanceItemResponse(**item) for item in payload.get("items", [])]
-    return RebalanceCycleResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        items=items,
-    )
 
 
 @router.get("/cycles", response_model=list[RebalanceCycleResponse])

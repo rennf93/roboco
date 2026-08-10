@@ -1,4 +1,4 @@
-"""Unit tests for the /git/file range computation (roboco.api.routes.git).
+"""Unit tests for the /git/file range computation (roboco.api.utils.git).
 
 Pure logic — no DB, no git. Covers the line/context windowing, explicit
 range, whole-file cap, and truncation flag.
@@ -6,7 +6,7 @@ range, whole-file cap, and truncation flag.
 
 from __future__ import annotations
 
-from roboco.api.routes.git import _FILE_MAX_LINES, _compute_file_range
+from roboco.api.utils.git import _FILE_MAX_LINES, _compute_file_range
 
 
 class TestComputeFileRange:

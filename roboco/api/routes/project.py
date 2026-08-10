@@ -4,13 +4,10 @@ Project API Routes
 CRUD operations for managing git projects/repositories.
 """
 
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-
-if TYPE_CHECKING:
-    from roboco.db.tables import ProjectTable
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -33,15 +30,14 @@ from roboco.api.schemas.project import (
     project_to_response,
     project_to_summary,
 )
+from roboco.api.utils.project import action_response as _action_response
+from roboco.api.utils.project import get_project_or_404 as _get_project_or_404
 from roboco.foundation.policy.conventions.models import ConventionsStandard
 from roboco.models.base import Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.security import guard_deco
-from roboco.services.conventions import (
-    ScaffoldResult,
-    get_conventions_service,
-)
-from roboco.services.project import ProjectService, get_project_service
+from roboco.services.conventions import get_conventions_service
+from roboco.services.project import get_project_service
 
 router = APIRouter()
 
@@ -489,28 +485,6 @@ async def remove_agent_access(
 # =============================================================================
 # CONVENTIONS ENDPOINTS
 # =============================================================================
-
-
-async def _get_project_or_404(
-    service: ProjectService, project_id: str
-) -> "ProjectTable":
-    """Resolve a project by UUID or slug, raising 404 when absent."""
-    try:
-        project = await service.get(UUID(project_id))
-    except ValueError:
-        project = await service.get_by_slug(project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project not found: {project_id}",
-        )
-    return project
-
-
-def _action_response(result: ScaffoldResult) -> ConventionsActionResponse:
-    return ConventionsActionResponse(
-        pr_number=result.pr_number, branch=result.branch, created=result.created
-    )
 
 
 @router.get("/{project_id}/conventions", response_model=ConventionsResponse)

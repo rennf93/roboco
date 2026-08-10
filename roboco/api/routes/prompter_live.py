@@ -39,8 +39,17 @@ from roboco.api.schemas.prompter_live import (
     StartLiveRequest,
     StartLiveResponse,
 )
+from roboco.api.utils.prompter_live import (
+    intake_scope_for_task as _intake_scope_for_task,
+)
+from roboco.api.utils.prompter_live import (
+    start_batch_re_interview as _start_batch_re_interview,
+)
+from roboco.api.utils.prompter_live import (
+    translate_service_error as _translate_service_error,
+)
 from roboco.security import guard_deco, prompt_injection_validator
-from roboco.services.base import NotFoundError, ServiceError, ValidationError
+from roboco.services.base import ServiceError
 from roboco.services.prompter import get_prompter_service
 from roboco.services.prompter_live import get_live_registry
 
@@ -48,28 +57,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 router = APIRouter()
-
-
-def _translate_service_error(e: ServiceError) -> HTTPException:
-    """Service error → HTTP status (mirrors the legacy prompter route)."""
-    if isinstance(e, NotFoundError):
-        return HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "not_found", "message": e.message},
-        )
-    if isinstance(e, ValidationError):
-        return HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "validation_error",
-                "message": e.message,
-                "field": e.field,
-            },
-        )
-    return HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail={"error": "internal_error", "message": e.message},
-    )
 
 
 @router.post(
@@ -322,59 +309,6 @@ async def confirm_live_batch(
 
     await get_orchestrator().reap_intake_session(session_id)
     return result
-
-
-async def _intake_scope_for_task(
-    db: DbSession, task: Any
-) -> tuple[str | None, str | None]:
-    """Return (project_slug, product_id) intake scope for a task — exactly one."""
-    if task.product_id is not None:
-        return None, str(task.product_id)
-    if task.project_id is not None:
-        from roboco.services.project import get_project_service
-
-        proj = await get_project_service(db).get(UUID(str(task.project_id)))
-        return (proj.slug if proj else None), None
-    return None, None
-
-
-async def _start_batch_re_interview(
-    db: DbSession, umbrella: Any, entries: list[dict[str, Any]]
-) -> StartLiveResponse:
-    """Cold re-interview for a MegaTask umbrella.
-
-    Recovers the batch's multi-repo scope from its root-subtasks' own project /
-    cell-map targets (no single project/product lives on the branchless
-    umbrella) and seeds a batch-aware redraft message. 400 only when nothing is
-    recoverable (e.g. every root-subtask was itself cancelled).
-    """
-    from roboco.services.prompter import compose_batch_redraft_message
-    from roboco.services.task import get_task_service
-
-    task_service = get_task_service(db)
-    umbrella_id = UUID(str(umbrella.id))
-    children = await task_service.get_live_subtasks(umbrella_id)
-    project_ids = await task_service.distinct_projects_for_batch(umbrella_id)
-    if not project_ids:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This MegaTask has no recoverable projects to re-interview against.",
-        )
-    initial_message = compose_batch_redraft_message(umbrella, children, entries)
-
-    session_id = uuid4().hex
-    try:
-        await get_orchestrator().start_intake_session(
-            session_id,
-            project_ids=[str(pid) for pid in project_ids],
-            initial_message=initial_message,
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start re-interview session: {exc}",
-        ) from exc
-    return StartLiveResponse(session_id=session_id, project_ids=project_ids)
 
 
 @router.post(

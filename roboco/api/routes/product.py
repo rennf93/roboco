@@ -18,15 +18,12 @@ from roboco.api.schemas.product import (
     product_to_response,
     product_to_summary,
 )
-from roboco.models.product import ProductCellMapping, ProductCreate, ProductUpdate
+from roboco.api.utils.product import to_mappings as _to_mappings
+from roboco.models.product import ProductCreate, ProductUpdate
 from roboco.services.base import ConflictError
 from roboco.services.product import get_product_service
 
 router = APIRouter()
-
-
-def _to_mappings(cells: list) -> list[ProductCellMapping]:
-    return [ProductCellMapping(team=c.team, project_id=c.project_id) for c in cells]
 
 
 @router.get("", response_model=list[ProductSummaryResponse])

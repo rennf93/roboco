@@ -826,7 +826,7 @@ async def test_rebase_endpoint_pm_gets_200() -> None:
 
     with (
         patch(
-            "roboco.api.routes.git.get_project_service", return_value=mock_project_svc
+            "roboco.api.utils.git.get_project_service", return_value=mock_project_svc
         ),
         patch("roboco.api.routes.git.get_git_service", return_value=mock_git_svc),
     ):

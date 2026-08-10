@@ -11,13 +11,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.github_app import (
     GitHubAppCredentialsSetRequest,
     GitHubAppCredentialsStatus,
     InstallationRepositoryResponse,
     InstallationResponse,
 )
+from roboco.api.utils.github_app import require_ceo as _require_ceo
 from roboco.security import guard_deco
 from roboco.services.github_app_auth import (
     GitHubAppAPIError,
@@ -32,10 +33,6 @@ from roboco.services.github_app_credentials import (
 )
 
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="manage the GitHub App integration")
 
 
 @router.get("/credentials", response_model=GitHubAppCredentialsStatus)

@@ -5675,6 +5675,14 @@ The chain is linear and complete (001→076), with `init_db` running `upgrade he
 
 The FastAPI application shell, request pipeline, and real-time WebSocket fan-out layer for RoboCo. `app.py` builds the ASGI app, wires ~40 route routers, and runs the async lifespan (DB migrations, feature-flag overlay, transcription/extraction/RAG/learning service init, ordered shutdown). `middleware.py` adds correlation IDs, request logging, and a full exception-handler chain mapping domain/service/HTTP errors to structured JSON. `websocket.py` + `websocket_bridge.py` own the live panel streams (agents, notifications, system) with per-connection bounded send queues and an event-bus bridge. `deps.py` is the dependency-injection spine: agent header auth, role-gate helpers, and Choreographer/ContentActions wiring. `utils/` provides route-layer error factories and get-or-404/ownership helpers. `middleware_docs.py` enforces the docs-path permission matrix. `roboco/security.py` (outside `api/` but wired here) supplies the optional fastapi-guard HTTP security layer: `apply_guard(app)` mounts `SecurityMiddleware` last — outermost — in `create_app`, and `guarded_lifespan(lifespan)` wraps the async lifespan, both gated by `ROBOCO_GUARD_ENABLED` (default off, byte-for-byte unchanged request path while off).
 
+**Route-helper extraction (2026-08-08, `no_helpers_in_routes` cleanup, batch A).** `roboco/api/utils/` gained 13 new per-route-file modules (`a2a.py`, `coroner.py`, `dogfood.py`, `git.py`, `pitch.py`, `release.py`, `sentinel.py`, `spackle.py`, `system.py`, `tasks.py`, `telegram.py`, `video.py`, `work_session.py`) holding the non-`@router` module-level helpers that `roboco/api/routes/{same name}.py` used to define inline — a retry of the reverted `d48463f7`/PR#769/#793 extraction, done this time one file at a time with the `@router` inventory verified unchanged after each. `telegram.py`'s `mount_telegram_miniapp_auth` moved too (app-wiring, not a route helper; `app.py` and its integration test now import it from here). Batch B (the remaining `roboco/api/routes/` files) is a separate, disjoint-file follow-up.
+
+> Post-snapshot correction (2026-08-08, PR #846): `mount_telegram_miniapp_auth` living in `utils/telegram.py` was itself a pr_gate finding (app/route wiring in a helper-only module, forcing a lazy back-import) — it did not survive. It is now inlined directly into `app.py`'s `create_app()` at the existing mount call site; `utils/telegram.py` holds only `_require_ceo`. Separately, `routes/v1/_role_dep.py` (untouched by batches A/B above) had its own 4 module-level helpers extracted into new `utils/v1_role_dep.py` in the same PR.
+
+**Route-helper extraction, batch B (2026-08-08, same cleanup, the batch-A follow-up).** `roboco/api/utils/` gained 18 more per-route-file modules (`board_programs.py`, `dashboard.py`, `docs.py`, `github_app.py`, `mirror.py`, `optimal.py`, `periscope.py`, `pest_control.py`, `playbooks.py`, `product.py`, `project.py`, `prompter_live.py`, `provider.py`, `research.py`, `roadmap.py`, `scales.py`, `secretary.py`, `x.py`) — every remaining `roboco/api/routes/` file that still reported a `no_helpers_in_routes` finding after batch A, same one-file-at-a-time discipline and the same never-touch-`@router`/schemas rule. `board_programs.py`'s `BoardProgramResponse` response model stays defined in the route module untouched (`to_response()` resolves it via a deferred import to avoid a circular import); that pre-existing model placement is waived (`.roboco/conventions.yml`) rather than moved, per the task's explicit instruction not to repeat the reverted `d48463f7`/#769/#793 regression. `research.py`'s module-level quota tracker singleton moved along with `_enforce_quota`, so `test_research_routes.py`'s monkeypatch target repoints to `roboco.api.utils.research`. Between the two batches every `roboco/api/routes/` file reported 0 `no_helpers_in_routes` findings except `orchestrator.py`, which batch A deliberately left untouched (4 remaining hits, tracked separately) — see the correction below.
+
+> Post-batch-B correction (2026-08-08, finding F-6342aeab): a prior attempt to fold the `orchestrator.py` fix into sibling subtask `9f740deb` never actually touched the file. `_require_ceo`, `_validated_agent_id`, `_build_manual_spawn_prompt`, and `_resolve_manual_spawn_prompt` are now moved verbatim into a new `roboco/api/utils/orchestrator.py`, same discipline as batches A/B (`@router` decorators, path constants, and response schemas in `routes/orchestrator.py` untouched); `tests/unit/api/test_orchestrator_manual_spawn.py`'s imports + monkeypatch targets repoint to `roboco.api.utils.orchestrator`. Every `roboco/api/routes/` file now reports 0 `no_helpers_in_routes` findings.
+
 ## Files
 
 | Path | Role | approx LOC |
@@ -5688,6 +5696,38 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `roboco/api/utils/__init__.py` | Re-export surface for error factories + resource helpers | ~43 |
 | `roboco/api/utils/errors.py` | HTTPException factories + `handle_service_error` + `service_error_handler` decorator | ~214 |
 | `roboco/api/utils/resources.py` | `get_or_404`, `get_by_field_or_404`, `require_ownership`/`require_recipient`/`require_membership` | ~180 |
+| `roboco/api/utils/tasks.py` | Helpers extracted from `routes/tasks.py`: `_StatusOverride` dataclass, PM-editor scope/field enforcement, error translation, null-clears, batch-shape reassertion, cell-map/complete/merge helpers | ~462 |
+| `roboco/api/utils/video.py` | Helpers extracted from `routes/video.py`: cut/preview-path resolution, response/history builders, orientation-frame listing | ~223 |
+| `roboco/api/utils/git.py` | Helpers extracted from `routes/git.py`: file-range compute, service/git-error → HTTPException translation, branch-line parsing | ~131 |
+| `roboco/api/utils/pitch.py` | Helpers extracted from `routes/pitch.py`: exception/response translation, cell-list parsing | ~79 |
+| `roboco/api/utils/work_session.py` | Helpers extracted from `routes/work_session.py`: session-ownership assertions (dev + cell-PM) | ~67 |
+| `roboco/api/utils/coroner.py` | Helpers extracted from `routes/coroner.py`: CEO-only guard, postmortem-task → response mapping | ~53 |
+| `roboco/api/utils/release.py` | Helpers extracted from `routes/release.py`: CEO-only guard, status/response mapping for release-proposal tasks | ~53 |
+| `roboco/api/utils/telegram.py` | Helpers extracted from `routes/telegram.py`, incl. `mount_telegram_miniapp_auth` (app-wiring, called from `app.py`) — superseded 2026-08-08 (PR #846): `mount_telegram_miniapp_auth` no longer lives here (inlined into `app.py`'s `create_app()` instead); this file now holds only `_require_ceo` | ~13 |
+| `roboco/api/utils/a2a.py` | Helpers extracted from `routes/a2a.py`: CEO-only guard, reply-target resolution | ~39 |
+| `roboco/api/utils/sentinel.py` | Helpers extracted from `routes/sentinel.py`: CEO-only guard, quality-report response mapping | ~38 |
+| `roboco/api/utils/dogfood.py` | Helpers extracted from `routes/dogfood.py`: CEO-only guard, status/response mapping for Dogfood cycle tasks | ~34 |
+| `roboco/api/utils/spackle.py` | Helpers extracted from `routes/spackle.py`: CEO-only guard, status/response mapping for Spackle cycle tasks | ~34 |
+| `roboco/api/utils/system.py` | Helper extracted from `routes/system.py`: rate-limit resume-at computation | ~18 |
+| `roboco/api/utils/prompter_live.py` | Helpers extracted from `routes/prompter_live.py`: service-error translation, intake-scope resolution, batch re-interview kickoff | ~88 |
+| `roboco/api/utils/x.py` | Helpers extracted from `routes/x.py`: CEO-only guard, status/response/history-response mapping for X post-queue tasks | ~83 |
+| `roboco/api/utils/provider.py` | Helpers extracted from `routes/provider.py`: provider-remediation lookup (+ dict), complexity-override parsing | ~64 |
+| `roboco/api/utils/research.py` | Helpers extracted from `routes/research.py`: role guard, `RESEARCH_ROLES`, module-level quota tracker + `_enforce_quota` | ~49 |
+| `roboco/api/utils/board_programs.py` | Helpers extracted from `routes/board_programs.py`: CEO-only guard, response mapping (deferred import of the route module's `BoardProgramResponse` to dodge a circular import) | ~45 |
+| `roboco/api/utils/project.py` | Helpers extracted from `routes/project.py`: project-or-404 lookup, action-response mapping | ~39 |
+| `roboco/api/utils/periscope.py` | Helpers extracted from `routes/periscope.py`: CEO-only guard, response mapping | ~37 |
+| `roboco/api/utils/roadmap.py` | Helpers extracted from `routes/roadmap.py`: CEO-only guard, status/response mapping for roadmap-cycle-item tasks | ~35 |
+| `roboco/api/utils/mirror.py` | Helpers extracted from `routes/mirror.py`: CEO-only guard, status/response mapping for messaging-fix tasks | ~34 |
+| `roboco/api/utils/pest_control.py` | Helpers extracted from `routes/pest_control.py`: CEO-only guard, status/response mapping for bug-hunt tasks | ~34 |
+| `roboco/api/utils/scales.py` | Helpers extracted from `routes/scales.py`: CEO-only guard, status/response mapping for rebalance-plan tasks | ~34 |
+| `roboco/api/utils/optimal.py` | Helper extracted from `routes/optimal.py`: KB-denial response builder | ~33 |
+| `roboco/api/utils/docs.py` | Helper extracted from `routes/docs.py`: unauthorized-response builder | ~26 |
+| `roboco/api/utils/dashboard.py` | Helper extracted from `routes/dashboard.py`: auditor-or-CEO guard (+ role frozenset) | ~26 |
+| `roboco/api/utils/playbooks.py` | Helper extracted from `routes/playbooks.py`: curator-role guard (+ role frozenset) | ~20 |
+| `roboco/api/utils/secretary.py` | Helper extracted from `routes/secretary.py`: secretary-or-CEO guard (renamed `_require`→`require`, + role frozenset) | ~20 |
+| `roboco/api/utils/github_app.py` | Helper extracted from `routes/github_app.py`: CEO-only guard | ~11 |
+| `roboco/api/utils/product.py` | Helper extracted from `routes/product.py`: mapping-list response builder | ~11 |
+| `roboco/api/utils/orchestrator.py` | Helpers extracted from `routes/orchestrator.py` (2026-08-08 correction, finding F-6342aeab): CEO-HMAC router guard (`_require_ceo`), agent-id path-injection guard + slug normalization (`_validated_agent_id`), manual-spawn prompt builder + best-effort task-aware resolver (`_build_manual_spawn_prompt`, `_resolve_manual_spawn_prompt`) | ~146 |
 | `roboco/api/__init__.py` | Deliberately does NOT re-export `app` (circular-import guard, documented) | ~14 |
 | `roboco/security.py` | fastapi-guard 7.2.1 / guard-core 3.3.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~407 |
 
@@ -6010,7 +6050,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
 | roboco/api/routes/x.py | X (Twitter) engine — CEO-only: list/approve/reject held draft posts + set/status OAuth 1.0a credentials. |
 | roboco/api/routes/roadmap.py | Board roadmap engine — CEO-only: list open cycles + per-item approve/reject. |
-| roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` mounted only when `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both armed (`mount_telegram_miniapp_auth`); validates a Mini App's `initData` and mints the cloud-auth session cookie; adds its own unconditional `LoginRateLimiter`. |
+| roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` object, conditionally mounted (`telegram_miniapp_enabled` AND `cloud_auth_enabled`) inline in `app.py`'s `create_app()` as of PR #846 (see the post-snapshot correction below — no `mount_telegram_miniapp_auth` function exists anymore); the mount also installs its own unconditional `LoginRateLimiter`. |
 | roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
 | roboco/api/routes/v1/_role_dep.py | Per-role HMAC guards + `envelope_to_response` helper. |
 | roboco/api/routes/v1/do.py | Content verbs `/api/v1/do/*` (commit/note/say/dm/evidence/playbook...). |
@@ -6152,7 +6192,7 @@ roboco/api/
 │   │   ├── secretary_live.py    live Secretary chat
 │   │   └── provider.py          provider catalog/keys
 │   └── v1/ (agent-gateway)
-│       ├── _role_dep.py         HMAC role guards + envelope helper
+│       ├── _role_dep.py         thin: per-role guard instances built from utils/v1_role_dep.py (PR #846)
 │       ├── do.py                /api/v1/do/* content verbs
 │       ├── flow_dev.py          developer flow verbs
 │       ├── flow_qa.py           QA flow verbs
@@ -6193,7 +6233,7 @@ roboco/api/
 ## Config Flags
 - Auth-gate mode: `_auth_required()` (env-driven; HMAC mandatory in prod-ish, optional in dev) — `api/deps.py`.
 - Feature-flag routes are inert when their backing engine is off: `release.py` (ROBOCO_RELEASE_MANAGER_ENABLED), `prompter_live.py` MegaTask batch, `optimal.py` learnings (ROBOCO_ORG_MEMORY_ENABLED), `research.py` (ROBOCO_RESEARCH_ENABLED), `provider.py` grok/self-hosted (ROBOCO_GROK / self-hosted), CI-watch/dep-update originate elsewhere but surface via orchestrator/tasks.
-- `telegram.py`'s `webapp_auth_router` doesn't merely no-op off — the route doesn't exist at all unless `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both true (`mount_telegram_miniapp_auth`, called from `app.py`, mirrors `mount_cloud_auth`'s conditional mount).
+- `telegram.py`'s `webapp_auth_router` doesn't merely no-op off — the route doesn't exist at all unless `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both true. As of PR #846 the conditional mount + `LoginRateLimiter` install is inlined directly in `app.py`'s `create_app()` (mirrors `mount_cloud_auth`'s conditional-mount pattern) — there is no `mount_telegram_miniapp_auth` function anymore; two intermediate placements (`utils/telegram.py`, then `routes/telegram.py`) each tripped `no_helpers_in_routes`/helper-forbidden before landing in `app.py`, which only forbids `model`.
 
 ## Gotchas
 - `do` + `a2a` routers are token-only (any authenticated role), not role-asserted — any signed agent can call any content verb; service-layer scope is the only gate.
@@ -6226,6 +6266,7 @@ roboco/api/
 > - `baa87d58` (2026-07-19, PR #576, Telegram Mini App V4) adds `GET /api/telegram/today` (`require_ceo_role` + 30/60s rate limit) backed by new `TgCockpitService` + the `TelegramTodayResponse`/`TodayNeedsYou`/`TodayFleet`/`TodaySpend`/`TodayVelocity`/`TodayShip` schema family in `api/schemas/telegram.py` — see `docs/map/notification.md` for the service, `docs/map/panel.md` for the cockpit's Today tab.
 > - `461a6e1a`+`96401f4c`+`5f32d876` (2026-07-18/19, forge Phases 1-4, #571/#575/#581) — no new HTTP routes (the forge routing is internal to `GitService`), but `roboco/api/schemas/project.py`/`project_fields.py` gain `git_provider` (project CRUD schemas) and the shared `task_project_fields` helper the X/video routes now call — see `docs/map/worksession-git.md` and `docs/map/product-strategy-research-pitch.md`.
 > - ("panel-perf-p3-p4") adds `GET /api/dashboard/metrics/members` (batch scorecard fetch) — see `docs/map/metrics-observability.md`.
+> - `6c1a3b18`+`95114553` (2026-08-08, PR #846, `no_helpers_in_routes` placement fix) resolves two pr_gate findings the 2026-08-08 route-helper-extraction cleanup (batches A/B above) left open: `mount_telegram_miniapp_auth` (app/route wiring, not a helper) is removed from `utils/telegram.py` and, after a QA-caught round-2 relocation into `routes/telegram.py` (still helper-forbidden), inlined directly into `app.py`'s `create_app()`; `utils/telegram.py` now holds only `_require_ceo`. `routes/v1/_role_dep.py`'s 4 module-level helpers — untouched by batches A/B — are extracted verbatim into new `utils/v1_role_dep.py`; `_role_dep.py` now only re-imports them and builds the per-role guard instances. No `@router` handler, path, or response schema changed.
 
 ## Regression Risks
 

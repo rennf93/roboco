@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
-from roboco.api.routes.tasks import _apply_null_clears
+from roboco.api.utils.tasks import _apply_null_clears
 
 
 def _task(**overrides: object) -> SimpleNamespace:

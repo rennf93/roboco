@@ -17,6 +17,8 @@ from roboco.api.schemas.secretary import (
     DirectiveResponse,
     DirectiveSubmit,
 )
+from roboco.api.utils.secretary import SECRETARY_OR_CEO
+from roboco.api.utils.secretary import require as _require
 from roboco.models import AgentRole
 from roboco.models.secretary import DirectiveKind, DirectiveStatus
 from roboco.security import guard_deco, prompt_injection_validator
@@ -25,21 +27,11 @@ from roboco.services.secretary import get_secretary_service
 
 router = APIRouter()
 
-_SECRETARY_OR_CEO = frozenset({AgentRole.SECRETARY, AgentRole.CEO})
-
-
-def _require(agent: CurrentAgentContext, allowed: frozenset[AgentRole]) -> None:
-    if agent.role not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"role '{agent.role}' not permitted on the Secretary surface",
-        )
-
 
 @router.get("/state", response_model=CompanyStateResponse)
 async def read_state(db: DbSession, agent: CurrentAgentContext) -> CompanyStateResponse:
     """Compact company-state snapshot (Secretary or CEO)."""
-    _require(agent, _SECRETARY_OR_CEO)
+    _require(agent, SECRETARY_OR_CEO)
     state = await get_secretary_service(db).read_company_state()
     return CompanyStateResponse(**state)
 
@@ -56,7 +48,7 @@ async def search_tasks(
     The CEO refers to tasks by NAME in the Secretary chat; this resolves a
     name to concrete ids so a directive can target the right task.
     """
-    _require(agent, _SECRETARY_OR_CEO)
+    _require(agent, SECRETARY_OR_CEO)
     from roboco.services.task import get_task_service
 
     rows = await get_task_service(db).search_tasks(q, limit=limit)
@@ -78,7 +70,7 @@ async def read_task(
 ) -> dict[str, object]:
     """Read one task's full detail — content, notes, plan, progress, PR ref
     (Secretary or CEO). Secretary FULL task access."""
-    _require(agent, _SECRETARY_OR_CEO)
+    _require(agent, SECRETARY_OR_CEO)
     try:
         return await get_secretary_service(db).read_task(task_id)
     except NotFoundError as exc:
@@ -101,7 +93,7 @@ async def submit_directive(
     data: DirectiveSubmit, db: DbSession, agent: CurrentAgentContext
 ) -> DirectiveResponse:
     """Submit a directive (Secretary or CEO). Gated kinds queue; others run."""
-    _require(agent, _SECRETARY_OR_CEO)
+    _require(agent, SECRETARY_OR_CEO)
     try:
         kind = DirectiveKind(data.kind)
     except ValueError as exc:
