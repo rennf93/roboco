@@ -68,6 +68,22 @@ async def test_is_behind_base_parses_left_right_counts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_is_behind_base_parses_real_tab_separated_output() -> None:
+    """Real ``git rev-list --left-right --count`` output is TAB-separated, not
+    space-separated — a space-joined stand-in like '3 2' passes under both the
+    old ``.partition(" ")`` parse and the current ``.split()`` one, so it can't
+    prove the fix. Feed a literal TAB (as git actually emits) and assert it
+    still parses to (3, 2), the case the old parse silently fell through to
+    (0, 0) on."""
+    svc = _git_service()
+    await _wire(svc, rev_list_stdout="3\t2")
+
+    behind, ahead = await svc.is_behind_base(_task(), base_branch=_BASE)
+
+    assert (behind, ahead) == (3, 2)
+
+
+@pytest.mark.asyncio
 async def test_is_behind_base_up_to_date_returns_zeros() -> None:
     """'0 5' → not behind (0), 5 commits ahead."""
     svc = _git_service()

@@ -156,8 +156,8 @@ def _evidence_task(task_id: Any) -> MagicMock:
 async def test_conventions_skipped_when_git_legs_already_timed_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both the diff and list_changed_files legs time out (evidence_gaps
-    ends up non-empty) — _qa_convention_findings (and the real
+    """The combined diff_and_files leg times out (evidence_gaps ends up
+    non-empty) — _qa_convention_findings (and the real
     conventions_check_for_task it would call) must never run; the caller
     fills in a could_not_run skip entry and its own evidence_gaps note
     instead."""
@@ -169,8 +169,7 @@ async def test_conventions_skipped_when_git_legs_already_timed_out(
         return "unreachable"
 
     git_svc = AsyncMock()
-    git_svc.diff.side_effect = _hangs
-    git_svc.list_changed_files.side_effect = _hangs
+    git_svc.diff_and_files.side_effect = _hangs
     c = _evidence_choreographer(git_svc)
     task_id = uuid4()
     t = _evidence_task(task_id)
@@ -186,8 +185,9 @@ async def test_conventions_skipped_when_git_legs_already_timed_out(
         }
     ]
     gaps = body["evidence_gaps"]
-    assert any("pr diff unavailable" in g for g in gaps)
-    assert any("files_changed unavailable" in g for g in gaps)
+    # A combined-leg timeout kills diff AND files_changed together — the
+    # gap note names both losses, not just "pr diff".
+    assert any("pr diff + files_changed unavailable" in g for g in gaps)
     assert any("conventions findings unavailable" in g for g in gaps)
 
 
@@ -199,8 +199,7 @@ async def test_conventions_runs_when_legs_succeed(
     build (both legs succeed) still runs conventions exactly as before."""
     monkeypatch.setattr(settings, "conventions_enabled", True)
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "diff content"
-    git_svc.list_changed_files.return_value = ["README.md"]
+    git_svc.diff_and_files.return_value = ("diff content", ["README.md"])
     git_svc.conventions_check_for_task.return_value = {
         "findings": [],
         "could_not_run": False,
@@ -213,6 +212,8 @@ async def test_conventions_runs_when_legs_succeed(
     body = ev.as_dict()
 
     git_svc.conventions_check_for_task.assert_awaited_once()
+    call_kwargs = git_svc.conventions_check_for_task.await_args.kwargs
+    assert call_kwargs["changed_files"] == ["README.md"]
     assert "evidence_gaps" not in body
 
 
@@ -231,8 +232,7 @@ async def test_conventions_not_skipped_stub_when_flag_off(
         return "unreachable"
 
     git_svc = AsyncMock()
-    git_svc.diff.side_effect = _hangs
-    git_svc.list_changed_files.side_effect = _hangs
+    git_svc.diff_and_files.side_effect = _hangs
     c = _evidence_choreographer(git_svc)
     task_id = uuid4()
     t = _evidence_task(task_id)

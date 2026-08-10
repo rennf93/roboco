@@ -194,7 +194,13 @@ class QAMixin(_Base):
         ).with_introspection(task=t, role=role_str)
 
     async def _qa_convention_findings(
-        self, qa_agent_id: UUID, t: Any, *, timeout: float, gaps: list[str]
+        self,
+        qa_agent_id: UUID,
+        t: Any,
+        *,
+        timeout: float,
+        gaps: list[str],
+        changed_files: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Convention-validator findings on the task's changed files (flag-gated).
 
@@ -235,11 +241,16 @@ class QAMixin(_Base):
         signal (``evidence_gaps`` already non-empty) and skips calling this
         method entirely in that case, instead of trusting a false assumption
         and re-hitting the same cold/contended git ops unbounded.
+
+        ``changed_files`` threads the file list ``_build_qa_claim_evidence``
+        already resolved via ``diff_and_files`` straight into the validator
+        call, so this never re-derives it with its own THIRD
+        ``list_changed_files`` resolution.
         """
         if not settings.conventions_enabled:
             return []
         result = await self.git.conventions_check_for_task(
-            qa_agent_id, t, timeout=timeout
+            qa_agent_id, t, timeout=timeout, changed_files=changed_files
         )
         if result.get("could_not_run"):
             reason = result.get("reason") or "validator could not run"
@@ -282,50 +293,58 @@ class QAMixin(_Base):
         authoritative source) + journal_highlights so the QA agent has
         the full PR context up-front and can't miss a piece.
 
-        files_changed comes from ``git.list_changed_files``
-        instead of ``work_session.files_modified``. The legacy
-        ``add_files_modified`` HTTP path that populated files_modified
-        is not called by the gateway ``commit()``, so the work_session
-        list was always empty — QA saw no files even on real PRs.
+        files_changed comes from ``git.diff_and_files`` instead of
+        ``work_session.files_modified``. The legacy ``add_files_modified``
+        HTTP path that populated files_modified is not called by the
+        gateway ``commit()``, so the work_session list was always empty —
+        QA saw no files even on real PRs.
 
-        The slow legs (branch-fetch-backed diff, list_changed_files) run
-        bounded via ``run_bounded_leg`` against ONE shared ``LegBudget`` for
-        this whole build — a timeout skips that piece and records a note in
-        ``evidence_gaps`` instead of hanging this advisory (non-gating) verb
-        for the whole ``flow_verb_timeout_seconds`` budget. The conventions
-        leg self-bounds separately (see ``_qa_convention_findings``) but
-        still draws its ceiling from the same shared budget.
+        The git leg (``diff_and_files`` — one workspace/token/head/base
+        resolution, the full diff and the ``--name-only`` diff run
+        concurrently as subprocesses) runs bounded via ``run_bounded_leg``
+        against a shared ``LegBudget`` for this whole build — a timeout
+        skips it and records a note (naming both the diff and
+        files_changed losses — a combined-leg timeout kills both together)
+        in ``evidence_gaps`` instead of hanging this advisory (non-gating)
+        verb for the whole ``flow_verb_timeout_seconds`` budget. It is
+        awaited on its own, sequential to the two independent DB reads
+        (journal highlights, ancestor context) — NOT gathered with them:
+        ``self.task``/``self.git``/``self.evidence_repo`` share ONE
+        request-scoped ``AsyncSession`` (see ``deps.py``), and the git
+        leg's own workspace/token resolution runs DB lookups against that
+        same session, so concurrently awaiting it alongside the DB reads
+        risks two queries racing one ``AsyncSession`` (unsupported by
+        SQLAlchemy) plus a ``wait_for``-cancelled DB query mid-flight if
+        the git leg times out. The internal subprocess-level concurrency
+        inside ``diff_and_files`` (the two git commands) is the real
+        latency win and is untouched by this. The conventions leg
+        self-bounds separately (see ``_qa_convention_findings``) but still
+        draws its ceiling from the same shared budget, and reuses the file
+        list resolved here instead of re-deriving it.
         """
-        files_changed: list[str] = []
-        diff_summary = ""
         evidence_gaps: list[str] = []
         budget = LegBudget(settings.evidence_assembly_timeout_seconds)
+
+        diff_summary, files_changed = "", []
         if t.branch_name:
-            diff_summary = await run_bounded_leg(
-                self.git.diff(branch_name=t.branch_name),
-                default="",
+            diff_summary, files_changed = await run_bounded_leg(
+                self.git.diff_and_files(branch_name=t.branch_name),
+                default=("", []),
                 budget=budget,
-                leg="pr diff",
+                leg="pr diff + files_changed",
                 hint="review the PR diff on GitHub directly",
                 task_id=task_id,
                 gaps=evidence_gaps,
             )
-            files_changed = await run_bounded_leg(
-                self.git.list_changed_files(branch_name=t.branch_name),
-                default=[],
-                budget=budget,
-                leg="files_changed",
-                hint="review the PR diff on GitHub directly",
-                task_id=task_id,
-                gaps=evidence_gaps,
-            )
-        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
-            task_id
-        )
+
         # The ask-chain (parent → root descriptions) so QA judges INTENT
         # against the intake's original analysis, not only the leaf's ACs.
         # Leaf-only journals stay (include_ancestors defaults False above);
-        # ancestor *descriptions* are the ask, not work-so-far.
+        # ancestor *descriptions* are the ask, not work-so-far. Awaited
+        # after the git leg (see docstring) instead of gathered with it.
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id
+        )
         parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
         convention_findings: list[dict[str, Any]]
         if evidence_gaps and settings.conventions_enabled:
@@ -356,6 +375,7 @@ class QAMixin(_Base):
                     budget.remaining(),
                 ),
                 gaps=evidence_gaps,
+                changed_files=files_changed,
             )
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, t.id
