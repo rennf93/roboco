@@ -275,8 +275,9 @@ function TasksPageContent() {
   const { data: projects, refetch: refetchProjects } = useProjects();
   const { data: products, refetch: refetchProducts } = useProducts();
 
-  // The stalled-task set — sourced from GET /dashboard/stalled-tasks via the
-  // shared useStalledTasks hook, never re-derived client-side. Backs the
+  // The stalled-task set — sourced from GET /tasks/blocked filtered by
+  // blocker_resolver_type=human via the shared useStalledTasks hook,
+  // never re-derived client-side. Backs the
   // "Stalled" filter toggle below.
   const {
     data: stalledTasks,
@@ -284,7 +285,7 @@ function TasksPageContent() {
     refetch: refetchStalled,
   } = useStalledTasks();
   const stalledTaskIds = useMemo(
-    () => new Set((stalledTasks ?? []).map((t) => t.task_id)),
+    () => new Set((stalledTasks ?? []).map((t) => t.id)),
     [stalledTasks],
   );
 

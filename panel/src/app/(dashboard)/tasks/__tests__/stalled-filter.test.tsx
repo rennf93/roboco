@@ -3,14 +3,14 @@ import { render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PageRefreshProvider } from "@/components/providers";
 import type { ReactNode } from "react";
-import type { StalledTask } from "@/lib/api/dashboard";
+import type { Task } from "@/types";
 
 const { list, getStalledTasks, capturedTaskTableProps } = vi.hoisted(() => ({
   list: vi.fn(async () => [
     { id: "task-1", title: "A", status: "in_progress", team: "backend" },
     { id: "task-2", title: "B", status: "in_progress", team: "backend" },
   ]),
-  getStalledTasks: vi.fn(async (): Promise<StalledTask[]> => []),
+  getStalledTasks: vi.fn(async (): Promise<Task[]> => []),
   capturedTaskTableProps: { current: null as { tasks?: unknown[] } | null },
 }));
 
@@ -62,14 +62,13 @@ describe("TasksPage — stalled filter (URL-param wired, populated)", () => {
     getStalledTasks.mockReset();
     getStalledTasks.mockResolvedValue([
       {
-        task_id: "task-1",
+        id: "task-1",
         title: "A",
-        assignee_id: null,
-        status: "in_progress",
-        stalled_reason: "breaker_tripped",
-        stalled_since: "2026-08-01T00:00:00Z",
-        stalled_seconds: 3600,
-      },
+        assigned_to: null,
+        status: "blocked",
+        blocker_resolver_type: "human",
+        updated_at: "2026-08-01T00:00:00Z",
+      } as Task,
     ]);
     capturedTaskTableProps.current = null;
   });

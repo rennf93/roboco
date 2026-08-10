@@ -31,9 +31,10 @@ interface TaskFiltersProps {
   productFilter?: string[];
   onProductChange?: (value: string[]) => void;
   productOptions?: { value: string; label: string }[];
-  // Stalled-only toggle, backed by GET /dashboard/stalled-tasks (see
-  // useStalledTasks) — stalledCount/stalledError describe the state of
-  // that fetch, not a client-derived stall condition.
+  // Stalled-only toggle, backed by GET /tasks/blocked filtered by
+  // blocker_resolver_type=human (see useStalledTasks) —
+  // stalledCount/stalledError describe the state of that fetch, not a
+  // client-derived stall condition.
   stalledFilter?: boolean;
   onStalledChange?: (value: boolean) => void;
   stalledCount?: number;

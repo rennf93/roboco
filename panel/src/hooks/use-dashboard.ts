@@ -6,10 +6,10 @@ import {
   MetricsSummary,
   CreateFlagRequest,
   CreateReportRequest,
-  type StalledTask,
 } from "@/lib/api/dashboard";
 import type {
   Team,
+  Task,
   AuditorDashboard,
   AuditorFlag,
   AuditorReport,
@@ -178,14 +178,14 @@ export function useAgentStatus() {
 }
 
 /**
- * The current stalled-task set (durable stalled marker, oldest-stalled-
- * first) — fetched once here and reused by the Overview "Stalled / Needs
- * you" section, the Tasks page's stalled filter, and the task-detail
- * header's stalled indicator, so none of them re-derive stall conditions
- * client-side.
+ * The current stalled-task set — blocked tasks with
+ * blocker_resolver_type=human (the dispatcher has given up). Fetched once
+ * here and reused by the Overview "Stalled / Needs you" section, the Tasks
+ * page's stalled filter, and the task-detail header's stalled indicator, so
+ * none of them re-derive stall conditions client-side.
  */
 export function useStalledTasks() {
-  return useQuery<StalledTask[]>({
+  return useQuery<Task[]>({
     queryKey: dashboardKeys.stalledTasks(),
     queryFn: () => dashboardApi.getStalledTasks(),
     refetchInterval: 60000,

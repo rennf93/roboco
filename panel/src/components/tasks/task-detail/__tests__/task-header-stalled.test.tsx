@@ -43,13 +43,12 @@ describe("TaskHeader stalled indicator", () => {
     mockStalled.mockReturnValue({
       data: [
         {
-          task_id: "t1",
+          id: "t1",
           title: "Some task",
-          assignee_id: null,
-          status: "in_progress",
-          stalled_reason: "breaker_tripped",
-          stalled_since: "2026-08-01T00:00:00Z",
-          stalled_seconds: 3600,
+          assigned_to: null,
+          status: "blocked",
+          blocker_resolver_type: "human",
+          updated_at: "2026-08-01T00:00:00Z",
         },
       ],
     });
@@ -59,9 +58,7 @@ describe("TaskHeader stalled indicator", () => {
     const chip = screen.getByText("stalled");
     expect(chip).toBeInTheDocument();
     await user.hover(chip);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "breaker_tripped",
-    );
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("human");
   });
 
   it("hides the stalled chip when the stalled set is empty", () => {
@@ -84,13 +81,12 @@ describe("TaskHeader stalled indicator", () => {
     mockStalled.mockReturnValue({
       data: [
         {
-          task_id: "some-other-task",
+          id: "some-other-task",
           title: "Other",
-          assignee_id: null,
-          status: "in_progress",
-          stalled_reason: "breaker_tripped",
-          stalled_since: "2026-08-01T00:00:00Z",
-          stalled_seconds: 60,
+          assigned_to: null,
+          status: "blocked",
+          blocker_resolver_type: "human",
+          updated_at: "2026-08-01T00:00:00Z",
         },
       ],
     });

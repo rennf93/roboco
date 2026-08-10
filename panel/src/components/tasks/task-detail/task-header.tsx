@@ -209,7 +209,7 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
   const revisionCount = task.revision_count ?? 0;
   // Membership in the backend's stalled set only — see useStalledTasks.
   const { data: stalledTasks } = useStalledTasks();
-  const stalledEntry = stalledTasks?.find((t) => t.task_id === task.id);
+  const stalledEntry = stalledTasks?.find((t) => t.id === task.id);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Inline editing states
@@ -708,7 +708,7 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
               )}
 
               {/* Stalled chip — only when this task is in the backend's
-                  current stalled set (GET /dashboard/stalled-tasks). */}
+                  current stalled set (blocked + blocker_resolver_type=human). */}
               {stalledEntry && (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -717,7 +717,7 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                       stalled
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent>{stalledEntry.stalled_reason}</TooltipContent>
+                  <TooltipContent>{stalledEntry.blocker_resolver_type}</TooltipContent>
                 </Tooltip>
               )}
             </div>

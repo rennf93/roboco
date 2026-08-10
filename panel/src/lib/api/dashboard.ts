@@ -58,20 +58,6 @@ export interface AgentMetric {
   errors: number;
 }
 
-// A task the dispatcher's respawn breaker has given up on — the durable
-// stalled marker (tasks.stalled_reason/stalled_since). Matches the backend
-// StalledTaskResponse schema (roboco/api/schemas/dashboard.py). `status` and
-// `stalled_reason` are rendered verbatim — no client-side relabeling.
-export interface StalledTask {
-  task_id: string;
-  title: string;
-  assignee_id: string | null;
-  status: string;
-  stalled_reason: string;
-  stalled_since: string;
-  stalled_seconds: number;
-}
-
 // =============================================================================
 // AUDITOR API TYPES
 // =============================================================================
@@ -594,14 +580,15 @@ export const dashboardApi = {
     return data;
   },
 
-  // The current stalled set — every task with a durable stalled marker,
-  // oldest-stalled-first (roboco/api/routes/dashboard.py `GET
-  // /dashboard/stalled-tasks`).
-  getStalledTasks: async (): Promise<StalledTask[]> => {
+  // The current stalled set — blocked tasks whose blocker_resolver_type is
+  // "human" (the dispatcher has given up and won't respawn). Sourced from
+  // GET /tasks/blocked, filtered by the backend's own classification — no
+  // client-side stall-condition re-derivation.
+  getStalledTasks: async (): Promise<Task[]> => {
     if (isMockMode()) {
       return [];
     }
-    const { data } = await api.get<StalledTask[]>("/dashboard/stalled-tasks");
-    return data;
+    const { data } = await api.get<Task[]>("/tasks/blocked");
+    return data.filter((t) => t.blocker_resolver_type === "human");
   },
 };
