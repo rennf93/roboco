@@ -10755,10 +10755,12 @@ class TaskService(BaseService):
         ``root_owned`` is the parent's OWN ``parent_ac_refs`` (declared on
         itself via ``declare_coverage(task_id=<own root>, ...)``) — criteria
         only the root's own machinery satisfies (e.g. PR-supersede, closing a
-        contributor PR), never a cell. Root-owned refs are unconditionally
-        folded into both ``claimed`` and ``verified``: there is no child
-        status to gate on, the work happens at/after the root's own
-        submit/supersede by construction.
+        contributor PR), never a cell. Only applies when the loaded task IS a
+        root (``parent_task_id is None``); a non-root task's ``parent_ac_refs``
+        are upward refs towards its own parent, not self-coverage, and stay
+        inert. Root-owned refs are unconditionally folded into both ``claimed``
+        and ``verified``: there is no child status to gate on, the work happens
+        at/after the root's own submit/supersede by construction.
 
         A parent whose ``acceptance_criteria_ids`` is empty or out of length
         with ``acceptance_criteria`` (a legacy row from before every AC
@@ -10784,7 +10786,11 @@ class TaskService(BaseService):
                 claimed |= refset
             if status == TaskStatus.COMPLETED:
                 verified |= refset
-        root_owned = self._normalize_ac_refs(parent, parent.parent_ac_refs)
+        root_owned = (
+            self._normalize_ac_refs(parent, parent.parent_ac_refs)
+            if parent.parent_task_id is None
+            else set()
+        )
         if root_owned:
             any_declared = True
             claimed |= root_owned
