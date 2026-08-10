@@ -62,6 +62,8 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 |--------|------|----------------|-----------|
 | GET | /api/health, /api/ready | health.py | none |
 | GET | /api/dashboard/ceo | dashboard.py | agent context |
+| GET | /api/dashboard/metrics/{cycle-time,bottlenecks,rework,scorecard/*,member/{id},member/ceo,members} | dashboard.py | agent context — `members` (no `{id}`) is the batch scorecard fetch replacing N per-agent calls |
+| GET | /api/dashboard/stalled-tasks | dashboard.py | agent context — the durable respawn-breaker give-up set (`tasks.stalled_reason`/`stalled_since`, migration 092); logic in `TaskService.list_stalled_tasks` — see `docs/backend/api/stalled-task-marker.md` |
 | GET | /api/dashboard/metrics/{cycle-time,bottlenecks,rework,spawn-waste,scorecard/*,member/{id},member/ceo,members} | dashboard.py | agent context — `members` (no `{id}`) is the batch scorecard fetch replacing N per-agent calls; `spawn-waste` returns `MetricsService.get_spawn_waste_metrics` (zero-progress spawn sessions, priced, per-agent/per-team) |
 | GET/POST/PATCH/DELETE | /api/tasks, /api/tasks/{id}/{claim,start,verify,submit-qa,pass-qa,fail-qa,complete,cancel,escalate-to-ceo} | tasks.py | agent context + `require_task_action` |
 | GET | /api/tasks/summary?q= (list_tasks_summary) | tasks.py | agent context — trimmed list-view rows; server-side title/description/id-prefix search via `TaskService.search_tasks` when `q` is set (wave 1, `d1cf6ecb`) |

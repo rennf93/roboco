@@ -19,6 +19,7 @@ from roboco.api.schemas.dashboard import (
     CreateFlagRequest,
     CreateReportRequest,
     FlagSeverity,
+    StalledTaskResponse,
     TeamHealth,
     UsageSummary,
 )
@@ -28,6 +29,7 @@ from roboco.models.dashboard import CreateFlagParams
 from roboco.services.dashboard import get_dashboard_service
 from roboco.services.kanban import get_kanban_service
 from roboco.services.metrics import get_metrics_service
+from roboco.services.task import get_task_service
 from roboco.services.usage import get_usage_service
 
 # Router-level panel gate (mirrors usage.py): every dashboard view is
@@ -662,3 +664,32 @@ async def get_org_scorecard(
     metrics_service = get_metrics_service(db)
     card = await metrics_service.get_org_scorecard(team=team, days=days)
     return card.to_dict()
+
+
+# =============================================================================
+# STALLED-TASK VISIBILITY: durable give-up markers, readable without logs
+# =============================================================================
+
+
+@router.get("/stalled-tasks", response_model=list[StalledTaskResponse])
+async def get_stalled_tasks(
+    db: DbSession,
+) -> list[StalledTaskResponse]:
+    """The current stalled set: tasks the dispatcher's respawn breaker gave up
+    on. Per entry: task id/title/assignee, current status, why it stalled,
+    and how long. Query/classification logic lives in TaskService."""
+    task_service = get_task_service(db)
+    entries = await task_service.list_stalled_tasks()
+    return [
+        StalledTaskResponse(
+            task_id=e.task_id,
+            title=e.title,
+            assignee_id=e.assignee_id,
+            assignee_slug=e.assignee_slug,
+            status=e.status,
+            reason=e.reason,
+            stalled_since=e.stalled_since,
+            stalled_seconds=e.stalled_seconds,
+        )
+        for e in entries
+    ]

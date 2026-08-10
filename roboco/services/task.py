@@ -551,6 +551,25 @@ class GatewayAgentView:
     skills: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class StalledTaskEntry:
+    """One row of the durable stalled-task set (`TaskService.list_stalled_tasks`).
+
+    Backs the read endpoint in ``roboco/api/routes`` — the route only
+    converts these into the response schema, all classification/query logic
+    lives here.
+    """
+
+    task_id: UUID
+    title: str
+    assignee_id: UUID | None
+    assignee_slug: str | None
+    status: str
+    reason: str
+    stalled_since: datetime
+    stalled_seconds: float
+
+
 def _default_claim_statuses(role: str | None) -> set[TaskStatus]:
     """Return the base (non-reassign) claim statuses for a role."""
     if role is None:
@@ -1230,6 +1249,8 @@ class TaskService(BaseService):
         """
         from roboco.db.tables import AuditLogTable
 
+        self._clear_stale_stalled_marker(task)
+
         # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
         # rework cycle. Incremented at this single chokepoint — every transition
         # path funnels its audit through here exactly once — so the rework rate
@@ -1277,6 +1298,25 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    @staticmethod
+    def _clear_stale_stalled_marker(task: TaskTable) -> None:
+        """Any status transition is genuine task movement, so a stale
+        breaker-tripped stalled marker (set by
+        ``AgentOrchestrator._pm_respawn_should_gate``) no longer applies —
+        clear it here unconditionally rather than relying solely on the
+        dispatcher's narrower same-key re-observation path
+        (``_respawn_status_change_resets`` -> ``_clear_task_stalled_marker``),
+        which never re-fires once the task's status leaves the dispatcher's
+        own fetch scope (e.g. a dev's task advancing to ``awaiting_qa``).
+        Direct attribute assignment (not the async ``clear_stalled_marker``
+        helper) since the caller is synchronous and already holds the ORM
+        object mid-transaction — it commits/rolls back atomically with the
+        transition itself. Split out of ``_emit_status_transition_audit`` to
+        keep its own complexity down (xenon budget)."""
+        if task.stalled_reason is not None:
+            task.stalled_reason = None
+            task.stalled_since = None
 
     def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
         """Coroner (Board Program) bounce trigger (spec §4): fire exactly
@@ -3499,6 +3539,94 @@ class TaskService(BaseService):
             select(TaskTable).where(TaskTable.id == task_id)
         )
         return result.scalar_one_or_none()
+
+    async def mark_stalled(self, task_id: UUID, reason: str) -> None:
+        """Set the durable stalled marker (see `roboco.models.base.StalledReason`).
+
+        Called by the orchestrator's respawn breaker (`_pm_respawn_should_gate`)
+        at the exact point it fires the one-shot CEO notification, so the
+        give-up decision is readable on the task row without container logs.
+        The caller already enforces one-shot-per-trip discipline via its own
+        in-memory `notified` flag — this always (re)stamps `stalled_since` to
+        now, which is correct for a fresh trip after a cooldown self-heal
+        attempt failed.
+        """
+        await self.session.execute(
+            update(TaskTable)
+            .where(TaskTable.id == task_id)
+            .values(stalled_reason=reason, stalled_since=datetime.now(UTC))
+        )
+
+    async def clear_stalled_marker(self, task_id: UUID) -> None:
+        """Clear the stalled marker on genuine forward progress.
+
+        Conditioned on `stalled_reason` already being set so the overwhelming
+        majority of calls (a task that was never stalled) skip the write.
+        """
+        await self.session.execute(
+            update(TaskTable)
+            .where(TaskTable.id == task_id, TaskTable.stalled_reason.is_not(None))
+            .values(stalled_reason=None, stalled_since=None)
+        )
+
+    async def list_stalled_tasks(self) -> list[StalledTaskEntry]:
+        """The current stalled set: every task with a durable stalled marker.
+
+        Backs the `GET` read endpoint — all query/classification logic lives
+        here per the architectural standard (routes stay thin).
+
+        Excludes terminal (completed/cancelled) tasks at the query level as a
+        defensive backstop: ``_emit_status_transition_audit`` (the single
+        chokepoint every status transition funnels through) now clears the
+        marker unconditionally on any transition, so a completed/cancelled
+        task should never actually carry a marker in practice — but this
+        filter keeps a terminal task out of the list even if some future path
+        sets terminal status without going through that chokepoint. Mirrors
+        the terminal-status pair ``_is_terminal_task`` checks.
+        """
+        result = await self.session.execute(
+            select(
+                TaskTable.id,
+                TaskTable.title,
+                TaskTable.assigned_to,
+                AgentTable.slug,
+                TaskTable.status,
+                TaskTable.stalled_reason,
+                TaskTable.stalled_since,
+            )
+            .outerjoin(AgentTable, AgentTable.id == TaskTable.assigned_to)
+            .where(
+                TaskTable.stalled_reason.is_not(None),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.stalled_since.asc())
+        )
+        now = datetime.now(UTC)
+        entries = []
+        for row in result.all():
+            stalled_since = row.stalled_since
+            since_aware = (
+                stalled_since
+                if stalled_since is None or stalled_since.tzinfo is not None
+                else stalled_since.replace(tzinfo=UTC)
+            )
+            entries.append(
+                StalledTaskEntry(
+                    task_id=row.id,
+                    title=row.title,
+                    assignee_id=row.assigned_to,
+                    assignee_slug=row.slug,
+                    status=row.status.value
+                    if hasattr(row.status, "value")
+                    else row.status,
+                    reason=row.stalled_reason,
+                    stalled_since=since_aware,
+                    stalled_seconds=(now - since_aware).total_seconds()
+                    if since_aware
+                    else 0.0,
+                )
+            )
+        return entries
 
     async def record_section_note(
         self, task_id: UUID, content_type: str, payload: Any
@@ -8433,6 +8561,23 @@ class TaskService(BaseService):
                 error=str(e),
             )
 
+    @staticmethod
+    def _move_dependency_to_completed(task: TaskTable, completed_task_id: UUID) -> None:
+        """Prune ``completed_task_id`` from ``dependency_ids``, remembering it
+        on ``completed_dependency_ids`` so the unblock briefing can name which
+        upstream task just landed (otherwise the only record is destroyed
+        here). NULL-tolerant: a restored/reconstructed row can carry ``None``
+        on either column instead of ``[]``.
+        """
+        task.dependency_ids = [
+            dep_id
+            for dep_id in (task.dependency_ids or [])
+            if dep_id != completed_task_id
+        ]
+        task.completed_dependency_ids = _append_missing(
+            task.completed_dependency_ids, completed_task_id
+        )
+
     async def _unblock_dependents(self, completed_task_id: UUID) -> None:
         """Unblock tasks that were waiting on the completed task."""
         result = await self.session.execute(
@@ -8443,17 +8588,7 @@ class TaskService(BaseService):
         blocked_tasks = result.scalars().all()
 
         for task in blocked_tasks:
-            # Remove the completed task from dependencies, but remember it so the
-            # unblock briefing can tell the revived dependent which upstream task
-            # just landed (otherwise the only record of it is destroyed here).
-            task.dependency_ids = [
-                dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
-            ]
-            if completed_task_id not in (task.completed_dependency_ids or []):
-                task.completed_dependency_ids = [
-                    *(task.completed_dependency_ids or []),
-                    completed_task_id,
-                ]
+            self._move_dependency_to_completed(task, completed_task_id)
             # If no more dependencies, unblock (system action - no role validation)
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
                 await self._revive_unblocked_dependent(task)
