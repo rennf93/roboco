@@ -27,6 +27,7 @@ ORIGINAL_DEVELOPER = "original_developer"
 DOCUMENTER = "documenter"
 REQUIRED_CELLS = "required_cells"
 EXTERNAL_PR_HEAD = "external_pr_head"
+EXTERNAL_PR_AUTHOR = "external_pr_author"
 EXTERNAL_PR_SUPERSEDE = "external_pr_supersede"
 SELF_HEAL_FP = "self_heal_fp"
 DISMISSED = "dismissed"
@@ -633,6 +634,15 @@ def get_external_pr_head(task: HasMarkers) -> str | None:
 
 def set_external_pr_head(task: HasMarkers, head_sha: str) -> None:
     set_marker(task, EXTERNAL_PR_HEAD, head_sha)
+
+
+def get_external_pr_author(task: HasMarkers) -> str | None:
+    val = get_marker(task, EXTERNAL_PR_AUTHOR)
+    return str(val) if val else None
+
+
+def set_external_pr_author(task: HasMarkers, login: str) -> None:
+    set_marker(task, EXTERNAL_PR_AUTHOR, login)
 
 
 # --- external PR supersede ------------------------------------------------- #

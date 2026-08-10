@@ -1861,6 +1861,7 @@ class TaskService(BaseService):
         pr_url = str(pr.get("url") or "")
         pr_title = str(pr.get("title") or "")
         head_sha = str(pr.get("head_sha") or "")
+        author_login = str(pr.get("user_login") or "")
         if await self.external_review_task_exists(project_id, pr_number, head_sha):
             return None
         kind = "internal" if source == "internal_pr" else "external"
@@ -1902,6 +1903,10 @@ class TaskService(BaseService):
         # while an unchanged PR is skipped (see external_review_task_exists).
         if head_sha:
             markers.set_external_pr_head(task, head_sha)
+        # Capture the contributor's login so the supersede comments can tag
+        # them (@login) without a per-comment PR fetch.
+        if author_login:
+            markers.set_external_pr_author(task, author_login)
         await self.session.flush()
         return task
 
@@ -2754,10 +2759,14 @@ class TaskService(BaseService):
         # the contributor's commits (via _resolve_base_branch's parent-branch
         # rule), not the default branch. The marker links back to the review +
         # contributor PR for dedup and close-on-land (no parent link needed).
+        # The contributor's login rides along (author=) so the supersede
+        # comments can tag them without an extra PR fetch.
         umbrella.branch_name = branch_name
-        markers.set_external_pr_supersede(
-            umbrella, f"pr={pr_number} review={review_task_id}"
-        )
+        author = markers.get_external_pr_author(review) or ""
+        marker = f"pr={pr_number} review={review_task_id}"
+        if author:
+            marker += f" author={author}"
+        markers.set_external_pr_supersede(umbrella, marker)
         await self.session.flush()
         self.log.info(
             "Supersede umbrella created",
@@ -2789,7 +2798,7 @@ class TaskService(BaseService):
                 return task
         return None
 
-    async def supersede_umbrellas_pending_close(self) -> list[TaskTable]:
+    async def supersede_umbrellas_pending_close(self) -> list[tuple[TaskTable, int]]:
         """Landed supersede umbrellas whose contributor PR hasn't been closed yet.
 
         A supersede umbrella reaching COMPLETED is necessary but not sufficient
@@ -2799,6 +2808,9 @@ class TaskService(BaseService):
         additionally require a non-cancelled descendant that landed a PR (see
         :meth:`_supersede_replacement_landed`). The ``closed=1`` token on the
         marker line makes close-on-land idempotent (closed only once).
+
+        Returns ``(umbrella, replacement_pr_number)`` pairs so the caller can
+        link the merged replacement PR in the close comment.
         """
         result = await self.session.execute(
             select(TaskTable).where(
@@ -2806,13 +2818,16 @@ class TaskService(BaseService):
                 TaskTable.status == TaskStatus.COMPLETED,
             )
         )
-        pending: list[TaskTable] = []
+        pending: list[tuple[TaskTable, int]] = []
         for task in result.scalars().all():
             if "closed=1" in supersede_marker_line(task).split():
                 continue
-            if not await self._supersede_replacement_landed(cast("UUID", task.id)):
+            replacement_pr = await self._supersede_replacement_landed(
+                cast("UUID", task.id)
+            )
+            if replacement_pr is None:
                 continue
-            pending.append(task)
+            pending.append((task, replacement_pr))
         return pending
 
     async def supersede_umbrellas_branch_pending(self) -> list[TaskTable]:
@@ -2840,14 +2855,14 @@ class TaskService(BaseService):
                 pending.append(task)
         return pending
 
-    async def _supersede_replacement_landed(self, umbrella_id: UUID) -> bool:
-        """True if a non-cancelled descendant of the umbrella landed a PR.
+    async def _supersede_replacement_landed(self, umbrella_id: UUID) -> int | None:
+        """The replacement PR number if a non-cancelled descendant landed one.
 
         Walks the umbrella's subtree (bounded by MAX_TASK_DEPTH) and returns
-        True as soon as it finds a COMPLETED task carrying a ``pr_number`` — the
-        team's merged replacement PR. Returns False when every code descendant
-        was cancelled (force-completed umbrella), so close-on-land then leaves
-        the contributor PR open.
+        the ``pr_number`` as soon as it finds a COMPLETED task carrying one,
+        the team's merged replacement PR. Returns ``None`` when every code
+        descendant was cancelled (force-completed umbrella), so close-on-land
+        then leaves the contributor PR open.
         """
         frontier: list[UUID] = [umbrella_id]
         seen: set[UUID] = set()
@@ -2864,9 +2879,9 @@ class TaskService(BaseService):
                     continue
                 seen.add(child_id)
                 if child.status == TaskStatus.COMPLETED and child.pr_number is not None:
-                    return True
+                    return int(child.pr_number)
                 frontier.append(child_id)
-        return False
+        return None
 
     async def mark_supersede_pr_closed(self, task_id: UUID) -> None:
         """Record that a landed supersede's contributor PR has been closed.
