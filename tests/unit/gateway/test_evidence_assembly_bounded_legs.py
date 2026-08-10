@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -46,6 +46,8 @@ from roboco.services.gateway.choreographer.evidence_legs import (
     LegBudget,
     run_bounded_leg,
 )
+
+_T = TypeVar("_T")
 
 # Every timeout-shaped test is parametrized over both real timeout shapes:
 # asyncio's own cancellation-converted TimeoutError, and GitTimeoutError
@@ -363,7 +365,10 @@ async def test_claim_review_diff_timeout_degrades_with_gap(
     assert ev["files_changed"] == []
     assert "evidence_gaps" in ev
     assert len(ev["evidence_gaps"]) == 1
-    assert "pr diff unavailable" in ev["evidence_gaps"][0]
+    # A combined-leg timeout kills diff AND files_changed together — the
+    # gap note names both losses, not just "pr diff", so a reader can tell
+    # files_changed is empty because of a timeout, not genuinely empty.
+    assert "pr diff + files_changed unavailable" in ev["evidence_gaps"][0]
 
 
 @pytest.mark.asyncio
@@ -485,51 +490,58 @@ async def test_claim_review_normal_path_has_no_evidence_gaps(
 
 
 @pytest.mark.asyncio
-async def test_claim_review_gathers_git_leg_against_db_reads(
+async def test_claim_review_awaits_git_leg_sequential_to_db_reads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The combined git leg (diff_and_files) and the two independent DB
-    reads (journal highlights, ancestor context) are gathered — a slow
-    0.15s leg on EACH side finishes in close to 0.15s total wall time, not
-    ~0.3s (what awaiting the git leg THEN the DB reads, one after another,
-    would cost). This is the measurable claim_review evidence-latency drop
-    the git-leg dedup + gather is for."""
+    reads (journal highlights, ancestor context) must NEVER overlap:
+    ``self.task``/``self.git``/``self.evidence_repo`` share ONE
+    request-scoped ``AsyncSession`` (see ``deps.py``), and the git leg's own
+    workspace/token resolution runs DB lookups against that same session, so
+    gathering it alongside the DB reads risks two queries racing one
+    ``AsyncSession`` (unsupported by SQLAlchemy). Proven structurally via an
+    in-flight counter (peak concurrency never exceeds 1) rather than a
+    wall-clock margin, which can flake under CI load."""
     monkeypatch.setattr(settings, "conventions_enabled", False)
-    leg_seconds = 0.15
+    leg_seconds = 0.02
+    in_flight = 0
+    peak = 0
 
-    async def _slow_diff_and_files(*_args: object, **_kwargs: object) -> Any:
+    async def _track(result: _T) -> _T:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
         await asyncio.sleep(leg_seconds)
-        return "diff content", ["README.md"]
+        in_flight -= 1
+        return result
+
+    async def _diff_leg(*_args: object, **_kwargs: object) -> Any:
+        return await _track(("diff content", ["README.md"]))
+
+    async def _journal_leg(*_args: object, **_kwargs: object) -> list[Any]:
+        return await _track([])
+
+    async def _ancestor_leg(*_args: object, **_kwargs: object) -> list[Any]:
+        return await _track([])
 
     git_svc = AsyncMock()
-    git_svc.diff_and_files.side_effect = _slow_diff_and_files
-
-    async def _slow_journal(*_args: object, **_kwargs: object) -> list[Any]:
-        await asyncio.sleep(leg_seconds)
-        return []
-
-    async def _slow_ancestor(*_args: object, **_kwargs: object) -> list[Any]:
-        await asyncio.sleep(leg_seconds)
-        return []
+    git_svc.diff_and_files.side_effect = _diff_leg
 
     evidence_repo = AsyncMock()
-    evidence_repo.journal_highlights_for_task.side_effect = _slow_journal
-    evidence_repo.ancestor_context_for_task.side_effect = _slow_ancestor
+    evidence_repo.journal_highlights_for_task.side_effect = _journal_leg
+    evidence_repo.ancestor_context_for_task.side_effect = _ancestor_leg
 
     c, qa_id, task_id = _qa_harness(git_svc, evidence_repo=evidence_repo)
 
-    start = time.monotonic()
     env = await c.claim_review(qa_id, task_id)
-    elapsed = time.monotonic() - start
 
     body = env.as_dict()
     assert body["error"] is None, body
     ev = body["evidence"]
     assert ev["pr_diff_summary"] == "diff content"
     assert ev["files_changed"] == ["README.md"]
-    # Sequential (git leg, then DB reads — the pre-fix shape) would take
-    # ~2*leg_seconds; gathered execution stays close to ONE leg.
-    assert elapsed < leg_seconds * 1.8
+    # Structural proof: the three legs never overlap in-flight.
+    assert peak == 1
 
 
 # ---------------------------------------------------------------------------

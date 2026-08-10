@@ -35,7 +35,6 @@ still validates role + claim source-status + task_type before dispatch.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -304,28 +303,35 @@ class QAMixin(_Base):
         resolution, the full diff and the ``--name-only`` diff run
         concurrently as subprocesses) runs bounded via ``run_bounded_leg``
         against a shared ``LegBudget`` for this whole build — a timeout
-        skips it and records a note in ``evidence_gaps`` instead of hanging
-        this advisory (non-gating) verb for the whole
-        ``flow_verb_timeout_seconds`` budget. It is gathered together with
-        the two independent DB reads (journal highlights, ancestor context)
-        so those run WHILE the git subprocesses are in flight instead of
-        strictly after them — those reads touch nothing the git leg
-        touches, so there is nothing to serialize them for. The conventions
-        leg self-bounds separately (see ``_qa_convention_findings``) but
-        still draws its ceiling from the same shared budget, and reuses the
-        file list resolved here instead of re-deriving it.
+        skips it and records a note (naming both the diff and
+        files_changed losses — a combined-leg timeout kills both together)
+        in ``evidence_gaps`` instead of hanging this advisory (non-gating)
+        verb for the whole ``flow_verb_timeout_seconds`` budget. It is
+        awaited on its own, sequential to the two independent DB reads
+        (journal highlights, ancestor context) — NOT gathered with them:
+        ``self.task``/``self.git``/``self.evidence_repo`` share ONE
+        request-scoped ``AsyncSession`` (see ``deps.py``), and the git
+        leg's own workspace/token resolution runs DB lookups against that
+        same session, so concurrently awaiting it alongside the DB reads
+        risks two queries racing one ``AsyncSession`` (unsupported by
+        SQLAlchemy) plus a ``wait_for``-cancelled DB query mid-flight if
+        the git leg times out. The internal subprocess-level concurrency
+        inside ``diff_and_files`` (the two git commands) is the real
+        latency win and is untouched by this. The conventions leg
+        self-bounds separately (see ``_qa_convention_findings``) but still
+        draws its ceiling from the same shared budget, and reuses the file
+        list resolved here instead of re-deriving it.
         """
         evidence_gaps: list[str] = []
         budget = LegBudget(settings.evidence_assembly_timeout_seconds)
 
-        async def _git_leg() -> tuple[str, list[str]]:
-            if not t.branch_name:
-                return "", []
-            return await run_bounded_leg(
+        diff_summary, files_changed = "", []
+        if t.branch_name:
+            diff_summary, files_changed = await run_bounded_leg(
                 self.git.diff_and_files(branch_name=t.branch_name),
                 default=("", []),
                 budget=budget,
-                leg="pr diff",
+                leg="pr diff + files_changed",
                 hint="review the PR diff on GitHub directly",
                 task_id=task_id,
                 gaps=evidence_gaps,
@@ -334,16 +340,12 @@ class QAMixin(_Base):
         # The ask-chain (parent → root descriptions) so QA judges INTENT
         # against the intake's original analysis, not only the leaf's ACs.
         # Leaf-only journals stay (include_ancestors defaults False above);
-        # ancestor *descriptions* are the ask, not work-so-far.
-        (
-            (diff_summary, files_changed),
-            journal_highlights,
-            parent_context,
-        ) = await asyncio.gather(
-            _git_leg(),
-            self.evidence_repo.journal_highlights_for_task(task_id),
-            self.evidence_repo.ancestor_context_for_task(task_id),
+        # ancestor *descriptions* are the ask, not work-so-far. Awaited
+        # after the git leg (see docstring) instead of gathered with it.
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id
         )
+        parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
         convention_findings: list[dict[str, Any]]
         if evidence_gaps and settings.conventions_enabled:
             # The diff/files_changed legs above already timed out, so the
