@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Literal
 # the lifecycle tables that depend on it. New consumers may also import
 # from `roboco.foundation.identity` directly.
 from roboco.foundation.identity import Role, Team
+from roboco.foundation.policy.content import markers
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -895,6 +896,18 @@ def _next_hint_pm_idle(_t: Any) -> str:
     return "idle until subtasks finish"
 
 
+def _next_hint_submit_up(t: Any) -> str:
+    if markers.is_pr_waived(t):
+        return (
+            "no diff to review — PR creation was waived (report-only"
+            " subtree); complete(task_id) merges it directly"
+        )
+    return (
+        "cell→root PR opened + in review; the cell reviewer will pr_pass,"
+        " then complete(task_id) merges it"
+    )
+
+
 def _next_hint_pr_gate_review(_t: Any) -> str:
     return (
         "review the assembled PR diff against the parent objective + full"
@@ -903,7 +916,12 @@ def _next_hint_pr_gate_review(_t: Any) -> str:
     )
 
 
-def _next_hint_submit_root(_t: Any) -> str:
+def _next_hint_submit_root(t: Any) -> str:
+    if markers.is_pr_waived(t):
+        return (
+            "no diff to review — PR creation was waived (report-only"
+            " subtree); complete(task_id) escalates to the CEO directly"
+        )
     return (
         "root→master PR opened; the main reviewer will review it,"
         " then complete(task_id) escalates to the CEO"
@@ -1557,10 +1575,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         # The Cell PM owns cell completion — it merges the cell→root PR
         # via complete(). Main PM only completes the ROOT task.
-        next_hint=lambda _t: (
-            "cell→root PR opened + in review; the cell reviewer will pr_pass,"
-            " then complete(task_id) merges it"
-        ),
+        next_hint=_next_hint_submit_up,
     ),
     "submit_root": IntentSpec(
         name="submit_root",
