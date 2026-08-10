@@ -1501,3 +1501,31 @@ async def test_declare_coverage_self_declare_rejected_for_non_owner() -> None:
     env = await c.declare_coverage(pm_id, root_id, ["id-a"])
     assert env.error == "invalid_state"
     task_svc.add_parent_ac_refs.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_self_declare_rejected_for_non_root() -> None:
+    """Root-owned self-declare on a coordination task that HAS a parent (e.g.
+    a cell coordination root parented to a Main PM root) is rejected. The
+    read-side guard in _parent_ac_ref_sets only treats a task's own
+    parent_ac_refs as self-coverage when parent_task_id is None, so
+    self-declaring here would stamp refs that silently do nothing at the
+    gate. Reject up front rather than return a silent no-op."""
+    pm_id = uuid4()
+    cell_root_id = uuid4()
+    cell_root = MagicMock(
+        id=cell_root_id,
+        assigned_to=pm_id,
+        parent_task_id=uuid4(),
+        acceptance_criteria=["cell a", "cell b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = cell_root
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, cell_root_id, ["id-a"])
+    assert env.error == "invalid_state"
+    task_svc.add_parent_ac_refs.assert_not_awaited()

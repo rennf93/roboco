@@ -1698,6 +1698,7 @@ async def test_parent_ac_coverage_marks_root_owned_claimed_by() -> None:
         acceptance_criteria=["crit a", "crit b", "crit c"],
         acceptance_criteria_ids=["id-a", "id-b", "id-c"],
         parent_ac_refs=["id-a"],
+        parent_task_id=None,
     )
     svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["id-b"])])
     assert await svc.parent_ac_coverage(parent.id) == [
@@ -1734,6 +1735,7 @@ async def test_uncovered_parent_acs_root_owned_satisfied_without_child() -> None
         acceptance_criteria=["crit a", "crit b"],
         acceptance_criteria_ids=["id-a", "id-b"],
         parent_ac_refs=["id-a"],
+        parent_task_id=None,
     )
     svc = _svc_with_children(parent, [])
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == ["crit b"]
@@ -1745,6 +1747,7 @@ async def test_unclaimed_parent_acs_root_owned_counts_as_claimed() -> None:
         acceptance_criteria=["crit a", "crit b"],
         acceptance_criteria_ids=["id-a", "id-b"],
         parent_ac_refs=["id-a"],
+        parent_task_id=None,
     )
     svc = _svc_with_children(parent, [])
     assert await svc.unclaimed_parent_acceptance_criteria(parent.id) == ["crit b"]
@@ -1762,10 +1765,88 @@ async def test_production_replay_mixed_child_and_root_owned_coverage() -> None:
         acceptance_criteria=[f"crit {i}" for i in range(5)],
         acceptance_criteria_ids=ids,
         parent_ac_refs=["id-3", "id-4"],
+        parent_task_id=None,
     )
     svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["id-0", "id-1", "id-2"])])
     assert await svc.unclaimed_parent_acceptance_criteria(parent.id) == []
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
+
+
+@pytest.mark.asyncio
+async def test_leaf_parent_ac_refs_not_root_owned_on_self() -> None:
+    # Regression: a leaf child (has parent_task_id, non-empty parent_ac_refs
+    # declared UPWARDS towards its parent, no children of its own) must NOT
+    # treat those refs as root-owned self-coverage. The live incident leaf
+    # 9bd12bd5 carried 11 parent_ac_refs that were its PARENT's criterion
+    # ids (upward refs), not its own. Under the old code those armed the AC
+    # gate and false-positive rejected cell_pm_complete with "N parent
+    # acceptance criteria not covered." The refs here deliberately do NOT
+    # match the leaf's own acceptance_criteria_ids (they reference the
+    # parent's criteria) so this test FAILS if the root_owned guard is
+    # reverted: old code returns all 3 leaf ACs as uncovered, new code
+    # returns [] (any_declared stays False, the gate is inert).
+    leaf = _build_task(
+        acceptance_criteria=["leaf a", "leaf b", "leaf c"],
+        acceptance_criteria_ids=["id-a", "id-b", "id-c"],
+        parent_ac_refs=["parent-1", "parent-2", "parent-3"],
+        parent_task_id=uuid4(),
+    )
+    svc = _svc_with_children(leaf, [])
+    assert await svc.uncovered_parent_acceptance_criteria(leaf.id) == []
+    assert await svc.unclaimed_parent_acceptance_criteria(leaf.id) == []
+
+
+@pytest.mark.asyncio
+async def test_root_owned_still_fires_for_true_root_with_uncovered_acs() -> None:
+    # A real root (parent_task_id is None) with root_owned refs AND children
+    # that do NOT cover all criteria -- the gate still fires for the
+    # uncovered ones. root_owned folds into claimed+verified, but criteria
+    # not in root_owned and not covered by a completed child still block.
+    root = _build_task(
+        acceptance_criteria=["crit a", "crit b", "crit c"],
+        acceptance_criteria_ids=["id-a", "id-b", "id-c"],
+        parent_ac_refs=["id-a"],
+        parent_task_id=None,
+    )
+    svc = _svc_with_children(root, [(TaskStatus.IN_PROGRESS, ["id-b"])])
+    assert await svc.uncovered_parent_acceptance_criteria(root.id) == [
+        "crit b",
+        "crit c",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_intermediate_task_parent_ac_refs_not_root_owned() -> None:
+    # A cell-root-level task that has a parent_task_id (it is itself a child
+    # of the Main PM root) and carries parent_ac_refs -- those refs are
+    # upward refs towards its parent, NOT root-owned coverage on itself.
+    # Same guard as the leaf case, different position in the tree.
+    cell_root = _build_task(
+        acceptance_criteria=["cell a", "cell b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=["id-a", "id-b"],
+        parent_task_id=uuid4(),
+    )
+    svc = _svc_with_children(cell_root, [(TaskStatus.COMPLETED, ["id-a"])])
+    # Only "cell b" is uncovered (no root_owned shortcut for the cell root).
+    assert await svc.uncovered_parent_acceptance_criteria(cell_root.id) == [
+        "cell b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_root_owned_refs_fold_into_verified_for_true_root() -> None:
+    # A root with parent_ac_refs covering some of its own criteria -- those
+    # criteria count as covered (claimed+verified) even with no children.
+    root = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=["id-a"],
+        parent_task_id=None,
+    )
+    svc = _svc_with_children(root, [])
+    assert await svc.uncovered_parent_acceptance_criteria(root.id) == ["crit b"]
+    assert await svc.unclaimed_parent_acceptance_criteria(root.id) == ["crit b"]
 
 
 @pytest.mark.asyncio
