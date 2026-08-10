@@ -18,6 +18,7 @@ from roboco.models.base import TaskStatus
 from roboco.services.task import TaskService, supersede_marker_line
 
 _VALUE = "pr=5 review=abc"
+_LANDED_PR = 42  # the replacement PR number a landed descendant carries
 
 
 def _scalars_all(rows: list[object]) -> MagicMock:
@@ -65,7 +66,7 @@ def test_marker_line_empty_when_absent() -> None:
 async def test_pending_close_excludes_umbrella_with_closed_marker() -> None:
     umbrella = _task(f"{_VALUE} closed=1", id=uuid4())
     svc = _service(_scalars_all([umbrella]))
-    _bind(svc, "_supersede_replacement_landed", AsyncMock(return_value=True))
+    _bind(svc, "_supersede_replacement_landed", AsyncMock(return_value=_LANDED_PR))
     assert await svc.supersede_umbrellas_pending_close() == []
 
 
@@ -73,8 +74,8 @@ async def test_pending_close_excludes_umbrella_with_closed_marker() -> None:
 async def test_pending_close_keeps_open_landed_umbrella() -> None:
     umbrella = _task(_VALUE, id=uuid4())
     svc = _service(_scalars_all([umbrella]))
-    _bind(svc, "_supersede_replacement_landed", AsyncMock(return_value=True))
-    assert await svc.supersede_umbrellas_pending_close() == [umbrella]
+    _bind(svc, "_supersede_replacement_landed", AsyncMock(return_value=_LANDED_PR))
+    assert await svc.supersede_umbrellas_pending_close() == [(umbrella, _LANDED_PR)]
 
 
 @pytest.mark.asyncio
@@ -83,34 +84,34 @@ async def test_pending_close_requires_landed_replacement() -> None:
     # subtask was cancelled) — close-on-land must skip it.
     umbrella = _task(_VALUE, id=uuid4())
     svc = _service(_scalars_all([umbrella]))
-    _bind(svc, "_supersede_replacement_landed", AsyncMock(return_value=False))
+    _bind(svc, "_supersede_replacement_landed", AsyncMock(return_value=None))
     assert await svc.supersede_umbrellas_pending_close() == []
 
 
 # ---------------------------------------------------------------------------
-# _supersede_replacement_landed — subtree walk
+# _supersede_replacement_landed: subtree walk (returns pr_number | None)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_replacement_landed_true_for_completed_descendant_with_pr() -> None:
-    child = MagicMock(id=uuid4(), status=TaskStatus.COMPLETED, pr_number=42)
+    child = MagicMock(id=uuid4(), status=TaskStatus.COMPLETED, pr_number=_LANDED_PR)
     svc = _service(_scalars_all([child]))
-    assert await svc._supersede_replacement_landed(uuid4()) is True
+    assert await svc._supersede_replacement_landed(uuid4()) == _LANDED_PR
 
 
 @pytest.mark.asyncio
 async def test_replacement_landed_false_when_descendant_cancelled() -> None:
     child = MagicMock(id=uuid4(), status=TaskStatus.CANCELLED, pr_number=42)
     svc = _service(_scalars_all([child]))
-    assert await svc._supersede_replacement_landed(uuid4()) is False
+    assert await svc._supersede_replacement_landed(uuid4()) is None
 
 
 @pytest.mark.asyncio
 async def test_replacement_landed_false_when_completed_without_pr() -> None:
     child = MagicMock(id=uuid4(), status=TaskStatus.COMPLETED, pr_number=None)
     svc = _service(_scalars_all([child]))
-    assert await svc._supersede_replacement_landed(uuid4()) is False
+    assert await svc._supersede_replacement_landed(uuid4()) is None
 
 
 # ---------------------------------------------------------------------------

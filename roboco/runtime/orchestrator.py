@@ -116,19 +116,29 @@ _MINUTES_PER_HOUR = 60
 
 # Supersede contributor PR comments - a coherent pair. The at-supersede comment
 # posts when the CEO takes the PR over; the at-close comment posts when the
-# replacement lands and the contributor PR is retired.
+# replacement lands and the contributor PR is retired. Both are prefixed with an
+# ``@{author}`` tag (when the contributor's login is known) so the original
+# developer is notified and nudged toward the replacement PR.
 SUPERSEDE_PR_COMMENT = (
     "Thanks for this contribution! We reviewed it and are taking the work "
     "over internally to finish and harden it to our standards. The "
     "implementation continues on branch `{branch}` as an internal task; "
     "your PR informed the approach and is appreciated. This PR will be "
-    "closed once our replacement lands. Feel free to reach out if you "
-    "have questions."
+    "closed once our replacement lands. Feel free to reach out with any "
+    "questions."
 )
 SUPERSEDE_PR_CLOSE_COMMENT = (
-    "Superseded by our own PR - the work was finished and hardened to our "
-    "standards based on your contribution. Thanks for the contribution!"
+    "Our replacement PR #{replacement_pr} has been merged, finishing and "
+    "hardening the work to our standards based on your contribution. This "
+    "PR is closed as superseded. Thanks for the contribution! If we missed "
+    "something from your PR, please open a new one and we will pick it up."
 )
+
+
+def _supersede_author_prefix(author: str) -> str:
+    """The ``@login `` prefix for a supersede comment, or "" when unknown."""
+    return f"@{author} " if author else ""
+
 
 # Max background branch-cut attempts before escalating to BLOCKED (HUMAN
 # resolver). The sweep retries with exponential backoff between attempts.
@@ -8441,7 +8451,13 @@ Start by:
             _sm.clear_branch_cut_next_retry_at(umbrella)
             await db.flush()
             await db.commit()
-        pr_number = self._parse_supersede_pr(umbrella.quick_context or "")
+        # The marker lives in orchestration_markers (migration 041), NOT
+        # quick_context: reading quick_context here returned None after the
+        # marker refactor, so a stranded branch_pending umbrella was never
+        # reconciled (same bug class as close-on-land).
+        pr_number = self._parse_supersede_pr(
+            _sm.get_external_pr_supersede(umbrella) or ""
+        )
         if pr_number is None:
             return None
         project = await project_service.get(cast("UUID", umbrella.project_id))
@@ -10147,17 +10163,28 @@ Start by:
         commits.
         """
         closed = 0
-        for umbrella in await task_service.supersede_umbrellas_pending_close():
-            pr_number = self._parse_supersede_pr(umbrella.quick_context or "")
+        for (
+            umbrella,
+            replacement_pr,
+        ) in await task_service.supersede_umbrellas_pending_close():
+            # The marker lives in orchestration_markers (migration 041), NOT in
+            # quick_context: reading quick_context here returned None for every
+            # umbrella after the marker refactor, so close-on-land never fired.
+            marker = _markers.get_external_pr_supersede(umbrella) or ""
+            pr_number = self._parse_supersede_pr(marker)
             if pr_number is None:
                 continue
+            author = self._parse_supersede_author(marker)
+            comment = _supersede_author_prefix(
+                author
+            ) + SUPERSEDE_PR_CLOSE_COMMENT.format(replacement_pr=replacement_pr)
             try:
                 await git.close_pull_request(
                     pr_number,
-                    comment=SUPERSEDE_PR_CLOSE_COMMENT,
+                    comment=comment,
                     delete_branch=False,
                     actor_agent_id=system_id,
-                    # PR numbers are per-repo — scope the close to THIS
+                    # PR numbers are per-repo; scope the close to THIS
                     # umbrella's project so a same-numbered PR in another
                     # project's repo is never resolved (and closed) by mistake.
                     project_id=cast("UUID", umbrella.project_id),
@@ -10173,24 +10200,33 @@ Start by:
         return closed
 
     @staticmethod
-    def _parse_supersede_pr(quick_context: str) -> int | None:
+    def _parse_supersede_pr(marker_line: str) -> int | None:
         """Extract the contributor PR number from a supersede umbrella marker.
 
-        Anchored to the marker line so a CEO note containing ``pr=`` on a later
-        line of the multi-writer ``quick_context`` can't be misread as the PR.
+        The marker value is ``pr={n} review={uuid} [author={login}] [closed=1]``
+        stored under the ``external_pr_supersede`` key in ``orchestration_markers``
+        (migration 041). It used to ride in ``quick_context`` prefixed with the key
+        name; the refactor moved it to the typed column but left this parser on
+        ``quick_context``, so close-on-land never found the PR number and never
+        fired. ``pr=`` is unique among the tokens (``review=`` / ``author=`` /
+        ``closed=1`` don't start with ``pr=``), so a whitespace split + prefix match
+        is exact.
         """
-        for raw in quick_context.splitlines():
-            line = raw.strip()
-            if not line.startswith("external_pr_supersede"):
-                continue
-            for part in line.split():
-                if part.startswith("pr="):
-                    try:
-                        return int(part[3:])
-                    except ValueError:
-                        return None
-            return None
+        for part in marker_line.split():
+            if part.startswith("pr="):
+                try:
+                    return int(part[3:])
+                except ValueError:
+                    return None
         return None
+
+    @staticmethod
+    def _parse_supersede_author(marker_line: str) -> str:
+        """Extract the contributor login from a supersede umbrella marker, or ""."""
+        for part in marker_line.split():
+            if part.startswith("author="):
+                return part[len("author=") :]
+        return ""
 
     @staticmethod
     def _pr_author_allowed(pr: dict[str, Any], allowlist: set[str]) -> bool:
@@ -10299,10 +10335,16 @@ Start by:
             # retries via the supersede_comment_posted marker.
             git = GitService(db)
             try:
+                author = self._parse_supersede_author(
+                    markers.get_external_pr_supersede(umbrella) or ""
+                )
+                comment = _supersede_author_prefix(
+                    author
+                ) + SUPERSEDE_PR_COMMENT.format(branch=branch_name)
                 await git.comment_pull_request(
                     pr_number,
                     project_id=project_id,
-                    comment=SUPERSEDE_PR_COMMENT.format(branch=branch_name),
+                    comment=comment,
                 )
                 markers.mark_supersede_comment_posted(umbrella)
                 await db.flush()
@@ -10394,10 +10436,16 @@ Start by:
                 # Post the contributor comment if the fast path did not.
                 if not markers.is_supersede_comment_posted(umbrella):
                     try:
+                        author = self._parse_supersede_author(
+                            markers.get_external_pr_supersede(umbrella) or ""
+                        )
+                        comment = _supersede_author_prefix(
+                            author
+                        ) + SUPERSEDE_PR_COMMENT.format(branch=branch_name)
                         await git.comment_pull_request(
                             pr_number,
                             project_id=project_id,
-                            comment=SUPERSEDE_PR_COMMENT.format(branch=branch_name),
+                            comment=comment,
                         )
                         markers.mark_supersede_comment_posted(umbrella)
                         await db.flush()
