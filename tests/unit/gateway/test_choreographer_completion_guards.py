@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.services.base import UnauthorizedError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
@@ -187,9 +188,11 @@ async def test_cell_pm_complete_allows_decision_without_separate_reflect() -> No
 async def test_cell_pm_complete_routes_head_branch_leaf_to_ceo_approval() -> None:
     """A leaf whose parent is a branchless coordination root resolves its
     merge target to the project head env branch (slave/master), and pr_merge
-    is CEO-only for the head branch. cell_pm_complete must route such a leaf
-    to awaiting_ceo_approval (the CEO merge turn) instead of calling pr_merge
-    (which would CEO_ONLY-fail and bounce the cell PM escalate_up -> main-pm).
+    is CEO-only for the head branch. cell_pm_complete calls pr_merge, catches
+    the CEO_ONLY refusal, and routes such a leaf to awaiting_ceo_approval
+    (the CEO merge turn) instead of bouncing the cell PM escalate_up ->
+    main-pm (which also can't merge) into a BLOCKED loop. Keyed on the actual
+    CEO_ONLY refusal so a stub merge that doesn't model it proceeds normally.
     Live: 5612b225/PR 856 (blocked 3x), 5b780794/PR 840.
     """
     pm_id = uuid4()
@@ -222,6 +225,13 @@ async def test_cell_pm_complete_routes_head_branch_leaf_to_ceo_approval() -> Non
     journal_svc.has_reflect_for_task.return_value = True
     git_svc = AsyncMock()
     git_svc.is_pr_merged_for_task.return_value = False
+    git_svc.pr_merge.side_effect = UnauthorizedError(
+        action="pr_merge",
+        reason=(
+            "CEO_ONLY: merging into 'slave' (this project's head environment"
+            " branch) is reserved for the CEO via approve-&-merge"
+        ),
+    )
     deps = _make_deps(task=task_svc, journal=journal_svc, git=git_svc)
     c = Choreographer(deps)
 
@@ -234,7 +244,7 @@ async def test_cell_pm_complete_routes_head_branch_leaf_to_ceo_approval() -> Non
     # The subtask guard bypass is the whole fix.
     kwargs = task_svc.escalate_to_ceo.call_args.kwargs
     assert kwargs.get("allow_subtask_ceo_merge") is True
-    git_svc.pr_merge.assert_not_awaited()
+    git_svc.pr_merge.assert_awaited_once()
 
 
 @pytest.mark.asyncio

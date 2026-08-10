@@ -1100,6 +1100,7 @@ class TaskService(BaseService):
         new_status: TaskStatus,
         agent_role: str | None = None,
         audit_agent_id: str | UUID | None = None,
+        extra_allowed_roles: tuple[str, ...] = (),
     ) -> None:
         """
         Validate and set task status with lifecycle enforcement.
@@ -1130,7 +1131,7 @@ class TaskService(BaseService):
         target = new_status.value if isinstance(new_status, TaskStatus) else new_status
 
         # Validate the transition (raises TaskLifecycleError if invalid)
-        validate_task_transition(current, target, agent_role)
+        validate_task_transition(current, target, agent_role, extra_allowed_roles)
 
         # Validate git requirements (raises GitRequirementError if not met)
         git_ctx = GitContext(
@@ -7506,12 +7507,15 @@ class TaskService(BaseService):
         if notes:
             markers.set_transition_note(task, "escalate_to_ceo", notes)
 
-        # Validate transition with PM role requirement
+        # Validate transition with PM role requirement. A cell PM routing a
+        # CEO-only head-branch leaf here (allow_subtask_ceo_merge) is the one
+        # caller licensed to take this spec-pinned transition as cell_pm.
         self._validate_and_set_status(
             task,
             TaskStatus.AWAITING_CEO_APPROVAL,
             agent_role,
             audit_agent_id=actor_agent_id,
+            extra_allowed_roles=("cell_pm",) if allow_subtask_ceo_merge else (),
         )
         await self.session.flush()
 

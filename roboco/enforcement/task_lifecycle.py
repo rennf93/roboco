@@ -193,6 +193,7 @@ def validate_task_transition(
     current_status: str,
     target_status: str,
     agent_role: str | None = None,
+    extra_allowed_roles: tuple[str, ...] = (),
 ) -> bool:
     """Validate a task state transition against the spec-derived view.
 
@@ -214,7 +215,16 @@ def validate_task_transition(
 
     if agent_role:
         allowed_roles = ROLE_RESTRICTED_TRANSITIONS.get((current_status, target_status))
-        if allowed_roles and agent_role not in allowed_roles:
+        # extra_allowed_roles widens the gate for one call only: cell_pm
+        # routing a CEO-only head-branch leaf to the CEO merge turn takes
+        # awaiting_pm_review -> awaiting_ceo_approval (spec-pinned to
+        # main_pm / board) via escalate_to_ceo(allow_subtask_ceo_merge=True).
+        # The regular escalate_to_ceo verb never passes it.
+        if (
+            allowed_roles
+            and agent_role not in allowed_roles
+            and agent_role not in extra_allowed_roles
+        ):
             raise TaskLifecycleError(
                 current_status=current_status,
                 target_status=target_status,
@@ -231,10 +241,13 @@ def can_agent_transition(
     current_status: str,
     target_status: str,
     agent_role: str,
+    extra_allowed_roles: tuple[str, ...] = (),
 ) -> bool:
     """Non-raising variant of :func:`validate_task_transition`."""
     try:
-        return validate_task_transition(current_status, target_status, agent_role)
+        return validate_task_transition(
+            current_status, target_status, agent_role, extra_allowed_roles
+        )
     except TaskLifecycleError:
         return False
 

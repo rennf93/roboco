@@ -29,6 +29,7 @@ from roboco.foundation.policy.content import (
     validate_findings,
 )
 from roboco.foundation.policy.content.validators import reject_trivial
+from roboco.services.base import UnauthorizedError
 from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
@@ -7757,6 +7758,43 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role="cell_pm")
 
+    async def _handle_ceo_only_merge_refusal(
+        self,
+        exc: UnauthorizedError,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        target: str,
+    ) -> Envelope:
+        """Route a CEO_ONLY pr_merge refusal to CEO approval, or re-raise.
+
+        pr_merge raises CEO_ONLY when the merge target is the project's head
+        env branch (reserved for the CEO via approve-&-merge). A leaf whose
+        parent is a branchless coordination root resolves its target there
+        (resolve_parent_branch's branchless-parent fallback). Route such a
+        leaf to awaiting_ceo_approval (the CEO merge turn) instead of
+        bouncing the cell PM escalate_up -> main-pm (which also can't merge)
+        into a BLOCKED loop. Keyed on the actual refusal, not a
+        target==head proxy, so a stub merge that doesn't model CEO_ONLY
+        proceeds normally. Any other UnauthorizedError is re-raised unchanged.
+        Live incidents this closes: 5612b225/PR 856, 5b780794/PR 840.
+        """
+        if not (exc.reason and "CEO_ONLY" in exc.reason):
+            raise exc
+        return await self._maybe_route_head_branch_to_ceo(
+            pm_agent_id, task_id, t, target
+        ) or Envelope.invalid_state(
+            message=(
+                f"PR #{t.pr_number} targets the CEO-only head branch"
+                f" '{target}' and could not be routed to CEO approval"
+            ),
+            remediate=(
+                "the CEO must approve-and-merge this PR into the head"
+                f" branch '{target}' manually"
+            ),
+            context_briefing=await self._briefing_for(pm_agent_id, task_id),
+        ).with_introspection(task=t, role="cell_pm")
+
     async def cell_pm_complete(
         self, pm_agent_id: UUID, task_id: UUID, notes: str
     ) -> Envelope:
@@ -7807,11 +7845,6 @@ class Choreographer:
         if t.pr_number:
             already_merged = await self.git.is_pr_merged_for_task(task_id)
             if not already_merged:
-                ceo_env = await self._maybe_route_head_branch_to_ceo(
-                    pm_agent_id, task_id, t, target
-                )
-                if ceo_env is not None:
-                    return ceo_env
                 try:
                     merge_result = await self.git.pr_merge(
                         t.pr_number,
@@ -7832,6 +7865,10 @@ class Choreographer:
                         target=target,
                         notes=notes,
                         exc=exc,
+                    )
+                except UnauthorizedError as exc:
+                    return await self._handle_ceo_only_merge_refusal(
+                        exc, pm_agent_id, task_id, t, target
                     )
         return await self._finalize_cell_complete(
             pm_agent_id, task_id, t, notes, merge_commit
