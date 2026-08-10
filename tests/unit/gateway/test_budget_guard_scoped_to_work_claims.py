@@ -95,9 +95,9 @@ async def test_claim_review_succeeds_at_cap() -> None:
     task_svc.has_earlier_incomplete_code_sibling.return_value = False
     task_svc.qa_claim = AsyncMock(return_value=t)
     task_svc.project_month_spend_usd = AsyncMock(return_value=999.0)
-    c = Choreographer(_make_deps(task_svc))
-    cc: Any = c
-    cc._build_qa_review_evidence = AsyncMock(return_value={})
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.return_value = ("", [])
+    c = Choreographer(_make_deps(task_svc, git=git_svc))
 
     env = await c.claim_review(uuid4(), t.id)
     body = env.as_dict()

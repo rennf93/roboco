@@ -5967,6 +5967,35 @@ class GitService(BaseService):
             return origin_ref
         return branch_name
 
+    async def _resolve_diff_refs(
+        self,
+        *,
+        branch_name: str,
+        base: str | None,
+        actor_agent_id: UUID | None,
+        preferred_parent: str | None,
+    ) -> tuple[Any, str, str]:
+        """One (workspace, head_ref, base_ref) resolution for a diff-family call.
+
+        ``diff``, ``list_changed_files``, and ``diff_and_files`` each need the
+        identical four sequential lookups (workspace, token, head ref, base
+        ref) before they can run a ``git diff`` — factored out once so it
+        isn't duplicated per method body.
+        """
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
+        token = await self._token_for_branch(branch_name)
+        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
+        base_ref = (
+            base
+            if base is not None
+            else await self._resolve_diff_base(
+                workspace, branch_name, token=token, preferred_parent=preferred_parent
+            )
+        )
+        return workspace, head_ref, base_ref
+
     async def diff(
         self,
         *,
@@ -5990,18 +6019,17 @@ class GitService(BaseService):
         overrides the derived-parent lookup (see ``_resolve_diff_base``) for
         a caller with an authoritative parent branch name (a cross-team
         assembled-PR review) — never a literal ref like ``base="HEAD~1"``.
+
+        A caller that also needs ``list_changed_files`` for the same branch
+        should use ``diff_and_files`` instead — it resolves once and runs
+        both git subprocesses concurrently rather than paying this
+        resolution (and a second subprocess) twice.
         """
-        workspace = await self._workspace_for_branch(
-            branch_name, actor_agent_id=actor_agent_id
-        )
-        token = await self._token_for_branch(branch_name)
-        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
-        base_ref = (
-            base
-            if base is not None
-            else await self._resolve_diff_base(
-                workspace, branch_name, token=token, preferred_parent=preferred_parent
-            )
+        workspace, head_ref, base_ref = await self._resolve_diff_refs(
+            branch_name=branch_name,
+            base=base,
+            actor_agent_id=actor_agent_id,
+            preferred_parent=preferred_parent,
         )
         diff_result = await self._run_git(
             workspace, ["diff", f"{base_ref}...{head_ref}"], check=False
@@ -6025,18 +6053,14 @@ class GitService(BaseService):
         (which the gateway commit() does not call). Empty paths are
         skipped; output preserves git's order. Same default-
         branch fallback as ``diff`` (including ``preferred_parent``).
+
+        See ``diff_and_files`` when a caller needs both legs together.
         """
-        workspace = await self._workspace_for_branch(
-            branch_name, actor_agent_id=actor_agent_id
-        )
-        token = await self._token_for_branch(branch_name)
-        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
-        base_ref = (
-            base
-            if base is not None
-            else await self._resolve_diff_base(
-                workspace, branch_name, token=token, preferred_parent=preferred_parent
-            )
+        workspace, head_ref, base_ref = await self._resolve_diff_refs(
+            branch_name=branch_name,
+            base=base,
+            actor_agent_id=actor_agent_id,
+            preferred_parent=preferred_parent,
         )
         result = await self._run_git(
             workspace,
@@ -6044,6 +6068,40 @@ class GitService(BaseService):
             check=False,
         )
         return [line for line in result.stdout.splitlines() if line.strip()]
+
+    async def diff_and_files(
+        self,
+        *,
+        branch_name: str,
+        base: str | None = None,
+        actor_agent_id: UUID | None = None,
+        preferred_parent: str | None = None,
+    ) -> tuple[str, list[str]]:
+        """Return ``(diff, changed_files)`` for `branch_name` against `base`.
+
+        The combined form of ``diff`` + ``list_changed_files``: every caller
+        that previously awaited both in sequence
+        (``_build_qa_claim_evidence``, ``content_actions.evidence``)
+        re-resolved the identical workspace / token / head-ref / base-ref
+        FOUR times over and spawned two independent ``git diff`` subprocesses
+        back to back. This resolves once (``_resolve_diff_refs``) and runs
+        the full diff and the ``--name-only`` diff CONCURRENTLY off that
+        single resolution — halving the git-subprocess wall time on top of
+        removing the duplicate resolution.
+        """
+        workspace, head_ref, base_ref = await self._resolve_diff_refs(
+            branch_name=branch_name,
+            base=base,
+            actor_agent_id=actor_agent_id,
+            preferred_parent=preferred_parent,
+        )
+        spec = f"{base_ref}...{head_ref}"
+        diff_result, files_result = await asyncio.gather(
+            self._run_git(workspace, ["diff", spec], check=False),
+            self._run_git(workspace, ["diff", "--name-only", spec], check=False),
+        )
+        files = [line for line in files_result.stdout.splitlines() if line.strip()]
+        return diff_result.stdout, files
 
     async def read_file_at_branch(
         self,
@@ -6161,6 +6219,7 @@ class GitService(BaseService):
         *,
         preferred_parent: str | None = None,
         timeout: float | None = None,
+        changed_files: list[str] | None = None,
     ) -> dict[str, Any]:
         """Run the conventions validator on a task's changed files.
 
@@ -6182,6 +6241,12 @@ class GitService(BaseService):
         conventions_validator_advisory_timeout_seconds`` here; every
         fail-closed caller (``i_am_done``, ``pr_pass``) omits it and keeps
         the longer hardcoded cap.
+
+        ``changed_files`` lets a caller that already resolved the branch's
+        changed-file list (e.g. via ``diff_and_files``) thread it straight
+        in instead of paying for a THIRD ``list_changed_files`` resolution
+        + subprocess on top of the caller's own diff/files legs. Omit it
+        (the default) to keep the prior self-resolving behavior.
 
         The changed-file LIST above comes from git objects (``list_changed_files``
         fetches + diffs ``origin/<branch>``); the validator below reads CONTENT
@@ -6212,10 +6277,14 @@ class GitService(BaseService):
             clone_root = await self._workspace_for_branch(
                 branch, actor_agent_id=actor_agent_id
             )
-            changed = await self.list_changed_files(
-                branch_name=branch,
-                actor_agent_id=actor_agent_id,
-                preferred_parent=preferred_parent,
+            changed = (
+                changed_files
+                if changed_files is not None
+                else await self.list_changed_files(
+                    branch_name=branch,
+                    actor_agent_id=actor_agent_id,
+                    preferred_parent=preferred_parent,
+                )
             )
         except Exception as exc:
             return {

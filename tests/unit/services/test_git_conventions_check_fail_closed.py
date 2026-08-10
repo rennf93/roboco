@@ -118,6 +118,50 @@ async def test_preferred_parent_forwards_to_list_changed_files() -> None:
 
 
 @pytest.mark.asyncio
+async def test_changed_files_kwarg_skips_list_changed_files_resolution() -> None:
+    """A caller that already resolved the changed-file list (e.g. via
+    ``diff_and_files``) threads it straight in via ``changed_files`` — this
+    must skip the internal ``list_changed_files`` call (a THIRD resolution
+    on top of the caller's own diff/files legs) entirely."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    changed = AsyncMock(return_value=["should-not-be-called.py"])
+    _bind(svc, "list_changed_files", changed)
+    _bind(svc, "_worktree_for_task", MagicMock(return_value=Path("/tmp/wt")))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock(return_value=None))
+    validator = AsyncMock(return_value={"findings": [], "could_not_run": False})
+    _bind(svc, "_run_conventions_validator", validator)
+
+    await svc.conventions_check_for_task(
+        uuid4(),
+        _task_with_id("feature/backend/abc"),
+        changed_files=["already-resolved.py"],
+    )
+    changed.assert_not_awaited()
+    validator.assert_awaited_once_with(
+        Path("/tmp/wt"), ["already-resolved.py"], timeout=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_changed_files_kwarg_omitted_keeps_self_resolving_default() -> None:
+    """Omitting ``changed_files`` (every existing caller) keeps the prior
+    self-resolving behavior byte-for-byte."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    changed = AsyncMock(return_value=["a.py"])
+    _bind(svc, "list_changed_files", changed)
+    _bind(svc, "_worktree_for_task", MagicMock(return_value=Path("/tmp/wt")))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock(return_value=None))
+    validator = AsyncMock(return_value={"findings": [], "could_not_run": False})
+    _bind(svc, "_run_conventions_validator", validator)
+
+    await svc.conventions_check_for_task(uuid4(), _task_with_id("feature/backend/abc"))
+    changed.assert_awaited_once()
+    validator.assert_awaited_once_with(Path("/tmp/wt"), ["a.py"], timeout=None)
+
+
+@pytest.mark.asyncio
 async def test_validator_timeout_fails_closed_and_reaps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

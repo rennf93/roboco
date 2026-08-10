@@ -156,6 +156,24 @@ class _StubGit:
         del branch_name, base, actor_agent_id
         return []
 
+    async def diff_and_files(
+        self,
+        *,
+        branch_name: str,
+        base: Any = None,
+        actor_agent_id: Any = None,
+        preferred_parent: Any = None,
+    ) -> tuple[str, list[str]]:
+        del preferred_parent
+        return (
+            await self.diff(
+                branch_name=branch_name, base=base, actor_agent_id=actor_agent_id
+            ),
+            await self.list_changed_files(
+                branch_name=branch_name, base=base, actor_agent_id=actor_agent_id
+            ),
+        )
+
     async def pr_target(self, pr_number: int, *, actor_agent_id: Any = None) -> str:
         del pr_number, actor_agent_id
         return "main"
