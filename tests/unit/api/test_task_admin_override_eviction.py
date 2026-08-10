@@ -29,7 +29,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.api.deps import clear_orchestrator, set_orchestrator
-from roboco.api.routes.tasks import (
+from roboco.api.utils.tasks import (
     _apply_forced_status_override,
     _evict_stranded_agent,
     _StatusOverride,
@@ -91,7 +91,7 @@ async def test_evicts_live_agent_holding_the_overridden_task() -> None:
     with (
         _patch_session_factory(),
         patch(
-            "roboco.api.routes.tasks.get_agent_service",
+            "roboco.services.agent.get_agent_service",
             return_value=fake_agent_service,
         ),
     ):
@@ -113,7 +113,7 @@ async def test_noops_silently_when_orchestrator_absent() -> None:
     task_id = uuid4()
     prior_holder = uuid4()
 
-    with patch("roboco.api.routes.tasks.get_agent_service") as agent_service_fn:
+    with patch("roboco.services.agent.get_agent_service") as agent_service_fn:
         await _evict_stranded_agent(task_id, prior_holder)
         agent_service_fn.assert_not_called()
 
@@ -142,7 +142,7 @@ async def test_noops_when_live_instance_is_on_a_different_task() -> None:
     with (
         _patch_session_factory(),
         patch(
-            "roboco.api.routes.tasks.get_agent_service",
+            "roboco.services.agent.get_agent_service",
             return_value=fake_agent_service,
         ),
     ):
@@ -168,7 +168,7 @@ async def test_eviction_failure_is_swallowed() -> None:
     with (
         _patch_session_factory(),
         patch(
-            "roboco.api.routes.tasks.get_agent_service",
+            "roboco.services.agent.get_agent_service",
             return_value=fake_agent_service,
         ),
     ):
@@ -213,9 +213,9 @@ async def test_eviction_is_deferred_not_run_inline_before_commit() -> None:
     )
 
     with (
-        patch("roboco.api.routes.tasks.defer_after_commit") as deferred,
+        patch("roboco.api.utils.tasks.defer_after_commit") as deferred,
         patch(
-            "roboco.api.routes.tasks._evict_stranded_agent", new=AsyncMock()
+            "roboco.api.utils.tasks._evict_stranded_agent", new=AsyncMock()
         ) as evict_mock,
     ):
         result = await _apply_forced_status_override(req)
