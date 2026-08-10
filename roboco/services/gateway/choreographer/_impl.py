@@ -7696,6 +7696,67 @@ class Choreographer:
             )
         return None
 
+    async def _maybe_route_head_branch_to_ceo(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        target: str,
+    ) -> Envelope | None:
+        """Route a CEO-only head-branch leaf merge to CEO approval, or None.
+
+        A leaf whose parent is a branchless coordination root resolves its
+        merge target to the project's head env branch (slave/master, via
+        resolve_parent_branch's branchless-parent fallback). pr_merge is
+        CEO-only for the head branch: no agent may merge into it, so calling
+        it raises UnauthorizedError(CEO_ONLY) and the cell PM would
+        escalate_up -> main-pm (which also can't merge) and bounce BLOCKED
+        until the CEO intervenes by hand. Route such a leaf to
+        awaiting_ceo_approval (the CEO merge turn) instead; the closure
+        dispatcher skips awaiting_ceo_approval, so this is quiet, not a
+        re-spawn loop. Returns None when target is not the head branch (the
+        normal cell-PM merge proceeds). Live incidents this closes:
+        5612b225/PR 856 (blocked 3x), 5b780794/PR 840.
+        """
+        if not t.pr_number:
+            return None
+        head_branch = await self.task.project_default_branch_for_task(t)
+        if head_branch is None or target != head_branch:
+            return None
+        escalated = await self.task.escalate_to_ceo(
+            cast("UUID", t.id),
+            agent_role="cell_pm",
+            notes=(
+                f"Leaf PR #{t.pr_number} targets the CEO-only head branch"
+                f" '{target}' (parent is a branchless coordination root). The"
+                f" cell PM cannot merge into the head branch; routed to the"
+                f" CEO for approve-and-merge."
+            ),
+            actor_agent_id=pm_agent_id,
+            allow_subtask_ceo_merge=True,
+        )
+        if escalated is not None:
+            return Envelope.ok(
+                status=str(escalated.status),
+                task_id=str(task_id),
+                next=(
+                    "routed to CEO approval (PR targets the CEO-only head"
+                    " branch); idle until the CEO approves and merges"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            ).with_introspection(task=escalated, role="cell_pm")
+        return Envelope.invalid_state(
+            message=(
+                f"could not route PR #{t.pr_number} to CEO approval for the"
+                f" CEO-only head branch '{target}'"
+            ),
+            remediate=(
+                "the CEO must approve-and-merge this PR into the head branch"
+                f" '{target}' manually"
+            ),
+            context_briefing=await self._briefing_for(pm_agent_id, task_id),
+        ).with_introspection(task=t, role="cell_pm")
+
     async def cell_pm_complete(
         self, pm_agent_id: UUID, task_id: UUID, notes: str
     ) -> Envelope:
@@ -7746,6 +7807,11 @@ class Choreographer:
         if t.pr_number:
             already_merged = await self.git.is_pr_merged_for_task(task_id)
             if not already_merged:
+                ceo_env = await self._maybe_route_head_branch_to_ceo(
+                    pm_agent_id, task_id, t, target
+                )
+                if ceo_env is not None:
+                    return ceo_env
                 try:
                     merge_result = await self.git.pr_merge(
                         t.pr_number,

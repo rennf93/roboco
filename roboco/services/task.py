@@ -7398,12 +7398,20 @@ class TaskService(BaseService):
     # =========================================================================
 
     def _escalate_to_ceo_refusal(
-        self, task: TaskTable
+        self, task: TaskTable, *, allow_subtask_ceo_merge: bool = False
     ) -> tuple[str, dict[str, Any]] | None:
         """Eligibility checks for ``escalate_to_ceo``, extracted to keep that
         method's own cyclomatic complexity within the xenon gate. Returns
         ``(log_message, log_kwargs)`` when escalation must be refused, or
-        ``None`` when `task` is eligible."""
+        ``None`` when `task` is eligible.
+
+        ``allow_subtask_ceo_merge`` bypasses the parent/root guard for a leaf
+        whose PR targets the CEO-only head env branch (a branchless
+        coordination-root parent makes ``resolve_parent_branch`` fall back to
+        the project head branch, so ``pr_merge`` would CEO_ONLY-fail and the
+        cell PM would bounce escalate_up -> main-pm forever). Set only by
+        ``cell_pm_complete``'s head-branch routing; the ``escalate_to_ceo``
+        verb never passes it."""
         if task.status != TaskStatus.AWAITING_PM_REVIEW:
             return (
                 "Cannot escalate to CEO - task not in PM review",
@@ -7413,9 +7421,14 @@ class TaskService(BaseService):
         # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
         # carries its own project/branch/PR and behaves as a root for
         # git/CEO purposes (is_batch_root_subtask). A plain subtask (no
-        # batch_id) is still refused.
-        if task.parent_task_id and not is_batch_root_subtask(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        # batch_id) is still refused - UNLESS allow_subtask_ceo_merge routes a
+        # leaf whose PR targets the CEO-only head branch (see the param doc).
+        if (
+            task.parent_task_id
+            and not is_batch_root_subtask(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            )
+            and not allow_subtask_ceo_merge
         ):
             return (
                 "Cannot escalate subtask to CEO - only parent tasks allowed",
@@ -7447,6 +7460,7 @@ class TaskService(BaseService):
         agent_role: str = "cell_pm",
         notes: str | None = None,
         actor_agent_id: UUID | None = None,
+        allow_subtask_ceo_merge: bool = False,
     ) -> TaskTable | None:
         """
         Escalate a task to CEO for final approval (PM only).
@@ -7465,6 +7479,13 @@ class TaskService(BaseService):
                 to the specific PM/Board agent (every sibling transition
                 forwards the actor; without it the record is role-only and
                 ambiguous across same-role PMs).
+            allow_subtask_ceo_merge: Bypass the parent/root guard for a leaf
+                whose PR targets the CEO-only head env branch (a branchless
+                coordination-root parent makes ``resolve_parent_branch`` fall
+                back to the project head branch, so ``pr_merge`` would
+                CEO_ONLY-fail and the cell PM would bounce escalate_up ->
+                main-pm forever). Set only by ``cell_pm_complete``'s head-branch
+                routing; the ``escalate_to_ceo`` verb never passes it.
 
         Returns:
             The escalated task or None if escalation not allowed
@@ -7473,7 +7494,9 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        refusal = self._escalate_to_ceo_refusal(task)
+        refusal = self._escalate_to_ceo_refusal(
+            task, allow_subtask_ceo_merge=allow_subtask_ceo_merge
+        )
         if refusal:
             message, kwargs = refusal
             self.log.warning(message, task_id=str(task_id), **kwargs)
