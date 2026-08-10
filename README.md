@@ -140,6 +140,8 @@ docker compose -f docker-compose.registry.yml up -d
 
 Note: ROBOCO_PANEL_AGENT_TOKEN is a standing CEO credential — blank it if you later arm cloud auth (see `.env.example`).
 
+A fresh `.env` also gets `ROBOCO_HOST_PROJECT_DIR` and `ROBOCO_HOST_DATA_DIR` pinned to the checkout location — these are the host-side paths the orchestrator bind-mounts into every spawned agent. If you reuse an existing `.env` that doesn't set them, quickstart checks that the absence is safe: it only passes silently when the checkout is already at `/opt/roboco` (the compose default). Anywhere else, it fails loud with the exact line to add (e.g. `ROBOCO_HOST_PROJECT_DIR=/your/checkout/path`), because an unset var makes Docker create an empty directory at `/opt/roboco` and every agent spawn dies with `IsADirectoryError` before reading its system prompt. An explicitly-set value is always trusted as-is — split host/daemon setups (remote or rootless Docker, a bind-mounted checkout) legitimately name paths the script can't see.
+
 Choose the registry and version with two env vars (defaults shown) — set them in `.env` before running `make quickstart`:
 
 ```bash
