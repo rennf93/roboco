@@ -954,13 +954,13 @@ async def test_cell_pm_complete_routes_ceo_only_head_branch_to_ceo(
 
     env = await c.cell_pm_complete(
         cell_pm_agent.id,
-        leaf.id,
+        UUID(str(leaf.id)),
         notes="LGTM - routing to CEO for the head-branch merge.",
     )
     assert env.error is None, f"complete failed: {env.message}"
     assert env.status == Status.AWAITING_CEO_APPROVAL.value
 
-    final = await task_service.get(leaf.id)
+    final = await task_service.get(UUID(str(leaf.id)))
     assert final is not None
     assert str(final.status) == Status.AWAITING_CEO_APPROVAL.value
 
