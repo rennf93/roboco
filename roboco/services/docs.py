@@ -475,7 +475,7 @@ class DocsService(BaseService):
         await self._add_doc_to_task(req.task_id, doc_ref)
 
         # Index in RAG
-        await self._index_doc_in_rag(full_path)
+        await self._index_doc_in_rag(full_path, req.task_id)
 
         return rel_path, doc_ref, False  # is_update=False
 
@@ -523,7 +523,7 @@ class DocsService(BaseService):
         await self._add_doc_to_task(req.task_id, doc_ref)
 
         # Re-index in RAG
-        await self._index_doc_in_rag(full_path)
+        await self._index_doc_in_rag(full_path, req.task_id)
 
         return existing_path, doc_ref, True  # is_update=True
 
@@ -736,14 +736,25 @@ class DocsService(BaseService):
             path=doc_ref.path,
         )
 
-    async def _index_doc_in_rag(self, path: Path) -> None:
-        """Index document in RAG. Failures are logged but don't break flow."""
+    async def _index_doc_in_rag(self, path: Path, task_id: UUID | None = None) -> None:
+        """Index document in RAG. Failures are logged but don't break flow.
+
+        Marked ``provenance="live_write"`` (roboco_docs_write writes a doc
+        mid-task, before the task's PR merges) so a ``roboco_kb_search`` hit
+        built from it carries an explicit caveat instead of reading like
+        deployed reality — the live incident this guards against: a dev
+        built UI against an API contract that existed only in a still-open PR.
+        """
         try:
             # Import here to avoid circular dependency
             from roboco.services.optimal import get_optimal_service
 
             optimal = await get_optimal_service()
-            await optimal.index_documentation(sources=[str(path)])
+            await optimal.index_documentation(
+                sources=[str(path)],
+                provenance="live_write",
+                task_id=str(task_id) if task_id else None,
+            )
             self.log.debug("Document indexed in RAG", path=str(path))
         except Exception as e:
             # Log but don't fail - RAG indexing is nice-to-have

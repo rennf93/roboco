@@ -35,6 +35,7 @@ from roboco.api.utils.project import get_project_or_404 as _get_project_or_404
 from roboco.foundation.policy.conventions.models import ConventionsStandard
 from roboco.models.base import Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
+from roboco.security import guard_deco
 from roboco.services.conventions import get_conventions_service
 from roboco.services.project import get_project_service
 
@@ -141,6 +142,12 @@ async def get_project(
 
 
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600, action="log")
 async def create_project(
     data: ProjectCreateRequest,
     db: DbSession,
@@ -201,6 +208,12 @@ async def create_project(
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600, action="log")
 async def update_project(
     project_id: str,
     data: ProjectUpdateRequest,
@@ -257,6 +270,7 @@ async def update_project(
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@guard_deco.rate_limit(requests=20, window=60)
 async def delete_project(
     project_id: str,
     db: DbSession,
@@ -303,6 +317,9 @@ async def delete_project(
 
 
 @router.post("/{project_id}/workspace", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def set_workspace(
     project_id: str,
     data: SetWorkspaceRequest,
@@ -342,6 +359,9 @@ async def set_workspace(
 
 
 @router.post("/{project_id}/sync", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def update_sync_state(
     project_id: str,
     data: SyncStateRequest,
@@ -384,6 +404,7 @@ async def update_sync_state(
 
 
 @router.post("/{project_id}/access/{agent_id}", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=30, window=60)
 async def add_agent_access(
     project_id: str,
     agent_id: UUID,
@@ -424,6 +445,7 @@ async def add_agent_access(
 
 
 @router.delete("/{project_id}/access/{agent_id}", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=30, window=60)
 async def remove_agent_access(
     project_id: str,
     agent_id: UUID,
@@ -492,6 +514,10 @@ async def get_conventions(
 
 
 @router.put("/{project_id}/conventions", response_model=ConventionsActionResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.block_clouds()
 async def update_conventions(
     project_id: str,
     standard: ConventionsStandard,
@@ -509,6 +535,8 @@ async def update_conventions(
 @router.post(
     "/{project_id}/conventions/restore", response_model=ConventionsActionResponse
 )
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.block_clouds()
 async def restore_conventions(
     project_id: str,
     db: DbSession,

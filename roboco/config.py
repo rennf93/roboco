@@ -865,6 +865,32 @@ class Settings(BaseSettings):
             "only scopes which XFF entries are treated as hops."
         ),
     )
+    guard_log_suspicious_level: (
+        Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None
+    ) = Field(
+        default="WARNING",
+        description=(
+            "Log level for guard-core's suspicious-path log lines: IP bans, "
+            "blocked countries, and every BehaviorTracker ban/log/throttle "
+            "line share this one dial (guard-core 3.10.0 replaced a patchwork "
+            "of hardcoded WARNINGs with it). Default 'WARNING' is guard-core's "
+            "own default, so behavior is byte-for-byte unchanged unless an "
+            "operator sets this. CRITICAL: setting this to empty/None "
+            "silences IP-ban logging too, not just WAF noise, so a quieter "
+            "WAF also loses the ban audit trail. An invalid level (anything "
+            "outside DEBUG/INFO/WARNING/ERROR/CRITICAL) fails config load "
+            "instead of silently mis-configuring the WAF; empty string is "
+            "accepted as the env-settable spelling of None."
+        ),
+    )
+
+    @field_validator("guard_log_suspicious_level", mode="before")
+    @classmethod
+    def _empty_guard_log_suspicious_level_as_none(cls, v: object) -> object:
+        # Env vars are always strings, so an operator has no textual way to
+        # express Python None for this Literal field short of leaving it
+        # empty; the Literal itself still rejects anything else invalid.
+        return None if v == "" else v
 
     # ==========================================================================
     # Production self-healing ("engine 4") — DORMANT by default
@@ -1734,6 +1760,18 @@ class Settings(BaseSettings):
             "self-hosted runner can far exceed the sub-second local-op "
             "default; short-budgeting it is what made open_pr time out before "
             "the branch reached the remote."
+        ),
+    )
+    git_diff_timeout_seconds: int = Field(
+        default=60,
+        ge=5,
+        description=(
+            'Wall-clock timeout in seconds for GET /api/git/diff\'s "diff" '
+            "stage — the two sequential local `git diff` / `git diff --stat` "
+            "subprocess calls together. Each call is already bounded "
+            "individually by git_command_timeout_seconds inside "
+            "GitService._run_git; this is the outer bound on the pair so a "
+            "stalled diff route fails closed with a 504 instead of hanging."
         ),
     )
     evidence_assembly_timeout_seconds: float = Field(

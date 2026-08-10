@@ -4,6 +4,9 @@ Git Route Helpers
 Route-glue helpers backing roboco/api/routes/git.py.
 """
 
+import asyncio
+from collections.abc import Coroutine
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -76,6 +79,29 @@ def _translate_error(e: ServiceError | GitError) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
     )
+
+
+async def _bounded_git_stage[T](
+    coro: Coroutine[Any, Any, T], *, timeout: float, stage: str
+) -> T:
+    """Await ``coro`` bounded by ``timeout``; fail closed with a stage-named 504.
+
+    Sibling to ``evidence_legs.run_bounded_leg`` but for a route that must
+    FAIL CLOSED (no soft degrade): both timeout shapes — asyncio's own
+    ``TimeoutError`` from ``wait_for``'s own cancellation, and
+    ``GitTimeoutError`` raised from inside ``GitService._run_git``'s own
+    internal subprocess bound — translate to the same stage-naming 504
+    instead of a bare/generic message. Cancelling a thread-backed git call
+    only stops AWAITING it, not necessarily the underlying subprocess — the
+    same caveat evidence_legs.py documents for its own soft-degrading legs.
+    """
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except (TimeoutError, GitTimeoutError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"git diff timed out during {stage} after {timeout:g}s",
+        ) from e
 
 
 async def _resolve_project_slug(identifier: str, db: AsyncSession) -> str:

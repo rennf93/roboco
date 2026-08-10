@@ -18,6 +18,8 @@ Signing the CLA does **not** transfer ownership of your work away from you — y
 
 The first time you open a pull request, the CLA Assistant bot will comment with a link and ask you to confirm agreement by posting a one-line comment on the PR. This is a one-time action; subsequent PRs are recognized automatically.
 
+**System-account PRs self-satisfy.** `.github/workflows/cla.yml` allowlists `roboco-app[bot]` (the GitHub App RoboCo's own agent fleet pushes and opens PRs under) and `dependabot[bot]`, so their PRs never need a manual sign-off comment — an App account can't post one as itself, and the CLA exists to obtain copyright assignment from human contributors, not from commits made on the maintainer's own behalf. `tests/unit/test_cla_workflow_allowlist.py` regression-guards this exemption directly against the workflow YAML.
+
 ## Development workflow
 
 1. Fork the repository and create a feature branch.

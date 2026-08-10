@@ -15,11 +15,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import structlog
+
+from roboco.services.release_readiness import project_version
 
 logger = structlog.get_logger()
 
@@ -161,8 +164,11 @@ class ReleaseExecutor:
         """Fresh-release pipeline: promote → bump → changelog → gate → commit.
 
         Returns ``(commit_sha, files)`` on success, or a ``ReleaseResult`` on a
-        fail-closed abort (promotion conflict / red gate / commit-push failure)
-        so ``execute`` surfaces it to the CEO as a structured outcome, not a 500.
+        fail-closed abort (promotion conflict / unresolvable version / red gate /
+        commit-push failure) so ``execute`` surfaces it to the CEO as a
+        structured outcome, not a 500. Every ops call that can raise is wrapped:
+        an uncaught one here reaches the caller's generic handler and loses the
+        status vocabulary this method exists to produce.
         """
         # Full-chain promotion: merge the env ladder head→…→prod into the prod
         # checkout before bumping, so the release commits the promoted state.
@@ -180,7 +186,24 @@ class ReleaseExecutor:
                     f"env-chain promotion failed — not published (fail-closed): {exc}"
                 )[:280],
             )
-        files = await self._ops.apply_version_bumps(report.version_bump_plan, version)
+        try:
+            files = await self._ops.apply_version_bumps(
+                report.version_bump_plan, version
+            )
+        except RuntimeError as exc:
+            # Raised when the repo's current version is unresolvable, which would
+            # otherwise let an empty-string replace corrupt every planned file.
+            logger.error("release version bump failed", error=str(exc)[:300])
+            return ReleaseResult(
+                status="bump_failed",
+                version=version,
+                files_changed=[],
+                commit_sha=None,
+                release_url=None,
+                detail=(f"version bump failed, not published (fail-closed): {exc}")[
+                    :280
+                ],
+            )
         await self._ops.write_changelog_entry(report.drafted_changelog)
 
         gate_ok, gate_detail = await self._ops.run_gate()
@@ -340,19 +363,33 @@ class _GitReleaseOps:
         return None
 
     def _current_version(self) -> str:
-        text = (self._root / "pyproject.toml").read_text(encoding="utf-8")
-        match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
-        return match.group(1) if match else ""
+        """Whichever manifest this repo actually ships, not pyproject.toml only.
+
+        Readiness probes pyproject/package.json/Cargo.toml/VERSION to BUILD the
+        bump plan; reading only pyproject here made the executor blind to a
+        version readiness had already found on a non-Python repo.
+        """
+        return project_version(self._root)
 
     async def apply_version_bumps(self, plan: list[str], new_version: str) -> list[str]:
         """Replace the current version with ``new_version`` across the plan.
 
         CHANGELOG.md is skipped here (it gets a new entry, not a string-replace)
         but is kept in the returned list since it IS changed by the entry. uv.lock
-        is bumped only within the ``roboco`` package block to avoid clobbering a
+        is bumped only within this repo's OWN package block to avoid clobbering a
         dependency that happens to share the version string.
+
+        Fail-closed on an unresolvable current version: ``str.replace("", x)``
+        inserts ``x`` between every character of every planned file, so an empty
+        ``old`` must abort the release, never fall through to the loop.
         """
         old = self._current_version()
+        if not old:
+            raise RuntimeError(
+                "release bump aborted: no current version found in the repo's "
+                "manifest (pyproject.toml / package.json / Cargo.toml / VERSION)"
+            )
+        package = _lock_package_name(self._root)
         for rel in plan:
             if rel.endswith(_CHANGELOG_NAME):
                 continue
@@ -361,7 +398,7 @@ class _GitReleaseOps:
                 continue
             text = path.read_text(encoding="utf-8")
             if rel.endswith("uv.lock"):
-                text = _bump_uv_lock(text, old, new_version)
+                text = _bump_uv_lock(text, old, new_version, package)
             else:
                 text = text.replace(old, new_version)
             path.write_text(text, encoding="utf-8")
@@ -514,10 +551,36 @@ class _GitReleaseOps:
         return str(resp.json().get("html_url") or "")
 
 
-def _bump_uv_lock(text: str, old: str, new: str) -> str:
-    """Bump only the ``roboco`` package's version inside uv.lock."""
+def _lock_package_name(root: Path) -> str:
+    """This repo's own distribution name, for scoping the uv.lock bump.
+
+    Empty when there is no readable ``[project] name`` (a non-Python repo has
+    no uv.lock in its plan either, so the bump no-ops rather than guessing).
+    """
+    try:
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+    name = data.get("project", {}).get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _bump_uv_lock(text: str, old: str, new: str, package: str) -> str:
+    """Bump only ``package``'s own version block inside uv.lock, leaving a
+    dependency that happens to share the version string untouched.
+
+    ``package`` used to be the hardcoded literal ``roboco``, which silently
+    no-opped the lockfile bump for every other uv project. An unresolvable
+    name still no-ops, deliberately: a wrong lockfile edit is worse than none.
+    """
+    if not package:
+        return text
     pattern = re.compile(
-        r'(\[\[package\]\]\nname = "roboco"\nversion = )"' + re.escape(old) + '"'
+        r'(\[\[package\]\]\nname = "'
+        + re.escape(package)
+        + r'"\nversion = )"'
+        + re.escape(old)
+        + '"'
     )
     return pattern.sub(rf'\1"{new}"', text)
 

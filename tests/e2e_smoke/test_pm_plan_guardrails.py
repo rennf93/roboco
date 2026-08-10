@@ -7,6 +7,12 @@ The fix adds ceilings (plan <= 2000, approach <= 800, sub-task title <= 200,
 sub-task description <= 600) and an over-decomposition cap (>7 sub_tasks
 rejected) at both the HTTP Pydantic boundary and the choreographer gate.
 
+Overflow past the plan/count caps is still a hard reject (over-decomposition
+and an over-length ``plan`` narrative are real defects); overflow past a
+per-field character cap (approach, sub-task title/description) is truncated
+instead as of the 2026-08 fix — a hard 422 there used to strand a cell PM's
+``i_will_plan`` for ~6 respawn laps, throwing away an otherwise-good plan.
+
 This scenario drives a MAIN_PM planning root through the real API and asserts
 each guardrail surfaces a clean ``incomplete_input`` envelope with a
 remediation hint the agent can act on — not a 500, not a silent accept. The
@@ -105,13 +111,18 @@ def test_pm_plan_over_decomposition_cap_rejected(e2e_stack: E2EStack) -> None:
     assert "at most 7" in str(body.get("field_hints", {})), body
 
 
-def test_pm_plan_overlong_subtask_description_rejected(
+def test_pm_plan_overlong_subtask_description_truncated(
     e2e_stack: E2EStack,
 ) -> None:
-    """A sub-task description >600 chars is the bloat defect — rejected at
-    the Pydantic boundary (422), so the envelope carries the validation
-    ``detail`` rather than the gate's ``field_hints``. Both layers are the
-    guardrail working; this test pins the boundary layer."""
+    """A sub-task description >600 chars is truncated to 600 at the Pydantic
+    boundary, not rejected — the 2026-08 fix (a hard 422 here used to strand
+    a cell PM's i_will_plan for ~6 respawn laps, throwing away an otherwise
+    -good plan exactly like the approach incident this guardrail file also
+    covers). The call succeeds and the persisted plan carries the clamped
+    description."""
+    from roboco.db.tables import TaskTable
+    from sqlalchemy import select
+
     stack = e2e_stack
     company = seed_company(stack)
     main_pm, task_id = _seed_planning_root(stack, company)
@@ -124,12 +135,18 @@ def test_pm_plan_overlong_subtask_description_rejected(
         approach=_APPROACH,
         sub_tasks=[bloated],
     )
-    body = expect_error(env, "incomplete_input", "over-long subtask desc")
-    # Boundary 422: missing is [] but detail carries the Pydantic error
-    # naming sub_tasks + the 600-char cap.
-    detail = str(body.get("detail"))
-    assert "sub_tasks" in detail, body
-    assert "600" in detail, body
+    assert env.get("error") != "incomplete_input", env
+
+    async def _run(session: Any) -> dict[str, Any]:
+        row = (
+            await session.execute(select(TaskTable).where(TaskTable.id == task_id))
+        ).scalar_one()
+        plan: dict[str, Any] = row.plan or {}
+        return plan
+
+    plan = stack.run_db(_run)
+    persisted_desc = plan["sub_tasks"][0]["description"]
+    assert persisted_desc == "x" * 597 + "...", persisted_desc
 
 
 def test_pm_plan_valid_plan_passes_gate(e2e_stack: E2EStack) -> None:

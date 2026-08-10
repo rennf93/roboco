@@ -81,8 +81,7 @@ async def test_claim_review_returns_evidence_inline() -> None:
     _stub_empty_ledger(task_svc.session)
     work_svc = AsyncMock()
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "+++ diff content"
-    git_svc.list_changed_files.return_value = ["README.md"]
+    git_svc.diff_and_files.return_value = ("+++ diff content", ["README.md"])
     deps = _make_deps(task=task_svc, work_session=work_svc, git=git_svc)
     c = Choreographer(deps)
 
@@ -149,7 +148,7 @@ async def test_claim_review_marks_evidence_inspected() -> None:
     task_svc.qa_claim.return_value = t_claimed
     _stub_empty_ledger(task_svc.session)
     git_svc = AsyncMock()
-    git_svc.diff.return_value = ""
+    git_svc.diff_and_files.return_value = ("", [])
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 

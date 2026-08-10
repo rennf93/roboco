@@ -22,6 +22,7 @@ Workspace Structure:
 """
 
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 
@@ -56,11 +57,13 @@ from roboco.api.schemas.git import (
     GitStatusResponse,
 )
 from roboco.api.utils.git import (
+    _bounded_git_stage,
     _compute_file_range,
     _parse_branch_line,
     _resolve_project_slug,
     _translate_error,
 )
+from roboco.config import settings
 from roboco.exceptions import GitError
 from roboco.logging import get_logger
 from roboco.models.base import AgentRole
@@ -281,15 +284,12 @@ async def get_git_diff(
     project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
-    try:
-        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
-
+    async def _run_diff_stage() -> tuple[Any, Any]:
         args = ["diff"]
         if staged:
             args.append("--staged")
         if file_path:
             args.extend(["--", file_path])
-
         diff_result = await git_service._run_git(workspace, args)
 
         # Count files changed
@@ -297,6 +297,19 @@ async def get_git_diff(
         if staged:
             stat_args.append("--staged")
         stat_result = await git_service._run_git(workspace, stat_args)
+        return diff_result, stat_result
+
+    try:
+        workspace = await _bounded_git_stage(
+            git_service.get_workspace(project_slug, agent.agent_id),
+            timeout=settings.workspace_clone_timeout,
+            stage="workspace resolution",
+        )
+        diff_result, stat_result = await _bounded_git_stage(
+            _run_diff_stage(),
+            timeout=settings.git_diff_timeout_seconds,
+            stage="diff",
+        )
     except _TranslatableError as e:
         raise _translate_error(e) from e
 

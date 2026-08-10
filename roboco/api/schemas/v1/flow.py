@@ -30,31 +30,113 @@ _AC_MAX_ITEM_CHARS = 200
 # sibling ceiling in choreographer._impl (the gate re-derives its own copy).
 _APPROACH_MAX_CHARS = 800
 
+# Sibling free-text caps — same truncate-not-reject treatment as approach
+# (2026-08 fix: a hard 422 on an overlong sub_task/risk/question threw away
+# an otherwise-good plan exactly like the approach incident did — a live
+# incident stranded a cell PM's i_will_plan on an over-length sub_task
+# description for ~6 respawn laps).
+_SUBTASK_TITLE_MAX_CHARS = 200
+_SUBTASK_DESCRIPTION_MAX_CHARS = 600
+_RISK_MAX_CHARS = 300
+_MITIGATION_MAX_CHARS = 600
+_OPEN_QUESTION_MAX_CHARS = 300
+_DELEGATE_TITLE_MAX_CHARS = 200
+
+
+def _truncate(value: str, limit: int) -> str:
+    """The one truncation rule every clamp on this surface shares."""
+    if len(value) > limit:
+        return value[: limit - 3] + "..."
+    return value
+
+
+def _clamp(value: object, limit: int) -> object:
+    """``mode="before"`` clamp: pass non-str input through unchanged so the
+    real type/min_length validation reports the actual error."""
+    if isinstance(value, str):
+        return _truncate(value, limit)
+    return value
+
+
+def _clamp_dict_list(value: object, key_limits: dict[str, int]) -> object:
+    """``mode="before"`` clamp for a list-of-plain-dicts field.
+
+    IWillWorkOnRequest.steps/risks/open_questions stay ``list[dict[str,
+    str]]`` (not typed models like SubTaskCreate/RiskCreate/
+    OpenQuestionCreate) because the choreographer consumes them as raw
+    dicts (``_thin_subtask_hint``, ``_normalize_risk``,
+    ``_normalize_open_question`` all use ``.get()``) — re-typing would mean
+    touching every one of those call sites for no behavior change. Walks
+    each dict entry, truncating the named str keys in place; non-dict items
+    and unknown/non-str values pass through untouched so real validation
+    reports the actual error."""
+    if not isinstance(value, list):
+        return value
+    out = []
+    for item in value:
+        if isinstance(item, dict):
+            out.append(
+                {
+                    k: (_clamp(v, key_limits[k]) if k in key_limits else v)
+                    for k, v in item.items()
+                }
+            )
+        else:
+            out.append(item)
+    return out
+
 
 class SubTaskCreate(BaseModel):
     """A PM sub_task — a delegate target AND a progress-checklist item.
 
     Mirrors DelegateRequest title/description caps so an over-long sub_task
-    can't bloat the plan (the 2026-07-07 task-quality defect). The server
-    assigns id + order; callers supply title + description only.
+    can't bloat the plan (the 2026-07-07 task-quality defect). Overflow past
+    the caps is truncated, not rejected (see IWillPlanRequest.approach's
+    _truncate_approach) — the server assigns id + order; callers supply
+    title + description only.
     """
 
-    title: str = Field(..., min_length=1, max_length=200)
-    description: str = Field(..., min_length=20, max_length=600)
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=20)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _truncate_title(cls, v: object) -> object:
+        return _clamp(v, _SUBTASK_TITLE_MAX_CHARS)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _truncate_description(cls, v: object) -> object:
+        return _clamp(v, _SUBTASK_DESCRIPTION_MAX_CHARS)
 
 
 class RiskCreate(BaseModel):
     """A {risk, mitigation} entry — what could go wrong and how it's handled."""
 
-    risk: str = Field(..., min_length=1, max_length=300)
-    mitigation: str = Field(..., min_length=1, max_length=600)
+    risk: str = Field(..., min_length=1)
+    mitigation: str = Field(..., min_length=1)
+
+    @field_validator("risk", mode="before")
+    @classmethod
+    def _truncate_risk(cls, v: object) -> object:
+        return _clamp(v, _RISK_MAX_CHARS)
+
+    @field_validator("mitigation", mode="before")
+    @classmethod
+    def _truncate_mitigation(cls, v: object) -> object:
+        return _clamp(v, _MITIGATION_MAX_CHARS)
 
 
 class OpenQuestionCreate(BaseModel):
     """An open question the PM wants answered before/during work."""
 
-    question: str = Field(..., min_length=1, max_length=300)
+    question: str = Field(..., min_length=1)
     answered: bool = False
+
+    @field_validator("question", mode="before")
+    @classmethod
+    def _truncate_question(cls, v: object) -> object:
+        return _clamp(v, _OPEN_QUESTION_MAX_CHARS)
 
 
 class GiveMeWorkRequest(BaseModel):
@@ -82,6 +164,36 @@ class IWillWorkOnRequest(BaseModel):
     technical_considerations: StrList = Field(default_factory=list)
     risks: list[dict[str, str]] = Field(default_factory=list)
     open_questions: list[dict[str, str | bool]] = Field(default_factory=list)
+
+    # steps/risks/open_questions are the same free-text fields
+    # SubTaskCreate/RiskCreate/OpenQuestionCreate clamp above — the
+    # choreographer feeds them into the SAME _thin_subtask_hint gate with
+    # the SAME 200/600/300/600/300-char limits (same incident class as
+    # approach: a hard 422 here stranded a dev's i_will_work_on exactly
+    # like an overlong PM sub_task did). Clamped in place instead of
+    # rejected; unknown keys and non-str values pass through untouched.
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _truncate_steps(cls, v: object) -> object:
+        return _clamp_dict_list(
+            v,
+            {
+                "title": _SUBTASK_TITLE_MAX_CHARS,
+                "description": _SUBTASK_DESCRIPTION_MAX_CHARS,
+            },
+        )
+
+    @field_validator("risks", mode="before")
+    @classmethod
+    def _truncate_risks(cls, v: object) -> object:
+        return _clamp_dict_list(
+            v, {"risk": _RISK_MAX_CHARS, "mitigation": _MITIGATION_MAX_CHARS}
+        )
+
+    @field_validator("open_questions", mode="before")
+    @classmethod
+    def _truncate_open_questions(cls, v: object) -> object:
+        return _clamp_dict_list(v, {"question": _OPEN_QUESTION_MAX_CHARS})
 
 
 class OpenPrRequest(BaseModel):
@@ -378,9 +490,7 @@ class IWillPlanRequest(BaseModel):
     @field_validator("approach", mode="before")
     @classmethod
     def _truncate_approach(cls, v: object) -> object:
-        if isinstance(v, str) and len(v) > _APPROACH_MAX_CHARS:
-            return v[: _APPROACH_MAX_CHARS - 3] + "..."
-        return v
+        return _clamp(v, _APPROACH_MAX_CHARS)
 
 
 class DelegateRequest(BaseModel):
@@ -393,7 +503,9 @@ class DelegateRequest(BaseModel):
     """
 
     parent_task_id: UUID
-    title: str = Field(..., min_length=1, max_length=200)
+    # Overflow past 200 chars is truncated, not rejected — same treatment as
+    # SubTaskCreate.title / IWillPlanRequest.approach.
+    title: str = Field(..., min_length=1)
     # 20-char minimum mirrors TASK_AT_CREATE.description (MIN_LENGTH=20).
     # Forces a real one-line summary instead of "x" or "see title".
     description: str = Field(..., min_length=20)
@@ -408,23 +520,22 @@ class DelegateRequest(BaseModel):
     nature: str = Field(..., min_length=1)
     estimated_complexity: Complexity
     # acceptance_criteria is required and non-empty; downstream policy
-    # also denylist-checks each item against placeholder phrases. The
-    # per-item cap (<=200 chars) + list cap (<=7) mirror the policy so an
-    # over-long / over-count AC list is rejected at the boundary (422), not
-    # only by the service-layer completeness check.
+    # also denylist-checks each item against placeholder phrases. The list
+    # cap (<=7) mirrors the policy and stays a hard reject — dropping ACs
+    # silently would be data loss. Each item's own overflow past 200 chars
+    # is truncated in place instead (_ac_items_bounded below) — a verbose
+    # criterion's tail isn't worth throwing away the whole delegate call.
     acceptance_criteria: StrList = Field(..., min_length=1, max_length=7)
 
     @field_validator("acceptance_criteria")
     @classmethod
     def _ac_items_bounded(cls, v: list[str]) -> list[str]:
-        for i, item in enumerate(v):
-            if len(item.strip()) > _AC_MAX_ITEM_CHARS:
-                raise ValueError(
-                    f"acceptance_criteria[{i}] is {len(item.strip())} chars "
-                    f"(max {_AC_MAX_ITEM_CHARS}) — a criterion that long is a "
-                    "restated description, not a verifiable outcome. Split it."
-                )
-        return v
+        return [_truncate(item, _AC_MAX_ITEM_CHARS) for item in v]
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _truncate_title(cls, v: object) -> object:
+        return _clamp(v, _DELEGATE_TITLE_MAX_CHARS)
 
     # Optional per-subtask project override. When omitted, the choreographer
     # resolves the project from the parent's Product map for this cell, then

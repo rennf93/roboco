@@ -968,6 +968,35 @@ VAULT_NOTE_SOURCE = "vault_note"
 # explicit exemption.
 EVAL_BENCH_SOURCE = "eval_bench"
 
+# Sources excluded from the delivery lead-time population
+# (``get_delivery_stats_30d`` below): held CEO-approval drafts and standing
+# reports that complete the instant a Board role files/the CEO approves them,
+# not when real delivery work ships. X_SOURCES + the feature-spotlight
+# exploration cover x_post/x_reply/x_feature (+ equivalents x_editorial/
+# x_campaign/x_barfly); VIDEO_HELD_SOURCES covers the held video_post draft
+# (mp4s + captions ready for CEO approval — never dispatched, exactly like
+# X_SOURCES). RELEASE_MANAGER_SOURCE covers held release proposals. A
+# "ceo_report" (Periscope/Sentinel) is never a TaskTable row at all — filed
+# as a report, not a task — so it needs no entry here. Every board-program
+# exploration cycle (board_roadmap, board_pest_control, ...) is excluded
+# separately, by task_type == ADMINISTRATIVE, not by source.
+#
+# VIDEO_SOURCE (the video-authoring task itself) is deliberately NOT in this
+# set: per the comment on VIDEO_SOURCE above, it IS dispatched — a normal,
+# pre-assigned UX/UI code task like any other cell delivery task
+# (video_engine.open_video_task creates it task_type=CODE, status=PENDING,
+# with a real assignee) — so excluding it would drop genuine delivery work
+# from the lead-time population, the same way excluding a regular backend
+# code task would.
+LEAD_TIME_EXCLUDED_SOURCES: frozenset[str] = frozenset(
+    {
+        *X_SOURCES,
+        X_FEATURE_EXPLORATION_SOURCE,
+        *VIDEO_HELD_SOURCES,
+        RELEASE_MANAGER_SOURCE,
+    }
+)
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -1110,6 +1139,11 @@ class TaskService(BaseService):
             is_umbrella=is_batch_umbrella(
                 batch_id=task.batch_id, parent_task_id=task.parent_task_id
             ),
+            # A PR-waived task (zero commits relative to its parent —
+            # report-only work the verb runner skipped create_pr for) is
+            # exempt from the pr_number CEO-escalation gate the same way an
+            # umbrella is, even though it carries a real branch.
+            is_pr_waived=markers.is_pr_waived(task),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -4973,7 +5007,17 @@ class TaskService(BaseService):
                     doc_paths.append(self._resolve_doc_abspath(rel_path))
 
             if doc_paths:
-                count = await optimal.index_documentation(doc_paths, project="roboco")
+                # Same "not yet merged" provenance as roboco_docs_write's own
+                # index call — this re-indexes the task's own in-flight docs
+                # (including ones authored via Edit/Write and captured by
+                # _capture_workspace_docs above, which bypass roboco_docs_write
+                # entirely), so it must be marked live_write too.
+                count = await optimal.index_documentation(
+                    doc_paths,
+                    project="roboco",
+                    provenance="live_write",
+                    task_id=str(task_id),
+                )
                 self.log.debug(
                     "Indexed docs",
                     task_id=str(task_id),
@@ -6713,6 +6757,11 @@ class TaskService(BaseService):
         batch umbrella — without this, umbrella completion deadlocks in
         in_progress (``submit_pm_review`` returns None, the Main PM loops on
         ``complete`` -> invalid_state forever).
+
+        A PR-waived task (real branch, zero commits relative to its parent —
+        report-only work the verb runner already skipped create_pr for) is
+        exempt from the pr_created/pr_number half the same way: it still
+        needs a branch (it is not branchless), but it legitimately has no PR.
         """
         if task.status != TaskStatus.IN_PROGRESS:
             self.log.warning(
@@ -6730,7 +6779,10 @@ class TaskService(BaseService):
                 task_id=str(task_id),
             )
             return False
-        if (not task.pr_created or not task.pr_number) and not is_umbrella:
+        pr_waived = markers.is_pr_waived(task)
+        if (not task.pr_created or not task.pr_number) and not (
+            is_umbrella or pr_waived
+        ):
             self.log.warning(
                 "Cannot submit for PM review - PR must be created first",
                 task_id=str(task_id),
@@ -6973,8 +7025,12 @@ class TaskService(BaseService):
         them completed — mirrors the CEO-approve guard but applies to
         the PM's own awaiting_pm_review → completed transition.
         Root parent tasks and tasks without a work_session skip this
-        check (escalation to CEO handles them).
+        check (escalation to CEO handles them). A PR-waived task (zero
+        commits relative to its parent — report-only work) has no PR to
+        merge by design, so it is exempt too.
         """
+        if markers.is_pr_waived(task):
+            return True
         if not task.work_session_id:
             return True
         result = await self.session.execute(
@@ -7213,6 +7269,50 @@ class TaskService(BaseService):
     # CEO APPROVAL WORKFLOW
     # =========================================================================
 
+    def _escalate_to_ceo_refusal(
+        self, task: TaskTable
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Eligibility checks for ``escalate_to_ceo``, extracted to keep that
+        method's own cyclomatic complexity within the xenon gate. Returns
+        ``(log_message, log_kwargs)`` when escalation must be refused, or
+        ``None`` when `task` is eligible."""
+        if task.status != TaskStatus.AWAITING_PM_REVIEW:
+            return (
+                "Cannot escalate to CEO - task not in PM review",
+                {"current_status": task.status.value},
+            )
+        # Only parent (root) tasks can be escalated to CEO (not subtasks) —
+        # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
+        # carries its own project/branch/PR and behaves as a root for
+        # git/CEO purposes (is_batch_root_subtask). A plain subtask (no
+        # batch_id) is still refused.
+        if task.parent_task_id and not is_batch_root_subtask(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
+            return (
+                "Cannot escalate subtask to CEO - only parent tasks allowed",
+                {"parent_task_id": str(task.parent_task_id)},
+            )
+        # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
+        # MegaTask umbrella, which is branchless by design (assembles no PR of
+        # its own; each root-subtask carries its own project/branch/PR). It
+        # escalates to the CEO with no pr_number once every root-subtask is
+        # done. A PR-waived root (zero commits relative to its parent —
+        # report-only work) is exempt the same way: it has a real branch, but
+        # legitimately no PR to point the CEO at.
+        if (
+            not task.pr_number
+            and not is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            )
+            and not markers.is_pr_waived(task)
+        ):
+            return (
+                "Cannot escalate to CEO - task has no PR",
+                {"pr_created": task.pr_created},
+            )
+        return None
+
     async def escalate_to_ceo(
         self,
         task_id: UUID,
@@ -7245,42 +7345,10 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Only allow escalation from awaiting_pm_review
-        if task.status != TaskStatus.AWAITING_PM_REVIEW:
-            self.log.warning(
-                "Cannot escalate to CEO - task not in PM review",
-                task_id=str(task_id),
-                current_status=task.status.value,
-            )
-            return None
-
-        # Only parent (root) tasks can be escalated to CEO (not subtasks) —
-        # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
-        # carries its own project/branch/PR and behaves as a root for
-        # git/CEO purposes (is_batch_root_subtask). A plain subtask (no
-        # batch_id) is still refused.
-        if task.parent_task_id and not is_batch_root_subtask(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
-        ):
-            self.log.warning(
-                "Cannot escalate subtask to CEO - only parent tasks allowed",
-                task_id=str(task_id),
-                parent_task_id=str(task.parent_task_id),
-            )
-            return None
-
-        # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
-        # MegaTask umbrella, which is branchless by design (assembles no PR of
-        # its own; each root-subtask carries its own project/branch/PR). It
-        # escalates to the CEO with no pr_number once every root-subtask is done.
-        if not task.pr_number and not is_batch_umbrella(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
-        ):
-            self.log.warning(
-                "Cannot escalate to CEO - task has no PR",
-                task_id=str(task_id),
-                pr_created=task.pr_created,
-            )
+        refusal = self._escalate_to_ceo_refusal(task)
+        if refusal:
+            message, kwargs = refusal
+            self.log.warning(message, task_id=str(task_id), **kwargs)
             return None
 
         # Store the escalation note as a marker, not quick_context soup.
@@ -7348,8 +7416,14 @@ class TaskService(BaseService):
             )
             return None
 
-        # Verify PR is merged (CEO merges as final action before approving)
-        if task.work_session_id:
+        # Verify PR is merged (CEO merges as final action before approving).
+        # A PR-waived task (real branch, zero commits relative to its parent —
+        # report-only work the verb runner already skipped create_pr for)
+        # keeps a real work_session whose pr_status never becomes "merged"
+        # (there was never a PR to merge) — exempt it the same way the
+        # umbrella/pr_number gates elsewhere are, or it strands in
+        # awaiting_ceo_approval needing manual status surgery.
+        if task.work_session_id and not markers.is_pr_waived(task):
             work_session_result = await self.session.execute(
                 select(WorkSessionTable).where(
                     WorkSessionTable.id == task.work_session_id
@@ -9458,11 +9532,37 @@ class TaskService(BaseService):
         return {row[0].value: row[1] for row in result.all()}
 
     async def get_delivery_stats_30d(self) -> dict[str, Any]:
-        """Return completed-task count and median lead time for the last 30 days.
+        """Return completed-task count and median lead time for real delivery
+        work completed in the last 30 days.
+
+        The population is scoped to one well-defined unit per piece of work —
+        **root delivery tasks** (``parent_task_id IS NULL``) — so a Main-PM
+        coordination root is counted once, never again for each of its cell
+        tasks and dev subtasks. For a MegaTask, that root is the branchless
+        umbrella (its root-subtasks are children of the umbrella and are
+        excluded); a single-task delivery's root is the coordination root
+        itself.
+
+        It further excludes non-delivery rows that would otherwise pollute
+        "intake to merged" with completions that carry no real delivery
+        lead time:
+
+        - ``task_type == administrative`` — process/administrative tasks and
+          every board-program exploration cycle (board_roadmap,
+          board_pest_control, ...), which complete the moment a Board role
+          files its proposal, not when anything ships.
+        - :data:`LEAD_TIME_EXCLUDED_SOURCES` — held CEO-approval drafts (X
+          posts, video posts, release proposals) that complete the instant
+          the CEO approves them, seconds after being drafted.
+
+        ``completed_30d`` and ``median_lead_time_hours`` are computed from
+        the SAME filtered row set, so the two figures always describe the
+        same population.
 
         Queries tasks WHERE status=completed AND completed_at IS NOT NULL AND
-        completed_at >= now()-30d.  Lead time is ``completed_at - created_at``
-        expressed in hours; the median is computed with :func:`statistics.median`.
+        completed_at >= now()-30d, plus the scoping above.  Lead time is
+        ``completed_at - created_at`` expressed in hours; the median is
+        computed with :func:`statistics.median`.
 
         Returns::
 
@@ -9479,6 +9579,9 @@ class TaskService(BaseService):
                 TaskTable.status == TaskStatus.COMPLETED,
                 TaskTable.completed_at.is_not(None),
                 TaskTable.completed_at >= cutoff,
+                TaskTable.parent_task_id.is_(None),
+                TaskTable.task_type != TaskType.ADMINISTRATIVE,
+                TaskTable.source.notin_(LEAD_TIME_EXCLUDED_SOURCES),
             )
         )
         rows = result.all()
@@ -10401,6 +10504,17 @@ class TaskService(BaseService):
         )
         statuses = result.scalars().all()
         return all(s in terminal for s in statuses)
+
+    async def has_children(self, task_id: UUID) -> bool:
+        """True iff this task has at least one subtask, any status.
+
+        Distinguishes a coordination node from a leaf for the PM/dev routing
+        classifier (``AgentOrchestrator._classify_cell_code_task``).
+        """
+        result = await self.session.execute(
+            select(TaskTable.id).where(TaskTable.parent_task_id == task_id).limit(1)
+        )
+        return result.first() is not None
 
     async def terminal_children_count(self, task_id: UUID) -> int:
         """Count of direct subtasks in a terminal status (COMPLETED/CANCELLED).

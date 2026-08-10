@@ -16,6 +16,7 @@ from roboco.api.schemas.pitch import PitchCreateRequest, PitchDecision, PitchRes
 from roboco.api.utils.pitch import _parse_cells, _to_http_exc, _to_response
 from roboco.models import AgentRole
 from roboco.models.pitch import PitchCreate, PitchStatus
+from roboco.security import guard_deco
 from roboco.services.base import ConflictError, NotFoundError, ValidationError
 from roboco.services.github_provisioning import ProvisioningError
 from roboco.services.pitch import get_pitch_service
@@ -35,6 +36,9 @@ _VIEW_ROLES = frozenset(
 
 
 @router.post("", response_model=PitchResponse, status_code=status.HTTP_201_CREATED)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def create_pitch(
     data: PitchCreateRequest, db: DbSession, agent: CurrentAgentContext
 ) -> PitchResponse:
@@ -102,6 +106,11 @@ async def get_pitch(
 
 
 @router.post("/{pitch_id}/approve", response_model=PitchResponse)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600, action="log")
 async def approve_pitch(
     pitch_id: UUID,
     db: DbSession,
@@ -130,6 +139,9 @@ async def approve_pitch(
 
 
 @router.post("/{pitch_id}/reject", response_model=PitchResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def reject_pitch(
     pitch_id: UUID,
     data: PitchDecision,

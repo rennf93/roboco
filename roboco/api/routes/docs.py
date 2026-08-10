@@ -20,6 +20,7 @@ from roboco.api.schemas.docs import (
     WriteDocResponse,
 )
 from roboco.api.utils.docs import unauthorized_response as _unauthorized_response
+from roboco.security import guard_deco
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.docs import WriteDocInput, get_docs_service
 
@@ -38,7 +39,14 @@ _read_path_query: str = Query(
 # =============================================================================
 
 
+# 2 MiB, not the 64 KiB used elsewhere: this route writes whole reference docs,
+# and the repo's own tree already carries an 82 KiB page and a 1.5 MiB aggregate
+# map. A cap under the real corpus would 413 a legitimate roboco_docs_write and
+# surface to the agent only as WRITE_FAILED, with no hint that size was the cause.
 @router.post("/write", response_model=WriteDocResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=2097152)
+@guard_deco.content_type_filter(["application/json"])
 async def write_doc(
     data: WriteDocRequest,
     db: DbSession,
@@ -202,6 +210,7 @@ async def list_docs(
 
 
 @router.delete("/delete")
+@guard_deco.rate_limit(requests=20, window=60)
 async def delete_doc(
     db: DbSession,
     agent: CurrentAgentContext,

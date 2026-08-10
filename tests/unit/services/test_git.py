@@ -734,6 +734,82 @@ async def test_diff_returns_diff_stdout() -> None:
 
 
 @pytest.mark.asyncio
+async def test_diff_and_files_resolves_once_and_returns_both_legs() -> None:
+    """``diff_and_files`` resolves workspace / token / head-ref / base-ref
+    EXACTLY ONCE (not the two separate resolutions calling ``diff()`` then
+    ``list_changed_files()`` would cost) and returns both the full diff and
+    the changed-file list from that single resolution."""
+    svc = _service()
+    workspace_mock = AsyncMock(return_value=Path("/tmp/ws"))
+    token_mock = AsyncMock(return_value=None)
+    head_mock = AsyncMock(return_value="origin/feature")
+    base_mock = AsyncMock(return_value="origin/master")
+    _bind(svc, "_workspace_for_branch", workspace_mock)
+    _bind(svc, "_token_for_branch", token_mock)
+    _bind(svc, "_resolve_head_ref", head_mock)
+    _bind(svc, "_resolve_diff_base", base_mock)
+
+    async def _run_git(
+        _workspace: Path, args: list[str], check: bool = True, token: str | None = None
+    ) -> MagicMock:
+        del check, token
+        if "--name-only" in args:
+            return MagicMock(stdout="a.py\nb.py\n", returncode=0)
+        return MagicMock(stdout="diff --git a b\n+x\n", returncode=0)
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    diff, files = await svc.diff_and_files(branch_name="feature/backend/abc")
+
+    assert "+x" in diff
+    assert files == ["a.py", "b.py"]
+    workspace_mock.assert_awaited_once()
+    token_mock.assert_awaited_once()
+    head_mock.assert_awaited_once()
+    base_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_diff_and_files_runs_subprocesses_concurrently() -> None:
+    """The full diff and the ``--name-only`` diff run as CONCURRENT
+    subprocesses off the single resolution — not sequentially (the pre-fix
+    ``diff()`` then ``list_changed_files()`` shape). Proven structurally via
+    an in-flight counter on the fake ``_run_git`` (peak concurrency reaches
+    2) rather than a wall-clock margin, which can flake under CI load."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
+
+    leg_seconds = 0.02
+    in_flight = 0
+    peak = 0
+
+    async def _run_git(
+        _workspace: Path, args: list[str], check: bool = True, token: str | None = None
+    ) -> MagicMock:
+        nonlocal in_flight, peak
+        del check, token
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(leg_seconds)
+        in_flight -= 1
+        if "--name-only" in args:
+            return MagicMock(stdout="a.py\n", returncode=0)
+        return MagicMock(stdout="diff\n", returncode=0)
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    diff, files = await svc.diff_and_files(branch_name="feature/backend/abc")
+
+    assert diff == "diff\n"
+    assert files == ["a.py"]
+    # Structural proof: both subprocess legs were in-flight at once.
+    assert peak == 2  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
 async def test_read_file_at_branch_returns_committed_content() -> None:
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))

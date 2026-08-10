@@ -169,9 +169,30 @@ async def deliver_text(chat_id: str, text: str) -> str | None:
         return None
     sess.last_user_turn = time.monotonic()
     delivered = await get_live_registry().deliver(sess.session_id, text)
-    if delivered:
-        return ""
-    return "Couldn't reach the agent — it may still be starting. Try again shortly."
+    if not delivered:
+        return "Couldn't reach the agent — it may still be starting. Try again shortly."
+    if sess.kind == "intake":
+        # Mirrors send_message (prompter_live.py) — the panel's own equivalent
+        # already persists every human turn; a Telegram-bridged intake chat is
+        # the same live prompter session and should too. Secretary sessions
+        # have no durable-message table wired yet, so they're left alone.
+        await _persist_bridge_turn(sess.session_id, text)
+    return ""
+
+
+async def _persist_bridge_turn(session_id: str, text: str) -> None:
+    """Durably record one Telegram-bridged intake human turn. Best-effort —
+    a persistence failure never blocks the live conversation."""
+    from roboco.db.base import get_db_context
+    from roboco.services.prompter import get_prompter_service
+
+    try:
+        async with get_db_context() as db:
+            await get_prompter_service(db).record_live_message(session_id, "user", text)
+    except Exception:
+        logger.exception(
+            "Failed to persist Telegram bridge turn", session_id=session_id
+        )
 
 
 async def end_session(chat_id: str) -> str:

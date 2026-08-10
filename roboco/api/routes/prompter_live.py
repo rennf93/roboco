@@ -146,7 +146,9 @@ async def session_status(session_id: str) -> dict[str, bool]:
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.honeypot_detection(["email", "phone", "website"])
 @guard_deco.suspicious_detection(enabled=True)
-async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, bool]:
+async def send_message(
+    session_id: str, body: LiveMessageRequest, db: DbSession
+) -> dict[str, bool]:
     """Deliver the human's message to the running intake agent."""
     delivered = await get_live_registry().deliver(session_id, body.text)
     if not delivered:
@@ -157,6 +159,7 @@ async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, b
                 "message": f"No live intake session {session_id} (spawn it first).",
             },
         )
+    await get_prompter_service(db).record_live_message(session_id, "user", body.text)
     return {"delivered": True}
 
 
@@ -200,6 +203,7 @@ async def confirm_live(
             )
     except ServiceError as e:
         raise _translate_service_error(e) from e
+    await service.mark_live_drafts_consumed(session_id, task_id)
     await db.commit()
 
     # Board route (first confirm, not a re-draft): keep the intake agent alive
@@ -291,6 +295,9 @@ async def confirm_live_batch(
             )
     except ServiceError as e:
         raise _translate_service_error(e) from e
+    await service.mark_live_drafts_consumed(
+        session_id, UUID(result["umbrella_task_id"])
+    )
     await db.commit()
 
     if (
@@ -371,9 +378,30 @@ async def re_interview(
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
 @guard_deco.content_type_filter(["application/json"])
-async def relay_event(session_id: str, event: AgentEvent) -> dict[str, bool]:
-    """Relay one agent event from the container onto the session's stream."""
-    return {"pushed": get_live_registry().push(session_id, event.model_dump())}
+async def relay_event(
+    session_id: str, event: AgentEvent, db: DbSession
+) -> dict[str, bool]:
+    """Relay one agent event from the container onto the session's stream.
+
+    ``draft``/``batch`` events are durably persisted to ``task_drafts`` BEFORE
+    the push onto the SSE queue — closing the 2026-07-25 gap where a proposed
+    draft's only copy lived in the in-memory relay and vanished with the
+    session. ``text`` deltas are buffered per-session and flushed to
+    ``prompter_messages`` as one assistant turn on ``turn_end`` rather than
+    persisting a row per token delta.
+    """
+    registry = get_live_registry()
+    if event.kind in ("draft", "batch"):
+        await get_prompter_service(db).record_live_draft(session_id, event.data)
+    elif event.kind == "text" and event.text:
+        registry.buffer_text(session_id, event.text)
+    elif event.kind == "turn_end":
+        text = registry.flush_text(session_id)
+        if text.strip():
+            await get_prompter_service(db).record_live_message(
+                session_id, "assistant", text
+            )
+    return {"pushed": registry.push(session_id, event.model_dump())}
 
 
 _SEARCH_TASKS_DEFAULT_LIMIT = 8
