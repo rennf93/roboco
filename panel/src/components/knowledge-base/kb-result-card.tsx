@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { KBSearchResult } from "@/types";
 import { KBIndexTypeBadge } from "./kb-index-type-badge";
 import { HelpTip } from "@/components/ui/help-tip";
-import { ExternalLink, FileCode, Hash } from "lucide-react";
+import { AlertTriangle, ExternalLink, FileCode, Hash } from "lucide-react";
 
 interface KBResultCardProps {
   result: KBSearchResult;
@@ -54,6 +54,14 @@ export function KBResultCard({ result, onClick }: KBResultCardProps) {
                   {scorePercent}% match
                 </span>
               </HelpTip>
+              {result.metadata?.provenance === "live_write" && (
+                <HelpTip label="Written mid-task, before the task's PR merged — verify against git before relying on it. This does not clear on merge; it clears only when the doc is re-indexed from the repo tree.">
+                  <span className="text-xs flex items-center gap-1 w-fit rounded px-1.5 py-0.5 bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300">
+                    <AlertTriangle className="h-3 w-3" />
+                    in-flight doc
+                  </span>
+                </HelpTip>
+              )}
             </div>
 
             {/* Source */}

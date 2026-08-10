@@ -24,6 +24,9 @@ from roboco.db.tables import (
     AgentTable,
     ProductTable,
     ProjectTable,
+    PrompterMessageTable,
+    PrompterSessionTable,
+    TaskDraftTable,
     TaskTable,
 )
 from roboco.models.base import (
@@ -2115,3 +2118,144 @@ async def test_history_digest_layer_all_empty_returns_none(
     ]
 
     assert await history_digest_layer(cast("AsyncSession", object()), projects) is None
+
+
+# =============================================================================
+# Live-session durable persistence — task_drafts / prompter_messages (the
+# 2026-08-08 NAS-recovery fix: nothing wrote these tables since 2026-06-08).
+# =============================================================================
+
+
+async def _seed_intake_agent(db_session: Any) -> UUID:
+    """Ensure the singleton "intake-1" agent row exists — the FK target for
+    ``prompter_sessions.agent_id``. ``merge`` is idempotent."""
+    intake_id = UUID(AGENT_UUIDS["intake-1"])
+    await db_session.merge(
+        AgentTable(
+            id=intake_id,
+            name="intake-1",
+            slug="intake-1",
+            role=AgentRole.PROMPTER,
+            team=None,
+            status=AgentStatus.ACTIVE,
+            model_config={},
+            system_prompt="intake",
+            capabilities=[],
+            permissions={},
+            metrics={},
+        )
+    )
+    await db_session.flush()
+    return intake_id
+
+
+async def _seed_plain_task(db_session: Any, ceo_id: UUID, project_id: UUID) -> UUID:
+    """A minimal real task row — ``task_drafts.task_id`` FKs onto ``tasks.id``."""
+    task_id = uuid4()
+    task = TaskTable(
+        id=task_id,
+        title="Some confirmed task",
+        description="A task a live draft became.",
+        acceptance_criteria=["done"],
+        status=TaskStatus.PENDING,
+        team=Team.BACKEND,
+        project_id=project_id,
+        created_by=ceo_id,
+    )
+    db_session.add(task)
+    await db_session.flush()
+    return task_id
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_live_session_is_idempotent(db_session: Any) -> None:
+    await _seed_intake_agent(db_session)
+    service = PrompterService(db_session)
+    session_id = uuid4().hex
+
+    first = await service.get_or_create_live_session(session_id)
+    second = await service.get_or_create_live_session(session_id)
+
+    assert first.id == second.id == UUID(session_id)
+    assert first.agent_id == UUID(AGENT_UUIDS["intake-1"])
+    rows = (
+        (
+            await db_session.execute(
+                select(PrompterSessionTable).where(PrompterSessionTable.id == first.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1  # not duplicated by the second call
+
+
+@pytest.mark.asyncio
+async def test_record_live_draft_persists_before_confirm(db_session: Any) -> None:
+    await _seed_intake_agent(db_session)
+    service = PrompterService(db_session)
+    session_id = uuid4().hex
+    draft_data = {"title": "Add widgets", "acceptance_criteria": ["works"]}
+
+    row = await service.record_live_draft(session_id, draft_data)
+
+    assert row.confirmed_at is None
+    assert row.task_id is None
+    assert row.draft_data == draft_data
+    persisted = await db_session.get(TaskDraftTable, row.id)
+    assert persisted is not None
+    assert persisted.draft_data == draft_data
+
+
+@pytest.mark.asyncio
+async def test_mark_live_drafts_consumed_marks_never_deletes(db_session: Any) -> None:
+    await _seed_intake_agent(db_session)
+    project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    task_id = await _seed_plain_task(db_session, ceo_id, project_id)
+    service = PrompterService(db_session)
+    session_id = uuid4().hex
+
+    # Two rounds proposed in the same session (e.g. a board-redraft loop).
+    first = await service.record_live_draft(session_id, {"title": "Round 1"})
+    second = await service.record_live_draft(session_id, {"title": "Round 2"})
+    draft_ids = (first.id, second.id)
+
+    await service.mark_live_drafts_consumed(session_id, task_id)
+    await db_session.flush()
+    # `db_session` is `expire_on_commit=False`, so the bulk UPDATE's own
+    # synchronize_session isn't guaranteed to refresh these already-loaded
+    # Python objects — expire them so the assertions read the real DB state.
+    db_session.expire_all()
+
+    for draft_id in draft_ids:
+        row = await db_session.get(TaskDraftTable, draft_id)
+        assert row is not None  # never deleted
+        assert row.confirmed_at is not None
+        assert row.task_id == task_id
+
+
+@pytest.mark.asyncio
+async def test_record_live_message_persists_role_and_content(db_session: Any) -> None:
+    await _seed_intake_agent(db_session)
+    service = PrompterService(db_session)
+    session_id = uuid4().hex
+
+    user_row = await service.record_live_message(session_id, "user", "hi there")
+    assistant_row = await service.record_live_message(
+        session_id, "assistant", "hello! how can I help?"
+    )
+
+    rows = (
+        (
+            await db_session.execute(
+                select(PrompterMessageTable)
+                .where(PrompterMessageTable.session_id == UUID(session_id))
+                .order_by(PrompterMessageTable.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [r.id for r in rows] == [user_row.id, assistant_row.id]
+    assert [r.role for r in rows] == ["user", "assistant"]
+    assert rows[1].content == "hello! how can I help?"

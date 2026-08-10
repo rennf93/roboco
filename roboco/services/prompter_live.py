@@ -60,6 +60,11 @@ class LiveIntakeSession:
     # touching an active or page-reloaded one (reload reconnects + keeps
     # exchanging turns, so activity stays fresh). Seeded at open.
     last_activity: float = field(default_factory=time.monotonic)
+    # Accumulates ``text`` chunk deltas for the turn currently in flight, so
+    # the relay route can flush the complete assistant reply to
+    # ``prompter_messages`` on ``turn_end`` instead of persisting one row per
+    # token delta. Pure in-memory buffering — no DB access here.
+    pending_text: list[str] = field(default_factory=list)
 
 
 class PrompterLiveRegistry:
@@ -183,6 +188,21 @@ class PrompterLiveRegistry:
         session.last_activity = time.monotonic()
         session.queue.put_nowait(event)
         return True
+
+    def buffer_text(self, session_id: str, text: str) -> None:
+        """Accumulate one assistant ``text`` delta for the in-flight turn."""
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.pending_text.append(text)
+
+    def flush_text(self, session_id: str) -> str:
+        """Return + clear the accumulated assistant text (called on ``turn_end``)."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return ""
+        text = "".join(session.pending_text)
+        session.pending_text.clear()
+        return text
 
     def idle_session_ids(self, threshold_seconds: float) -> list[tuple[str, str]]:
         """Return ``(session_id, agent_id)`` for live chats idle past the threshold.

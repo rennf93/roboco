@@ -35,6 +35,7 @@ from roboco.models.journal import (
     StruggleEntryParams,
     TaskReflectionParams,
 )
+from roboco.security import guard_deco
 from roboco.services.journal import ListEntriesFilter, get_journal_service
 
 router = APIRouter()
@@ -125,6 +126,9 @@ async def list_my_entries(
     response_model=JournalEntryResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def create_entry(
     request: CreateEntryRequest,
     agent: CurrentAgentContext,
@@ -270,6 +274,9 @@ async def get_my_growth_metrics(
 
 
 @router.post("/me/search", response_model=list[JournalEntryResponse])
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def search_my_entries(
     request: SearchEntriesRequest,
     agent: CurrentAgentContext,
@@ -311,6 +318,9 @@ async def search_my_entries(
     response_model=JournalEntryResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def add_task_reflection(
     request: TaskReflectionRequest,
     agent: CurrentAgentContext,
@@ -361,6 +371,9 @@ async def add_task_reflection(
     response_model=JournalEntryResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def add_decision_log(
     request: DecisionLogRequest,
     agent: CurrentAgentContext,
@@ -412,6 +425,9 @@ async def add_decision_log(
     response_model=JournalEntryResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def add_learning(
     request: LearningRequest,
     agent: CurrentAgentContext,
@@ -461,6 +477,9 @@ async def add_learning(
     response_model=JournalEntryResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def add_struggle(
     request: StruggleRequest,
     agent: CurrentAgentContext,
@@ -511,6 +530,9 @@ async def add_struggle(
     response_model=JournalEntryResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
 async def add_general_entry(
     request: GeneralEntryRequest,
     agent: CurrentAgentContext,
@@ -619,6 +641,7 @@ async def get_entry(
 
 
 @router.delete("/entries/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+@guard_deco.rate_limit(requests=20, window=60)
 async def delete_entry(
     entry_id: UUID,
     agent: CurrentAgentContext,

@@ -558,6 +558,26 @@ async def get_rework(
     return report.to_dict()
 
 
+@router.get("/metrics/spawn-waste")
+async def get_spawn_waste(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """Spawn sessions that advanced nothing on their task, priced, by agent/team/task.
+
+    "Unproductive" here means zero forward-progress SIGNAL (no status
+    advance, commit, progress update, or journal entry within the session's
+    own window) — see ``MetricsService.get_spawn_waste_metrics``. This is a
+    DIFFERENT definition from ``GET /api/usage/spawn-waste``
+    (``UsageService.get_spawn_waste``), which flags zero OUTPUT TOKENS on an
+    Anthropic session. This is the endpoint the Fable-mode doctrine
+    dashboard rides.
+    """
+    metrics_service = get_metrics_service(db)
+    report = await metrics_service.get_spawn_waste_metrics(days=days)
+    return report.to_dict()
+
+
 @router.get("/metrics/scorecard/agent/{agent_id}")
 async def get_agent_scorecard(
     agent_id: UUID,

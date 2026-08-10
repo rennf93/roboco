@@ -115,16 +115,16 @@ wheels = [
 
 [[package]]
 name = "alembic"
-version = "1.19.0"
+version = "1.19.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mako" },
     { name = "sqlalchemy" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fb/01/a48dab7827ac4421272399f7ed9a2ec17edd12c8bcde4417bd7b6821b71a/alembic-1.19.0.tar.gz", hash = "sha256:6487c612fc719dcfa22b17d2dd5b2b458929641e6aa2f0b65b135727f5e6d501", size = 2069906, upload-time = "2026-08-04T18:57:04.599Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/16/2b/e4153978368de59918115c9e01d3ebf58a558a7285efa7e960c383c4b59a/alembic-1.19.1.tar.gz", hash = "sha256:e0fca0518118c78acc493e31bcb5402f190057aaf6df8b5b95ce94c4789cf648", size = 2070816, upload-time = "2026-08-08T16:32:01.565Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/79/59ab6f1fe72eee229de91aa393225389a85df12a0fbbbfa264efcf6d7872/alembic-1.19.0-py3-none-any.whl", hash = "sha256:cf839d3849116aab3cc047e09c6968b9bd6b2fde61b6bb7c1e97352fe5503580", size = 265738, upload-time = "2026-08-04T18:57:06.219Z" },
+    { url = "https://files.pythonhosted.org/packages/20/89/e62cc37b69ad357cc8ecd6e7367f5245f523d3cbb338a66197212bdf6749/alembic-1.19.1-py3-none-any.whl", hash = "sha256:b39018cb3d9413a19cbd54cf3c02ad33998641f0538eb77413a488a21c3e14be", size = 265946, upload-time = "2026-08-08T16:32:03.153Z" },
 ]
 
 [[package]]
@@ -845,7 +845,7 @@ wheels = [
 
 [[package]]
 name = "fastapi-guard"
-version = "7.4.1"
+version = "7.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -853,9 +853,9 @@ dependencies = [
     { name = "starlette" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/a6/0f48e08cb98d2ff2341a8ee5257cad1a6b11f98f717452e57f66ccf61eff/fastapi_guard-7.4.1.tar.gz", hash = "sha256:8fd81b014a0b0a050063d22581b498ef2f85c46322842ed933ec2bb8734a9c73", size = 44551, upload-time = "2026-08-03T21:30:36.177Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/bc/c736988fe07b0cad1e3e6f4e52ccb2936ad962772cfe07e7a7c7caf76cc0/fastapi_guard-7.5.1.tar.gz", hash = "sha256:d9a278472094c6d87f281fbb04b0afb34c117c07c7f0501bc2f12a9126fb2fde", size = 48381, upload-time = "2026-08-09T17:17:01.251Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/22/ac62317ec310bc1bcabac633d31d62ea7831644c7ce68556b9f0d1c8fee3/fastapi_guard-7.4.1-py3-none-any.whl", hash = "sha256:68daf2e3b96f43b75d3fedf1f4eed35ac167ccc5c5b921c4af0817b40f41264d", size = 23909, upload-time = "2026-08-03T21:30:35.052Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/7a/22aa185c54e4a503488307a5eeed2e87d6e44520f66a3dae53c134c1aa1d/fastapi_guard-7.5.1-py3-none-any.whl", hash = "sha256:b0f30b875b4876a5b10d9555c0af3913e18455073a653d0393c3383b571d0aec", size = 25744, upload-time = "2026-08-09T17:17:00.117Z" },
 ]
 
 [[package]]
@@ -1060,7 +1060,7 @@ wheels = [
 
 [[package]]
 name = "guard-core"
-version = "3.9.0"
+version = "3.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1071,9 +1071,14 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0f/4b/8e47a567dbe813adf98e14eaf93da3359bc74a10031ba31f3882082449e1/guard_core-3.9.0.tar.gz", hash = "sha256:4c41988c41a4c52ff16d43d44fa61b7872c7d2f47762ac3a3c5bb98e1593fcef", size = 216676, upload-time = "2026-08-03T21:26:02.588Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/59/492a7f767c436abf84fcb4ef87de079ace8d581cd406647bff549a547d6b/guard_core-3.11.0.tar.gz", hash = "sha256:88fae44e1ee0818123b19ccb72ea48bb95cd692552db5c89be6c0ffebf6f2214", size = 248562, upload-time = "2026-08-09T17:30:24.529Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/d0/a2c64a3ee1ef3910a2d6d918c9dc4b54a10e0087385ba5f09e07a5654d93/guard_core-3.9.0-py3-none-any.whl", hash = "sha256:5ebedc493f43a1744dcdab556a4a082d75e9904f6e23830a9d0fac33d889e6d6", size = 263515, upload-time = "2026-08-03T21:26:01.438Z" },
+    { url = "https://files.pythonhosted.org/packages/08/37/94aacf1d16b6373dea74e10bbde6f2da6f864db02e8f0c449472223c18b4/guard_core-3.11.0-py3-none-any.whl", hash = "sha256:942090b217697f6f87242e55b21572e488ef32cc9ed0efc5ea3697b923ad40ff", size = 288695, upload-time = "2026-08-09T17:30:23.258Z" },
+]
+
+[package.optional-dependencies]
+redis = [
+    { name = "redis" },
 ]
 
 [[package]]
@@ -2563,7 +2568,7 @@ dependencies = [
     { name = "fastapi-guard" },
     { name = "fastapi-users", extra = ["sqlalchemy"] },
     { name = "fastapi-users-db-sqlalchemy" },
-    { name = "guard-core" },
+    { name = "guard-core", extra = ["redis"] },
     { name = "hiredis" },
     { name = "httpx" },
     { name = "mcp" },
@@ -2637,7 +2642,7 @@ requires-dist = [
     { name = "fastapi-guard" },
     { name = "fastapi-users", extras = ["sqlalchemy"] },
     { name = "fastapi-users-db-sqlalchemy" },
-    { name = "guard-core" },
+    { name = "guard-core", extras = ["redis"] },
     { name = "hiredis" },
     { name = "httpx" },
     { name = "httpx", marker = "extra == 'dev'" },
@@ -2861,14 +2866,14 @@ wheels = [
 
 [[package]]
 name = "starlette"
-version = "1.5.0"
+version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/aa/bf8ead9ed9d965a9290d291c4ac2d30ac1ae1f9b05a1a0ffdf1a05ac8ac6/starlette-1.5.0.tar.gz", hash = "sha256:7d5f63a7e4981a9587fc2a0fbc44cfb6cc4c9181d8c26d7e948871ed5da8c3df", size = 2711789, upload-time = "2026-08-08T07:23:16.504Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/b4/205b0d5241d934e8add0c38aa924c4f9fb7330834ff11e5444db964ec3f9/starlette-1.6.0.tar.gz", hash = "sha256:d4e3ac5e546444960c710297a3c9fc3f7ebae1b7e963f3d36173b49da535be9b", size = 2716969, upload-time = "2026-08-08T18:27:57.512Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/6a/a9ff0b4b7603f9498fa419b63ff09e182536ff2f739c85df7f38c0b46781/starlette-1.5.0-py3-none-any.whl", hash = "sha256:9ca76b47375e56f279d7c66651e801ef11167e58557c429be7ec55702d81d4bb", size = 74328, upload-time = "2026-08-08T07:23:14.675Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/cb/6a6a47d5b464bd08695d254f3da6e7986cc70c9fa5d778eda57538edfe56/starlette-1.6.0-py3-none-any.whl", hash = "sha256:a86dd39d14bb45f85a3d18525215a9ef0cfd1f192ac793220e72598c90335f0c", size = 75969, upload-time = "2026-08-08T18:27:56.196Z" },
 ]
 
 [[package]]

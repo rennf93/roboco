@@ -135,6 +135,21 @@ async def test_rework_endpoint(dashboard_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_spawn_waste_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        "/api/dashboard/metrics/spawn-waste", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert "total_sessions" in body
+    assert "zero_progress_sessions" in body
+    assert "zero_progress_cost_usd" in body
+    assert "total_cost_usd" in body
+    assert "zero_progress_cost_share" in body
+    assert "by_agent" in body and "by_team" in body and "by_task" in body
+
+
+@pytest.mark.asyncio
 async def test_agent_scorecard_404_when_absent(dashboard_client: AsyncClient) -> None:
     resp = await dashboard_client.get(
         f"/api/dashboard/metrics/scorecard/agent/{uuid4()}", headers=_HDR

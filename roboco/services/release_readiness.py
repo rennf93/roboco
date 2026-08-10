@@ -469,9 +469,13 @@ _VERSION_PROBES: tuple[tuple[str, Callable[[Path], str]], ...] = (
 )
 
 
-def _project_version(root: Path) -> str:
-    """Current version from the repo's own manifest — first probe that
+def project_version(root: Path) -> str:
+    """Current version from the repo's own manifest, first probe that
     yields one wins (pyproject.toml, package.json, Cargo.toml, VERSION).
+
+    Public because the release EXECUTOR must resolve the current version the
+    same way readiness did when it built the bump plan; the two halves
+    disagreeing is how a non-Python repo got a detected-but-unbumpable version.
 
     Missing or unparseable manifests are skipped, never raised: a non-Python
     layout must degrade to "" (readiness reports the gap) instead of
@@ -648,7 +652,7 @@ def gather_snapshot(
     (the ``tag_drift`` gap). None ⇒ degenerate/unsplit project, baseline stays
     ``last_tag`` (unchanged behavior).
     """
-    version = _project_version(root)
+    version = project_version(root)
     tag = _last_tag(root)
     prod_tip = _rev_parse(root, f"origin/{prod_branch}") if prod_branch else None
     last_tag_sha = _rev_parse(root, f"{tag}^{{commit}}") if tag else None
