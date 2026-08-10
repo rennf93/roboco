@@ -1041,11 +1041,19 @@ export const tasksApi = {
   // CEO authorizes the org to take over a reviewed external PR.
   supersedeExternalPr: async (
     taskId: string,
-  ): Promise<{ ok: boolean; supersede_task_id?: string; branch?: string }> => {
+  ): Promise<{
+    ok: boolean;
+    supersede_task_id?: string;
+    branch?: string;
+    status?: string;
+    already_superseded?: boolean;
+  }> => {
     const { data } = await api.post<{
       ok: boolean;
       supersede_task_id?: string;
       branch?: string;
+      status?: string;
+      already_superseded?: boolean;
     }>("/tasks/" + taskId + "/supersede-external-pr");
     return data;
   },

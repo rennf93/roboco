@@ -1478,6 +1478,46 @@ class NotificationDeliveryService(BaseService):
             task_id=task_id, subject=notification.subject, actionable=True
         )
 
+    async def notify_ceo_of_supersede_branch_cut_failure(
+        self,
+        *,
+        task: TaskTable,
+        task_id: UUID,
+        branch: str,
+        error: str,
+    ) -> None:
+        """CEO notification: the background branch cut exhausted retries.
+
+        The umbrella is BLOCKED with HUMAN resolver after
+        ``_MAX_BRANCH_CUT_ATTEMPTS`` failures. The CEO can unblock the task
+        (the reconciliation sweep re-runs the cut) or cancel the umbrella.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        notification = NotificationTable(
+            type=NotificationType.APPROVAL,
+            priority=NotificationPriority.HIGH,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Supersede branch cut failed: {(task.title or 'Unknown')[:60]}",
+            body=(
+                f"Task {task_display(task, task_id)} was blocked: the background "
+                f"branch cut for '{branch}' failed after multiple retries - "
+                f"{error[:300]}.\n\n"
+                "Unblock the task to re-run the branch cut (the reconciliation "
+                "sweep picks it up automatically), or cancel the task if the "
+                "git/forge credentials or repo are the problem."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
+        )
+        await self._persist_and_deliver(notification)
+        await self._notify_telegram(
+            task_id=task_id, subject=notification.subject, actionable=True
+        )
+
     async def notify_ceo_of_completion(self, *, task: TaskTable, task_id: UUID) -> None:
         """CEO-facing completion notification with the granular effort breakdown.
 

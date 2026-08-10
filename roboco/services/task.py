@@ -2815,6 +2815,31 @@ class TaskService(BaseService):
             pending.append(task)
         return pending
 
+    async def supersede_umbrellas_branch_pending(self) -> list[TaskTable]:
+        """Supersede umbrellas whose branch cut is still in progress or needs retry.
+
+        A ``branch_pending`` marker means the CEO's supersede action committed
+        the umbrella but the background branch cut (fetch
+        ``refs/pull/{n}/head`` + push) has not completed yet. A
+        ``branch_cut_failed`` marker on a non-BLOCKED, non-CANCELLED umbrella
+        means the CEO unblocked it after exhaustion and the sweep should
+        re-run the cut. The reconciliation sweep re-runs the cut for both so
+        an orchestrator restart does not strand the umbrella.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+        )
+        pending: list[TaskTable] = []
+        for task in result.scalars().all():
+            if markers.is_branch_pending(task) or (
+                markers.is_branch_cut_failed(task) and task.status != TaskStatus.BLOCKED
+            ):
+                pending.append(task)
+        return pending
+
     async def _supersede_replacement_landed(self, umbrella_id: UUID) -> bool:
         """True if a non-cancelled descendant of the umbrella landed a PR.
 

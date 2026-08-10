@@ -168,6 +168,11 @@ select = [
 # every kwarg is independently override-able by callers/tests, same
 # bundling-adds-no-clarity rationale as prompter.py above.
 "roboco/services/github_provisioning.py" = ["PLR0913"]
+# ensure_workspace carries the workspace-resolution contract (project_slug,
+# agent_id, git_url, default_branch, force, skip_refresh) - skip_refresh is
+# the supersede branch-cut path's skip of the 60s origin refresh-fetch;
+# bundling would just relocate the same named fields behind one hop.
+"roboco/services/workspace.py" = ["PLR0913"]
 # Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
 # verb contract (task title, description, acceptance criteria, assignee, etc.). Bundling
 # into a dataclass hides the field-by-field schema the LLM needs at the

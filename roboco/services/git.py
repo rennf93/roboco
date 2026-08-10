@@ -587,7 +587,11 @@ class GitService(BaseService):
         return await self._token_for_project(parts[0])
 
     async def get_workspace(
-        self, project_slug: str, agent_id: UUID | None = None
+        self,
+        project_slug: str,
+        agent_id: UUID | None = None,
+        *,
+        skip_refresh: bool = False,
     ) -> Path:
         """Get the workspace path for an agent on a project."""
         project_service = get_project_service(self.session)
@@ -615,6 +619,7 @@ class GitService(BaseService):
                     agent_id=agent_id,
                     git_url=project.git_url,
                     default_branch=head_branch(project),
+                    skip_refresh=skip_refresh,
                 )
             else:
                 workspace = await workspace_service.resolve_workspace(
@@ -5686,6 +5691,41 @@ class GitService(BaseService):
         behind = int(parts[0]) if valid and parts[0].isdigit() else 0
         ahead = int(parts[1]) if valid and parts[1].isdigit() else 0
         return behind, ahead
+
+    async def comment_pull_request(
+        self,
+        pr_number: int,
+        *,
+        project_id: UUID,
+        comment: str,
+    ) -> None:
+        """Post a comment on PR ``pr_number`` without closing it.
+
+        Resolves the repo ref and git token directly from the project record
+        (NOT from a workspace clone) so the comment never triggers a 300s
+        clone. Used by the supersede flow to notify the contributor at
+        supersede time and at close-on-land.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise NotFoundError("PR", str(pr_number))
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project for task", str(task.id))
+
+        git_token = await self._get_project_token_or_raise(project.slug)
+        repo_ref = self._parse_git_url(project.git_url)
+        await self._forge.create_issue_comment(repo_ref, git_token, pr_number, comment)
 
     async def close_pull_request(
         self,
