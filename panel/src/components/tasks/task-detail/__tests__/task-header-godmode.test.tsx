@@ -26,6 +26,10 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock("@/hooks/use-dashboard", () => ({
+  useStalledTasks: () => ({ data: [] }),
+}));
+
 // Make the Select testable without Radix's portal/pointer machinery: each
 // SelectItem renders a button carrying its value; clicking it invokes the
 // nearest Select's onValueChange (scoped via context so the status Select and
