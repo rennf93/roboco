@@ -69,7 +69,10 @@ fail() {
 # compose's own opaque interpolation error later.
 require_nonempty_env_var() {
     local var="$1" hint="$2" value
-    value="$(grep -E "^${var}=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2-)"
+    # `|| true`: same set -e/pipefail guard as require_host_path_var — an
+    # unset var makes grep exit 1, pipefail surfaces that as the pipeline
+    # status, and set -e would exit before the diagnosis below can print.
+    value="$(grep -E "^${var}=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
     [ -n "$value" ] \
         || fail "${ENV_FILE} has no value for ${var} (docker-compose.registry.yml requires it non-empty to start). ${hint}"
 }
