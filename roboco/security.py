@@ -9,8 +9,9 @@ effect once the middleware is mounted, so decorating is a harmless no-op while
 the flag is off (the guard-core-api pattern).
 
 Cloud-host-ready but env-driven: ``enforce_https`` follows
-``ROBOCO_ENVIRONMENT``, and a personal NAS deploy stays relaxed via
-``ROBOCO_GUARD_FAIL_SECURE=false`` + ``ROBOCO_ENVIRONMENT=development``.
+``ROBOCO_ENVIRONMENT`` (dev on the NAS -> not enforced, TLS terminates at
+nginx regardless). ``ROBOCO_GUARD_FAIL_SECURE`` ships ``true`` (fail-secure
+ON) everywhere, including the personal NAS deploy.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 from guard import SecurityConfig, SecurityDecorator, SecurityMiddleware
 from guard.adapters import StarletteGuardResponse
 from guard.lifespan import make_lifespan
+from guard_core.core.behavioral.processor import BehavioralProcessor
+from guard_core.exceptions import GuardRedisError
 from guard_core.models import BehaviorRuleConfig, ThreatBanConfig
 from starlette.responses import Response as _StarletteResponse
 
@@ -30,10 +33,47 @@ from roboco.logging import get_logger
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+    from guard_core.decorators.base import RouteConfig
     from guard_core.protocols.request_protocol import GuardRequest
     from guard_core.protocols.response_protocol import GuardResponse
 
 logger = get_logger(__name__)
+
+# --------------------------------------------------------------------------
+# Behavioral usage-rule redis fail-open patch.
+#
+# usage_monitor()/behavior_analysis() rules (route_config.behavior_rules) are
+# invoked directly from SecurityMiddleware.dispatch (guard/middleware.py:574-577),
+# OUTSIDE SecurityCheckPipeline -- the only place redis_fail_open is honored
+# (guard_core/core/checks/pipeline.py:93, _handle_check_error). BehaviorTracker.
+# track_endpoint_usage calls redis unguarded and raises GuardRedisError (not an
+# HTTPException) on a redis blip, so it falls through to roboco's generic
+# exception handler as a 500 instead of failing open like every pipeline check
+# does. Wrap this seam here rather than fork/vendor guard-core; the durable fix
+# belongs upstream (route this call through the pipeline's own GuardRedisError /
+# redis_fail_open handling).
+_orig_process_usage_rules = BehavioralProcessor.process_usage_rules
+
+
+async def _process_usage_rules_fail_open(
+    self: BehavioralProcessor,
+    request: GuardRequest,
+    client_ip: str,
+    route_config: RouteConfig,
+) -> None:
+    try:
+        await _orig_process_usage_rules(self, request, client_ip, route_config)
+    except GuardRedisError as exc:
+        if not self.context.config.redis_fail_open:
+            raise
+        logger.warning(
+            "behavioral usage-rule check skipped: redis unavailable, "
+            "failing open (redis_fail_open=True)",
+            error=str(exc),
+        )
+
+
+setattr(BehavioralProcessor, "process_usage_rules", _process_usage_rules_fail_open)
 
 # Body bytes scanned by the custom validators — enough to catch injected
 # preambles without reading unbounded payloads.

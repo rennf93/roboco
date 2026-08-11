@@ -19,8 +19,10 @@ ASGI shim (production sees a real IP behind nginx; TestClient's bogus
 from __future__ import annotations
 
 import contextlib
+import logging
 from http import HTTPStatus
 from typing import TYPE_CHECKING, ClassVar
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -28,6 +30,12 @@ from fastapi.testclient import TestClient
 from guard import SecurityMiddleware
 from guard.adapters import StarletteGuardRequest
 from guard.lifespan import make_lifespan
+from guard_core.core.behavioral.context import BehavioralContext
+from guard_core.core.behavioral.processor import BehavioralProcessor
+from guard_core.core.events import SecurityEventBus
+from guard_core.decorators.base import RouteConfig
+from guard_core.exceptions import GuardRedisError
+from guard_core.handlers.behavior_handler import BehaviorRule
 from guard_core.utils import extract_client_ip, is_ip_allowed
 from roboco import security
 from starlette.requests import Request
@@ -221,6 +229,85 @@ class TestDecoyPaths:
         with _client(_guarded_app(passive=True)) as client:
             resp = client.get("/.git/config")
         assert resp.status_code == HTTPStatus.OK
+
+
+class TestBehavioralUsageRuleRedisFailOpen:
+    """usage_monitor()/behavior_analysis() rules run OUTSIDE SecurityCheckPipeline
+    (guard/middleware.py dispatch calls BehavioralProcessor.process_usage_rules
+    directly), so a redis blip there bypasses guard-core's own redis_fail_open
+    handling (guard_core/core/checks/pipeline.py) unless roboco.security patches
+    it. Without the patch, `process_usage_rules` propagates the raw
+    GuardRedisError -- these tests call the REAL (patched) method installed on
+    BehavioralProcessor by roboco.security's import-time setattr.
+    """
+
+    @staticmethod
+    def _context(
+        behavior_tracker: object, *, redis_fail_open: bool
+    ) -> BehavioralContext:
+        cfg = security.build_security_config()
+        cfg.redis_fail_open = redis_fail_open
+        return BehavioralContext(
+            config=cfg,
+            logger=logging.getLogger("test.behavioral"),
+            event_bus=SecurityEventBus(agent_handler=None, config=cfg),
+            guard_decorator=None,
+            behavior_tracker=behavior_tracker,
+        )
+
+    @staticmethod
+    def _route_config() -> RouteConfig:
+        route_config = RouteConfig()
+        route_config.behavior_rules.append(
+            BehaviorRule(rule_type="usage", threshold=5, window=60, action="log")
+        )
+        return route_config
+
+    @staticmethod
+    def _request() -> StarletteGuardRequest:
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/usage",
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+        }
+        return StarletteGuardRequest(Request(scope))
+
+    @pytest.mark.asyncio
+    async def test_redis_blip_fails_open_instead_of_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _BrokenTracker:
+            async def track_endpoint_usage(self, *_a: object, **_k: object) -> bool:
+                raise GuardRedisError(503, "redis down")
+
+        mock_logger = MagicMock()
+        monkeypatch.setattr(security, "logger", mock_logger)
+        context = self._context(_BrokenTracker(), redis_fail_open=True)
+        processor = BehavioralProcessor(context)
+
+        await processor.process_usage_rules(
+            self._request(), "127.0.0.1", self._route_config()
+        )
+
+        mock_logger.warning.assert_called_once()
+        assert "redis unavailable" in mock_logger.warning.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_redis_blip_still_raises_when_fail_open_disabled(self) -> None:
+        class _BrokenTracker:
+            async def track_endpoint_usage(self, *_a: object, **_k: object) -> bool:
+                raise GuardRedisError(503, "redis down")
+
+        context = self._context(_BrokenTracker(), redis_fail_open=False)
+        processor = BehavioralProcessor(context)
+
+        with pytest.raises(GuardRedisError):
+            await processor.process_usage_rules(
+                self._request(), "127.0.0.1", self._route_config()
+            )
 
 
 # ---------------------------------------------------------------------------

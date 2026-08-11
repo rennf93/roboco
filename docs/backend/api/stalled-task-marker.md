@@ -85,6 +85,10 @@ The clear is fire-and-forget via `_schedule_bg`, mirroring the counter write-thr
 
 **Why this alone wasn't sufficient (the #866 bug):** this branch only fires when the SAME `(agent, task)` tracker key is re-observed by `_dispatch_dev_work`, which fetches only `pending`/`claimed`/`needs_revision`/`in_progress`/`blocked` tasks. Once a wedged dev's task advances to `awaiting_qa` (or any status outside that dev-role fetch set), that tracker key is never polled again, so this branch alone left a resolved task's marker stuck until the task went terminal. It remains in place as a faster, same-role secondary clear; the `TaskService`-level clear above is what now guarantees correctness for every transition, including cross-role ones.
 
+### The `reassign_active_claim` clear (a PM handing a wedged claim to a new claimant)
+
+`TaskService.reassign_active_claim` (a PM reassigning a claimed/in_progress task's live claim to a different agent, the sanctioned recovery for a wedged dev) never changes `task.status`, so it never routes through `_emit_status_transition_audit`'s unconditional clear above. It now calls `self._clear_stale_stalled_marker(task)` directly alongside its other claim-field writes, so the marker no longer survives the hand-off and misreports a task actively being worked by its new claimant as stalled.
+
 ## Read endpoint
 
 ### `GET /api/dashboard/stalled-tasks`
@@ -127,12 +131,13 @@ This endpoint sits on the existing `/api/dashboard` router, which is router-leve
 - `tests/unit/runtime/test_stalled_marker.py`: the orchestrator wiring; a breaker trip calls `mark_stalled` alongside `_notify_stuck_agent`, one-shot per trip.
 - `tests/unit/runtime/test_pm_respawn_reset.py`: the dispatcher's same-key genuine-forward-progress branch clears the marker via `_schedule_bg` (the secondary, same-role-recovery path).
 - `tests/integration/test_dashboard_routes.py`: `GET /api/dashboard/stalled-tasks` end to end against a real DB.
+- `tests/unit/services/test_task.py::test_reassign_active_claim_clears_stalled_marker`: `reassign_active_claim` clears a set `stalled_reason`/`stalled_since` on the new claimant hand-off, even though the call never changes `task.status`.
 
-Together these cover the acceptance-critical behaviors: a trip sets the marker, genuine progress clears it regardless of which path or role observes that progress, a re-trip after the cooldown window re-marks/re-notifies exactly once rather than double-counting, and a task that advances past its wedged agent's own dispatch window (the #866 bug) no longer appears in the read endpoint.
+Together these cover the acceptance-critical behaviors: a trip sets the marker, genuine progress clears it regardless of which path or role observes that progress, a re-trip after the cooldown window re-marks/re-notifies exactly once rather than double-counting, a task that advances past its wedged agent's own dispatch window (the #866 bug) no longer appears in the read endpoint, and a PM reassigning a wedged claim to a new agent also clears the marker even though no status transition occurs.
 
 ## Related
 
 - `_notification_spawn_over_cap` (no `task_id` path) notifies the CEO on trip but sets no task marker — there is no task to mark. `NOTIFICATION_CAP` stays unused on `StalledReason`, reserved for a future task-keyed variant.
 - `roboco/runtime/orchestrator.py`: `_pm_respawn_should_gate` (breaker trip), `_respawn_status_change_resets` (secondary same-key progress-based reset), `_pm_cooldown_gate` (cooldown self-heal / re-notify eligibility).
-- `roboco/services/task.py`: `TaskService._emit_status_transition_audit` / `_clear_stale_stalled_marker` (primary, unconditional clear on any status transition — added in the #866 fix-forward revision, task `cbc0666d`), `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks`.
+- `roboco/services/task.py`: `TaskService._emit_status_transition_audit` / `_clear_stale_stalled_marker` (primary, unconditional clear on any status transition, added in the #866 fix-forward revision, task `cbc0666d`), `TaskService.mark_stalled` / `clear_stalled_marker` / `list_stalled_tasks` / `reassign_active_claim` (calls `_clear_stale_stalled_marker` directly since it changes no status).
 - CHANGELOG.md's Unreleased `### Added` section also gained an entry for this feature (durable stalled marker + read endpoint, referencing PR #866) as part of the #866 fix-forward revision — the original delivery's diff had omitted it.

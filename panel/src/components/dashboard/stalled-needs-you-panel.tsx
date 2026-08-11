@@ -6,16 +6,12 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { useStalledTasks } from "@/hooks/use-dashboard";
-import { useAgents } from "@/hooks/use-agents";
 import { AlertOctagon, AlertCircle, Clock } from "lucide-react";
 
-// Computes a display duration from the backend's updated_at timestamp —
-// this is display formatting only, it never re-derives what counts as
-// "stalled" (that classification is blocker_resolver_type=human from the
-// backend).
-function formatStalledDuration(updatedAt: string | null): string {
-  if (!updatedAt) return "unknown";
-  const seconds = Math.floor((Date.now() - new Date(updatedAt).getTime()) / 1000);
+// Formats the backend's own stalled_seconds for display - this is display
+// formatting only, it never re-derives what counts as "stalled" (that's the
+// backend's durable stalled_reason/stalled_since marker).
+function formatStalledDuration(seconds: number): string {
   if (seconds < 0) return "unknown";
   const hours = Math.floor(seconds / 3600);
   if (hours < 1) return "< 1h";
@@ -24,18 +20,14 @@ function formatStalledDuration(updatedAt: string | null): string {
 }
 
 /**
- * Overview "Stalled / Needs you" section — every blocked task the
- * dispatcher has given up on (blocker_resolver_type=human), driven entirely
- * by GET /tasks/blocked filtered by the backend's own classification
- * (useStalledTasks). Title, assignee, status, and blocker_resolver_type
- * render verbatim from that response; a failed fetch renders a distinct
- * error state, never the empty state.
+ * Overview "Stalled / Needs you" section - every task the dispatcher's
+ * respawn breaker has given up on, driven entirely by
+ * GET /dashboard/stalled-tasks (useStalledTasks). Title, status, assignee,
+ * and reason render verbatim from that response; a failed fetch renders a
+ * distinct error state, never the empty state.
  */
 export function StalledNeedsYouPanel() {
   const { data: stalledTasks, isLoading, isError } = useStalledTasks();
-  const { data: agents } = useAgents();
-
-  const agentNames = new Map((agents ?? []).map((a) => [a.id, a.name]));
 
   return (
     <Card>
@@ -72,8 +64,8 @@ export function StalledNeedsYouPanel() {
           <div className="space-y-3">
             {stalledTasks?.map((task) => (
               <Link
-                key={task.id}
-                href={"/tasks/" + task.id}
+                key={task.task_id}
+                href={"/tasks/" + task.task_id}
                 prefetch={false}
               >
                 <div className="flex items-start gap-3 p-3 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 dark:border-amber-900 dark:bg-amber-950 dark:hover:bg-amber-900 transition-colors">
@@ -86,18 +78,18 @@ export function StalledNeedsYouPanel() {
                       <Badge variant="outline" className="text-xs">
                         {task.status}
                       </Badge>
-                      {task.assigned_to && (
+                      {(task.assignee_slug || task.assignee_id) && (
                         <span className="text-xs text-muted-foreground">
-                          {agentNames.get(task.assigned_to) ?? task.assigned_to}
+                          {task.assignee_slug ?? task.assignee_id}
                         </span>
                       )}
                     </div>
                     <p className="text-sm text-muted-foreground truncate">
-                      {task.blocker_resolver_type}
+                      {task.reason}
                     </p>
                     <div className="flex items-center gap-1 mt-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
-                      Stalled for {formatStalledDuration(task.updated_at)}
+                      Stalled for {formatStalledDuration(task.stalled_seconds)}
                     </div>
                   </div>
                 </div>

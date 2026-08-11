@@ -777,6 +777,18 @@ def test_lock_package_name_empty_without_pyproject(tmp_path: Path) -> None:
     assert _lock_package_name(tmp_path) == ""
 
 
+def test_lock_package_name_pep503_normalizes_underscore_and_case(
+    tmp_path: Path,
+) -> None:
+    """uv.lock always stores the PEP 503-normalized name (lowercase, ``-_.``
+    runs collapsed to one ``-``); a raw pyproject ``Acme_Api`` must normalize
+    to ``acme-api`` or the bump regex never matches the lockfile entry."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "Acme_Api"\nversion = "0.12.0"\n'
+    )
+    assert _lock_package_name(tmp_path) == "acme-api"
+
+
 def test_bump_uv_lock_scopes_to_this_repos_own_package() -> None:
     out = _bump_uv_lock(_UV_LOCK, "0.12.0", "0.13.0", "acme-api")
     assert 'name = "acme-api"\nversion = "0.13.0"' in out

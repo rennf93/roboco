@@ -4550,21 +4550,27 @@ class Choreographer:
     ) -> tuple[Envelope | None, Any]:
         """Resolve a root-owned self-declare (caller is ``child``'s assignee).
 
-        Returns ``(None, child)`` when ``child`` is a true root (no parent) so
-        its own ``parent_ac_refs`` count as self-coverage at the read-side
-        gate. A coordination task that HAS a parent is rejected: the
-        ``_parent_ac_ref_sets`` guard only treats own refs as self-coverage
-        when ``parent_task_id`` is None, so self-declaring here would stamp
-        refs that silently do nothing. Reject up front rather than return a
+        Returns ``(None, child)`` when ``child`` is a root: a true root (no
+        parent) or a MegaTask root-subtask (parented by the umbrella yet a
+        genuine Main-PM coordination root with its own project/branch/PR,
+        see ``is_batch_root_subtask``) so its own ``parent_ac_refs`` count as
+        self-coverage at the read-side gate (``_parent_ac_ref_sets`` applies
+        the identical root predicate). A plain parented task (a cell task or
+        an ordinary leaf) is rejected: self-declaring there would stamp refs
+        the read-side guard treats as inert upward refs, not self-coverage,
+        so they'd silently do nothing. Reject up front rather than return a
         silent no-op that looks like success.
         """
-        if child.parent_task_id is None:
+        if child.parent_task_id is None or is_batch_root_subtask(
+            batch_id=child.batch_id, parent_task_id=child.parent_task_id
+        ):
             return None, child
         return (
             Envelope.invalid_state(
                 message=(
                     "root-owned self-declare is reserved for a true"
-                    " coordination root (a task with no parent)"
+                    " coordination root (a task with no parent, or a"
+                    " MegaTask root-subtask)"
                 ),
                 remediate=(
                     "this task has a parent, so self-declared refs would"

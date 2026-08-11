@@ -8,6 +8,7 @@ import type {
   FlagSeverity,
   CEOOverview as CEOOverviewType,
   Task,
+  StalledTask,
 } from "@/types";
 import {
   isMockMode,
@@ -580,15 +581,15 @@ export const dashboardApi = {
     return data;
   },
 
-  // The current stalled set — blocked tasks whose blocker_resolver_type is
-  // "human" (the dispatcher has given up and won't respawn). Sourced from
-  // GET /tasks/blocked, filtered by the backend's own classification — no
-  // client-side stall-condition re-derivation.
-  getStalledTasks: async (): Promise<Task[]> => {
+  // The current stalled set - every task the dispatcher's respawn breaker
+  // has given up on (the durable stalled_reason/stalled_since marker), from
+  // the dedicated GET /dashboard/stalled-tasks endpoint. Independent of
+  // status: a stalled task can be in_progress, not just blocked.
+  getStalledTasks: async (): Promise<StalledTask[]> => {
     if (isMockMode()) {
       return [];
     }
-    const { data } = await api.get<Task[]>("/tasks/blocked");
-    return data.filter((t) => t.blocker_resolver_type === "human");
+    const { data } = await api.get<StalledTask[]>("/dashboard/stalled-tasks");
+    return data;
   },
 };

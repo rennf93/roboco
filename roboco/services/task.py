@@ -875,6 +875,90 @@ async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
         )
 
 
+async def _evict_stranded_agent(task_id: UUID, prior_holder: UUID) -> None:
+    """Best-effort: gracefully stop a live agent container stranded by an
+    admin status override that cleared its claim out from under it.
+
+    Scheduled via ``defer_after_commit`` (see ``_schedule_stranded_eviction``)
+    rather than run inline: this does a DB lookup, an HTTP round-trip to the
+    agent's SDK, and up to a 10s ``docker stop`` plus inspect/logs/rm. Run
+    inline it would execute inside the caller's still-OPEN transaction while
+    the just-overridden task/agent rows sit lock-held (the #721/chown-storm
+    lock-convoy class) and make the caller's write latency-bound on container
+    teardown. By the time this deferred callable actually runs the caller's
+    own ``AsyncSession`` may already be closing (a FastAPI request tears its
+    session down once the route returns), so it opens a FRESH session from
+    the process session factory for its one lookup instead of touching the
+    caller's session.
+
+    ``admin_set_status`` is pure-DB: it clears the DB-side claim markers
+    (``active_claimant_id``) but never touches a live agent container, which
+    keeps flailing on ``not_authorized`` for every content verb against a
+    task it no longer legitimately holds. Mirrors the budget sweep's own
+    admin_set_status + ``stop_agent(graceful=True, ...)`` pairing;
+    release_claim is False here since the override already handled claim
+    state.
+
+    Never raises: an absent orchestrator (tests run without one), an unknown
+    agent, or no live container for this exact task are all silent no-ops.
+    """
+    try:
+        from roboco.api.deps import get_orchestrator_or_none
+        from roboco.services.agent import get_agent_service
+
+        orchestrator = get_orchestrator_or_none()
+        if orchestrator is None:
+            return
+        from roboco.db.base import get_session_factory
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            agent = await get_agent_service(session).get_by_uuid(prior_holder)
+        if agent is None:
+            return
+        instance = orchestrator.get_instance(agent.slug)
+        if instance is None or instance.current_task_id != str(task_id):
+            return
+        await orchestrator.stop_agent(
+            agent.slug,
+            graceful=True,
+            release_claim=False,
+            stop_reason="admin_status_override",
+        )
+        _module_log.warning(
+            "admin_override_evicted_stranded_agent",
+            task_id=str(task_id),
+            prior_holder=str(prior_holder),
+        )
+    except Exception as exc:
+        _module_log.warning(
+            "admin_override_eviction_failed",
+            task_id=str(task_id),
+            prior_holder=str(prior_holder),
+            error=str(exc),
+        )
+
+
+def _schedule_stranded_eviction(
+    session: AsyncSession, task_id: UUID, prior_holder: UUID
+) -> None:
+    """Defer a stranded-agent eviction to run only after ``session`` commits.
+
+    Called from ``admin_set_status`` the moment it actually clears a claim
+    that had a live holder: every caller of that chokepoint (the admin PATCH
+    route, the Secretary's CEO-directed override action) gets the eviction
+    for free instead of each call site duplicating it. See
+    ``_evict_stranded_agent`` for why this must never run inside the
+    still-open transaction.
+    """
+    from roboco.services.notification_delivery import defer_after_commit
+
+    async def _evict() -> None:
+        await _evict_stranded_agent(task_id, prior_holder)
+
+    defer_after_commit(session, _evict)
+
+
 # Source tag for a Sentinel (Board Program) exploration cycle: a PENDING task
 # the sentinel engine opens for the Auditor to assess org-wide quality drift
 # (waiver-accumulation trends, conventions-violation hotspots, docs/map
@@ -2822,9 +2906,7 @@ class TaskService(BaseService):
         for task in result.scalars().all():
             if "closed=1" in supersede_marker_line(task).split():
                 continue
-            replacement_pr = await self._supersede_replacement_landed(
-                cast("UUID", task.id)
-            )
+            replacement_pr = await self._supersede_replacement_landed(task)
             if replacement_pr is None:
                 continue
             pending.append((task, replacement_pr))
@@ -2855,20 +2937,32 @@ class TaskService(BaseService):
                 pending.append(task)
         return pending
 
-    async def _supersede_replacement_landed(self, umbrella_id: UUID) -> int | None:
-        """The replacement PR number if a non-cancelled descendant landed one.
+    async def _supersede_replacement_landed(self, umbrella: TaskTable) -> int | None:
+        """The replacement PR number for a landed supersede umbrella.
 
-        Walks the umbrella's subtree (bounded by MAX_TASK_DEPTH) and returns
-        the ``pr_number`` as soon as it finds a COMPLETED task carrying one,
-        the team's merged replacement PR. Returns ``None`` when every code
-        descendant was cancelled (force-completed umbrella), so close-on-land
-        then leaves the contributor PR open.
+        Prefers the umbrella's OWN ``pr_number``: the umbrella is a real
+        Main-PM coordination root and ``submit_root`` stamps its merged root
+        PR directly on it, so this is the canonical replacement PR the
+        close-on-land comment should link (previously never consulted, so
+        the comment could point at an internal cell PR instead, or find no
+        qualifying descendant and skip closing the contributor PR forever).
+        Falls back to walking the umbrella's subtree (bounded by
+        MAX_TASK_DEPTH) for a COMPLETED descendant carrying a ``pr_number``,
+        needed only when the umbrella itself has none (e.g. the CEO
+        force-completed it over a cancelled code subtask). The descendant
+        query is ordered (creation time, then id) so multiple qualifying
+        siblings resolve the same way on every call instead of depending on
+        unspecified row order.
         """
-        frontier: list[UUID] = [umbrella_id]
+        if umbrella.pr_number is not None:
+            return int(umbrella.pr_number)
+        frontier: list[UUID] = [cast("UUID", umbrella.id)]
         seen: set[UUID] = set()
         while frontier:
             result = await self.session.execute(
-                select(TaskTable).where(TaskTable.parent_task_id.in_(frontier))
+                select(TaskTable)
+                .where(TaskTable.parent_task_id.in_(frontier))
+                .order_by(TaskTable.created_at.asc(), TaskTable.id.asc())
             )
             frontier = []
             for child in result.scalars().all():
@@ -3781,6 +3875,15 @@ class TaskService(BaseService):
         the PM on a dev task it cannot do (a respawn loop). The in-band escalate
         and block-down transitions are untouched — this fires only on
         re-activation, and only when a pre-block snapshot exists.
+
+        A non-blocked override into a review/queue state (see
+        ``_REVIEW_QUEUE_STATES``) that clears a live ``active_claimant_id``
+        also schedules a post-commit eviction of that claimant's container
+        (``_schedule_stranded_eviction``), unconditionally, not gated on
+        ``force``, since a bypassed status is orthogonal to whether an agent
+        got stranded holding the old claim. Every caller of this method (the
+        admin PATCH route, the Secretary's override action) gets this for
+        free.
         """
         task = await self.get(task_id)
         if not task:
@@ -3818,6 +3921,15 @@ class TaskService(BaseService):
             # The stale claimant is no longer active on THIS task — release
             # its fleet marker (mirrors every other claim-clearing site).
             await self._clear_agent_current_task(prior_claimant, task_id)
+            # A claim just got cleared out from under a live holder, so evict
+            # its container regardless of `force`. `force` only gates whether
+            # the STATUS bypass itself is acknowledged (hatch/resurrection);
+            # a stranded agent flailing not_authorized is a consequence of
+            # the claim clearing above, not of the force flag, so it must
+            # not be conditioned on it (previously only a force=True override
+            # scheduled this, stranding an agent on every unforced one).
+            if prior_claimant is not None:
+                _schedule_stranded_eviction(self.session, task_id, prior_claimant)
         task.status = new_status
         await self.session.flush()
         self._emit_status_transition_audit(
@@ -10768,14 +10880,17 @@ class TaskService(BaseService):
         declaration still counts as "coverage tracking is active here").
 
         ``root_owned`` is the parent's OWN ``parent_ac_refs`` (declared on
-        itself via ``declare_coverage(task_id=<own root>, ...)``) — criteria
+        itself via ``declare_coverage(task_id=<own root>, ...)``), criteria
         only the root's own machinery satisfies (e.g. PR-supersede, closing a
         contributor PR), never a cell. Only applies when the loaded task IS a
-        root (``parent_task_id is None``); a non-root task's ``parent_ac_refs``
-        are upward refs towards its own parent, not self-coverage, and stay
-        inert. Root-owned refs are unconditionally folded into both ``claimed``
-        and ``verified``: there is no child status to gate on, the work happens
-        at/after the root's own submit/supersede by construction.
+        root: either a true root (``parent_task_id is None``) or a MegaTask
+        root-subtask (``is_batch_root_subtask``, parented by the umbrella yet
+        a genuine coordination root with its own project/branch/PR for git/CEO
+        purposes). A plain parented task's ``parent_ac_refs`` are upward refs
+        towards its own parent, not self-coverage, and stay inert. Root-owned
+        refs are unconditionally folded into both ``claimed`` and ``verified``:
+        there is no child status to gate on, the work happens at/after the
+        root's own submit/supersede by construction.
 
         A parent whose ``acceptance_criteria_ids`` is empty or out of length
         with ``acceptance_criteria`` (a legacy row from before every AC
@@ -10801,9 +10916,12 @@ class TaskService(BaseService):
                 claimed |= refset
             if status == TaskStatus.COMPLETED:
                 verified |= refset
+        parent_is_root = parent.parent_task_id is None or is_batch_root_subtask(
+            batch_id=parent.batch_id, parent_task_id=parent.parent_task_id
+        )
         root_owned = (
             self._normalize_ac_refs(parent, parent.parent_ac_refs)
-            if parent.parent_task_id is None
+            if parent_is_root
             else set()
         )
         if root_owned:
@@ -11417,6 +11535,12 @@ class TaskService(BaseService):
         task.claimed_at = now
         task.last_heartbeat_at = now
         task.active_claimant_id = cast("Any", effective_assignee)
+        # This is a genuine hand-off of forward progress to a new claimant,
+        # but it never touches task.status, so it never routes through
+        # _emit_status_transition_audit's own stalled-marker clear. Without
+        # this a task reassigned off a wedged agent keeps reading as stalled
+        # in the dashboard while the new claimant actively works it.
+        self._clear_stale_stalled_marker(task)
         await self._retarget_agent_claim(old_assignee, effective_assignee, task_id)
         await self.session.flush()
         self.log.info(

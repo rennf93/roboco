@@ -61,6 +61,11 @@ def _build_task(**overrides: object) -> MagicMock:
         "blocker_raised_by": None,
         "commits": [],
         "dev_notes": None,
+        # An unconfigured MagicMock attribute auto-creates a truthy child
+        # mock, not None, so batch_id must default to None explicitly or
+        # every plain (non-MegaTask) task-shaped mock here would silently
+        # read as a batch root-subtask to is_batch_root_subtask.
+        "batch_id": None,
     }
     base.update(overrides)
     return MagicMock(**base)
@@ -1831,6 +1836,32 @@ async def test_intermediate_task_parent_ac_refs_not_root_owned() -> None:
     # Only "cell b" is uncovered (no root_owned shortcut for the cell root).
     assert await svc.uncovered_parent_acceptance_criteria(cell_root.id) == [
         "cell b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_root_subtask_parent_ac_refs_are_root_owned() -> None:
+    # A MegaTask root-subtask carries both batch_id AND parent_task_id (the
+    # umbrella), yet it is a genuine Main-PM coordination root with its own
+    # project/branch/PR (is_batch_root_subtask). Unlike an ordinary parented
+    # cell task (test_intermediate_task_parent_ac_refs_not_root_owned above),
+    # its own parent_ac_refs DO count as root-owned self-coverage -- the
+    # write side (submit_root/cell_pm_complete's self-declare) has nowhere
+    # else to stamp a root-only criterion like PR-supersede.
+    root_subtask = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=["id-a"],
+        parent_task_id=uuid4(),  # the umbrella
+        batch_id=uuid4(),
+    )
+    svc = _svc_with_children(root_subtask, [])
+    # "crit a" is satisfied by the root-owned ref; "crit b" has no coverage.
+    assert await svc.uncovered_parent_acceptance_criteria(root_subtask.id) == [
+        "crit b",
+    ]
+    assert await svc.unclaimed_parent_acceptance_criteria(root_subtask.id) == [
+        "crit b",
     ]
 
 

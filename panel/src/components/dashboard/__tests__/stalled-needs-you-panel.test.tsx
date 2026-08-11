@@ -1,43 +1,29 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
-const { mockStalled, mockAgents } = vi.hoisted(() => ({
+const { mockStalled } = vi.hoisted(() => ({
   mockStalled: vi.fn(),
-  mockAgents: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-dashboard", () => ({
   useStalledTasks: mockStalled,
 }));
 
-vi.mock("@/hooks/use-agents", () => ({
-  useAgents: mockAgents,
-}));
-
 import { StalledNeedsYouPanel } from "../stalled-needs-you-panel";
 
 describe("StalledNeedsYouPanel", () => {
-  beforeEach(() => {
-    vi.useFakeTimers({ now: new Date("2026-08-10T02:00:00Z") });
-    mockAgents.mockReturnValue({
-      data: [{ id: "agent-1", name: "FE-Dev-1" }],
-    });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it("renders each stalled task's title, assignee, status, reason, and duration, linking to task detail", () => {
     mockStalled.mockReturnValue({
       data: [
         {
-          id: "task-abc",
+          task_id: "task-abc",
           title: "Fix the flaky test",
-          assigned_to: "agent-1",
-          status: "blocked",
-          blocker_resolver_type: "human",
-          updated_at: "2026-08-10T00:00:00Z",
+          assignee_id: "agent-1",
+          assignee_slug: "fe-dev-1",
+          status: "in_progress",
+          reason: "respawn breaker gave up after 4 strikes",
+          stalled_since: "2026-08-10T00:00:00Z",
+          stalled_seconds: 7200,
         },
       ],
       isLoading: false,
@@ -47,12 +33,38 @@ describe("StalledNeedsYouPanel", () => {
     render(<StalledNeedsYouPanel />);
 
     expect(screen.getByText("Fix the flaky test")).toBeInTheDocument();
-    expect(screen.getByText("FE-Dev-1")).toBeInTheDocument();
-    expect(screen.getByText("blocked")).toBeInTheDocument();
-    expect(screen.getByText("human")).toBeInTheDocument();
+    expect(screen.getByText("fe-dev-1")).toBeInTheDocument();
+    expect(screen.getByText("in_progress")).toBeInTheDocument();
+    expect(
+      screen.getByText("respawn breaker gave up after 4 strikes"),
+    ).toBeInTheDocument();
     expect(screen.getByText(/stalled for 2h/i)).toBeInTheDocument();
     const link = screen.getByRole("link");
     expect(link).toHaveAttribute("href", "/tasks/task-abc");
+  });
+
+  it("falls back to assignee_id when assignee_slug is null", () => {
+    mockStalled.mockReturnValue({
+      data: [
+        {
+          task_id: "task-abc",
+          title: "Fix the flaky test",
+          assignee_id: "agent-1",
+          assignee_slug: null,
+          status: "blocked",
+          reason: "waiting on human",
+          stalled_since: "2026-08-10T00:00:00Z",
+          stalled_seconds: 60,
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<StalledNeedsYouPanel />);
+
+    expect(screen.getByText("agent-1")).toBeInTheDocument();
+    expect(screen.getByText(/stalled for < 1h/i)).toBeInTheDocument();
   });
 
   it("renders an explicit empty state when nothing is stalled", () => {

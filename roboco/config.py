@@ -800,8 +800,9 @@ class Settings(BaseSettings):
         description=(
             "Fail CLOSED: when a security check raises an unhandled error, block "
             "the request instead of letting it through. Secure default for "
-            "cloud/public hosting; the NAS compose overrides this to false so a "
-            "guard-internal bug never 500s the operator's personal deploy."
+            "cloud/public hosting; the NAS compose ships this same true default "
+            "(fail-secure ON) now that the redis-blip 500 class is handled by "
+            "redis_fail_open + roboco.security's behavioral-path patch instead."
         ),
     )
     guard_passive_mode: bool = Field(

@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import TaskTable
 from roboco.exceptions import GitError
-from roboco.logging import get_logger
 from roboco.models.base import AgentRole, TaskStatus
 from roboco.services.base import (
     NotFoundError,
@@ -21,12 +20,8 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
-from roboco.services.notification_delivery import defer_after_commit
 from roboco.services.permissions import AgentContext
 from roboco.services.task import TaskService
-from roboco.utils.converters import to_python_uuid
-
-_logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from roboco.api.schemas.tasks import TaskUpdate
@@ -101,7 +96,12 @@ async def _apply_forced_status_override(req: _StatusOverride) -> TaskTable:
     Extracted from ``update_task`` so the route's complexity stays readable.
     Refuses a non-privileged caller, and refuses a bypass into a hatch state
     without the explicit ``force`` flag; otherwise delegates to the audited
-    ``admin_set_status`` and asserts the override landed.
+    ``admin_set_status`` and asserts the override landed. A live agent
+    stranded by the claim clearing (e.g. a review-queue target) is evicted
+    by ``admin_set_status`` itself, not here: that chokepoint is what every
+    caller (this route, the Secretary's override action) routes through, so
+    the eviction fires regardless of which caller triggered it and
+    regardless of ``force``.
     """
     if req.new_status == req.task.status:
         return req.task
@@ -133,14 +133,6 @@ async def _apply_forced_status_override(req: _StatusOverride) -> TaskTable:
                 ' "force": true to acknowledge the override.'
             ),
         )
-    # Capture the pre-override holder BEFORE admin_set_status mutates
-    # active_claimant_id in place (it clears it for a review-queue target).
-    # active_claimant_id is the live claimant (who actually holds the running
-    # container for this task); assigned_to is the fallback nominal owner for
-    # a status where no one has an active claim yet.
-    prior_holder = to_python_uuid(req.task.active_claimant_id) or to_python_uuid(
-        req.task.assigned_to
-    )
     task = await req.service.admin_set_status(
         req.task_id,
         req.new_status,
@@ -153,90 +145,7 @@ async def _apply_forced_status_override(req: _StatusOverride) -> TaskTable:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Task status override failed unexpectedly",
         )
-    _schedule_stranded_eviction(req, prior_holder)
     return task
-
-
-def _schedule_stranded_eviction(
-    req: _StatusOverride, prior_holder: UUID | None
-) -> None:
-    """Deferred to run AFTER the route's db.commit() — see
-    _evict_stranded_agent for why this must never run inside the still-open
-    request transaction."""
-    if not req.force or prior_holder is None:
-        return
-    task_id = req.task_id
-    holder = prior_holder
-
-    async def _evict() -> None:
-        await _evict_stranded_agent(task_id, holder)
-
-    defer_after_commit(req.service.session, _evict)
-
-
-async def _evict_stranded_agent(task_id: UUID, prior_holder: UUID) -> None:
-    """Best-effort: gracefully stop a live agent container stranded by a
-    forced admin status override that moved its task out from under it.
-
-    Scheduled via ``defer_after_commit`` (see ``_apply_forced_status_override``)
-    rather than run inline: this does a DB lookup, an HTTP round-trip to the
-    agent's SDK, and up to a 10s ``docker stop`` plus inspect/logs/rm — run
-    inline it would execute inside the request's still-OPEN transaction
-    while the just-overridden task/agent rows sit lock-held (the #721/
-    chown-storm lock-convoy class) and make the CEO's PATCH latency-bound on
-    container teardown. By the time this deferred callable actually runs the
-    request's own ``AsyncSession`` may already be closing (FastAPI tears it
-    down once the route returns), so it opens a FRESH session from the
-    process session factory for its one lookup instead of touching the
-    request session.
-
-    ``admin_set_status`` is pure-DB — it clears the DB-side claim markers
-    (``active_claimant_id``) but never touches a live agent container, which
-    keeps flailing on ``not_authorized`` for every content verb against a
-    task it no longer legitimately holds. Mirrors the budget sweep's own
-    admin_set_status + ``stop_agent(graceful=True, ...)`` pairing —
-    release_claim is False here since the override already handled claim
-    state.
-
-    Never raises: an absent orchestrator (tests run without one), an unknown
-    agent, or no live container for this exact task are all silent no-ops.
-    """
-    try:
-        from roboco.api.deps import get_orchestrator_or_none
-        from roboco.services.agent import get_agent_service
-
-        orchestrator = get_orchestrator_or_none()
-        if orchestrator is None:
-            return
-        from roboco.db.base import get_session_factory
-
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            agent = await get_agent_service(session).get_by_uuid(prior_holder)
-        if agent is None:
-            return
-        instance = orchestrator.get_instance(agent.slug)
-        if instance is None or instance.current_task_id != str(task_id):
-            return
-        await orchestrator.stop_agent(
-            agent.slug,
-            graceful=True,
-            release_claim=False,
-            stop_reason="admin_status_override",
-        )
-        _logger.warning(
-            "admin_override_evicted_stranded_agent",
-            task_id=str(task_id),
-            prior_holder=str(prior_holder),
-            agent_slug=agent.slug,
-        )
-    except Exception as exc:
-        _logger.warning(
-            "admin_override_eviction_failed",
-            task_id=str(task_id),
-            prior_holder=str(prior_holder),
-            error=str(exc),
-        )
 
 
 # The CEO's "PM lighter" scope: cell_pm/main_pm may PATCH this content-only

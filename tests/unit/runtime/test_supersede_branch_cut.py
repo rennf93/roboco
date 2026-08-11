@@ -9,6 +9,7 @@ branch_cut_failed), F5 (comment_pull_request never clones), F6 (tests).
 from __future__ import annotations
 
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -125,15 +126,26 @@ async def test_dispatcher_skips_branch_cut_failed_umbrella() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _new_orchestrator() -> AgentOrchestrator:
+    """A bare orchestrator instance (no __init__) so the real
+    _reconcile_one_umbrella / _reconcile_umbrella_row / _parse_supersede_pr
+    methods resolve normally instead of returning an unbound MagicMock that
+    can't be awaited -- a plain MagicMock() stand-in only "worked" here
+    because the old (pre-per-row-isolation) code's broad try/except quietly
+    swallowed that TypeError and returned [], masking the bug."""
+    return AgentOrchestrator.__new__(AgentOrchestrator)
+
+
 @pytest.mark.asyncio
-async def test_sweep_skips_in_flight_umbrella() -> None:
+async def test_sweep_skips_in_flight_umbrella(monkeypatch: pytest.MonkeyPatch) -> None:
     """The sweep must not spawn a second _cut_supersede_branch for an
     umbrella whose cut is already running."""
     umbrella_id = uuid4()
-    orch = MagicMock()
+    orch = _new_orchestrator()
     orch._supersede_cuts_in_flight = {str(umbrella_id)}
     orch._bg_tasks = set()
-    orch._cut_supersede_branch = AsyncMock()
+    cut_mock = AsyncMock()
+    monkeypatch.setattr(orch, "_cut_supersede_branch", cut_mock)
 
     umbrella = SimpleNamespace(
         id=umbrella_id,
@@ -153,6 +165,7 @@ async def test_sweep_skips_in_flight_umbrella() -> None:
     mock_task_service.supersede_umbrellas_branch_pending = AsyncMock(
         return_value=[umbrella]
     )
+    mock_task_service.get = AsyncMock(return_value=umbrella)
     mock_project_service = MagicMock()
     mock_project_service.get = AsyncMock(
         return_value=SimpleNamespace(slug="test-project")
@@ -166,12 +179,269 @@ async def test_sweep_skips_in_flight_umbrella() -> None:
         ),
     ):
         to_reconcile = await AgentOrchestrator._collect_supersede_reconciliations(
-            cast("AgentOrchestrator", orch), session_factory
+            orch, session_factory
         )
 
     # The in-flight umbrella is filtered out.
     assert to_reconcile == []
-    orch._cut_supersede_branch.assert_not_awaited()
+    cut_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_collect_reconciliations_isolates_one_failing_umbrella() -> None:
+    """One umbrella raising mid-reconciliation must not discard entries
+    already reconciled for its siblings on the same sweep tick (per-row
+    isolation, mirroring the notification re-escalation sweep #721/#730)."""
+    orch = _new_orchestrator()
+    orch._supersede_cuts_in_flight = set()
+
+    good_id = uuid4()
+    bad_id = uuid4()
+    good_umbrella = SimpleNamespace(
+        id=good_id,
+        project_id=uuid4(),
+        branch_name="feature/main_pm/supersede-pr-42",
+        status=TaskStatus.PENDING,
+        orchestration_markers={
+            "branch_pending": True,
+            "external_pr_supersede": f"pr={_PR_42} review=abc",
+        },
+    )
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    session_factory = MagicMock(return_value=mock_session)
+
+    mock_task_service = MagicMock()
+    mock_task_service.supersede_umbrellas_branch_pending = AsyncMock(
+        return_value=[SimpleNamespace(id=bad_id), SimpleNamespace(id=good_id)]
+    )
+
+    async def _get(uid: Any) -> Any:
+        if uid == bad_id:
+            raise RuntimeError("db exploded reading this umbrella")
+        return good_umbrella
+
+    mock_task_service.get = AsyncMock(side_effect=_get)
+    mock_project_service = MagicMock()
+    mock_project_service.get = AsyncMock(
+        return_value=SimpleNamespace(slug="test-project")
+    )
+
+    with (
+        patch("roboco.services.task.get_task_service", return_value=mock_task_service),
+        patch(
+            "roboco.services.project.get_project_service",
+            return_value=mock_project_service,
+        ),
+    ):
+        to_reconcile = await AgentOrchestrator._collect_supersede_reconciliations(
+            orch, session_factory
+        )
+
+    # The bad umbrella is skipped; the good sibling still reconciles.
+    assert len(to_reconcile) == 1
+    assert to_reconcile[0][0] == str(good_id)
+    assert to_reconcile[0][1] == "test-project"
+    assert to_reconcile[0][2] == _PR_42
+
+
+# ---------------------------------------------------------------------------
+# F1: the comment-posted marker must be durable (committed) before the risky
+# branch-cut step, so a later failure's session rollback can't resurrect a
+# flush-only marker and cause a retry to repost a duplicate PR comment.
+# ---------------------------------------------------------------------------
+
+
+class _FakeSupersedeDb:
+    """Minimal fake session that reproduces the exact bug shape: a `flush()`
+    is NOT durable and is wiped by `rollback()`; only `commit()` makes an
+    ORM object's mutated attribute survive a rollback. Real enough to prove
+    F1 without a real DB."""
+
+    def __init__(self, obj: SimpleNamespace) -> None:
+        self._obj = obj
+        self._committed = dict(obj.orchestration_markers or {})
+
+    async def flush(self) -> None:
+        pass  # NOT durable, matching real SQLAlchemy flush-without-commit.
+
+    async def commit(self) -> None:
+        self._committed = dict(self._obj.orchestration_markers or {})
+
+    async def rollback(self) -> None:
+        self._obj.orchestration_markers = dict(self._committed)
+
+
+def _fake_get_db_context(fake_db: _FakeSupersedeDb) -> Any:
+    """Mirrors `roboco.db.base.get_db_context`'s real commit/rollback shape:
+    commit on clean exit, rollback + re-raise on any exception."""
+
+    @asynccontextmanager
+    async def _ctx() -> Any:
+        try:
+            yield fake_db
+            await fake_db.commit()
+        except Exception:
+            await fake_db.rollback()
+            raise
+
+    return _ctx
+
+
+@pytest.mark.asyncio
+async def test_branch_cut_retry_does_not_repost_comment_after_step_failure() -> None:
+    """F1: a branch-cut step failure AFTER a successful comment post must not
+    wipe the comment-posted marker (pre-fix: it was flush-only and the
+    get_db_context rollback discarded it) -- and a retry must then see the
+    marker and skip re-posting to the contributor's public PR."""
+    umbrella_id = uuid4()
+    umbrella = SimpleNamespace(
+        id=umbrella_id,
+        status=TaskStatus.PENDING,
+        orchestration_markers={
+            "branch_pending": True,
+            "external_pr_supersede": f"pr={_PR_NUM} review=abc author=someone",
+        },
+    )
+    fake_db = _FakeSupersedeDb(umbrella)
+
+    mock_task_service = MagicMock()
+    mock_task_service.get = AsyncMock(return_value=umbrella)
+
+    mock_git = MagicMock()
+    mock_git.comment_pull_request = AsyncMock()
+    mock_git.get_workspace = AsyncMock(side_effect=RuntimeError("workspace boom"))
+    mock_git.create_branch_from_pr_head = AsyncMock()
+
+    orch = MagicMock()
+    orch._supersede_cuts_in_flight = set()
+    orch._parse_supersede_author = AgentOrchestrator._parse_supersede_author
+    orch._fail_supersede_branch_cut = AsyncMock()
+
+    with (
+        patch("roboco.db.get_db_context", _fake_get_db_context(fake_db)),
+        patch("roboco.services.task.get_task_service", return_value=mock_task_service),
+        patch("roboco.services.git.GitService", return_value=mock_git),
+    ):
+        await AgentOrchestrator._cut_supersede_branch(
+            cast("AgentOrchestrator", orch),
+            umbrella_id=str(umbrella_id),
+            project_slug="test-project",
+            pr_number=_PR_NUM,
+            project_id=uuid4(),
+            branch_name="feature/main_pm/supersede-pr-99",
+        )
+
+    # The comment was posted once; the branch-cut step's failure was handed
+    # off to the retry/backoff path (mocked out -- covered separately below).
+    mock_git.comment_pull_request.assert_awaited_once()
+    orch._fail_supersede_branch_cut.assert_awaited_once()
+    # The critical assertion: despite the session rollback triggered by the
+    # LATER failure, the comment-posted marker survived because it was
+    # committed durably the moment the comment landed.
+    assert markers.is_supersede_comment_posted(umbrella) is True
+
+    # Retry: this time the branch cut succeeds. The marker must gate a
+    # second post -- comment_pull_request stays called exactly once total.
+    mock_git.get_workspace = AsyncMock(return_value=MagicMock())
+    mock_git.create_branch_from_pr_head = AsyncMock()
+    with (
+        patch("roboco.db.get_db_context", _fake_get_db_context(fake_db)),
+        patch("roboco.services.task.get_task_service", return_value=mock_task_service),
+        patch("roboco.services.git.GitService", return_value=mock_git),
+    ):
+        await AgentOrchestrator._cut_supersede_branch(
+            cast("AgentOrchestrator", orch),
+            umbrella_id=str(umbrella_id),
+            project_slug="test-project",
+            pr_number=_PR_NUM,
+            project_id=uuid4(),
+            branch_name="feature/main_pm/supersede-pr-99",
+        )
+
+    mock_git.comment_pull_request.assert_awaited_once()
+    assert markers.is_branch_pending(umbrella) is False
+
+
+# ---------------------------------------------------------------------------
+# Reset-durability: the CEO-unblock reset (branch_cut_failed -> fresh
+# branch_pending) must survive a LATER git failure in the same call, the same
+# way F1 already covers the comment-posted marker. Exact combo: the comment
+# was already posted on an earlier attempt (so that block's own commit is
+# skipped entirely this round) AND the umbrella is CEO-unblocked
+# (branch_cut_failed set, branch_pending clear) when the branch cut itself
+# raises.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ceo_unblock_reset_survives_later_branch_cut_failure() -> None:
+    """A flush-only reset is wiped by get_db_context's rollback on the git
+    failure below it, so _fail_supersede_branch_cut's own `is_branch_pending`
+    guard sees the pre-reset state and silently no-ops -- dropping that
+    attempt's retry bookkeeping (attempt count + backoff) entirely. A commit
+    makes the reset durable before the risky git step runs, so the failure
+    handler still sees branch_pending and records the retry."""
+    umbrella_id = uuid4()
+    umbrella = SimpleNamespace(
+        id=umbrella_id,
+        status=TaskStatus.PENDING,
+        orchestration_markers={
+            # Exhausted + CEO-unblocked: branch_cut_failed set, no
+            # branch_pending (mirrors the real post-unblock state).
+            "branch_cut_failed": _ATTEMPTS,
+            "supersede_comment_posted": True,
+            "external_pr_supersede": f"pr={_PR_NUM} review=abc author=someone",
+        },
+    )
+    fake_db = _FakeSupersedeDb(umbrella)
+
+    mock_task_service = MagicMock()
+    mock_task_service.get = AsyncMock(return_value=umbrella)
+    mock_task_service.admin_set_status = AsyncMock()
+
+    mock_git = MagicMock()
+    mock_git.comment_pull_request = AsyncMock()
+    mock_git.get_workspace = AsyncMock(side_effect=RuntimeError("workspace boom"))
+    mock_git.create_branch_from_pr_head = AsyncMock()
+
+    orch = MagicMock()
+    orch._supersede_cuts_in_flight = set()
+    orch._parse_supersede_author = AgentOrchestrator._parse_supersede_author
+    # Bind the REAL failure handler (not mocked out, unlike the F1 test
+    # above) so this proves the reset's bookkeeping actually reaches it.
+    real_fail = AgentOrchestrator._fail_supersede_branch_cut
+    orch._fail_supersede_branch_cut = real_fail.__get__(orch, AgentOrchestrator)
+
+    with (
+        patch("roboco.db.get_db_context", _fake_get_db_context(fake_db)),
+        patch("roboco.services.task.get_task_service", return_value=mock_task_service),
+        patch("roboco.services.git.GitService", return_value=mock_git),
+    ):
+        await AgentOrchestrator._cut_supersede_branch(
+            cast("AgentOrchestrator", orch),
+            umbrella_id=str(umbrella_id),
+            project_slug="test-project",
+            pr_number=_PR_NUM,
+            project_id=uuid4(),
+            branch_name="feature/main_pm/supersede-pr-99",
+        )
+
+    # The comment was already posted -- that block must not re-post.
+    mock_git.comment_pull_request.assert_not_awaited()
+    # The critical assertions: the reset's branch_pending survived the LATER
+    # git failure (durable, not wiped by that failure's own rollback), and
+    # the failure handler actually recorded this attempt instead of no-op'ing
+    # on a stale is_branch_pending() read.
+    assert markers.is_branch_pending(umbrella) is True
+    assert markers.get_branch_cut_next_retry_at(umbrella) is not None
+    # Attempt count restarted fresh off the CEO-unblock reset (0 -> 1), not
+    # left stuck at the pre-unblock exhausted count.
+    assert markers.get_branch_cut_attempts(umbrella) == 1
+    # Still below MAX_ATTEMPTS this round -- no premature re-escalation.
+    mock_task_service.admin_set_status.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

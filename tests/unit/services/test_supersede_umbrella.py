@@ -9,11 +9,12 @@ approval notes can no longer be mistaken for it.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.db.tables import TaskTable
 from roboco.models.base import TaskStatus
 from roboco.services.task import TaskService, supersede_marker_line
 
@@ -41,6 +42,15 @@ def _bind(svc: TaskService, name: str, value: object) -> None:
 def _task(supersede: str | None = None, **kw: Any) -> SimpleNamespace:
     om = {"external_pr_supersede": supersede} if supersede is not None else None
     return SimpleNamespace(orchestration_markers=om, **kw)
+
+
+def _umbrella(pr_number: int | None) -> TaskTable:
+    """A real TaskTable for direct calls into
+    ``TaskService._supersede_replacement_landed``, which is typed to take a
+    ``TaskTable`` -- only ``id``/``pr_number`` matter for that method, and a
+    transient (never flushed) instance is safe here since the session is
+    mocked."""
+    return TaskTable(id=uuid4(), pr_number=pr_number)
 
 
 # ---------------------------------------------------------------------------
@@ -89,29 +99,57 @@ async def test_pending_close_requires_landed_replacement() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _supersede_replacement_landed: subtree walk (returns pr_number | None)
+# _supersede_replacement_landed: own-pr preference, then subtree walk
+# fallback (returns pr_number | None)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replacement_landed_prefers_umbrella_own_pr() -> None:
+    """The umbrella's OWN pr_number (stamped by submit_root) is the
+    canonical replacement PR and must be preferred over the descendant walk
+    -- the walk must not even run (no session.execute call)."""
+    svc = _service(_scalars_all([]))
+    umbrella = _umbrella(_LANDED_PR)
+    assert await svc._supersede_replacement_landed(umbrella) == _LANDED_PR
+    cast("AsyncMock", svc.session.execute).assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_replacement_landed_true_for_completed_descendant_with_pr() -> None:
     child = MagicMock(id=uuid4(), status=TaskStatus.COMPLETED, pr_number=_LANDED_PR)
     svc = _service(_scalars_all([child]))
-    assert await svc._supersede_replacement_landed(uuid4()) == _LANDED_PR
+    umbrella = _umbrella(None)
+    assert await svc._supersede_replacement_landed(umbrella) == _LANDED_PR
 
 
 @pytest.mark.asyncio
 async def test_replacement_landed_false_when_descendant_cancelled() -> None:
     child = MagicMock(id=uuid4(), status=TaskStatus.CANCELLED, pr_number=42)
     svc = _service(_scalars_all([child]))
-    assert await svc._supersede_replacement_landed(uuid4()) is None
+    umbrella = _umbrella(None)
+    assert await svc._supersede_replacement_landed(umbrella) is None
 
 
 @pytest.mark.asyncio
 async def test_replacement_landed_false_when_completed_without_pr() -> None:
     child = MagicMock(id=uuid4(), status=TaskStatus.COMPLETED, pr_number=None)
     svc = _service(_scalars_all([child]))
-    assert await svc._supersede_replacement_landed(uuid4()) is None
+    umbrella = _umbrella(None)
+    assert await svc._supersede_replacement_landed(umbrella) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_close_uses_umbrella_own_pr_with_no_qualifying_descendant() -> (
+    None
+):
+    """Regression: when no descendant qualifies but the umbrella itself has
+    a merged PR of its own, close-on-land must still surface it instead of
+    skipping the umbrella forever (this exercises the REAL, unmocked
+    _supersede_replacement_landed through the full pending-close path)."""
+    umbrella = _task(_VALUE, id=uuid4(), pr_number=_LANDED_PR)
+    svc = _service(_scalars_all([umbrella]))
+    assert await svc.supersede_umbrellas_pending_close() == [(umbrella, _LANDED_PR)]
 
 
 # ---------------------------------------------------------------------------

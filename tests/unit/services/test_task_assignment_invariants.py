@@ -15,6 +15,7 @@ such. Direct ORM writes from the escalation chain are out of scope.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -430,3 +431,64 @@ async def test_reassign_still_redirects_on_claimed_planning_child() -> None:
     assert result is task
     assert task.assigned_to == be_pm_id
     assert "[ASSIGNMENT REDIRECTED]" in task.dev_notes
+
+
+# ---------------------------------------------------------------------------
+# Regression: reassign_active_claim clears a stale stalled marker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reassign_active_claim_clears_stalled_marker() -> None:
+    """A PM reassigning a wedged claim to a new agent is genuine forward
+    progress, but reassign_active_claim never touches task.status, so it
+    never routes through _emit_status_transition_audit's own unconditional
+    stalled-marker clear. Without a direct clear here, the task keeps
+    reading as stalled in GET /api/dashboard/stalled-tasks while the new
+    claimant actively works it (docs/backend/api/stalled-task-marker.md's
+    claim that genuine forward progress always clears the marker)."""
+    svc = _service()
+    old_dev = uuid4()
+    new_dev = uuid4()
+    task = _task(
+        team=Team.BACKEND,
+        task_type=TaskType.CODE,
+        assigned_to=old_dev,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    task.stalled_reason = "breaker_tripped"
+    task.stalled_since = datetime.now(UTC)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+
+    result = await svc.reassign_active_claim(task.id, new_dev)
+
+    assert result is task
+    assert task.assigned_to == new_dev
+    assert task.stalled_reason is None
+    assert task.stalled_since is None
+
+
+@pytest.mark.asyncio
+async def test_reassign_active_claim_leaves_unset_marker_untouched() -> None:
+    """No accidental writes on the overwhelming common case: a task that was
+    never stalled stays that way through a reassign."""
+    svc = _service()
+    old_dev = uuid4()
+    new_dev = uuid4()
+    task = _task(
+        team=Team.BACKEND,
+        task_type=TaskType.CODE,
+        assigned_to=old_dev,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    task.stalled_reason = None
+    task.stalled_since = None
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+
+    result = await svc.reassign_active_claim(task.id, new_dev)
+
+    assert result is task
+    assert task.stalled_reason is None
+    assert task.stalled_since is None

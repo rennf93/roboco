@@ -1517,6 +1517,7 @@ async def test_declare_coverage_self_declare_rejected_for_non_root() -> None:
         id=cell_root_id,
         assigned_to=pm_id,
         parent_task_id=uuid4(),
+        batch_id=None,  # a plain parented coordination task, not a MegaTask
         acceptance_criteria=["cell a", "cell b"],
         acceptance_criteria_ids=["id-a", "id-b"],
     )
@@ -1529,3 +1530,41 @@ async def test_declare_coverage_self_declare_rejected_for_non_root() -> None:
     env = await c.declare_coverage(pm_id, cell_root_id, ["id-a"])
     assert env.error == "invalid_state"
     task_svc.add_parent_ac_refs.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_self_declare_accepted_for_batch_root_subtask() -> None:
+    """Root-owned self-declare on a MegaTask root-subtask (batch_id set AND
+    parented by the umbrella) IS accepted: it is a genuine Main-PM
+    coordination root with its own project/branch/PR (is_batch_root_subtask),
+    unlike the plain parented cell root rejected above. Without this, a
+    root-subtask carrying a root-only criterion (e.g. PR-supersede) has no
+    path to coverage and submit_root blocks on it forever."""
+    pm_id = uuid4()
+    root_subtask_id = uuid4()
+    root_subtask = MagicMock(
+        id=root_subtask_id,
+        assigned_to=pm_id,
+        parent_task_id=uuid4(),  # the umbrella
+        batch_id=uuid4(),
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = root_subtask
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="board")
+    task_svc.unknown_ac_refs = MagicMock(return_value=[])
+    task_svc.add_parent_ac_refs.return_value = root_subtask
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, root_subtask_id, ["id-a"])
+    assert env.error is None, env.as_dict()
+    task_svc.add_parent_ac_refs.assert_awaited_once_with(
+        root_subtask_id, ["id-a"], declared_by=pm_id
+    )
+    # Self-declare targets its own uncovered-set, never a parent_task_id.
+    task_svc.uncovered_parent_acceptance_criteria.assert_awaited_once_with(
+        root_subtask_id
+    )

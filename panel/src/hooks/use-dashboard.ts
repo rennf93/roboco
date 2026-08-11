@@ -9,12 +9,12 @@ import {
 } from "@/lib/api/dashboard";
 import type {
   Team,
-  Task,
   AuditorDashboard,
   AuditorFlag,
   AuditorReport,
   FlagSeverity,
   OrchestratorStatus,
+  StalledTask,
 } from "@/types";
 
 export const dashboardKeys = {
@@ -178,14 +178,16 @@ export function useAgentStatus() {
 }
 
 /**
- * The current stalled-task set — blocked tasks with
- * blocker_resolver_type=human (the dispatcher has given up). Fetched once
- * here and reused by the Overview "Stalled / Needs you" section, the Tasks
- * page's stalled filter, and the task-detail header's stalled indicator, so
- * none of them re-derive stall conditions client-side.
+ * The current stalled-task set - every task with a durable stalled marker
+ * (the dispatcher's respawn breaker gave up), from GET
+ * /dashboard/stalled-tasks. Fetched once here and reused by the Overview
+ * "Stalled / Needs you" section and the Tasks page's stalled filter. The
+ * task-detail header does NOT use this hook - it reads the viewed task's
+ * own `stalled_reason`/`stalled_since` fields directly (already present on
+ * TaskResponse), no second fetch needed.
  */
 export function useStalledTasks() {
-  return useQuery<Task[]>({
+  return useQuery<StalledTask[]>({
     queryKey: dashboardKeys.stalledTasks(),
     queryFn: () => dashboardApi.getStalledTasks(),
     refetchInterval: 60000,

@@ -135,6 +135,24 @@ def _completed_branchful_children(children: list[Any]) -> list[Any]:
     ]
 
 
+# Matches a unified diff's per-file header, e.g. "diff --git a/x.py b/x.py".
+_DIFF_GIT_HEADER_RE = re.compile(r"^diff --git a/.+ b/(.+)$")
+
+
+def _files_changed_from_diff(diff_text: str) -> list[str]:
+    """Best-effort changed-file list recovered from a full diff's headers.
+
+    Fallback for ``diff_and_files`` when the dedicated ``--name-only`` leg
+    fails but the full-diff leg succeeded: parsing the ``diff --git``
+    headers already present in ``diff_text`` beats returning an empty list
+    a reader can't tell apart from "no files changed". Not authoritative
+    (a quoted path with an embedded " b/" sequence can slip through),
+    only used when the real ``--name-only`` leg is unavailable.
+    """
+    matches = (_DIFF_GIT_HEADER_RE.match(line) for line in diff_text.splitlines())
+    return [m.group(1) for m in matches if m]
+
+
 def _network_git_timeout() -> int:
     """Budget for git ops that talk to origin (fetch / pull / push).
 
@@ -6128,6 +6146,23 @@ class GitService(BaseService):
         the full diff and the ``--name-only`` diff CONCURRENTLY off that
         single resolution — halving the git-subprocess wall time on top of
         removing the duplicate resolution.
+
+        Per-leg fault isolation: ``return_exceptions=True`` so a failure or
+        timeout in ONE subprocess degrades only that leg instead of
+        discarding an already-succeeded sibling result (a bare ``gather()``
+        cancels/loses the completed leg the instant the other raises). Only
+        when BOTH legs fail does the exception propagate, degrading exactly
+        as before via the caller's ``run_bounded_leg``.
+
+        A single-leg failure is NOT silent: it logs a structured warning
+        naming the leg and the underlying error, and, when the
+        ``--name-only`` leg is the one that failed, recovers the changed
+        file list from the full diff's own ``diff --git`` headers
+        (``_files_changed_from_diff``) instead of returning an empty list a
+        reader can't tell apart from "no files changed". The reverse case
+        (diff leg fails, name-only leg succeeds) has no equivalent recovery:
+        an empty diff text next to a non-empty file list is already
+        self-evidently incomplete to a reader.
         """
         workspace, head_ref, base_ref = await self._resolve_diff_refs(
             branch_name=branch_name,
@@ -6139,9 +6174,41 @@ class GitService(BaseService):
         diff_result, files_result = await asyncio.gather(
             self._run_git(workspace, ["diff", spec], check=False),
             self._run_git(workspace, ["diff", "--name-only", spec], check=False),
+            return_exceptions=True,
         )
-        files = [line for line in files_result.stdout.splitlines() if line.strip()]
-        return diff_result.stdout, files
+        if isinstance(diff_result, BaseException) and isinstance(
+            files_result, BaseException
+        ):
+            raise diff_result
+        if isinstance(diff_result, BaseException):
+            self._log_diff_leg_failure("diff", branch_name, diff_result)
+            diff_text = ""
+        else:
+            diff_text = diff_result.stdout
+        if isinstance(files_result, BaseException):
+            self._log_diff_leg_failure("diff --name-only", branch_name, files_result)
+            files = _files_changed_from_diff(diff_text)
+        else:
+            files = [line for line in files_result.stdout.splitlines() if line.strip()]
+        return diff_text, files
+
+    def _log_diff_leg_failure(
+        self, leg: str, branch_name: str, error: BaseException
+    ) -> None:
+        """Structured warning for a degraded ``diff_and_files`` leg.
+
+        The only visibility a single-leg failure gets: `gather`'s
+        ``return_exceptions=True`` isolation means the caller's own
+        ``run_bounded_leg`` never sees this exception (it only propagates
+        when BOTH legs fail), so nothing else logs it.
+        """
+        self.log.warning(
+            "diff_and_files_leg_failed",
+            leg=leg,
+            branch_name=branch_name,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
 
     async def read_file_at_branch(
         self,

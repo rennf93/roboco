@@ -479,6 +479,9 @@ services:
       # gateway-fronted Tailscale Serve deploy can set it via .env rather than
       # hand-editing this file. Same reach-the-container rule as above.
       ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
+      # Log level for guard-core's suspicious-path lines - same
+      # carried-but-inert-until-armed rule as the two guard vars above.
+      ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL: ${ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL:-WARNING}
       ROBOCO_AGENT_TOOL_CALL_HALT: ${ROBOCO_AGENT_TOOL_CALL_HALT:-600}
       ROBOCO_AGENT_TOOL_CALL_WARN: ${ROBOCO_AGENT_TOOL_CALL_WARN:-200}
       # Per-task/project cost budgets (default-off; conservative registry

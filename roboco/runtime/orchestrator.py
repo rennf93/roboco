@@ -8404,33 +8404,65 @@ Start by:
     ) -> list[tuple[str, str, int, Any, str]]:
         """Build the (uid, slug, pr, pid, branch) list for the sweep to spawn.
 
-        Handles in-flight dedup (F2), backoff (F3), and re-arm after CEO
-        unblock of a branch_cut_failed umbrella (F4). Returns [] on any
-        lookup error so the sweep tick is best-effort.
+        The candidate id list is looked up in its own session (a lookup
+        failure here is best-effort and returns []); each umbrella is then
+        reconciled in its OWN fresh session via ``_reconcile_umbrella_row``
+        so one persistently-failing umbrella cannot starve every sibling on
+        the sweep tick (mirrors the notification re-escalation sweep's
+        per-row isolation, #721/#730).
         """
         import time
 
-        from roboco.foundation.policy.content import markers as _sm
-        from roboco.services.project import get_project_service
         from roboco.services.task import get_task_service
 
         now = time.time()
         try:
             async with session_factory() as db:
                 task_service = get_task_service(db)
-                project_service = get_project_service(db)
                 pending = await task_service.supersede_umbrellas_branch_pending()
-                to_reconcile: list[tuple[str, str, int, Any, str]] = []
-                for umbrella in pending:
-                    entry = await self._reconcile_one_umbrella(
-                        umbrella, now, project_service, db, _sm
-                    )
-                    if entry is not None:
-                        to_reconcile.append(entry)
+                umbrella_ids = [str(u.id) for u in pending]
         except Exception as e:
             logger.warning("Supersede branch-pending sweep lookup failed", error=str(e))
             return []
+        to_reconcile: list[tuple[str, str, int, Any, str]] = []
+        for uid in umbrella_ids:
+            entry = await self._reconcile_umbrella_row(uid, now, session_factory)
+            if entry is not None:
+                to_reconcile.append(entry)
         return to_reconcile
+
+    async def _reconcile_umbrella_row(
+        self, uid: str, now: float, session_factory: Any
+    ) -> tuple[str, str, int, Any, str] | None:
+        """Reconcile ONE umbrella in its own session, isolated from siblings.
+
+        A fresh session per row means a lookup error, or a commit/flush
+        failure inside ``_reconcile_one_umbrella``'s CEO-unblock reset, can
+        never poison or roll back any other row's session; the failing
+        umbrella is logged and skipped this tick, retried on the next.
+        """
+        from roboco.foundation.policy.content import markers as _sm
+        from roboco.services.project import get_project_service
+        from roboco.services.task import get_task_service
+        from roboco.utils.converters import require_uuid
+
+        try:
+            async with session_factory() as db:
+                task_service = get_task_service(db)
+                project_service = get_project_service(db)
+                umbrella = await task_service.get(require_uuid(uid))
+                if umbrella is None:
+                    return None
+                return await self._reconcile_one_umbrella(
+                    umbrella, now, project_service, db, _sm
+                )
+        except Exception as e:
+            logger.warning(
+                "Supersede branch-pending sweep row failed; umbrella skipped",
+                umbrella_id=uid,
+                error=str(e),
+            )
+            return None
 
     async def _reconcile_one_umbrella(
         self, umbrella: Any, now: float, project_service: Any, db: Any, _sm: Any
@@ -10421,13 +10453,22 @@ Start by:
                 # unblocked by the CEO after exhaustion — reset for a fresh
                 # cut. (The sweep also does this, but guard here too in case
                 # the spawn came from supersede_external_pr's retry path.)
+                # Commit (not flush) the instant the reset lands: the git
+                # work below (workspace resolve + branch cut) can genuinely
+                # raise, and get_db_context's except clause rolls back the
+                # WHOLE session on any exception, so a flush-only reset would
+                # be discarded along with it, so if the comment was already
+                # posted on an earlier attempt (skipping that block's own
+                # commit) a raise here would revert branch_pending to False
+                # and make _fail_supersede_branch_cut's own guard silently
+                # drop this attempt's failure bookkeeping.
                 if markers.is_branch_cut_failed(
                     umbrella
                 ) and not markers.is_branch_pending(umbrella):
                     markers.mark_branch_pending(umbrella)
                     markers.clear_branch_cut_failed(umbrella)
                     markers.clear_branch_cut_next_retry_at(umbrella)
-                    await db.flush()
+                    await db.commit()
                 # Already completed by a prior run (race with sweep).
                 if not markers.is_branch_pending(umbrella):
                     return
@@ -10448,7 +10489,14 @@ Start by:
                             comment=comment,
                         )
                         markers.mark_supersede_comment_posted(umbrella)
-                        await db.flush()
+                        # Commit (not flush) the instant the comment lands: the
+                        # branch-cut step below is real network git and can
+                        # genuinely raise, and get_db_context's except clause
+                        # rolls back the WHOLE session on any exception, so a
+                        # flush-only marker would be discarded along with it,
+                        # and the retry would repost a duplicate comment on the
+                        # contributor's public PR.
+                        await db.commit()
                     except Exception as exc:
                         logger.warning(
                             "supersede: background contributor comment failed",

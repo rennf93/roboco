@@ -144,6 +144,11 @@ select = [
 
 # Lazy imports to avoid circular dependencies
 [tool.ruff.lint.per-file-ignores]
+# B010: the behavioral usage-rule redis-fail-open patch (see the module
+# docstring block) must use setattr, not a direct method assignment - mypy's
+# method-assign check rejects `BehavioralProcessor.process_usage_rules = ...`
+# outright, and a `# type: ignore` is not allowed in this codebase.
+"roboco/security.py" = ["B010"]
 # MCP tool surfaces ARE the LLM-facing contract — every parameter must be
 # top-level + typed so the SDK exposes it as a discrete schema field with
 # enum constraints. Bundling into a dataclass would hide enum hints from

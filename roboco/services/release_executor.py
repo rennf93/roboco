@@ -556,13 +556,20 @@ def _lock_package_name(root: Path) -> str:
 
     Empty when there is no readable ``[project] name`` (a non-Python repo has
     no uv.lock in its plan either, so the bump no-ops rather than guessing).
+
+    PEP 503-normalized (lowercase, runs of ``-_.`` collapsed to a single ``-``):
+    uv.lock always stores the normalized form, so a raw pyproject name like
+    ``Acme_Api`` would build a regex in ``_bump_uv_lock`` that never matches
+    the lockfile's ``acme-api`` entry, silently no-opping the bump.
     """
     try:
         data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         return ""
     name = data.get("project", {}).get("name")
-    return name if isinstance(name, str) else ""
+    if not isinstance(name, str):
+        return ""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _bump_uv_lock(text: str, old: str, new: str, package: str) -> str:

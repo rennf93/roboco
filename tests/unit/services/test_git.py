@@ -16,7 +16,12 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from roboco.config import settings
-from roboco.exceptions import GitCommandError, GitError, MergeConflictError
+from roboco.exceptions import (
+    GitCommandError,
+    GitError,
+    GitTimeoutError,
+    MergeConflictError,
+)
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.forge import RepoRef
 from roboco.services.gateway.quality_gate import GateResult
@@ -807,6 +812,132 @@ async def test_diff_and_files_runs_subprocesses_concurrently() -> None:
     assert files == ["a.py"]
     # Structural proof: both subprocess legs were in-flight at once.
     assert peak == 2  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_diff_and_files_isolates_a_single_leg_failure() -> None:
+    """A failure in ONE subprocess leg must not blank the sibling leg's
+    already-succeeded result (#856 regression: a bare ``gather()`` without
+    ``return_exceptions=True`` discards a completed leg the instant the
+    other raises)."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
+
+    async def _run_git(
+        _workspace: Path, args: list[str], check: bool = True, token: str | None = None
+    ) -> MagicMock:
+        del check, token
+        if "--name-only" in args:
+            raise GitCommandError("diff --name-only", "boom")
+        return MagicMock(stdout="diff --git a b\n+x\n", returncode=0)
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    diff, files = await svc.diff_and_files(branch_name="feature/backend/abc")
+
+    # The full-diff leg succeeded and its data survives the sibling's failure.
+    assert "+x" in diff
+    # The failed name-only leg degrades to its own empty default.
+    assert files == []
+
+
+@pytest.mark.asyncio
+async def test_diff_and_files_raises_when_both_legs_fail() -> None:
+    """No partial result to salvage when BOTH legs fail: the exception still
+    propagates, degrading exactly as before via the caller's own
+    ``run_bounded_leg`` handling."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
+    _bind(svc, "_run_git", AsyncMock(side_effect=GitCommandError("diff", "boom")))
+
+    with pytest.raises(GitCommandError):
+        await svc.diff_and_files(branch_name="feature/backend/abc")
+
+
+@pytest.mark.asyncio
+async def test_diff_and_files_single_leg_failure_is_logged_and_recovered() -> None:
+    """A single-leg failure is no longer silent (#856 follow-up defect).
+
+    Without the fix, a ``--name-only`` leg timeout next to a succeeded diff
+    leg returns ``files == []`` with zero log lines and zero signal, so QA
+    can't tell "genuinely no files changed" from "the leg silently failed".
+    This asserts BOTH halves of the fix: a warning naming the failed leg,
+    and a changed-file list recovered from the diff's own headers instead
+    of a bare empty list.
+    """
+    svc = _service()
+    svc.log = MagicMock()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
+
+    real_diff = (
+        "diff --git a/foo.py b/foo.py\n"
+        "index abc1234..def5678 100644\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+
+    async def _run_git(
+        _workspace: Path, args: list[str], check: bool = True, token: str | None = None
+    ) -> MagicMock:
+        del check, token
+        if "--name-only" in args:
+            raise GitTimeoutError("diff --name-only", 30)
+        return MagicMock(stdout=real_diff, returncode=0)
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    diff, files = await svc.diff_and_files(branch_name="feature/backend/abc")
+
+    assert diff == real_diff
+    # Recovered from the diff's own "diff --git a/foo.py b/foo.py" header,
+    # not the silent empty list a bare gather() isolation left behind.
+    assert files == ["foo.py"]
+    svc.log.warning.assert_called_once()
+    _, kwargs = svc.log.warning.call_args
+    assert kwargs["leg"] == "diff --name-only"
+    assert "branch_name" in kwargs
+
+
+@pytest.mark.asyncio
+async def test_diff_and_files_diff_leg_failure_is_logged() -> None:
+    """The reverse single-leg failure (diff leg fails, name-only survives)
+    also logs a warning naming the failed leg."""
+    svc = _service()
+    svc.log = MagicMock()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
+    _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
+    _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
+
+    async def _run_git(
+        _workspace: Path, args: list[str], check: bool = True, token: str | None = None
+    ) -> MagicMock:
+        del check, token
+        if "--name-only" in args:
+            return MagicMock(stdout="foo.py\n", returncode=0)
+        raise GitTimeoutError("diff", 30)
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    diff, files = await svc.diff_and_files(branch_name="feature/backend/abc")
+
+    assert diff == ""
+    assert files == ["foo.py"]
+    svc.log.warning.assert_called_once()
+    _, kwargs = svc.log.warning.call_args
+    assert kwargs["leg"] == "diff"
 
 
 @pytest.mark.asyncio

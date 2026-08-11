@@ -747,9 +747,10 @@ services:
       # / log-only calibration (WAF false-positive review, see
       # docs/rag/architecture/http-security-guard.md) came back clean, CEO
       # approved flipping to active now that cloud auth + Tailscale are armed.
-      # Guard mounts, observes, AND BLOCKS matching requests. FAIL_SECURE=false
-      # so a guard-internal error never 500s this personal deploy. Left OFF
-      # entirely in the registry compose.
+      # Guard mounts, observes, AND BLOCKS matching requests. FAIL_SECURE=true
+      # (fail-secure ON): a guard-internal check error blocks the request
+      # rather than letting it through. Left OFF entirely in the registry
+      # compose.
       # enforce_https follows ROBOCO_ENVIRONMENT (dev on the NAS → not enforced).
       ROBOCO_GUARD_ENABLED: ${ROBOCO_GUARD_ENABLED:-true}
       ROBOCO_GUARD_PASSIVE_MODE: ${ROBOCO_GUARD_PASSIVE_MODE:-false}
@@ -764,6 +765,9 @@ services:
       # goes inert for /tg. Same "must be listed here to reach the container"
       # rule as the emergency whitelist above.
       ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
+      # Log level for guard-core's suspicious-path lines (IP bans, blocked
+      # countries, BehaviorTracker). Same "must be listed here" rule as above.
+      ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL: ${ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL:-WARNING}
       ROBOCO_AGENT_TOOL_CALL_HALT: ${ROBOCO_AGENT_TOOL_CALL_HALT:-600}
       ROBOCO_AGENT_TOOL_CALL_WARN: ${ROBOCO_AGENT_TOOL_CALL_WARN:-200}
       # Per-task/project cost budgets (default-off subsystem; also on the

@@ -17,11 +17,6 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-const { mockStalled } = vi.hoisted(() => ({ mockStalled: vi.fn() }));
-vi.mock("@/hooks/use-dashboard", () => ({
-  useStalledTasks: mockStalled,
-}));
-
 import { TaskHeader } from "../task-header";
 
 function buildTask(overrides: Partial<Task> = {}): Task {
@@ -38,59 +33,36 @@ function buildTask(overrides: Partial<Task> = {}): Task {
 }
 
 describe("TaskHeader stalled indicator", () => {
-  it("shows the stalled chip with the backend's reason when this task is in the stalled set (populated)", async () => {
+  it("shows the stalled chip with the task's own stalled_reason (populated)", async () => {
     const user = userEvent.setup();
-    mockStalled.mockReturnValue({
-      data: [
-        {
-          id: "t1",
-          title: "Some task",
-          assigned_to: null,
-          status: "blocked",
-          blocker_resolver_type: "human",
-          updated_at: "2026-08-01T00:00:00Z",
-        },
-      ],
-    });
 
-    render(<TaskHeader task={buildTask()} onAction={vi.fn()} />);
+    render(
+      <TaskHeader
+        task={buildTask({ stalled_reason: "respawn breaker gave up" })}
+        onAction={vi.fn()}
+      />,
+    );
 
     const chip = screen.getByText("stalled");
     expect(chip).toBeInTheDocument();
     await user.hover(chip);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("human");
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "respawn breaker gave up",
+    );
   });
 
-  it("hides the stalled chip when the stalled set is empty", () => {
-    mockStalled.mockReturnValue({ data: [] });
-
-    render(<TaskHeader task={buildTask()} onAction={vi.fn()} />);
+  it("hides the stalled chip when stalled_reason is null", () => {
+    render(
+      <TaskHeader
+        task={buildTask({ stalled_reason: null })}
+        onAction={vi.fn()}
+      />,
+    );
 
     expect(screen.queryByText("stalled")).not.toBeInTheDocument();
   });
 
-  it("hides the stalled chip (rather than fabricating stalled status) when the fetch errors", () => {
-    mockStalled.mockReturnValue({ data: undefined, isError: true });
-
-    render(<TaskHeader task={buildTask()} onAction={vi.fn()} />);
-
-    expect(screen.queryByText("stalled")).not.toBeInTheDocument();
-  });
-
-  it("does not show the chip for a different task's stalled entry", () => {
-    mockStalled.mockReturnValue({
-      data: [
-        {
-          id: "some-other-task",
-          title: "Other",
-          assigned_to: null,
-          status: "blocked",
-          blocker_resolver_type: "human",
-          updated_at: "2026-08-01T00:00:00Z",
-        },
-      ],
-    });
-
+  it("hides the stalled chip when stalled_reason is absent", () => {
     render(<TaskHeader task={buildTask()} onAction={vi.fn()} />);
 
     expect(screen.queryByText("stalled")).not.toBeInTheDocument();

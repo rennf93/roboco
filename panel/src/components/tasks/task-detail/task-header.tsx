@@ -9,7 +9,6 @@ import {
   useUpdateTask,
   useTaskValidTransitions,
 } from "@/hooks/use-tasks";
-import { useStalledTasks } from "@/hooks/use-dashboard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -207,9 +206,9 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
     (s) => s !== task.status && !nextStatuses.includes(s),
   );
   const revisionCount = task.revision_count ?? 0;
-  // Membership in the backend's stalled set only — see useStalledTasks.
-  const { data: stalledTasks } = useStalledTasks();
-  const stalledEntry = stalledTasks?.find((t) => t.id === task.id);
+  // This task's own durable stalled marker (already on TaskResponse) - no
+  // second fetch needed, unlike the Overview/Tasks-page stalled surfaces.
+  const stalledReason = task.stalled_reason;
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Inline editing states
@@ -707,9 +706,9 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                 </Tooltip>
               )}
 
-              {/* Stalled chip — only when this task is in the backend's
-                  current stalled set (blocked + blocker_resolver_type=human). */}
-              {stalledEntry && (
+              {/* Stalled chip - only when this task carries the backend's
+                  durable stalled marker (task.stalled_reason). */}
+              {stalledReason && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-red-300 bg-red-100 px-2 text-xs font-medium text-red-800 dark:border-red-800 dark:bg-red-900 dark:text-red-300">
@@ -717,7 +716,7 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                       stalled
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent>{stalledEntry.blocker_resolver_type}</TooltipContent>
+                  <TooltipContent>{stalledReason}</TooltipContent>
                 </Tooltip>
               )}
             </div>
