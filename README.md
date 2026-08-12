@@ -177,7 +177,7 @@ uv run uvicorn roboco.api.app:app --reload --host 0.0.0.0 --port 8000
 
 ## Configuration
 
-Key environment variables (see `roboco/config.py` for all options):
+Key environment variables (see `roboco/config.py` for all options). The panel's **Settings → Feature Flags** card is the authoritative source for the full set of 36 feature flags — toggle them there rather than editing env by hand. The bash block below shows the env-var equivalents of a few representative flags plus settings that have no panel toggle:
 
 ```bash
 # API Server
@@ -208,6 +208,19 @@ ROBOCO_DOCS_SYNC_MAX_PER_CYCLE=1        # max docs-sync tasks originated per pub
 # Auditor scheduled sweeps (default 6 hours; 0 disables)
 ROBOCO_AUDIT_INTERVAL_SECONDS=21600
 ```
+
+The 36 feature flags exposed in the panel fall into eight categories:
+
+- **Communication:** `telegram_enabled`, `telegram_inbound_enabled`, `x_engine_enabled`, `x_replies_enabled`, `x_feature_spotlight_enabled` — Telegram notifications and the X (Twitter) account.
+- **Content:** `video_engine_enabled`, `video_on_release`, `video_on_spotlight` — the video-generation engine and its triggers.
+- **Governance:** `provisioning_enabled`, `strategy_engine_enabled`, `roadmap_engine_enabled`, `research_enabled`, `release_manager_enabled` — Board programs and the gated release manager.
+- **Infrastructure:** `ci_watch_enabled`, `dep_update_enabled`, `env_sync_enabled`, `docs_sync_enabled`, `gateway_health_enabled`, `self_heal_enabled`, `self_heal_originate_enabled`, `sandbox_db_enabled`, `rag_auto_update_enabled`, `transcript_prune_enabled` — background loops, sandbox DBs, and workspace health.
+- **Quality:** `conventions_enabled`, `org_memory_enabled`, `fable_mode_enabled`, `possibilities_matrix_enabled`, `routing_strict` — architectural enforcement, organizational memory, behavioral doctrine, and model-routing strictness.
+- **Budgets:** `task_budgets_enabled` — per-project monthly and per-task cost caps.
+- **Vault:** `obsidian_vault_enabled`, `vault_intake_enabled`, `vault_report_enabled`, `vault_kb_enabled` — Obsidian vault projection, intake, reports, and KB indexing.
+- **PR review:** `external_pr_enabled`, `internal_pr_enabled`, `toolchain_match_enabled` — inbound/external PR review, internal PR review, and toolchain matching.
+
+Each flag has a one-line description in the panel card. The remaining twelve Board Programs (Pest Control, Spackle, Scales, Dogfood, Periscope, Megaphone, Mirror, Barfly, War Room, Coroner, Librarian, Sentinel) arm per-program on the dedicated Board Programs page (Business section) rather than the Feature Flags card.
 
 ## Multi-Agent Workspace Structure
 
