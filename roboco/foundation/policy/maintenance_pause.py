@@ -122,18 +122,29 @@ def validate_pause_payload(payload: dict[str, Any]) -> None:
     ``maintenance_pause.*`` goes through, including the pre-existing generic
     ``PUT /api/settings/{key}`` route, not just ``MaintenancePauseService.
     pause()``'s own Python-level bound. The ``expires_at``-past-``paused_at``
-    and ``MAX_PAUSE_HOURS`` checks below make that 14-day rail structural
-    (hold regardless of which door the write comes through) instead of a
-    convention only one caller happens to honor. A resumed (``paused=False``)
-    payload needs nothing else.
+    and ``MAX_PAUSE_HOURS`` checks in ``_validate_pause_span`` below make
+    that 14-day rail structural (hold regardless of which door the write
+    comes through) instead of a convention only one caller happens to honor.
+    A resumed (``paused=False``) payload needs nothing else.
     """
+    if _validate_pause_envelope(payload):
+        _validate_paused_fields(payload)
+
+
+def _validate_pause_envelope(payload: dict[str, Any]) -> bool:
+    """Validate the outer shape and return the boolean 'paused' flag."""
     if not isinstance(payload, dict):
         raise ValueError("pause payload must be a JSON object")
     paused = payload.get("paused")
     if not isinstance(paused, bool):
         raise ValueError("pause payload must carry a boolean 'paused'")
-    if not paused:
-        return
+    return paused
+
+
+def _validate_paused_fields(payload: dict[str, Any]) -> None:
+    """Validate the fields a paused=True payload must carry: who paused it,
+    when, until when (span-checked by ``_validate_pause_span``), and an
+    optional reason."""
     paused_by = payload.get("paused_by")
     if not isinstance(paused_by, str) or not paused_by.strip():
         raise ValueError("a paused payload requires a non-empty 'paused_by'")
@@ -143,6 +154,20 @@ def validate_pause_payload(payload: dict[str, Any]) -> None:
     expires_at = _parse_dt(payload.get("expires_at"))
     if expires_at is None:
         raise ValueError("a paused payload requires a valid ISO 'expires_at'")
+    _validate_pause_span(paused_at, expires_at)
+    reason = payload.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError("'reason' must be a string when present")
+
+
+def _validate_pause_span(paused_at: datetime, expires_at: datetime) -> None:
+    """Enforce ``expires_at > paused_at`` and the ``MAX_PAUSE_HOURS`` bound --
+    the one structural guarantee that a pause cannot be written permanent.
+
+    The ``try/except TypeError`` turns a naive-versus-aware datetime mismatch
+    (unorderable, raises on comparison) into a clean ``ValueError`` instead of
+    leaking a confusing ``TypeError`` to the settings-write caller.
+    """
     try:
         overdue = expires_at <= paused_at
         overlong = expires_at - paused_at > timedelta(hours=MAX_PAUSE_HOURS)
@@ -154,6 +179,3 @@ def validate_pause_payload(payload: dict[str, Any]) -> None:
         raise ValueError("'expires_at' must be after 'paused_at'")
     if overlong:
         raise ValueError(f"pause duration must not exceed {MAX_PAUSE_HOURS} hours")
-    reason = payload.get("reason")
-    if reason is not None and not isinstance(reason, str):
-        raise ValueError("'reason' must be a string when present")

@@ -13391,68 +13391,96 @@ Start now: evidence(task_id="{task_id}")
     ) -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
-        Wraps each ``unclaim_for_reaper`` in try/except so a single bad row
-        doesn't abort the dispatch tick — the reaper must keep ticking even
-        if one task's release somehow fails. A claim whose assignee still has
-        a live container is skipped: the heartbeat is a stale proxy there, and
-        reaping a working agent only churns the task.
-
-        ``dispatch_paused`` narrows the ``dispatch``-scope maintenance pause
-        to just the DB-level unclaim below: the wedged-grok / stuck-claude /
-        broken-gateway kill checks nested in ``_should_skip_live_reap`` are
-        liveness/heartbeat based, not dispatch based, and always run -- a
-        genuinely wedged container must never idle unmonitored for the
-        length of a pause. Unclaiming only helps a task that a respawn can
-        follow, which a paused fleet won't do this tick, so that step alone
-        is deferred until the pause lifts.
+        Each candidate is delegated to ``_reap_one_stale_claim``, which
+        decides skip-vs-reap and, when a reap is due, hands off to
+        ``_unclaim_stale_claim`` -- wrapped there in try/except so a single
+        bad row doesn't abort the dispatch tick. See
+        ``_reap_one_stale_claim`` for the pause-ordering guarantee: the
+        liveness/kill checks always run; only the final DB unclaim is gated
+        on ``dispatch_paused``.
         """
-        from roboco.utils.converters import require_uuid
-
         cutoff = datetime.now(UTC) - timedelta(seconds=self._claim_heartbeat_ttl)
         candidates = await svc.list_in_progress_or_claimed()
         for t in candidates:
-            ts = t.last_heartbeat_at
-            if ts is None or ts < cutoff:
-                # A live container is spared unless it is wedged (grok) or its
-                # gateway is broken-but-alive past the grace window — see
-                # _should_skip_live_reap, which kills + evicts those so we fall
-                # through to release + respawn. This check always runs, paused
-                # or not.
-                if await self._should_skip_live_reap(t, ts):
-                    continue
-                # A provider-parked agent (session-limit / overload / grok-429)
-                # is OFFLINE with a dead container and a ``rate_limit_lifted``
-                # WaitingRecord. The probe-resume loop owns its recovery — do
-                # NOT reap the claim, or probe-success would respawn the agent
-                # on a task it no longer owns.
-                if self._assignee_is_provider_parked(t):
-                    continue
-                if dispatch_paused:
-                    # The pause-sensitive step: no respawn will follow this
-                    # tick, so leave the claim as-is (any wedged container
-                    # above was already killed regardless).
-                    continue
-                task_id = require_uuid(t.id)
-                reaped_agent = getattr(t, "assigned_to", None) or getattr(
-                    t, "claimed_by", None
-                )
-                try:
-                    await svc.unclaim_for_reaper(task_id)
-                    logger.warning(
-                        "stale claim reaped",
-                        task_id=str(task_id),
-                        last_heartbeat=ts.isoformat() if ts else None,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "stale-claim reap failed; continuing",
-                        task_id=str(task_id),
-                        error=str(exc),
-                    )
-                else:
-                    await self._notify_stale_claim_reaped(
-                        task_id, reaped_agent, ts, getattr(t, "title", None)
-                    )
+            await self._reap_one_stale_claim(svc, t, cutoff, dispatch_paused)
+
+    def _heartbeat_is_stale(self, ts: Any, cutoff: datetime) -> bool:
+        """True when a claim's heartbeat is missing or past ``cutoff``."""
+        return ts is None or ts < cutoff
+
+    async def _reap_one_stale_claim(
+        self,
+        svc: "TaskService",
+        t: Any,
+        cutoff: datetime,
+        dispatch_paused: bool,
+    ) -> None:
+        """Decide skip-vs-reap for one candidate claim.
+
+        ``dispatch_paused`` narrows the ``dispatch``-scope maintenance pause
+        to just the final DB-level unclaim: the wedged-grok / stuck-claude /
+        broken-gateway kill checks nested in ``_should_skip_live_reap`` are
+        liveness/heartbeat based, not dispatch based, and always run FIRST --
+        a genuinely wedged container must never idle unmonitored for the
+        length of a pause. Unclaiming only helps a task that a respawn can
+        follow, which a paused fleet won't do this tick, so that step alone
+        is deferred until the pause lifts. A claim whose assignee still has a
+        live container is otherwise skipped entirely: the heartbeat is a
+        stale proxy there, and reaping a working agent only churns the task.
+        """
+        ts = t.last_heartbeat_at
+        if not self._heartbeat_is_stale(ts, cutoff):
+            return
+        # A live container is spared unless it is wedged (grok) or its
+        # gateway is broken-but-alive past the grace window - see
+        # _should_skip_live_reap, which kills + evicts those so we fall
+        # through to release + respawn. This check always runs, paused
+        # or not.
+        if await self._should_skip_live_reap(t, ts):
+            return
+        # A provider-parked agent (session-limit / overload / grok-429)
+        # is OFFLINE with a dead container and a ``rate_limit_lifted``
+        # WaitingRecord. The probe-resume loop owns its recovery - do
+        # NOT reap the claim, or probe-success would respawn the agent
+        # on a task it no longer owns.
+        if self._assignee_is_provider_parked(t):
+            return
+        if dispatch_paused:
+            # The pause-sensitive step: no respawn will follow this
+            # tick, so leave the claim as-is (any wedged container
+            # above was already killed regardless).
+            return
+        await self._unclaim_stale_claim(svc, t, ts)
+
+    async def _unclaim_stale_claim(
+        self, svc: "TaskService", t: Any, ts: datetime | None
+    ) -> None:
+        """Release one stale claim to pending.
+
+        try/except so a single bad row doesn't abort the dispatch tick - the
+        reaper must keep ticking even if one task's release somehow fails.
+        """
+        from roboco.utils.converters import require_uuid
+
+        task_id = require_uuid(t.id)
+        reaped_agent = getattr(t, "assigned_to", None) or getattr(t, "claimed_by", None)
+        try:
+            await svc.unclaim_for_reaper(task_id)
+            logger.warning(
+                "stale claim reaped",
+                task_id=str(task_id),
+                last_heartbeat=ts.isoformat() if ts else None,
+            )
+        except Exception as exc:
+            logger.error(
+                "stale-claim reap failed; continuing",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+        else:
+            await self._notify_stale_claim_reaped(
+                task_id, reaped_agent, ts, getattr(t, "title", None)
+            )
 
     async def _notify_stale_claim_reaped(
         self,
