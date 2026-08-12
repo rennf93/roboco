@@ -102,6 +102,12 @@ export function XPostDetail({
         </p>
       )}
 
+      {post.editorial && (
+        <p className="text-xs text-muted-foreground">
+          Angle: {post.editorial.angle} — {post.editorial.rationale}
+        </p>
+      )}
+
       <div className="space-y-1">
         <Textarea
           value={body}
