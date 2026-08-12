@@ -845,6 +845,12 @@ class PlaybookTable(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="draft", index=True
     )
+    # The Board Program that drafted this playbook directly via
+    # PlaybookService.draft() (e.g. "coroner", "librarian"), None for an
+    # ordinary delivery-role draft_playbook draft. created_by can't tell
+    # these apart: both Coroner and Librarian draft as the same fixed
+    # Auditor identity. See PlaybookService._record_learn.
+    source_program: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_by: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     approved_by: Mapped[PyUUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True

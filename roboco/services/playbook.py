@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +32,21 @@ if TYPE_CHECKING:
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _SLUG_MAX = 80
 
+# Both the Librarian and the Coroner Board Programs (librarian_engine /
+# coroner_engine) draft playbooks through PlaybookService.draft() DIRECTLY
+# (never the ordinary draft_playbook do-verb: role_config.py withholds it
+# from the Auditor by construction, locked by test_playbook_verbs.py's
+# "auditor curates but does not draft" invariant). created_by is NOT a
+# discriminator between them: both stamp the same fixed Auditor identity
+# (the one agent who runs both programs), so a Coroner-drafted playbook is
+# indistinguishable from a Librarian-drafted one by created_by alone, a
+# live bug that attributed every Coroner playbook decision to the
+# "librarian" LEARN cycle. The real discriminator is `source_program`
+# (PlaybookTable.source_program), stamped explicitly by each drafting call
+# site (`_draft_coroner_playbook`/`_draft_librarian_playbooks` in
+# content_actions.py), None for an ordinary delivery-role draft_playbook
+# draft, which never sets it.
+
 
 def _slugify(title: str) -> str:
     slug = _SLUG_RE.sub("-", title.strip().lower()).strip("-")
@@ -43,8 +58,21 @@ class PlaybookService(BaseService):
 
     service_name: ClassVar[str] = "playbook"
 
-    async def draft(self, data: PlaybookCreate, created_by: UUID) -> PlaybookTable:
+    async def draft(
+        self,
+        data: PlaybookCreate,
+        created_by: UUID,
+        *,
+        source_program: str | None = None,
+    ) -> PlaybookTable:
         """Create a DRAFT playbook; slug is derived from the title (unique).
+
+        ``source_program`` is internal-only, never exposed on
+        ``PlaybookCreate``, so an ordinary ``draft_playbook`` do-verb caller
+        (any delivery role) can never set it. Only the two direct-service
+        callers (``_draft_coroner_playbook``/``_draft_librarian_playbooks``
+        in content_actions.py) pass it, naming their own program explicitly
+        so ``_record_learn`` later knows which LEARN cycle to credit.
 
         The ``_get_by_slug`` pre-check is a fast-path for UX, not the
         authoritative guard: two concurrent same-title drafts both miss it
@@ -74,6 +102,7 @@ class PlaybookService(BaseService):
             source_task_ids=source_ids,
             status=PlaybookStatus.DRAFT.value,
             created_by=created_by,
+            source_program=source_program,
         )
         self.session.add(playbook)
         try:
@@ -124,6 +153,8 @@ class PlaybookService(BaseService):
             playbook.indexed_at = None
         # Retry path: no status/provenance mutation — the caller re-indexes.
         await self.session.flush()
+        if is_draft:
+            await self._record_learn(playbook, "approved")
         self.log.info(
             "Playbook approved",
             playbook_id=str(playbook_id),
@@ -275,8 +306,50 @@ class PlaybookService(BaseService):
         playbook.archived_by = approver_id
         playbook.archived_at = datetime.now(UTC)
         await self.session.flush()
+        await self._record_learn(playbook, "rejected", reason)
         self.log.info("Playbook rejected", playbook_id=str(playbook_id), reason=reason)
         return playbook
+
+    async def _record_learn(
+        self, playbook: PlaybookTable, verdict: str, reason: str | None = None
+    ) -> None:
+        """Best-effort LEARN for whichever Board Program drafted this
+        playbook, never allowed to affect the already-decided
+        approve/reject, mirrors ``XPostService._record_learn``'s posture.
+
+        Discriminated by ``playbook.source_program`` (stamped at draft time
+        by the direct-service caller, see ``draft``'s docstring), NOT by
+        ``created_by``, which both Coroner and Librarian stamp identically
+        (the same fixed Auditor identity runs both programs). A no-op for a
+        plain delivery-role ``draft_playbook`` draft, whose
+        ``source_program`` is always None: that kind of draft is not a
+        board-program cycle item and must not fabricate a cycle decision."""
+        if playbook.source_program is None:
+            return
+        try:
+            from roboco.services.board_programs import (
+                get_board_program_engine,
+                learn_ref,
+            )
+
+            item_payload: dict[str, Any] = {
+                "title": playbook.title,
+                "description": playbook.problem,
+                "evidence": playbook.procedure,
+                "status": playbook.status,
+                "reject_reason": reason,
+            }
+            await get_board_program_engine(self.session).record_decision(
+                playbook.source_program,
+                learn_ref({"title": playbook.title}),
+                verdict,
+                reason,
+                item_payload=item_payload,
+            )
+        except Exception as exc:
+            self.log.warning(
+                "playbook: LEARN record_decision failed (best-effort)", error=str(exc)
+            )
 
     async def unindex_playbook(self, playbook: PlaybookTable) -> None:
         """De-index a playbook from the PLAYBOOKS RAG index (best-effort).

@@ -34,6 +34,7 @@ from roboco.models.metrics import (
     CeoScorecard,
     MemberScorecard,
     OrgScorecard,
+    ProvenanceReport,
     ReworkReport,
     Scorecard,
     SpawnWasteReport,
@@ -51,6 +52,7 @@ from roboco.services.repositories.review_findings import (
     STATUS_OPEN,
     ReviewFindingsRepository,
 )
+from roboco.services.task import HUMAN_AUTHORED_SOURCES
 from roboco.utils.converters import to_python_uuid
 
 # Named audit events attributing a needs_revision bounce to its rejector —
@@ -1506,6 +1508,46 @@ class MetricsService(BaseService):
                     by_task.items(), key=lambda kv: kv[1]["zero"], reverse=True
                 )
             ],
+        )
+
+    async def get_provenance_metrics(self, days: int = 30) -> ProvenanceReport:
+        """Human- vs agent-originated task counts, trailing ``days``.
+
+        ``tasks.source`` alone can't answer "who originated this": a
+        delegated subtask's own source always reads "manual" no matter what
+        actually originated the work further up the tree (``create_subtask``
+        never inherits a parent's source, see ``HUMAN_AUTHORED_SOURCES`` in
+        ``roboco.services.task``). This classifies each task in the window by
+        its ROOT ancestor's source instead, one recursive query covering
+        every row rather than a per-task Python walk. The depth cap mirrors
+        ``TaskService.resolve_root_source``, a safety net past the real
+        MAX_TASK_DEPTH invariant, never expected to bind on real data.
+        """
+        from roboco.templates.git.constants import MAX_TASK_DEPTH
+
+        since = datetime.now(UTC) - timedelta(days=days)
+        rows = await self.session.execute(
+            text(
+                """
+                WITH RECURSIVE ancestry(orig_id, id, parent_task_id, source, depth) AS (
+                    SELECT id, id, parent_task_id, source, 0
+                    FROM tasks WHERE created_at >= :since
+                    UNION ALL
+                    SELECT a.orig_id, t.id, t.parent_task_id, t.source, a.depth + 1
+                    FROM tasks t
+                    JOIN ancestry a ON t.id = a.parent_task_id
+                    WHERE a.depth < :max_depth
+                )
+                SELECT source FROM ancestry WHERE parent_task_id IS NULL
+                """
+            ),
+            {"since": since, "max_depth": MAX_TASK_DEPTH + 4},
+        )
+        root_sources = rows.scalars().all()
+        human = sum(1 for s in root_sources if s in HUMAN_AUTHORED_SOURCES)
+        total = len(root_sources)
+        return ProvenanceReport(
+            total=total, human_authored=human, agent_authored=total - human
         )
 
     async def _task_progress_signal_times(

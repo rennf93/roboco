@@ -72,6 +72,7 @@ from roboco.services.gateway.remediation import (
     hint_for_short_quick_context,
     hint_for_unaddressed_acceptance_criteria,
 )
+from roboco.services.gateway.role_config import role_carries_notify_ack
 from roboco.services.repositories.review_findings import (
     STATUS_OPEN,
     ReviewFindingsRepository,
@@ -5072,12 +5073,18 @@ class Choreographer:
         return parent is None or bool(parent.branch_name)
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
-        """Report no more work. Soft-block if there are unread A2As or @mentions.
+        """Report no more work. Soft-block if there are unread A2As,
+        @mentions, or pending ack-required notifications this role can clear.
 
         Before marking the agent idle:
 
-        1. Bail with ``idle_with_unread`` when context_briefing has unread A2A
-           or @mentions (must address those first).
+        1. Bail with ``idle_with_unread`` when context_briefing has unread A2A,
+           @mentions, or a pending ack-required notification the caller's role
+           carries ``notify_ack`` for (must address those first). A role that
+           does not carry ``notify_ack`` (auditor, pr_reviewer, prompter,
+           secretary) is never blocked on the notification leg: it could
+           never satisfy it, so blocking would be a permanent dead-end
+           instead of a fixable gate.
         2. Refuse with INVALID_STATE if the agent has any pending tasks
            assigned but never claimed — they must call i_will_work_on (dev/qa/
            doc) or i_will_plan (pm) first. Board/advisory roles (product_owner,
@@ -5090,14 +5097,12 @@ class Choreographer:
            forever.
         """
         briefing = await self._briefing_for(agent_id, None)
-        if briefing.get("unread_a2a") or briefing.get("unread_mentions"):
+        pending_ack = await self._pending_ack_notifications(agent_id, briefing)
+        if briefing.get("unread_a2a") or briefing.get("unread_mentions") or pending_ack:
             return Envelope.ok(
                 status="idle_with_unread",
                 task_id=None,
-                next=(
-                    "clear your inbox, then retry i_am_idle(): read_messages()"
-                    " for unread A2A, notify_ack() per @mention notification"
-                ),
+                next=self._idle_with_unread_next(briefing, pending_ack),
                 context_briefing=briefing,
             )
         # Pre-idle guards, evaluated in order — the first that returns an
@@ -5138,6 +5143,46 @@ class Choreographer:
             next=next_msg,
             context_briefing=briefing,
         )
+
+    async def _pending_ack_notifications(
+        self, agent_id: UUID, briefing: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Ack-required notifications the caller's role can actually clear.
+
+        ``briefing["pending_notifications"]`` (EvidenceRepo.list_pending_
+        notifications) is already scoped to requires_ack rows; the remaining
+        gate here is the role check, so a role without ``notify_ack`` is
+        never handed a condition it cannot resolve. The role lookup only
+        runs when there is something pending, so the common empty-inbox
+        path pays no extra query.
+        """
+        pending = list(briefing.get("pending_notifications") or [])
+        if not pending:
+            return []
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or not role_carries_notify_ack(agent.role):
+            return []
+        return pending
+
+    @staticmethod
+    def _idle_with_unread_next(
+        briefing: dict[str, Any], pending_ack: list[dict[str, Any]]
+    ) -> str:
+        """Build the ``idle_with_unread`` remediation, naming the exact tool
+        for whichever reason(s) triggered it, since a mention-only message
+        left a pending-ack caller with no actual instruction to follow."""
+        reasons = ["clear your inbox, then retry i_am_idle():"]
+        if briefing.get("unread_a2a"):
+            reasons.append(" read_messages() for unread A2A;")
+        if briefing.get("unread_mentions"):
+            reasons.append(" notify_ack() per @mention notification;")
+        if pending_ack:
+            first_id = pending_ack[0].get("notification_id")
+            reasons.append(
+                f" notify_ack(notification_id='{first_id}') for"
+                f" {len(pending_ack)} pending ack-required notification(s);"
+            )
+        return "".join(reasons).rstrip(";")
 
     async def _pending_assignment_guard(
         self, agent_id: UUID, briefing: dict[str, Any]

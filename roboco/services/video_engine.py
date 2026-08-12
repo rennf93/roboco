@@ -624,7 +624,10 @@ class VideoEngine(BaseService):
             await get_notification_delivery_service(
                 self.session
             ).notify_ceo_of_queue_item(
-                kind="video", id8=str(task.id)[:8], title=occasion
+                kind="video",
+                id8=str(task.id)[:8],
+                title=occasion,
+                related_task_id=cast("UUID", task.id),
             )
         except Exception as exc:
             self.log.warning(

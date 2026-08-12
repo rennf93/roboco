@@ -19,7 +19,6 @@ from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskStatus as TS
-from roboco.services.notification import NotificationService
 from roboco.services.release_manager_engine import ReleaseAssessor, ReleaseManagerEngine
 from roboco.services.release_readiness import (
     BumpKind,
@@ -113,7 +112,6 @@ def _enable(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> None:
     monkeypatch.setattr(cfg, "self_heal_project_slug", SLUG)
     for key, value in overrides.items():
         monkeypatch.setattr(cfg, key, value)
-    monkeypatch.setattr(NotificationService, "send_ack_notification", AsyncMock())
 
 
 def test_report_dict_round_trip() -> None:
@@ -225,7 +223,8 @@ async def test_proposes_sends_telegram_push(
 ) -> None:
     """A freshly-originated release proposal fires the styled push DM
     (release kind, the proposal's id8, its version) alongside the existing
-    in-app notification."""
+    in-app notification, and names the proposal task as related_task_id so
+    the row can resolve once the CEO decides (DEFECT 2)."""
     await _seed(db_session)
     _enable(monkeypatch)
     notify = AsyncMock()
@@ -243,6 +242,30 @@ async def test_proposes_sends_telegram_push(
     assert kwargs["kind"] == "release"
     assert kwargs["id8"] == str(task.id)[:8]
     assert _VERSION in kwargs["title"]
+    assert kwargs["related_task_id"] == task.id
+
+
+@pytest.mark.asyncio
+async def test_proposes_does_not_double_notify_via_send_ack_notification(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DEFECT 3 regression: _notify_ceo used to ALSO fire a separate
+    NotificationService.send_ack_notification ALERT for the same event
+    (from_agent="system", distinct from notify_ceo_of_queue_item's own
+    CEO-self-addressed row): two pending-ack rows per proposal, with no
+    dedup path merging them since the sender differed. Only the queue-item
+    push fires now."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    send_ack = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.notification.NotificationService.send_ack_notification",
+        send_ack,
+    )
+    engine = ReleaseManagerEngine(db_session, assessor=_assessor(_report()))
+    task = await engine.run_cycle()
+    assert task is not None
+    send_ack.assert_not_awaited()
 
 
 @pytest.mark.asyncio

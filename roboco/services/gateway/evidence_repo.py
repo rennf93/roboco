@@ -194,7 +194,17 @@ class EvidenceRepo:
         ]
 
     async def list_pending_notifications(self, agent_id: UUID) -> list[dict[str, Any]]:
-        """Unacknowledged, unexpired notifications addressed to this agent."""
+        """Unacknowledged, unexpired, ack-required notifications addressed to
+        this agent: the source `i_am_idle`'s soft-block reads to decide
+        whether a caller still owes an ack.
+
+        Scoped to ``requires_ack=True`` deliberately: an informational type
+        (TASK_ASSIGNMENT, BROADCAST, KNOWLEDGE_SHARE, ...) has no
+        `expires_at` and is never acked by design, so without this filter it
+        would show up here forever for any agent that ever received one,
+        making the soft-block unsatisfiable rather than a real "you owe an
+        ack" signal.
+        """
         from datetime import UTC, datetime
 
         from sqlalchemy import or_, select
@@ -215,6 +225,7 @@ class EvidenceRepo:
             )
             .where(NotificationTable.to_agents.contains([agent_id]))
             .where(~NotificationTable.acked_by.contains([agent_id]))
+            .where(NotificationTable.requires_ack.is_(True))
             .where(
                 or_(
                     NotificationTable.expires_at.is_(None),

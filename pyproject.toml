@@ -163,6 +163,11 @@ select = [
 # (task_id, assignee, completed_dependency_id, from_agent, to_ceo, db_session) —
 # db_session is the caller's session for event-loop-safe notification creation.
 "roboco/services/notification.py" = ["PLR0913"]
+# record_decision carries the LEARN-write contract (program_key, item_ref,
+# verdict, reason, exploration_task_id, item_payload) shared by every one of
+# its ~10 per-program callers; bundling would just relocate the same named
+# fields behind one hop, same rationale as prompter.py above.
+"roboco/services/board_programs.py" = ["PLR0913"]
 # open_video_task's kwargs (occasion, script, platforms, brief,
 # suggested_input_props, project_id) are the authoring-task contract shared
 # by the release/spotlight/on-demand callers — same "bundling would just

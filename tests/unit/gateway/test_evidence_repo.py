@@ -186,6 +186,29 @@ async def test_pending_notifications_maps_rows() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pending_notifications_query_scoped_to_requires_ack() -> None:
+    """The query must filter on requires_ack=True.
+
+    Without this, an informational type (TASK_ASSIGNMENT, BROADCAST, ...)
+    has no expires_at and is never acked by design, so it would show up
+    here forever for any agent that ever received one, making i_am_idle's
+    soft-block (which now consults this bucket) unsatisfiable rather than a
+    real "you owe an ack" signal. Reverting the filter makes this fail.
+    """
+    db = MagicMock()
+    result = MagicMock()
+    result.all.return_value = []
+    result.scalars.return_value.all.return_value = []
+    db.execute = AsyncMock(return_value=result)
+    repo = EvidenceRepo(db)
+
+    await repo.list_pending_notifications(uuid4())
+
+    statement = db.execute.call_args.args[0]
+    assert "requires_ack" in str(statement)
+
+
+@pytest.mark.asyncio
 async def test_unread_a2a_maps_other_agent_and_unread_count() -> None:
     cid = uuid4()
     conv = SimpleNamespace(

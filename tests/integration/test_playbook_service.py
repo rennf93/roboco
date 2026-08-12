@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from roboco.config import settings as cfg
+from roboco.db.tables import BoardProgramCycleTable
+from roboco.foundation import identity as _foundation
 from roboco.models.base import PlaybookStatus
 from roboco.models.playbook import PlaybookCreate
 from roboco.services.base import ConflictError, NotFoundError
 from roboco.services.playbook import PlaybookService
+from sqlalchemy import select
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -293,3 +297,121 @@ async def test_archive_rejects_already_archived(db_session: AsyncSession) -> Non
     await svc.archive(pb.id, approver_id=uuid4())
     with pytest.raises(ConflictError):
         await svc.archive(pb.id, approver_id=uuid4())
+
+
+# --- gap 2: Board Program LEARN wiring --------------------------------------
+# A playbook drafted through propose_playbook_drafts (Librarian) or
+# propose_postmortem's playbook kind (Coroner) both carry created_by == the
+# same fixed Auditor identity (that agent runs both programs). created_by
+# alone can't tell them apart, so PlaybookService.draft() takes an explicit
+# source_program kwarg the two direct-service call sites stamp, and
+# approve/reject route a decision into THAT program's cycle only, never for
+# a plain delivery-role draft_playbook draft (source_program=None).
+
+_AUDITOR_ID = _foundation.AGENTS["auditor"].uuid
+
+
+async def _seed_cycle(session: AsyncSession, program_key: str) -> None:
+    session.add(
+        BoardProgramCycleTable(
+            program_key=program_key,
+            exploration_task_id=None,
+            opened_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+
+
+async def _cycle_row(session: AsyncSession, program_key: str) -> BoardProgramCycleTable:
+    result = await session.execute(
+        select(BoardProgramCycleTable).where(
+            BoardProgramCycleTable.program_key == program_key
+        )
+    )
+    return result.scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_approve_librarian_playbook_records_learn_decision(
+    db_session: AsyncSession,
+) -> None:
+    await _seed_cycle(db_session, "librarian")
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(
+        _create(title="Retry a flaky migration"),
+        created_by=_AUDITOR_ID,
+        source_program="librarian",
+    )
+    await svc.approve(pb.id, approver_id=uuid4())
+
+    row = await _cycle_row(db_session, "librarian")
+    assert row.items_approved == 1
+    decision = row.decisions[0]
+    assert decision["verdict"] == "approved"
+    assert decision["item_snapshot"]["title"] == "Retry a flaky migration"
+
+
+@pytest.mark.asyncio
+async def test_reject_librarian_playbook_records_learn_decision_with_reason(
+    db_session: AsyncSession,
+) -> None:
+    await _seed_cycle(db_session, "librarian")
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(
+        _create(title="Duplicate of an existing playbook"),
+        created_by=_AUDITOR_ID,
+        source_program="librarian",
+    )
+    await svc.reject(pb.id, approver_id=uuid4(), reason="duplicate")
+
+    row = await _cycle_row(db_session, "librarian")
+    assert row.items_rejected == 1
+    assert row.decisions[0]["verdict"] == "rejected"
+    assert row.decisions[0]["reason"] == "duplicate"
+
+
+@pytest.mark.asyncio
+async def test_approve_plain_draft_does_not_record_learn(
+    db_session: AsyncSession,
+) -> None:
+    """A playbook drafted by a delivery role (source_program=None, whatever
+    created_by is) is not a board-program cycle item: approving it must
+    never touch the librarian ledger, even when a cycle is open."""
+    await _seed_cycle(db_session, "librarian")
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Ordinary delivery draft"), created_by=uuid4())
+    await svc.approve(pb.id, approver_id=uuid4())
+
+    row = await _cycle_row(db_session, "librarian")
+    assert row.items_approved == 0
+    assert row.decisions == []
+
+
+@pytest.mark.asyncio
+async def test_approve_coroner_playbook_records_learn_against_coroner_not_librarian(
+    db_session: AsyncSession,
+) -> None:
+    """The genuinely ambiguous case (live-verified regression): a
+    Coroner-drafted playbook carries the EXACT SAME created_by as a
+    Librarian-drafted one (the same fixed Auditor identity runs both
+    programs), so created_by cannot discriminate. With both cycles open,
+    approving a Coroner playbook must credit ONLY the coroner cycle; the
+    librarian cycle (a real, live one open at the same time) must stay
+    untouched. Before the source_program fix this landed on "librarian"
+    instead, per DEFECT 1's live-DB observation."""
+    await _seed_cycle(db_session, "coroner")
+    await _seed_cycle(db_session, "librarian")
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(
+        _create(title="Verify venv freshness before gate"),
+        created_by=_AUDITOR_ID,  # identical to the librarian test above
+        source_program="coroner",
+    )
+    await svc.approve(pb.id, approver_id=uuid4())
+
+    coroner_row = await _cycle_row(db_session, "coroner")
+    librarian_row = await _cycle_row(db_session, "librarian")
+    assert coroner_row.items_approved == 1
+    assert coroner_row.decisions[0]["verdict"] == "approved"
+    assert librarian_row.items_approved == 0
+    assert librarian_row.decisions == []

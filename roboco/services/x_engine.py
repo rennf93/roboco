@@ -1140,7 +1140,10 @@ class XEngine(BaseService):
             await get_notification_delivery_service(
                 self.session
             ).notify_ceo_of_queue_item(
-                kind="xpost", id8=str(task.id)[:8], title=body[:100]
+                kind="xpost",
+                id8=str(task.id)[:8],
+                title=body[:100],
+                related_task_id=cast("UUID", task.id),
             )
         except Exception as exc:
             self.log.warning(

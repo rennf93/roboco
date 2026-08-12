@@ -90,12 +90,23 @@ async def _add_notification(
 async def test_pending_ack_only_not_masked_by_fully_acked_window(
     db_session: AsyncSession,
 ) -> None:
-    """Newest ``limit`` fully-acked rows must NOT hide the oldest unacked one."""
+    """Newest ``limit`` fully-acked rows must NOT hide the oldest unacked one.
+
+    ``list_system_notifications(pending_ack_only=True)`` reads the WHOLE
+    requires_ack set with no recipient scope (there is none to scope by,
+    it's the system-wide view), so a fixed calendar date collides with any
+    other test's real-"now"-timestamped committed row in the shared suite
+    DB (e.g. a still-unacked CEO queue-item notification another test left
+    behind). Anchoring on ``now() + 10 years`` instead keeps this test's own
+    4 rows the newest in the whole table regardless of what else is
+    committed, so the assertions only ever depend on ordering WITHIN that
+    set, not on the table being otherwise empty.
+    """
     sender_id = await _seed_sender(db_session)
     recipient_id = await _seed_recipient(db_session)
 
     limit = 3
-    base = datetime(2026, 1, 1, tzinfo=UTC)
+    base = datetime.now(UTC) + timedelta(days=3650)
     # Newest `limit` rows (largest timestamps) are fully acked; the oldest is not.
     acked_ids = [
         await _add_notification(

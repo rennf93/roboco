@@ -240,6 +240,9 @@ async def test_propose_gap_fill_sends_telegram_push_per_item(
         assert call.kwargs["id8"] == id8
         assert call.kwargs["extra"] == f"item-{i}"
         assert call.kwargs["title"] == f"Item {i}"
+        # DEFECT 2 regression: without related_task_id the row can never
+        # auto-resolve once every item on the cycle is decided.
+        assert call.kwargs["related_task_id"] == cycle_task.id
 
 
 @pytest.mark.asyncio

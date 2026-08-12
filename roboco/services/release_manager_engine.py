@@ -33,7 +33,6 @@ from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
-from roboco.services.notification import NotificationService
 from roboco.services.notification_delivery import get_notification_delivery_service
 from roboco.services.project import get_project_service
 from roboco.services.release_readiness import (
@@ -191,24 +190,15 @@ class ReleaseManagerEngine(BaseService):
     async def _notify_ceo(
         self, report: ReleaseReadinessReport, task: TaskTable
     ) -> None:
-        gaps = f" {len(report.gaps)} gap(s) to review." if report.gaps else ""
-        body = (
-            f"[release] Ready to cut v{report.proposed_version} "
-            f"({report.bump_kind}). {len(report.change_summary)} change(s) "
-            f"since the last tag.{gaps}\n\n"
-            "Review the drafted CHANGELOG + version bumps and approve or "
-            "reject-with-changes in the panel — nothing publishes until you do."
-        )
-        try:
-            await NotificationService().send_ack_notification(
-                from_agent="system",
-                to_agent="ceo",
-                body=body,
-                task_id=str(task.id),
-                db_session=self.session,
-            )
-        except Exception as exc:
-            self.log.warning("release CEO notify failed (best-effort)", error=str(exc))
+        """Push the queue-item DM + in-app row for the freshly-opened release
+        proposal. Used to also fire a second, separate ``send_ack_notification``
+        ALERT for the same event (from_agent="system" vs this call's CEO
+        self-notify): two pending-ack rows for one proposal, with no dedup
+        path merging them since the sender differed. Removed: this call alone
+        carries the better payload (the styled Telegram push with an
+        Approve/Reject/Open keyboard, plus an in-app row that now resolves via
+        ``related_task_id`` the moment the CEO decides, see
+        ``notify_ceo_of_queue_item``'s docstring)."""
         try:
             await get_notification_delivery_service(
                 self.session
@@ -216,6 +206,7 @@ class ReleaseManagerEngine(BaseService):
                 kind="release",
                 id8=str(task.id)[:8],
                 title=f"v{report.proposed_version} ready",
+                related_task_id=cast("UUID", task.id),
             )
         except Exception as exc:
             self.log.warning(

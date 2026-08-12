@@ -1071,6 +1071,21 @@ VAULT_NOTE_SOURCE = "vault_note"
 # explicit exemption.
 EVAL_BENCH_SOURCE = "eval_bench"
 
+# The only two sources a human ever typed/approved from scratch: "manual"
+# (created directly, not via the Prompter chat) and "prompter" (a CEO-
+# confirmed Intake draft, confirmed_by_human is required at creation, see
+# api/routes/tasks.py). Every other source (self_heal, ci_watch, a Board
+# Program proposal, ...) is a system/agent origination path. NOT a substitute
+# for reading ``TaskTable.source`` directly on a given row: a delegated
+# subtask's own source is always "manual" (create_subtask never inherits the
+# parent's source, inheriting it naively would land board/engine sources on
+# children too, which several dispatch branches key off by exact match, e.g.
+# SELF_HEAL_SOURCE gates on ``source == SELF_HEAL_SOURCE and not
+# confirmed_by_human``, a child would default confirmed_by_human=False and
+# get skipped forever). Use TaskService.resolve_root_source /
+# is_human_authored to answer "who really originated this" for any task.
+HUMAN_AUTHORED_SOURCES: frozenset[str] = frozenset({"manual", "prompter"})
+
 # Sources excluded from the delivery lead-time population
 # (``get_delivery_stats_30d`` below): held CEO-approval drafts and standing
 # reports that complete the instant a Board role files/the CEO approves them,
@@ -1648,6 +1663,48 @@ class TaskService(BaseService):
                 )
             parent_parent = parent.parent_task_id
             current_id = UUID(str(parent_parent)) if parent_parent else None
+
+    async def resolve_root_source(self, task_id: UUID) -> str | None:
+        """The ROOT ancestor's ``source`` for ``task_id``, the real provenance.
+
+        ``create_subtask`` never forwards a parent's ``source`` to its
+        child (see ``HUMAN_AUTHORED_SOURCES``), so a delegated task's own
+        ``source`` column always reads "manual" no matter what actually
+        originated the work further up the tree. This walks the
+        ``parent_task_id`` chain to the root in one recursive query
+        instead of N round trips, and returns the root's source (its own
+        source, if ``task_id`` is already a root). None only if
+        ``task_id`` doesn't exist. The depth cap is a safety net past the
+        real ``MAX_TASK_DEPTH`` invariant enforced at creation, it can
+        only ever stop a hypothetical corrupt chain, never a real one.
+        """
+        from roboco.templates.git.constants import MAX_TASK_DEPTH
+
+        row = await self.session.execute(
+            text(
+                """
+                WITH RECURSIVE ancestry(orig_id, id, parent_task_id, source, depth) AS (
+                    SELECT id, id, parent_task_id, source, 0
+                    FROM tasks WHERE id = :task_id
+                    UNION ALL
+                    SELECT a.orig_id, t.id, t.parent_task_id, t.source, a.depth + 1
+                    FROM tasks t
+                    JOIN ancestry a ON t.id = a.parent_task_id
+                    WHERE a.depth < :max_depth
+                )
+                SELECT source FROM ancestry WHERE parent_task_id IS NULL
+                """
+            ),
+            {"task_id": task_id, "max_depth": MAX_TASK_DEPTH + 4},
+        )
+        return row.scalar_one_or_none()
+
+    async def is_human_authored(self, task_id: UUID) -> bool:
+        """True when ``task_id``'s real originator (its root ancestor) is
+        a human: the root's source is in ``HUMAN_AUTHORED_SOURCES``.
+        False (never raises) for a nonexistent task_id."""
+        root_source = await self.resolve_root_source(task_id)
+        return root_source in HUMAN_AUTHORED_SOURCES
 
     @staticmethod
     def _require_target_or_umbrella(req: TaskCreateRequest) -> None:

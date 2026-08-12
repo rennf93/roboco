@@ -35,7 +35,12 @@ from roboco.foundation.policy.communications import (
     ReescalationPolicy,
     reescalation_decision,
 )
-from roboco.models.base import AgentRole, NotificationPriority, NotificationType
+from roboco.models.base import (
+    AgentRole,
+    NotificationPriority,
+    NotificationType,
+    TaskStatus,
+)
 from roboco.services.base import BaseService, NotFoundError
 from roboco.services.notification_dedup import (
     all_recipients_recently_notified,
@@ -382,6 +387,74 @@ class NotificationDeliveryService(BaseService):
             reescalation_count=n.reescalation_count,
             reescalation_delivered_count=n.reescalation_delivered_count,
         )
+
+    async def resolve_terminal_task_escalations(self) -> int:
+        """Auto-ack every requires_ack notification whose related task has
+        gone terminal (completed/cancelled): the escalation's premise ("this
+        needs your attention") no longer holds once the task it names is
+        done, so no recipient can meaningfully act on it.
+
+        Runs every sweep tick, independent of `expires_at`: without this, an
+        unacked escalation whose task finished out from under it keeps
+        looking "pending" (feeding both `EvidenceRepo.list_pending_notifications`,
+        which drives `i_am_idle`'s soft-block, and `list_system_notifications`,
+        which drives the escalation dispatcher) and keeps re-escalating up the
+        chain via `sweep_expired_notifications` every backoff window, all the
+        way to the CEO, until its own `expires_at` (default 2 days), for work
+        that is already done. Best-effort per row, mirroring
+        `sweep_expired_notifications`'s per-row commit/rollback isolation: one
+        bad row is logged and skipped, never aborting the rest. Returns the
+        count actually resolved.
+        """
+        result = await self.session.execute(
+            select(NotificationTable)
+            .join(TaskTable, TaskTable.id == NotificationTable.related_task_id)
+            .where(
+                NotificationTable.requires_ack.is_(True),
+                TaskTable.status.in_((TaskStatus.COMPLETED, TaskStatus.CANCELLED)),
+            )
+        )
+        candidates = list(result.scalars().all())
+        row_ids = [n.id for n in candidates if not self._notification_is_fully_acked(n)]
+        now = datetime.now(UTC)
+        resolved = 0
+        for nid in row_ids:
+            try:
+                n = await self.session.get(NotificationTable, nid)
+                if n is None or self._notification_is_fully_acked(n):
+                    continue
+                self._auto_ack_terminal_task_notification(n, now)
+                await self.session.commit()
+                resolved += 1
+                self.log.info(
+                    "Auto-resolved notification: related task is terminal",
+                    notification_id=str(nid),
+                    related_task_id=str(n.related_task_id),
+                )
+            except Exception as e:
+                await self.session.rollback()
+                self.log.warning(
+                    "Terminal-task notification auto-resolve failed",
+                    notification_id=str(nid),
+                    error=str(e),
+                )
+        return resolved
+
+    @staticmethod
+    def _auto_ack_terminal_task_notification(
+        n: NotificationTable, now: datetime
+    ) -> None:
+        """Ack every not-yet-acked recipient of `n`: its related task is
+        done, so the escalation is resolved by definition rather than by a
+        human decision. Mirrors `acknowledge_for_recipient`'s acked_by/
+        acked_at write (minus the dedup-key clear, which is per-recipient
+        Redis state a bulk sweep pass has no single recipient to key off)."""
+        acked = set(n.acked_by or [])
+        newly = [r for r in cast("list[UUID]", n.to_agents or []) if r not in acked]
+        if not newly:
+            return
+        n.acked_by = [*n.acked_by, *newly]
+        n.acked_at = {**n.acked_at, **{str(r): now.isoformat() for r in newly}}
 
     async def sweep_expired_notifications(self) -> int:
         """Re-escalate (per a backoff schedule) then log ack-required
@@ -1197,22 +1270,94 @@ class NotificationDeliveryService(BaseService):
         )
 
     async def notify_ceo_of_queue_item(
-        self, *, kind: str, id8: str, extra: str = "", title: str
+        self,
+        *,
+        kind: str,
+        id8: str,
+        extra: str = "",
+        title: str,
+        related_task_id: UUID | None = None,
     ) -> None:
-        """Best-effort push DM at the moment a held draft becomes CEO-
-        actionable — release proposals, X drafts, video posts, and roadmap
-        items used to land in the approval queue silently, with no ping
-        until the CEO happened to run ``/queue``. Reuses the exact styled
-        item line and Approve/Reject/Open keyboard ``/queue`` itself renders
-        (``telegram_inbound.render_queue_item_text`` / ``build_action_keyboard``
-        — one renderer, two callers), and the same degrade-to-no-op contract
-        as ``_notify_telegram``: a credentials/network failure only logs,
-        never raises into the originating engine.
+        """Push DM plus in-app notification at the moment a held draft
+        becomes CEO-actionable: release proposals, X drafts, video posts,
+        roadmap items, and every Board Program's per-item proposals (Mirror,
+        Pest Control, Spackle, Scales, Dogfood, ...) all route through this
+        one chokepoint. Telegram reuses the exact styled item line and
+        Approve/Reject/Open keyboard ``/queue`` itself renders
+        (``telegram_inbound.render_queue_item_text`` /
+        ``build_action_keyboard``, one renderer shared by both callers) and
+        keeps its own degrade-to-no-op contract unchanged: a
+        credentials/network failure only logs, never raises into the
+        originating engine.
+
+        The in-app row is shaped like ``notify_ceo_of_escalation`` /
+        ``notify_ceo_of_pitch`` (APPROVAL/HIGH, requires_ack, since a queue
+        item genuinely needs a CEO decision the same as those do). It stays
+        independent of the Telegram half in both directions: a persist
+        failure is caught and logged here instead of propagating (which
+        would otherwise skip the Telegram send below), and a Telegram
+        failure can never undo the already-flushed row. A missing
+        ``AgentTable`` CEO row only skips the in-app half; Telegram sends off
+        stored credentials, not that row, so its behavior stays exactly what
+        it was before this method persisted anything.
+
+        ``related_task_id`` is every caller's own held/exploration task
+        (the release proposal, the X/video draft, or the queue program's
+        shared exploration task the item lives on); without it the row can
+        never resolve: ``resolve_terminal_task_escalations``'s JOIN needs it
+        to auto-ack once the underlying decision is made (the task goes
+        terminal), and ``expires_at`` (stamped below from
+        ``notification_ack_ttl_hours``) backstops the rest via the normal
+        re-escalation/permanently-unacked path, same as every other
+        ack-required notification in this file. A caller with no resolvable
+        task (none today) simply omits it and falls back to that same
+        expires_at-only backstop.
         """
         from roboco.services.telegram_inbound import (
             build_action_keyboard,
             render_queue_item_text,
         )
+
+        ceo = await self._get_ceo_agent()
+        if ceo is not None:
+            label = kind.replace("_", " ")
+            notification = NotificationTable(
+                type=NotificationType.APPROVAL,
+                priority=NotificationPriority.HIGH,
+                from_agent=ceo.id,
+                to_agents=[ceo.id],
+                subject=f"{label.title()} awaiting review: {title[:100]}",
+                body=(
+                    f"A new {label} item is ready for your review "
+                    f"(ref {id8}{f':{extra}' if extra else ''}).\n\n"
+                    f"{title}\n\n"
+                    "Approve or reject it from the Telegram push, or review "
+                    "it in the panel's queue."
+                ),
+                related_task_id=related_task_id,
+                requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
+                expires_at=(
+                    datetime.now(UTC)
+                    + timedelta(hours=settings.notification_ack_ttl_hours)
+                    if settings.notification_ack_ttl_hours > 0
+                    else None
+                ),
+            )
+            try:
+                # Every item of one proposal cycle shares (from_agent=ceo,
+                # type=APPROVAL, related_task_id, to_agents=[ceo]): the
+                # SAME shared exploration task for a multi-item cycle; the
+                # purpose-dedup guard keys ONLY on that tuple (subject/body
+                # not compared), so without the bypass every item after the
+                # first still-unacked one would be silently dropped in-app.
+                # Each is a genuinely distinct thing to review, not a resend.
+                await self._persist_and_deliver(notification, bypass_purpose_dedup=True)
+            except Exception as exc:
+                self.log.warning(
+                    "queue_item in-app notify failed (best-effort)",
+                    kind=kind,
+                    error=str(exc),
+                )
 
         text = render_queue_item_text(kind, id8, extra, title)
         reply_markup = build_action_keyboard(kind, id8, extra)

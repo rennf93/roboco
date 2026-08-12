@@ -246,6 +246,10 @@ async def test_propose_postmortem_drafts_playbook_when_kind_is_playbook() -> Non
 
     assert env.status == "postmortem_proposed"
     playbook_svc.draft.assert_awaited_once()
+    # DEFECT 1 regression: created_by alone can't discriminate a Coroner
+    # draft from a Librarian one (same fixed Auditor identity), the call
+    # site must stamp its own program explicitly.
+    assert playbook_svc.draft.await_args.kwargs["source_program"] == "coroner"
     payload = engine.complete_with_postmortem.await_args.args[1]
     assert payload["playbook_id"] == str(drafted.id)
     # A "playbook" kind already routed into the curation queue above —

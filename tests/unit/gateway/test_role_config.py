@@ -9,6 +9,7 @@ from roboco.services.gateway.role_config import (
     _QA_FLOW,
     ROLE_CONFIGS,
     get_role_config,
+    role_carries_notify_ack,
 )
 
 
@@ -90,3 +91,37 @@ def test_dev_flow_matches_spec_intents_for_role() -> None:
 def test_qa_flow_matches_spec_intents_for_role() -> None:
     """role_config._QA_FLOW must equal spec.intents_for_role(Role.QA)."""
     assert tuple(_QA_FLOW) == spec.intents_for_role(spec.Role.QA)
+
+
+class TestRoleCarriesNotifyAck:
+    """role_carries_notify_ack: the i_am_idle soft-block's role gate."""
+
+    @pytest.mark.parametrize(
+        "role",
+        [
+            "developer",
+            "qa",
+            "documenter",
+            "cell_pm",
+            "main_pm",
+            "product_owner",
+            "head_marketing",
+        ],
+    )
+    def test_true_for_roles_with_notify_ack(self, role: str) -> None:
+        assert role_carries_notify_ack(role) is True
+
+    @pytest.mark.parametrize(
+        "role",
+        ["auditor", "pr_reviewer", "prompter", "secretary"],
+    )
+    def test_false_for_roles_without_notify_ack(self, role: str) -> None:
+        assert role_carries_notify_ack(role) is False
+
+    def test_false_for_unknown_role(self) -> None:
+        assert role_carries_notify_ack("not_a_role") is False
+
+    def test_matches_do_tools_membership_for_every_role(self) -> None:
+        """Single source of truth check: never drift from the do_tools tuple."""
+        for role, cfg in ROLE_CONFIGS.items():
+            assert role_carries_notify_ack(role) is ("notify_ack" in cfg.do_tools)

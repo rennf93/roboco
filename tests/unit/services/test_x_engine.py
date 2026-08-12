@@ -305,6 +305,9 @@ async def test_originate_post_sends_telegram_push(
     body = markers.get_x_draft_body(task)
     assert body is not None
     assert kwargs["title"] == body[:100]
+    # DEFECT 2 regression: without related_task_id the row can never
+    # auto-resolve once the CEO approves/rejects the draft.
+    assert kwargs["related_task_id"] == task.id
 
 
 @pytest.mark.asyncio

@@ -424,6 +424,10 @@ async def test_propose_playbook_drafts_calls_playbook_service_draft_directly(
     playbook_svc.draft.assert_awaited_once()
     create_call = playbook_svc.draft.await_args
     assert create_call.kwargs["created_by"] == agent_id
+    # DEFECT 1 regression: created_by alone can't discriminate a Librarian
+    # draft from a Coroner one (same fixed Auditor identity), the call
+    # site must stamp its own program explicitly.
+    assert create_call.kwargs["source_program"] == "librarian"
 
 
 @pytest.mark.asyncio

@@ -616,6 +616,9 @@ async def test_originate_video_post_sends_telegram_push(
     assert kwargs["kind"] == "video"
     assert kwargs["id8"] == str(draft_task.id)[:8]
     assert kwargs["title"] == "release v1.0.0"
+    # DEFECT 2 regression: without related_task_id the row can never
+    # auto-resolve once the CEO approves/rejects the draft.
+    assert kwargs["related_task_id"] == draft_task.id
 
 
 @pytest.mark.asyncio

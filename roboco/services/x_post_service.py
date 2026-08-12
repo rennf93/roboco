@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import redis.asyncio as redis
@@ -33,6 +33,9 @@ from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
 from roboco.services.notification_delivery import defer_after_commit
 from roboco.services.task import (
+    X_BARFLY_SOURCE,
+    X_CAMPAIGN_SOURCE,
+    X_EDITORIAL_SOURCE,
     X_FEATURE_SOURCE,
     X_REPLY_SOURCE,
     X_SOURCES,
@@ -52,6 +55,23 @@ logger = logging.getLogger(__name__)
 
 _LOCK_PREFIX = "roboco:x_post:"
 _LOCK_TTL_SECONDS = 60  # a tweet POST completes in seconds; generous crash backstop
+
+# X draft source -> the Board Program it LEARNs into. x_post/x_reply are NOT
+# Board Program items (release-manager and the mentions-poll respectively,
+# neither has a PROGRAMS registry entry), so they're deliberately absent: a
+# decision on those never reaches record_decision. Registry-derived rather
+# than hand-duplicated where a fit exists: none does, since PROGRAMS' own
+# ``source`` field names each program's EXPLORATION-task source
+# (``x_feature_exploration``, ``board_megaphone``, ...), not the source tag a
+# MATERIALIZED draft carries here. The two vocabularies are deliberately
+# different (see task.py's X_SOURCES block), so this mapping is its own small
+# table rather than a derived view of the registry.
+_LEARN_PROGRAM_BY_SOURCE: dict[str, str] = {
+    X_FEATURE_SOURCE: "x_feature",
+    X_EDITORIAL_SOURCE: "megaphone",
+    X_CAMPAIGN_SOURCE: "war_room",
+    X_BARFLY_SOURCE: "barfly",
+}
 _RELEASE_SCRIPT = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
     return redis.call("del", KEYS[1])
@@ -223,7 +243,9 @@ class XPostService(BaseService):
         await self.session.commit()
         if task.source == X_FEATURE_SOURCE:
             await self._open_spotlight_video(task, body)
-            await self._record_learn(task, "approved")
+        program_key = _LEARN_PROGRAM_BY_SOURCE.get(task.source)
+        if program_key is not None:
+            await self._record_learn(program_key, task, "approved")
         return XPostExecuteResult(
             status="posted", tweet_id=result.tweet_id, detail=result.detail
         )
@@ -300,20 +322,42 @@ class XPostService(BaseService):
             logger.warning("spotlight video draft failed (best-effort): %s", exc)
 
     async def _record_learn(
-        self, task: TaskTable, verdict: str, reason: str | None = None
+        self,
+        program_key: str,
+        task: TaskTable,
+        verdict: str,
+        reason: str | None = None,
     ) -> None:
-        """Best-effort LEARN for the x_feature Board Program — never allowed
-        to affect the already-decided approve/reject, mirrors
-        ``_open_spotlight_video``'s posture. ``item_ref`` is the feature slug
-        (stamped on ``x_feature_ref`` at draft-materialization time), falling
-        back to the task id when the marker is somehow missing."""
+        """Best-effort LEARN for a Board Program-backed X draft (x_feature,
+        megaphone, war_room, barfly), never allowed to affect the
+        already-decided approve/reject, mirrors ``_open_spotlight_video``'s
+        posture.
+
+        ``item_ref`` mirrors x_feature's original behavior (the feature slug,
+        stamped on ``x_feature_ref`` at draft-materialization time) for that
+        one source, falling back to the task's own title for the other three
+        (they carry no comparable short slug). ``item_payload`` is built
+        straight off ``task``: the materialized draft IS the item, so no
+        per-source ref-marker parsing is needed the way the queue programs'
+        auto-resolution does."""
         try:
             from roboco.services.board_programs import get_board_program_engine
 
-            ref = markers.get_x_feature_ref(task) or {}
-            item_ref = str(ref.get("slug") or task.id)
+            if program_key == "x_feature":
+                ref = markers.get_x_feature_ref(task) or {}
+                item_ref = str(ref.get("slug") or task.id)
+            else:
+                item_ref = (task.title or str(task.id)).strip()[:80]
+            body = markers.get_x_draft_body(task) or task.description or ""
+            item_payload: dict[str, Any] = {
+                "title": task.title or "",
+                "description": body,
+                "status": verdict,
+                "reject_reason": reason,
+                "materialized_task_id": str(task.id),
+            }
             await get_board_program_engine(self.session).record_decision(
-                "x_feature", item_ref, verdict, reason
+                program_key, item_ref, verdict, reason, item_payload=item_payload
             )
         except Exception as exc:
             logger.warning(
@@ -373,11 +417,12 @@ class XPostService(BaseService):
         finally:
             await self._release_lock(lock_key, token)
         # Outside the lock, after the cancel is flushed: LEARN records the
-        # rejection (x_feature source only — mirrors _post's approve-side
-        # hook), then a non-blank reason schedules the redraft. Never inline
-        # in the critical section above (see _schedule_redraft).
-        if locked.source == X_FEATURE_SOURCE:
-            await self._record_learn(locked, "rejected", reason)
+        # rejection (every Board Program-backed source, mirrors _post's
+        # approve-side hook), then a non-blank reason schedules the redraft.
+        # Never inline in the critical section above (see _schedule_redraft).
+        program_key = _LEARN_PROGRAM_BY_SOURCE.get(locked.source)
+        if program_key is not None:
+            await self._record_learn(program_key, locked, "rejected", reason)
         if reason.strip():
             self._schedule_redraft(task_id, reason)
         return locked

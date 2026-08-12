@@ -558,3 +558,120 @@ async def test_sweep_capped_row_never_re_escalates_again() -> None:
     assert count == 1  # still stale + unacked
     session.add.assert_not_called()
     assert notif.reescalation_count == capped_count  # untouched — no further attempts
+
+
+# =============================================================================
+# resolve_terminal_task_escalations: auto-ack when the related task is done
+# =============================================================================
+#
+# A requires_ack notification (e.g. BLOCKER_ESCALATION) whose related task
+# has gone terminal (completed/cancelled) can never be meaningfully acted on
+# by anyone. Left unacked it both wedges i_am_idle's soft-block (which reads
+# EvidenceRepo.list_pending_notifications, requires_ack-scoped) and keeps
+# sweep_expired_notifications' re-escalation ladder minting fresh rows about
+# it every backoff window, all the way to the CEO, for up to
+# notification_ack_ttl_hours. This pass auto-acks such rows independent of
+# expires_at, every sweep tick.
+
+
+def _terminal_escalation_notification(
+    *, acked: bool = False, recipient_id: UUID | None = None
+) -> MagicMock:
+    n = MagicMock()
+    n.id = uuid4()
+    n.type = NotificationType.BLOCKER_ESCALATION
+    n.subject = "Re-escalation (unacked): blocked"
+    n.body = "body"
+    rid = recipient_id or uuid4()
+    n.to_agents = [rid]
+    n.acked_by = [rid] if acked else []
+    n.acked_at = {}
+    n.requires_ack = True
+    n.related_task_id = uuid4()
+    return n
+
+
+def _resolve_session(notifications: list[MagicMock]) -> MagicMock:
+    """A session whose SELECT returns `notifications` and whose `get` looks
+    them up by id: mirrors `_session_returning`'s shape but scoped to just
+    this one query, so it never collides with the sweep tests' dual-query
+    (Update vs dedup-select vs stale-select) dispatcher above."""
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    async def _get(_model: Any, ident: Any) -> MagicMock | None:
+        return next((n for n in notifications if n.id == ident), None)
+
+    session.get = AsyncMock(side_effect=_get)
+
+    select_result = MagicMock()
+    select_result.scalars.return_value.all.return_value = notifications
+    session.execute = AsyncMock(return_value=select_result)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_task_escalations_acks_unacked_row() -> None:
+    notif = _terminal_escalation_notification()
+    recipient_id = notif.to_agents[0]
+    session = _resolve_session([notif])
+    svc = NotificationDeliveryService(session)
+
+    count = await svc.resolve_terminal_task_escalations()
+
+    assert count == 1
+    assert recipient_id in notif.acked_by
+    assert str(recipient_id) in notif.acked_at
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_task_escalations_skips_already_acked() -> None:
+    notif = _terminal_escalation_notification(acked=True)
+    session = _resolve_session([notif])
+    svc = NotificationDeliveryService(session)
+
+    count = await svc.resolve_terminal_task_escalations()
+
+    assert count == 0
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_task_escalations_row_failure_is_isolated() -> None:
+    """One row's failure is logged, rolled back, and skipped: it never
+    aborts resolution of the rest (mirrors sweep_expired_notifications'
+    own per-row isolation)."""
+    notif_bad = _terminal_escalation_notification()
+    notif_good = _terminal_escalation_notification()
+    session = _resolve_session([notif_bad, notif_good])
+
+    async def _get(_model: Any, ident: Any) -> MagicMock | None:
+        if ident == notif_bad.id:
+            raise RuntimeError("boom")
+        return notif_good if ident == notif_good.id else None
+
+    session.get = AsyncMock(side_effect=_get)
+    svc = NotificationDeliveryService(session)
+
+    count = await svc.resolve_terminal_task_escalations()
+
+    assert count == 1
+    assert notif_good.acked_by == [notif_good.to_agents[0]]
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_task_escalations_query_scoped_correctly() -> None:
+    """The query must filter on requires_ack AND the related task's terminal
+    status; reverting either predicate makes this fail."""
+    session = _resolve_session([])
+    svc = NotificationDeliveryService(session)
+
+    await svc.resolve_terminal_task_escalations()
+
+    statement = session.execute.call_args.args[0]
+    compiled = str(statement)
+    assert "requires_ack" in compiled
+    assert "tasks.status IN" in compiled

@@ -1813,6 +1813,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2041,6 +2042,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2271,6 +2273,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("target_task_title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2499,6 +2502,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2732,6 +2736,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2964,6 +2969,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -4719,6 +4725,7 @@ class ContentActions:
                     tags=["coroner", "postmortem"],
                 ),
                 created_by=agent_id,
+                source_program="coroner",
             )
         except ConflictError as exc:
             return None, Envelope.invalid_state(
@@ -4868,6 +4875,7 @@ class ContentActions:
                         tags=["librarian", "auto-authored"],
                     ),
                     created_by=agent_id,
+                    source_program="librarian",
                 )
             except ConflictError as exc:
                 return created, Envelope.invalid_state(

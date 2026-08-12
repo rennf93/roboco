@@ -348,6 +348,32 @@ class SpawnWasteReport:
 
 
 @dataclass
+class ProvenanceReport:
+    """Human- vs agent-originated task counts over a trailing window.
+
+    ``tasks.source`` alone cannot answer "who originated this": a delegated
+    subtask's own source always reads "manual" regardless of what actually
+    originated the work further up the tree (see ``HUMAN_AUTHORED_SOURCES``
+    in ``roboco.services.task``). Each task counted here is classified by
+    its ROOT ancestor's source, not its own.
+    """
+
+    total: int
+    human_authored: int
+    agent_authored: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "human_authored": self.human_authored,
+            "agent_authored": self.agent_authored,
+            "human_rate": round(
+                self.human_authored / self.total if self.total else 0.0, 4
+            ),
+        }
+
+
+@dataclass
 class Scorecard:
     """Fused per-agent or per-cell delivery scorecard."""
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -46,6 +47,7 @@ CEO_UUID = _foundation.AGENTS["ceo"].uuid
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 PO_UUID = _foundation.AGENTS["product-owner"].uuid
 HOM_UUID = _foundation.AGENTS["head-marketing"].uuid
+TWO = 2
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -337,5 +339,90 @@ async def test_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/board-programs")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Gap 5: the historical-cycles read surface behind the single rendered
+# ``last_cycle_summary`` line ``GET /api/board-programs`` returns.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_returns_historical_decisions(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    db_session.add(
+        BoardProgramCycleTable(
+            program_key="mirror",
+            exploration_task_id=None,
+            opened_at=datetime.now(UTC),
+            closed_at=datetime.now(UTC),
+            items_proposed=1,
+            items_approved=1,
+            items_rejected=0,
+            decisions=[
+                {
+                    "item_ref": "README claims a dead feature",
+                    "verdict": "approved",
+                    "reason": None,
+                    "item_snapshot": {
+                        "title": "README claims a dead feature",
+                        "materialized_task_id": str(uuid4()),
+                    },
+                }
+            ],
+        )
+    )
+    await db_session.flush()
+
+    resp = await ceo_client.get("/api/board-programs/mirror/cycles")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert len(body) == 1
+    cycle = body[0]
+    assert cycle["items_proposed"] == 1
+    assert cycle["items_approved"] == 1
+    decision = cycle["decisions"][0]
+    assert decision["item_ref"] == "README claims a dead feature"
+    assert decision["verdict"] == "approved"
+    assert decision["item_snapshot"]["title"] == "README claims a dead feature"
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_respects_limit(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    for _ in range(3):
+        db_session.add(
+            BoardProgramCycleTable(
+                program_key="sentinel",
+                exploration_task_id=None,
+                opened_at=datetime.now(UTC),
+            )
+        )
+    await db_session.flush()
+
+    resp = await ceo_client.get(
+        "/api/board-programs/sentinel/cycles", params={"limit": 2}
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert len(resp.json()) == TWO
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_unknown_key_is_404(ceo_client: AsyncClient) -> None:
+    resp = await ceo_client.get("/api/board-programs/not-a-real-program/cycles")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    await _seed_agents(db_session)
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/board-programs/mirror/cycles")
     assert resp.status_code == HTTPStatus.FORBIDDEN
     app.dependency_overrides.clear()

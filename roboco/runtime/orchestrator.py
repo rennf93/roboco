@@ -8312,8 +8312,13 @@ Start by:
         async with session_factory() as db:
             deliv_svc = get_notification_delivery_service(db)
             try:
+                # Resolve terminal-task escalations FIRST: sweep_expired_
+                # notifications runs its own independent query right after,
+                # so a row acked here is already excluded from that query's
+                # unacked/re-escalation path in the same tick.
+                resolved = await deliv_svc.resolve_terminal_task_escalations()
                 expired = await deliv_svc.sweep_expired_notifications()
-                if expired:
+                if resolved or expired:
                     await db.commit()
             except Exception as e:
                 await db.rollback()

@@ -531,11 +531,12 @@ async def test_approve_records_learn_decision(db_session: AsyncSession) -> None:
     # The ref is the item's TITLE, not its per-cycle index: this row is
     # rendered into the next cycle's exploration prompt, where "item-0"
     # names nothing (see BoardProgramEngine.learn_ref).
-    assert {
-        "item_ref": "Stale task",
-        "verdict": "approved",
-        "reason": None,
-    } in row.decisions
+    decision = next(d for d in row.decisions if d["item_ref"] == "Stale task")
+    assert decision["verdict"] == "approved"
+    assert decision["reason"] is None
+    # Scales items carry no direct materialized_task_id, so the snapshot
+    # falls back to target_task_id (the live task the decision acted on).
+    assert decision["item_snapshot"]["materialized_task_id"] == str(target.id)
 
 
 @pytest.mark.asyncio
@@ -559,11 +560,10 @@ async def test_reject_records_learn_decision_with_reason(
     # The ref is the item's TITLE, not its per-cycle index: this row is
     # rendered into the next cycle's exploration prompt, where "item-0"
     # names nothing (see BoardProgramEngine.learn_ref).
-    assert {
-        "item_ref": "Stale task",
-        "verdict": "rejected",
-        "reason": "not a priority",
-    } in row.decisions
+    decision = next(d for d in row.decisions if d["item_ref"] == "Stale task")
+    assert decision["verdict"] == "rejected"
+    assert decision["reason"] == "not a priority"
+    assert decision["item_snapshot"]["reject_reason"] == "not a priority"
 
 
 @pytest.mark.asyncio

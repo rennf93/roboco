@@ -17,6 +17,7 @@ import pytest_asyncio
 from roboco.config import settings as cfg
 from roboco.db.tables import (
     AgentTable,
+    AuditLogTable,
     BoardProgramCycleTable,
     ProjectTable,
     SystemSettingTable,
@@ -29,6 +30,7 @@ from roboco.foundation.policy.board_programs import (
     BoardProgram,
     TriggerKind,
 )
+from roboco.foundation.policy.content import markers
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -1210,3 +1212,220 @@ def _fake_predicate(
         return verdict
 
     return _predicate
+
+
+# ---------------------------------------------------------------------------
+# Item-payload snapshotting (gap 3: the full per-item payload used to live
+# ONLY on the exploration task's own orchestration_markers, gone the instant
+# TaskService.delete removes it) + the generic audit event (gap 4) +
+# list_cycles (gap 5's service-layer read surface).
+# ---------------------------------------------------------------------------
+
+
+async def _seed_mirror_item(
+    session: AsyncSession, task: TaskTable, *, materialized_task_id: str
+) -> None:
+    markers.set_messaging_fixes(
+        task,
+        {
+            "items": [
+                {
+                    "id": "item-0",
+                    "title": "README claims a feature that no longer ships",
+                    "evidence": "README section 3 still describes the old flow",
+                    "description": "Update the README to match shipped behavior",
+                    "acceptance_criteria": ["README section 3 rewritten"],
+                    "team": "backend",
+                    "project_slug": "roboco",
+                    "status": "approved",
+                    "materialized_task_id": materialized_task_id,
+                }
+            ]
+        },
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_record_decision_stamps_item_snapshot_from_queue_shaped_marker(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    task = await _make_exploration(db_session, source=MIRROR_SOURCE)
+    materialized_id = str(uuid4())
+    await _seed_mirror_item(db_session, task, materialized_task_id=materialized_id)
+    db_session.add(
+        BoardProgramCycleTable(
+            program_key="mirror",
+            exploration_task_id=task.id,
+            opened_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    await engine.record_decision(
+        "mirror",
+        "README claims a feature that no longer ships",
+        "approved",
+        exploration_task_id=cast("UUID", task.id),
+    )
+
+    row = await engine._cycle_for_exploration("mirror", cast("UUID", task.id))
+    assert row is not None
+    snapshot = row.decisions[0]["item_snapshot"]
+    assert snapshot["title"] == "README claims a feature that no longer ships"
+    assert snapshot["evidence"] == "README section 3 still describes the old flow"
+    assert snapshot["description"] == "Update the README to match shipped behavior"
+    assert snapshot["acceptance_criteria"] == ["README section 3 rewritten"]
+    assert snapshot["status"] == "approved"
+    assert snapshot["materialized_task_id"] == materialized_id
+
+
+@pytest.mark.asyncio
+async def test_record_decision_item_snapshot_survives_exploration_task_deletion(
+    db_session: AsyncSession,
+) -> None:
+    """DEFECT regression (gap 3): TaskService.delete hard-deletes the
+    exploration task the item payload used to live exclusively on, and the
+    cycle row's FK is ondelete=SET NULL, so without the snapshot the
+    decision would survive with nothing behind it. Proves the snapshot
+    baked in at decision time reads back intact once the task row is gone.
+
+    The FK's ON DELETE SET NULL fires as part of the DELETE statement itself
+    (an immediate, non-deferrable constraint), so no real commit is needed
+    to observe it, just a DB round-trip. ``refresh()`` re-reads ``cycle`` from
+    Postgres inside the SAME still-open, rollback-at-teardown transaction
+    every other test in this file relies on, so this needs no leaked-row
+    cleanup unlike the real-commit tests elsewhere in this module.
+    """
+    await _seed(db_session)
+    task = await _make_exploration(db_session, source=MIRROR_SOURCE)
+    task_id = cast("UUID", task.id)
+    await _seed_mirror_item(db_session, task, materialized_task_id=str(uuid4()))
+    cycle = BoardProgramCycleTable(
+        program_key="mirror", exploration_task_id=task_id, opened_at=datetime.now(UTC)
+    )
+    db_session.add(cycle)
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    await engine.record_decision(
+        "mirror",
+        "README claims a feature that no longer ships",
+        "approved",
+        exploration_task_id=task_id,
+    )
+
+    await db_session.execute(delete(TaskTable).where(TaskTable.id == task_id))
+    await db_session.flush()
+    await db_session.refresh(cycle)
+
+    assert cycle.exploration_task_id is None  # nulled by the FK
+    snapshot = cycle.decisions[0]["item_snapshot"]
+    assert snapshot["title"] == "README claims a feature that no longer ships"
+    assert snapshot["materialized_task_id"]
+
+
+@pytest.mark.asyncio
+async def test_record_decision_caps_an_explicit_item_payload(
+    db_session: AsyncSession,
+) -> None:
+    """An explicit ``item_payload`` (the x_post_service/playbook.py path) is
+    bounded the same way as an auto-resolved one: unknown keys are dropped
+    and long text is truncated, this is a snapshot, not an archive."""
+    await _seed(db_session)
+    task = await _make_exploration(
+        db_session, source=ROADMAP_SOURCE, status=TS.COMPLETED
+    )
+    db_session.add(
+        BoardProgramCycleTable(
+            program_key="roadmap",
+            exploration_task_id=task.id,
+            opened_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    await engine.record_decision(
+        "roadmap",
+        "item-1",
+        "approved",
+        item_payload={
+            "title": "x" * 500,
+            "unexpected_field": "must be dropped",
+            "acceptance_criteria": [f"ac-{i}" for i in range(20)],
+        },
+    )
+
+    row = await engine._latest_cycle("roadmap")
+    assert row is not None
+    snapshot = row.decisions[0]["item_snapshot"]
+    assert len(snapshot["title"]) == bp_module._SNAPSHOT_TEXT_CAP
+    assert "unexpected_field" not in snapshot
+    assert len(snapshot["acceptance_criteria"]) == bp_module._SNAPSHOT_AC_CAP
+
+
+@pytest.mark.asyncio
+async def test_record_decision_emits_a_generic_audit_event(
+    db_session: AsyncSession,
+) -> None:
+    """Gap 4: every program gets one audit row per decision at the single
+    ``record_decision`` chokepoint. Previously only Scales' own
+    ``task.scales_rebalance`` execution audit existed, and no program
+    (Scales included) emitted anything from LEARN itself."""
+    await _seed(db_session)
+    task = await _make_exploration(
+        db_session, source=ROADMAP_SOURCE, status=TS.COMPLETED
+    )
+    cycle = BoardProgramCycleTable(
+        program_key="roadmap", exploration_task_id=task.id, opened_at=datetime.now(UTC)
+    )
+    db_session.add(cycle)
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    await engine.record_decision(
+        "roadmap", "item-1", "rejected", reason="not aligned with the charter"
+    )
+
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLogTable).where(
+                    AuditLogTable.event_type == "board_program.decision",
+                    AuditLogTable.target_id == cycle.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].target_type == "board_program_cycle"
+    assert rows[0].details["program_key"] == "roadmap"
+    assert rows[0].details["verdict"] == "rejected"
+    assert rows[0].details["reason"] == "not aligned with the charter"
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_returns_newest_first_and_capped(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    for offset_hours in (3, 1, 2):
+        db_session.add(
+            BoardProgramCycleTable(
+                program_key="mirror",
+                exploration_task_id=None,
+                opened_at=datetime.now(UTC) - timedelta(hours=offset_hours),
+            )
+        )
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    cycles = await engine.list_cycles("mirror", limit=2)
+    assert len(cycles) == TWO
+    # Newest (smallest offset) first.
+    assert cycles[0].opened_at > cycles[1].opened_at

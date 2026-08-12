@@ -40,6 +40,8 @@ from roboco.services import x_engine as x_engine_module
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.task import (
     X_BARFLY_SOURCE,
+    X_CAMPAIGN_SOURCE,
+    X_EDITORIAL_SOURCE,
     X_FEATURE_SOURCE,
     X_POST_SOURCE,
     X_REPLY_SOURCE,
@@ -784,10 +786,12 @@ async def test_approve_does_not_flush_edited_body_before_lock(
 # --------------------------------------------------------------------------- #
 
 
-async def _seed_cycle_ledger_row(session: AsyncSession, task: TaskTable) -> None:
+async def _seed_cycle_ledger_row(
+    session: AsyncSession, task: TaskTable, *, program_key: str = "x_feature"
+) -> None:
     session.add(
         BoardProgramCycleTable(
-            program_key="x_feature",
+            program_key=program_key,
             exploration_task_id=task.id,
             opened_at=datetime.now(UTC),
         )
@@ -828,11 +832,11 @@ async def test_approve_feature_spotlight_records_learn_decision(
 
     row = await _cycle_row_for_task(db_session, _id(task))
     assert row.items_approved == ONE
-    assert {
-        "item_ref": _FEATURE_SLUG,
-        "verdict": "approved",
-        "reason": None,
-    } in row.decisions
+    decision = next(d for d in row.decisions if d["item_ref"] == _FEATURE_SLUG)
+    assert decision["verdict"] == "approved"
+    assert decision["reason"] is None
+    assert decision["item_snapshot"]["title"] == "X draft"
+    assert decision["item_snapshot"]["materialized_task_id"] == str(task.id)
 
 
 @pytest.mark.asyncio
@@ -846,11 +850,91 @@ async def test_reject_feature_spotlight_records_learn_decision_with_reason(
 
     row = await _cycle_row_for_task(db_session, _id(task))
     assert row.items_rejected == ONE
-    assert {
-        "item_ref": _FEATURE_SLUG,
-        "verdict": "rejected",
-        "reason": "not on-brand",
-    } in row.decisions
+    decision = next(d for d in row.decisions if d["item_ref"] == _FEATURE_SLUG)
+    assert decision["verdict"] == "rejected"
+    assert decision["reason"] == "not on-brand"
+    assert decision["item_snapshot"]["reject_reason"] == "not on-brand"
+
+
+# --------------------------------------------------------------------------- #
+# Gap-1 fix regression: megaphone/war_room/barfly drafts (x_editorial/
+# x_campaign/x_barfly) now record LEARN too. Previously _record_learn was
+# gated on X_FEATURE_SOURCE alone, so these three programs never accrued a
+# single decision no matter how many drafts the CEO approved/rejected.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_approve_megaphone_records_learn_decision(
+    db_session: AsyncSession,
+) -> None:
+    task = await _seed_draft(db_session, source=X_EDITORIAL_SOURCE, body="Ship notes")
+    await _seed_cycle_ledger_row(db_session, task, program_key="megaphone")
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(task))
+
+    row = await _cycle_row_for_task(db_session, _id(task))
+    assert row.items_approved == ONE
+    assert row.decisions[0]["verdict"] == "approved"
+    assert row.decisions[0]["item_snapshot"]["description"] == "Ship notes"
+
+
+@pytest.mark.asyncio
+async def test_approve_war_room_records_learn_decision(
+    db_session: AsyncSession,
+) -> None:
+    task = await _seed_draft(db_session, source=X_CAMPAIGN_SOURCE, body="Launch post")
+    await _seed_cycle_ledger_row(db_session, task, program_key="war_room")
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(task))
+
+    row = await _cycle_row_for_task(db_session, _id(task))
+    assert row.items_approved == ONE
+
+
+@pytest.mark.asyncio
+async def test_approve_barfly_records_learn_decision(
+    db_session: AsyncSession,
+) -> None:
+    task = await _seed_draft(
+        db_session, source=X_BARFLY_SOURCE, body="Reply commentary"
+    )
+    await _seed_cycle_ledger_row(db_session, task, program_key="barfly")
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(task))
+
+    row = await _cycle_row_for_task(db_session, _id(task))
+    assert row.items_approved == ONE
+
+
+@pytest.mark.asyncio
+async def test_reject_megaphone_records_learn_decision_with_reason(
+    db_session: AsyncSession,
+) -> None:
+    task = await _seed_draft(db_session, source=X_EDITORIAL_SOURCE)
+    await _seed_cycle_ledger_row(db_session, task, program_key="megaphone")
+    with _lock_free():
+        await _svc(db_session).reject(_id(task), "off-calendar")
+
+    row = await _cycle_row_for_task(db_session, _id(task))
+    assert row.items_rejected == ONE
+    assert row.decisions[0]["verdict"] == "rejected"
+    assert row.decisions[0]["reason"] == "off-calendar"
 
 
 @pytest.mark.asyncio
