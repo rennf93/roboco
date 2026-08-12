@@ -87,6 +87,13 @@ function campaignGuidance(post: XPost): string | null {
   return `${post.campaign.stage_label} · #${post.campaign.sequence} of "${post.campaign.campaign_name}" · recommended ${when}`;
 }
 
+// Megaphone editorial context — the angle the local model took and why,
+// surfaced on the card so the CEO can judge the framing before approving.
+function editorialGuidance(post: XPost): string | null {
+  if (!post.editorial) return null;
+  return `Angle: ${post.editorial.angle} — ${post.editorial.rationale}`;
+}
+
 // Explains what Approve does, or why it's disabled — surfaced on the button
 // itself so the CEO doesn't have to guess between "already posting", "over
 // the limit", or "empty". Always returns a non-empty string (never null):
@@ -186,6 +193,14 @@ function XPostRow({
         <HelpTip label="Recommended publish moment — guidance only, you approve each post individually and nothing here auto-posts">
           <p className="mb-2 text-xs text-muted-foreground">
             {campaignGuidance(post)}
+          </p>
+        </HelpTip>
+      )}
+
+      {editorialGuidance(post) && (
+        <HelpTip label="The editorial angle and rationale the draft takes — guidance only, you approve each post individually and nothing here auto-posts">
+          <p className="mb-2 text-xs text-muted-foreground">
+            {editorialGuidance(post)}
           </p>
         </HelpTip>
       )}
