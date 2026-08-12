@@ -1498,11 +1498,10 @@ class XEngine(BaseService):
         """(source, key) discriminating one draft's underlying item from
         another of the same source: release version for x_post, mention id
         for x_reply, feature slug for x_feature, target tweet id for
-        x_barfly. None when the task carries no such marker or the source
-        has no registered extractor (x_editorial/x_campaign — see the
-        ponytail note above the extractor dicts). Dict-dispatched (not an
-        if-chain) to keep this flat as new X sources register (xenon
-        budget)."""
+        x_barfly, angle for x_editorial, campaign_name:sequence for
+        x_campaign. None when the task carries no such marker.
+        Dict-dispatched (not an if-chain) to keep this flat as new X sources
+        register (xenon budget)."""
         extractor = _REDRAFT_IDENTITY_EXTRACTORS.get(task.source)
         return extractor(task) if extractor is not None else None
 
