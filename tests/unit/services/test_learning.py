@@ -346,10 +346,13 @@ async def test_get_learning_service_factory() -> None:
 class _FakeAgentRow:
     """Stand-in for an AgentTable row returned by the recipients SELECT."""
 
-    def __init__(self, *, id: UUID, role: AgentRole) -> None:
+    def __init__(
+        self, *, id: UUID, role: AgentRole, team: str | None = None
+    ) -> None:
         self.id = id
         self.role = role
         self.slug = f"{role.value}-agent"
+        self.team = team
 
 
 class _BulkInsertFakeDb:
@@ -391,6 +394,122 @@ async def _fake_db_ctx(db: _BulkInsertFakeDb) -> AsyncIterator[_BulkInsertFakeDb
 
 def _make_agents(n: int) -> list[_FakeAgentRow]:
     return [_FakeAgentRow(id=uuid4(), role=AgentRole.DEVELOPER) for _ in range(n)]
+
+
+class _CellScopeFakeDb:
+    """Fake AsyncSession for CELL-scope _fetch_notify_agents tests.
+
+    The first execute call is the author-team lookup (scalar_one_or_none);
+    the second is the candidate SELECT (scalars().all). On the second call,
+    candidates are filtered by the team predicate found in the SQL WHERE
+    clause — if no team predicate is present, ALL candidates are returned
+    so cross-team agents leak through and the test fails.
+    """
+
+    def __init__(
+        self, author_team: str | None, candidates: list[_FakeAgentRow]
+    ) -> None:
+        self._author_team = author_team
+        self._candidates = candidates
+        self.execute_count = 0
+
+    async def execute(self, stmt: Any, _params: Any = None) -> Any:
+        self.execute_count += 1
+        if self.execute_count == 1:
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = self._author_team
+            return result
+        team_filter = self._extract_team_filter(stmt)
+        if team_filter is not None:
+            returned = [c for c in self._candidates if c.team == team_filter]
+        else:
+            returned = list(self._candidates)
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = returned
+        return result
+
+    @staticmethod
+    def _extract_team_filter(stmt: Any) -> str | None:
+        """Return the team value from a .where(AgentTable.team == X) clause."""
+        whereclause = stmt.whereclause
+        if whereclause is None:
+            return None
+        clauses = getattr(whereclause, "clauses", [whereclause])
+        for clause in clauses:
+            left = getattr(clause, "left", None)
+            if left is not None and getattr(left, "key", None) == "team":
+                right = getattr(clause, "right", None)
+                if right is not None:
+                    return getattr(right, "value", None)
+        return None
+
+
+@pytest.mark.asyncio
+async def test_fetch_notify_agents_cell_scope_filters_by_team(
+    svc: LearningPropagationService,
+) -> None:
+    """CELL scope resolves the author's team and returns same-team candidates.
+
+    Seeds backend, frontend, and UX agents so removing the .where(team ==)
+    filter from learning.py would let cross-team agents through and fail
+    the test.
+    """
+    author_id = uuid4()
+    backend_agent = _FakeAgentRow(
+        id=uuid4(), role=AgentRole.DEVELOPER, team="backend"
+    )
+    frontend_agent = _FakeAgentRow(
+        id=uuid4(), role=AgentRole.DEVELOPER, team="frontend"
+    )
+    ux_agent = _FakeAgentRow(
+        id=uuid4(), role=AgentRole.DEVELOPER, team="ux_ui"
+    )
+    db = _CellScopeFakeDb(
+        author_team="backend",
+        candidates=[backend_agent, frontend_agent, ux_agent],
+    )
+
+    learning = Learning(
+        learning_id="lrn-cell-1",
+        agent_id=author_id,
+        agent_role="developer",
+        content="cell-scoped lesson",
+        learning_type=LearningType.PATTERN,
+        scope=LearningScope.CELL,
+    )
+
+    result = await svc._fetch_notify_agents(db, learning)
+    # Only the backend agent is returned — frontend and UX are excluded.
+    assert len(result) == 1
+    assert result[0].id == backend_agent.id
+    # Cross-team agents must NOT appear in the result.
+    result_ids = {r.id for r in result}
+    assert frontend_agent.id not in result_ids
+    assert ux_agent.id not in result_ids
+    # Two execute calls: author-team lookup + candidate SELECT.
+    _EXPECTED_CELL_EXECUTES = 2
+    assert db.execute_count == _EXPECTED_CELL_EXECUTES
+
+
+@pytest.mark.asyncio
+async def test_fetch_notify_agents_cell_scope_null_team_returns_empty(
+    svc: LearningPropagationService,
+) -> None:
+    """CELL scope returns [] when the author has no team assigned."""
+    db = _CellScopeFakeDb(author_team=None, candidates=[])
+
+    learning = Learning(
+        learning_id="lrn-cell-2",
+        agent_id=uuid4(),
+        agent_role="developer",
+        content="cell lesson from unteamed agent",
+        learning_type=LearningType.PATTERN,
+        scope=LearningScope.CELL,
+    )
+
+    result = await svc._fetch_notify_agents(db, learning)
+    assert result == []
+    assert db.execute_count == 1
 
 
 _N_RECIPIENTS = 25
