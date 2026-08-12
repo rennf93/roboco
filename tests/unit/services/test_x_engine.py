@@ -41,6 +41,7 @@ from roboco.services import x_engine as x_engine_module
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.task import (
     MEGAPHONE_SOURCE,
+    X_CAMPAIGN_SOURCE,
     X_EDITORIAL_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     X_FEATURE_SOURCE,
@@ -1465,6 +1466,88 @@ async def test_redraft_from_rejection_barfly_carries_reply_ref(
         markers.get_x_draft_body(redraft)
         == "A sharper reply. https://x.com/i/web/status/111"
     )
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_editorial_carries_editorial_ref(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected x_editorial draft's redraft keeps its angle + rationale —
+    losing x_editorial_ref would strip the editorial context from the
+    revision prompt and the panel's angle-guidance line."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+
+    class _Exploration:
+        project_id = project.id
+
+    post_task = await engine.materialize_editorial_post(
+        exploration_task=cast("TaskTable", _Exploration()),
+        angle="Why multi-agent beats monolithic",
+        body="Original editorial post.",
+        rationale="Counter the single-agent hype wave.",
+    )
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, "A sharper editorial take.")
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Too dry")
+    assert redraft is not None
+    assert redraft.source == X_EDITORIAL_SOURCE
+    ref = markers.get_x_editorial_ref(redraft)
+    assert ref is not None
+    assert ref["angle"] == "Why multi-agent beats monolithic"
+    assert ref["rationale"] == "Counter the single-agent hype wave."
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_campaign_carries_campaign_ref(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected x_campaign draft's redraft keeps its campaign_name,
+    stage_label, publish_after, and sequence — losing x_campaign_ref would
+    strip the campaign context from the revision prompt and the panel's
+    campaign-guidance line."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+
+    class _Exploration:
+        project_id = project.id
+
+    campaign_ref = {
+        "campaign_name": "Launch Week",
+        "stage_label": "Teaser",
+        "publish_after": "2026-08-15T00:00:00Z",
+        "sequence": 1,
+    }
+    post_task = await engine.materialize_campaign_post(
+        exploration_task=cast("TaskTable", _Exploration()),
+        campaign_ref=campaign_ref,
+        body="Original campaign post.",
+    )
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, "A sharper campaign tweet.")
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Too vague")
+    assert redraft is not None
+    assert redraft.source == X_CAMPAIGN_SOURCE
+    ref = markers.get_x_campaign_ref(redraft)
+    assert ref is not None
+    assert ref["campaign_name"] == "Launch Week"
+    assert ref["stage_label"] == "Teaser"
+    assert ref["publish_after"] == "2026-08-15T00:00:00Z"
+    assert ref["sequence"] == 1
 
 
 @pytest.mark.asyncio

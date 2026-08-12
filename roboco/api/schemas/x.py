@@ -32,6 +32,13 @@ class XCampaignRefModel(BaseModel):
     sequence: int
 
 
+class XEditorialRefModel(BaseModel):
+    """The editorial angle and rationale behind a Megaphone X post."""
+
+    angle: str
+    rationale: str
+
+
 class XBarflyRefModel(BaseModel):
     """The screened X conversation a held Barfly reply answers."""
 
@@ -55,6 +62,7 @@ class XPostResponse(BaseModel):
     mention: XMentionRefModel | None = None
     feature: XFeatureRefModel | None = None
     campaign: XCampaignRefModel | None = None
+    editorial: XEditorialRefModel | None = None
     barfly: XBarflyRefModel | None = None
     reject_reason: str | None = None
     project_slug: str | None = None
@@ -94,6 +102,7 @@ class XPostHistoryResponse(BaseModel):
     mention: XMentionRefModel | None = None
     feature: XFeatureRefModel | None = None
     campaign: XCampaignRefModel | None = None
+    editorial: XEditorialRefModel | None = None
     barfly: XBarflyRefModel | None = None
     tweet_id: str | None = None
     reject_reason: str | None = None
