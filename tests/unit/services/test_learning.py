@@ -346,9 +346,7 @@ async def test_get_learning_service_factory() -> None:
 class _FakeAgentRow:
     """Stand-in for an AgentTable row returned by the recipients SELECT."""
 
-    def __init__(
-        self, *, id: UUID, role: AgentRole, team: str | None = None
-    ) -> None:
+    def __init__(self, *, id: UUID, role: AgentRole, team: str | None = None) -> None:
         self.id = id
         self.role = role
         self.slug = f"{role.value}-agent"
@@ -455,15 +453,11 @@ async def test_fetch_notify_agents_cell_scope_filters_by_team(
     the test.
     """
     author_id = uuid4()
-    backend_agent = _FakeAgentRow(
-        id=uuid4(), role=AgentRole.DEVELOPER, team="backend"
-    )
+    backend_agent = _FakeAgentRow(id=uuid4(), role=AgentRole.DEVELOPER, team="backend")
     frontend_agent = _FakeAgentRow(
         id=uuid4(), role=AgentRole.DEVELOPER, team="frontend"
     )
-    ux_agent = _FakeAgentRow(
-        id=uuid4(), role=AgentRole.DEVELOPER, team="ux_ui"
-    )
+    ux_agent = _FakeAgentRow(id=uuid4(), role=AgentRole.DEVELOPER, team="ux_ui")
     db = _CellScopeFakeDb(
         author_team="backend",
         candidates=[backend_agent, frontend_agent, ux_agent],
