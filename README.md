@@ -103,6 +103,9 @@ roboco/
 │   ├── rag/                     # Agent knowledge base (indexed into RAG)
 │   └── map/                     # Exhaustive codebase map (agent-facing)
 ├── alembic/                     # Database migrations
+├── motion/                      # Video/motion-graphics toolchain
+├── panel/                       # Next.js 16 control panel (served on :3000 via nginx)
+├── scripts/                     # Bootstrap and utility scripts (bootstrap.sh for make quickstart)
 ├── CLAUDE.md                    # Claude Code guidance
 ├── docker-compose.yml           # Full stack, built from source
 └── docker-compose.registry.yml  # Full stack, pulled from the image registry
