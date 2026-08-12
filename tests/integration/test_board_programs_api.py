@@ -22,8 +22,10 @@ from roboco.db.tables import (
     TaskTable,
 )
 from roboco.foundation import identity as _foundation
+from roboco.foundation.policy.maintenance_pause import PauseScope
 from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.permissions import AgentContext
+from roboco.services.maintenance_pause import get_maintenance_pause_service
 from roboco.services.task import (
     BARFLY_SOURCE,
     CORONER_SOURCE,
@@ -153,6 +155,24 @@ async def _arm_war_room(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) 
         access_token="at-test",
         access_token_secret="ats-test",
     )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _purge_maintenance_pause_rows(
+    db_session: AsyncSession,
+) -> AsyncIterator[None]:
+    """A pause the DEFECT-5 run-now test below writes (through a route that
+    commits explicitly) would otherwise outlive it in the shared, cross-
+    test-persistent DB and 409 every later run-now call in this file. Purge
+    unconditionally -- a no-op for every test here that never paused
+    anything."""
+    yield
+    await db_session.execute(
+        delete(SystemSettingTable).where(
+            SystemSettingTable.key.like("maintenance_pause.%")
+        )
+    )
+    await db_session.commit()
 
 
 def _build_app(db_session: AsyncSession, role: AgentRole, agent_id: UUID) -> FastAPI:
@@ -299,6 +319,30 @@ async def test_run_now_opens_a_cycle_then_conflicts_on_retry(
 
     second = await ceo_client.post("/api/board-programs/roadmap/run-now")
     assert second.status_code == HTTPStatus.CONFLICT
+    # DEFECT 5: the generic (non-pause) 409 must not claim a pause that
+    # isn't happening.
+    assert "pause" not in second.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_run_now_conflict_names_the_maintenance_pause_when_active(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEFECT 5: run-now's 409 must say WHY when the reason is a
+    board_programs maintenance pause, not the generic disabled/open-cycle/
+    no-project message that gives the CEO nothing actionable."""
+    await _arm_roadmap(db_session, monkeypatch)
+    await get_maintenance_pause_service(db_session).pause(
+        PauseScope.BOARD_PROGRAMS, by="ceo", hours=1
+    )
+    await db_session.commit()
+
+    resp = await ceo_client.post("/api/board-programs/roadmap/run-now")
+
+    assert resp.status_code == HTTPStatus.CONFLICT
+    assert "pause" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

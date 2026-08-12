@@ -343,6 +343,7 @@ async def test_dispatch_pm_work_routes_vault_draft_to_board_review_only() -> Non
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=[_vault_task_dict()])
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._resolve_agent_slug = MagicMock(return_value="product-owner")
     stub._BOARD_AGENTS = frozenset({"product-owner", "head-marketing"})
     stub._handle_board_assigned_task = AsyncMock()

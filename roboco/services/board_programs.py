@@ -832,6 +832,18 @@ class BoardProgramEngine(BaseService):
         return result.scalar_one_or_none()
 
     async def _originate_and_record(self, key: str) -> TaskTable | None:
+        """The shared origination chokepoint every registered program's cron
+        (``_run_due_one``) AND off-schedule (``open_program_cycle``: CEO
+        run-now, a metric-predicate accelerator, the strategy-engine idle
+        trigger, the Dogfood release-publish hook) path funnels through, so
+        one ``board_programs``-scope maintenance-pause check here covers all
+        of them at once. Coroner and War Room's own EVENT-hook entry points
+        (``open_for_incident`` / ``open_for_release``) bypass this function
+        entirely and carry their own identical check."""
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if await is_paused(self.session, PauseScope.BOARD_PROGRAMS):
+            return None
         task = await _ORIGINATORS[key](self.session)
         if task is None:
             return None

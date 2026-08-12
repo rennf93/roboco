@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from roboco.llm.providers import AgentProvider, ProviderRegistry
     from roboco.services.llm import AgentRoute
+    from roboco.services.maintenance_pause import PauseScope
     from roboco.services.task import TaskService
 import structlog
 from fastapi import status as http_status
@@ -1044,6 +1045,11 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
 
     Returns True when handled — the caller must not fall through to the
     board-review / PM-assigned paths — False for a normal PM/board task.
+
+    A ``board_programs``-scope maintenance pause leaves a matched task
+    PENDING and untouched (still returns True; it must never fall through
+    to the two-reviewer board-review path, which is the wrong flow for a
+    solo-authored program task) rather than dispatching the explorer spawn.
     """
     dispatch: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {
         ROADMAP_SOURCE: orch._dispatch_roadmap_exploration,
@@ -1065,6 +1071,10 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
     handler = dispatch.get(source) if isinstance(source, str) else None
     if handler is None:
         return False
+    from roboco.services.maintenance_pause import PauseScope
+
+    if await orch._is_paused(PauseScope.BOARD_PROGRAMS):
+        return True
     await handler(task)
     return True
 
@@ -9877,11 +9887,19 @@ Start by:
         renders (and the next cycle no longer re-renders + re-originates a
         second held video_post draft). The committed ``render_status=
         "rendered"`` is the idempotency key the next scan skips.
+
+        Skips the whole pass while the ``engines`` maintenance-pause scope is
+        active: rendering calls the video-renderer sidecar and materializes
+        a new held video_post draft, both autonomous origination work. A
+        skipped tick is retried next cycle once resumed, so nothing is lost.
         """
         from roboco.db import get_db_context
+        from roboco.services.maintenance_pause import PauseScope, is_paused
         from roboco.services.task import get_task_service
 
         async with get_db_context() as db:
+            if await is_paused(db, PauseScope.ENGINES):
+                return
             tasks = await get_task_service(db).list_completed_video_tasks()
             for task in tasks:
                 await self._render_video_task(db, task)
@@ -12823,14 +12841,28 @@ Start now: evidence(task_id="{task_id}")
         need to inject a mock service do so by building an instance via
         ``__new__`` (bypassing this method) and calling
         ``_reap_with_service`` directly.
+
+        THE TRAP: while ``dispatch`` is paused, agents legitimately stop
+        bumping their gateway heartbeat (no new turn is being dispatched for
+        them), so an otherwise-idle-but-fine claim would read as wedged past
+        the TTL and get unclaimed + respawned, the exact opposite of paused.
+        But the pause must not blind the fleet to a genuinely wedged/stuck/
+        broken-gateway container: those kills are liveness-based, not
+        dispatch-based, and a paused fleet can still burn spend on a runaway
+        agent for up to ``MAX_PAUSE_HOURS``. So the reap still runs every
+        tick; only its DB-level unclaim fallback (the part that only helps
+        if a respawn can follow, which a paused fleet won't do) is gated on
+        ``dispatch_paused`` -- see ``_reap_with_service``.
         """
         from roboco.db.base import get_session_factory
+        from roboco.services.maintenance_pause import PauseScope, is_paused
         from roboco.services.task import TaskService
 
         factory = get_session_factory()
         async with factory() as db:
+            dispatch_paused = await is_paused(db, PauseScope.DISPATCH)
             svc = TaskService(db)
-            await self._reap_with_service(svc)
+            await self._reap_with_service(svc, dispatch_paused=dispatch_paused)
             await db.commit()
         await self._sandbox_janitor_sweep()
 
@@ -13354,7 +13386,9 @@ Start now: evidence(task_id="{task_id}")
             and not await self._maybe_recover_broken_gateway(t)
         )
 
-    async def _reap_with_service(self, svc: "TaskService") -> None:
+    async def _reap_with_service(
+        self, svc: "TaskService", *, dispatch_paused: bool = False
+    ) -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
         Wraps each ``unclaim_for_reaper`` in try/except so a single bad row
@@ -13362,6 +13396,15 @@ Start now: evidence(task_id="{task_id}")
         if one task's release somehow fails. A claim whose assignee still has
         a live container is skipped: the heartbeat is a stale proxy there, and
         reaping a working agent only churns the task.
+
+        ``dispatch_paused`` narrows the ``dispatch``-scope maintenance pause
+        to just the DB-level unclaim below: the wedged-grok / stuck-claude /
+        broken-gateway kill checks nested in ``_should_skip_live_reap`` are
+        liveness/heartbeat based, not dispatch based, and always run -- a
+        genuinely wedged container must never idle unmonitored for the
+        length of a pause. Unclaiming only helps a task that a respawn can
+        follow, which a paused fleet won't do this tick, so that step alone
+        is deferred until the pause lifts.
         """
         from roboco.utils.converters import require_uuid
 
@@ -13373,7 +13416,8 @@ Start now: evidence(task_id="{task_id}")
                 # A live container is spared unless it is wedged (grok) or its
                 # gateway is broken-but-alive past the grace window — see
                 # _should_skip_live_reap, which kills + evicts those so we fall
-                # through to release + respawn.
+                # through to release + respawn. This check always runs, paused
+                # or not.
                 if await self._should_skip_live_reap(t, ts):
                     continue
                 # A provider-parked agent (session-limit / overload / grok-429)
@@ -13382,6 +13426,11 @@ Start now: evidence(task_id="{task_id}")
                 # NOT reap the claim, or probe-success would respawn the agent
                 # on a task it no longer owns.
                 if self._assignee_is_provider_parked(t):
+                    continue
+                if dispatch_paused:
+                    # The pause-sensitive step: no respawn will follow this
+                    # tick, so leave the claim as-is (any wedged container
+                    # above was already killed regardless).
                     continue
                 task_id = require_uuid(t.id)
                 reaped_agent = getattr(t, "assigned_to", None) or getattr(
@@ -13437,6 +13486,17 @@ Start now: evidence(task_id="{task_id}")
                 error=str(exc),
             )
 
+    async def _is_paused(self, scope: "PauseScope") -> bool:
+        """Open a short-lived session and check ``scope``'s maintenance-pause
+        state. ``is_paused`` itself never raises (it fails closed
+        internally), so no extra try/except is needed at call sites."""
+        from roboco.db.base import get_session_factory
+        from roboco.services.maintenance_pause import is_paused
+
+        factory = get_session_factory()
+        async with factory() as db:
+            return await is_paused(db, scope)
+
     async def _dispatch_all_work(self) -> None:
         """Run all dispatchers to check for and assign work.
 
@@ -13455,6 +13515,15 @@ Start now: evidence(task_id="{task_id}")
         spawn an agent for a task whose previous holder is dead. Without
         this ordering, the spawn pass could race against a stale claim and
         skip work the reaper would have freed in the same tick.
+
+        A ``dispatch``-scope maintenance pause drains every spawn-issuing
+        dispatcher here EXCEPT ``pm_work``, which always runs: it also
+        routes Board Program exploration dispatch (a separate,
+        independently-paused ``board_programs`` scope, see
+        ``_dispatch_board_program_exploration``), so it cannot be skipped
+        wholesale without incorrectly coupling the two scopes. ``pm_work``
+        itself skips its own non-board-program branches while paused (see
+        ``_dispatch_pm_work``).
         """
         self._tick_handled_tasks = set()
 
@@ -13467,42 +13536,53 @@ Start now: evidence(task_id="{task_id}")
             logger.error("Stale-claim reaper failed; continuing tick", error=str(e))
 
         # Enforce the GROK cost ceiling (budget kill-switch parity). Wrapped so a
-        # failure never blocks dispatch; the next tick retries.
+        # failure never blocks dispatch; the next tick retries. Unrelated to the
+        # maintenance pause: a genuinely runaway-cost container is a real signal,
+        # not a "nothing is happening" false positive, so it is never suppressed
+        # by a pause; only NEW spawns are.
         try:
             await self._enforce_grok_cost_budget()
         except Exception as e:
             logger.error("Grok cost-budget sweep failed; continuing tick", error=str(e))
 
+        from roboco.services.maintenance_pause import PauseScope
+
+        dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
+
         dispatchers: list[tuple[str, Any]] = []
         async with httpx.AsyncClient(
             timeout=30.0, headers=_system_api_headers()
         ) as client:
-            dispatchers = [
-                ("pm_work", self._dispatch_pm_work(client)),
-                ("pm_closure_work", self._dispatch_pm_closure_work(client)),
-                (
-                    "revision_coordination",
-                    self._dispatch_revision_coordination_roots(client),
-                ),
-                ("dev_work", self._dispatch_dev_work(client)),
-                ("qa_work", self._dispatch_qa_work(client)),
-                ("pr_review_work", self._dispatch_pr_review_work(client)),
-                ("pr_gate_work", self._dispatch_pr_gate_work(client)),
-                ("doc_work", self._dispatch_doc_work(client)),
-                ("pm_review_work", self._dispatch_pm_review_work(client)),
-                ("marketing_work", self._dispatch_marketing_work(client)),
-                ("blocker_work", self._dispatch_blocker_work(client)),
-                (
-                    "claimed_without_agent",
-                    self._dispatch_claimed_without_agent(client),
-                ),
-                ("escalation_work", self._dispatch_escalation_work(client)),
-                ("approval_work", self._dispatch_approval_work(client)),
-                ("a2a_work", self._dispatch_a2a_work(client)),
-                ("audit_work", self._dispatch_audit_work(client)),
-                ("vault_curation_work", self._dispatch_vault_curation_work(client)),
-                ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
-            ]
+            dispatchers = [("pm_work", self._dispatch_pm_work(client))]
+            if not dispatch_paused:
+                dispatchers += [
+                    ("pm_closure_work", self._dispatch_pm_closure_work(client)),
+                    (
+                        "revision_coordination",
+                        self._dispatch_revision_coordination_roots(client),
+                    ),
+                    ("dev_work", self._dispatch_dev_work(client)),
+                    ("qa_work", self._dispatch_qa_work(client)),
+                    ("pr_review_work", self._dispatch_pr_review_work(client)),
+                    ("pr_gate_work", self._dispatch_pr_gate_work(client)),
+                    ("doc_work", self._dispatch_doc_work(client)),
+                    ("pm_review_work", self._dispatch_pm_review_work(client)),
+                    ("marketing_work", self._dispatch_marketing_work(client)),
+                    ("blocker_work", self._dispatch_blocker_work(client)),
+                    (
+                        "claimed_without_agent",
+                        self._dispatch_claimed_without_agent(client),
+                    ),
+                    ("escalation_work", self._dispatch_escalation_work(client)),
+                    ("approval_work", self._dispatch_approval_work(client)),
+                    ("a2a_work", self._dispatch_a2a_work(client)),
+                    ("audit_work", self._dispatch_audit_work(client)),
+                    (
+                        "vault_curation_work",
+                        self._dispatch_vault_curation_work(client),
+                    ),
+                    ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
+                ]
             for name, coro in dispatchers:
                 try:
                     await coro
@@ -14900,8 +14980,18 @@ Start now: evidence(task_id="{task_id}")
 
         Monitors: pending tasks (both assigned and unassigned)
         Spawns: product-owner, main-pm, be-pm, fe-pm, ux-pm (or devs for simple)
+
+        Mixed dispatch-pause scope: a ``dispatch``-scope pause skips this
+        method's own PM/board-review routing (below) but never the Board
+        Program exploration branch, which is gated independently by
+        ``board_programs`` scope inside ``_dispatch_board_program_
+        exploration``, the two scopes must stay decoupled even though they
+        share this one dispatcher.
         """
+        from roboco.services.maintenance_pause import PauseScope
+
         tasks = await self._fetch_tasks(client, "pending")
+        dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
 
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
@@ -14927,12 +15017,16 @@ Start now: evidence(task_id="{task_id}")
                 # register (xenon budget). Falls through to the generic
                 # board/PM-assigned handlers only for a non-program task.
                 if not await _dispatch_board_program_exploration(self, task):
+                    if dispatch_paused:
+                        continue
                     if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                         await self._handle_board_assigned_task(task, assigned_to)
                     else:
                         await self._handle_pm_assigned_task(task, assigned_to)
                 continue
 
+            if dispatch_paused:
+                continue
             await self._route_unassigned_pm_task(client, task)
 
     async def _dispatch_revision_coordination_roots(

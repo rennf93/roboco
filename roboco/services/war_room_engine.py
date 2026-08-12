@@ -144,8 +144,17 @@ class WarRoomEngine(BaseService):
         release_ref: dict[str, Any] | None,
         project_id: UUID | None = None,
     ) -> TaskTable | None:
-        """Shared arm/creds/dedup/project gate for both entry points."""
-        if not await program_armed(self.session, "war_room"):
+        """Shared arm/creds/dedup/project gate for both entry points.
+
+        Checked here (not only at ``_originate_and_record``, the shared
+        chokepoint ``run_cycle`` rides) because ``open_for_release`` bypasses
+        that chokepoint entirely: it records its own LEARN ledger row.
+        """
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not await program_armed(self.session, "war_room") or await is_paused(
+            self.session, PauseScope.BOARD_PROGRAMS
+        ):
             return None
         client = await self._client()
         if not client.configured:

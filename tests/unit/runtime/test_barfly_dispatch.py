@@ -105,6 +105,7 @@ async def test_dispatch_pm_work_routes_barfly_source_away_from_board() -> None:
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=[task])
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._resolve_agent_slug = MagicMock(return_value="head-marketing")
     stub._BOARD_AGENTS = frozenset({"product-owner", "head-marketing"})
     stub._dispatch_roadmap_exploration = AsyncMock()

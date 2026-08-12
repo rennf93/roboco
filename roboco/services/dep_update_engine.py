@@ -50,11 +50,16 @@ class DepUpdateEngine(BaseService):
     async def run_cycle(self, projects: list[Any]) -> list[TaskTable]:
         """Probe each opted-in project and open a dep-update task when due (bounded).
 
-        No-op unless ``dep_update_enabled``. Returns the tasks it opened. Flushes;
-        the caller (the orchestrator loop) owns the commit. Never starts /
-        approves / merges / deploys.
+        No-op unless ``dep_update_enabled``, or while the ``engines``
+        maintenance-pause scope is active. Returns the tasks it opened.
+        Flushes; the caller (the orchestrator loop) owns the commit. Never
+        starts / approves / merges / deploys.
         """
-        if not settings.dep_update_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.dep_update_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return []
         task_svc = get_task_service(self.session)
         # One fetch for both the rolling cap and the per-(repo, command) dedup.

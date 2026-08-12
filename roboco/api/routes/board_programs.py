@@ -20,8 +20,10 @@ from roboco.api.utils.board_programs import cycle_to_response as _cycle_to_respo
 from roboco.api.utils.board_programs import require_ceo as _require_ceo
 from roboco.api.utils.board_programs import to_response as _to_response
 from roboco.foundation.policy.board_programs import PROGRAMS
+from roboco.foundation.policy.maintenance_pause import PauseScope
 from roboco.security import guard_deco
 from roboco.services.board_programs import get_board_program_engine
+from roboco.services.maintenance_pause import is_paused
 
 router = APIRouter()
 
@@ -90,8 +92,22 @@ async def run_program_now(
 
     404 for an unregistered key; 409 when the program is disabled, already
     has an open cycle, or (a project-scoped program) has no opted-in project
-    — ``open_program_cycle`` collapses all three into the same None result,
-    and the caller has no actionable distinction between them beyond retry.
+    -- ``open_program_cycle`` collapses those into the same None result, and
+    the caller has no actionable distinction between them beyond retry. A
+    ``board_programs`` maintenance pause is checked separately here and named
+    explicitly in that case, since silently folding it into the same generic
+    message would send the CEO looking at the wrong control.
+
+    Unlike ``POST /video/request`` (deliberately exempt from the ``engines``
+    pause scope, see ``VideoEngine.open_video_task``'s own docstring), this
+    run-now rides ``open_program_cycle``, the SAME chokepoint the cron loop
+    and the metric-predicate accelerator also call. Exempting the CEO's
+    manual trigger from the pause here would exempt those two autonomous
+    callers too, since they share this one entry point, the opposite of
+    what a pause is for. Video's on-demand path is a structurally separate
+    function from its own autonomous (release-triggered) trigger, so it can
+    be exempted without that leak. Honoring the pause here, not aligning
+    with video's exemption, is the deliberate choice.
     """
     _require_ceo(agent)
     if key not in PROGRAMS:
@@ -101,6 +117,15 @@ async def run_program_now(
     engine = get_board_program_engine(db)
     task = await engine.open_program_cycle(key)
     if task is None:
+        if await is_paused(db, PauseScope.BOARD_PROGRAMS):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Could not open a cycle - the board_programs maintenance "
+                    "pause is active. Resume it from the maintenance-pause "
+                    "control, or wait for it to auto-expire, then try again."
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(

@@ -108,11 +108,16 @@ class ReleaseManagerEngine(BaseService):
     async def run_cycle(self) -> TaskTable | None:
         """Assess and, if warranted, originate one held proposal. Else no-op.
 
-        No-op unless ``release_manager_enabled``. Originates only past the
+        No-op unless ``release_manager_enabled``, or while the ``engines``
+        maintenance-pause scope is active. Originates only past the
         threshold, with a green gate, and when no proposal is already open. The
         proposal is held for the CEO; this never starts/approves/publishes.
         """
-        if not settings.release_manager_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.release_manager_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return None
         task_svc = get_task_service(self.session)
         if await task_svc.list_open_release_proposals():

@@ -32,6 +32,7 @@ from roboco.api.routes.github_app import router as github_app_router
 from roboco.api.routes.health import router as health_router
 from roboco.api.routes.journals import router as journals_router
 from roboco.api.routes.kanban import router as kanban_router
+from roboco.api.routes.maintenance_pause import router as maintenance_pause_router
 from roboco.api.routes.mirror import router as mirror_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
@@ -452,6 +453,14 @@ def create_app() -> FastAPI:
         settings_router,
         prefix=f"{api_prefix}/settings",
         tags=["Settings"],
+    )
+
+    # Operator maintenance pause: CEO-only drain switches (dispatch / board
+    # programs / originating engines), read+set+clear.
+    app.include_router(
+        maintenance_pause_router,
+        prefix=f"{api_prefix}/maintenance-pause",
+        tags=["Maintenance Pause"],
     )
 
     app.include_router(

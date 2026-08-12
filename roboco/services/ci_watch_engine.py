@@ -63,11 +63,16 @@ class CiWatchEngine(BaseService):
     async def run_cycle(self, projects: list[Any]) -> list[TaskTable]:
         """Assess the watch set and open a fix task per red repo (bounded).
 
-        No-op unless ``ci_watch_enabled``. Returns the tasks it opened. Flushes;
-        the caller (the orchestrator loop) owns the commit. Never starts /
-        approves / merges / deploys.
+        No-op unless ``ci_watch_enabled``, or while the ``engines``
+        maintenance-pause scope is active. Returns the tasks it opened.
+        Flushes; the caller (the orchestrator loop) owns the commit. Never
+        starts / approves / merges / deploys.
         """
-        if not settings.ci_watch_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.ci_watch_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return []
         samples = await self._source.fetch(projects)
         breaches = [s for s in samples if s.is_breach]

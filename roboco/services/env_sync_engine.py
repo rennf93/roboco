@@ -50,12 +50,17 @@ class EnvSyncEngine(BaseService):
     async def run_cycle(self, projects: list[Any]) -> list[TaskTable]:
         """Cascade each opted-in project's ladder; return conflict-PR tasks opened.
 
-        No-op unless ``env_sync_enabled``. Per-cycle + rolling caps; one open
+        No-op unless ``env_sync_enabled``, or while the ``engines``
+        maintenance-pause scope is active. Per-cycle + rolling caps; one open
         env_sync task per repo (a conflict pauses the cascade at that rung).
         Never pushes prod. Flushes; the caller (the orchestrator loop) owns the
         commit.
         """
-        if not settings.env_sync_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.env_sync_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return []
         task_svc = get_task_service(self.session)
         open_count = len(await task_svc.list_open_env_sync_tasks())

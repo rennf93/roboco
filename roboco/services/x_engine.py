@@ -554,9 +554,14 @@ class XEngine(BaseService):
         reached. Called from ``ReleaseProposalService.approve()``'s publish
         success branch — never invoked by the loop itself. ``project_id``
         scopes the draft to the released project; omitted falls back to the
-        deployment-anchor project.
+        deployment-anchor project. Also no-ops while the ``engines``
+        maintenance-pause scope is active.
         """
-        if not settings.x_engine_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.x_engine_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return None
         client = await self._client()
         if not client.configured:
@@ -616,11 +621,23 @@ class XEngine(BaseService):
 
     # ---- mentions (periodic poll) ------------------------------------------
 
+    async def _mentions_poll_gated(self) -> bool:
+        """True when the mentions-poll cycle must no-op: the engine or the
+        mention-reply sub-switch is off, or the ``engines`` maintenance-pause
+        scope is active. Split out of ``run_cycle`` to keep its own
+        complexity flat (xenon budget)."""
+        if not (settings.x_engine_enabled and settings.x_replies_enabled):
+            return True
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        return await is_paused(self.session, PauseScope.ENGINES)
+
     async def run_cycle(self) -> list[TaskTable]:
         """One mentions-poll pass: fetch, filter, dedup, draft, hold. No-op
         list unless the engine AND the mention-reply sub-switch are on and
-        credentials are configured (release posting doesn't use this path)."""
-        if not (settings.x_engine_enabled and settings.x_replies_enabled):
+        credentials are configured (release posting doesn't use this path),
+        or while the ``engines`` maintenance-pause scope is active."""
+        if await self._mentions_poll_gated():
             return []
         client = await self._client()
         if not client.configured:

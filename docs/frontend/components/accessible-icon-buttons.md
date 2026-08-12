@@ -44,6 +44,10 @@ const LABEL = "Open settings";
 - **title**: Browser native tooltip (fallback, appears on hover/focus)
 - **TooltipContent**: Radix UI tooltip for consistent visual feedback
 
+### `title` is now optional on newer controls
+
+`Tooltip` (`components/ui/tooltip.tsx`) became self-providing (it wraps its own `TooltipProvider` internally, so no app-level or per-component `TooltipProvider` wrapper is needed anymore either). Once the Radix tooltip reliably supplies the hover/focus text, the native `title` attribute is redundant with it, and some newer icon-only controls (the navbar refresh button in `header.tsx`, the maintenance-pause control below) deliberately omit `title`, keeping only `aria-label` + `TooltipContent`. Older controls that still carry `title` (the sidebar collapse toggle, the notification bell) are not wrong, just not yet updated; either form is acceptable, but do not add a fresh `title` to a brand-new control unless you are matching an existing sibling that still has one.
+
 ### Naming convention
 
 Label text uses **active verbs** describing what happens when the control is clicked:
@@ -104,7 +108,7 @@ When an icon-only control displays shortened content (e.g., "FD1" for "Frontend 
 
 ## Implemented controls
 
-The following 8 icon-only controls have been retrofitted:
+The following 10 icon-only controls have been retrofitted:
 
 1. **notification-bell.tsx** — "View notifications"
 2. **task-header.tsx** (back button) — "Go back to tasks list"
@@ -114,10 +118,12 @@ The following 8 icon-only controls have been retrofitted:
 6. **kanban-card.tsx** (move-forward) — "Move forward" / "PM must activate this task first"
 7. **command-center.tsx** (settings) — "Open settings"
 8. **pr-review-queue.tsx** (details link) — "Review details"
+9. **connection-status.tsx** (navbar health badge, `role="status"` on a `Badge`, not a `Button`) - icon-only in all three states (checking/connected/disconnected); `aria-label` names the full state, `TooltipContent` repeats it in full sentence form since the visible text label was removed
+10. **maintenance-control.tsx** (navbar maintenance-pause button) - icon-only; `aria-label` folds in the live paused-scope count ("Operator maintenance pause (2 paused)") so the count is available to screen readers too, not just the visual badge
 
 Plus one avatar tooltip:
 
-9. **assignee-avatar.tsx** — Shows full agent display name
+11. **assignee-avatar.tsx** - Shows full agent display name
 
 ## Testing
 

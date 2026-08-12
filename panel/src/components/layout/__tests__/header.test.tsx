@@ -31,6 +31,10 @@ vi.mock("@/components/layout/connection-status", () => ({
   ConnectionStatus: () => <div data-testid="connection-status" />,
 }));
 
+vi.mock("@/components/maintenance/maintenance-control", () => ({
+  MaintenanceControl: () => <div data-testid="maintenance-control" />,
+}));
+
 vi.mock("@/components/layout/mobile-sidebar", () => ({
   MobileSidebar: () => <div data-testid="mobile-sidebar" />,
 }));

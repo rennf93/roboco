@@ -112,11 +112,13 @@ class SelfHealEngine(BaseService):
     async def run_cycle(self) -> list[RegressionObservation]:
         """Assess, notify the CEO, and (if originate is on) open fix tasks.
 
-        No-op unless ``self_heal_enabled``. It always NOTIFIES on a regression;
-        when ``self_heal_originate_enabled`` it also opens a PENDING fix task per
-        new regression and STOPS. It never starts, approves, merges, or deploys.
-        Writes (any opened task) are flushed here; the caller (the orchestrator
-        loop) owns the commit.
+        No-op unless ``self_heal_enabled``. It always NOTIFIES on a regression
+        (a CEO alert is a signal, not autonomous action, so it is never
+        suppressed by a maintenance pause); when ``self_heal_originate_enabled``
+        AND the ``engines`` maintenance-pause scope is inactive, it also opens
+        a PENDING fix task per new regression and STOPS. It never starts,
+        approves, merges, or deploys. Writes (any opened task) are flushed
+        here; the caller (the orchestrator loop) owns the commit.
 
         #43: the notify loop dedupes per fingerprint — a regression that stays
         red across cycles pings the CEO once per episode, not every tick (the
@@ -148,7 +150,10 @@ class SelfHealEngine(BaseService):
             )
             await self._mark_notified(obs.fingerprint)
         if settings.self_heal_originate_enabled:
-            await self._originate(observations)
+            from roboco.services.maintenance_pause import PauseScope, is_paused
+
+            if not await is_paused(self.session, PauseScope.ENGINES):
+                await self._originate(observations)
         return observations
 
     async def _open_self_heal_task_ids_by_fp(self) -> dict[str, UUID]:

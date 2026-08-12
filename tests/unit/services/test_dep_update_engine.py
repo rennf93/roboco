@@ -39,14 +39,24 @@ class _FakeWorkspace:
 
 def _make_engine(
     task_svc: Any, workspace: _FakeWorkspace | None = None
-) -> tuple[DepUpdateEngine, Any]:
+) -> tuple[DepUpdateEngine, list[Any]]:
     session = MagicMock()
     engine = DepUpdateEngine(session, workspace=workspace or _FakeWorkspace())
-    patcher = patch(
-        "roboco.services.dep_update_engine.get_task_service", return_value=task_svc
-    )
-    patcher.start()
-    return engine, patcher
+    patchers = [
+        patch(
+            "roboco.services.dep_update_engine.get_task_service", return_value=task_svc
+        ),
+        # session is a bare MagicMock: is_paused's real settings-store read
+        # would raise on it and fail closed (treats as paused), so run_cycle
+        # would no-op regardless of the scenario under test.
+        patch(
+            "roboco.services.maintenance_pause.is_paused",
+            AsyncMock(return_value=False),
+        ),
+    ]
+    for p in patchers:
+        p.start()
+    return engine, patchers
 
 
 @pytest.fixture
@@ -71,11 +81,12 @@ async def test_dedupe_spared_by_command_not_git_url(_enabled: None) -> None:
         side_effect=lambda req: SimpleNamespace(id=uuid4(), project_id=req.project_id)
     )
 
-    engine, patcher = _make_engine(task_svc)
+    engine, patchers = _make_engine(task_svc)
     try:
         created = await engine.run_cycle([p1, p2])
     finally:
-        patcher.stop()
+        for p in patchers:
+            p.stop()
 
     # p1 deduped (open task already covers (mono, "uv lock -U"));
     # p2 still eligible (different command) -> opened.
@@ -99,11 +110,12 @@ async def test_run_cycle_fetches_open_tasks_once(_enabled: None) -> None:
         side_effect=lambda req: SimpleNamespace(id=uuid4(), project_id=req.project_id)
     )
 
-    engine, patcher = _make_engine(task_svc)
+    engine, patchers = _make_engine(task_svc)
     try:
         created = await engine.run_cycle(projects)
     finally:
-        patcher.stop()
+        for p in patchers:
+            p.stop()
 
     assert len(created) == project_count
     # One fetch for both the cap and the per-(repo, command) dedupe —

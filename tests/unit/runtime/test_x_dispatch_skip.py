@@ -31,6 +31,7 @@ async def test_x_posts_are_never_routed_by_pm_dispatch() -> None:
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=tasks)
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._resolve_agent_slug = MagicMock(return_value="secretary-1")
     stub._BOARD_AGENTS = frozenset()
     stub._route_unassigned_pm_task = AsyncMock()
@@ -55,6 +56,7 @@ async def test_x_posts_are_never_routed_by_dev_dispatch() -> None:
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=tasks)
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._dev_dispatch_one = AsyncMock()
 
     client: Any = MagicMock()

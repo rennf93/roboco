@@ -114,6 +114,7 @@ async def test_dispatch_pm_work_routes_war_room_away_from_board_handler() -> Non
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=[task])
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._resolve_agent_slug = MagicMock(return_value="head-marketing")
     stub._BOARD_AGENTS = frozenset({"product-owner", "head-marketing"})
     stub._dispatch_war_room_exploration = AsyncMock()
@@ -135,6 +136,7 @@ async def test_war_room_tasks_are_never_routed_by_dev_dispatch() -> None:
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=tasks)
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._dev_dispatch_one = AsyncMock()
 
     client: Any = MagicMock()

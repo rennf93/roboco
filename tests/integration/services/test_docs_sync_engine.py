@@ -44,6 +44,12 @@ def _make_engine(project_svc: Any, task_svc: Any) -> tuple[DocsSyncEngine, list[
             "roboco.services.docs_sync_engine.get_task_service",
             return_value=task_svc,
         ),
+        # session is a bare MagicMock: is_paused's real settings-store read
+        # would raise on it and fail closed (treats as paused).
+        patch(
+            "roboco.services.maintenance_pause.is_paused",
+            AsyncMock(return_value=False),
+        ),
     ]
     for p in patchers:
         p.start()

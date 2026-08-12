@@ -243,6 +243,10 @@ async def test_run_cycle_commits_per_task() -> None:
     with (
         patch("roboco.db.get_db_context", _db_ctx(db)),
         patch("roboco.services.task.get_task_service", return_value=task_svc),
+        patch(
+            "roboco.services.maintenance_pause.is_paused",
+            AsyncMock(return_value=False),
+        ),
     ):
         await orch._run_video_render_cycle()
     assert orch._render_video_task.await_args_list == [
@@ -264,6 +268,10 @@ async def test_run_cycle_with_no_completed_tasks_does_not_commit() -> None:
     with (
         patch("roboco.db.get_db_context", _db_ctx(db)),
         patch("roboco.services.task.get_task_service", return_value=task_svc),
+        patch(
+            "roboco.services.maintenance_pause.is_paused",
+            AsyncMock(return_value=False),
+        ),
     ):
         await orch._run_video_render_cycle()
     orch._render_video_task.assert_not_awaited()
@@ -295,6 +303,10 @@ async def test_run_cycle_commits_before_mid_cycle_raise_so_prior_render_durable(
     with (
         patch("roboco.db.get_db_context", _db_ctx(db)),
         patch("roboco.services.task.get_task_service", return_value=task_svc),
+        patch(
+            "roboco.services.maintenance_pause.is_paused",
+            AsyncMock(return_value=False),
+        ),
         pytest.raises(RuntimeError, match="B blew up"),
     ):
         await orch._run_video_render_cycle()
