@@ -1,8 +1,6 @@
 # X Engine: Editorial + Campaign Sources Registered in All Redraft Paths
 
-**Date:** 2026-08-12
-**Task:** 90cddb87
-**File:** `roboco/services/x_engine.py`
+**Date:** 2026-08-12 **Task:** 90cddb87 **File:** `roboco/services/x_engine.py`
 
 ## Change
 
