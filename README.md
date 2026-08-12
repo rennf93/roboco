@@ -328,9 +328,24 @@ uv run mypy roboco/
 - [x] Inbound PR review (read-only PR-reviewer + CEO supersede/dismiss queue)
 - [x] Self-healing CI loop for RoboCo's own repo (default-off, CEO-gated)
 - [x] Business Goals tab with a live Company Scorecard (delivery, spend-vs-budget, lead time)
+- [x] Frontend control panel (Next.js 16, vendored under `panel/`, served through nginx on :3000 — kanban, command palette, Metrics, Workstation)
+- [x] Telegram bridge + Mini App (V1–V6: notifications bridge, two-way bot, signed webapp, Today/cockpit, brand voice, premium overhaul)
+- [x] X engine (craft bar + rework loop, release-caption composition, CEO-reject redraft)
+- [x] Video engine (HyperFrames craft program + motion design bar)
+- [x] Board Program registry (12 programs: Pest Control, Spackle, Scales, Dogfood, Periscope, Megaphone, Mirror, Barfly, War Room, Coroner, Librarian, Sentinel)
+- [x] Roadmap engine (replaced bespoke roadmap loop via the Board Program registry)
+- [x] Forge program (GitHub, Gitea, GitLab as first-class forges via provider-routed REST)
+- [x] Env-branches ladder (EnvSyncEngine, ordered environment ladder, sync PRs)
+- [x] Cost-tiered model routing (role:complexity rung + saved routing presets)
+- [x] Per-task and per-project cost budgets (flag-gated, claim-time spend guard)
+- [x] Eval harness (golden-task lifecycle replay + real-spawn path)
+- [x] GitHub App authentication (installation-token minting with PAT fallback)
+- [x] Org memory (learnings + error-solution + playbook knowledge base)
+- [x] Obsidian vault projection (V2: drift janitor, archival, weekly report, KB ingest)
+- [x] Possibilities matrix (work-already-done fast path to QA)
+- [x] Release manager (RoboCo Release Manager identity + CI-verifying release gate)
 
 **In Progress**
-- [x] Frontend panel (vendored under `panel/`, served through nginx on :3000)
 - [ ] Full agent autonomy testing
 
 ## Security
