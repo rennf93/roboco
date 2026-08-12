@@ -78,6 +78,7 @@ Requests are signed with a **hand-rolled OAuth 1.0a HMAC-SHA1** signer (`roboco/
 
 ## Related
 
+- `docs/backend/api/x-post-response-schemas.md` — the `XPostResponse` / `XPostHistoryResponse` API schemas and their source-specific ref fields (mention, feature, campaign, editorial, barfly)
 - `docs/rag/architecture/config-reference.md` — full env var table
 - `docs/rag/architecture/board-programs.md` — Megaphone (editorial), War Room (campaign), Barfly, and Spotlight Board Programs that originate the non-release, non-mention draft sources
 - `docs/rag/roles/head-marketing.md` — why the HoM's tool surface is unchanged
