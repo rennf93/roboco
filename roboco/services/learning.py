@@ -261,7 +261,16 @@ class LearningPropagationService:
                 role_enum = None
             if role_enum is not None:
                 query = query.where(AgentTable.role == role_enum)
-        # CELL scope: TODO filter by team field; ORG scope: notify all agents.
+        elif learning.scope == LearningScope.CELL:
+            author_team = (
+                await db.execute(
+                    select(AgentTable.team).where(AgentTable.id == learning.agent_id)
+                )
+            ).scalar_one_or_none()
+            if author_team is None:
+                return []
+            query = query.where(AgentTable.team == author_team)
+        # ORG scope: notify all non-human agents.
         result = await db.execute(query)
         return result.scalars().all()
 

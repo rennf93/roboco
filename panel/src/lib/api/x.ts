@@ -28,6 +28,14 @@ export interface XCampaignRef {
   sequence: number;
 }
 
+// An editorial (Megaphone) post's angle + rationale — the local-model
+// editorial context carried through redrafts, surfaced so the CEO sees why
+// the draft takes the angle it does.
+export interface XEditorialRef {
+  angle: string;
+  rationale: string;
+}
+
 export interface XBarflyRef {
   tweet_id: string;
   author_handle: string;
@@ -52,6 +60,7 @@ export interface XPost {
   mention?: XMentionRef | null;
   feature?: XFeatureRef | null;
   campaign?: XCampaignRef | null;
+  editorial?: XEditorialRef | null;
   barfly?: XBarflyRef | null;
   reject_reason?: string | null;
   project_slug?: string | null;
@@ -82,6 +91,7 @@ export interface XPostHistoryEntry {
   mention?: XMentionRef | null;
   feature?: XFeatureRef | null;
   campaign?: XCampaignRef | null;
+  editorial?: XEditorialRef | null;
   barfly?: XBarflyRef | null;
   tweet_id?: string | null;
   reject_reason?: string | null;

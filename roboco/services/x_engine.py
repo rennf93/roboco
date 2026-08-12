@@ -404,14 +404,6 @@ def _sections_since(
 # ._redraft_context) — module-level + dict-dispatched rather than growing
 # if-chains in the two methods, so a fifth X source registers by adding one
 # dict entry each, not another branch (xenon budget).
-#
-# ponytail: X_EDITORIAL_SOURCE and X_CAMPAIGN_SOURCE have no registered
-# extractor here or in ``_carry_redraft_markers`` — a rejected editorial/
-# campaign post still redrafts (the generic, unlocked fallback in
-# ``_redraft_identity``/``_redraft_context`` below), it just loses its
-# ``x_editorial_ref``/``x_campaign_ref`` marker on the redraft, so the panel's
-# angle/campaign-guidance line won't render for it. Add an entry to both dicts
-# below + a branch in ``_carry_redraft_markers`` when that's needed. --------
 
 
 def _redraft_identity_x_post(task: TaskTable) -> tuple[str, str] | None:
@@ -434,6 +426,18 @@ def _redraft_identity_x_barfly(task: TaskTable) -> tuple[str, str] | None:
     return (X_BARFLY_SOURCE, str(tweet_id)) if tweet_id else None
 
 
+def _redraft_identity_x_editorial(task: TaskTable) -> tuple[str, str] | None:
+    angle = (markers.get_x_editorial_ref(task) or {}).get("angle")
+    return (X_EDITORIAL_SOURCE, str(angle)) if angle else None
+
+
+def _redraft_identity_x_campaign(task: TaskTable) -> tuple[str, str] | None:
+    ref = markers.get_x_campaign_ref(task)
+    if ref and ref.get("campaign_name") and ref.get("sequence") is not None:
+        return (X_CAMPAIGN_SOURCE, f"{ref['campaign_name']}:{ref['sequence']}")
+    return None
+
+
 _REDRAFT_IDENTITY_EXTRACTORS: dict[
     str, Callable[[TaskTable], tuple[str, str] | None]
 ] = {
@@ -441,6 +445,8 @@ _REDRAFT_IDENTITY_EXTRACTORS: dict[
     X_REPLY_SOURCE: _redraft_identity_x_reply,
     X_FEATURE_SOURCE: _redraft_identity_x_feature,
     X_BARFLY_SOURCE: _redraft_identity_x_barfly,
+    X_EDITORIAL_SOURCE: _redraft_identity_x_editorial,
+    X_CAMPAIGN_SOURCE: _redraft_identity_x_campaign,
 }
 
 
@@ -464,11 +470,80 @@ def _redraft_context_x_barfly(post_task: TaskTable) -> str:
     return f"This is a reply to this X conversation:\n{text}" if text else ""
 
 
+def _redraft_context_x_editorial(post_task: TaskTable) -> str:
+    ref = markers.get_x_editorial_ref(post_task)
+    if not ref:
+        return ""
+    return (
+        f"This is an editorial (Megaphone) post with angle: {ref['angle']}. "
+        f"Rationale: {ref['rationale']}."
+    )
+
+
+def _redraft_context_x_campaign(post_task: TaskTable) -> str:
+    ref = markers.get_x_campaign_ref(post_task)
+    if not ref:
+        return ""
+    return (
+        f"This is a campaign (War Room) post for {ref['campaign_name']}, "
+        f"stage {ref['stage_label']} (sequence {ref['sequence']}, "
+        f"publish after {ref['publish_after']})."
+    )
+
+
 _REDRAFT_CONTEXT_BUILDERS: dict[str, Callable[[TaskTable], str]] = {
     X_POST_SOURCE: _redraft_context_x_post,
     X_REPLY_SOURCE: _redraft_context_x_reply,
     X_FEATURE_SOURCE: _redraft_context_x_feature,
     X_BARFLY_SOURCE: _redraft_context_x_barfly,
+    X_EDITORIAL_SOURCE: _redraft_context_x_editorial,
+    X_CAMPAIGN_SOURCE: _redraft_context_x_campaign,
+}
+
+
+def _carry_x_post_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    version = markers.get_x_release_version(post_task)
+    if version:
+        markers.set_x_release_version(new_task, version)
+
+
+def _carry_x_reply_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_x_mention_ref(post_task)
+    if ref:
+        markers.set_x_mention_ref(new_task, ref)
+
+
+def _carry_x_feature_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_x_feature_ref(post_task)
+    if ref:
+        markers.set_x_feature_ref(new_task, ref)
+
+
+def _carry_x_barfly_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_barfly_reply_ref(post_task)
+    if ref:
+        markers.set_barfly_reply_ref(new_task, ref)
+
+
+def _carry_x_editorial_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_x_editorial_ref(post_task)
+    if ref:
+        markers.set_x_editorial_ref(new_task, ref)
+
+
+def _carry_x_campaign_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_x_campaign_ref(post_task)
+    if ref:
+        markers.set_x_campaign_ref(new_task, ref)
+
+
+_REDRAFT_MARKER_CARRIERS: dict[str, Callable[[TaskTable, TaskTable], None]] = {
+    X_POST_SOURCE: _carry_x_post_marker,
+    X_REPLY_SOURCE: _carry_x_reply_marker,
+    X_FEATURE_SOURCE: _carry_x_feature_marker,
+    X_BARFLY_SOURCE: _carry_x_barfly_marker,
+    X_EDITORIAL_SOURCE: _carry_x_editorial_marker,
+    X_CAMPAIGN_SOURCE: _carry_x_campaign_marker,
 }
 
 
@@ -1443,11 +1518,10 @@ class XEngine(BaseService):
         """(source, key) discriminating one draft's underlying item from
         another of the same source: release version for x_post, mention id
         for x_reply, feature slug for x_feature, target tweet id for
-        x_barfly. None when the task carries no such marker or the source
-        has no registered extractor (x_editorial/x_campaign — see the
-        ponytail note above the extractor dicts). Dict-dispatched (not an
-        if-chain) to keep this flat as new X sources register (xenon
-        budget)."""
+        x_barfly, angle for x_editorial, campaign_name:sequence for
+        x_campaign. None when the task carries no such marker.
+        Dict-dispatched (not an if-chain) to keep this flat as new X sources
+        register (xenon budget)."""
         extractor = _REDRAFT_IDENTITY_EXTRACTORS.get(task.source)
         return extractor(task) if extractor is not None else None
 
@@ -1557,22 +1631,9 @@ class XEngine(BaseService):
         itself reject/approve-able through the normal flow. The feature
         source's seen-slug bookkeeping is NOT repeated here — the original
         draft already marked it seen at authoring time."""
-        if post_task.source == X_POST_SOURCE:
-            version = markers.get_x_release_version(post_task)
-            if version:
-                markers.set_x_release_version(new_task, version)
-        elif post_task.source == X_REPLY_SOURCE:
-            ref = markers.get_x_mention_ref(post_task)
-            if ref:
-                markers.set_x_mention_ref(new_task, ref)
-        elif post_task.source == X_FEATURE_SOURCE:
-            ref = markers.get_x_feature_ref(post_task)
-            if ref:
-                markers.set_x_feature_ref(new_task, ref)
-        elif post_task.source == X_BARFLY_SOURCE:
-            ref = markers.get_barfly_reply_ref(post_task)
-            if ref:
-                markers.set_barfly_reply_ref(new_task, ref)
+        carrier = _REDRAFT_MARKER_CARRIERS.get(post_task.source or "")
+        if carrier:
+            carrier(new_task, post_task)
 
 
 def get_x_engine(session: AsyncSession, client: XClient | None = None) -> XEngine:
