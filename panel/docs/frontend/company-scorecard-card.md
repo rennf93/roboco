@@ -35,7 +35,7 @@ The charter `objectives` field on `CockpitSummary` is `Record<string, unknown>[]
 
 ### "No data yet" fallback
 
-Each card guards its metric with a `hasData` check (`value != null`, covering both `null` and `undefined`). When the metric is absent the card renders "No data yet" in italic muted text instead of a value — mirroring the `SpeedSection` pattern. This is the contract for the two new fields (`first_pass_yield`, `escaped_defects`): until the backend companion item ships them on the `/cockpit/summary` response, both are absent and both cards show "No data yet". The card never fabricates a value or a label.
+Each card guards its metric with a `hasData` check (`value != null`, covering both `null` and `undefined`). When the metric is absent the card renders "No data yet" in italic muted text instead of a value — mirroring the `SpeedSection` pattern. For the two fields backed by the cockpit service (`first_pass_yield`, `escaped_defects`), the fallback triggers only on a genuine null/empty result — not on a missing field, since the backend now populates both (`cockpit.py:76-77`). The card never fabricates a value or a label.
 
 ## CockpitSummary type changes
 
@@ -43,18 +43,19 @@ Each card guards its metric with a `hasData` check (`value != null`, covering bo
 
 ```typescript
 // Fraction of tasks shipped to merge with no human code edits (0–1).
-// Backend companion item adds this; until it ships the field is absent
-// and the UI renders 'No data yet'. Formatted as a percentage, matching
-// the phone's pctOrDash convention in tg-metrics-tab.tsx.
+// Populated by the cockpit service (scorecard.first_pass_yield); the
+// UI renders 'No data yet' only on a genuine null. Formatted as a
+// percentage, matching the phone's pctOrDash convention in tg-metrics-tab.tsx.
 first_pass_yield?: number | null;
 
-// Count of critical escaped defects per release (backend companion item).
+// Count of critical escaped defects per release, populated by the cockpit
+// service (ReviewFindingsRepository.escaped_defects_since).
 escaped_defects?: number | null;
 ```
 
-Both are optional and nullable so the UI degrades cleanly while the backend companion item is outstanding. `first_pass_yield` is a 0–1 fraction formatted as a percentage, matching the phone's `pctOrDash(scorecard.first_pass_yield)` convention in `tg-metrics-tab.tsx`. `median_lead_time_hours` is unchanged — it already existed at the top level of the type and `SpeedSection` reads it from there.
+Both are optional and nullable so the UI degrades cleanly when the backend returns a genuine null/empty result. `first_pass_yield` is a 0–1 fraction formatted as a percentage, matching the phone's `pctOrDash(scorecard.first_pass_yield)` convention in `tg-metrics-tab.tsx`. `median_lead_time_hours` is unchanged — it already existed at the top level of the type and `SpeedSection` reads it from there.
 
-The backend companion item (out of scope for this change) is what adds `first_pass_yield` and `escaped_defects` to the `/api/cockpit/summary` response. Until it lands, the two objective cards for those metrics show "No data yet".
+The cockpit service has shipped both fields: `first_pass_yield` is populated from the scorecard and `escaped_defects` from `ReviewFindingsRepository.escaped_defects_since` (`cockpit.py:76-77`). The two objective cards display live values; "No data yet" appears only on a genuine null/empty result.
 
 ## Card structure
 
@@ -79,7 +80,7 @@ CompanyScorecardCard
 - A missing `first_pass_yield` (null) and `escaped_defects` (undefined) each render "No data yet" — two fallbacks — while a present `median_lead_time_hours` still shows its value.
 - The fake "Revenue growth" / "Customer retention" / "Not tracked yet" stub labels do not appear in any render path.
 
-The `buildSummary` test helper carries `first_pass_yield: null` and `escaped_defects: null` by default, matching the not-yet-shipped backend state.
+The `buildSummary` test helper carries `first_pass_yield: null` and `escaped_defects: null` by default, exercising the fallback path for a genuine null/empty result rather than mirroring a not-yet-shipped production state.
 
 ## Related
 
