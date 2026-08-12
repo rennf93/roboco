@@ -14,7 +14,11 @@ from unittest.mock import MagicMock, patch
 from roboco.api.routes.x import _to_history_response, _to_response
 
 
-def _stub_task(*, with_project: bool = False) -> Any:
+def _stub_task(
+    *,
+    with_project: bool = False,
+    markers: dict[str, Any] | None = None,
+) -> Any:
     """A TaskTable stand-in matching _to_response/_to_history_response's reads."""
     return SimpleNamespace(
         id="task-1",
@@ -22,7 +26,7 @@ def _stub_task(*, with_project: bool = False) -> Any:
         title="X post: release v1.0.0",
         status="pending",
         description="",
-        orchestration_markers=None,
+        orchestration_markers=markers,
         project=(
             SimpleNamespace(slug="acme-robotics", name="Acme Robotics")
             if with_project
@@ -77,3 +81,51 @@ def test_to_history_response_omits_project_fields_when_project_unset() -> None:
         resp = _to_history_response(_stub_task(with_project=False))
     assert resp.project_slug is None
     assert resp.project_name is None
+
+
+_EDITORIAL_MARKERS: dict[str, Any] = {
+    "x_editorial_ref": {
+        "angle": "Launch angle",
+        "rationale": "Frames the release as a pivot",
+    },
+}
+
+
+def test_to_response_populates_editorial_when_marker_present() -> None:
+    with patch(
+        "roboco.api.schemas.project_fields.sa_inspect",
+        return_value=_loaded_inspector(),
+    ):
+        resp = _to_response(_stub_task(markers=_EDITORIAL_MARKERS))
+    assert resp.editorial is not None
+    assert resp.editorial.angle == "Launch angle"
+    assert resp.editorial.rationale == "Frames the release as a pivot"
+
+
+def test_to_response_omits_editorial_when_marker_absent() -> None:
+    with patch(
+        "roboco.api.schemas.project_fields.sa_inspect",
+        return_value=_loaded_inspector(),
+    ):
+        resp = _to_response(_stub_task(markers=None))
+    assert resp.editorial is None
+
+
+def test_to_history_response_populates_editorial_when_marker_present() -> None:
+    with patch(
+        "roboco.api.schemas.project_fields.sa_inspect",
+        return_value=_loaded_inspector(),
+    ):
+        resp = _to_history_response(_stub_task(markers=_EDITORIAL_MARKERS))
+    assert resp.editorial is not None
+    assert resp.editorial.angle == "Launch angle"
+    assert resp.editorial.rationale == "Frames the release as a pivot"
+
+
+def test_to_history_response_omits_editorial_when_marker_absent() -> None:
+    with patch(
+        "roboco.api.schemas.project_fields.sa_inspect",
+        return_value=_loaded_inspector(),
+    ):
+        resp = _to_history_response(_stub_task(markers=None))
+    assert resp.editorial is None
