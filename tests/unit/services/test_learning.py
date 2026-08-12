@@ -393,6 +393,78 @@ def _make_agents(n: int) -> list[_FakeAgentRow]:
     return [_FakeAgentRow(id=uuid4(), role=AgentRole.DEVELOPER) for _ in range(n)]
 
 
+class _CellScopeFakeDb:
+    """Fake AsyncSession for CELL-scope _fetch_notify_agents tests.
+
+    The first execute call is the author-team lookup (scalar_one_or_none);
+    the second is the candidate SELECT (scalars().all).
+    """
+
+    def __init__(
+        self, author_team: str | None, candidates: list[_FakeAgentRow]
+    ) -> None:
+        self._author_team = author_team
+        self._candidates = candidates
+        self.execute_count = 0
+
+    async def execute(self, _stmt: Any, _params: Any = None) -> Any:
+        self.execute_count += 1
+        if self.execute_count == 1:
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = self._author_team
+            return result
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = list(self._candidates)
+        return result
+
+
+@pytest.mark.asyncio
+async def test_fetch_notify_agents_cell_scope_filters_by_team(
+    svc: LearningPropagationService,
+) -> None:
+    """CELL scope resolves the author's team and returns same-team candidates."""
+    author_id = uuid4()
+    teammate = _FakeAgentRow(id=uuid4(), role=AgentRole.DEVELOPER)
+    db = _CellScopeFakeDb(author_team="backend", candidates=[teammate])
+
+    learning = Learning(
+        learning_id="lrn-cell-1",
+        agent_id=author_id,
+        agent_role="developer",
+        content="cell-scoped lesson",
+        learning_type=LearningType.PATTERN,
+        scope=LearningScope.CELL,
+    )
+
+    result = await svc._fetch_notify_agents(db, learning)
+    assert len(result) == 1
+    assert result[0].id == teammate.id
+    # Two execute calls: author-team lookup + candidate SELECT.
+    _EXPECTED_CELL_EXECUTES = 2
+    assert db.execute_count == _EXPECTED_CELL_EXECUTES
+
+
+@pytest.mark.asyncio
+async def test_fetch_notify_agents_cell_scope_null_team_returns_empty(
+    svc: LearningPropagationService,
+) -> None:
+    """CELL scope returns [] when the author has no team assigned."""
+    db = _CellScopeFakeDb(author_team=None, candidates=[])
+
+    learning = Learning(
+        learning_id="lrn-cell-2",
+        agent_id=uuid4(),
+        agent_role="developer",
+        content="cell lesson from unteamed agent",
+        learning_type=LearningType.PATTERN,
+        scope=LearningScope.CELL,
+    )
+
+    result = await svc._fetch_notify_agents(db, learning)
+    assert result == []
+    assert db.execute_count == 1
+
+
 _N_RECIPIENTS = 25
 
 
