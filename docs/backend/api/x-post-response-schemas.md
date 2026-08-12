@@ -41,7 +41,7 @@ When the `x_editorial_ref` marker is absent (any non-editorial source), `editori
 
 ## Panel rendering
 
-The panel's X post queue (`x-post-queue.tsx`) renders a `sourceMeta`-driven label/icon per source and a source-specific context line. With the `editorial` field now serialized, the panel can render the angle-guidance line for editorial drafts the same way it already renders the campaign-guidance line for War Room drafts. Frontend rendering of the editorial line is a separate frontend-cell concern; this task only exposes the data.
+The panel's X post queue (`x-post-queue.tsx`) renders a `sourceMeta`-driven label/icon per source and a source-specific context line. With the `editorial` field now serialized, the panel renders the angle-guidance line for editorial drafts the same way it already renders the campaign-guidance line for War Room drafts. The frontend implementation (PR #920, 2026-08-12) mirrors the `XCampaignRef`/`campaignGuidance` pattern exactly: `lib/api/x.ts` exports `XEditorialRef` (`{ angle, rationale }`) with `editorial?: XEditorialRef | null` on both `XPost` and `XPostHistoryEntry`; `x-post-queue.tsx` adds an `editorialGuidance(post)` function rendered as a HelpTip-wrapped context block; `x-post-detail.tsx` (TG approvals card) adds a `post.editorial`-guarded `text-xs text-muted-foreground` block. Both surfaces null-guard on `post.editorial`. See `docs/map/panel.md` for the full panel map.
 
 ## Tests
 
