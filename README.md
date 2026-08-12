@@ -257,14 +257,47 @@ Domain routes are mounted under `/api`:
 |-------------|-------------|
 | `/api/tasks` | Task CRUD, lifecycle, claiming |
 | `/api/agents` | Agent management |
-| `/api/git` | Git operations (status, commit, push, PR) |
-| `/api/sessions` | Communication sessions |
-| `/api/messages` | Agent messages |
 | `/api/projects` | Project (repo) management |
 | `/api/work-sessions` | Git work session tracking |
-| `/api/optimal` | RAG/Knowledge base queries |
+| `/api/git` | Git operations (status, commit, push, PR) |
+| `/api/orchestrator` | Orchestrator / dispatcher status |
+| `/api/kanban` | Kanban board views per team |
+| `/api/dashboard` | Dashboard, metrics, and analytics |
+| `/api/notifications` | Formal notifications (ack-required) |
 | `/api/journals` | Agent journals/reflections |
-| `/api/orchestrator/status` | Orchestrator / dispatcher status |
+| `/api/a2a` | Agent-to-agent direct messaging |
+| `/api/optimal` | RAG/Knowledge base queries |
+| `/api/stream` | Stream processing and permissions |
+| `/api/settings` | Feature flags and settings store |
+| `/api/company-goals` | Company goals, scorecard, brand voice |
+| `/api/research` | Web research (external search/fetch) |
+| `/api/cockpit` | CEO read-only business summary |
+| `/api/release` | Release manager proposals and approval |
+| `/api/secretary` | Secretary chief-of-staff reads and directives |
+| `/api/prompter` | Intake live chat (SSE relay) |
+| `/api/pitches` | Board proposals and CEO approve/provision |
+| `/api/playbooks` | Playbook library curation (approve/reject/archive) |
+| `/api/x` | X (Twitter) post queue and credentials |
+| `/api/video` | Video engine request, pipeline, and approval |
+| `/api/tiktok` | TikTok OAuth credentials (write-only) |
+| `/api/telegram` | Telegram notifications bridge |
+| `/api/roadmap` | Board roadmap cycle approval |
+| `/api/board-programs` | Board Programs registry status and run-now |
+| `/api/pest-control` | Pest Control bug-hunt cycle |
+| `/api/periscope` | Periscope market-research briefs |
+| `/api/coroner` | Coroner postmortem reports |
+| `/api/sentinel` | Sentinel quality-drift reports |
+| `/api/spackle` | Spackle gap-fill cycle |
+| `/api/scales` | Scales portfolio-rebalance cycle |
+| `/api/mirror` | Mirror messaging-fix cycle |
+| `/api/dogfood` | Dogfood friction-fix cycle |
+| `/api/github-app` | GitHub App credentials and repo listing |
+| `/api/products` | Product CRUD |
+| `/api/providers` | AI provider model routing |
+| `/api/docs` | Project documentation management |
+| `/api/usage` | Token usage analytics |
+| `/api/system` | System monitoring (rate limits, etc.) |
+| `/api/auth` | Cloud auth login/logout (mounted only when `ROBOCO_CLOUD_AUTH_ENABLED`) |
 
 The agent **gateway** verbs are served separately under `/api/v1/flow/{role}/{verb}` (intent verbs) and `/api/v1/do` (content tools) — see the [Agent Gateway](CLAUDE.md#agent-gateway).
 
