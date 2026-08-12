@@ -20,7 +20,3 @@ Two new unit tests in `tests/unit/services/test_x_engine.py`:
 
 - `test_redraft_from_rejection_editorial_carries_editorial_ref` — verifies angle + rationale preserved.
 - `test_redraft_from_rejection_campaign_carries_campaign_ref` — verifies campaign_name, stage_label, publish_after, sequence preserved.
-
-## Known stale docstring
-
-`_redraft_identity`'s docstring (x_engine.py ~line 1502) still references the removed ponytail note and says x_editorial/x_campaign have no registered extractor — this is now stale. Not fixed in this task (documenter role, not dev). Next dev touch should update it.
