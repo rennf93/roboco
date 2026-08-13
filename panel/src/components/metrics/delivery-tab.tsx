@@ -23,6 +23,7 @@ import {
   useCycleTime,
   useBottlenecks,
   useRework,
+  useProvenance,
   useTeamScorecard,
 } from "@/hooks/use-observability";
 import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
@@ -280,6 +281,63 @@ function ReworkCard() {
   );
 }
 
+// ─── Provenance (human vs agent origination) ─────────────────────────────────
+
+function ProvenanceCard() {
+  const { data, isLoading, isError } = useProvenance(30);
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <HelpTip label="Every task in the window classified by its ROOT ancestor's source, not its own: a delegated subtask's own source column always reads 'manual' no matter who really originated the work further up the tree">
+          <CardTitle className="text-base">Task Provenance (30d)</CardTitle>
+        </HelpTip>
+      </CardHeader>
+      <CardContent>
+        {isError ? (
+          <p className="text-sm text-muted-foreground py-8 text-center">
+            Failed to load provenance metrics.
+          </p>
+        ) : isLoading || !data ? (
+          <Skeleton className="h-20 w-full" />
+        ) : data.total === 0 ? (
+          <p className="text-sm text-muted-foreground py-8 text-center">
+            No tasks created in this window yet.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-baseline gap-3">
+              <span className="text-3xl font-bold">{pct(data.human_rate)}</span>
+              <span className="text-sm text-muted-foreground">
+                human-originated · {data.human_authored}/{data.total} tasks
+              </span>
+            </div>
+            <HelpTip
+              label={`${data.human_authored} human-rooted (manual/prompter source) · ${data.agent_authored} agent-rooted (delegation, board programs, self-heal, and similar)`}
+            >
+              <div className="flex h-2 w-full overflow-hidden rounded bg-muted">
+                <div
+                  className="h-2 bg-[var(--chart-1)]"
+                  style={{ width: `${Math.round(data.human_rate * 100)}%` }}
+                />
+                <div
+                  className="h-2 bg-[var(--chart-2)]"
+                  style={{
+                    width: `${Math.round((1 - data.human_rate) * 100)}%`,
+                  }}
+                />
+              </div>
+            </HelpTip>
+            <div className="flex gap-2 text-xs">
+              <Badge variant="secondary">Human {data.human_authored}</Badge>
+              <Badge variant="secondary">Agent {data.agent_authored}</Badge>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Per-cell scorecards ────────────────────────────────────────────────────────
 
 function CellScorecard({ team }: { team: string }) {
@@ -338,7 +396,10 @@ export function DeliveryTabContent() {
         <CycleTimeCard />
         <BottlenecksCard />
       </div>
-      <ReworkCard />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ReworkCard />
+        <ProvenanceCard />
+      </div>
       <div className="grid gap-4 md:grid-cols-3">
         {CELLS.map((team) => (
           <CellScorecard key={team} team={team} />

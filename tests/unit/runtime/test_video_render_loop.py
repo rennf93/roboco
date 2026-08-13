@@ -113,7 +113,7 @@ class _FakeRenderer:
 
 def _db_ctx(db: Any) -> Any:
     @asynccontextmanager
-    async def _ctx() -> Any:
+    async def _ctx(**_kwargs: str) -> Any:
         yield db
 
     return _ctx
@@ -363,7 +363,7 @@ async def test_render_video_task_holds_no_session_across_render_calls() -> None:
     open_sessions = 0
 
     @asynccontextmanager
-    async def _fake_db_ctx() -> Any:
+    async def _fake_db_ctx(**_kwargs: str) -> Any:
         nonlocal open_sessions
         open_sessions += 1
         db = MagicMock()

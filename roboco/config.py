@@ -125,6 +125,19 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=20, ge=0)
     database_pool_timeout: int = Field(default=10, ge=1)
     database_pool_recycle: int = Field(default=1800, ge=60)
+    # A SEPARATE, smaller engine/pool for the orchestrator's background engine
+    # loops (self-heal, ci-watch, dep-update, env-sync, release-manager,
+    # x-mentions, board-program, video-render, the vault engines, telegram
+    # poll, strategy-engine, see roboco.db.base.get_engine(pool=...)) so a
+    # long-held background connection can never starve an agent-facing
+    # FastAPI request queued on the primary pool. FastAPI's get_db /
+    # get_db_committed always use the primary pool; only these loops opt in
+    # via get_db_context(pool="background"). Ceiling with the primary pool's
+    # 30 is 38 against max_connections=100 (25 already in use at idle per the
+    # 2026-07-29 incident measurement), leaving headroom for the backup
+    # container, psql, and Alembic.
+    database_background_pool_size: int = Field(default=4, ge=1)
+    database_background_max_overflow: int = Field(default=4, ge=0)
     # Server-side guards against the lock-convoy incident class (2026-07-29):
     # a session parked mid-transaction on non-DB work (git subprocess, an
     # asyncio lock queue) holds its row locks + pooled connection until

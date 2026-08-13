@@ -71,7 +71,7 @@ async def test_load_set_keeps_distinct_commands_per_repo() -> None:
 
 def _db_ctx(db: Any) -> Any:
     @asynccontextmanager
-    async def _ctx() -> Any:
+    async def _ctx(**_kwargs: str) -> Any:
         yield db
 
     return _ctx

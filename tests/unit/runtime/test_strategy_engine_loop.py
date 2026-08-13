@@ -23,6 +23,9 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 class _FakeDbCtx:
     """An async context manager yielding a dummy session."""
 
+    def __init__(self, pool: str = "primary") -> None:
+        self._pool = pool
+
     async def __aenter__(self) -> object:
         return object()
 

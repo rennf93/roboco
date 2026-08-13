@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from roboco.config import settings as cfg
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.foundation import identity as _foundation
@@ -28,11 +29,11 @@ from roboco.services.release_readiness import (
     report_to_dict,
 )
 from roboco.services.task import RELEASE_MANAGER_SOURCE, TaskService, get_task_service
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
-
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 SECRETARY_UUID = _foundation.AGENTS["secretary-1"].uuid
@@ -40,6 +41,42 @@ SLUG = "roboco"
 ONE = 1
 MIN_COMMITS = 8
 _VERSION = "0.13.0"
+
+
+@pytest_asyncio.fixture
+async def db_session(_test_database_url: str) -> AsyncIterator[AsyncSession]:
+    """Savepoint-isolated override, shadowing tests/conftest.py's plain-
+    rollback fixture for THIS module only (pytest resolves a module-level
+    fixture over a conftest.py one of the same name).
+
+    ``ReleaseManagerEngine.run_cycle`` now commits mid-cycle to release the
+    pool connection before the readiness assessment (read-clone resolve,
+    git subprocess calls, and a CI HTTP call, the 2026-07-29 pool-exhaustion
+    fix). A plain rollback-at-teardown only undoes UNCOMMITTED state, so
+    that mid-test commit would otherwise leak rows into the shared
+    session-scoped test database. Mirrors
+    tests/integration/services/conftest.py's fixture exactly: nests the
+    test in one real transaction and gives the session a SAVEPOINT
+    (``join_transaction_mode="create_savepoint"``); every commit under
+    test only ends the savepoint, and the real transaction is what rolls
+    back at teardown.
+    """
+    engine = create_async_engine(_test_database_url, future=True)
+    async with engine.connect() as connection:
+        await connection.begin()
+        factory = async_sessionmaker(
+            bind=connection,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        async with factory() as session:
+            try:
+                yield session
+            finally:
+                await session.close()
+        await connection.rollback()
+    await engine.dispose()
 
 
 def _report(
@@ -284,6 +321,38 @@ async def test_proposes_survives_telegram_push_failure(
     task = await engine.run_cycle()
     assert task is not None
     assert await get_task_service(db_session).list_open_release_proposals()
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_releases_pool_before_assessment(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_cycle commits (releasing the pool connection) before calling the
+    assessor - the assessor does a read-clone resolve/fetch, git subprocess
+    calls, and a CI status HTTP call that must not hold a checked-out
+    connection (2026-07-29 pool-exhaustion incident class). Without the
+    release, commit is never called before the assessor runs (the preceding
+    work is a read-only SELECT), so this fails without the fix."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    order: list[str] = []
+    real_commit = db_session.commit
+
+    async def _tracked_commit() -> None:
+        order.append("commit")
+        await real_commit()
+
+    monkeypatch.setattr(db_session, "commit", _tracked_commit)
+
+    async def _assessor() -> ReleaseReadinessReport | None:
+        order.append("assess")
+        return _report()
+
+    engine = ReleaseManagerEngine(db_session, assessor=_assessor)
+    await engine.run_cycle()
+    assert "commit" in order
+    assert "assess" in order
+    assert order.index("commit") < order.index("assess")
 
 
 @pytest.mark.asyncio

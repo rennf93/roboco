@@ -150,6 +150,27 @@ async def test_spawn_waste_endpoint(dashboard_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_provenance_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        "/api/dashboard/metrics/provenance?days=30", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert set(body) >= {"total", "human_authored", "agent_authored", "human_rate"}
+    assert body["total"] == body["human_authored"] + body["agent_authored"]
+
+
+@pytest.mark.asyncio
+async def test_provenance_endpoint_rejects_out_of_range_days(
+    dashboard_client: AsyncClient,
+) -> None:
+    resp = await dashboard_client.get(
+        "/api/dashboard/metrics/provenance?days=91", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
 async def test_agent_scorecard_404_when_absent(dashboard_client: AsyncClient) -> None:
     resp = await dashboard_client.get(
         f"/api/dashboard/metrics/scorecard/agent/{uuid4()}", headers=_HDR

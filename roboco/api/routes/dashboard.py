@@ -562,6 +562,20 @@ async def get_spawn_waste(
     return report.to_dict()
 
 
+@router.get("/metrics/provenance")
+async def get_provenance(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """Human- vs agent-originated task counts, classified by each task's ROOT
+    ancestor source (a delegated subtask's own `source` always reads
+    "manual" regardless of who really kicked off the work, see
+    `MetricsService.get_provenance_metrics`)."""
+    metrics_service = get_metrics_service(db)
+    report = await metrics_service.get_provenance_metrics(days=days)
+    return report.to_dict()
+
+
 @router.get("/metrics/scorecard/agent/{agent_id}")
 async def get_agent_scorecard(
     agent_id: UUID,

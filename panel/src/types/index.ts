@@ -1494,6 +1494,14 @@ export interface Scorecard {
   cost_usd: number;
 }
 
+/** Human- vs agent-originated task counts (root-source classification). */
+export interface ProvenanceReport {
+  total: number;
+  human_authored: number;
+  agent_authored: number;
+  human_rate: number;
+}
+
 // --- Granular per-member metrics (v0.15.0) ---
 
 export interface StageEffort {

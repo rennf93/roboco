@@ -122,6 +122,7 @@ class ReleaseManagerEngine(BaseService):
         task_svc = get_task_service(self.session)
         if await task_svc.list_open_release_proposals():
             return None  # one open proposal at a time
+        await self._release_pool_connection()
         report = await self._ready_report()
         if report is None:
             return None
@@ -133,6 +134,25 @@ class ReleaseManagerEngine(BaseService):
             )
             return None
         return await self._originate(report, cast("UUID", project.id))
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Called right before the readiness assessment below - a read-clone
+        resolve/fetch, several git subprocess calls, and a CI status HTTP
+        call (``_production_assess`` / ``gather_snapshot``), together the
+        longest single-cycle connection hold this engine can produce.
+        Mirrors content_actions.evidence()'s pool-release commit (2026-07-29
+        pool-exhaustion incident): the next read/write reopens a fresh
+        transaction on demand. A poisoned session rolls back instead -
+        ending the transaction is the point, either way works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     async def _ready_report(self) -> ReleaseReadinessReport | None:
         """Assess and return a report only when a release is actually warranted.

@@ -9417,7 +9417,7 @@ Start by:
         from roboco.services.strategy_engine import get_strategy_engine
 
         try:
-            async with get_db_context() as db:
+            async with get_db_context(pool="background") as db:
                 await get_strategy_engine(db).run_cycle()
             state.failures = 0
             state.notified = False
@@ -9469,7 +9469,7 @@ Start by:
         while self._running:
             try:
                 await asyncio.sleep(interval)
-                async with get_db_context() as db:
+                async with get_db_context(pool="background") as db:
                     ingested = await self._poll_external_prs_once(db)
                 if ingested:
                     self._dispatch_wake.set()
@@ -9506,7 +9506,7 @@ Start by:
         while self._running:
             try:
                 await asyncio.sleep(interval)
-                async with get_db_context() as db:
+                async with get_db_context(pool="background") as db:
                     await get_self_heal_engine(db).run_cycle()
                     await db.commit()
                 self._record_loop_heartbeat("self_heal", interval)
@@ -9549,7 +9549,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.ci_watch_engine import get_ci_watch_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             watch_set = await self._load_ci_watch_set(db)
             if not watch_set:
                 logger.warning(
@@ -9638,7 +9638,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.dep_update_engine import get_dep_update_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             projects = await self._load_dep_update_set(db)
             if not projects:
                 logger.warning(
@@ -9683,7 +9683,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.env_sync_engine import get_env_sync_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             projects = await self._load_env_sync_set(db)
             if not projects:
                 logger.warning(
@@ -9743,7 +9743,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.release_manager_engine import get_release_manager_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             await get_release_manager_engine(db).run_cycle()
             await db.commit()
 
@@ -9776,7 +9776,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.x_engine import get_x_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             await get_x_engine(db).run_cycle()
             await db.commit()
 
@@ -9825,7 +9825,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.board_programs import get_board_program_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             await get_board_program_engine(db).run_due_programs()
             await db.commit()
 
@@ -9855,7 +9855,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.vault_intake_engine import get_vault_intake_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             await get_vault_intake_engine(db).run_cycle()
             await db.commit()
 
@@ -9887,7 +9887,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.vault_janitor import get_vault_janitor
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             await get_vault_janitor(db).run_cycle()
             await db.commit()
 
@@ -9917,7 +9917,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.vault_kb_engine import get_vault_kb_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             await get_vault_kb_engine(db).run_cycle()
             await db.commit()
 
@@ -9951,7 +9951,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.telegram_inbound import get_telegram_inbound_engine
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             await get_telegram_inbound_engine(db).run_cycle()
             await db.commit()
 
@@ -9995,7 +9995,7 @@ Start by:
         from roboco.services.maintenance_pause import PauseScope, is_paused
         from roboco.services.task import get_task_service
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             if await is_paused(db, PauseScope.ENGINES):
                 return
             task_ids = [
@@ -10052,7 +10052,7 @@ Start by:
         from roboco.foundation.policy.content import markers
         from roboco.services.task import get_task_service
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             task = await get_task_service(db).get(task_id)
             if task is None:
                 return None
@@ -10074,7 +10074,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.task import get_task_service
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             task = await get_task_service(db).get(task_id)
             if task is None:
                 return
@@ -10097,7 +10097,7 @@ Start by:
         if terminal:
             payload["render_status"] = "failed"
         title = ""
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             task = await get_task_service(db).get(task_id)
             if task is None:
                 return
@@ -10162,7 +10162,7 @@ Start by:
         from roboco.services.video_renderer_client import get_video_renderer
         from roboco.services.workspace import WorkspaceError, get_workspace_service
 
-        async with get_db_context() as db:
+        async with get_db_context(pool="background") as db:
             project = (
                 await get_project_service(db).get(project_id) if project_id else None
             )
@@ -10299,6 +10299,23 @@ Start by:
             canonical.append(project)
         return canonical
 
+    @staticmethod
+    async def _release_pool_connection(db: "AsyncSession") -> None:
+        """End ``db``'s current transaction so its pool connection is returned.
+
+        Mirrors content_actions.evidence()'s pool-release commit / the
+        background engines' own ``_release_pool_connection`` (2026-07-29
+        pool-exhaustion incident): the next read/write reopens a fresh
+        transaction on demand. A poisoned session rolls back instead - ending
+        the transaction is the point, either way works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await db.commit()
+        except PendingRollbackError:
+            await db.rollback()
+
     async def _poll_external_prs_once(self, db: "AsyncSession") -> int:
         """One discovery pass across active repos; returns tasks ingested.
 
@@ -10310,6 +10327,11 @@ Start by:
         org's own and never ingested, regardless of author — the rest split
         into external/fork PRs and (when internal review is on) org-repo PRs
         opened outside the task flow. Commits once at the end.
+
+        The pool connection is released (``_release_pool_connection``) right
+        before each project's ``list_open_prs`` below, a GitHub HTTP call -
+        per-project, not once for the whole batch, so the hold never
+        accumulates across every active repo in one poll tick.
         """
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
@@ -10322,6 +10344,7 @@ Start by:
         allowlist = {a.lower() for a in settings.external_pr_author_allowlist}
         ingested = 0
         for project in self._projects_one_per_repo(projects):
+            await self._release_pool_connection(db)
             for pr in await git.list_open_prs(project.slug):
                 if await self._ingest_pr_if_reviewable(
                     task_service, project, pr, system_id, allowlist
