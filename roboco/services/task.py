@@ -159,7 +159,12 @@ _ESCALATABLE_TO_BLOCKED: frozenset[TaskStatus] = frozenset(
 # Review/queue states are entered unowned and re-claimed via the claim verbs
 # (claim_review, claim_doc_task, i_will_plan, ...). An admin override landing a
 # blocked task in one of these must clear the stale claim or the next claimant
-# is handed a task it cannot write to.
+# is handed a task it cannot write to. AWAITING_CEO_APPROVAL has no claim verb
+# at all (the CEO approves directly, out of band) but the same principle
+# applies: whoever held the claim before is no longer who should act, so a
+# stale active_claimant_id here is equally wrong - it misrepresents who is
+# "working" the task and would let the prior claimant keep writing notes/
+# commits via _active_claim_violation after losing ownership.
 _REVIEW_QUEUE_STATES: frozenset[TaskStatus] = frozenset(
     {
         TaskStatus.NEEDS_REVISION,
@@ -167,6 +172,7 @@ _REVIEW_QUEUE_STATES: frozenset[TaskStatus] = frozenset(
         TaskStatus.AWAITING_DOCUMENTATION,
         TaskStatus.AWAITING_PR_REVIEW,
         TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.AWAITING_CEO_APPROVAL,
     }
 )
 
@@ -11318,6 +11324,20 @@ class TaskService(BaseService):
         )
         return task
 
+    @staticmethod
+    def _clear_stale_active_claimant(
+        task: TaskTable, effective_assignee: UUID | None
+    ) -> None:
+        """Clear ``active_claimant_id`` when ``reassign`` hands the task to
+        someone else. No-op when there was no live claim, or the claim
+        already matches the new owner (an idempotent re-hand must not wipe
+        a legitimately-set claim). See ``reassign``'s docstring for why
+        this is always safe to do unconditionally otherwise.
+        """
+        prior_claimant = to_python_uuid(task.active_claimant_id)
+        if prior_claimant is not None and prior_claimant != effective_assignee:
+            task.active_claimant_id = cast("Any", None)
+
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
@@ -11328,6 +11348,24 @@ class TaskService(BaseService):
         documenter, doc → cell_pm). Pass ``None`` to clear assignment so
         no agent gets respawned (e.g. after escalating to CEO, who acts
         via the UI).
+
+        A stale ``active_claimant_id`` left pointing at whoever held the
+        claim before this hand-off is cleared below when it no longer
+        matches the new owner - WHO should act just moved, so the old
+        claim must move with it or the prior claimant keeps standing as
+        "actively working" (and, via ``_active_claim_violation``, keeps the
+        ability to write notes/commits) after losing ownership. Every
+        caller here hands off to a NEW owner as the tail end of its own
+        turn (dev → qa, qa → doc, doc → pm, escalate_to_ceo → None), so
+        clearing is always safe: it is never "pulling the rug" out from
+        under a live in-flight verb, only releasing a grip the caller
+        itself just relinquished. This mirrors ``_REVIEW_QUEUE_STATES``'
+        clearing in ``admin_set_status`` / ``_admin_out_of_blocked``, and
+        leaves the agent-row ACTIVE marker (``current_task_id``) untouched
+        - that is ``reassign_active_claim``'s job for CLAIMED/IN_PROGRESS
+        hand-offs, and AWAITING_PM_REVIEW's own recovery seam
+        (``assign_review_pm``) re-establishes ``active_claimant_id`` there
+        before the PM is ever spawned.
 
         Returns the refreshed task, or None if the task no longer exists.
         """
@@ -11373,6 +11411,7 @@ class TaskService(BaseService):
         task.claimed_by = (
             cast("Any", effective_assignee) if effective_assignee else None
         )
+        self._clear_stale_active_claimant(task, effective_assignee)
         await self.session.flush()
         self.log.info(
             "Task reassigned",

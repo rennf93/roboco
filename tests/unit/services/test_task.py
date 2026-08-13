@@ -61,6 +61,10 @@ def _build_task(**overrides: object) -> MagicMock:
         "blocker_raised_by": None,
         "commits": [],
         "dev_notes": None,
+        # Same MagicMock-autocreate trap as batch_id below: reassign() now
+        # reads active_claimant_id (to_python_uuid chokes on an unconfigured
+        # mock child), so every task-shaped mock here needs a real default.
+        "active_claimant_id": None,
         # An unconfigured MagicMock attribute auto-creates a truthy child
         # mock, not None, so batch_id must default to None explicitly or
         # every plain (non-MegaTask) task-shaped mock here would silently

@@ -185,6 +185,17 @@ _EXPECTED_STOP_MAX_ENTRIES = 200
 # the task pending-unassigned forever. Generous enough to cover the PM's next
 # tool call; short enough that a genuinely abandoned task recovers fast.
 _CREATOR_ROUTE_GRACE_SECONDS = 600
+# _dispatch_pm_work's fetch is the one dispatcher NOT team-scoped (it triages
+# every fresh pending task org-wide, board/main_pm/marketing-assigned or not),
+# unlike every other dispatcher, whose fetch is narrowed by team/source/status
+# and never competes for the same window. GET /tasks's default limit (100),
+# ordered by priority/sequence/created_at (not recency), silently truncates
+# once org-wide pending tasks exceed it: a materialized board-program root
+# (team=main_pm, default priority) can fall outside the fetched window and
+# never be seen, i.e. "assigned but nothing routes it". Raised to the route's
+# own declared max (Query(..., le=500) on GET /tasks) so this dispatcher sees
+# the whole queue any realistically-sized backlog can produce.
+_PM_DISPATCH_FETCH_LIMIT = 500
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
@@ -1306,6 +1317,11 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
+        # In-path PR-gate CI-status cache: (project_slug, pr_number) ->
+        # (monotonic fetch time, state). Bounds get_pr_ci_status calls to
+        # roughly one per _GATE_CI_STATUS_CACHE_TTL_SECONDS per PR instead
+        # of one per dispatch tick per task (see _gate_task_ci_pending).
+        self._gate_ci_status_cache: dict[tuple[str, int], tuple[float, str | None]] = {}
         # Dispatcher heartbeat throttle (see _emit_dispatcher_heartbeat).
         self._last_dispatch_heartbeat: datetime | None = None
         # Serializes the fire-and-forget respawn-tracker upserts so same-key
@@ -8372,23 +8388,24 @@ Start by:
         Dormant in a standard deployment: when no ``external_pr_supersede``
         umbrellas exist the lookup returns nothing and no GitHub call is made,
         so this is safe to run unconditionally on every sweep.
+
+        Each landed umbrella's contributor-PR close runs in its OWN fresh
+        session (``_close_one_superseded_pr``), never one session held across
+        the whole pending list: this sweep ticks every 60s forever, so a
+        single session held across N sequential GitHub close calls (each an
+        HTTP round trip) was the highest-frequency pool-hold offender of the
+        2026-07-29 pool-exhaustion incident class. Mirrors
+        ``_reconcile_umbrella_row``'s per-row isolation two methods below.
         """
         from roboco.db.base import get_session_factory
-        from roboco.services.git import GitService
-        from roboco.services.task import get_task_service
 
         system_id = _foundation.AGENTS["system"].uuid
         session_factory = get_session_factory()
-        async with session_factory() as db:
-            try:
-                git = GitService(db)
-                task_service = get_task_service(db)
-                closed = await self._close_superseded_prs(git, task_service, system_id)
-                if closed:
-                    await db.commit()
-            except Exception as e:
-                await db.rollback()
-                logger.warning("Supersede close-on-land sweep failed", error=str(e))
+        pending = await self._collect_supersede_close_pending(session_factory)
+        for uid, replacement_pr in pending:
+            await self._close_one_superseded_pr(
+                uid, replacement_pr, system_id, session_factory
+            )
 
         # Reconcile branch_pending / branch_cut_failed umbrellas (restart-safe).
         to_reconcile = await self._collect_supersede_reconciliations(session_factory)
@@ -8413,6 +8430,87 @@ Start by:
             )
             self._bg_tasks.add(bg)
             bg.add_done_callback(self._bg_tasks.discard)
+
+    async def _collect_supersede_close_pending(
+        self, session_factory: Any
+    ) -> list[tuple[str, int]]:
+        """(umbrella id, replacement PR) pairs pending a contributor-PR close.
+
+        Read in its own short session, closed before the per-row close loop
+        in ``_sweep_superseded_prs``. A lookup failure here is best-effort
+        and returns [] (mirrors ``_collect_supersede_reconciliations``).
+        """
+        from roboco.services.task import get_task_service
+
+        try:
+            async with session_factory() as db:
+                task_service = get_task_service(db)
+                pending = await task_service.supersede_umbrellas_pending_close()
+                return [(str(u.id), pr) for u, pr in pending]
+        except Exception as e:
+            logger.warning("Supersede close-on-land sweep lookup failed", error=str(e))
+            return []
+
+    async def _close_one_superseded_pr(
+        self,
+        uid: str,
+        replacement_pr: int,
+        system_id: "UUID",
+        session_factory: Any,
+    ) -> None:
+        """Close ONE landed umbrella's contributor PR in its own fresh session.
+
+        Per-row session + per-row commit, isolated from siblings (mirrors
+        ``_reconcile_umbrella_row``): one bad PR (deleted, revoked PAT) is
+        logged and skipped rather than aborting every other umbrella queued
+        this tick, and the pool connection this row checks out for the
+        GitHub HTTP call below is released the moment the row finishes.
+        """
+        from roboco.services.git import GitService
+        from roboco.services.task import get_task_service
+        from roboco.utils.converters import require_uuid
+
+        try:
+            async with session_factory() as db:
+                task_service = get_task_service(db)
+                umbrella = await task_service.get(require_uuid(uid))
+                if umbrella is None:
+                    return
+                marker = _markers.get_external_pr_supersede(umbrella) or ""
+                pr_number = self._parse_supersede_pr(marker)
+                if pr_number is None:
+                    return
+                author = self._parse_supersede_author(marker)
+                comment = _supersede_author_prefix(
+                    author
+                ) + SUPERSEDE_PR_CLOSE_COMMENT.format(replacement_pr=replacement_pr)
+                git = GitService(db)
+                try:
+                    await git.close_pull_request(
+                        pr_number,
+                        comment=comment,
+                        delete_branch=False,
+                        actor_agent_id=system_id,
+                        # PR numbers are per-repo; scope the close to THIS
+                        # umbrella's project so a same-numbered PR in another
+                        # project's repo is never resolved (and closed) by
+                        # mistake.
+                        project_id=cast("UUID", umbrella.project_id),
+                    )
+                except Exception:
+                    # A permanent close failure (deleted PR, revoked PAT) would
+                    # otherwise re-fire + re-log every tick forever; keep it a
+                    # single warning rather than a per-tick stack trace.
+                    logger.warning("close-on-land failed", pr_number=pr_number)
+                    return
+                await task_service.mark_supersede_pr_closed(cast("UUID", umbrella.id))
+                await db.commit()
+        except Exception as e:
+            logger.warning(
+                "Supersede close-on-land sweep row failed; umbrella skipped",
+                umbrella_id=uid,
+                error=str(e),
+            )
 
     async def _collect_supersede_reconciliations(
         self, session_factory: Any
@@ -9883,10 +9981,10 @@ Start by:
         """One render pass: render every completed authoring task carrying an
         unrendered composition. Testable w/o the sleep.
 
-        commit per-task so a raise mid-cycle no longer rolls back prior
-        renders (and the next cycle no longer re-renders + re-originates a
-        second held video_post draft). The committed ``render_status=
-        "rendered"`` is the idempotency key the next scan skips.
+        Only resolves the id list here; each id is then handed to
+        ``_render_video_task``, which owns its own short session boundaries
+        (see that method's docstring). This loop itself never holds a
+        session across a task's render.
 
         Skips the whole pass while the ``engines`` maintenance-pause scope is
         active: rendering calls the video-renderer sidecar and materializes
@@ -9900,13 +9998,27 @@ Start by:
         async with get_db_context() as db:
             if await is_paused(db, PauseScope.ENGINES):
                 return
-            tasks = await get_task_service(db).list_completed_video_tasks()
-            for task in tasks:
-                await self._render_video_task(db, task)
-                await db.commit()
+            task_ids = [
+                t.id for t in await get_task_service(db).list_completed_video_tasks()
+            ]
+        for task_id in task_ids:
+            await self._render_video_task(task_id)
 
-    async def _render_video_task(self, db: Any, task: Any) -> None:
+    async def _render_video_task(self, task_id: Any) -> None:
         """Render one completed authoring task's composition, or skip/retry/fail.
+
+        Runs in separate short DB sessions, never one held across the
+        render: ``_resolve_video_render`` reads what to render and closes;
+        ``_render_both_cuts`` opens its own session only for the project +
+        read-clone resolve, closed before the renderer.render() calls (each
+        drives the render sidecar over HTTP for tens to hundreds of
+        seconds, the worst DB-pool-hold offender by 2-3 orders of
+        magnitude when the video engine is armed, 2026-07-29
+        pool-exhaustion incident class); the result is then written in a
+        FRESH session that RE-FETCHES the task by id rather than reusing
+        the resolve-phase reference, since that session has
+        ``expire_on_commit=False``, so a stale in-memory attribute would
+        otherwise go unnoticed instead of being re-read.
 
         Skips silently when the dev hasn't called ``propose_video`` yet (no
         ``composition_id``) or the task already reached a terminal render state
@@ -9916,35 +10028,94 @@ Start by:
         broken task never blocks the cycle, and is RETRIED on later cycles up to
         ``_MAX_VIDEO_RENDER_ATTEMPTS`` before being marked terminally failed.
         """
-        from roboco.foundation.policy.content import markers
-
-        draft = markers.get_video_draft(task) or {}
-        composition_id = draft.get("composition_id")
-        if not composition_id or draft.get("render_status") in ("rendered", "failed"):
+        resolved = await self._resolve_video_render(task_id)
+        if resolved is None:
             return
+        draft, composition_id, project_id = resolved
         try:
             mp4_paths = await self._render_both_cuts(
-                db, draft, composition_id, str(task.id), task.project_id
+                draft, composition_id, str(task_id), project_id
             )
-            await self._materialize_video_post(db, task, draft, mp4_paths)
         except Exception as exc:
-            attempts = int(draft.get("render_attempts", 0)) + 1
-            terminal = attempts >= _MAX_VIDEO_RENDER_ATTEMPTS
-            payload = {**draft, "render_attempts": attempts, "render_error": str(exc)}
-            if terminal:
-                payload["render_status"] = "failed"
-            markers.set_video_draft(task, payload)
-            logger.warning(
-                "video-render: render attempt failed",
-                task_id=str(task.id),
-                attempts=attempts,
-                terminal=terminal,
-                error=str(exc),
-            )
-            if terminal:
-                await self._notify_video_render_failure(task, str(exc))
+            await self._fail_video_render_attempt(task_id, draft, exc)
+            return
+        await self._finish_video_render(task_id, draft, mp4_paths)
 
-    async def _notify_video_render_failure(self, task: Any, last_error: str) -> None:
+    async def _resolve_video_render(
+        self, task_id: Any
+    ) -> tuple[dict[str, Any], str, Any] | None:
+        """What to render for ONE task, read in a short session released
+        before the render below. None when there's nothing to render yet
+        (no ``propose_video`` call) or the render already reached a
+        terminal state."""
+        from roboco.db import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.services.task import get_task_service
+
+        async with get_db_context() as db:
+            task = await get_task_service(db).get(task_id)
+            if task is None:
+                return None
+            draft = markers.get_video_draft(task) or {}
+            composition_id = draft.get("composition_id")
+            if not composition_id or draft.get("render_status") in (
+                "rendered",
+                "failed",
+            ):
+                return None
+            return draft, composition_id, task.project_id
+
+    async def _finish_video_render(
+        self, task_id: Any, draft: dict[str, Any], mp4_paths: dict[str, str]
+    ) -> None:
+        """Re-fetch the task in a fresh session and materialize the render
+        result. Never reuses the resolve-phase task reference across the
+        render gap, see ``_render_video_task``'s docstring."""
+        from roboco.db import get_db_context
+        from roboco.services.task import get_task_service
+
+        async with get_db_context() as db:
+            task = await get_task_service(db).get(task_id)
+            if task is None:
+                return
+            await self._materialize_video_post(db, task, draft, mp4_paths)
+
+    async def _fail_video_render_attempt(
+        self, task_id: Any, draft: dict[str, Any], exc: Exception
+    ) -> None:
+        """Record one failed render attempt in a fresh session, re-fetching
+        the task by id (see ``_render_video_task``'s docstring). Retries on
+        later cycles up to ``_MAX_VIDEO_RENDER_ATTEMPTS`` before terminally
+        failing the task and alerting the CEO."""
+        from roboco.db import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.services.task import get_task_service
+
+        attempts = int(draft.get("render_attempts", 0)) + 1
+        terminal = attempts >= _MAX_VIDEO_RENDER_ATTEMPTS
+        payload = {**draft, "render_attempts": attempts, "render_error": str(exc)}
+        if terminal:
+            payload["render_status"] = "failed"
+        title = ""
+        async with get_db_context() as db:
+            task = await get_task_service(db).get(task_id)
+            if task is None:
+                return
+            markers.set_video_draft(task, payload)
+            title = task.title
+        logger.warning(
+            "video-render: render attempt failed",
+            task_id=str(task_id),
+            attempts=attempts,
+            terminal=terminal,
+            error=str(exc),
+        )
+        if terminal:
+            await self._notify_video_render_failure(task_id, title, str(exc))
+
+    async def _notify_video_render_failure(
+        self, task_id: Any, title: str, last_error: str
+    ) -> None:
         """Send one CEO alert that a video render exhausted its retries.
 
         Best-effort, mirroring ``_notify_strategy_engine_failure`` — a
@@ -9958,19 +10129,18 @@ Start by:
                 to_agent="ceo",
                 body=(
                     f"[video engine] render terminally failed for task "
-                    f"{task.title!r} ({_MAX_VIDEO_RENDER_ATTEMPTS} attempts "
+                    f"{title!r} ({_MAX_VIDEO_RENDER_ATTEMPTS} attempts "
                     f"exhausted): {last_error}"
                 ),
-                task_id=task.id,
+                task_id=task_id,
             )
         except Exception:
             logger.exception(
-                "video-render failure-notify dropped", task_id=str(task.id)
+                "video-render failure-notify dropped", task_id=str(task_id)
             )
 
     async def _render_both_cuts(
         self,
-        db: Any,
         draft: dict[str, Any],
         composition_id: str,
         render_key: str,
@@ -9981,17 +10151,26 @@ Start by:
         "square": path}. ``render_key`` (the source task id) scopes each
         cut's output path. ``project_id`` is the task's own ``project_id`` —
         never a fixed slug — so a video task authored against any opted-in
-        project renders from that project's ``motion/`` dir, not RoboCo's."""
+        project renders from that project's ``motion/`` dir, not RoboCo's.
+
+        The project + read-clone resolve runs in its own short session,
+        closed BEFORE the renderer.render() calls below (see
+        ``_render_video_task``'s docstring for why).
+        """
+        from roboco.db import get_db_context
         from roboco.services.project import get_project_service
         from roboco.services.video_renderer_client import get_video_renderer
         from roboco.services.workspace import WorkspaceError, get_workspace_service
 
-        project = await get_project_service(db).get(project_id) if project_id else None
-        if project is None or not project.slug:
-            raise WorkspaceError(
-                f"video-render: task's project not resolvable ({project_id})"
+        async with get_db_context() as db:
+            project = (
+                await get_project_service(db).get(project_id) if project_id else None
             )
-        workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
+            if project is None or not project.slug:
+                raise WorkspaceError(
+                    f"video-render: task's project not resolvable ({project_id})"
+                )
+            workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
         motion_dir = str(workspace / "motion")
         input_props = draft.get("input_props") or {}
         renderer = get_video_renderer()
@@ -10206,53 +10385,6 @@ Start by:
             source=source,
         )
         return created is not None
-
-    async def _close_superseded_prs(
-        self, git: Any, task_service: Any, system_id: "UUID"
-    ) -> int:
-        """Close + link the contributor PR for each landed supersede umbrella.
-
-        Idempotent: each umbrella is marked ``closed=1`` after its contributor PR
-        is closed, so it is processed once. ``delete_branch=False`` — the
-        contributor's branch lives on their fork; we never touch it. Caller
-        commits.
-        """
-        closed = 0
-        for (
-            umbrella,
-            replacement_pr,
-        ) in await task_service.supersede_umbrellas_pending_close():
-            # The marker lives in orchestration_markers (migration 041), NOT in
-            # quick_context: reading quick_context here returned None for every
-            # umbrella after the marker refactor, so close-on-land never fired.
-            marker = _markers.get_external_pr_supersede(umbrella) or ""
-            pr_number = self._parse_supersede_pr(marker)
-            if pr_number is None:
-                continue
-            author = self._parse_supersede_author(marker)
-            comment = _supersede_author_prefix(
-                author
-            ) + SUPERSEDE_PR_CLOSE_COMMENT.format(replacement_pr=replacement_pr)
-            try:
-                await git.close_pull_request(
-                    pr_number,
-                    comment=comment,
-                    delete_branch=False,
-                    actor_agent_id=system_id,
-                    # PR numbers are per-repo; scope the close to THIS
-                    # umbrella's project so a same-numbered PR in another
-                    # project's repo is never resolved (and closed) by mistake.
-                    project_id=cast("UUID", umbrella.project_id),
-                )
-            except Exception:
-                # A permanent close failure (deleted PR, revoked PAT) would
-                # otherwise re-fire + re-log every tick forever; keep it a single
-                # warning rather than a per-tick stack trace.
-                logger.warning("close-on-land failed", pr_number=pr_number)
-                continue
-            await task_service.mark_supersede_pr_closed(cast("UUID", umbrella.id))
-            closed += 1
-        return closed
 
     @staticmethod
     def _parse_supersede_pr(marker_line: str) -> int | None:
@@ -12038,8 +12170,16 @@ Start by:
         client: httpx.AsyncClient,
         status: str | list[str],
         team: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch tasks by status and optional team filter."""
+        """Fetch tasks by status and optional team filter.
+
+        ``limit`` forwards to ``GET /tasks``'s own ``limit`` query param
+        (default 100 server-side); omit to keep that default. A caller whose
+        fetch is NOT team-scoped needs this raised (see
+        ``_dispatch_pm_work``'s docstring for why an unscoped fetch can
+        silently truncate).
+        """
         # If multiple statuses, make separate requests and combine results
         statuses = status if isinstance(status, list) else [status]
         all_tasks: list[dict[str, Any]] = []
@@ -12048,6 +12188,8 @@ Start by:
             params: dict[str, Any] = {"status": single_status}
             if team:
                 params["team"] = team
+            if limit is not None:
+                params["limit"] = limit
 
             try:
                 resp = await client.get(f"{self._api_url}/tasks", params=params)
@@ -13591,8 +13733,13 @@ Start now: evidence(task_id="{task_id}")
                     ),
                     ("dev_work", self._dispatch_dev_work(client)),
                     ("qa_work", self._dispatch_qa_work(client)),
-                    ("pr_review_work", self._dispatch_pr_review_work(client)),
+                    # pr_gate_work runs BEFORE pr_review_work: both can spawn
+                    # the shared pr-reviewer-1 (root→master gate reviews vs.
+                    # inbound external/fork PR reviews), and the internal gate
+                    # blocks the delivery pipeline while an external PR can
+                    # wait a tick - see _dispatch_pr_gate_work's docstring.
                     ("pr_gate_work", self._dispatch_pr_gate_work(client)),
+                    ("pr_review_work", self._dispatch_pr_review_work(client)),
                     ("doc_work", self._dispatch_doc_work(client)),
                     ("pm_review_work", self._dispatch_pm_review_work(client)),
                     ("marketing_work", self._dispatch_marketing_work(client)),
@@ -15015,10 +15162,17 @@ Start now: evidence(task_id="{task_id}")
         ``board_programs`` scope inside ``_dispatch_board_program_
         exploration``, the two scopes must stay decoupled even though they
         share this one dispatcher.
+
+        Fetches with ``_PM_DISPATCH_FETCH_LIMIT`` (not the API's 100
+        default): this is the one dispatcher whose fetch is NOT team-scoped
+        (see that constant's comment for the silent-truncation class of bug
+        a plain default fetch would reintroduce here).
         """
         from roboco.services.maintenance_pause import PauseScope
 
-        tasks = await self._fetch_tasks(client, "pending")
+        tasks = await self._fetch_tasks(
+            client, "pending", limit=_PM_DISPATCH_FETCH_LIMIT
+        )
         dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
 
         for task in tasks:
@@ -16004,20 +16158,96 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             )
             break
 
+    # Bounds get_pr_ci_status calls to roughly one per PR per window instead
+    # of one per dispatch tick per task - the dispatch loop polls every
+    # `dispatcher_interval` (30s default) and can wake far more often on a
+    # busy fleet (trigger_dispatch fires on every status transition).
+    _GATE_CI_STATUS_CACHE_TTL_SECONDS: ClassVar[float] = 60.0
+
+    async def _fetch_gate_ci_state(self, slug: str, pr_number: int) -> str | None:
+        """Best-effort CI ``state`` lookup for the gate CI-pending check.
+
+        Reuses ``GitService.get_pr_ci_status`` - the exact signal ``pr_pass``
+        itself blocks on. Returns ``None`` on any lookup failure so the
+        caller fails open (never strands a task over a transient error).
+        """
+        from roboco.db import get_db_context
+        from roboco.services.git import GitService
+
+        try:
+            async with get_db_context() as db:
+                status = await GitService(db).get_pr_ci_status(slug, pr_number)
+        except Exception as exc:
+            logger.warning(
+                "gate CI status lookup failed",
+                project_slug=slug,
+                pr_number=pr_number,
+                error=str(exc),
+            )
+            return None
+        return status.get("state") if isinstance(status, dict) else None
+
+    async def _gate_task_ci_pending(self, task: dict[str, Any]) -> bool:
+        """True while the assembled PR's head-commit CI is still running or
+        not yet scheduled.
+
+        Without this, the dispatcher spawns a reviewer that immediately hits
+        ``pr_pass``'s own CI-pending block and exits, respawning every tick
+        until the respawn breaker trips and pages the CEO (live 2026-08: 7
+        rejected ``pr_pass`` calls in ~12 min on each of two tasks). The
+        lookup is cached per (slug, pr_number) for
+        ``_GATE_CI_STATUS_CACHE_TTL_SECONDS``.
+
+        Fails open (``False`` - spawn proceeds) on a missing project_slug/
+        pr_number, a lookup error, or any non-pending state (including
+        ``no_ci_configured``, ``error``, ``success``, ``failure``) - a
+        reviewer must still be spawned for a repo with no CI configured, or
+        to act on a genuinely-failing PR via ``pr_fail``. Only ``pending``
+        and ``pending_not_scheduled`` hold the spawn back.
+        """
+        slug = task.get("project_slug")
+        pr_number = task.get("pr_number")
+        if not slug or not pr_number:
+            return False
+        cache_key = (str(slug), int(pr_number))
+        now = time.monotonic()
+        cached = self._gate_ci_status_cache.get(cache_key)
+        ttl = self._GATE_CI_STATUS_CACHE_TTL_SECONDS
+        if cached is not None and now - cached[0] < ttl:
+            state = cached[1]
+        else:
+            state = await self._fetch_gate_ci_state(str(slug), int(pr_number))
+            self._gate_ci_status_cache[cache_key] = (now, state)
+        return state in ("pending", "pending_not_scheduled")
+
     async def _dispatch_pr_gate_work(self, client: httpx.AsyncClient) -> None:
         """Dispatch in-path PR-review-gate tasks (awaiting_pr_review) to reviewers.
 
         Routes by level: a cell→root task (team backend/frontend/ux_ui) goes to
         that cell's reviewer (be/fe/ux-pr-reviewer); the root→master task goes to
-        the main reviewer (pr-reviewer-1). The reviewer claims the task itself via
-        ``claim_gate_review`` (no pre-claim — mirrors the external-PR dispatcher);
-        the ``is_agent_active`` guard + one-reviewer-per-cell prevent a
-        double-spawn, and ``spawned`` bounds each reviewer to one task per tick.
+        the main reviewer (pr-reviewer-1) - the SAME shared reviewer
+        ``_dispatch_pr_review_work`` uses for inbound external/fork PRs, so this
+        dispatcher runs BEFORE it in ``_dispatch_all_work``'s order: an
+        assembled root PR blocks the whole delivery pipeline (every PM merge
+        downstream waits on it) while an external PR can wait a tick, so ties
+        for the shared reviewer must favor the internal gate. Without this
+        order a busy external-PR queue starves the root→master gate
+        indefinitely (live 2026-08: two cell tasks self-routed via their
+        dedicated cell reviewers while two Main-PM root tasks sat on
+        assignee=main-pm until the CEO manually intervened). The reviewer
+        claims the task itself via ``claim_gate_review`` (no pre-claim -
+        mirrors the external-PR dispatcher); the ``is_agent_active`` guard +
+        one-reviewer-per-cell prevent a double-spawn, and ``spawned`` bounds
+        each reviewer to one task per tick. A task whose assembled PR's CI is
+        still pending is skipped entirely (see ``_gate_task_ci_pending``) so
+        the reviewer isn't spawned only to be immediately CI-blocked.
         """
         tasks = await self._fetch_tasks(client, "awaiting_pr_review")
         spawned: set[str] = set()
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            if await self._gate_task_ci_pending(task):
                 continue
             team = task.get("team")
             if team in ("backend", "frontend", "ux_ui"):

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from roboco.config import settings as cfg
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.foundation import identity as _foundation
@@ -22,14 +23,48 @@ from roboco.services.notification import NotificationService
 from roboco.services.self_heal_engine import SelfHealEngine
 from roboco.services.task import TaskService, get_task_service
 from roboco.services.telemetry import TelemetrySample
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from collections.abc import AsyncIterator
+    from uuid import UUID
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 MAIN_PM_UUID = _foundation.AGENTS["main-pm"].uuid
 SLUG = "roboco"
 ONE = 1
+
+
+@pytest_asyncio.fixture
+async def db_session(_test_database_url: str) -> AsyncIterator[AsyncSession]:
+    """Savepoint-isolated override of the root ``db_session`` fixture.
+
+    ``SelfHealEngine.run_cycle`` now commits mid-call to release the pool
+    connection before the telemetry fetch (2026-07-29 pool-exhaustion fix),
+    so the root fixture's plain rollback-at-teardown can no longer undo it -
+    a mid-test commit would leak rows into the shared session-scoped test
+    database. Nests the whole test in one real transaction and gives the
+    session a SAVEPOINT (``join_transaction_mode="create_savepoint"``): a
+    ``commit()`` under test only ends the savepoint, the real rollback at
+    teardown undoes everything. ``session.in_transaction()`` still correctly
+    reads False right after such a commit.
+    """
+    engine = create_async_engine(_test_database_url, future=True)
+    async with engine.connect() as connection:
+        await connection.begin()
+        factory = async_sessionmaker(
+            bind=connection,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        async with factory() as session:
+            try:
+                yield session
+            finally:
+                await session.close()
+        await connection.rollback()
+    await engine.dispose()
 
 
 class _FakeSource:
@@ -246,6 +281,34 @@ async def test_loop_never_starts_or_approves(
     open_tasks = await get_task_service(db_session).list_open_self_heal_tasks()
     assert len(open_tasks) == ONE
     assert open_tasks[0].status == TaskStatus.PENDING  # never advanced by the loop
+
+
+@pytest.mark.asyncio
+async def test_pool_connection_released_after_telemetry_fetch(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-07-29 pool-exhaustion regression: run_cycle must release the pool
+    connection right after the telemetry fetch (a project lookup immediately
+    followed by an outbound GitHub HTTP call in the real source) - not carry
+    it into the reads/writes that follow. ``_seed_project`` flushes without
+    committing, so the transaction it opened is still live at the top of
+    ``run_cycle`` unless the fetch-adjacent release actually runs."""
+    await _seed_project(db_session)
+    _enable(monkeypatch)
+    engine = SelfHealEngine(db_session, source=_FakeSource([_breach("ci:roboco")]))
+
+    in_transaction_after_fetch: list[bool] = []
+    real_open_map = engine._open_self_heal_task_ids_by_fp
+
+    async def _spy() -> dict[str, UUID]:
+        in_transaction_after_fetch.append(db_session.in_transaction())
+        return await real_open_map()
+
+    monkeypatch.setattr(engine, "_open_self_heal_task_ids_by_fp", _spy)
+
+    await engine.run_cycle()
+
+    assert in_transaction_after_fetch == [False]
 
 
 @pytest.mark.asyncio

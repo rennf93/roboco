@@ -54,6 +54,14 @@ class DepUpdateEngine(BaseService):
         maintenance-pause scope is active. Returns the tasks it opened.
         Flushes; the caller (the orchestrator loop) owns the commit. Never
         starts / approves / merges / deploys.
+
+        The pool connection is released (see ``_release_pool_connection``)
+        right before each project's probe below - a real git clone + a
+        package-manager invocation, 2-25 minutes, the longest single
+        connection hold of any background loop and the 2026-07-29
+        pool-exhaustion precondition. Reads happen first; the probe and any
+        resulting task-create then run with the connection free until they
+        need it, mirroring content_actions.evidence()'s pool-release commit.
         """
         from roboco.services.maintenance_pause import PauseScope, is_paused
 
@@ -84,12 +92,30 @@ class DepUpdateEngine(BaseService):
                     cap=settings.dep_update_max_open_tasks,
                 )
                 break
+            await self._release_pool_connection()
             task = await self._open_for_project(task_svc, project, open_keys)
             if task is None:
                 continue
             created.append(task)
             open_count += 1
         return created
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Called right before a per-project probe that runs for minutes (a real
+        git clone + package-manager invocation) - a connection checked out
+        for that long is the 2026-07-29 pool-exhaustion precondition. Mirrors
+        content_actions.evidence()'s pool-release commit: the next read/write
+        reopens a fresh transaction on demand. A poisoned session rolls back
+        instead - ending the transaction is the point, either way works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     async def _open_for_project(
         self,

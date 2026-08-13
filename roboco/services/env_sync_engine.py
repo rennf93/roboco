@@ -55,6 +55,15 @@ class EnvSyncEngine(BaseService):
         env_sync task per repo (a conflict pauses the cascade at that rung).
         Never pushes prod. Flushes; the caller (the orchestrator loop) owns the
         commit.
+
+        The pool connection is released (see ``_release_pool_connection``)
+        right before each project's cascade below, which makes one or more
+        GitHub merges-API calls - mirrors content_actions.evidence()'s
+        pool-release commit (2026-07-29 pool-exhaustion incident): a
+        connection must not sit checked out for that. Per-iteration (not
+        once for the whole loop) because whether a project's cascade opens a
+        task is only known after it runs, so the cap can't be pre-computed
+        for a batch the way the dep-update probe's can.
         """
         from roboco.services.maintenance_pause import PauseScope, is_paused
 
@@ -76,11 +85,27 @@ class EnvSyncEngine(BaseService):
                 break
             if not await self._should_sync(task_svc, project):
                 continue
+            await self._release_pool_connection()
             task = await self._cascade_project(project)
             if task is not None:
                 created.append(task)
                 open_count += 1
         return created
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Mirrors content_actions.evidence()'s pool-release commit: the next
+        read/write reopens a fresh transaction on demand. A poisoned session
+        rolls back instead - ending the transaction is the point, either way
+        works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     async def _should_sync(self, task_svc: TaskService, project: Any) -> bool:
         """True when ``project`` is opted in and not already being synced.

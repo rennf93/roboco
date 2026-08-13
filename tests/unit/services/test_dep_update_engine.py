@@ -40,7 +40,9 @@ class _FakeWorkspace:
 def _make_engine(
     task_svc: Any, workspace: _FakeWorkspace | None = None
 ) -> tuple[DepUpdateEngine, list[Any]]:
-    session = MagicMock()
+    # AsyncMock, not MagicMock: run_cycle now awaits session.commit() to
+    # release the pool connection before each project's probe.
+    session = AsyncMock()
     engine = DepUpdateEngine(session, workspace=workspace or _FakeWorkspace())
     patchers = [
         patch(

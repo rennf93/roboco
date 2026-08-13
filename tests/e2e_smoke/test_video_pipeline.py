@@ -17,6 +17,8 @@ including its already-posted idempotency.
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
@@ -157,25 +159,22 @@ class _FakeRenderer:
         return f"/fake-out/{render_key}-{composition_id}-{orientation}.mp4"
 
 
-def _render_completed_task(stack: E2EStack, task_id: UUID) -> None:
+def _render_completed_task(task_id: UUID) -> None:
     """Drive the REAL orchestrator render step against the completed
     authoring task — only the sidecar client + workspace read-clone are
-    mocked (the render step's external-I/O boundary)."""
-    from pathlib import Path as _Path
-
-    from roboco.db.tables import TaskTable
+    mocked (the render step's external-I/O boundary). ``_render_video_task``
+    owns its own short DB sessions (2026-08 pool-exhaustion hardening) and
+    resolves via ``get_db_context``, which the e2e stack's patched
+    ``settings.database_*`` already route at this stack's own DB, so no
+    session needs to be handed in."""
     from roboco.runtime.orchestrator import AgentOrchestrator
-    from sqlalchemy import select
 
     workspace = SimpleNamespace(
-        ensure_read_clone=AsyncMock(return_value=_Path("/fake-clone"))
+        ensure_read_clone=AsyncMock(return_value=Path("/fake-clone"))
     )
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
 
-    async def _run(session: AsyncSession) -> None:
-        row = (
-            await session.execute(select(TaskTable).where(TaskTable.id == task_id))
-        ).scalar_one()
+    async def _run() -> None:
         with (
             patch(
                 "roboco.services.video_renderer_client.get_video_renderer",
@@ -186,9 +185,9 @@ def _render_completed_task(stack: E2EStack, task_id: UUID) -> None:
                 lambda _db: workspace,
             ),
         ):
-            await orch._render_video_task(session, row)
+            await orch._render_video_task(task_id)
 
-    stack.run_db(_run)
+    asyncio.run(_run())
 
 
 def _task_dict(stack: E2EStack, task_id: UUID) -> dict[str, Any]:
@@ -332,7 +331,7 @@ def test_video_pipeline_render_and_approve(e2e_stack: E2EStack) -> None:
     assert _is_held_ceo_source(before) is False, before
 
     # The render loop: only the sidecar client + workspace read-clone mocked.
-    _render_completed_task(stack, task_id)
+    _render_completed_task(task_id)
 
     draft = _find_video_post_draft(stack, task_id)
     assert draft["source"] == "video_post", draft

@@ -7,7 +7,7 @@ only notifies the CEO (this slice never originates, starts, merges, or deploys).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 import redis.asyncio as redis_asyncio
@@ -41,7 +41,9 @@ def _sample(value: float) -> TelemetrySample:
 
 
 def _engine(samples: list[TelemetrySample]) -> SelfHealEngine:
-    return SelfHealEngine(MagicMock(), source=_FakeSource(samples))
+    # AsyncMock, not MagicMock: run_cycle now awaits session.commit() to
+    # release the pool connection right after the telemetry fetch.
+    return SelfHealEngine(AsyncMock(), source=_FakeSource(samples))
 
 
 @pytest.mark.asyncio

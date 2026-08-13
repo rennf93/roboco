@@ -10,8 +10,9 @@ fixed parser (reads the marker value directly) and the rich close comment
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -119,79 +120,202 @@ def test_at_supersede_comment_names_branch() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _close_superseded_prs: the close comment carries the tag + replacement link
+# _close_one_superseded_pr: the close comment carries the tag + replacement
+# link, in its OWN fresh session (2026-08 pool-exhaustion hardening, see
+# _sweep_superseded_prs's docstring). Mirrors _collect_reconciliations'
+# session_factory-as-MagicMock-returning-an-AsyncMock-session test pattern
+# from test_supersede_branch_cut.py.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_close_superseded_prs_tags_contributor_and_links_replacement() -> None:
-    umbrella = MagicMock(id=uuid4(), project_id=uuid4())
-    umbrella.orchestration_markers = {"external_pr_supersede": _MARKER}
+def _fake_session_factory() -> tuple[Any, AsyncMock]:
+    """A session_factory whose ``()`` call yields one shared AsyncMock
+    session via ``async with``, mirroring test_supersede_branch_cut.py's
+    ``session_factory`` fixture pattern."""
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.commit = AsyncMock()
+    session_factory = MagicMock(return_value=mock_session)
+    return session_factory, mock_session
 
+
+@pytest.mark.asyncio
+async def test_close_one_superseded_pr_tags_contributor_and_links_replacement() -> None:
+    umbrella_id = uuid4()
+    umbrella = SimpleNamespace(
+        id=umbrella_id,
+        project_id=uuid4(),
+        orchestration_markers={"external_pr_supersede": _MARKER},
+    )
+    session_factory, mock_session = _fake_session_factory()
+
+    task_service = MagicMock()
+    task_service.get = AsyncMock(return_value=umbrella)
+    task_service.mark_supersede_pr_closed = AsyncMock()
     git = MagicMock()
     git.close_pull_request = AsyncMock()
-    task_service = MagicMock()
-    task_service.supersede_umbrellas_pending_close = AsyncMock(
-        return_value=[(umbrella, _REPLACEMENT_PR)]
-    )
-    task_service.mark_supersede_pr_closed = AsyncMock()
 
-    closed = await AgentOrchestrator._close_superseded_prs(
-        _new_orchestrator(), git, task_service, cast("Any", uuid4())
-    )
+    with (
+        patch("roboco.services.task.get_task_service", return_value=task_service),
+        patch("roboco.services.git.GitService", return_value=git),
+    ):
+        await AgentOrchestrator._close_one_superseded_pr(
+            _new_orchestrator(),
+            str(umbrella_id),
+            _REPLACEMENT_PR,
+            cast("Any", uuid4()),
+            session_factory,
+        )
 
-    assert closed == 1
     git.close_pull_request.assert_awaited_once()
     kwargs = git.close_pull_request.call_args.kwargs
     assert kwargs["comment"].startswith(f"@{_AUTHOR} ")
     assert f"#{_REPLACEMENT_PR}" in kwargs["comment"]
     assert kwargs["delete_branch"] is False
     task_service.mark_supersede_pr_closed.assert_awaited_once()
+    # The row's own session commits: this is the release point that keeps
+    # the pool connection from sitting checked out across every OTHER
+    # pending umbrella's close call this tick.
+    mock_session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_close_superseded_prs_skips_marker_without_pr() -> None:
-    # A malformed marker (no pr=) must not crash the loop.
-    umbrella = MagicMock(id=uuid4(), project_id=uuid4())
-    umbrella.orchestration_markers = {"external_pr_supersede": "review=only"}
+async def test_close_one_superseded_pr_skips_marker_without_pr() -> None:
+    # A malformed marker (no pr=) must not crash the row.
+    umbrella_id = uuid4()
+    umbrella = SimpleNamespace(
+        id=umbrella_id,
+        project_id=uuid4(),
+        orchestration_markers={"external_pr_supersede": "review=only"},
+    )
+    session_factory, mock_session = _fake_session_factory()
 
+    task_service = MagicMock()
+    task_service.get = AsyncMock(return_value=umbrella)
+    task_service.mark_supersede_pr_closed = AsyncMock()
     git = MagicMock()
     git.close_pull_request = AsyncMock()
-    task_service = MagicMock()
-    task_service.supersede_umbrellas_pending_close = AsyncMock(
-        return_value=[(umbrella, _REPLACEMENT_PR)]
-    )
-    task_service.mark_supersede_pr_closed = AsyncMock()
 
-    closed = await AgentOrchestrator._close_superseded_prs(
-        _new_orchestrator(), git, task_service, cast("Any", uuid4())
-    )
+    with (
+        patch("roboco.services.task.get_task_service", return_value=task_service),
+        patch("roboco.services.git.GitService", return_value=git),
+    ):
+        await AgentOrchestrator._close_one_superseded_pr(
+            _new_orchestrator(),
+            str(umbrella_id),
+            _REPLACEMENT_PR,
+            cast("Any", uuid4()),
+            session_factory,
+        )
 
-    assert closed == 0
     git.close_pull_request.assert_not_awaited()
     task_service.mark_supersede_pr_closed.assert_not_awaited()
+    mock_session.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_close_superseded_prs_no_author_still_links_replacement() -> None:
+async def test_close_one_superseded_pr_no_author_still_links_replacement() -> None:
     """A pre-existing umbrella whose review predates the author capture still
     gets a close comment linking the replacement PR (just without the @tag)."""
-    umbrella = MagicMock(id=uuid4(), project_id=uuid4())
-    umbrella.orchestration_markers = {"external_pr_supersede": _MARKER_NO_AUTHOR}
+    umbrella_id = uuid4()
+    umbrella = SimpleNamespace(
+        id=umbrella_id,
+        project_id=uuid4(),
+        orchestration_markers={"external_pr_supersede": _MARKER_NO_AUTHOR},
+    )
+    session_factory, _mock_session = _fake_session_factory()
 
+    task_service = MagicMock()
+    task_service.get = AsyncMock(return_value=umbrella)
+    task_service.mark_supersede_pr_closed = AsyncMock()
     git = MagicMock()
     git.close_pull_request = AsyncMock()
-    task_service = MagicMock()
-    task_service.supersede_umbrellas_pending_close = AsyncMock(
-        return_value=[(umbrella, _REPLACEMENT_PR_42)]
-    )
-    task_service.mark_supersede_pr_closed = AsyncMock()
 
-    closed = await AgentOrchestrator._close_superseded_prs(
-        _new_orchestrator(), git, task_service, cast("Any", uuid4())
-    )
+    with (
+        patch("roboco.services.task.get_task_service", return_value=task_service),
+        patch("roboco.services.git.GitService", return_value=git),
+    ):
+        await AgentOrchestrator._close_one_superseded_pr(
+            _new_orchestrator(),
+            str(umbrella_id),
+            _REPLACEMENT_PR_42,
+            cast("Any", uuid4()),
+            session_factory,
+        )
 
-    assert closed == 1
     kwargs = git.close_pull_request.call_args.kwargs
     assert not kwargs["comment"].startswith("@")
     assert f"#{_REPLACEMENT_PR_42}" in kwargs["comment"]
+
+
+@pytest.mark.asyncio
+async def test_close_one_superseded_pr_isolates_row_failure() -> None:
+    """A row whose git call raises (or whose lookup blows up) must be
+    logged and skipped, not propagate out: the sweep loop has no try/except
+    of its own around each row, so this isolation lives HERE."""
+    umbrella_id = uuid4()
+    umbrella = SimpleNamespace(
+        id=umbrella_id,
+        project_id=uuid4(),
+        orchestration_markers={"external_pr_supersede": _MARKER},
+    )
+    session_factory, mock_session = _fake_session_factory()
+
+    task_service = MagicMock()
+    task_service.get = AsyncMock(return_value=umbrella)
+    task_service.mark_supersede_pr_closed = AsyncMock()
+    git = MagicMock()
+    git.close_pull_request = AsyncMock(side_effect=RuntimeError("PAT revoked"))
+
+    with (
+        patch("roboco.services.task.get_task_service", return_value=task_service),
+        patch("roboco.services.git.GitService", return_value=git),
+    ):
+        # Must not raise.
+        await AgentOrchestrator._close_one_superseded_pr(
+            _new_orchestrator(),
+            str(umbrella_id),
+            _REPLACEMENT_PR,
+            cast("Any", uuid4()),
+            session_factory,
+        )
+
+    task_service.mark_supersede_pr_closed.assert_not_awaited()
+    mock_session.commit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _sweep_superseded_prs: reads the pending list once, then hands EACH row to
+# its own _close_one_superseded_pr call with a fresh session per row (never
+# one session shared across the whole pending list). The 2026-08 fix for
+# the highest-frequency pool-hold offender (this sweep ticks every 60s).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sweep_hands_each_pending_row_its_own_close_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = _new_orchestrator()
+    orch._supersede_cuts_in_flight = set()
+    orch._bg_tasks = set()
+
+    pending = [(str(uuid4()), 1), (str(uuid4()), 2)]
+    monkeypatch.setattr(
+        orch, "_collect_supersede_close_pending", AsyncMock(return_value=pending)
+    )
+    close_one = AsyncMock()
+    monkeypatch.setattr(orch, "_close_one_superseded_pr", close_one)
+    monkeypatch.setattr(
+        orch, "_collect_supersede_reconciliations", AsyncMock(return_value=[])
+    )
+
+    with patch("roboco.db.base.get_session_factory", return_value=MagicMock()):
+        await AgentOrchestrator._sweep_superseded_prs(orch)
+
+    # One _close_one_superseded_pr call per pending row, never one call
+    # (or one shared session) for the whole batch.
+    assert close_one.await_count == len(pending)
+    called = {(c.args[0], c.args[1]) for c in close_one.await_args_list}
+    assert called == set(pending)

@@ -132,6 +132,13 @@ class SelfHealEngine(BaseService):
         if not settings.self_heal_enabled:
             return []
         observations = await self.assess()
+        # Release the pool connection right after the telemetry fetch above
+        # (a project lookup immediately followed by an outbound GitHub HTTP
+        # call, inside GitService.get_latest_ci_conclusion) - mirrors
+        # content_actions.evidence()'s pool-release commit (2026-07-29
+        # pool-exhaustion incident), so the reads/writes below start from a
+        # fresh transaction instead of riding whatever the fetch left open.
+        await self._release_pool_connection()
         if not observations:
             return []
         fp_to_task = await self._open_self_heal_task_ids_by_fp()
@@ -220,6 +227,21 @@ class SelfHealEngine(BaseService):
     @staticmethod
     def _dedupe_key(fingerprint: str) -> str:
         return f"{_NOTIFY_DEDUPE_KEY_PREFIX}{fingerprint}"
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Mirrors content_actions.evidence()'s pool-release commit: the next
+        read/write reopens a fresh transaction on demand. A poisoned session
+        rolls back instead - ending the transaction is the point, either way
+        works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     async def _originate(self, observations: list[RegressionObservation]) -> int:
         """Open a PENDING fix task per NEW regression, then STOP. Returns count.

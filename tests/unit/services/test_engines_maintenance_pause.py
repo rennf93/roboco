@@ -15,15 +15,51 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 import roboco.services.self_heal_engine as sh_module
 from roboco.config import settings as cfg
 from roboco.foundation.policy.maintenance_pause import PauseScope
 from roboco.services.ci_watch_engine import CiWatchEngine
 from roboco.services.maintenance_pause import get_maintenance_pause_service
 from roboco.services.self_heal_engine import RegressionObservation, SelfHealEngine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from collections.abc import AsyncIterator
+
+
+@pytest_asyncio.fixture
+async def db_session(_test_database_url: str) -> AsyncIterator[AsyncSession]:
+    """Savepoint-isolated override of the root ``db_session`` fixture.
+
+    ``CiWatchEngine``/``SelfHealEngine.run_cycle`` now commit mid-call to
+    release the pool connection around their telemetry fetch (2026-07-29
+    pool-exhaustion fix). ``_pause_engines`` below only flushes its pause
+    row (caller commits, by convention) - but a later ``run_cycle`` call in
+    the SAME test reaches that new commit, which would sweep the pause row
+    up with it and leak it into the shared session-scoped test database
+    (a plain rollback-at-teardown can no longer undo an explicit commit).
+    Nests the whole test in one real transaction and gives the session a
+    SAVEPOINT (``join_transaction_mode="create_savepoint"``): a mid-test
+    ``commit()`` only ends the savepoint, the real rollback at teardown
+    undoes everything.
+    """
+    engine = create_async_engine(_test_database_url, future=True)
+    async with engine.connect() as connection:
+        await connection.begin()
+        factory = async_sessionmaker(
+            bind=connection,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        async with factory() as session:
+            try:
+                yield session
+            finally:
+                await session.close()
+        await connection.rollback()
+    await engine.dispose()
 
 
 async def _pause_engines(session: AsyncSession) -> None:

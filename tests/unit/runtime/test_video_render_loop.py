@@ -1,11 +1,21 @@
 """The orchestrator video-render loop: dormant when off; the cycle wrapper
-iterates + commits (mocked wiring test, mirrors test_dep_update_loop.py); the
-per-task render (mocked renderer/workspace, real DB) renders both cuts, holds
-one video_post draft, and is idempotent (a rendered task is never re-rendered;
-a failed render bounded-retries up to a cap, then is terminal) — never itself
-committing, so it never pollutes the session-scoped
-shared test database the way routing it through the committing cycle wrapper
-would.
+resolves ids then delegates per-task (mocked wiring test, mirrors
+test_dep_update_loop.py); the per-task render (mocked renderer/workspace,
+real DB) renders both cuts, holds one video_post draft, and is idempotent (a
+rendered task is never re-rendered; a failed render bounded-retries up to a
+cap, then is terminal).
+
+2026-08 pool-exhaustion hardening: ``_render_video_task`` now runs in THREE
+separate short DB sessions (resolve / render-project-lookup / write) instead
+of one session held across the whole task, so no pool connection sits
+checked out across the render sidecar's HTTP calls (tens to hundreds of
+seconds in production). The real-DB tests below patch ``get_db_context`` to
+a no-commit stand-in bound to the shared ``db_session`` fixture: every
+phase lands on the SAME test transaction (never committing, so it never
+pollutes the session-scoped shared test database the way routing it through
+a REAL committing session would), while a dedicated fully-mocked test
+(``test_render_video_task_holds_no_session_across_render_calls``) pins the
+actual connection-release behavior a no-commit stand-in can't observe.
 """
 
 from __future__ import annotations
@@ -16,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
+from uuid import uuid4
 
 import pytest
 from roboco.config import settings as cfg
@@ -190,7 +201,10 @@ async def _make_completed_video_task(
     return task
 
 
-def _render_patches(renderer: _FakeRenderer, workspace: Any) -> Any:
+def _render_patches(renderer: _FakeRenderer, workspace: Any, db: Any) -> Any:
+    """The 3 patches ``_render_video_task``'s three internal sessions need:
+    the renderer + workspace I/O boundary, and ``get_db_context`` routed to
+    the shared (never-committing) test session."""
     return (
         patch(
             "roboco.services.video_renderer_client.get_video_renderer",
@@ -200,6 +214,7 @@ def _render_patches(renderer: _FakeRenderer, workspace: Any) -> Any:
             "roboco.services.workspace.get_workspace_service",
             lambda _db: workspace,
         ),
+        patch("roboco.db.get_db_context", _db_ctx(db)),
     )
 
 
@@ -226,17 +241,16 @@ async def test_loop_returns_immediately_when_disabled(
 # --------------------------------------------------------------------------- #
 # _run_video_render_cycle — wiring only (mocked db/service, mirrors
 # test_dep_update_loop.py); the substantive render behavior is covered below
-# against _render_video_task directly, which never commits.
+# against _render_video_task directly.
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_run_cycle_commits_per_task() -> None:
+async def test_run_cycle_delegates_one_call_per_completed_task_id() -> None:
     orch = _orch()
     task_a = MagicMock()
     task_b = MagicMock()
     db = MagicMock()
-    db.commit = AsyncMock()
     task_svc = MagicMock()
     task_svc.list_completed_video_tasks = AsyncMock(return_value=[task_a, task_b])
     orch._render_video_task = AsyncMock()
@@ -249,19 +263,19 @@ async def test_run_cycle_commits_per_task() -> None:
         ),
     ):
         await orch._run_video_render_cycle()
+    # One call per completed task's OWN id, never the task object, and
+    # never a shared db passed alongside it (each task owns its own
+    # sessions internally).
     assert orch._render_video_task.await_args_list == [
-        call(db, task_a),
-        call(db, task_b),
+        call(task_a.id),
+        call(task_b.id),
     ]
-    # one commit per task — never one trailing commit after the loop
-    assert db.commit.await_count == TWO
 
 
 @pytest.mark.asyncio
-async def test_run_cycle_with_no_completed_tasks_does_not_commit() -> None:
+async def test_run_cycle_with_no_completed_tasks_calls_nothing() -> None:
     orch = _orch()
     db = MagicMock()
-    db.commit = AsyncMock()
     task_svc = MagicMock()
     task_svc.list_completed_video_tasks = AsyncMock(return_value=[])
     orch._render_video_task = AsyncMock()
@@ -275,28 +289,30 @@ async def test_run_cycle_with_no_completed_tasks_does_not_commit() -> None:
     ):
         await orch._run_video_render_cycle()
     orch._render_video_task.assert_not_awaited()
-    db.commit.assert_not_awaited()  # nothing rendered → nothing to durably persist
 
 
 @pytest.mark.asyncio
-async def test_run_cycle_commits_before_mid_cycle_raise_so_prior_render_durable() -> (
-    None
-):
-    """A raise mid-cycle must not roll back prior renders: each render is
-    committed before the next is attempted, so the committed
-    render_status='rendered' is the idempotency key the next scan skips
-    (instead of re-rendering + re-originating a second held video_post draft).
+async def test_run_cycle_a_raise_stops_later_ids_but_prior_ids_already_ran() -> None:
+    """Each id is fully processed (its own sessions, its own commits) BEFORE
+    the next id is even touched, and no shared session spans the cycle, so a
+    raise on one id can only ever stop LATER ids in the same tick (retried
+    next interval by ``_video_render_loop``); it can't roll back or block
+    ids that already ran.
     """
     orch = _orch()
     task_a = MagicMock()
     task_b = MagicMock()
+    task_c = MagicMock()
     db = MagicMock()
-    db.commit = AsyncMock()
     task_svc = MagicMock()
-    task_svc.list_completed_video_tasks = AsyncMock(return_value=[task_a, task_b])
+    task_svc.list_completed_video_tasks = AsyncMock(
+        return_value=[task_a, task_b, task_c]
+    )
+    seen: list[Any] = []
 
-    async def _render(_db: Any, task: Any) -> None:
-        if task is task_b:
+    async def _render(task_id: Any) -> None:
+        seen.append(task_id)
+        if task_id is task_b.id:
             raise RuntimeError("B blew up")
 
     orch._render_video_task = AsyncMock(side_effect=_render)
@@ -310,18 +326,97 @@ async def test_run_cycle_commits_before_mid_cycle_raise_so_prior_render_durable(
         pytest.raises(RuntimeError, match="B blew up"),
     ):
         await orch._run_video_render_cycle()
-    # A's commit happened BEFORE B raised — exactly one commit, A is durable
-    db.commit.assert_awaited_once()
-    assert orch._render_video_task.await_args_list == [
-        call(db, task_a),
-        call(db, task_b),
-    ]
+    assert seen == [task_a.id, task_b.id]  # C never reached
+
+
+# --------------------------------------------------------------------------- #
+# The pool-release fix itself: no DB session may be held across the render
+# sidecar's HTTP calls. A no-commit db_session stand-in (used by every real-
+# DB test below) can't observe a real release, so this uses full mocks that
+# track whether a get_db_context() block is currently open.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_render_video_task_holds_no_session_across_render_calls() -> None:
+    """2026-07-29 pool-exhaustion regression: fails against the pre-fix
+    shape, where one session spanned the whole task's render (both
+    renderer.render() calls happened with a connection still checked out)."""
+    orch = _orch()
+    task_id = uuid4()
+    project_id = uuid4()
+
+    resolve_task = SimpleNamespace(
+        id=task_id,
+        project_id=project_id,
+        orchestration_markers={
+            "video_draft": {"composition_id": "Intro", "input_props": {}}
+        },
+    )
+    write_task = SimpleNamespace(
+        id=task_id,
+        project_id=project_id,
+        orchestration_markers=dict(resolve_task.orchestration_markers),
+    )
+    project = SimpleNamespace(id=project_id, slug=SLUG)
+
+    open_sessions = 0
+
+    @asynccontextmanager
+    async def _fake_db_ctx() -> Any:
+        nonlocal open_sessions
+        open_sessions += 1
+        db = MagicMock()
+        try:
+            yield db
+        finally:
+            open_sessions -= 1
+
+    task_svc = MagicMock()
+    task_svc.get = AsyncMock(side_effect=[resolve_task, write_task])
+    project_svc = MagicMock()
+    project_svc.get = AsyncMock(return_value=project)
+    workspace = _fake_workspace()
+    video_engine = MagicMock()
+    video_engine._originate_video_post = AsyncMock()
+
+    session_open_at_render: list[bool] = []
+
+    async def _render(**kwargs: Any) -> str:
+        session_open_at_render.append(open_sessions > 0)
+        return f"/fake-out/{kwargs['composition_id']}-{kwargs['orientation']}.mp4"
+
+    renderer = SimpleNamespace(render=AsyncMock(side_effect=_render))
+
+    with (
+        patch("roboco.db.get_db_context", _fake_db_ctx),
+        patch("roboco.services.task.get_task_service", return_value=task_svc),
+        patch("roboco.services.project.get_project_service", return_value=project_svc),
+        patch("roboco.services.workspace.get_workspace_service", lambda _db: workspace),
+        patch(
+            "roboco.services.video_renderer_client.get_video_renderer",
+            lambda: renderer,
+        ),
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=video_engine,
+        ),
+    ):
+        await orch._render_video_task(task_id)
+
+    # No get_db_context() block was open during either render() call.
+    assert session_open_at_render == [False, False]
+    assert renderer.render.await_count == TWO
+    video_engine._originate_video_post.assert_awaited_once()
+    # Nothing left open behind us.
+    assert open_sessions == 0
 
 
 # --------------------------------------------------------------------------- #
 # _render_video_task — real DB (flush only, never commits: the session-scoped
-# shared test DB stays clean via this test's own rollback teardown), mocked
-# renderer + workspace clone.
+# shared test DB stays clean via this test's own rollback teardown, since
+# get_db_context is patched to a no-commit stand-in bound to db_session),
+# mocked renderer + workspace clone.
 # --------------------------------------------------------------------------- #
 
 
@@ -338,9 +433,9 @@ async def test_render_video_task_renders_both_cuts_and_materializes_post(
     renderer = _FakeRenderer()
     workspace = _fake_workspace()
     orch = _orch()
-    p1, p2 = _render_patches(renderer, workspace)
-    with p1, p2:
-        await orch._render_video_task(db_session, task)
+    p1, p2, p3 = _render_patches(renderer, workspace, db_session)
+    with p1, p2, p3:
+        await orch._render_video_task(task.id)
 
     workspace.ensure_read_clone.assert_awaited_once_with(SLUG)
     assert len(renderer.calls) == TWO
@@ -385,9 +480,9 @@ async def test_render_video_task_resolves_workspace_from_task_project_not_settin
     renderer = _FakeRenderer()
     workspace = _fake_workspace()
     orch = _orch()
-    p1, p2 = _render_patches(renderer, workspace)
-    with p1, p2:
-        await orch._render_video_task(db_session, task)
+    p1, p2, p3 = _render_patches(renderer, workspace, db_session)
+    with p1, p2, p3:
+        await orch._render_video_task(task.id)
 
     # Still resolved via the task's own project_id -> slug "roboco", not the
     # now-bogus self_heal_project_slug.
@@ -409,10 +504,10 @@ async def test_render_video_task_second_call_is_idempotent(
     renderer = _FakeRenderer()
     workspace = _fake_workspace()
     orch = _orch()
-    p1, p2 = _render_patches(renderer, workspace)
-    with p1, p2:
-        await orch._render_video_task(db_session, task)
-        await orch._render_video_task(db_session, task)  # must be a no-op
+    p1, p2, p3 = _render_patches(renderer, workspace, db_session)
+    with p1, p2, p3:
+        await orch._render_video_task(task.id)
+        await orch._render_video_task(task.id)  # must be a no-op
 
     assert len(renderer.calls) == TWO  # not four — the second call skipped it
     posts = await get_task_service(db_session).list_open_video_posts()
@@ -435,9 +530,9 @@ async def test_rerender_clears_state_so_next_cycle_re_renders(
     renderer = _FakeRenderer()
     workspace = _fake_workspace()
     orch = _orch()
-    p1, p2 = _render_patches(renderer, workspace)
-    with p1, p2:
-        await orch._render_video_task(db_session, task)
+    p1, p2, p3 = _render_patches(renderer, workspace, db_session)
+    with p1, p2, p3:
+        await orch._render_video_task(task.id)
     assert len(renderer.calls) == TWO
     draft = markers.get_video_draft(task)
     assert draft is not None
@@ -450,8 +545,8 @@ async def test_rerender_clears_state_so_next_cycle_re_renders(
     assert "render_status" not in draft
     assert "render_attempts" not in draft
 
-    with p1, p2:
-        await orch._render_video_task(db_session, task)  # re-picked up
+    with p1, p2, p3:
+        await orch._render_video_task(task.id)  # re-picked up
     assert len(renderer.calls) == FOUR  # rendered a second time, not skipped
     draft = markers.get_video_draft(task)
     assert draft is not None
@@ -471,9 +566,9 @@ async def test_render_video_task_skips_task_without_composition_id(
     renderer = _FakeRenderer()
     workspace = _fake_workspace()
     orch = _orch()
-    p1, p2 = _render_patches(renderer, workspace)
-    with p1, p2:
-        await orch._render_video_task(db_session, task)
+    p1, p2, p3 = _render_patches(renderer, workspace, db_session)
+    with p1, p2, p3:
+        await orch._render_video_task(task.id)
 
     assert renderer.calls == []
     workspace.ensure_read_clone.assert_not_awaited()
@@ -500,9 +595,9 @@ async def test_render_video_task_single_failure_retries_not_terminal(
     renderer = _FakeRenderer(fail=True)
     workspace = _fake_workspace()
     orch = _orch()
-    p1, p2 = _render_patches(renderer, workspace)
-    with p1, p2:
-        await orch._render_video_task(db_session, task)
+    p1, p2, p3 = _render_patches(renderer, workspace, db_session)
+    with p1, p2, p3:
+        await orch._render_video_task(task.id)
 
     posts = await get_task_service(db_session).list_open_video_posts()
     assert posts == []
@@ -532,19 +627,20 @@ async def test_render_video_task_terminal_after_max_attempts(
     renderer = _FakeRenderer(fail=True)
     workspace = _fake_workspace()
     orch = _orch()
-    p1, p2 = _render_patches(renderer, workspace)
+    p1, p2, p3 = _render_patches(renderer, workspace, db_session)
     notify_svc = AsyncMock()
     with (
         p1,
         p2,
+        p3,
         patch(
             "roboco.services.notification.NotificationService",
             return_value=notify_svc,
         ),
     ):
-        await orch._render_video_task(db_session, task)  # tips to terminal
+        await orch._render_video_task(task.id)  # tips to terminal
         calls_at_terminal = len(renderer.calls)
-        await orch._render_video_task(db_session, task)  # now a no-op
+        await orch._render_video_task(task.id)  # now a no-op
 
     draft = markers.get_video_draft(task)
     assert draft is not None
@@ -583,16 +679,17 @@ async def test_render_video_task_notify_failure_does_not_raise(
     renderer = _FakeRenderer(fail=True)
     workspace = _fake_workspace()
     orch = _orch()
-    p1, p2 = _render_patches(renderer, workspace)
+    p1, p2, p3 = _render_patches(renderer, workspace, db_session)
     with (
         p1,
         p2,
+        p3,
         patch(
             "roboco.services.notification.NotificationService",
             side_effect=RuntimeError("notification DB unreachable"),
         ),
     ):
-        await orch._render_video_task(db_session, task)  # must not raise
+        await orch._render_video_task(task.id)  # must not raise
 
     draft = markers.get_video_draft(task)
     assert draft is not None

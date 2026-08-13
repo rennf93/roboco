@@ -312,8 +312,15 @@ async def test_admin_set_status_blocked_target_schedules_no_eviction() -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_set_status_ceo_approval_target_schedules_no_eviction() -> None:
-    """Same must-not-change-behavior case for AWAITING_CEO_APPROVAL."""
+async def test_admin_set_status_ceo_approval_target_schedules_eviction() -> None:
+    """AWAITING_CEO_APPROVAL joined ``_REVIEW_QUEUE_STATES`` (2026-08 fix):
+    a stale ``active_claimant_id`` surviving an admin override into this
+    state is just as wrong as any other queue target, even though the CEO
+    approves directly with no claim() edge of its own - live evidence was a
+    task in awaiting_ceo_approval with assigned_to=ceo but
+    active_claimant_id=main-pm. Previously this state was explicitly
+    excluded (see git history) and left the stale claim + a stranded
+    container in place."""
     dev = uuid4()
     task = _build_task(
         status=TaskStatus.AWAITING_PM_REVIEW,
@@ -328,5 +335,5 @@ async def test_admin_set_status_ceo_approval_target_schedules_no_eviction() -> N
     with patch("roboco.services.notification_delivery.defer_after_commit") as deferred:
         await svc.admin_set_status(task.id, TaskStatus.AWAITING_CEO_APPROVAL)
 
-    deferred.assert_not_called()
-    assert task.active_claimant_id == dev
+    assert task.active_claimant_id is None
+    deferred.assert_called_once()

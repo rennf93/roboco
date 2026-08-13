@@ -21,14 +21,16 @@ are unit-covered):
   not discard them. Seeds a ``tiktok_credentials`` row, drives the real
   ``_refresh`` with a mocked TikTok token endpoint, rolls the caller session
   back, and re-reads from a fresh session — the rotated tokens must persist.
-- M21 — ``_run_video_render_cycle`` commits per-task, so a raise mid-cycle
-  does not roll back prior renders. Drives the real cycle against the e2e
-  DB with a stubbed ``_render_video_task`` (task A materializes the held
-  video_post draft via the real ``_materialize_video_post``; task B raises);
+- M21: each video render task runs its own short DB sessions (2026-08
+  pool-exhaustion hardening), so one task's render failure can't roll back
+  another's already-durable render. Drives the real
+  ``_run_video_render_cycle`` against the e2e DB with only the render
+  sidecar mocked: task A renders successfully, task B's renderer raises;
   asserts A's ``render_status='rendered'`` + A's video_post draft are
-  durable in a fresh session (committed before B raised). Mirrors the unit
-  test in ``tests/unit/runtime/test_video_render_loop.py`` but drives the
-  real ``get_db_context`` + real DB instead of a mock session.
+  durable in a fresh session, and B recorded a retryable (non-terminal)
+  failed attempt. Mirrors the unit test in
+  ``tests/unit/runtime/test_video_render_loop.py`` but drives the real
+  ``get_db_context`` + real DB instead of a mock session.
 
 M11 (engine-loop liveness watchdog) is NOT exercised here — a non-flaky
 liveness-alert harness needs a controllable clock + a long-running loop
@@ -39,10 +41,11 @@ model without flakiness. M11 is unit-covered by
 Deviations from a true end-to-end exercise (noted): H24's CI-conclusion
 source is stubbed (the e2e harness has no real GitHub CI); H25 uses the
 real e2e Redis but skips when unreachable; M1's TikTok token endpoint is
-mocked (no real TikTok egress); M21's ``_render_video_task`` is stubbed
-(the real render path needs a video-renderer sidecar) but the stub drives
-the real ``_materialize_video_post`` + real ``get_db_context`` + real DB
-commit. The full-suite session-scoped workspace contamination across
+mocked (no real TikTok egress); M21's render sidecar is mocked (the real
+render path needs a video-renderer sidecar) but drives the real
+``_render_video_task`` / ``_materialize_video_post`` + real
+``get_db_context`` + real DB commits. The full-suite session-scoped
+workspace contamination across
 e2e_smoke files is a pre-existing harness limitation (documented in Phase
 4's module) and is out of scope — each scenario here passes in isolation.
 """
@@ -50,6 +53,7 @@ e2e_smoke files is a pre-existing harness limitation (documented in Phase
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -368,12 +372,13 @@ async def test_m21_render_cycle_commits_per_task(
     e2e_stack: E2EStack,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """M21: a raise mid-cycle no longer rolls back prior renders. The cycle
-    commits after each ``_render_video_task``; A's ``render_status='rendered'``
-    + A's held video_post draft are durable before B raises. Drives the real
-    ``_run_video_render_cycle`` (real ``get_db_context`` + real DB) with a
-    stubbed ``_render_video_task`` — A's stub drives the real
-    ``_materialize_video_post`` (real video_engine code path), B's raises."""
+    """M21: each render task runs its own short DB sessions, so one task's
+    render failure can't roll back another's already-durable render. A's
+    ``render_status='rendered'`` + held video_post draft are durable
+    regardless of B's failure. Drives the real ``_run_video_render_cycle``
+    (real ``get_db_context`` + real DB, real ``_render_video_task`` /
+    ``_materialize_video_post``) with only the render sidecar + workspace
+    read-clone mocked: IntroA renders, IntroB's renderer raises."""
     from roboco.config import settings
     from roboco.db import base as db_base
     from roboco.runtime.orchestrator import AgentOrchestrator
@@ -386,39 +391,39 @@ async def test_m21_render_cycle_commits_per_task(
     db_base._DbHolder.session_factory = None
     factory = db_base.get_session_factory()
     try:
-        await _seed_video_render_stack(factory)
+        a_id, b_id = await _seed_video_render_stack(factory)
+
+        workspace = SimpleNamespace(
+            ensure_read_clone=AsyncMock(return_value=Path("/fake-clone"))
+        )
+
+        async def _render(**kwargs: Any) -> str:
+            if kwargs["composition_id"] == "IntroB":
+                raise RuntimeError("B blew up")
+            return f"/fake-out/{kwargs['composition_id']}-{kwargs['orientation']}.mp4"
+
+        renderer = SimpleNamespace(render=AsyncMock(side_effect=_render))
 
         orch: Any = AgentOrchestrator.__new__(AgentOrchestrator)
-        # ``list_completed_video_tasks`` orders by created_at.desc(), so the
-        # later-seeded task is processed first. The stub is order-independent:
-        # the first task renders (real _materialize_video_post), the second
-        # raises — proving the first's commit is durable before the raise.
-        rendered_id: list[Any] = []
-
-        async def _stub_render(db: Any, task: Any) -> None:
-            if rendered_id:
-                raise RuntimeError("B blew up")
-            rendered_id.append(task.id)
-            draft = markers.get_video_draft(task) or {}
-            await orch._materialize_video_post(
-                db,
-                task,
-                draft,
-                {"vertical": "/fake/v.mp4", "square": "/fake/s.mp4"},
-            )
-
-        orch._render_video_task = AsyncMock(side_effect=_stub_render)
-
-        with pytest.raises(RuntimeError, match="B blew up"):
+        with (
+            patch(
+                "roboco.services.video_renderer_client.get_video_renderer",
+                lambda: renderer,
+            ),
+            patch(
+                "roboco.services.workspace.get_workspace_service",
+                lambda _db: workspace,
+            ),
+        ):
+            # B's failure is caught + recorded inside _render_video_task;
+            # the cycle itself never raises.
             await orch._run_video_render_cycle()
 
-        # Re-read from a fresh session — the rendered task's marker is
-        # durable (committed before the second raised), and its held
-        # video_post draft exists.
-        first_id = rendered_id[0]
+        # Re-read from a fresh session: A's render is durable (its own
+        # sessions committed independently of B's later failure).
         async with factory() as fresh:
             a_row = (
-                await fresh.execute(select(TaskTable).where(TaskTable.id == first_id))
+                await fresh.execute(select(TaskTable).where(TaskTable.id == a_id))
             ).scalar_one()
             a_draft = markers.get_video_draft(a_row) or {}
             assert a_draft.get("render_status") == "rendered"
@@ -432,9 +437,17 @@ async def test_m21_render_cycle_commits_per_task(
                 )
             ).scalar_one_or_none()
             assert post_row is not None
+
+            b_row = (
+                await fresh.execute(select(TaskTable).where(TaskTable.id == b_id))
+            ).scalar_one()
+            b_draft = markers.get_video_draft(b_row) or {}
+            # Retryable, not terminal: one failed attempt, next cycle retries.
+            assert b_draft.get("render_status") is None
+            assert b_draft.get("render_attempts") == 1
             assert post_row.confirmed_by_human is False  # held for CEO
             post_draft = markers.get_video_draft(post_row) or {}
-            assert post_draft.get("source_task_id") == str(first_id)
+            assert post_draft.get("source_task_id") == str(a_id)
             assert post_draft.get("render_status") == "rendered"
     finally:
         await db_base.close_db()
