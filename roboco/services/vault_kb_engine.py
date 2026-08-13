@@ -73,7 +73,22 @@ class VaultKBCycleReport:
 
 
 class VaultKBEngine(BaseService):
-    """One KB-ingest pass over the allowlisted vault note folders."""
+    """One KB-ingest pass over the allowlisted vault note folders.
+
+    This engine's OWN ``self.session`` (the background pool) is never
+    touched below - every read/write below goes through ``optimal.*``
+    (``list_indexed_documents`` / ``index_vault_note`` / ``unindex_vault_note``),
+    each of which opens its own short-lived ``get_db_context()`` session.
+    That default is ``pool="primary"``, not background - a prior audit's
+    "background work no longer draws from the pool that serves agents"
+    claim does not hold for this cycle's DB traffic, only for this engine's
+    own session. Left as-is rather than threaded onto the background pool:
+    ``OptimalService`` is a shared singleton also called from agent-facing,
+    real-time paths (journal/playbook indexing) that belong on primary, and
+    each checkout here is brief and released well before the embed call
+    (never held across it), so it is not the slot-starvation-under-slow-IO
+    class the background pool split exists to prevent.
+    """
 
     service_name = "vault_kb_engine"
 

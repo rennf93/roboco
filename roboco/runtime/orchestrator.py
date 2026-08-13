@@ -10329,9 +10329,16 @@ Start by:
         opened outside the task flow. Commits once at the end.
 
         The pool connection is released (``_release_pool_connection``) right
-        before each project's ``list_open_prs`` below, a GitHub HTTP call -
-        per-project, not once for the whole batch, so the hold never
-        accumulates across every active repo in one poll tick.
+        before each project's PR fetch below, a GitHub HTTP call - per-project,
+        not once for the whole batch, so the hold never accumulates across
+        every active repo in one poll tick. The resolve (project row + token,
+        both DB reads) runs BEFORE the release, not via ``list_open_prs``
+        itself: that convenience method does its own ``get_by_slug``/token
+        DB reads as its first statements, so calling it right after a release
+        would re-check-out a connection and hold it through the very HTTP
+        call the release exists to free it for. ``resolve_repo_and_token`` +
+        ``list_open_prs_for`` split the DB-resolve from the IO so nothing
+        DB-backed runs between the release and the HTTP call.
         """
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
@@ -10344,8 +10351,12 @@ Start by:
         allowlist = {a.lower() for a in settings.external_pr_author_allowlist}
         ingested = 0
         for project in self._projects_one_per_repo(projects):
+            resolved = await git.resolve_repo_and_token(project.slug)
             await self._release_pool_connection(db)
-            for pr in await git.list_open_prs(project.slug):
+            if resolved is None:
+                continue
+            repo_ref, git_token = resolved
+            for pr in await git.list_open_prs_for(project.slug, repo_ref, git_token):
                 if await self._ingest_pr_if_reviewable(
                     task_service, project, pr, system_id, allowlist
                 ):

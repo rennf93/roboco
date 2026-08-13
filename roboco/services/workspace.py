@@ -1559,6 +1559,17 @@ class WorkspaceService:
 
         ``force`` bypasses the 30s refresh TTL (conventions reads must reflect
         the current head-branch HEAD, not a stale one).
+
+        The token DB read in each branch below is immediately followed by
+        ``_release_pool_connection`` - the actual clone/fetch that follows is
+        a real network+subprocess call (a fresh clone can take a while), and
+        without the release the connection this method's own DB read just
+        checked out would sit held for the whole of it. A caller that already
+        resolved its own project/token before calling in (e.g. a background
+        engine that released before this call) still only pays for one more
+        DB read here, not an extra hold: this method's read replaces
+        whatever the caller released, and is itself released again before
+        the slow work starts.
         """
         from roboco.services.project import get_project_service
 
@@ -1577,6 +1588,7 @@ class WorkspaceService:
                 last = _read_clone_synced.get(str(workspace), -math.inf)
                 if force or (now - last) >= _READ_CLONE_FETCH_TTL_SECONDS:
                     token = await self._read_clone_token(project_service, project_slug)
+                    await self._release_pool_connection()
                     await asyncio.to_thread(self._prune_broken_refs, workspace)
                     await asyncio.to_thread(
                         self._sync_read_clone,
@@ -1592,6 +1604,7 @@ class WorkspaceService:
             git_token = await self._resolve_git_token(
                 project_service, project_slug, git_url
             )
+            await self._release_pool_connection()
             await self._clone_repo(
                 workspace, git_url, default_branch, git_token, agent=None
             )
@@ -1602,6 +1615,21 @@ class WorkspaceService:
             )
             _read_clone_synced[str(workspace)] = _monotonic()
             return workspace
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Mirrors content_actions.evidence()'s pool-release commit: the next
+        read/write reopens a fresh transaction on demand. A poisoned session
+        rolls back instead - ending the transaction is the point, either way
+        works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     @staticmethod
     async def _read_clone_token(project_service: Any, project_slug: str) -> str | None:

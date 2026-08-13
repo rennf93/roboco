@@ -138,11 +138,15 @@ class ReleaseManagerEngine(BaseService):
     async def _release_pool_connection(self) -> None:
         """End the current transaction so its pool connection is returned.
 
-        Called right before the readiness assessment below - a read-clone
-        resolve/fetch, several git subprocess calls, and a CI status HTTP
-        call (``_production_assess`` / ``gather_snapshot``), together the
-        longest single-cycle connection hold this engine can produce.
-        Mirrors content_actions.evidence()'s pool-release commit (2026-07-29
+        Called right before the readiness assessment below, and again inside
+        ``_production_assess`` right after its own CI-query DB resolve (see
+        that method) and inside ``WorkspaceService.ensure_read_clone`` right
+        after its own token DB resolve - the assessment's read-clone
+        fetch/clone, CI status HTTP call, and git subprocess snapshot are
+        each released into separately, not held across as one long span,
+        since each of those steps does its own fresh DB read immediately
+        beforehand that a release here alone can't prevent. Mirrors
+        content_actions.evidence()'s pool-release commit (2026-07-29
         pool-exhaustion incident): the next read/write reopens a fresh
         transaction on demand. A poisoned session rolls back instead -
         ending the transaction is the point, either way works.
@@ -271,10 +275,22 @@ class ReleaseManagerEngine(BaseService):
                 "release-manager: read-clone HEAD resolve failed", error=str(exc)
             )
             head_sha = None
-        ci = await get_git_service(self.session).get_latest_ci_conclusion(
-            slug,
-            workflow=(settings.self_heal_ci_workflow or None),
-            head_sha=head_sha,
+        # Resolve (DB: project + token) THEN release THEN fetch (HTTP only) -
+        # get_latest_ci_conclusion's own first statement is a fresh get_by_slug
+        # DB read, so calling it directly here would re-check-out a connection
+        # and hold it through the HTTP call below, same as if no release ever
+        # ran. resolve_ci_query/get_latest_ci_conclusion_for split the two.
+        git_service = get_git_service(self.session)
+        ci_query = await git_service.resolve_ci_query(slug)
+        await self._release_pool_connection()
+        ci = (
+            await git_service.get_latest_ci_conclusion_for(
+                ci_query,
+                workflow=(settings.self_heal_ci_workflow or None),
+                head_sha=head_sha,
+            )
+            if ci_query is not None
+            else None
         )
         conclusion = None if head_sha is None else (ci or {}).get("conclusion")
         # Env-branches diff baseline: the read clone is pinned to head, so fetch

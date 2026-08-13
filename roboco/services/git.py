@@ -2294,6 +2294,32 @@ class GitService(BaseService):
             return cast("dict[str, Any]", existing.json()[0])
         return None
 
+    async def resolve_repo_and_token(
+        self, project_slug: str
+    ) -> tuple[RepoRef, str] | None:
+        """DB-only resolve of a project's repo ref + decrypted token.
+
+        Split out of ``list_open_prs``/``get_latest_ci_conclusion`` so a
+        caller that wants to release its pool connection before the network
+        call can do the DB reads here FIRST, release, then call the
+        ``*_for`` IO-only sibling with the returned values - a resolve
+        immediately followed by a fresh DB read holds the pool connection
+        through whatever slow call comes next, so the split matters, not
+        just the release's position. None on a missing project/git_url,
+        an unparseable remote, or a missing token.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        try:
+            repo_ref = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        return repo_ref, git_token
+
     async def list_open_prs(self, project_slug: str) -> list[dict[str, Any]]:
         """List a project's open PRs, normalized with fork/author classification.
 
@@ -2306,16 +2332,21 @@ class GitService(BaseService):
         trust. Returns ``[]`` on a missing token, unparseable remote, or any
         GitHub error — it never raises into the poll loop.
         """
-        project = await get_project_service(self.session).get_by_slug(project_slug)
-        if project is None or not project.git_url:
+        resolved = await self.resolve_repo_and_token(project_slug)
+        if resolved is None:
             return []
-        try:
-            repo_ref = self._parse_git_url(project.git_url)
-        except GitError:
-            return []
-        git_token = await self._token_for_project(project_slug)
-        if not git_token:
-            return []
+        repo_ref, git_token = resolved
+        return await self.list_open_prs_for(project_slug, repo_ref, git_token)
+
+    async def list_open_prs_for(
+        self, project_slug: str, repo_ref: RepoRef, git_token: str
+    ) -> list[dict[str, Any]]:
+        """IO-only half of ``list_open_prs``: no DB reads, just the GitHub call.
+
+        Takes an already-resolved ``repo_ref``/``git_token`` (see
+        ``resolve_repo_and_token``) so a caller can release its pool
+        connection before this runs. Returns ``[]`` on any GitHub error.
+        """
         raw = await self._fetch_open_prs(project_slug, repo_ref, git_token)
         if raw is None:
             return []
@@ -2373,6 +2404,37 @@ class GitService(BaseService):
             "author_association": pr.get("author_association"),
         }
 
+    async def resolve_ci_query(
+        self, project_slug: str, *, branch: str | None = None
+    ) -> _CiRunQuery | None:
+        """DB-only resolve of the inputs ``get_latest_ci_conclusion`` needs.
+
+        Split out for the same pool-release reason as ``resolve_repo_and_token``:
+        a caller releases its connection after this, then calls
+        ``get_latest_ci_conclusion_for`` with the returned query - an IO-only
+        call that performs no DB reads of its own. None on a missing
+        project/git_url, an unparseable remote, or a missing token.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        try:
+            repo_ref = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        # Default to the head rung (where dev work and the release gate look);
+        # the release-commit CI wait overrides with the prod rung, where the
+        # pushed release commit actually lives.
+        return _CiRunQuery(
+            project_slug=project_slug,
+            repo_ref=repo_ref,
+            branch=branch or head_branch(project),
+            git_token=git_token,
+        )
+
     async def get_latest_ci_conclusion(
         self,
         project_slug: str,
@@ -2397,26 +2459,25 @@ class GitService(BaseService):
         with no matching Actions runs (a repo that doesn't use GitHub Actions
         yields no signal, not a false one). It never raises into the poll loop.
         """
-        project = await get_project_service(self.session).get_by_slug(project_slug)
-        if project is None or not project.git_url:
+        query = await self.resolve_ci_query(project_slug, branch=branch)
+        if query is None:
             return None
-        try:
-            repo_ref = self._parse_git_url(project.git_url)
-        except GitError:
-            return None
-        git_token = await self._token_for_project(project_slug)
-        if not git_token:
-            return None
-        # Default to the head rung (where dev work and the release gate look);
-        # the release-commit CI wait overrides with the prod rung, where the
-        # pushed release commit actually lives.
-        branch = branch or head_branch(project)
-        query = _CiRunQuery(
-            project_slug=project_slug,
-            repo_ref=repo_ref,
-            branch=branch,
-            git_token=git_token,
+        return await self.get_latest_ci_conclusion_for(
+            query, workflow=workflow, head_sha=head_sha
         )
+
+    async def get_latest_ci_conclusion_for(
+        self,
+        query: _CiRunQuery,
+        *,
+        workflow: str | None = None,
+        head_sha: str | None = None,
+    ) -> dict[str, Any] | None:
+        """IO-only half of ``get_latest_ci_conclusion``: no DB reads.
+
+        Takes an already-resolved ``query`` (see ``resolve_ci_query``) so a
+        caller can release its pool connection before this runs.
+        """
         run = await self._fetch_latest_ci_run(query, workflow, head_sha)
         if run is None:
             return None
@@ -2425,7 +2486,7 @@ class GitService(BaseService):
             "head_sha": run.get("head_sha"),
             "run_url": run.get("html_url") or "",
             "run_name": run.get("name") or "",
-            "branch": branch,
+            "branch": query.branch,
             "completed_at": run.get("updated_at"),
         }
 

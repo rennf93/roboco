@@ -134,7 +134,10 @@ def test_sync_read_clone_with_token_uses_extraheader_not_url(tmp_path: Path) -> 
 
 
 def _read_clone_service(tmp_path: Path) -> WorkspaceService:
-    svc = WorkspaceService(MagicMock())
+    # AsyncMock, not MagicMock: ensure_read_clone's fetch/clone branches now
+    # call session.commit() (_release_pool_connection, the pool-hold fix) -
+    # a MagicMock session's .commit() isn't awaitable and would TypeError.
+    svc = WorkspaceService(AsyncMock())
     object.__setattr__(svc, "root", tmp_path)
     return svc
 
