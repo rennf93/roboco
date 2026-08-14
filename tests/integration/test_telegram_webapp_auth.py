@@ -166,7 +166,7 @@ def test_mount_included_when_both_armed() -> None:
         if getattr(m.cls, "__name__", "") != "LoginRateLimiter":
             continue
         raw_paths = m.kwargs.get("paths")
-        if isinstance(raw_paths, (tuple, list)):
+        if isinstance(raw_paths, tuple | list):
             limited_paths.update(str(p) for p in raw_paths)
     assert "/api/telegram/webapp-auth" in limited_paths
 

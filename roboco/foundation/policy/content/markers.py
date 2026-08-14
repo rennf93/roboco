@@ -898,7 +898,7 @@ def is_branch_cut_failed(task: HasMarkers) -> bool:
 
 def get_branch_cut_attempts(task: HasMarkers) -> int:
     val = get_marker(task, BRANCH_CUT_FAILED, 0)
-    return int(val) if isinstance(val, (int, float)) else 1
+    return int(val) if isinstance(val, int | float) else 1
 
 
 def mark_branch_cut_failed(task: HasMarkers, attempts: int = 1) -> None:
@@ -911,7 +911,7 @@ def clear_branch_cut_failed(task: HasMarkers) -> None:
 
 def get_branch_cut_next_retry_at(task: HasMarkers) -> float | None:
     val = get_marker(task, BRANCH_CUT_NEXT_RETRY_AT, None)
-    return float(val) if isinstance(val, (int, float)) else None
+    return float(val) if isinstance(val, int | float) else None
 
 
 def set_branch_cut_next_retry_at(task: HasMarkers, ts: float) -> None:
