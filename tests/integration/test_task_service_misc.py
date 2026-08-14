@@ -769,7 +769,9 @@ async def test_docs_complete_indexes_when_documents_present(
     monkeypatch.setattr("roboco.services.optimal.get_optimal_service", _get_optimal)
     out = await svc.docs_complete(task.id, doc_notes="docs done")
     assert out is not None
-    await asyncio.sleep(0.05)
+    # Drain the fire-and-forget indexing task; a sleep races the fixture
+    # teardown's rollback on the shared connection.
+    await asyncio.gather(*svc._background_tasks)
 
 
 def test_record_doc_notes_skips_empty(task_setup: dict) -> None:
