@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer — fastapi-guard 7.3.0 / guard-core 3.5.0.
+"""RoboCo HTTP security layer (fastapi-guard 7.6.0 / guard-core 3.12.0).
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:
@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import re
 from ipaddress import ip_address, ip_network
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from guard import SecurityConfig, SecurityDecorator, SecurityMiddleware
+from guard import status as guard_status
 from guard.adapters import StarletteGuardResponse
 from guard.lifespan import make_lifespan
 from guard_core.core.behavioral.processor import BehavioralProcessor
@@ -34,24 +36,27 @@ from roboco.logging import get_logger
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from guard_core.decorators.base import RouteConfig
+    from guard_core.handlers.behavior_handler import BehaviorRule
     from guard_core.protocols.request_protocol import GuardRequest
     from guard_core.protocols.response_protocol import GuardResponse
 
 logger = get_logger(__name__)
 
 # --------------------------------------------------------------------------
-# Behavioral usage-rule redis fail-open patch.
+# Behavioral rule redis fail-open patches.
 #
-# usage_monitor()/behavior_analysis() rules (route_config.behavior_rules) are
-# invoked directly from SecurityMiddleware.dispatch (guard/middleware.py:574-577),
-# OUTSIDE SecurityCheckPipeline -- the only place redis_fail_open is honored
-# (guard_core/core/checks/pipeline.py:93, _handle_check_error). BehaviorTracker.
-# track_endpoint_usage calls redis unguarded and raises GuardRedisError (not an
-# HTTPException) on a redis blip, so it falls through to roboco's generic
+# usage_monitor()/behavior_analysis() route rules and global_behavior_rules
+# are invoked directly from SecurityMiddleware.dispatch / _process_response
+# (guard/middleware.py), OUTSIDE SecurityCheckPipeline -- the only place
+# redis_fail_open is honored (guard_core/core/checks/pipeline.py:93,
+# _handle_check_error). BehaviorTracker.track_endpoint_usage /
+# track_return_pattern call redis unguarded and raise GuardRedisError (not an
+# HTTPException) on a redis blip, so they fall through to roboco's generic
 # exception handler as a 500 instead of failing open like every pipeline check
-# does. Wrap this seam here rather than fork/vendor guard-core; the durable fix
-# belongs upstream (route this call through the pipeline's own GuardRedisError /
-# redis_fail_open handling).
+# does. Verified still required at guard-core 3.12.0 (redis_fail_open is
+# still not consulted on either seam). Wrap all three seams here rather than
+# fork/vendor guard-core; the durable fix belongs upstream (route these calls
+# through the pipeline's own GuardRedisError / redis_fail_open handling).
 _orig_process_usage_rules = BehavioralProcessor.process_usage_rules
 
 
@@ -74,6 +79,68 @@ async def _process_usage_rules_fail_open(
 
 
 setattr(BehavioralProcessor, "process_usage_rules", _process_usage_rules_fail_open)
+
+# Route-level return_pattern rules (behavior_analysis() decorators). Roboco
+# has none of these today (every route-level rule is rule_type="frequency",
+# handled above), but a future one would hit the same unguarded redis call.
+_orig_process_return_rules = BehavioralProcessor.process_return_rules
+
+
+async def _process_return_rules_fail_open(
+    self: BehavioralProcessor,
+    request: GuardRequest,
+    response: GuardResponse,
+    client_ip: str,
+    route_config: RouteConfig,
+) -> None:
+    try:
+        await _orig_process_return_rules(
+            self, request, response, client_ip, route_config
+        )
+    except GuardRedisError as exc:
+        if not self.context.config.redis_fail_open:
+            raise
+        logger.warning(
+            "behavioral return-rule check skipped: redis unavailable, "
+            "failing open (redis_fail_open=True)",
+            error=str(exc),
+        )
+
+
+setattr(BehavioralProcessor, "process_return_rules", _process_return_rules_fail_open)
+
+# global_behavior_rules (_BEHAVIOR_RULES below) run through THIS seam, not
+# process_return_rules -- roboco's status:404/status:401 rules are global,
+# not per-route, so this is the one that is actually live in prod.
+_orig_process_global_return_rules = BehavioralProcessor.process_global_return_rules
+
+
+async def _process_global_return_rules_fail_open(
+    self: BehavioralProcessor,
+    request: GuardRequest,
+    response: GuardResponse,
+    client_ip: str,
+    rules: list[BehaviorRule],
+) -> None:
+    try:
+        await _orig_process_global_return_rules(
+            self, request, response, client_ip, rules
+        )
+    except GuardRedisError as exc:
+        if not self.context.config.redis_fail_open:
+            raise
+        logger.warning(
+            "behavioral global-return-rule check skipped: redis unavailable, "
+            "failing open (redis_fail_open=True)",
+            error=str(exc),
+        )
+
+
+setattr(
+    BehavioralProcessor,
+    "process_global_return_rules",
+    _process_global_return_rules_fail_open,
+)
 
 # Body bytes scanned by the custom validators — enough to catch injected
 # preambles without reading unbounded payloads.
@@ -245,21 +312,24 @@ _SECURITY_HEADERS: dict[str, Any] = {
     "custom": None,
 }
 
-_THREAT_BAN_CONFIG: dict[str, ThreatBanConfig] = {
-    "sqli": ThreatBanConfig(threshold=3, duration=7200),
-    "cmd_injection": ThreatBanConfig(threshold=1, duration=86400),
-    "ssrf": ThreatBanConfig(threshold=2, duration=7200),
-    "file_inclusion": ThreatBanConfig(threshold=2, duration=7200),
-    # Scanner / decoy-path auto-ban (Surface N). A bot probing scanner
-    # fingerprints (/.git/config, /wp-login.php, /phpmyadmin, …) is detected on
-    # the URL-path scan; these thresholds turn repeated probes into a ban. Only
-    # /api|/ws paths reach the app behind nginx — the classic root probes are
-    # dropped at the edge (444) in docker/nginx.conf. Requires redis (24h ban >
-    # in-memory cap) and only bans in active mode; passive logs the recon hit.
-    "recon": ThreatBanConfig(threshold=5, duration=86400),
-    "sensitive_file": ThreatBanConfig(threshold=3, duration=86400),
-    "cms_probing": ThreatBanConfig(threshold=3, duration=86400),
-}
+_THREAT_BAN_CONFIG: MappingProxyType[str, ThreatBanConfig] = MappingProxyType(
+    {
+        "sqli": ThreatBanConfig(threshold=3, duration=7200),
+        "cmd_injection": ThreatBanConfig(threshold=1, duration=86400),
+        "ssrf": ThreatBanConfig(threshold=2, duration=7200),
+        "file_inclusion": ThreatBanConfig(threshold=2, duration=7200),
+        # Scanner / decoy-path auto-ban (Surface N). A bot probing scanner
+        # fingerprints (/.git/config, /wp-login.php, /phpmyadmin, …) is
+        # detected on the URL-path scan; these thresholds turn repeated
+        # probes into a ban. Only /api|/ws paths reach the app behind nginx;
+        # the classic root probes are dropped at the edge (444) in
+        # docker/nginx.conf. Requires redis (24h ban > in-memory cap) and
+        # only bans in active mode; passive logs the recon hit.
+        "recon": ThreatBanConfig(threshold=5, duration=86400),
+        "sensitive_file": ThreatBanConfig(threshold=3, duration=86400),
+        "cms_probing": ThreatBanConfig(threshold=3, duration=86400),
+    }
+)
 
 
 # Cloud-auth login (roboco.api.auth.routes.mount_cloud_auth, mounted only
@@ -384,16 +454,30 @@ _WAF_FREETEXT_BODY_FIELDS: set[str] = {
 }
 
 # Log-only 404-scan sweep detection (calibration signal, never bans).
-_BEHAVIOR_RULES: list[BehaviorRuleConfig] = [
+# pattern is "status:" (not a bare substring): guard-core 3.12.0 rejects a
+# body-based return_pattern rule at construction unless
+# behavior_scan_response_body=True. status: is validation-exempt and is the
+# form that actually matches a response's status code.
+_BEHAVIOR_RULES: tuple[BehaviorRuleConfig, ...] = (
     BehaviorRuleConfig(
         rule_type="return_pattern",
         threshold=30,
         window=300,
-        pattern="404",
+        pattern="status:404",
         action="log",
         correlate_with_detection=True,
-    )
-]
+    ),
+    # Credential-probing visibility (log-only): a stale internal HMAC token
+    # must never earn a ban, so this never carries a ban action.
+    BehaviorRuleConfig(
+        rule_type="return_pattern",
+        threshold=20,
+        window=300,
+        pattern="status:401",
+        action="log",
+        correlate_with_detection=True,
+    ),
+)
 
 
 def _redis_url() -> str:
@@ -639,7 +723,7 @@ class ClientIpResolutionMiddleware:
         await self.app(scope, receive, send)
 
 
-def _guard_whitelist() -> list[str]:
+def _guard_whitelist() -> tuple[str, ...]:
     extra = [
         x.strip() for x in settings.guard_emergency_whitelist.split(",") if x.strip()
     ]
@@ -658,7 +742,7 @@ def _guard_whitelist() -> list[str]:
     # stamping still buys correct attribution in logs/telemetry, and any
     # FUTURE non-tailnet public exposure still gets full scrutiny — only
     # 100.64.0.0/10 is exempted here, nothing wider.
-    return [*_INTERNAL_NETWORKS, _TAILNET_NETWORK, *extra]
+    return (*_INTERNAL_NETWORKS, _TAILNET_NETWORK, *extra)
 
 
 def _emergency_whitelist() -> list[str]:
@@ -681,6 +765,13 @@ def _agent_kwargs() -> dict[str, Any]:
         "agent_enable_metrics": True,
         "agent_strict": False,
         "enable_dynamic_rules": True,
+        # HMAC/session material must never leave in a telemetry payload.
+        "agent_sensitive_headers": [
+            "x-agent-token",
+            "authorization",
+            "cookie",
+            "x-api-key",
+        ],
     }
 
 
@@ -693,11 +784,11 @@ def build_security_config() -> SecurityConfig:
         # here lets guard peel forwarded LAN IPs as trusted hops and fall back to
         # the whitelisted docker-bridge peer, bypassing the block — see
         # test_nginx_forwarded_lan_client_is_not_whitelisted.
-        trusted_proxies=[
+        trusted_proxies=(
             "127.0.0.1",
             "::1",
             "172.16.0.0/12",
-        ],
+        ),
         trusted_proxy_depth=1,
         trust_x_forwarded_proto=True,
         # Calibrate-then-enforce.
@@ -731,6 +822,13 @@ def build_security_config() -> SecurityConfig:
         # entire request stream the moment the guard went active (2026-07-19).
         enforce_https=False,
         fail_secure=settings.guard_fail_secure,
+        # Evaluated and deferred (2026-08-14): route_config runs before
+        # whitelist/exclude are even consulted, so strict mode turns EVERY
+        # unresolved path into a 500 for every client, whitelisted or not,
+        # verified live. That defeats the status:404 visibility rule above
+        # (a scanner sweep would show as 500s, not 404s) and turns routine
+        # client/panel typos into apparent server errors. Stays False.
+        route_resolution_strict=False,
         # Flip-on kill switch.
         emergency_mode=settings.guard_emergency,
         emergency_whitelist=_emergency_whitelist(),
@@ -742,6 +840,9 @@ def build_security_config() -> SecurityConfig:
         security_headers=_SECURITY_HEADERS,
         threat_ban_config=_THREAT_BAN_CONFIG,
         global_behavior_rules=_BEHAVIOR_RULES,
+        # Off by default: roboco's own return_pattern rules match on status:
+        # only, which never needs a response body read.
+        behavior_scan_response_body=settings.guard_scan_response_body,
         # Signature WAF on, but calibrated: free-text bodies excluded (below).
         enable_penetration_detection=True,
         excluded_detection_headers=_TRACING_HEADERS,
@@ -772,6 +873,10 @@ def apply_guard(app: FastAPI) -> None:
         # stamp state.client_ip before the guard's extraction reads it.
         app.add_middleware(ClientIpResolutionMiddleware)
         app.state.guard_decorator = guard_deco
+        # Internal readiness probe (GET /_guard/status). nginx only routes
+        # /api and /ws to the orchestrator, so this is reachable on the
+        # docker mesh / localhost:8000 only -- the intent.
+        guard_status.add_status_route(app)
         logger.info(
             "fastapi-guard armed",
             passive=settings.guard_passive_mode,

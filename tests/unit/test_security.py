@@ -7,13 +7,14 @@ settings.guard_enabled.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi import FastAPI
 from guard import SecurityMiddleware
 from pydantic import ValidationError
 from roboco import security
+from roboco.api.app import create_app
 from roboco.config import Settings, settings
 
 if TYPE_CHECKING:
@@ -327,3 +328,133 @@ def test_redis_failure_never_takes_down_a_fail_secure_deployment() -> None:
     cfg = security.build_security_config()
     assert cfg.redis_fail_open is True
     assert cfg.enable_redis is True
+
+
+# --- boot smoke: guard-core 3.12.0 construction-time validation -----------
+
+
+def test_build_security_config_constructs_under_guard_core_3_12() -> None:
+    """guard-core 3.12.0 rejects a bare-substring return_pattern rule at
+    SecurityConfig construction unless behavior_scan_response_body=True; this
+    used to crash at MODULE IMPORT (the module-level security_config), which
+    would have taken the orchestrator down at boot."""
+    security.build_security_config()
+
+
+def test_app_boots_with_guard_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real app factory, not just build_security_config() in isolation:
+    guards against a construction-time crash reachable only through the full
+    create_app() -> apply_guard() path."""
+    monkeypatch.setattr(settings, "guard_enabled", True)
+    app = create_app()
+    assert _has_security_middleware(app)
+
+
+def test_global_behavior_rules_use_status_patterns() -> None:
+    """A bare substring pattern ('404') is rejected at construction unless
+    behavior_scan_response_body=True; status: is the validation-exempt form
+    that actually matches a response's status code."""
+    cfg = security.build_security_config()
+    patterns = {r.pattern for r in cfg.global_behavior_rules}
+    assert "status:404" in patterns
+    assert "status:401" in patterns
+
+
+# --- immutability: guard-core 3.12.0 freezes config collections -----------
+
+
+def _append(seq: Any, item: str) -> None:
+    """Untyped indirection: cfg.whitelist's static type is tuple[str, ...],
+    which has no .append. Going through Any is how this test actually calls
+    the mutation guard-core removed, instead of merely asserting the
+    runtime type."""
+    seq.append(item)
+
+
+def test_whitelist_is_immutable_after_construction() -> None:
+    """guard-core 3.12.0 coerces list/set/dict collection fields to
+    tuple/frozenset/MappingProxyType at construction; in-place mutation now
+    raises. Documents the new contract for editors who reach for list-style
+    mutation on a config field."""
+    cfg = security.build_security_config()
+    assert isinstance(cfg.whitelist, tuple)
+    with pytest.raises(AttributeError):
+        _append(cfg.whitelist, "1.2.3.4")
+
+
+# --- agent_sensitive_headers: telemetry payloads never carry auth material -
+
+
+def test_agent_kwargs_empty_when_telemetry_off() -> None:
+    assert security._agent_kwargs() == {}
+
+
+def test_agent_sensitive_headers_present_when_telemetry_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    kwargs = security._agent_kwargs()
+    assert kwargs["agent_sensitive_headers"] == [
+        "x-agent-token",
+        "authorization",
+        "cookie",
+        "x-api-key",
+    ]
+
+
+# --- guard_scan_response_body: default-off response-body inspection -------
+
+
+def test_guard_scan_response_body_defaults_false() -> None:
+    assert security.build_security_config().behavior_scan_response_body is False
+
+
+def test_guard_scan_response_body_threads_through_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_scan_response_body", True)
+    assert security.build_security_config().behavior_scan_response_body is True
+
+
+# --- add_status_route: internal readiness probe ----------------------------
+
+
+def test_apply_guard_adds_status_route_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_enabled", True)
+    app = FastAPI()
+    security.apply_guard(app)
+    assert "/_guard/status" in {getattr(r, "path", None) for r in app.routes}
+
+
+def test_apply_guard_omits_status_route_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_enabled", False)
+    app = FastAPI()
+    security.apply_guard(app)
+    assert "/_guard/status" not in {getattr(r, "path", None) for r in app.routes}
+
+
+# --- block_clouds() decorator sanity: silent-filter path still resolves ---
+
+
+def test_block_clouds_argless_route_still_resolves_route_config() -> None:
+    """block_cloud_providers at CONFIG level raises on an unrecognized name;
+    the block_clouds() DECORATOR path instead silently filters unknown names.
+    An argless route must still resolve a real route config carrying the
+    default trio, guarding against a future named-provider typo silently
+    vanishing the whole route's config instead of just the bad name."""
+
+    @security.guard_deco.block_clouds()
+    async def _guard_test_block_clouds_route() -> dict[str, bool]:
+        return {"ok": True}
+
+    route_id = _guard_test_block_clouds_route._guard_route_id
+    route_config = security.guard_deco.get_route_config(route_id)
+    assert route_config is not None
+    # guard-core 3.13.0 will widen the argless default to all six supported
+    # providers (adds DigitalOcean/Linode/Vultr). When this pin breaks on
+    # that bump, decide: accept all six, or pass the classic three explicitly.
+    assert route_config.block_cloud_providers == {"AWS", "GCP", "Azure"}

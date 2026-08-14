@@ -792,7 +792,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 7.2.0) — DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 7.6.0 / guard-core 3.12.0), DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
@@ -905,6 +905,16 @@ class Settings(BaseSettings):
         # express Python None for this Literal field short of leaving it
         # empty; the Literal itself still rejects anything else invalid.
         return None if v == "" else v
+
+    guard_scan_response_body: bool = Field(
+        default=False,
+        description=(
+            "Let the guard's return_pattern behavior rules inspect response "
+            "bodies, not just status codes. Off by default: byte-for-byte "
+            "unchanged behavior, and roboco's own status:404/status:401 "
+            "rules never need it."
+        ),
+    )
 
     # ==========================================================================
     # Production self-healing ("engine 4") — DORMANT by default

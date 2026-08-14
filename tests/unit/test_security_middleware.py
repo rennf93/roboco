@@ -18,6 +18,7 @@ ASGI shim (production sees a real IP behind nginx; TestClient's bogus
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from http import HTTPStatus
@@ -28,7 +29,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from guard import SecurityMiddleware
-from guard.adapters import StarletteGuardRequest
+from guard.adapters import StarletteGuardRequest, StarletteGuardResponse
 from guard.lifespan import make_lifespan
 from guard_core.core.behavioral.context import BehavioralContext
 from guard_core.core.behavioral.processor import BehavioralProcessor
@@ -36,9 +37,11 @@ from guard_core.core.events import SecurityEventBus
 from guard_core.decorators.base import RouteConfig
 from guard_core.exceptions import GuardRedisError
 from guard_core.handlers.behavior_handler import BehaviorRule
+from guard_core.handlers.ipban_handler import ip_ban_manager
 from guard_core.utils import extract_client_ip, is_ip_allowed
 from roboco import security
 from starlette.requests import Request
+from starlette.responses import Response
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -69,10 +72,15 @@ class _InjectClientIP:
         await self.app(scope, receive, send)
 
 
-def _guarded_app(*, passive: bool, ip: str = "127.0.0.1") -> _InjectClientIP:
+def _guarded_app(
+    *, passive: bool, ip: str = "127.0.0.1", rate_limit: int | None = None
+) -> _InjectClientIP:
     cfg = security.build_security_config()
     cfg.passive_mode = passive
     cfg.enable_redis = False
+    if rate_limit is not None:
+        cfg.rate_limit = rate_limit
+        cfg.rate_limit_window = 60
 
     @contextlib.asynccontextmanager
     async def _life(_app: FastAPI) -> AsyncIterator[None]:
@@ -104,6 +112,13 @@ def _guarded_app(*, passive: bool, ip: str = "127.0.0.1") -> _InjectClientIP:
     # guard block (active) from a pass-through (passive log-only).
     @app.get("/.git/config")
     async def _decoy() -> dict[str, bool]:
+        return {"ok": True}
+
+    # Matches build_security_config()'s own exclude_paths verbatim, used to
+    # exercise the new exclude_paths semantics (route_config/ip_security/
+    # rate_limit still enforce there; WAF/behavioral tracking do not).
+    @app.get("/health")
+    async def _health() -> dict[str, bool]:
         return {"ok": True}
 
     app.state.guard_decorator = deco
@@ -231,6 +246,37 @@ class TestDecoyPaths:
         assert resp.status_code == HTTPStatus.OK
 
 
+class TestExcludePathSemantics:
+    """guard-core 3.12.0 changed exclude_paths: an excluded path no longer
+    skips every check. WAF/behavioral tracking are skipped
+    (guard_exclusion_scoped), but route_config, ip_security, and rate_limit
+    still enforce (enforced_on_excluded_paths=True). A whitelisted client is
+    unaffected (is_whitelisted short-circuits rate limit and ip_security's
+    global check), but a non-whitelisted client and a banned IP are not."""
+
+    def test_whitelisted_client_on_excluded_path_never_rate_limited(self) -> None:
+        with _client(_guarded_app(passive=False, rate_limit=2)) as client:
+            responses = [client.get("/health") for _ in range(5)]
+        assert all(r.status_code == HTTPStatus.OK for r in responses)
+
+    def test_non_whitelisted_client_on_excluded_path_is_rate_limited(self) -> None:
+        with _client(
+            _guarded_app(passive=False, ip=_EXTERNAL_IP, rate_limit=2)
+        ) as client:
+            responses = [client.get("/health") for _ in range(5)]
+        assert any(r.status_code != HTTPStatus.OK for r in responses)
+
+    def test_banned_ip_blocked_on_excluded_path(self) -> None:
+        banned_ip = "203.0.113.222"
+        asyncio.run(ip_ban_manager.ban_ip(banned_ip, 30))
+        try:
+            with _client(_guarded_app(passive=False, ip=banned_ip)) as client:
+                resp = client.get("/health")
+            assert resp.status_code == HTTPStatus.FORBIDDEN
+        finally:
+            asyncio.run(ip_ban_manager.unban_ip(banned_ip))
+
+
 class TestBehavioralUsageRuleRedisFailOpen:
     """usage_monitor()/behavior_analysis() rules run OUTSIDE SecurityCheckPipeline
     (guard/middleware.py dispatch calls BehavioralProcessor.process_usage_rules
@@ -307,6 +353,179 @@ class TestBehavioralUsageRuleRedisFailOpen:
         with pytest.raises(GuardRedisError):
             await processor.process_usage_rules(
                 self._request(), "127.0.0.1", self._route_config()
+            )
+
+
+class TestBehavioralReturnRuleRedisFailOpen:
+    """process_return_rules (route-level return_pattern rules, e.g. a future
+    @deco.behavior_analysis([...return_pattern...])) is invoked directly from
+    guard's _process_response -> response_factory.process_response
+    (guard/middleware.py), OUTSIDE SecurityCheckPipeline, same as
+    process_usage_rules -- needs the same fail-open patch.
+    """
+
+    @staticmethod
+    def _context(
+        behavior_tracker: object, *, redis_fail_open: bool
+    ) -> BehavioralContext:
+        cfg = security.build_security_config()
+        cfg.redis_fail_open = redis_fail_open
+        return BehavioralContext(
+            config=cfg,
+            logger=logging.getLogger("test.behavioral"),
+            event_bus=SecurityEventBus(agent_handler=None, config=cfg),
+            guard_decorator=None,
+            behavior_tracker=behavior_tracker,
+        )
+
+    @staticmethod
+    def _route_config() -> RouteConfig:
+        route_config = RouteConfig()
+        route_config.behavior_rules.append(
+            BehaviorRule(
+                rule_type="return_pattern",
+                threshold=5,
+                window=60,
+                pattern="status:404",
+                action="log",
+            )
+        )
+        return route_config
+
+    @staticmethod
+    def _request() -> StarletteGuardRequest:
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/usage",
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+        }
+        return StarletteGuardRequest(Request(scope))
+
+    @staticmethod
+    def _response() -> StarletteGuardResponse:
+        return StarletteGuardResponse(Response(status_code=404))
+
+    @pytest.mark.asyncio
+    async def test_redis_blip_fails_open_instead_of_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _BrokenTracker:
+            async def track_return_pattern(self, *_a: object, **_k: object) -> bool:
+                raise GuardRedisError(503, "redis down")
+
+        mock_logger = MagicMock()
+        monkeypatch.setattr(security, "logger", mock_logger)
+        context = self._context(_BrokenTracker(), redis_fail_open=True)
+        processor = BehavioralProcessor(context)
+
+        await processor.process_return_rules(
+            self._request(), self._response(), "127.0.0.1", self._route_config()
+        )
+
+        mock_logger.warning.assert_called_once()
+        assert "redis unavailable" in mock_logger.warning.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_redis_blip_still_raises_when_fail_open_disabled(self) -> None:
+        class _BrokenTracker:
+            async def track_return_pattern(self, *_a: object, **_k: object) -> bool:
+                raise GuardRedisError(503, "redis down")
+
+        context = self._context(_BrokenTracker(), redis_fail_open=False)
+        processor = BehavioralProcessor(context)
+
+        with pytest.raises(GuardRedisError):
+            await processor.process_return_rules(
+                self._request(), self._response(), "127.0.0.1", self._route_config()
+            )
+
+
+class TestBehavioralGlobalReturnRuleRedisFailOpen:
+    """global_behavior_rules (roboco's status:404/status:401 rules) run
+    through process_global_return_rules -- a DIFFERENT seam than
+    process_return_rules, also invoked directly from guard's _process_response
+    OUTSIDE SecurityCheckPipeline, and also needing its own fail-open patch.
+    This is the seam actually live in prod: roboco has no route-level
+    return_pattern rules today, only global ones.
+    """
+
+    @staticmethod
+    def _context(
+        behavior_tracker: object, *, redis_fail_open: bool
+    ) -> BehavioralContext:
+        cfg = security.build_security_config()
+        cfg.redis_fail_open = redis_fail_open
+        return BehavioralContext(
+            config=cfg,
+            logger=logging.getLogger("test.behavioral"),
+            event_bus=SecurityEventBus(agent_handler=None, config=cfg),
+            guard_decorator=None,
+            behavior_tracker=behavior_tracker,
+        )
+
+    @staticmethod
+    def _rules() -> list[BehaviorRule]:
+        return [
+            BehaviorRule(
+                rule_type="return_pattern",
+                threshold=5,
+                window=60,
+                pattern="status:404",
+                action="log",
+            )
+        ]
+
+    @staticmethod
+    def _request() -> StarletteGuardRequest:
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/usage",
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+        }
+        return StarletteGuardRequest(Request(scope))
+
+    @staticmethod
+    def _response() -> StarletteGuardResponse:
+        return StarletteGuardResponse(Response(status_code=404))
+
+    @pytest.mark.asyncio
+    async def test_redis_blip_fails_open_instead_of_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _BrokenTracker:
+            async def track_return_pattern(self, *_a: object, **_k: object) -> bool:
+                raise GuardRedisError(503, "redis down")
+
+        mock_logger = MagicMock()
+        monkeypatch.setattr(security, "logger", mock_logger)
+        context = self._context(_BrokenTracker(), redis_fail_open=True)
+        processor = BehavioralProcessor(context)
+
+        await processor.process_global_return_rules(
+            self._request(), self._response(), "127.0.0.1", self._rules()
+        )
+
+        mock_logger.warning.assert_called_once()
+        assert "redis unavailable" in mock_logger.warning.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_redis_blip_still_raises_when_fail_open_disabled(self) -> None:
+        class _BrokenTracker:
+            async def track_return_pattern(self, *_a: object, **_k: object) -> bool:
+                raise GuardRedisError(503, "redis down")
+
+        context = self._context(_BrokenTracker(), redis_fail_open=False)
+        processor = BehavioralProcessor(context)
+
+        with pytest.raises(GuardRedisError):
+            await processor.process_global_return_rules(
+                self._request(), self._response(), "127.0.0.1", self._rules()
             )
 
 
