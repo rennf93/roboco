@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -2153,6 +2154,71 @@ def test_release_prompt_contains_slop_ban_and_length_guidance() -> None:
     assert "Em dashes" in prompt
     assert "game-changer" in prompt
     assert "under 240 characters" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# IMPACT BAR (the deliverable-carries-the-post standard, distilled from a
+# reference high-impact X post) reaches every local-model drafting prompt via
+# _hom_voice -> _voice_guide -> {_release,_reply,_revision}_prompt. Sentinel
+# phrases pinned here must also appear, verbatim, in head-marketing.md's own
+# IMPACT BAR section (see test_impact_bar_parity_with_head_marketing_md
+# below), the parity check between the local-model chokepoint and
+# the cloud-agent chokepoint.
+# --------------------------------------------------------------------------- #
+
+IMPACT_BAR_SENTINELS = (
+    "IMPACT BAR",
+    "falsifiable specific",
+    "first sentence",
+    "engagement-bait",
+    "canonical, verifiable link",
+    "reader's own terms",
+)
+
+
+def test_release_prompt_carries_impact_bar() -> None:
+    voice = x_engine_module._hom_voice("RoboCo")
+    prompt = x_engine_module._release_prompt(
+        _VERSION, ["feat: new thing"], voice, "RoboCo"
+    )
+    for sentinel in IMPACT_BAR_SENTINELS:
+        assert sentinel in prompt, f"release prompt missing IMPACT BAR: {sentinel!r}"
+
+
+def test_reply_prompt_carries_impact_bar() -> None:
+    voice = x_engine_module._hom_voice("RoboCo")
+    prompt = x_engine_module._reply_prompt("great work on this", voice, "RoboCo")
+    for sentinel in IMPACT_BAR_SENTINELS:
+        assert sentinel in prompt, f"reply prompt missing IMPACT BAR: {sentinel!r}"
+
+
+def test_revision_prompt_carries_impact_bar() -> None:
+    voice = x_engine_module._hom_voice("RoboCo")
+    prompt = x_engine_module._revision_prompt(
+        "old draft body", "too vague", voice, "RoboCo", ""
+    )
+    for sentinel in IMPACT_BAR_SENTINELS:
+        assert sentinel in prompt, f"revision prompt missing IMPACT BAR: {sentinel!r}"
+
+
+def test_impact_bar_parity_with_head_marketing_md() -> None:
+    """The IMPACT BAR is authored twice, once for the local-model chokepoint
+    (``_HOM_VOICE_GUIDE`` in x_engine.py) and once for the cloud-agent
+    chokepoint (head-marketing.md's own VOICE GUIDE section). A one-sided
+    edit to either copy must fail this test loudly rather than silently
+    drift the two bars apart."""
+    identities_dir = (
+        Path(__file__).resolve().parents[3] / "agents" / "prompts" / "identities"
+    )
+    identity_text = (identities_dir / "head-marketing.md").read_text()
+    voice = x_engine_module._hom_voice("RoboCo")
+    for sentinel in IMPACT_BAR_SENTINELS:
+        assert sentinel in identity_text, (
+            f"head-marketing.md missing IMPACT BAR sentinel: {sentinel!r}"
+        )
+        assert sentinel in voice, (
+            f"_hom_voice missing IMPACT BAR sentinel: {sentinel!r}"
+        )
 
 
 # --------------------------------------------------------------------------- #

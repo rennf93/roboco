@@ -158,6 +158,16 @@ def test_barfly_prompt_names_never_invent_a_tweet() -> None:
     assert "never invent a tweet" in prompt.lower()
 
 
+def test_barfly_prompt_names_no_links_in_reply_body() -> None:
+    """The platform appends the conversation's own URL server-side
+    (materialize_barfly_reply); the prompt must tell the drafting agent not
+    to add a second one of its own."""
+    orch = _make_orch()
+    prompt = orch._build_barfly_prompt(_barfly_task())
+    assert "appends the conversation's own URL" in prompt
+    assert "reply_body itself must contain NO links" in prompt
+
+
 def test_barfly_prompt_renders_candidates() -> None:
     orch = _make_orch()
     task = _barfly_task(

@@ -18217,9 +18217,11 @@ follow-up -> spotlight) — for the CEO to review. You author this alone.
 5. propose_campaign(campaign_name="<short name>", posts=[...])
      — call this EXACTLY ONCE with 2-6 posts IN ORDER. Each post is an
        object with: body (the tweet text, plain, <=280 chars, in your voice —
-       see the VOICE GUIDE), publish_after (ISO 8601 datetime, future,
-       strictly ascending across posts), stage_label (one of 'teaser',
-       'launch', 'follow_up', 'spotlight', 'other').
+       see the VOICE GUIDE, and clearing the IMPACT BAR in your identity:
+       deliverable noun in the first sentence, one falsifiable specific, no
+       hashtags/emoji/exclamations), publish_after (ISO 8601 datetime,
+       future, strictly ascending across posts), stage_label (one of
+       'teaser', 'launch', 'follow_up', 'spotlight', 'other').
 
    If there is genuinely nothing this cycle worth a campaign — no real
    highlights on a release trigger, nothing fresh on an on-demand run —
@@ -18484,8 +18486,10 @@ RECENTLY REJECTED BY THE CEO — avoid repeating these angles: {rejected_line}
    the CEO can enable), not in the already-covered list above, and worth
    telling people about.
 4. Draft ONE post in your voice (see your identity's VOICE GUIDE) — plain
-   text, no markdown, no thread, max 280 characters, and never invent a
-   capability that doesn't exist.
+   text, no markdown, no thread, max 280 characters, never invent a
+   capability that doesn't exist, and it must clear the IMPACT BAR in your
+   identity (deliverable noun in the first sentence, one falsifiable
+   specific, no hashtags/emoji/exclamations).
 5. propose_feature_spotlight(feature_slug="<a short stable slug>",
    feature_title="<human-readable feature name>", body="<the post>")
      — call this EXACTLY ONCE.
@@ -18604,7 +18608,12 @@ SCREENED CANDIDATES:
    someone else in a way that makes a RoboCo reply redundant.
 3. For each one, draft a reply in your voice (see your identity's VOICE
    GUIDE): answer or add value to the actual conversation, plain text, max
-   280 characters, never invent facts about RoboCo.
+   280 characters, never invent facts about RoboCo, and it must clear the
+   IMPACT BAR in your identity (deliverable noun in the first sentence, one
+   falsifiable specific, no hashtags/emoji/exclamations). The platform
+   appends the conversation's own URL to your reply automatically, so
+   reply_body itself must contain NO links; the IMPACT BAR's one-link rule
+   is satisfied by that appended URL.
 4. propose_conversation_replies(items=[...])
      — call this EXACTLY ONCE with 1-{max_items} items. Each item is an
        object with: tweet_id (REQUIRED — must be one of the candidate ids
@@ -18736,8 +18745,10 @@ there is no separate approval surface.
    (a process/craft note), 'changelog_highlight' (one specific shipped
    change), or 'other'.
 4. Draft ONE post in your voice (see your identity's VOICE GUIDE) — plain
-   text, no markdown, no thread, max 280 characters, and never invent a
-   capability that doesn't exist.
+   text, no markdown, no thread, max 280 characters, never invent a
+   capability that doesn't exist, and it must clear the IMPACT BAR in your
+   identity (deliverable noun in the first sentence, one falsifiable
+   specific, no hashtags/emoji/exclamations).
 5. propose_editorial_post(angle="<one of the four above>", body="<the post>",
    rationale="<why this angle, this cycle>")
      — call this EXACTLY ONCE.

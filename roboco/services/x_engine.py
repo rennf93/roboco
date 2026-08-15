@@ -120,16 +120,19 @@ class _RedraftLockUnavailable(Exception):
 # adapted from agents/prompts/teams/ux_ui.md's "AI tells to avoid" — the local-
 # model release/reply drafts previously ran on one throwaway sentence with
 # neither. ``{product_name}`` is filled in by ``_hom_voice`` so the shared
-# style examples never hardcode a literal brand name.
+# style examples never hardcode a literal brand name. The IMPACT BAR section
+# is likewise ported verbatim from head-marketing.md's own IMPACT BAR (kept
+# in parity by tests/unit/services/test_x_engine.py's sentinel-phrase check)
+# so the local-model chokepoint and the cloud-agent chokepoint hold the same
+# bar, not two copies that can drift.
 _HOM_VOICE_GUIDE = """VOICE, with the reasoning behind each rule:
 - Confident, not hedgy: you're announcing something that shipped and works —
   say "{product_name} now does X," never "we think this might help with X."
 - Concise: one post, one idea; if a caveat doesn't fit, cut the caveat, not
   the point.
-- No emoji spam: one deliberate emoji at most (e.g. a rocket on a launch);
-  three reads like a bot.
-- No hashtags unless truly apt: a hashtag on every post is noise, it earns
-  its place only in a real active conversation.
+- No emoji, ever: even one reads as a bot, not a company.
+- No hashtags, ever: a hashtag on every post is noise, and there's no
+  post where it earns its place.
 - Speak as "we": you represent the company, not a persona.
 - Plain text: no markdown, no bullet lists, no thread — X renders anything
   else as visibly broken.
@@ -143,10 +146,45 @@ BANNED — an instant rewrite if any of these appear in the draft:
 - Em dashes.
 - "game-changer", "seamless", "effortless", "supercharge", "unleash",
   "elevate", "dive in", "we're excited/thrilled to announce".
-- Exclamation-mark pileups (more than one "!" anywhere in the post).
+- Any exclamation point anywhere in the post.
 - A rhetorical question as the opening line.
 - "X isn't just Y, it's Z" constructions.
 - Rule-of-three adjective chains ("fast, reliable, and powerful").
+
+IMPACT BAR, with the reasoning behind each rule (what makes a post get read
+instead of scrolled past):
+- Open with the deliverable: a verb plus the concrete artifact noun
+  (feature, tool, benchmark, release) in the first sentence, never a topic
+  announcement or an abstract noun ("initiative," "journey," "effort").
+  This rule as written applies to standalone posts (announcement,
+  spotlight, editorial, campaign); a reply instead answers the person's
+  actual point first and names the deliverable inside that answer.
+- Carry one falsifiable specific: a real number, threshold, name, or
+  artifact. A post that could describe any product is rejected copy.
+- Demonstrate, don't claim: hand the reader the thing itself (a link, a
+  number, a named mechanism), not adjectives about it.
+- One canonical, verifiable link when one exists (the repo, the release,
+  the docs page), placed near the close, never buried mid-sentence, and
+  never more than one.
+- Name the verification in one clause when a neutral one exists (CI green,
+  third-party review, a benchmark run); it pre-empts "just spin" replies
+  before they get written.
+- Zero emoji, zero hashtags, zero exclamation points, zero engagement-bait
+  ("like/RT", "drop your thoughts", "who's building?").
+- Close on substance or an inclusive invitation (try it, read it, build on
+  it), never a slogan, never self-congratulation.
+- Name the cadence for a standing practice ("every release," "weekly"), so
+  it reads as practice, not a stunt.
+- State the reader's payoff in the reader's own terms before any
+  implementation detail; a non-expert should be able to restate why they
+  care.
+
+IMPACT CHECK before a draft ships: does sentence one name the deliverable;
+is there one number, name, or artifact a skeptic could verify; is the link,
+if present, singular and near the end. Any "no" means rewrite, not send.
+These three checks are the hard floor; when the 280-char limit forces a
+choice, satisfy these three first and treat every other rule above as
+best-effort.
 
 STYLE EXAMPLES — voice only, do not reuse this content, write fresh copy
 grounded in the real facts you were given:
@@ -188,7 +226,7 @@ def _fallback_release_body(version: str, product_name: str) -> str:
     # Deliberately generic: the deterministic fallback must never quote a raw
     # changelog bullet — internal plumbing jargon read as the release headline.
     return (
-        f"{product_name} v{version} just shipped — new features, fixes, and "
+        f"{product_name} v{version} just shipped: new features, fixes, and "
         "performance work across the board. Full release notes on GitHub."
     )
 
