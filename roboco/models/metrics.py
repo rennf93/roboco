@@ -524,6 +524,28 @@ class CeoScorecard:
 
 
 @dataclass
+class VerbLatencyStats:
+    """p50/p95 HTTP duration for one gateway verb over a time window.
+
+    Backed by ``PERCENTILE_CONT`` on ``verb_latency_samples``; one row per verb
+    sorted by p95 descending so the slowest verbs surface first.
+    """
+
+    verb: str
+    p50_ms: float
+    p95_ms: float
+    sample_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "verb": self.verb,
+            "p50_ms": round(self.p50_ms, 2),
+            "p95_ms": round(self.p95_ms, 2),
+            "sample_count": self.sample_count,
+        }
+
+
+@dataclass
 class TaskMetrics:
     """Granular per-task effort: real runtime vs wall-clock, turns, cost, rework.
 
