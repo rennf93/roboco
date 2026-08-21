@@ -151,6 +151,21 @@ A task may declare an `intends_to_touch` glob list at delegation time (the colli
 
 **Reuse, not duplication.** The drift comparison reuses `collision._drift` directly (imported at pr_gate.py:36). `_drift` uses `_glob_matches_file` (collision.py:55) for the glob-match — equality, fnmatch either direction, or directory-prefix containment. No second glob-match implementation is introduced; `_codeql_glob_overlap` (pr_gate.py:76) already duplicates `collision._glob_overlaps` by design (documented as avoiding a private-module dependency for the relaxation grant), but the drift reuse does NOT follow that pattern — it imports and calls `_drift` itself.
 
+### What declaring a scope buys you
+
+When a task declares `intends_to_touch` globs, the CodeQL scope relaxation kicks in. `_codeql_checks_out_of_scope(failing_checks, intends_to_touch)` in pr_gate.py drops any failing CodeQL check whose analyzed-language scope does not overlap the declared globs, and `_scope_gate_codeql_failure(t, status)` removes those checks from the CI failure status. A failing CodeQL check whose analyzed language falls outside the declared scope no longer blocks `pr_pass`.
+
+For example, a task declaring `intends_to_touch=["roboco/**"]` that triggers a failing JavaScript/TypeScript CodeQL check (which analyzes `panel/**`) gets that check scope-gated out — it does not block `pr_pass`. The Python CodeQL check (`Analyze (python)`, scoped to `roboco/**`/`agents/**`/`alembic/**`/`scripts/**`) overlaps the declared scope and is NOT relaxed.
+
+### What it now costs you
+
+When a CodeQL scope relaxation is actually claimed — i.e. at least one failing CodeQL check was scope-gated out — the task's actual changed files are checked against its declared `intends_to_touch` globs using `collision.py`'s `_drift` function. The changed files are sourced from `_gate_changed_files`. If any file falls outside the declared scope (drift), `pr_pass` is blocked with an `invalid_state` envelope naming each out-of-scope file. Each out-of-scope file is also recorded as a findings-ledger row (path-shaped `file` field, narrative in the `evidence` field) visible to Pest Control and Sentinel.
+
+This drift check is **unconditional** — it fires for every task that claimed a relaxation, even when the task has no colliding sibling. It is NOT routed through `build_collision_context` (which is sibling-conditioned and returns None when no sibling overlaps). A relaxation-claiming task with no sibling still gets its diff verified against its declared scope.
+
+### Undeclared scope
+
+A task with no declared `intends_to_touch` keeps the old conservative behavior. `_codeql_checks_out_of_scope` returns `[]` when the task declares no scope, so no CodeQL relaxation is granted — every failing CodeQL check blocks `pr_pass`. Because no relaxation is claimed, the drift check is not performed. Today's behavior is preserved: undeclared scope means no relaxation and no drift check.
 
 ## Gotchas
 - self_review_block is dormant by design: markers.get_original_developer is never set on assembled coordination tasks (only on dev-leaf tasks at QA/doc claim), and GatewayAgentView carries no slug so actor_slug was previously always None. The fix sets actor_slug=str(reviewer_agent_id) so the gate is wired, but it only fires if the marker were ever set to the reviewer's UUID — currently never. Don't assume the self-review defense is active in production today.
