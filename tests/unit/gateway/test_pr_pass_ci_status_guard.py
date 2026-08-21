@@ -197,6 +197,118 @@ async def test_pr_pass_scope_gate_narrows_message_to_remaining_failures() -> Non
     assert "Analyze (python)" not in (env.message or "")
 
 
+# ---------------------------------------------------------------------------
+# Scope-relaxation drift guard: verifies the actual diff against the declared
+# scope when a CodeQL relaxation was claimed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scope_relaxation_passes_when_files_in_declared_scope() -> None:
+    """AC: A task whose changed files fall entirely inside its declared
+    intends_to_touch globs passes the gate unchanged after a CodeQL scope
+    relaxation."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["panel/**"])
+    t_after = _t(status="awaiting_pm_review")
+    c = _make_choreographer()
+    record_spy = _stub_gate_path(
+        c, reviewer_id=reviewer_id, t_before=t_before, t_after=t_after
+    )
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["Analyze (python)"]}
+    )
+    c.git.list_changed_files = AsyncMock(
+        return_value=["panel/src/foo.tsx", "panel/src/bar.tsx"]
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error is None, env.as_dict()
+    assert env.status == "awaiting_pm_review"
+    record_spy.assert_called_once()
+    ci_note = record_spy.call_args.kwargs.get("ci_note") or ""
+    assert "outside declared scope" in ci_note
+
+
+@pytest.mark.asyncio
+async def test_scope_relaxation_blocks_when_files_outside_declared_scope() -> None:
+    """AC: A task that declared a narrow scope, touched files outside it, and
+    received a CodeQL scope relaxation is blocked at pr_pass with an
+    invalid_state envelope naming each out-of-scope file."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["panel/**"])
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["Analyze (python)"]}
+    )
+    c.git.list_changed_files = AsyncMock(
+        return_value=["panel/src/foo.tsx", "roboco/services/hack.py"]
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error == "invalid_state"
+    assert "roboco/services/hack.py" in (env.message or "")
+    assert "outside" in (env.message or "").lower()
+    # The in-scope file must NOT be named as a drift file.
+    assert "panel/src/foo.tsx" not in (env.message or "")
+
+
+@pytest.mark.asyncio
+async def test_scope_relaxation_drift_checked_without_colliding_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC: Drift is evaluated for a relaxation-claiming task even with no
+    colliding sibling — the check is unconditional, calling _drift directly
+    rather than through build_collision_context. Monkeypatching
+    build_collision_context to return None (its no-sibling behaviour) must NOT
+    suppress the drift block."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["panel/**"])
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["Analyze (python)"]}
+    )
+    c.git.list_changed_files = AsyncMock(return_value=["roboco/services/hack.py"])
+    monkeypatch.setattr(
+        "roboco.services.gateway.choreographer.pr_gate.build_collision_context",
+        lambda **_kw: None,
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error == "invalid_state"
+    assert "roboco/services/hack.py" in (env.message or "")
+
+
+@pytest.mark.asyncio
+async def test_no_declared_scope_no_relaxation_no_drift_finding() -> None:
+    """AC: A task with no declared intends_to_touch behaves exactly as today —
+    no CodeQL relaxation granted and no drift finding recorded. The failing
+    CodeQL check still blocks (conservative), and the drift guard is never
+    reached (list_changed_files is never called)."""
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=None)
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["Analyze (python)"]}
+    )
+    c.git.list_changed_files = AsyncMock(return_value=["roboco/services/hack.py"])
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    # No relaxation — the standard CI failure block fires.
+    assert env.error == "invalid_state"
+    assert "Analyze (python)" in (env.message or "")
+    # The drift guard was never called (no relaxation → no drift check).
+    assert "outside declared scope" not in (env.message or "")
+    c.git.list_changed_files.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_pr_pass_still_blocked_on_unmapped_codeql_check_name() -> None:
     """A failing check name that LOOKS like CodeQL but isn't in
