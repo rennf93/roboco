@@ -15,6 +15,7 @@ Documentation for the Backend Cell team.
 - `/qa/` - QA-related docs
 - `/services/` - Internal service architecture & patterns
   - `coordination-events.md` - 5 coordination-event notification producers: reassignment, collision-sequencing, unblock, dependency-revival, stale-claim-reaped
+  - `optimal-per-index-timeout.md` - Per-index 15s timeout + partial-result `gaps` list in `OptimalService.search_with_gaps()` / `RAGResponse.gaps` (inner to the route-level 30s bound; follows the `evidence_legs.run_bounded_leg` degradation pattern; `search()` stays backward compatible)
   - `pr-waiver.md` - Zero-diff PR-waiver: `submit_up`/`submit_root` detect a zero-commit branch before `create_pr`/`create_root_pr`, waive PR creation, and route report-only cell/root tasks to `completed` with no PR and no manual status surgery
 - `/ops/` - Operational runbooks
   - `codeql-workflows.md` - Split CodeQL workflow triggers and branch-protection notes
