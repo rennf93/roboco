@@ -1180,10 +1180,10 @@ def _format_barfly_candidates(markers_dict: dict[str, Any]) -> str:
 # history") for the board-exploration context: check the digest before
 # proposing and skip duplicates of work that already shipped.
 _SHIPPED_DIGEST_INSTRUCTION = (
-    "Before proposing, check the shipped-this-week digest above. If a "
-    "candidate item duplicates work that already shipped this week (named "
-    "above) or is in flight, say so plainly and skip it instead of quietly "
-    "drafting a duplicate."
+    "Before proposing, check the shipped-this-week digest above — do not "
+    "propose already-shipped work. If a candidate item duplicates work that "
+    "already shipped this week (named above) or is in flight, say so plainly "
+    "and skip it instead of quietly drafting a duplicate."
 )
 
 

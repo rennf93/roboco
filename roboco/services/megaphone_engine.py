@@ -58,6 +58,7 @@ _EXPLORATION_DESCRIPTION = (
     "behind-the-scenes note, or a changelog highlight."
 )
 
+
 class MegaphoneEngine(BaseService):
     """Originate ONE held Megaphone-exploration cycle for the Head of Marketing."""
 
