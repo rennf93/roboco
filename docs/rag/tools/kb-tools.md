@@ -26,6 +26,14 @@ roboco_kb_search(
 roboco_rag_query(query="How does authentication work?", top_k=5)
 ```
 
+Both `roboco_kb_search` and `roboco_rag_query` fan out across every registered
+index concurrently with a **per-index 15s timeout** (inner to the route's 30s
+outer bound). If an index does not finish, the others still return their
+results and the response carries a `gaps` list naming the timed-out indexes
+(e.g. `["journals unavailable: timed out after 15s"]`), empty when all indexes
+completed. A slow index no longer discards the whole result set. See
+`docs/backend/services/optimal-per-index-timeout.md` for the service contract.
+
 ## Mentor (Conversational)
 
 ```python

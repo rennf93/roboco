@@ -30,6 +30,7 @@ from roboco.models.optimal import (
     IndexType,
     QueryContext,
     RAGResponse,
+    SearchOutcome,
     SearchResult,
 )
 from roboco.services.optimal_brain.indexes import (
@@ -65,6 +66,43 @@ MAX_CONTENT_CHARS = 800
 # index_documentation, except any file under a "standards" subdir, which
 # routes to the standards indexer instead (see _index_doc_file).
 AUTO_INDEX_DIRS = ("rag", "map")
+
+# Per-index search timeout — INNER to the route-level 30s/60s timeout. Each
+# index plugin's search_with_embedding() call is bounded independently so a
+# single slow index can't discard results from every index that already
+# finished. On timeout the index is recorded in the gaps list and a failure
+# outcome is returned instead of propagating (evidence_legs.py pattern).
+_PER_INDEX_SEARCH_TIMEOUT = 15.0
+
+
+async def _bounded_index_search(
+    entry: tuple[IndexType, BaseIndexPlugin],
+    query_embedding: list[float],
+    query_text: str,
+    top_k: int,
+    gaps: list[str],
+    timeout: float = _PER_INDEX_SEARCH_TIMEOUT,
+) -> SearchOutcome:
+    """Wrap a single index search in a per-index timeout.
+
+    On timeout, append the index name to ``gaps`` and return a failure
+    outcome instead of propagating — following the degradation pattern from
+    ``evidence_legs.run_bounded_leg``.
+    """
+    index_type, plugin = entry
+    try:
+        return await asyncio.wait_for(
+            plugin.search_with_embedding(query_embedding, query_text, top_k=top_k),
+            timeout=timeout,
+        )
+    except TimeoutError:
+        gaps.append(f"{index_type.value} unavailable: timed out after {timeout:.0f}s")
+        return SearchOutcome(
+            results=[],
+            success=False,
+            error_message=f"Timed out after {timeout:.0f}s",
+            index_type=index_type,
+        )
 
 
 @dataclass
@@ -1378,6 +1416,22 @@ class OptimalService:
         Returns:
             List of search results sorted by relevance
         """
+        results, _ = await self.search_with_gaps(query, context, top_k)
+        return results
+
+    async def search_with_gaps(
+        self,
+        query: str,
+        context: QueryContext | None = None,
+        top_k: int = 5,
+    ) -> tuple[list[SearchResult], list[str]]:
+        """Semantic search across knowledge base with per-index timeout.
+
+        Like ``search()`` but each index is bounded by
+        ``_PER_INDEX_SEARCH_TIMEOUT`` independently. Returns
+        ``(results, gaps)`` where ``gaps`` lists indexes that timed out —
+        empty when all completed.
+        """
         if not self._initialized:
             raise RuntimeError("OptimalService not initialized")
 
@@ -1386,7 +1440,7 @@ class OptimalService:
         )
         plugins = [(it, self._plugins[it]) for it in index_types if it in self._plugins]
         if not plugins:
-            return []
+            return [], []
 
         # Embed the query ONCE, then run every index's hybrid search
         # concurrently — instead of each index re-embedding in series.
@@ -1394,19 +1448,20 @@ class OptimalService:
             query_embedding = await plugins[0][1].compute_query_embedding(query)
         except Exception as e:
             logger.warning("Query embedding failed", error=str(e))
-            return []
+            return [], []
 
+        gaps: list[str] = []
         outcomes = await asyncio.gather(
             *(
-                plugin.search_with_embedding(query_embedding, query, top_k=top_k)
-                for _, plugin in plugins
+                _bounded_index_search(entry, query_embedding, query, top_k, gaps)
+                for entry in plugins
             ),
             return_exceptions=True,
         )
 
         results = self._collect_outcomes(plugins, outcomes)
         results.sort(key=lambda r: r.score, reverse=True)
-        return results[: top_k * len(index_types)]
+        return results[: top_k * len(index_types)], gaps
 
     async def _search_single_index(
         self,
@@ -1415,16 +1470,41 @@ class OptimalService:
         query_text: str,
         top_k: int,
         buf: _QueryAggregationBuffer,
+        gaps: list[str] | None = None,
     ) -> None:
-        """Search one index with a pre-computed embedding; update buf in place."""
+        """Search one index with a pre-computed embedding; update buf in place.
+
+        Bounded by ``_PER_INDEX_SEARCH_TIMEOUT`` — on timeout, the index is
+        recorded in ``gaps`` (when provided) and an error is logged in buf
+        instead of propagating.
+        """
         index_type, plugin = entry
         if await plugin.count() == 0:
             logger.debug("Skipping empty index", index_type=index_type.value)
             return
 
-        outcome = await plugin.search_with_embedding(
-            query_embedding, query_text, top_k=top_k
-        )
+        try:
+            outcome = await asyncio.wait_for(
+                plugin.search_with_embedding(query_embedding, query_text, top_k=top_k),
+                timeout=_PER_INDEX_SEARCH_TIMEOUT,
+            )
+        except TimeoutError:
+            if gaps is not None:
+                gaps.append(
+                    f"{index_type.value} unavailable: timed out after "
+                    f"{_PER_INDEX_SEARCH_TIMEOUT:.0f}s"
+                )
+            buf.stats[index_type.value] = -1  # -1 indicates error
+            buf.errors[index_type.value] = (
+                f"Timed out after {_PER_INDEX_SEARCH_TIMEOUT:.0f}s"
+            )
+            logger.warning(
+                "RAG search timed out for index",
+                index_type=index_type.value,
+                timeout=_PER_INDEX_SEARCH_TIMEOUT,
+            )
+            return
+
         if outcome.success:
             buf.stats[index_type.value] = len(outcome.results)
             buf.citations.extend(outcome.results)
@@ -1439,23 +1519,28 @@ class OptimalService:
 
     async def _aggregate_citations(
         self, index_types: list[IndexType], query: str, top_k: int
-    ) -> tuple[list[SearchResult], dict[str, int], dict[str, str]]:
-        """Embed once, then search the requested indexes concurrently."""
+    ) -> tuple[list[SearchResult], dict[str, int], dict[str, str], list[str]]:
+        """Embed once, then search the requested indexes concurrently.
+
+        Returns ``(citations, stats, errors, gaps)`` where ``gaps`` lists
+        indexes that timed out under the per-index timeout.
+        """
         buf = _QueryAggregationBuffer()
+        gaps: list[str] = []
         plugins = [(it, self._plugins[it]) for it in index_types if it in self._plugins]
         if not plugins:
-            return buf.citations, buf.stats, buf.errors
+            return buf.citations, buf.stats, buf.errors, gaps
 
         try:
             query_embedding = await plugins[0][1].compute_query_embedding(query)
         except Exception as e:
             logger.warning("RAG query embedding failed", error=str(e))
-            return buf.citations, buf.stats, buf.errors
+            return buf.citations, buf.stats, buf.errors, gaps
 
         await asyncio.gather(
             *(
                 self._search_single_index(
-                    (it, plugin), query_embedding, query, top_k, buf
+                    (it, plugin), query_embedding, query, top_k, buf, gaps
                 )
                 for it, plugin in plugins
             ),
@@ -1467,8 +1552,9 @@ class OptimalService:
             total_citations=len(buf.citations),
             by_index=buf.stats,
             errors=buf.errors if buf.errors else None,
+            gaps=gaps if gaps else None,
         )
-        return buf.citations, buf.stats, buf.errors
+        return buf.citations, buf.stats, buf.errors, gaps
 
     async def query(
         self,
@@ -1494,9 +1580,12 @@ class OptimalService:
             "RAG query starting", query=query[:50], num_indexes=len(index_types)
         )
 
-        all_citations, search_stats, search_errors = await self._aggregate_citations(
-            index_types, query, top_k
-        )
+        (
+            all_citations,
+            search_stats,
+            search_errors,
+            gaps,
+        ) = await self._aggregate_citations(index_types, query, top_k)
 
         all_citations.sort(key=lambda r: r.score, reverse=True)
         top_citations = all_citations[: top_k * 2]
@@ -1515,6 +1604,7 @@ class OptimalService:
                     context_used=len(top_citations),
                     search_stats=search_stats,
                     search_errors=search_errors,
+                    gaps=gaps,
                 )
 
         logger.warning("RAG query found no citations in any index")
@@ -1525,6 +1615,7 @@ class OptimalService:
             context_used=0,
             search_stats=search_stats,
             search_errors=search_errors,
+            gaps=gaps,
         )
 
     def _strip_think_tags(self, text: str) -> str:
