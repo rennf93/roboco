@@ -64,16 +64,16 @@ async def test_verb_latency_stats_percentiles(db_session: AsyncSession) -> None:
     await db_session.execute(delete(VerbLatencySampleTable))
     # 10 samples: 10,20,30,...,100 ms → p50=55, p95=95.5
     await _seed_samples(db_session, "give_me_work", list(range(10, 101, 10)))
-    # 4 samples: 100,200,300,400 ms → p50=250, p95=400
+    # 4 samples: 100,200,300,400 ms → p50=250, p95=385 (linear interpolation)
     await _seed_samples(db_session, "i_am_done", [100, 200, 300, 400])
     await db_session.commit()
 
     stats = await get_metrics_service(db_session).get_verb_latency_stats(hours=24)
     assert len(stats) == 2  # noqa: PLR2004
 
-    # Sorted by p95 descending: i_am_done (400) first, give_me_work (95.5) second
+    # Sorted by p95 descending: i_am_done (385) first, give_me_work (95.5) second
     assert stats[0].verb == "i_am_done"
-    assert stats[0].p95_ms == pytest.approx(400, abs=1)
+    assert stats[0].p95_ms == pytest.approx(385, abs=1)
     assert stats[0].p50_ms == pytest.approx(250, abs=1)
     assert stats[0].sample_count == 4  # noqa: PLR2004
 
