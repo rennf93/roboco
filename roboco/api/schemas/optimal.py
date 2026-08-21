@@ -64,6 +64,10 @@ class SearchResponse(BaseModel):
     results: list[SearchResultResponse]
     query: str
     total: int
+    gaps: list[str] = Field(
+        default_factory=list,
+        description="Indexes that timed out (empty when all completed)",
+    )
 
 
 class RAGQueryResponse(BaseModel):
@@ -78,6 +82,10 @@ class RAGQueryResponse(BaseModel):
     )
     search_errors: dict[str, str] | None = Field(
         default=None, description="Error messages for failed indexes"
+    )
+    gaps: list[str] = Field(
+        default_factory=list,
+        description="Indexes that timed out (empty when all completed)",
     )
 
 
