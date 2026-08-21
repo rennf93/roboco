@@ -22,7 +22,16 @@ The first time you open a pull request, the CLA Assistant bot will comment with 
 
 ## Development workflow
 
-1. Fork the repository and create a feature branch.
+1. Fork the repository and branch off **`slave`**, not `master`.
+
+   `slave` is the development trunk that every change lands on first. `master` is production and only the maintainer merges into it. A PR opened against `master` will be asked to retarget, so save yourself the round trip:
+
+   ```bash
+   git remote add upstream https://github.com/rennf93/roboco.git
+   git fetch upstream
+   git checkout -b my-feature upstream/slave
+   ```
+
 2. Make your change. Follow the existing code style.
 3. Run the full quality gate before opening a PR:
 
@@ -38,8 +47,9 @@ For the frontend (`panel/`):
    pnpm format && pnpm lint && pnpm typecheck && pnpm test
    ```
 
-4. **Sign your commits.** `master` requires *verified* signatures, so set up commit signing before you push — see [Signing your commits](#signing-your-commits).
-5. Open a pull request with a clear description of the change and its motivation.
+4. **Sign your commits.** Your work reaches `master` eventually, and `master` requires *verified* signatures, so set up commit signing before you push. See [Signing your commits](#signing-your-commits).
+5. **Sign the CLA.** The `cla` check on your PR links to it. It cannot merge until that check is green.
+6. Open a pull request **against `slave`** with a clear description of the change and its motivation.
 
 ## Commit messages
 
@@ -47,7 +57,7 @@ Keep commits focused and descriptive. Do not include AI-generated attribution fo
 
 ## Signing your commits
 
-`master` is protected by a rule that **every commit must carry a verified signature**. Set this up once and it's automatic from then on; otherwise a maintainer has to bypass the rule to merge your PR.
+`master` is protected by a rule that **every commit must carry a verified signature**. You open PRs against `slave`, but the work reaches `master` from there, so unsigned commits block it later rather than never. Set this up once and it's automatic from then on; otherwise a maintainer has to bypass the rule to merge your PR.
 
 > This is *cryptographic* signing (`git commit -S`, shown as **Verified** on GitHub) — not the `-s` Developer Certificate of Origin *sign-off* trailer. The sign-off does **not** satisfy the signature rule.
 
@@ -64,7 +74,7 @@ Then add that **same public key** to GitHub a second time as a signing key: **Se
 Your next commit will be signed; confirm with `git log --show-signature -1`. If you already pushed **unsigned** commits on your PR, re-sign the whole branch and force-push:
 
 ```bash
-git rebase --exec "git commit --amend --no-edit -S" origin/master
+git rebase --exec "git commit --amend --no-edit -S" upstream/slave
 git push --force-with-lease
 ```
 
