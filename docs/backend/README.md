@@ -16,6 +16,7 @@ Documentation for the Backend Cell team.
 - `/services/` - Internal service architecture & patterns
   - `coordination-events.md` - 5 coordination-event notification producers: reassignment, collision-sequencing, unblock, dependency-revival, stale-claim-reaped
   - `pr-waiver.md` - Zero-diff PR-waiver: `submit_up`/`submit_root` detect a zero-commit branch before `create_pr`/`create_root_pr`, waive PR creation, and route report-only cell/root tasks to `completed` with no PR and no manual status surgery
+  - `shipped-work-digest.md` - Shared `shipped_work_digest` helper in `roboco/utils/` (extracted from `MegaphoneEngine`), its delegation refactor, and its injection into the roadmap, Pest Control, and Spackle exploration prompts with "do not propose already-shipped work" instruction text and a three-layer degradation path
 - `/ops/` - Operational runbooks
   - `codeql-workflows.md` - Split CodeQL workflow triggers and branch-protection notes
 
