@@ -18,11 +18,11 @@ Signing the CLA does **not** transfer ownership of your work away from you — y
 
 The first time you open a pull request, the CLA Assistant bot will comment with a link and ask you to confirm agreement by posting a one-line comment on the PR. This is a one-time action; subsequent PRs are recognized automatically.
 
+**System-account PRs self-satisfy.** `.github/workflows/cla.yml` allowlists `roboco-app[bot]` (the GitHub App RoboCo's own agent fleet pushes and opens PRs under) and `dependabot[bot]`, so their PRs never need a manual sign-off comment — an App account can't post one as itself, and the CLA exists to obtain copyright assignment from human contributors, not from commits made on the maintainer's own behalf. `tests/unit/test_cla_workflow_allowlist.py` regression-guards this exemption directly against the workflow YAML.
+
 ## Development workflow
 
-1. Fork the repository and branch off **`slave`**, not `master`.
-
-   `slave` is the development trunk that every change lands on first. `master` is production and only the maintainer merges into it. A PR opened against `master` will be asked to retarget, so save yourself the round trip:
+1. Fork the repository and branch off **`slave`**, not `master`. `slave` is the development trunk that every change lands on first. `master` is production and only the maintainer merges into it. A PR opened against `master` will be asked to retarget, so save yourself the round trip:
 
    ```bash
    git remote add upstream https://github.com/rennf93/roboco.git
@@ -34,8 +34,10 @@ The first time you open a pull request, the CLA Assistant bot will comment with 
 3. Run the full quality gate before opening a PR:
 
    ```bash
-   make quality   # ruff format check, ruff check, mypy, pytest --cov-fail-under=80
+   make quality   # ruff format, ruff check, markdown reflow, mypy, pytest --cov-fail-under=80, xenon, radon
    ```
+
+The gate includes a markdown prose reflow check (`scripts/reflow_md.py --check`) that rejects hard-wrapped text in `docs/` and `README.md` — prose must follow a one-sentence-per-line standard. If it fails, run `make reflow-docs` to auto-fix, then re-run `make quality`. See `docs/rag/standards/markdown-reflow-quality-gate.md` for details.
 
 For the frontend (`panel/`):
 
@@ -55,9 +57,7 @@ Keep commits focused and descriptive. Do not include AI-generated attribution fo
 
 `master` is protected by a rule that **every commit must carry a verified signature**. You open PRs against `slave`, but the work reaches `master` from there, so unsigned commits block it later rather than never. Set this up once and it's automatic from then on; otherwise a maintainer has to bypass the rule to merge your PR.
 
-> This is *cryptographic* signing (`git commit -S`, shown as **Verified** on
-> GitHub) — not the `-s` Developer Certificate of Origin *sign-off* trailer. The
-> sign-off does **not** satisfy the signature rule.
+> This is *cryptographic* signing (`git commit -S`, shown as **Verified** on GitHub) — not the `-s` Developer Certificate of Origin *sign-off* trailer. The sign-off does **not** satisfy the signature rule.
 
 The lowest-friction method reuses the SSH key you already use with GitHub:
 
