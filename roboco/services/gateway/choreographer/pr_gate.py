@@ -38,6 +38,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import render_findings
 from roboco.services.gateway.merge_chain import resolve_parent_branch
+from roboco.utils.converters import to_python_uuid
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -139,19 +140,28 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb="claim_gate_review",
             )
-        claimed = await self.task.pr_gate_claim(reviewer_agent_id, task_id)
-        if claimed is None:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message="this assembled-PR review task is no longer claimable",
-                    remediate="it may already be claimed; give_me_work for the next",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
-                agent_id=reviewer_agent_id,
-                task_id=task_id,
-                verb="claim_gate_review",
-            )
-        t = claimed
+        # Durability boundary: commit the claim BEFORE the advisory evidence
+        # assembly begins — see claim_review (qa.py) for the full rationale.
+        # Same-agent retry: if the task is already claimed by THIS reviewer,
+        # skip the re-claim and go straight to evidence rebuild.
+        if to_python_uuid(t.active_claimant_id) != reviewer_agent_id:
+            claimed = await self.task.pr_gate_claim(reviewer_agent_id, task_id)
+            if claimed is None:
+                return await self._emit_rejection(
+                    Envelope.invalid_state(
+                        message="this assembled-PR review task is no longer claimable",
+                        remediate=(
+                            "it may already be claimed; give_me_work for the next"
+                        ),
+                        context_briefing=briefing,
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=reviewer_agent_id,
+                    task_id=task_id,
+                    verb="claim_gate_review",
+                )
+            t = claimed
+            await self.task.session.commit()
+
         evidence = await self._build_gate_review_evidence(t)
         return Envelope.ok(
             status=str(t.status),
