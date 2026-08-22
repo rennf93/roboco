@@ -144,6 +144,7 @@ class SentinelEngine(BaseService):
             ),
             ("Top spend by task (all-time)", await self._top_task_spend()),
             ("Top spend by project (all-time)", await self._top_project_spend()),
+            ("Per-verb latency (p50/p95)", await self._latency_section()),
         ]
         return "\n\n".join(
             f"{title}:\n" + "\n".join(lines) for title, lines in sections if lines
@@ -254,6 +255,35 @@ class SentinelEngine(BaseService):
             .limit(_TREND_LIMIT)
         )
         return [f"- {slug}: ${total:.2f}" for slug, total in result.all()]
+
+    async def _latency_section(self) -> list[str]:
+        """Slowest gateway verbs by p95, flagging any whose p95 crosses its
+        matching server-side timeout (120s normal, 900s for ``SLOW_VERBS``).
+        Catches DB errors and returns an empty list so a telemetry gap never
+        blocks the spawn."""
+        from roboco.foundation.policy.flow_timeouts import SLOW_VERBS
+        from roboco.services.metrics import get_metrics_service
+
+        normal_timeout_ms = settings.flow_verb_timeout_seconds * 1000
+        slow_timeout_ms = settings.flow_verb_slow_timeout_seconds * 1000
+        try:
+            stats = await get_metrics_service(self.session).get_verb_latency_stats(
+                hours=24
+            )
+        except Exception:
+            self.log.warning("sentinel-engine: latency section query failed")
+            return []
+        if not stats:
+            return []
+        lines: list[str] = []
+        for s in stats[:_TREND_LIMIT]:
+            timeout_ms = slow_timeout_ms if s.verb in SLOW_VERBS else normal_timeout_ms
+            flag = "  ⚠ p95 exceeds timeout" if s.p95_ms > timeout_ms else ""
+            lines.append(
+                f"- {s.verb}: p50={s.p50_ms:.0f}ms p95={s.p95_ms:.0f}ms "
+                f"({s.sample_count} samples){flag}"
+            )
+        return lines
 
 
 def get_sentinel_engine(session: AsyncSession) -> SentinelEngine:

@@ -2695,3 +2695,34 @@ class RagIndexFailureTable(Base):
     next_retry_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
+
+
+# =============================================================================
+# VERB LATENCY SAMPLES
+# =============================================================================
+
+
+class VerbLatencySampleTable(Base):
+    """One per-verb HTTP duration sample, persisted from
+    ``RequestLoggingMiddleware`` for p50/p95 aggregation by ``MetricsService``."""
+
+    __tablename__ = "verb_latency_samples"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    verb: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(50), nullable=False)
+    duration_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        Index("ix_verb_latency_samples_verb_created", "verb", "created_at"),
+    )

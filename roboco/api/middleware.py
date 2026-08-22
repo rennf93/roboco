@@ -23,6 +23,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from roboco.api.schemas.common import ErrorCode
 from roboco.config import settings
+from roboco.db.base import get_session_factory
+from roboco.db.tables import VerbLatencySampleTable
 from roboco.exceptions import (
     AuthenticationError,
     InvalidStateError,
@@ -99,6 +101,52 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
 # REQUEST LOGGING MIDDLEWARE
 # =============================================================================
 
+_FLOW_PATH_PREFIX = "/api/v1/flow/"
+
+
+def _extract_flow_verb_role(path: str) -> tuple[str, str] | None:
+    """Extract (role, verb) from a ``/api/v1/flow/{role}/{verb}`` path.
+
+    Returns ``None`` for non-flow paths so telemetry only persists for gateway
+    verbs.
+    """
+    if not path.startswith(_FLOW_PATH_PREFIX):
+        return None
+    parts = path.rstrip("/").rsplit("/", 2)
+    if len(parts) < 2:  # noqa: PLR2004
+        return None
+    return parts[-2], parts[-1]
+
+
+async def _persist_verb_latency(
+    verb: str, role: str, duration_ms: float, outcome: str, status_code: int | None
+) -> None:
+    """Fire-and-forget write of one latency sample using a separate session.
+
+    Never raises — a telemetry failure is logged and swallowed so the verb
+    itself is unaffected.
+    """
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            session.add(
+                VerbLatencySampleTable(
+                    verb=verb,
+                    role=role,
+                    duration_ms=duration_ms,
+                    outcome=outcome,
+                    status_code=status_code,
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.warning(
+            "verb_latency: failed to persist telemetry sample",
+            verb=verb,
+            outcome=outcome,
+            exc_info=True,
+        )
+
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """
@@ -130,6 +178,16 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             # Add timing header
             response.headers["X-Response-Time-Ms"] = str(round(duration_ms, 2))
 
+            flow_parts = _extract_flow_verb_role(request.url.path)
+            if flow_parts is not None:
+                role, verb = flow_parts
+                outcome = "timeout" if response.status_code == 504 else "success"  # noqa: PLR2004
+                asyncio.create_task(  # noqa: RUF006
+                    _persist_verb_latency(
+                        verb, role, duration_ms, outcome, response.status_code
+                    )
+                )
+
             return response
 
         except Exception as e:
@@ -139,6 +197,14 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 duration_ms=round(duration_ms, 2),
                 error=str(e),
             )
+
+            flow_parts = _extract_flow_verb_role(request.url.path)
+            if flow_parts is not None:
+                role, verb = flow_parts
+                asyncio.create_task(  # noqa: RUF006
+                    _persist_verb_latency(verb, role, duration_ms, "error", None)
+                )
+
             raise
 
 
