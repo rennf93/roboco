@@ -46,6 +46,7 @@ from roboco.models.metrics import (
     TeamReworkRate,
     TeamSpawnWaste,
     VelocityMetrics,
+    VerbLatencyStats,
 )
 from roboco.services.base import BaseService
 from roboco.services.repositories.review_findings import (
@@ -1772,6 +1773,35 @@ class MetricsService(BaseService):
             )
         ).scalar()
         return _as_hours(avg_hours)
+
+    async def get_verb_latency_stats(self, hours: int = 24) -> list[VerbLatencyStats]:
+        """p50/p95 HTTP duration per gateway verb over the last ``hours`` window."""
+        since = datetime.now(UTC) - timedelta(hours=hours)
+        sql = text(
+            """
+            SELECT
+                verb,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)::float
+                    AS p50_ms,
+                PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)::float
+                    AS p95_ms,
+                COUNT(*) AS n
+            FROM verb_latency_samples
+            WHERE created_at >= :since
+            GROUP BY verb
+            ORDER BY p95_ms DESC
+            """
+        )
+        rows = (await self.session.execute(sql, {"since": since})).all()
+        return [
+            VerbLatencyStats(
+                verb=r.verb,
+                p50_ms=float(r.p50_ms or 0.0),
+                p95_ms=float(r.p95_ms or 0.0),
+                sample_count=int(r.n),
+            )
+            for r in rows
+        ]
 
 
 # =============================================================================
