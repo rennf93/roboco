@@ -408,9 +408,7 @@ def test_apply_guard_mounts_middleware_when_enabled(
     app = FastAPI()
     security.apply_guard(app)
     # guard.status module was removed in 7.6.0; verify middleware mounts instead.
-    assert any(
-        "SecurityMiddleware" in str(m.cls) for m in app.user_middleware
-    )
+    assert any("SecurityMiddleware" in str(m.cls) for m in app.user_middleware)
 
 
 def test_apply_guard_no_middleware_when_disabled(
@@ -419,9 +417,7 @@ def test_apply_guard_no_middleware_when_disabled(
     monkeypatch.setattr(settings, "guard_enabled", False)
     app = FastAPI()
     security.apply_guard(app)
-    assert not any(
-        "SecurityMiddleware" in str(m.cls) for m in app.user_middleware
-    )
+    assert not any("SecurityMiddleware" in str(m.cls) for m in app.user_middleware)
 
 
 # --- block_clouds() decorator sanity: silent-filter path still resolves ---
