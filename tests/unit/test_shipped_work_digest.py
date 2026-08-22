@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from roboco.models.base import Team
 from roboco.utils.shipped_work_digest import shipped_work_digest
+from structlog.testing import capture_logs
 
 
 def _mock_session(rows: list[tuple]) -> MagicMock:
@@ -86,3 +87,23 @@ async def test_degradation_changelog_exception_does_not_raise() -> None:
 
     assert "- (nothing completed)" in got
     assert "(not available this cycle)" in got
+
+
+async def test_changelog_exception_emits_warning_log() -> None:
+    """A changelog read that raises internally emits a warning log before
+    degrading to the empty string — restoring the observability the original
+    MegaphoneEngine implementation had."""
+    session = _mock_session(rows=[])
+
+    with (
+        patch(
+            "roboco.services.workspace.get_workspace_service",
+            side_effect=RuntimeError("clone blew up"),
+        ),
+        capture_logs() as logs,
+    ):
+        await shipped_work_digest(session, "roboco-api")
+
+    warning_logs = [e for e in logs if e["log_level"] == "warning"]
+    assert warning_logs, "changelog read failure must emit a warning log"
+    assert "changelog" in warning_logs[0]["event"].lower()
