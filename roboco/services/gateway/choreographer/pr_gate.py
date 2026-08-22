@@ -27,10 +27,15 @@ from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.batch import is_batch_root_subtask
 from roboco.foundation.policy.content import (
     ContentValidationError,
+    Finding,
+    Severity,
     markers,
 )
 from roboco.services.gateway.choreographer import findings as findings_lib
-from roboco.services.gateway.choreographer.collision import build_collision_context
+from roboco.services.gateway.choreographer.collision import (
+    _drift,
+    build_collision_context,
+)
 from roboco.services.gateway.choreographer.evidence_legs import (
     LegBudget,
     run_bounded_leg,
@@ -905,6 +910,11 @@ class PRGateMixin(_Base):
             status, scope_note = self._scope_gate_codeql_failure(t, status)
             state = status.get("state")
             if scope_note is not None:
+                drift_env = await self._scope_relaxation_drift_guard(
+                    reviewer_agent_id, task_id, t, role_str, briefing
+                )
+                if drift_env is not None:
+                    return drift_env, None
                 return None, scope_note
         if state == "success":
             return None, None
@@ -953,6 +963,92 @@ class PRGateMixin(_Base):
         return (
             {"state": "success", "head_sha": status.get("head_sha")},
             f"CodeQL finding(s) outside declared scope did not block: {names}",
+        )
+
+    async def _scope_relaxation_drift_guard(
+        self,
+        reviewer_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> Envelope | None:
+        """Verify a CodeQL scope relaxation against the actual diff.
+
+        Called only when ``_scope_gate_codeql_failure`` granted a relaxation
+        (dropped at least one out-of-scope CodeQL check). Fetches the PR's real
+        touched files and runs ``collision._drift`` directly — not through
+        ``build_collision_context`` (which is sibling-conditioned and returns
+        ``None`` when no colliding sibling exists). An under-declared scope that
+        bought a security-scan relaxation must not pass unverified.
+
+        Returns ``None`` when every touched file falls inside the declared
+        globs (or when the file fetch fails — fail-open, matching the
+        best-effort posture of ``_gate_changed_files``). Returns an
+        ``invalid_state`` envelope naming each out-of-scope file when drift is
+        detected, after recording each as a findings-ledger row so Pest Control
+        and Sentinel can see scope drift accumulate.
+        """
+        task_intends = _task_intends_to_touch(t)
+        gate_parent = await self._gate_diff_parent(t)
+        actual_files = await self._gate_changed_files(t, gate_parent)
+        if not actual_files:
+            return None
+        drifted = _drift(task_intends, actual_files)
+        if not drifted:
+            return None
+        findings = [
+            Finding(
+                file=f,
+                line=None,
+                severity=Severity.MAJOR,
+                criterion=None,
+                expected="file falls inside the task's declared intends_to_touch scope",
+                actual=f"{f} is outside every declared glob "
+                "— scope relaxation granted on an "
+                "under-declared scope",
+                fix="Add the file to intends_to_touch, or remove it from the PR",
+                evidence=f"CodeQL scope relaxation was granted "
+                "because at least one failing CodeQL check was "
+                "outside the declared scope, but the diff "
+                f"touches {f} which no declared glob covers.",
+            )
+            for f in drifted
+        ]
+        author_slug = role_str
+        try:
+            async with self.task.session.begin_nested():
+                await findings_lib.insert_and_render(
+                    self.task.session,
+                    task_id=task_id,
+                    origin="pr_gate",
+                    round=findings_lib.next_round(t),
+                    author_slug=author_slug,
+                    findings=findings,
+                )
+        except Exception as exc:
+            logger.warning(
+                "scope_relaxation_drift_findings_skip",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+        names = ", ".join(drifted)
+        return await self._emit_rejection(
+            Envelope.invalid_state(
+                message=(
+                    f"CodeQL scope relaxation granted but the diff touches files "
+                    f"outside the declared intends_to_touch scope: {names}. "
+                    f"Add these files to the task's scope or remove them from the PR."
+                ),
+                remediate=(
+                    "pr_fail the PR with the out-of-scope files as findings, or "
+                    "ask the developer to widen intends_to_touch / narrow the diff"
+                ),
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str),
+            agent_id=reviewer_agent_id,
+            task_id=task_id,
+            verb="pr_pass",
         )
 
     @staticmethod
