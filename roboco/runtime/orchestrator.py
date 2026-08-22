@@ -429,6 +429,7 @@ AGENT_IMAGES: dict[str, str] = {
     "be-pr-reviewer": "roboco-agent-pr-reviewer",
     "fe-pr-reviewer": "roboco-agent-pr-reviewer",
     "ux-pr-reviewer": "roboco-agent-pr-reviewer",
+    "cell-pr-reviewer-2": "roboco-agent-pr-reviewer",
     # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
     INTAKE_AGENT_ID: "roboco-agent-prompter",
     # Secretary — persistent Agent-SDK driver with gated CEO authority.
@@ -12118,7 +12119,7 @@ Start by:
         elif role == "pm":
             candidates = [f"{prefix}-pm"]
         elif role == "pr_reviewer":
-            candidates = [f"{prefix}-pr-reviewer"]
+            candidates = [f"{prefix}-pr-reviewer", "cell-pr-reviewer-2"]
         else:
             return None
 
@@ -16275,6 +16276,14 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         each reviewer to one task per tick. A task whose assembled PR's CI is
         still pending is skipped entirely (see ``_gate_task_ci_pending``) so
         the reviewer isn't spawned only to be immediately CI-blocked.
+
+        When a cell's dedicated reviewer is active on another gate task,
+        ``_select_agent_for_cell`` falls back to the shared
+        ``cell-pr-reviewer-2`` (board-team, image-identical), so a same-cell
+        pile-up no longer serializes 12-14 min on a single reviewer.
+        ``cell-pr-reviewer-2`` is never used for the root→master gate or
+        inbound external PRs (both hardcode pr-reviewer-1), preserving the
+        run-order starvation guard above.
         """
         tasks = await self._fetch_tasks(client, "awaiting_pr_review")
         spawned: set[str] = set()

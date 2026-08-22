@@ -89,6 +89,7 @@ def test_agents_catalog_has_all_seed_slugs() -> None:
         "be-pr-reviewer",
         "fe-pr-reviewer",
         "ux-pr-reviewer",
+        "cell-pr-reviewer-2",
     }
     actual = set(identity.AGENTS.keys())
     assert actual == expected_slugs, f"agent catalog drift: {actual ^ expected_slugs}"

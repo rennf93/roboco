@@ -793,6 +793,7 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "be-pr-reviewer": "backend",
     "fe-pr-reviewer": "frontend",
     "ux-pr-reviewer": "ux_ui",
+    "cell-pr-reviewer-2": None,  # shared cell-gate overflow, serves all cells
     "ceo": None,
 }
 
