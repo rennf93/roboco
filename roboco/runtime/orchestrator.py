@@ -1187,6 +1187,34 @@ def _format_barfly_candidates(markers_dict: dict[str, Any]) -> str:
     )
 
 
+# Instruction text appended to the shipped-this-week digest block in the
+# roadmap, Pest Control, and Spackle exploration prompts — adapts intake's
+# "don't propose what's already been done" wording (prompter.md §"Task
+# history") for the board-exploration context: check the digest before
+# proposing and skip duplicates of work that already shipped.
+_SHIPPED_DIGEST_INSTRUCTION = (
+    "Before proposing, check the shipped-this-week digest above — do not "
+    "propose already-shipped work. If a candidate item duplicates work that "
+    "already shipped this week (named above) or is in flight, say so plainly "
+    "and skip it instead of quietly drafting a duplicate."
+)
+
+
+def _shipped_digest_block(digest_context: str) -> str:
+    """Render the ``## Shipped-this-week digest`` block (digest + the
+    do-not-propose-already-shipped-work instruction) for the roadmap, Pest
+    Control, and Spackle exploration prompts. Returns ``""`` when no digest
+    was assembled so the section is omitted entirely — mirrors the
+    megaphone ``digest_block`` pattern. Module-level (not a method) so it's
+    unit-testable without a wholesale-mocked ``self``."""
+    if not digest_context:
+        return ""
+    return (
+        f"\n## Shipped-this-week digest\n{digest_context}\n\n"
+        f"{_SHIPPED_DIGEST_INSTRUCTION}\n"
+    )
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -14320,11 +14348,12 @@ Start now: evidence(task_id="{task_id}")
         logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("roadmap")
         market_brief_context = await self._periscope_brief_context()
+        digest_context = await self._shipped_work_digest_context()
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
             initial_prompt=self._build_roadmap_prompt(
-                task, prior_context, market_brief_context
+                task, prior_context, market_brief_context, digest_context
             ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_roadmap_exploration",
@@ -14374,11 +14403,12 @@ Start now: evidence(task_id="{task_id}")
         )
         prior_context = await self._board_program_prior_context("pest_control")
         evidence_context = await self._pest_control_evidence_context()
+        digest_context = await self._shipped_work_digest_context()
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
             initial_prompt=self._build_pest_control_prompt(
-                task, prior_context, evidence_context
+                task, prior_context, evidence_context, digest_context
             ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_pest_control_exploration",
@@ -14555,10 +14585,13 @@ Start now: evidence(task_id="{task_id}")
             return
         logger.info("Spawning Product Owner for spackle exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("spackle")
+        digest_context = await self._shipped_work_digest_context()
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
-            initial_prompt=self._build_spackle_prompt(task, prior_context),
+            initial_prompt=self._build_spackle_prompt(
+                task, prior_context, digest_context
+            ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_spackle_exploration",
         )
@@ -14831,6 +14864,26 @@ Start now: evidence(task_id="{task_id}")
                 return await get_megaphone_engine(db).digest_context()
         except Exception:
             logger.warning("megaphone: digest-context read failed (best-effort)")
+            return ""
+
+    async def _shipped_work_digest_context(self) -> str:
+        """Best-effort shipped-this-week digest read for the roadmap, Pest
+        Control, and Spackle exploration prompts — mirrors
+        ``_megaphone_digest_context``'s degrade-to-empty-string posture: a read
+        failure here must never block the spawn, only drop the digest section
+        from this cycle's prompt. Calls the shared helper directly so the
+        Product Owner's prompts don't depend on ``MegaphoneEngine``."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.utils.shipped_work_digest import shipped_work_digest
+
+            slug = (settings.self_heal_project_slug or "roboco-api").strip()
+            async with get_db_context() as db:
+                return await shipped_work_digest(db, slug)
+        except Exception:
+            logger.warning(
+                "board-program: shipped-work digest read failed (best-effort)"
+            )
             return ""
 
     async def _dispatch_librarian_exploration(self, task: dict[str, Any]) -> None:
@@ -17949,6 +18002,7 @@ those, and a substantive recorded note IS your job here.
         task: dict[str, Any],
         prior_context: str = "",
         market_brief_context: str = "",
+        digest_context: str = "",
     ) -> str:
         """Prompt for the Product Owner's one-shot roadmap-exploration cycle.
 
@@ -17959,7 +18013,10 @@ those, and a substantive recorded note IS your job here.
         closed cycles (``BoardProgramEngine.prior_cycle_context``) — empty
         when none exist yet. ``market_brief_context`` is Periscope's latest
         filed market brief (spec §4: "its brief is Printer's cross-role
-        input") — empty when no brief has ever been filed; never blocks."""
+        input") — empty when no brief has ever been filed; never blocks.
+        ``digest_context`` is the server-assembled shipped-this-week digest
+        (``shipped_work_digest``) — empty when the digest could not be
+        assembled; never blocks."""
         task_id = task.get("id", "unknown")
         min_items = settings.roadmap_min_items_per_cycle
         max_items = settings.roadmap_max_items_per_cycle
@@ -17970,6 +18027,7 @@ those, and a substantive recorded note IS your job here.
             if market_brief_context
             else ""
         )
+        digest_block = _shipped_digest_block(digest_context)
         return f"""\
 You are the Product Owner. It's time for your periodic roadmap exploration.
 
@@ -17978,7 +18036,7 @@ TASK: {task_id}
 Explore the company's projects and propose ONE themed cycle of roadmap items
 for the CEO to review — you author this alone. The Head of Marketing is not
 involved in this cycle.
-{brief_block}{prior_block}
+{brief_block}{digest_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -18011,6 +18069,7 @@ that is not your job here, and the gateway will reject those verbs.
         task: dict[str, Any],
         prior_context: str = "",
         evidence_context: str = "",
+        digest_context: str = "",
     ) -> str:
         """Prompt for the Product Owner's one-shot Pest Control exploration.
 
@@ -18019,8 +18078,9 @@ that is not your job here, and the gateway will reject those verbs.
         ``prior_context`` is the LEARN rendering of the last closed cycles
         (``BoardProgramEngine.prior_cycle_context``); ``evidence_context`` is
         the server-assembled rework/findings evidence
-        (``PestControlEngine.evidence_context``) — both empty when none
-        exist yet."""
+        (``PestControlEngine.evidence_context``); ``digest_context`` is the
+        server-assembled shipped-this-week digest (``shipped_work_digest``)
+        — all empty when none exist yet; never blocks."""
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         task_id = task.get("id", "unknown")
@@ -18031,6 +18091,7 @@ that is not your job here, and the gateway will reject those verbs.
             if evidence_context
             else ""
         )
+        digest_block = _shipped_digest_block(digest_context)
         return f"""\
 You are the Product Owner. It's time for your periodic Pest Control exploration.
 
@@ -18040,7 +18101,7 @@ Hunt LATENT defects — bugs the org already recorded but nobody read, not
 whatever CI happens to be red on right now (that's self-heal/CI-watch's job,
 not yours). Propose evidence-backed bug tasks for the CEO to review; you
 author this alone.
-{evidence_block}{prior_block}
+{evidence_block}{digest_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -18273,6 +18334,7 @@ not your job here, and the gateway will reject those.
         self,
         task: dict[str, Any],
         prior_context: str = "",
+        digest_context: str = "",
     ) -> str:
         """Prompt for the Product Owner's one-shot Spackle exploration.
 
@@ -18282,13 +18344,16 @@ not your job here, and the gateway will reject those.
         docs, docs claims vs code, coverage holes, dead-end panel tabs) is
         the PO's own read-tool work, ordered explicitly below. ``prior_
         context`` is the LEARN rendering of the last closed cycles
-        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
-        yet."""
+        (``BoardProgramEngine.prior_cycle_context``); ``digest_context`` is
+        the server-assembled shipped-this-week digest
+        (``shipped_work_digest``) — both empty when none exist yet; never
+        blocks."""
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         task_id = task.get("id", "unknown")
         max_items = PROGRAMS["spackle"].max_items_per_cycle
         prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        digest_block = _shipped_digest_block(digest_context)
         return f"""\
 You are the Product Owner. It's time for your periodic Spackle exploration.
 
@@ -18297,7 +18362,7 @@ TASK: {task_id}
 Audit the target project's half-shipped surface area — the gaps between what
 was built and what was finished. Propose evidence-backed gap-fill tasks for
 the CEO to review; you author this alone.
-{prior_block}
+{digest_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
