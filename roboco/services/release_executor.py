@@ -421,6 +421,13 @@ class _GitReleaseOps:
         """
         if not self._env_chain:
             return
+        # The container has no global git identity (commit_and_push sets it
+        # per-clone too, but only AFTER promotion). The merge below creates a
+        # merge commit, so set identity first or it refuses outright.
+        from roboco.config import settings
+
+        await self._git("config", "user.name", settings.release_git_name)
+        await self._git("config", "user.email", settings.release_git_email)
         # Fresh ``--branch <prod>`` clone only has prod's history — fetch every
         # rung branch so ``origin/<branch>`` resolves for the merges.
         rc, out = await self._git(*self._git_prefix, "fetch", "origin")
