@@ -284,11 +284,12 @@ class DispatchWorkEngine(_Base):
         logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("roadmap")
         market_brief_context = await self._periscope_brief_context()
+        digest_context = await self._shipped_work_digest_context()
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
             initial_prompt=self._build_roadmap_prompt(
-                task, prior_context, market_brief_context
+                task, prior_context, market_brief_context, digest_context
             ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_roadmap_exploration",
@@ -338,11 +339,12 @@ class DispatchWorkEngine(_Base):
         )
         prior_context = await self._board_program_prior_context("pest_control")
         evidence_context = await self._pest_control_evidence_context()
+        digest_context = await self._shipped_work_digest_context()
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
             initial_prompt=self._build_pest_control_prompt(
-                task, prior_context, evidence_context
+                task, prior_context, evidence_context, digest_context
             ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_pest_control_exploration",
@@ -519,10 +521,13 @@ class DispatchWorkEngine(_Base):
             return
         logger.info("Spawning Product Owner for spackle exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("spackle")
+        digest_context = await self._shipped_work_digest_context()
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
-            initial_prompt=self._build_spackle_prompt(task, prior_context),
+            initial_prompt=self._build_spackle_prompt(
+                task, prior_context, digest_context
+            ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_spackle_exploration",
         )
@@ -795,6 +800,26 @@ class DispatchWorkEngine(_Base):
                 return await get_megaphone_engine(db).digest_context()
         except Exception:
             logger.warning("megaphone: digest-context read failed (best-effort)")
+            return ""
+
+    async def _shipped_work_digest_context(self) -> str:
+        """Best-effort shipped-this-week digest read for the roadmap, Pest
+        Control, and Spackle exploration prompts — mirrors
+        ``_megaphone_digest_context``'s degrade-to-empty-string posture: a read
+        failure here must never block the spawn, only drop the digest section
+        from this cycle's prompt. Calls the shared helper directly so the
+        Product Owner's prompts don't depend on ``MegaphoneEngine``."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.utils.shipped_work_digest import shipped_work_digest
+
+            slug = (settings.self_heal_project_slug or "roboco-api").strip()
+            async with get_db_context() as db:
+                return await shipped_work_digest(db, slug)
+        except Exception:
+            logger.warning(
+                "board-program: shipped-work digest read failed (best-effort)"
+            )
             return ""
 
     async def _dispatch_librarian_exploration(self, task: dict[str, Any]) -> None:
