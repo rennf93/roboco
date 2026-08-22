@@ -13,15 +13,22 @@ import contextlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 import redis.asyncio as redis
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from roboco.config import settings
-from roboco.db.tables import AgentTable, TaskTable
+from roboco.db.tables import (
+    AgentTable,
+    PrompterMessageTable,
+    PrompterSessionTable,
+    TaskDraftTable,
+    TaskTable,
+)
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.batch import (
     is_batch_umbrella,
@@ -43,8 +50,6 @@ from roboco.models.task import TaskCreateRequest
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger()
@@ -153,6 +158,79 @@ class PrompterService:
                 "session-based methods are unavailable"
             )
         return self._db
+
+    # -- Live-session durable persistence -----------------------------------
+    #
+    # The live intake chat (``prompter_live.py``) is in-memory-only plumbing
+    # (an SSE queue + a container handle) — nothing survived an orchestrator
+    # restart or a container loss until these three methods. ``task_drafts``
+    # and ``prompter_messages`` existed since migration 024 but nothing wrote
+    # them (CEO-directed fix after the 2026-08-08 NAS recovery proved the gap
+    # twice). The live session id (``uuid4().hex``, from ``start_live``) is
+    # reused verbatim as ``prompter_sessions.id`` so drafts/messages FK onto it.
+
+    async def get_or_create_live_session(self, session_id: str) -> PrompterSessionTable:
+        """Get-or-create the durable session row for a live intake chat.
+
+        Owned by the single seeded "intake-1" agent (the PROMPTER role) — a
+        live chat has no other real agent identity to attribute the session to.
+        """
+        session_uuid = UUID(session_id)
+        existing = await self._session.get(PrompterSessionTable, session_uuid)
+        if existing is not None:
+            return existing
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        row = PrompterSessionTable(
+            id=session_uuid, agent_id=UUID(AGENT_UUIDS["intake-1"])
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def record_live_draft(
+        self, session_id: str, draft_data: dict[str, Any]
+    ) -> TaskDraftTable:
+        """Durably persist a proposed draft/batch payload.
+
+        Called BEFORE the event reaches the panel's SSE queue (the write-first
+        half of the NAS-loss fix): an unconfirmed draft now survives a
+        container/session loss instead of living only in the in-memory relay.
+        Committed immediately so it is durable even if the request that
+        triggered it fails downstream.
+        """
+        await self.get_or_create_live_session(session_id)
+        row = TaskDraftTable(session_id=UUID(session_id), draft_data=draft_data)
+        self._session.add(row)
+        await self._session.commit()
+        return row
+
+    async def mark_live_drafts_consumed(self, session_id: str, task_id: UUID) -> None:
+        """Mark every still-open draft row for this session consumed.
+
+        Never deletes — a confirmed draft's row is the durable record of what
+        was proposed, kept alongside the task it became. Covers every draft
+        proposed in the session (including earlier board-redraft rounds), not
+        just the most recent one.
+        """
+        await self._session.execute(
+            update(TaskDraftTable)
+            .where(TaskDraftTable.session_id == UUID(session_id))
+            .where(TaskDraftTable.confirmed_at.is_(None))
+            .values(confirmed_at=datetime.now(UTC), task_id=task_id)
+        )
+
+    async def record_live_message(
+        self, session_id: str, role: str, content: str
+    ) -> PrompterMessageTable:
+        """Durably persist one turn (human or assistant) of a live intake chat."""
+        await self.get_or_create_live_session(session_id)
+        row = PrompterMessageTable(
+            session_id=UUID(session_id), role=role, content=content
+        )
+        self._session.add(row)
+        await self._session.commit()
+        return row
 
     async def _assignee_is_board(self, agent_id: UUID) -> bool:
         """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""
@@ -509,7 +587,7 @@ class PrompterService:
         if not raw:
             return ()
         deps: list[int] = []
-        for item in raw if isinstance(raw, (list, tuple)) else [raw]:
+        for item in raw if isinstance(raw, list | tuple) else [raw]:
             try:
                 deps.append(int(str(item).strip()))
             except (TypeError, ValueError) as exc:

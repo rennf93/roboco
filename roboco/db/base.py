@@ -7,7 +7,7 @@ import weakref
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import structlog
 from alembic import command
@@ -44,7 +44,11 @@ class Base(DeclarativeBase):
 
 
 class _DbHolder:
-    """Holder for database engine and session factory singletons.
+    """Holder for the PRIMARY database engine and session factory singletons.
+
+    Backs FastAPI's request-scoped ``get_db`` / ``get_db_committed`` and every
+    other DB caller that doesn't explicitly ask for the background pool (see
+    ``_BackgroundDbHolder`` / ``get_engine(pool=...)``).
 
     ``loop`` weakly tracks the event loop the cached engine belongs to.
     Pooled asyncpg connections are bound to the loop that created them, so
@@ -64,6 +68,34 @@ class _DbHolder:
     loop: "weakref.ref[asyncio.AbstractEventLoop] | None" = None
 
 
+class _BackgroundDbHolder:
+    """Twin of ``_DbHolder`` for the SEPARATE background pool.
+
+    The orchestrator's dormant/opt-in engine loops (self-heal, ci-watch,
+    dep-update, env-sync, release-manager, x-mentions, board-program,
+    video-render, the vault engines, telegram poll, strategy-engine) run
+    against this engine instead, sized independently
+    (``database_background_pool_size`` / ``_max_overflow``) so a long-held
+    background connection can never starve an agent-facing FastAPI request
+    queued on the primary pool (2026-07-29 pool-exhaustion incident class).
+    Both engines point at the SAME database; this splits the in-process
+    connection pool, not the data. Same event-loop rebind treatment as
+    ``_DbHolder``, see ``_rebind_holder_to_current_loop``, now parametrized
+    over which holder.
+    """
+
+    engine: AsyncEngine | None = None
+    session_factory: async_sessionmaker[AsyncSession] | None = None
+    loop: "weakref.ref[asyncio.AbstractEventLoop] | None" = None
+
+
+_DbPool = Literal["primary", "background"]
+
+
+def _holder_for(pool: _DbPool) -> type[_DbHolder] | type[_BackgroundDbHolder]:
+    return _DbHolder if pool == "primary" else _BackgroundDbHolder
+
+
 def _running_loop() -> asyncio.AbstractEventLoop | None:
     try:
         return asyncio.get_running_loop()
@@ -71,8 +103,11 @@ def _running_loop() -> asyncio.AbstractEventLoop | None:
         return None
 
 
-def _rebind_holder_to_current_loop() -> None:
-    """Discard the cached engine/factory when accessed from a foreign loop.
+def _rebind_holder_to_current_loop(
+    holder: type[_DbHolder] | type[_BackgroundDbHolder],
+) -> None:
+    """Discard ``holder``'s cached engine/factory when accessed from a
+    foreign loop.
 
     Rules: no cached engine or no running loop — nothing to do; cached with
     no loop stamp — claim it for the current loop (covers engines injected
@@ -82,51 +117,91 @@ def _rebind_holder_to_current_loop() -> None:
     design: its pool cannot be awaited away from a foreign/dead loop, and
     any in-flight session still holds its own reference to it.
     """
-    if _DbHolder.engine is None:
+    if holder.engine is None:
         return
     current = _running_loop()
     if current is None:
         return
-    if _DbHolder.loop is None:
-        _DbHolder.loop = weakref.ref(current)
+    if holder.loop is None:
+        holder.loop = weakref.ref(current)
         return
-    if _DbHolder.loop() is current:
+    if holder.loop() is current:
         return
-    logger.debug("Discarding DB engine bound to a different event loop")
-    _DbHolder.engine = None
-    _DbHolder.session_factory = None
-    _DbHolder.loop = None
+    logger.debug(
+        "Discarding DB engine bound to a different event loop", pool=holder.__name__
+    )
+    holder.engine = None
+    holder.session_factory = None
+    holder.loop = None
 
 
-def get_engine() -> AsyncEngine:
-    """Get or create the async engine (rebound per event loop — see holder)."""
-    _rebind_holder_to_current_loop()
-    if _DbHolder.engine is None:
-        _DbHolder.engine = create_async_engine(
+def get_engine(pool: _DbPool = "primary") -> AsyncEngine:
+    """Get or create ``pool``'s async engine (rebound per event loop, see holder).
+
+    ``"primary"`` (default) is the shared engine every existing caller, and
+    FastAPI's request-scoped ``get_db`` / ``get_db_committed``, already used
+    before the background pool existed. ``"background"`` is a separate,
+    smaller engine reserved for the orchestrator's dormant/opt-in engine
+    loops (see ``_BackgroundDbHolder``); both connect to the same
+    ``database_url``, just through independent pools.
+    """
+    holder = _holder_for(pool)
+    _rebind_holder_to_current_loop(holder)
+    if holder.engine is None:
+        # Server-side timeouts, applied per asyncpg connection: a transaction
+        # left idle (its coroutine parked on git I/O or an asyncio lock) is
+        # killed by Postgres itself, releasing its row locks and pool slot;
+        # a statement queued on someone else's row lock errors instead of
+        # holding a pool connection for the wait. Alembic's env.py builds its
+        # own engine, so migrations never carry these.
+        server_settings = {
+            key: str(value)
+            for key, value in (
+                (
+                    "idle_in_transaction_session_timeout",
+                    settings.database_idle_in_transaction_timeout_ms,
+                ),
+                ("lock_timeout", settings.database_lock_timeout_ms),
+            )
+            if value > 0
+        }
+        pool_size, max_overflow = (
+            (settings.database_pool_size, settings.database_max_overflow)
+            if pool == "primary"
+            else (
+                settings.database_background_pool_size,
+                settings.database_background_max_overflow,
+            )
+        )
+        holder.engine = create_async_engine(
             settings.database_url,
             echo=settings.database_echo,
-            pool_size=settings.database_pool_size,
-            max_overflow=settings.database_max_overflow,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
             pool_timeout=settings.database_pool_timeout,
             pool_recycle=settings.database_pool_recycle,
             pool_pre_ping=True,
+            connect_args={"server_settings": server_settings}
+            if server_settings
+            else {},
         )
         current = _running_loop()
-        _DbHolder.loop = weakref.ref(current) if current is not None else None
-    return _DbHolder.engine
+        holder.loop = weakref.ref(current) if current is not None else None
+    return holder.engine
 
 
-def get_session_factory() -> async_sessionmaker[AsyncSession]:
-    """Get or create the async session factory (rebound with the engine)."""
-    _rebind_holder_to_current_loop()
-    if _DbHolder.session_factory is None:
-        _DbHolder.session_factory = async_sessionmaker(
-            bind=get_engine(),
+def get_session_factory(pool: _DbPool = "primary") -> async_sessionmaker[AsyncSession]:
+    """Get or create ``pool``'s async session factory (rebound with its engine)."""
+    holder = _holder_for(pool)
+    _rebind_holder_to_current_loop(holder)
+    if holder.session_factory is None:
+        holder.session_factory = async_sessionmaker(
+            bind=get_engine(pool),
             class_=AsyncSession,
             expire_on_commit=False,
             autoflush=False,
         )
-    return _DbHolder.session_factory
+    return holder.session_factory
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
@@ -214,15 +289,21 @@ async def get_db_committed(
 
 
 @asynccontextmanager
-async def get_db_context() -> AsyncGenerator[AsyncSession]:
+async def get_db_context(pool: _DbPool = "primary") -> AsyncGenerator[AsyncSession]:
     """
     Context manager for database sessions outside of FastAPI.
+
+    ``pool="background"`` routes to the separate, smaller background pool
+    (see ``get_engine``), used by the orchestrator's dormant/opt-in engine
+    loops so a long-held session there can't starve agent-facing traffic on
+    the primary pool. Default stays ``"primary"`` so every existing caller,
+    including FastAPI's ``get_db`` / ``get_db_committed``, is unaffected.
 
     Usage:
         async with get_db_context() as db:
             result = await db.execute(...)
     """
-    session_factory = get_session_factory()
+    session_factory = get_session_factory(pool)
     async with session_factory() as session:
         try:
             yield session
@@ -408,8 +489,12 @@ async def drop_db() -> None:
 
 
 async def close_db() -> None:
-    """Close the database connection."""
+    """Close the database connection(s): both the primary and background pools."""
     if _DbHolder.engine is not None:
         await _DbHolder.engine.dispose()
         _DbHolder.engine = None
         _DbHolder.session_factory = None
+    if _BackgroundDbHolder.engine is not None:
+        await _BackgroundDbHolder.engine.dispose()
+        _BackgroundDbHolder.engine = None
+        _BackgroundDbHolder.session_factory = None

@@ -11,11 +11,14 @@ re-escalate on *every* sweep tick (~1min) forever. `reescalation_decision`
 (pure, in `foundation/policy/communications.py`) gates each tick behind a
 per-notification exponential schedule + a hard retry cap.
 
-Double-delivery race: `_persist_and_deliver`'s 60s dedup guard is a no-op for
-`BLOCKER_ESCALATION` (not in `_LOOP_PRONE_TYPES`), so it can't backstop two
-concurrent sweep ticks racing the same stale row — a compare-and-set claim
-(`_claim_reescalation_slot`) is the real guard, exercised below by racing two
-service instances against the same row.
+Double-delivery race: neither of `_persist_and_deliver`'s dedup guards
+backstops two concurrent sweep ticks racing the same stale row — the 60s
+Redis guard is a no-op for `BLOCKER_ESCALATION` (not in `_LOOP_PRONE_TYPES`),
+and the DB purpose-dedup guard is deliberately bypassed for this call path
+(`bypass_purpose_dedup=True`) so a legitimate repeat re-escalation is never
+silently dropped. A compare-and-set claim (`_claim_reescalation_slot`) is the
+real guard, exercised below by racing two service instances against the
+same row.
 """
 
 from __future__ import annotations
@@ -34,6 +37,10 @@ from roboco.foundation.policy.communications import (
 from roboco.models import NotificationPriority, NotificationType
 from roboco.services.notification_delivery import NotificationDeliveryService
 from sqlalchemy import Update
+
+# duplicate_unacked_notification_exists' dedup SELECT names exactly 2
+# columns (id, to_agents) — distinct from the sweep's whole-entity SELECT.
+_DEDUP_SELECT_COLUMN_COUNT = 2
 
 
 def _stale_notification(
@@ -106,24 +113,59 @@ def _assign_id_on_add(obj: Any) -> None:
 
 
 def _session_returning(
-    notifications: list[MagicMock], *, claim_succeeds: bool = True
+    notifications: list[MagicMock],
+    *,
+    claim_succeeds: bool = True,
+    dedup_rows: list[tuple[UUID, list[UUID]]] | None = None,
 ) -> MagicMock:
     """A session whose SELECT (the sweep's stale-notifications query) returns
     `notifications`; every re-escalation CAS UPDATE (`_claim_reescalation_slot`)
     reports 1 row affected — the claim wins — unless `claim_succeeds` is False,
-    simulating a concurrent sweep tick that already claimed this row's slot."""
+    simulating a concurrent sweep tick that already claimed this row's slot.
+
+    `commit`/`rollback` are awaitable no-ops (the per-row commit scope in
+    `sweep_expired_notifications`/`_maybe_reescalate` awaits both); `get`
+    is an awaitable lookup against `notifications` by id (the sweep loop
+    re-fetches each row post-snapshot via `session.get` instead of
+    iterating the ORM instances directly).
+
+    `duplicate_unacked_notification_exists` (called from `_persist_and_deliver`)
+    runs its OWN SELECT — `select(NotificationTable.id, NotificationTable.to_agents)`
+    — and reads it via `result.all()` directly, not `.scalars().all()` like the
+    sweep query above. The two are told apart by column count (the sweep query
+    selects the whole mapped entity; the dedup query selects exactly 2 columns)
+    so each gets its own configured mock result — `.all()` on a bare MagicMock
+    silently yields an empty iterator regardless of what's configured on
+    `.scalars().all()`, which is exactly how a real "existing duplicate" could
+    go unexercised by this suite. `dedup_rows` defaults to `[]` (no existing
+    duplicate); pass rows to simulate one and assert the exemption still
+    delivers."""
     session = MagicMock()
     session.add = MagicMock(side_effect=_assign_id_on_add)
     session.flush = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    async def _get(_model: Any, ident: Any) -> MagicMock | None:
+        return next((n for n in notifications if n.id == ident), None)
+
+    session.get = AsyncMock(side_effect=_get)
 
     select_result = MagicMock()
     select_result.scalars.return_value.all.return_value = notifications
+
+    dedup_result = MagicMock()
+    dedup_result.all.return_value = dedup_rows or []
 
     update_result = MagicMock()
     update_result.rowcount = 1 if claim_succeeds else 0
 
     async def _execute(statement: Any, *_args: Any, **_kwargs: Any) -> MagicMock:
-        return update_result if isinstance(statement, Update) else select_result
+        if isinstance(statement, Update):
+            return update_result
+        if len(list(statement.selected_columns)) == _DEDUP_SELECT_COLUMN_COUNT:
+            return dedup_result
+        return select_result
 
     session.execute = AsyncMock(side_effect=_execute)
     return session
@@ -164,6 +206,43 @@ async def test_sweep_re_escalates_stale_unacked_ack_required() -> None:
     assert re_escalated.requires_ack is True
     assert "Re-escalation" in re_escalated.subject
     assert notif.reescalation_delivered_count == 1  # the attempt was delivered
+
+
+@pytest.mark.asyncio
+async def test_sweep_re_escalation_not_suppressed_by_existing_unacked_duplicate() -> (
+    None
+):
+    """A prior unacked re-escalation to the SAME target (same sender/type/task
+    /recipient-set — exactly what `duplicate_unacked_notification_exists`
+    matches on) must NOT suppress this attempt. `_re_escalate_recipient`
+    passes `bypass_purpose_dedup=True`, so the DB purpose-dedup guard is
+    skipped for this call path even though a matching row exists — this is
+    the regression PR #742's unconditional dedup introduced."""
+    recipient = _agent("be-pm")
+    target = _agent("main-pm")
+    notif = _stale_notification(
+        requires_ack=True, acked=False, recipient_id=recipient.id
+    )
+
+    session = _session_returning([notif], dedup_rows=[(uuid4(), [target.id])])
+    svc = _svc_with_agents(session, recipient=recipient, escalation_target=target)
+
+    with (
+        patch(
+            "roboco.services.notification_delivery.all_recipients_recently_notified",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "roboco.services.notification_delivery.get_escalation_target",
+            return_value="main-pm",
+        ),
+    ):
+        count = await svc.sweep_expired_notifications()
+
+    assert count == 1
+    added = [c for c in session.add.call_args_list if c.args]
+    assert added, "re-escalation must still deliver despite the existing duplicate"
+    assert notif.reescalation_delivered_count == 1
 
 
 @pytest.mark.asyncio
@@ -261,12 +340,15 @@ async def test_sweep_skips_re_escalation_when_no_chain_target() -> None:
 @pytest.mark.asyncio
 async def test_sweep_cas_claim_prevents_double_delivery_race() -> None:
     """Two service instances (simulating two concurrent sweep ticks) race the
-    same stale row. `_persist_and_deliver`'s 60s dedup guard cannot arbitrate
-    this — BLOCKER_ESCALATION isn't a `_LOOP_PRONE_TYPES` member, so it's a
-    no-op for this path. The CAS claim in `_claim_reescalation_slot` is what
-    actually decides it: exactly one instance wins the guarded UPDATE and
-    delivers; the loser (0 rows updated) skips delivery entirely, without
-    raising."""
+    same stale row. Neither of `_persist_and_deliver`'s dedup guards
+    arbitrates this: the 60s Redis guard is a structural no-op for
+    BLOCKER_ESCALATION (not a `_LOOP_PRONE_TYPES` member), and the DB
+    purpose-dedup guard is deliberately bypassed by
+    `_re_escalate_recipient` (`bypass_purpose_dedup=True`) so a legitimate
+    repeat re-escalation is never silently dropped. The CAS claim in
+    `_claim_reescalation_slot` is what actually decides it: exactly one
+    instance wins the guarded UPDATE and delivers; the loser (0 rows
+    updated) skips delivery entirely, without raising."""
     recipient = _agent("be-pm")
     target = _agent("main-pm")
     notif = _stale_notification(
@@ -476,3 +558,120 @@ async def test_sweep_capped_row_never_re_escalates_again() -> None:
     assert count == 1  # still stale + unacked
     session.add.assert_not_called()
     assert notif.reescalation_count == capped_count  # untouched — no further attempts
+
+
+# =============================================================================
+# resolve_terminal_task_escalations: auto-ack when the related task is done
+# =============================================================================
+#
+# A requires_ack notification (e.g. BLOCKER_ESCALATION) whose related task
+# has gone terminal (completed/cancelled) can never be meaningfully acted on
+# by anyone. Left unacked it both wedges i_am_idle's soft-block (which reads
+# EvidenceRepo.list_pending_notifications, requires_ack-scoped) and keeps
+# sweep_expired_notifications' re-escalation ladder minting fresh rows about
+# it every backoff window, all the way to the CEO, for up to
+# notification_ack_ttl_hours. This pass auto-acks such rows independent of
+# expires_at, every sweep tick.
+
+
+def _terminal_escalation_notification(
+    *, acked: bool = False, recipient_id: UUID | None = None
+) -> MagicMock:
+    n = MagicMock()
+    n.id = uuid4()
+    n.type = NotificationType.BLOCKER_ESCALATION
+    n.subject = "Re-escalation (unacked): blocked"
+    n.body = "body"
+    rid = recipient_id or uuid4()
+    n.to_agents = [rid]
+    n.acked_by = [rid] if acked else []
+    n.acked_at = {}
+    n.requires_ack = True
+    n.related_task_id = uuid4()
+    return n
+
+
+def _resolve_session(notifications: list[MagicMock]) -> MagicMock:
+    """A session whose SELECT returns `notifications` and whose `get` looks
+    them up by id: mirrors `_session_returning`'s shape but scoped to just
+    this one query, so it never collides with the sweep tests' dual-query
+    (Update vs dedup-select vs stale-select) dispatcher above."""
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    async def _get(_model: Any, ident: Any) -> MagicMock | None:
+        return next((n for n in notifications if n.id == ident), None)
+
+    session.get = AsyncMock(side_effect=_get)
+
+    select_result = MagicMock()
+    select_result.scalars.return_value.all.return_value = notifications
+    session.execute = AsyncMock(return_value=select_result)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_task_escalations_acks_unacked_row() -> None:
+    notif = _terminal_escalation_notification()
+    recipient_id = notif.to_agents[0]
+    session = _resolve_session([notif])
+    svc = NotificationDeliveryService(session)
+
+    count = await svc.resolve_terminal_task_escalations()
+
+    assert count == 1
+    assert recipient_id in notif.acked_by
+    assert str(recipient_id) in notif.acked_at
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_task_escalations_skips_already_acked() -> None:
+    notif = _terminal_escalation_notification(acked=True)
+    session = _resolve_session([notif])
+    svc = NotificationDeliveryService(session)
+
+    count = await svc.resolve_terminal_task_escalations()
+
+    assert count == 0
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_task_escalations_row_failure_is_isolated() -> None:
+    """One row's failure is logged, rolled back, and skipped: it never
+    aborts resolution of the rest (mirrors sweep_expired_notifications'
+    own per-row isolation)."""
+    notif_bad = _terminal_escalation_notification()
+    notif_good = _terminal_escalation_notification()
+    session = _resolve_session([notif_bad, notif_good])
+
+    async def _get(_model: Any, ident: Any) -> MagicMock | None:
+        if ident == notif_bad.id:
+            raise RuntimeError("boom")
+        return notif_good if ident == notif_good.id else None
+
+    session.get = AsyncMock(side_effect=_get)
+    svc = NotificationDeliveryService(session)
+
+    count = await svc.resolve_terminal_task_escalations()
+
+    assert count == 1
+    assert notif_good.acked_by == [notif_good.to_agents[0]]
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_task_escalations_query_scoped_correctly() -> None:
+    """The query must filter on requires_ack AND the related task's terminal
+    status; reverting either predicate makes this fail."""
+    session = _resolve_session([])
+    svc = NotificationDeliveryService(session)
+
+    await svc.resolve_terminal_task_escalations()
+
+    statement = session.execute.call_args.args[0]
+    compiled = str(statement)
+    assert "requires_ack" in compiled
+    assert "tasks.status IN" in compiled

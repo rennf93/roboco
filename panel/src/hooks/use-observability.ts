@@ -11,6 +11,7 @@ import type {
   MemberScorecard,
   OrgScorecard,
   TaskMetrics,
+  ProvenanceReport,
 } from "@/types";
 
 // =============================================================================
@@ -25,6 +26,8 @@ export const observabilityKeys = {
     [...observabilityKeys.all, "bottlenecks", days] as const,
   rework: (days: number, team?: string) =>
     [...observabilityKeys.all, "rework", days, team ?? "all"] as const,
+  provenance: (days: number) =>
+    [...observabilityKeys.all, "provenance", days] as const,
   teamScorecard: (team: string, days: number) =>
     [...observabilityKeys.all, "scorecard", "team", team, days] as const,
   ceoScorecard: (days: number) =>
@@ -78,6 +81,15 @@ export function useRework(days = 30, team?: string) {
   return useQuery<ReworkReport>({
     queryKey: observabilityKeys.rework(days, team),
     queryFn: () => observabilityApi.getRework(days, team),
+    refetchInterval: 60_000,
+  });
+}
+
+/** Human- vs agent-originated task counts (root-source classification). */
+export function useProvenance(days = 30) {
+  return useQuery<ProvenanceReport>({
+    queryKey: observabilityKeys.provenance(days),
+    queryFn: () => observabilityApi.getProvenance(days),
     refetchInterval: 60_000,
   });
 }

@@ -24,18 +24,24 @@ replaces.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from sqlalchemy import func, select
 
 from roboco.config import settings
-from roboco.db.tables import BoardProgramCycleTable, ProjectTable, TaskTable
+from roboco.db.tables import (
+    AuditLogTable,
+    BoardProgramCycleTable,
+    ProjectTable,
+    TaskTable,
+)
 from roboco.foundation.policy.board_programs import (
     PROGRAMS,
     TriggerKind,
     program_due,
     project_participates,
 )
+from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
 from roboco.services.settings import get_settings_service
@@ -272,6 +278,157 @@ def learn_ref(item: dict[str, Any], limit: int = 80) -> str:
     return ref[:limit].rstrip() if len(ref) > limit else ref
 
 
+# ---------------------------------------------------------------------------
+# Item-payload snapshotting (gap: TaskService.delete hard-deletes the
+# exploration task the full per-item payload lives on; board_program_cycles
+# FK is ondelete=SET NULL, so a decision survives with nothing behind it).
+#
+# ``record_decision`` now stamps a BOUNDED snapshot onto each decision entry
+# at decision time, while the payload is still definitely alive, so the
+# history stands alone after the task is gone. Two sources feed it:
+#  - an explicit ``item_payload`` the caller already has in hand (x_post_
+#    service's materialized X drafts, PlaybookService's playbook rows: the
+#    item IS the object being decided, not an entry in a task's marker list);
+#  - for the "queue" programs (roadmap/pest_control/spackle/mirror/dogfood/
+#    scales/sentinel/periscope/coroner), auto-resolved from the exploration
+#    task's own marker payload via ``_QUEUE_ITEM_SHAPES`` below. Every one
+#    of those callers already passes ``exploration_task_id``, so no caller
+#    file needs to change to get this.
+# ---------------------------------------------------------------------------
+
+_SNAPSHOT_TEXT_CAP = 400
+_SNAPSHOT_AC_CAP = 10
+_SNAPSHOT_AC_ITEM_CAP = 200
+_SNAPSHOT_FIELDS = (
+    "title",
+    "evidence",
+    "description",
+    "status",
+    "reject_reason",
+    "materialized_task_id",
+)
+
+
+def _cap_item_payload(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Bound an item payload to a fixed, known field set before it lands in
+    the jsonb ``decisions`` column: this is a snapshot, not an archive."""
+    if not raw:
+        return None
+    out: dict[str, Any] = {}
+    for key in _SNAPSHOT_FIELDS:
+        val = raw.get(key)
+        if val:
+            out[key] = str(val)[:_SNAPSHOT_TEXT_CAP]
+    ac = raw.get("acceptance_criteria")
+    if isinstance(ac, list) and ac:
+        out["acceptance_criteria"] = [
+            str(a)[:_SNAPSHOT_AC_ITEM_CAP] for a in ac[:_SNAPSHOT_AC_CAP]
+        ]
+    return out or None
+
+
+class _QueueItemShape(NamedTuple):
+    """How to find + read one item out of a "queue" program's exploration-
+    task marker payload. ``list_key`` is None for Coroner, whose payload
+    carries a single ``process_change`` dict rather than a list."""
+
+    getter: Any  # Callable[[TaskTable], dict[str, Any] | None]
+    list_key: str | None
+    title_field: str
+    evidence_field: str | None
+    description_field: str | None
+
+
+# program_key -> shape, one entry per queue-style program (the four X-backed
+# programs and Librarian carry their item on a different object entirely and
+# reach record_decision through the explicit ``item_payload`` path instead).
+_QUEUE_ITEM_SHAPES: dict[str, _QueueItemShape] = {
+    "roadmap": _QueueItemShape(
+        markers.get_roadmap_cycle, "items", "title", "rationale", "description"
+    ),
+    "pest_control": _QueueItemShape(
+        markers.get_pest_hunt, "items", "title", "evidence", "description"
+    ),
+    "spackle": _QueueItemShape(
+        markers.get_gap_fill, "items", "title", "evidence", "description"
+    ),
+    "mirror": _QueueItemShape(
+        markers.get_messaging_fixes, "items", "title", "evidence", "description"
+    ),
+    "dogfood": _QueueItemShape(
+        markers.get_friction_fixes, "items", "title", "evidence", "description"
+    ),
+    "scales": _QueueItemShape(
+        markers.get_rebalance_plan, "items", "target_task_title", "rationale", None
+    ),
+    "sentinel": _QueueItemShape(
+        markers.get_quality_report,
+        "items",
+        "suggested_action",
+        "evidence",
+        "observation",
+    ),
+    "periscope": _QueueItemShape(
+        markers.get_market_brief, "findings", "claim", "source_url", "relevance"
+    ),
+    "coroner": _QueueItemShape(
+        markers.get_coroner_postmortem, None, "description", None, None
+    ),
+}
+
+
+def _queue_item_candidates(
+    stored: dict[str, Any], shape: _QueueItemShape
+) -> list[dict[str, Any]]:
+    """The item dicts on a queue-shaped marker payload worth matching
+    against: a coroner-style singleton's ``process_change``, else the
+    program's own ``list_key`` list."""
+    if shape.list_key is None:
+        pc = stored.get("process_change")
+        return [pc] if isinstance(pc, dict) else []
+    return [it for it in stored.get(shape.list_key, []) if isinstance(it, dict)]
+
+
+def _snapshot_from_item(
+    item: dict[str, Any], shape: _QueueItemShape
+) -> dict[str, Any] | None:
+    """Build + cap the snapshot dict for one matched item, per ``shape``'s
+    field-name mapping."""
+    raw = {
+        "title": item.get(shape.title_field),
+        "evidence": item.get(shape.evidence_field) if shape.evidence_field else None,
+        "description": item.get(shape.description_field)
+        if shape.description_field
+        else None,
+        "acceptance_criteria": item.get("acceptance_criteria"),
+        "status": item.get("status"),
+        "reject_reason": item.get("reject_reason"),
+        "materialized_task_id": item.get("materialized_task_id")
+        or item.get("target_task_id"),
+    }
+    return _cap_item_payload(raw)
+
+
+def _resolve_queue_item_snapshot(
+    task: TaskTable, program_key: str, item_ref: str
+) -> dict[str, Any] | None:
+    """Find the item on ``task``'s marker payload whose recomputed ref
+    matches ``item_ref`` and return its bounded snapshot, or None when the
+    program isn't queue-shaped, the marker is missing, or no item matches
+    (e.g. an item authored before this feature shipped, or the caller's own
+    ref computation used a field this resolver doesn't know about)."""
+    shape = _QUEUE_ITEM_SHAPES.get(program_key)
+    if shape is None:
+        return None
+    stored = shape.getter(task)
+    if not isinstance(stored, dict):
+        return None
+    for item in _queue_item_candidates(stored, shape):
+        if learn_ref({"title": item.get(shape.title_field)}) == item_ref:
+            return _snapshot_from_item(item, shape)
+    return None
+
+
 def _legacy_enabled(key: str) -> bool:
     """The pre-registry flag(s) each program aliases while both exist."""
     if key == "roadmap":
@@ -438,6 +595,38 @@ class BoardProgramEngine(BaseService):
         reader (the API/panel) sees exactly what a "run now" call would."""
         return await self._dedup_state(key)
 
+    async def _resolve_decision_cycle(
+        self, program_key: str, exploration_task_id: UUID | None
+    ) -> BoardProgramCycleTable | None:
+        """The exact cycle for ``exploration_task_id`` when it resolves,
+        else the most-recent cycle for ``program_key`` (or None); see
+        ``record_decision``'s docstring for the attribution rationale."""
+        if exploration_task_id is not None:
+            cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
+            if cycle is not None:
+                return cycle
+        return await self._latest_cycle(program_key)
+
+    async def _resolve_decision_snapshot(
+        self,
+        cycle: BoardProgramCycleTable,
+        program_key: str,
+        item_ref: str,
+        item_payload: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """An explicit ``item_payload`` wins (capped); otherwise a queue-
+        shaped program auto-resolves its snapshot from the exploration
+        task's own marker payload; see ``record_decision``'s docstring."""
+        snapshot = _cap_item_payload(item_payload)
+        if snapshot is not None or cycle.exploration_task_id is None:
+            return snapshot
+        task = await get_task_service(self.session).get(
+            cast("UUID", cycle.exploration_task_id)
+        )
+        if task is None:
+            return None
+        return _resolve_queue_item_snapshot(task, program_key, item_ref)
+
     async def record_decision(
         self,
         program_key: str,
@@ -446,6 +635,7 @@ class BoardProgramEngine(BaseService):
         reason: str | None = None,
         *,
         exploration_task_id: UUID | None = None,
+        item_payload: dict[str, Any] | None = None,
     ) -> None:
         """Accrue one CEO approve/reject onto a cycle for this program.
 
@@ -461,26 +651,60 @@ class BoardProgramEngine(BaseService):
         drafts don't carry their originating exploration task id, so this is
         the original, unchanged fallback for that caller. A best-effort
         no-op when no matching cycle exists.
+
+        ``item_payload``, when given, is stamped (bounded) onto the decision
+        entry as ``item_snapshot``: the caller already holds the full item
+        (an X draft task, a playbook row) in hand. When omitted, a queue-
+        shaped program (roadmap/pest_control/spackle/mirror/dogfood/scales/
+        sentinel/periscope/coroner) auto-resolves its own snapshot from the
+        exploration task's marker payload (see ``_resolve_queue_item_
+        snapshot``), which is what makes the cycle history stand alone once
+        ``TaskService.delete`` removes the exploration task the payload used
+        to live exclusively on.
         """
-        cycle = None
-        if exploration_task_id is not None:
-            cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
-        if cycle is None:
-            cycle = await self._latest_cycle(program_key)
+        cycle = await self._resolve_decision_cycle(program_key, exploration_task_id)
         if cycle is None:
             return
-        cycle.items_proposed += 1
-        if verdict == "approved":
-            cycle.items_approved += 1
-        else:
-            cycle.items_rejected += 1
-        cycle.decisions = [
-            *cycle.decisions,
-            {"item_ref": item_ref, "verdict": verdict, "reason": reason},
-        ]
-        if cycle.closed_at is None:
-            await self._maybe_close(cycle)
-        await self.session.flush()
+        snapshot = await self._resolve_decision_snapshot(
+            cycle, program_key, item_ref, item_payload
+        )
+        # Savepoint: every one of this method's callers (the per-program
+        # `_record_learn` family) wraps this call in its own best-effort
+        # try/except with no rollback — a mid-flush failure here would
+        # otherwise poison the caller's shared session (e.g. RoadmapService.
+        # approve_item does an UNGUARDED session.flush() right after this
+        # returns). Fixed once at the source instead of in every caller.
+        async with self.session.begin_nested():
+            cycle.items_proposed += 1
+            if verdict == "approved":
+                cycle.items_approved += 1
+            else:
+                cycle.items_rejected += 1
+            entry: dict[str, Any] = {
+                "item_ref": item_ref,
+                "verdict": verdict,
+                "reason": reason,
+            }
+            if snapshot:
+                entry["item_snapshot"] = snapshot
+            cycle.decisions = [*cycle.decisions, entry]
+            self.session.add(
+                AuditLogTable(
+                    event_type="board_program.decision",
+                    target_type="board_program_cycle",
+                    target_id=cycle.id,
+                    severity="info",
+                    details={
+                        "program_key": program_key,
+                        "item_ref": item_ref[:200],
+                        "verdict": verdict,
+                        "reason": (reason or "")[:300],
+                    },
+                )
+            )
+            if cycle.closed_at is None:
+                await self._maybe_close(cycle)
+            await self.session.flush()
 
     async def record_nothing_to_propose(
         self, program_key: str, exploration_task_id: UUID, reason: str
@@ -500,8 +724,28 @@ class BoardProgramEngine(BaseService):
         cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
         if cycle is None:
             return
-        cycle.nothing_to_propose_reason = reason
-        await self.session.flush()
+        # Savepoint: same reasoning as record_decision above — every caller
+        # here also wraps this in its own best-effort try/except.
+        async with self.session.begin_nested():
+            cycle.nothing_to_propose_reason = reason
+            await self.session.flush()
+
+    async def list_cycles(
+        self, program_key: str, *, limit: int = 20
+    ) -> list[BoardProgramCycleTable]:
+        """Every recorded cycle for ``program_key``, newest-opened-first,
+        capped 1-100: the durable LEARN-history read surface (``GET
+        /board-programs/{key}/cycles``). Each cycle's ``decisions`` carries
+        its own bounded ``item_snapshot`` where ``record_decision`` resolved
+        one, so this reads back complete even once the exploration task
+        behind an old cycle has been deleted."""
+        result = await self.session.execute(
+            select(BoardProgramCycleTable)
+            .where(BoardProgramCycleTable.program_key == program_key)
+            .order_by(BoardProgramCycleTable.opened_at.desc())
+            .limit(max(1, min(limit, 100)))
+        )
+        return list(result.scalars().all())
 
     async def prior_cycle_context(self, program_key: str, limit: int = 2) -> str:
         """Render the last ``limit`` CLOSED cycles for prompt injection, oldest
@@ -588,6 +832,18 @@ class BoardProgramEngine(BaseService):
         return result.scalar_one_or_none()
 
     async def _originate_and_record(self, key: str) -> TaskTable | None:
+        """The shared origination chokepoint every registered program's cron
+        (``_run_due_one``) AND off-schedule (``open_program_cycle``: CEO
+        run-now, a metric-predicate accelerator, the strategy-engine idle
+        trigger, the Dogfood release-publish hook) path funnels through, so
+        one ``board_programs``-scope maintenance-pause check here covers all
+        of them at once. Coroner and War Room's own EVENT-hook entry points
+        (``open_for_incident`` / ``open_for_release``) bypass this function
+        entirely and carry their own identical check."""
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if await is_paused(self.session, PauseScope.BOARD_PROGRAMS):
+            return None
         task = await _ORIGINATORS[key](self.session)
         if task is None:
             return None

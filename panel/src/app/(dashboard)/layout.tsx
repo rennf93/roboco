@@ -6,6 +6,7 @@ import { CommandPalette } from "@/components/layout/command-palette";
 import { ScrollRestoration } from "@/components/scroll-restoration";
 import { ScrollJumpButtons } from "@/components/scroll-jump-buttons";
 import { RateLimitBanner } from "@/components/rate-limit/rate-limit-banner";
+import { MaintenanceBanner } from "@/components/maintenance/maintenance-banner";
 import { AutoRefreshDriver } from "@/components/providers/auto-refresh-driver";
 
 export default function DashboardLayout({
@@ -21,6 +22,7 @@ export default function DashboardLayout({
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header />
+        <MaintenanceBanner />
         <RateLimitBanner />
         {/* pb-20 clears the fixed BottomTabBar on mobile; md+ has no bar. */}
         <main className="flex-1 overflow-auto bg-muted/30 p-4 pb-20 md:p-6">

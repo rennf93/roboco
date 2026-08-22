@@ -52,6 +52,10 @@ from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.choreographer.collision import build_collision_context
+from roboco.services.gateway.choreographer.evidence_legs import (
+    LegBudget,
+    run_bounded_leg,
+)
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
@@ -190,19 +194,71 @@ class QAMixin(_Base):
         ).with_introspection(task=t, role=role_str)
 
     async def _qa_convention_findings(
-        self, qa_agent_id: UUID, t: Any
+        self,
+        qa_agent_id: UUID,
+        t: Any,
+        *,
+        timeout: float,
+        gaps: list[str],
+        changed_files: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Convention-validator findings on the task's changed files (flag-gated).
 
         Empty when the subsystem is off; a validator that could not run surfaces
         a single explicit ``could_not_run`` entry rather than being dropped, so
         QA never mistakes a silent failure for a clean diff.
+
+        Deliberately NOT wrapped in ``run_bounded_leg``. Nesting an outer
+        ``asyncio.wait_for`` around this call raced
+        ``conventions_check_for_task``'s own inner ``wait_for`` (which
+        starts LATER, after setup) — the outer cancellation could fire
+        first and land INSIDE the inner ``except TimeoutError:``'s
+        ``proc.kill()``/``proc.wait()`` cleanup, skipping it and leaking the
+        validator subprocess (reproduced live). ``conventions_check_for_task``
+        already self-bounds the subprocess correctly via its own ``timeout``
+        kwarg; this method just reads the result and, on a detected
+        timeout, records the gap itself instead of relying on an outer
+        wrapper to notice.
+
+        ``timeout`` is this build's remaining share of the shared
+        evidence-assembly budget (``LegBudget``), already capped by the
+        caller at ``conventions_validator_advisory_timeout_seconds`` — so
+        this never exceeds its own designed ceiling but shrinks if earlier
+        legs (diff, list_changed_files) consumed most of the shared budget.
+
+        The setup phase inside ``conventions_check_for_task`` (workspace
+        resolution + its own ``list_changed_files`` call) is not separately
+        wrapped here: every individual git op there is already bounded by
+        ``git_command_timeout_seconds`` inside ``_run_git`` (raising
+        ``GitTimeoutError`` on expiry, caught by ``conventions_check_for_task``'s
+        own resolution try/except), and by the time this runs the workspace
+        was already resolved (warmed) by the diff/list_changed_files legs
+        above in the same evidence build — so the one theoretically-unbounded
+        piece (a cold clone) never actually triggers here in practice.
+
+        That warm-workspace assumption only holds when those legs actually
+        completed. ``_build_qa_claim_evidence`` now checks for the opposite
+        signal (``evidence_gaps`` already non-empty) and skips calling this
+        method entirely in that case, instead of trusting a false assumption
+        and re-hitting the same cold/contended git ops unbounded.
+
+        ``changed_files`` threads the file list ``_build_qa_claim_evidence``
+        already resolved via ``diff_and_files`` straight into the validator
+        call, so this never re-derives it with its own THIRD
+        ``list_changed_files`` resolution.
         """
         if not settings.conventions_enabled:
             return []
-        result = await self.git.conventions_check_for_task(qa_agent_id, t)
+        result = await self.git.conventions_check_for_task(
+            qa_agent_id, t, timeout=timeout, changed_files=changed_files
+        )
         if result.get("could_not_run"):
             reason = result.get("reason") or "validator could not run"
+            if "timed out" in reason:
+                gaps.append(
+                    f"conventions findings unavailable: {reason} — review the "
+                    "diff manually for architecture-convention issues"
+                )
             return [{"could_not_run": True, "reason": reason}]
         return list(result.get("findings", []))
 
@@ -237,26 +293,90 @@ class QAMixin(_Base):
         authoritative source) + journal_highlights so the QA agent has
         the full PR context up-front and can't miss a piece.
 
-        files_changed comes from ``git.list_changed_files``
-        instead of ``work_session.files_modified``. The legacy
-        ``add_files_modified`` HTTP path that populated files_modified
-        is not called by the gateway ``commit()``, so the work_session
-        list was always empty — QA saw no files even on real PRs.
+        files_changed comes from ``git.diff_and_files`` instead of
+        ``work_session.files_modified``. The legacy ``add_files_modified``
+        HTTP path that populated files_modified is not called by the
+        gateway ``commit()``, so the work_session list was always empty —
+        QA saw no files even on real PRs.
+
+        The git leg (``diff_and_files`` — one workspace/token/head/base
+        resolution, the full diff and the ``--name-only`` diff run
+        concurrently as subprocesses) runs bounded via ``run_bounded_leg``
+        against a shared ``LegBudget`` for this whole build — a timeout
+        skips it and records a note (naming both the diff and
+        files_changed losses — a combined-leg timeout kills both together)
+        in ``evidence_gaps`` instead of hanging this advisory (non-gating)
+        verb for the whole ``flow_verb_timeout_seconds`` budget. It is
+        awaited on its own, sequential to the two independent DB reads
+        (journal highlights, ancestor context) — NOT gathered with them:
+        ``self.task``/``self.git``/``self.evidence_repo`` share ONE
+        request-scoped ``AsyncSession`` (see ``deps.py``), and the git
+        leg's own workspace/token resolution runs DB lookups against that
+        same session, so concurrently awaiting it alongside the DB reads
+        risks two queries racing one ``AsyncSession`` (unsupported by
+        SQLAlchemy) plus a ``wait_for``-cancelled DB query mid-flight if
+        the git leg times out. The internal subprocess-level concurrency
+        inside ``diff_and_files`` (the two git commands) is the real
+        latency win and is untouched by this. The conventions leg
+        self-bounds separately (see ``_qa_convention_findings``) but still
+        draws its ceiling from the same shared budget, and reuses the file
+        list resolved here instead of re-deriving it.
         """
-        files_changed: list[str] = []
-        diff_summary = ""
+        evidence_gaps: list[str] = []
+        budget = LegBudget(settings.evidence_assembly_timeout_seconds)
+
+        diff_summary, files_changed = "", []
         if t.branch_name:
-            diff_summary = await self.git.diff(branch_name=t.branch_name)
-            files_changed = await self.git.list_changed_files(branch_name=t.branch_name)
-        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
-            task_id
-        )
+            diff_summary, files_changed = await run_bounded_leg(
+                self.git.diff_and_files(branch_name=t.branch_name),
+                default=("", []),
+                budget=budget,
+                leg="pr diff + files_changed",
+                hint="review the PR diff on GitHub directly",
+                task_id=task_id,
+                gaps=evidence_gaps,
+            )
+
         # The ask-chain (parent → root descriptions) so QA judges INTENT
         # against the intake's original analysis, not only the leaf's ACs.
         # Leaf-only journals stay (include_ancestors defaults False above);
-        # ancestor *descriptions* are the ask, not work-so-far.
+        # ancestor *descriptions* are the ask, not work-so-far. Awaited
+        # after the git leg (see docstring) instead of gathered with it.
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id
+        )
         parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
-        convention_findings = await self._qa_convention_findings(qa_agent_id, t)
+        convention_findings: list[dict[str, Any]]
+        if evidence_gaps and settings.conventions_enabled:
+            # The diff/files_changed legs above already timed out, so the
+            # "workspace was warmed" assumption _qa_convention_findings relies
+            # on (see its docstring) is false — skip it rather than re-hit the
+            # same cold/contended git ops and grind toward the 120s verb wall.
+            convention_findings = [
+                {
+                    "could_not_run": True,
+                    "reason": (
+                        "skipped: git evidence legs timed out "
+                        "(cold/contended workspace)"
+                    ),
+                }
+            ]
+            evidence_gaps.append(
+                "conventions findings unavailable: skipped because prior "
+                "evidence legs timed out (cold/contended workspace) — review "
+                "the diff manually for architecture-convention issues"
+            )
+        else:
+            convention_findings = await self._qa_convention_findings(
+                qa_agent_id,
+                t,
+                timeout=min(
+                    settings.conventions_validator_advisory_timeout_seconds,
+                    budget.remaining(),
+                ),
+                gaps=evidence_gaps,
+                changed_files=files_changed,
+            )
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, t.id
         )
@@ -291,6 +411,7 @@ class QAMixin(_Base):
             parent_context=parent_context,
             collision_context=collision_context,
             video_context=self._qa_video_context(t),
+            evidence_gaps=evidence_gaps,
         )
 
     async def _verify_qa_owner(
@@ -805,10 +926,14 @@ class QAMixin(_Base):
             # addressed qa-origin finding, in the same session/transaction as
             # the pass itself (not best-effort — the ledger's integrity is
             # the point). A failure here raises before run_intent, so the
-            # pass never lands against a stale ledger.
-            await findings_lib.stamp_addressed_verified(
-                self.task.session, t.id, origin="qa"
-            )
+            # pass never lands against a stale ledger. Savepoint: without it,
+            # a mid-flush failure poisons the session, so the rejection built
+            # below (and whatever writes it or the route's commit still do)
+            # would itself blow up instead of cleanly reaching the agent.
+            async with self.task.session.begin_nested():
+                await findings_lib.stamp_addressed_verified(
+                    self.task.session, t.id, origin="qa"
+                )
             t = await runner.run_intent("pass_review", t, agent, spec_ctx)
         except Exception as exc:
             return await self._emit_rejection(

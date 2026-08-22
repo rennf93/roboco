@@ -304,6 +304,10 @@ class OptimalService:
                 error=str(e),
             )
 
+        # Catch up on any file deleted while this process (or a prior one)
+        # was down, before the periodic in-memory sweep takes over.
+        await self._reconcile_deleted_docs_from_db()
+
         # Start periodic update task if enabled
         await self._start_periodic_update()
 
@@ -524,6 +528,115 @@ class OptimalService:
 
         return new_files, modified_files
 
+    def _scan_for_deleted_files(self, directory: Path) -> list[str]:
+        """Return previously-tracked file paths under ``directory`` that no
+        longer exist on disk, pruning them from ``self._file_mtimes``.
+
+        A file only ever enters ``self._file_mtimes`` after
+        ``_scan_for_file_changes``/``_index_docs_directory`` indexed it, so
+        this is the mirror check: anything tracked under this dir that the
+        current on-disk rglob no longer sees was deleted since the last scan.
+        """
+        on_disk = {str(p) for p in directory.rglob("*.md")}
+        deleted = [
+            path
+            for path in self._file_mtimes
+            if Path(path).is_relative_to(directory) and path not in on_disk
+        ]
+        for path in deleted:
+            del self._file_mtimes[path]
+        return deleted
+
+    async def _unindex_deleted_doc_file(self, file_path_str: str, name: str) -> None:
+        """De-index one auto-index-dir file that no longer exists on disk
+        (best-effort).
+
+        Mirrors unindex_playbook/unindex_vault_note/unindex_journal_entry:
+        drops the file's vector-store chunks AND its IndexedDocumentTable
+        tracking row, so a file removed from docs/rag or docs/map stops
+        surfacing in roboco_kb_search once it's gone from the tree.
+        Idempotent; failures are logged and swallowed so one bad path never
+        aborts the rest of the periodic re-scan.
+
+        ponytail: a "standards" subdir file is skipped — index_standards_file
+        parses it into multiple per-rule chunks under hashed-title source
+        URIs, with no per-file source to reverse from the path alone. Upgrade
+        path if this bites: track each file's emitted rule_ids alongside its
+        IndexedDocumentTable row so a delete can look them up.
+        """
+        if "standards" in Path(file_path_str).parts:
+            logger.debug(
+                "Skipping de-index of deleted standards file (per-rule "
+                "sources, not reversible from the path alone)",
+                file=file_path_str,
+            )
+            return
+
+        from roboco.db import get_db_context
+        from roboco.services.repositories import IndexedDocumentRepository
+
+        store_source = f"roboco://docs/{file_path_str}"
+        try:
+            plugin = self._get_plugin(IndexType.DOCUMENTATION)
+            await plugin._require_store.delete_by_source(store_source)
+        except Exception as exc:
+            logger.warning(
+                "Deleted-doc de-index (vector store) failed; continuing",
+                file=file_path_str,
+                error=str(exc),
+            )
+            return
+
+        try:
+            async with get_db_context() as db:
+                repo = IndexedDocumentRepository(db)
+                await repo.delete_by_source(
+                    IndexType.DOCUMENTATION.value, file_path_str
+                )
+        except Exception as exc:
+            logger.warning(
+                "Deleted-doc de-index (tracking row) failed; continuing",
+                file=file_path_str,
+                error=str(exc),
+            )
+            return
+
+        logger.info("De-indexed deleted doc file", file=file_path_str, dir=name)
+
+    async def _reconcile_deleted_docs_from_db(self) -> None:
+        """DB-seeded companion to ``_scan_for_deleted_files``, run once at
+        startup: ``self._file_mtimes`` is in-memory and only ever learns a
+        path by indexing it THIS process, so a file deleted while the
+        process was down (or in a prior process) is invisible to the
+        in-memory sweep — its chunks/tracking row are orphaned forever.
+        Bounded to one query; reconciles against the on-disk auto-index dirs.
+        """
+        docs_root = self._resolve_docs_root()
+        if docs_root is None:
+            return
+
+        from roboco.db import get_db_context
+        from roboco.services.repositories import IndexedDocumentRepository
+
+        try:
+            async with get_db_context() as db:
+                repo = IndexedDocumentRepository(db)
+                rows = await repo.get_by_index_type(
+                    IndexType.DOCUMENTATION.value, limit=10000
+                )
+        except Exception as exc:
+            logger.warning("DB-seeded deletion reconcile failed", error=str(exc))
+            return
+
+        for subdir in AUTO_INDEX_DIRS:
+            target_dir = docs_root / subdir
+            for row in rows:
+                source = row.source
+                if not source or not Path(source).is_relative_to(target_dir):
+                    continue
+                if not Path(source).exists():
+                    await self._unindex_deleted_doc_file(source, subdir)
+
     async def _reindex_files(self, files_to_index: list[Path], name: str) -> int:
         """Re-index the given files (from auto-index dir ``name``) and return
         the count that succeeded."""
@@ -542,13 +655,15 @@ class OptimalService:
         return indexed
 
     async def _check_for_updates(self) -> None:
-        """Scan every AUTO_INDEX_DIRS dir for new or modified files and index them."""
+        """Scan every AUTO_INDEX_DIRS dir for new, modified, or deleted files
+        and index/de-index them accordingly."""
         docs_root = self._resolve_docs_root()
         if docs_root is None:
             return
 
         total_indexed = 0
         total_files = 0
+        total_deleted = 0
         for subdir in AUTO_INDEX_DIRS:
             target_dir = docs_root / subdir
             if not target_dir.exists():
@@ -556,24 +671,33 @@ class OptimalService:
 
             new_files, modified_files = self._scan_for_file_changes(target_dir)
             files_to_index = new_files + modified_files
-            if not files_to_index:
-                continue
+            if files_to_index:
+                logger.info(
+                    "Detected file changes, re-indexing",
+                    dir=subdir,
+                    new_count=len(new_files),
+                    modified_count=len(modified_files),
+                )
+                total_indexed += await self._reindex_files(files_to_index, subdir)
+                total_files += len(files_to_index)
 
-            logger.info(
-                "Detected file changes, re-indexing",
-                dir=subdir,
-                new_count=len(new_files),
-                modified_count=len(modified_files),
-            )
+            deleted_files = self._scan_for_deleted_files(target_dir)
+            if deleted_files:
+                logger.info(
+                    "Detected deleted files, de-indexing",
+                    dir=subdir,
+                    deleted_count=len(deleted_files),
+                )
+                for deleted_path in deleted_files:
+                    await self._unindex_deleted_doc_file(deleted_path, subdir)
+                total_deleted += len(deleted_files)
 
-            total_indexed += await self._reindex_files(files_to_index, subdir)
-            total_files += len(files_to_index)
-
-        if total_indexed > 0:
+        if total_indexed > 0 or total_deleted > 0:
             logger.info(
                 "Periodic update complete",
                 indexed=total_indexed,
                 total_files=total_files,
+                deleted=total_deleted,
             )
 
     async def close(self) -> None:
@@ -660,11 +784,21 @@ class OptimalService:
         self,
         sources: list[str],
         project: str | None = None,
+        provenance: str = "repo_tree",
+        task_id: str | None = None,
     ) -> int:
-        """Index documentation files and track in database."""
+        """Index documentation files and track in database.
+
+        ``provenance="live_write"`` marks a doc written mid-task (not yet
+        merged/deployed) so ``roboco_kb_search`` can caveat it; the default
+        ``"repo_tree"`` is for content already on disk (auto-index dirs,
+        startup/manual reindex).
+        """
         plugin = self._get_plugin(IndexType.DOCUMENTATION)
         if isinstance(plugin, DocsIndexPlugin):
-            count, indexed_files = await plugin.index_sources(sources, project)
+            count, indexed_files = await plugin.index_sources(
+                sources, project, provenance=provenance, task_id=task_id
+            )
 
             # Batch track all indexed files using repository
             docs_to_track = [

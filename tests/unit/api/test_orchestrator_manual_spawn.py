@@ -19,18 +19,18 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-import roboco.api.routes.orchestrator as orch_route
+import roboco.api.utils.orchestrator as orch_utils
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from roboco.agents_config import AGENT_UUIDS
 from roboco.api.deps import _ServiceHolder, set_orchestrator
 from roboco.api.routes.orchestrator import (
+    router as orch_router,
+)
+from roboco.api.utils.orchestrator import (
     _build_manual_spawn_prompt,
     _resolve_manual_spawn_prompt,
     _validated_agent_id,
-)
-from roboco.api.routes.orchestrator import (
-    router as orch_router,
 )
 from roboco.runtime.orchestrator import AgentReadinessError, AgentState
 
@@ -111,9 +111,9 @@ async def test_resolve_prompt_no_task_id_returns_message_unchanged() -> None:
 async def test_resolve_prompt_enriches_when_task_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_route, "get_db_context", _FakeDbCtx)
+    monkeypatch.setattr(orch_utils, "get_db_context", _FakeDbCtx)
     monkeypatch.setattr(
-        orch_route,
+        orch_utils,
         "get_task_service",
         lambda _db: _FakeTaskService(task=_fake_task("verifying")),
     )
@@ -127,9 +127,9 @@ async def test_resolve_prompt_enriches_when_task_found(
 async def test_resolve_prompt_falls_back_when_task_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_route, "get_db_context", _FakeDbCtx)
+    monkeypatch.setattr(orch_utils, "get_db_context", _FakeDbCtx)
     monkeypatch.setattr(
-        orch_route, "get_task_service", lambda _db: _FakeTaskService(task=None)
+        orch_utils, "get_task_service", lambda _db: _FakeTaskService(task=None)
     )
     result = await _resolve_manual_spawn_prompt(str(uuid4()), "hello")
     assert result == "hello"
@@ -146,9 +146,9 @@ async def test_resolve_prompt_falls_back_on_bad_task_id() -> None:
 async def test_resolve_prompt_falls_back_on_db_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_route, "get_db_context", _FakeDbCtx)
+    monkeypatch.setattr(orch_utils, "get_db_context", _FakeDbCtx)
     monkeypatch.setattr(
-        orch_route,
+        orch_utils,
         "get_task_service",
         lambda _db: _FakeTaskService(error=RuntimeError("db down")),
     )

@@ -27,6 +27,7 @@ ORIGINAL_DEVELOPER = "original_developer"
 DOCUMENTER = "documenter"
 REQUIRED_CELLS = "required_cells"
 EXTERNAL_PR_HEAD = "external_pr_head"
+EXTERNAL_PR_AUTHOR = "external_pr_author"
 EXTERNAL_PR_SUPERSEDE = "external_pr_supersede"
 SELF_HEAL_FP = "self_heal_fp"
 DISMISSED = "dismissed"
@@ -67,6 +68,11 @@ PLAYBOOK_DRAFTS = "playbook_drafts"
 WAR_ROOM_BRIEF = "war_room_brief"
 BARFLY_CANDIDATES = "barfly_candidates"
 BARFLY_REPLY_REF = "barfly_reply_ref"
+PR_WAIVED = "pr_waived"
+BRANCH_PENDING = "branch_pending"
+SUPERSEDE_COMMENT_POSTED = "supersede_comment_posted"
+BRANCH_CUT_FAILED = "branch_cut_failed"
+BRANCH_CUT_NEXT_RETRY_AT = "branch_cut_next_retry_at"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -630,6 +636,15 @@ def set_external_pr_head(task: HasMarkers, head_sha: str) -> None:
     set_marker(task, EXTERNAL_PR_HEAD, head_sha)
 
 
+def get_external_pr_author(task: HasMarkers) -> str | None:
+    val = get_marker(task, EXTERNAL_PR_AUTHOR)
+    return str(val) if val else None
+
+
+def set_external_pr_author(task: HasMarkers, login: str) -> None:
+    set_marker(task, EXTERNAL_PR_AUTHOR, login)
+
+
 # --- external PR supersede ------------------------------------------------- #
 
 
@@ -804,6 +819,107 @@ def is_budget_blocked(task: HasMarkers) -> bool:
 
 def clear_budget_blocked(task: HasMarkers) -> None:
     clear_marker(task, BUDGET_BLOCKED)
+
+
+# --- PR waiver (zero-diff report-only work) ---------------------------------
+# submit_up / submit_root skip create_pr / create_root_pr when the task's
+# branch carries zero commits relative to its resolved parent branch (a
+# report-only audit/findings subtree with no code diff — the Board Program
+# catalog generates this by design). Stamped by the verb runner the moment it
+# waives PR creation so every downstream PR-required gate (the in-path
+# review gate, PM completion, the CEO-escalation pr_number check) recognizes
+# a legitimately PR-less task instead of wedging on a missing PR. The
+# human-readable reason rides the existing TRANSITION_NOTES marker under the
+# "pr_waived" event, alongside a progress entry for reviewer/PM visibility.
+
+PR_WAIVED_TRANSITION_EVENT = "pr_waived"
+
+
+def is_pr_waived(task: HasMarkers) -> bool:
+    return bool(get_marker(task, PR_WAIVED, False))
+
+
+def mark_pr_waived(task: HasMarkers) -> None:
+    set_marker(task, PR_WAIVED, True)
+
+
+def clear_pr_waived(task: HasMarkers) -> None:
+    """Un-latch a stale waiver once a REAL PR is about to be created.
+
+    ``PR_WAIVED`` is otherwise a one-way latch: nothing clears it once set,
+    so a waived task that later gets real commits (round trip: waived ->
+    ``request_changes`` -> NEEDS_REVISION -> re-submit with real work) keeps
+    disabling the PR-merged backstops (``TaskService.complete``'s
+    work-session-merged check, the CEO-escalation ``pr_number`` check) even
+    though a real PR now exists. Called from
+    ``VerbRunner._run_pre_side_effects`` the moment ``create_pr`` /
+    ``create_root_pr`` actually run (``ahead > 0``) — i.e. whenever this
+    round is NOT itself waiving PR creation.
+    """
+    clear_marker(task, PR_WAIVED)
+
+
+# --- supersede branch-pending (async branch cut) --------------------------- #
+# The CEO's supersede-external-PR action commits the umbrella first, stamps
+# branch_pending, and returns within the 60s client window. The branch cut
+# (workspace resolve + fetch refs/pull/{n}/head + push) runs in a background
+# task; the dispatcher skips a branch_pending umbrella so Main PM is not
+# routed until the branch is ready. SUPERSEDE_COMMENT_POSTED tracks whether
+# the contributor-facing PR comment was delivered (fast-path or background).
+# BRANCH_CUT_FAILED stores the failure attempt count (int) so the sweep can
+# apply a backoff; after MAX_BRANCH_CUT_ATTEMPTS it escalates to BLOCKED.
+# BRANCH_CUT_NEXT_RETRY_AT is the epoch timestamp the sweep waits for before
+# retrying a failed cut.
+
+
+def is_branch_pending(task: HasMarkers) -> bool:
+    return bool(get_marker(task, BRANCH_PENDING, False))
+
+
+def mark_branch_pending(task: HasMarkers) -> None:
+    set_marker(task, BRANCH_PENDING, True)
+
+
+def clear_branch_pending(task: HasMarkers) -> None:
+    clear_marker(task, BRANCH_PENDING)
+
+
+def is_supersede_comment_posted(task: HasMarkers) -> bool:
+    return bool(get_marker(task, SUPERSEDE_COMMENT_POSTED, False))
+
+
+def mark_supersede_comment_posted(task: HasMarkers) -> None:
+    set_marker(task, SUPERSEDE_COMMENT_POSTED, True)
+
+
+def is_branch_cut_failed(task: HasMarkers) -> bool:
+    return bool(get_marker(task, BRANCH_CUT_FAILED, False))
+
+
+def get_branch_cut_attempts(task: HasMarkers) -> int:
+    val = get_marker(task, BRANCH_CUT_FAILED, 0)
+    return int(val) if isinstance(val, int | float) else 1
+
+
+def mark_branch_cut_failed(task: HasMarkers, attempts: int = 1) -> None:
+    set_marker(task, BRANCH_CUT_FAILED, attempts)
+
+
+def clear_branch_cut_failed(task: HasMarkers) -> None:
+    clear_marker(task, BRANCH_CUT_FAILED)
+
+
+def get_branch_cut_next_retry_at(task: HasMarkers) -> float | None:
+    val = get_marker(task, BRANCH_CUT_NEXT_RETRY_AT, None)
+    return float(val) if isinstance(val, int | float) else None
+
+
+def set_branch_cut_next_retry_at(task: HasMarkers, ts: float) -> None:
+    set_marker(task, BRANCH_CUT_NEXT_RETRY_AT, ts)
+
+
+def clear_branch_cut_next_retry_at(task: HasMarkers) -> None:
+    clear_marker(task, BRANCH_CUT_NEXT_RETRY_AT)
 
 
 # --- escalate_up/unblock oscillation breaker -------------------------------

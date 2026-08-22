@@ -103,6 +103,9 @@ roboco/
 │   ├── rag/                     # Agent knowledge base (indexed into RAG)
 │   └── map/                     # Exhaustive codebase map (agent-facing)
 ├── alembic/                     # Database migrations
+├── motion/                      # Video/motion-graphics toolchain
+├── panel/                       # Next.js 16 control panel (served on :3000 via nginx)
+├── scripts/                     # Bootstrap and utility scripts (bootstrap.sh for make quickstart)
 ├── CLAUDE.md                    # Claude Code guidance
 ├── docker-compose.yml           # Full stack, built from source
 └── docker-compose.registry.yml  # Full stack, pulled from the image registry
@@ -140,6 +143,8 @@ docker compose -f docker-compose.registry.yml up -d
 
 Note: ROBOCO_PANEL_AGENT_TOKEN is a standing CEO credential — blank it if you later arm cloud auth (see `.env.example`).
 
+A fresh `.env` also gets `ROBOCO_HOST_PROJECT_DIR` and `ROBOCO_HOST_DATA_DIR` pinned to the checkout location — these are the host-side paths the orchestrator bind-mounts into every spawned agent. If you reuse an existing `.env` that doesn't set them, quickstart checks that the absence is safe: it only passes silently when the checkout is already at `/opt/roboco` (the compose default). Anywhere else, it fails loud with the exact line to add (e.g. `ROBOCO_HOST_PROJECT_DIR=/your/checkout/path`), because an unset var makes Docker create an empty directory at `/opt/roboco` and every agent spawn dies with `IsADirectoryError` before reading its system prompt. An explicitly-set value is always trusted as-is — split host/daemon setups (remote or rootless Docker, a bind-mounted checkout) legitimately name paths the script can't see.
+
 Choose the registry and version with two env vars (defaults shown) — set them in `.env` before running `make quickstart`:
 
 ```bash
@@ -175,7 +180,7 @@ uv run uvicorn roboco.api.app:app --reload --host 0.0.0.0 --port 8000
 
 ## Configuration
 
-Key environment variables (see `roboco/config.py` for all options):
+Key environment variables (see `roboco/config.py` for all options). The panel's **Settings → Feature Flags** card is the authoritative source for the full set of 36 feature flags — toggle them there rather than editing env by hand. The bash block below shows the env-var equivalents of a few representative flags plus settings that have no panel toggle:
 
 ```bash
 # API Server
@@ -206,6 +211,19 @@ ROBOCO_DOCS_SYNC_MAX_PER_CYCLE=1        # max docs-sync tasks originated per pub
 # Auditor scheduled sweeps (default 6 hours; 0 disables)
 ROBOCO_AUDIT_INTERVAL_SECONDS=21600
 ```
+
+The 36 feature flags exposed in the panel fall into eight categories:
+
+- **Communication:** `telegram_enabled`, `telegram_inbound_enabled`, `x_engine_enabled`, `x_replies_enabled`, `x_feature_spotlight_enabled` — Telegram notifications and the X (Twitter) account.
+- **Content:** `video_engine_enabled`, `video_on_release`, `video_on_spotlight` — the video-generation engine and its triggers.
+- **Governance:** `provisioning_enabled`, `strategy_engine_enabled`, `roadmap_engine_enabled`, `research_enabled`, `release_manager_enabled` — Board programs and the gated release manager.
+- **Infrastructure:** `ci_watch_enabled`, `dep_update_enabled`, `env_sync_enabled`, `docs_sync_enabled`, `gateway_health_enabled`, `self_heal_enabled`, `self_heal_originate_enabled`, `sandbox_db_enabled`, `rag_auto_update_enabled`, `transcript_prune_enabled` — background loops, sandbox DBs, and workspace health.
+- **Quality:** `conventions_enabled`, `org_memory_enabled`, `fable_mode_enabled`, `possibilities_matrix_enabled`, `routing_strict` — architectural enforcement, organizational memory, behavioral doctrine, and model-routing strictness.
+- **Budgets:** `task_budgets_enabled` — per-project monthly and per-task cost caps.
+- **Vault:** `obsidian_vault_enabled`, `vault_intake_enabled`, `vault_report_enabled`, `vault_kb_enabled` — Obsidian vault projection, intake, reports, and KB indexing.
+- **PR review:** `external_pr_enabled`, `internal_pr_enabled`, `toolchain_match_enabled` — inbound/external PR review, internal PR review, and toolchain matching.
+
+Each flag has a one-line description in the panel card. The remaining twelve Board Programs (Pest Control, Spackle, Scales, Dogfood, Periscope, Megaphone, Mirror, Barfly, War Room, Coroner, Librarian, Sentinel) arm per-program on the dedicated Board Programs page (Business section) rather than the Feature Flags card.
 
 ## Multi-Agent Workspace Structure
 
@@ -255,14 +273,47 @@ Domain routes are mounted under `/api`:
 |-------------|-------------|
 | `/api/tasks` | Task CRUD, lifecycle, claiming |
 | `/api/agents` | Agent management |
-| `/api/git` | Git operations (status, commit, push, PR) |
-| `/api/sessions` | Communication sessions |
-| `/api/messages` | Agent messages |
 | `/api/projects` | Project (repo) management |
 | `/api/work-sessions` | Git work session tracking |
-| `/api/optimal` | RAG/Knowledge base queries |
+| `/api/git` | Git operations (status, commit, push, PR) |
+| `/api/orchestrator` | Orchestrator / dispatcher status |
+| `/api/kanban` | Kanban board views per team |
+| `/api/dashboard` | Dashboard, metrics, and analytics |
+| `/api/notifications` | Formal notifications (ack-required) |
 | `/api/journals` | Agent journals/reflections |
-| `/api/orchestrator/status` | Orchestrator / dispatcher status |
+| `/api/a2a` | Agent-to-agent direct messaging |
+| `/api/optimal` | RAG/Knowledge base queries |
+| `/api/stream` | Stream processing and permissions |
+| `/api/settings` | Feature flags and settings store |
+| `/api/company-goals` | Company goals, scorecard, brand voice |
+| `/api/research` | Web research (external search/fetch) |
+| `/api/cockpit` | CEO read-only business summary |
+| `/api/release` | Release manager proposals and approval |
+| `/api/secretary` | Secretary chief-of-staff reads and directives |
+| `/api/prompter` | Intake live chat (SSE relay) |
+| `/api/pitches` | Board proposals and CEO approve/provision |
+| `/api/playbooks` | Playbook library curation (approve/reject/archive) |
+| `/api/x` | X (Twitter) post queue and credentials |
+| `/api/video` | Video engine request, pipeline, and approval |
+| `/api/tiktok` | TikTok OAuth credentials (write-only) |
+| `/api/telegram` | Telegram notifications bridge |
+| `/api/roadmap` | Board roadmap cycle approval |
+| `/api/board-programs` | Board Programs registry status and run-now |
+| `/api/pest-control` | Pest Control bug-hunt cycle |
+| `/api/periscope` | Periscope market-research briefs |
+| `/api/coroner` | Coroner postmortem reports |
+| `/api/sentinel` | Sentinel quality-drift reports |
+| `/api/spackle` | Spackle gap-fill cycle |
+| `/api/scales` | Scales portfolio-rebalance cycle |
+| `/api/mirror` | Mirror messaging-fix cycle |
+| `/api/dogfood` | Dogfood friction-fix cycle |
+| `/api/github-app` | GitHub App credentials and repo listing |
+| `/api/products` | Product CRUD |
+| `/api/providers` | AI provider model routing |
+| `/api/docs` | Project documentation management |
+| `/api/usage` | Token usage analytics |
+| `/api/system` | System monitoring (rate limits, etc.) |
+| `/api/auth` | Cloud auth login/logout (mounted only when `ROBOCO_CLOUD_AUTH_ENABLED`) |
 
 The agent **gateway** verbs are served separately under `/api/v1/flow/{role}/{verb}` (intent verbs) and `/api/v1/do` (content tools) — see the [Agent Gateway](CLAUDE.md#agent-gateway).
 
@@ -326,9 +377,24 @@ uv run mypy roboco/
 - [x] Inbound PR review (read-only PR-reviewer + CEO supersede/dismiss queue)
 - [x] Self-healing CI loop for RoboCo's own repo (default-off, CEO-gated)
 - [x] Business Goals tab with a live Company Scorecard (delivery, spend-vs-budget, lead time)
+- [x] Frontend control panel (Next.js 16, vendored under `panel/`, served through nginx on :3000 — kanban, command palette, Metrics, Workstation)
+- [x] Telegram bridge + Mini App (V1–V6: notifications bridge, two-way bot, signed webapp, Today/cockpit, brand voice, premium overhaul)
+- [x] X engine (craft bar + rework loop, release-caption composition, CEO-reject redraft)
+- [x] Video engine (HyperFrames craft program + motion design bar)
+- [x] Board Program registry (12 programs: Pest Control, Spackle, Scales, Dogfood, Periscope, Megaphone, Mirror, Barfly, War Room, Coroner, Librarian, Sentinel)
+- [x] Roadmap engine (replaced bespoke roadmap loop via the Board Program registry)
+- [x] Forge program (GitHub, Gitea, GitLab as first-class forges via provider-routed REST)
+- [x] Env-branches ladder (EnvSyncEngine, ordered environment ladder, sync PRs)
+- [x] Cost-tiered model routing (role:complexity rung + saved routing presets)
+- [x] Per-task and per-project cost budgets (flag-gated, claim-time spend guard)
+- [x] Eval harness (golden-task lifecycle replay + real-spawn path)
+- [x] GitHub App authentication (installation-token minting with PAT fallback)
+- [x] Org memory (learnings + error-solution + playbook knowledge base)
+- [x] Obsidian vault projection (V2: drift janitor, archival, weekly report, KB ingest)
+- [x] Possibilities matrix (work-already-done fast path to QA)
+- [x] Release manager (RoboCo Release Manager identity + CI-verifying release gate)
 
 **In Progress**
-- [x] Frontend panel (vendored under `panel/`, served through nginx on :3000)
 - [ ] Full agent autonomy testing
 
 ## Security

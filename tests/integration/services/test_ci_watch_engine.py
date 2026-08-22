@@ -35,6 +35,25 @@ class _FakeSource:
         return list(self._samples)
 
 
+class _ProbeRecordingSource:
+    """Records whether ``db`` held an open transaction when the fetch ran.
+
+    2026-07-29 pool-exhaustion regression guard: the fetch below stands in
+    for one outbound GitHub HTTP call per watched project. run_cycle must
+    release the pool connection (from the earlier is_paused read) before
+    calling this, not hold it open.
+    """
+
+    def __init__(self, db: AsyncSession, samples: list[TelemetrySample]) -> None:
+        self._db = db
+        self._samples = samples
+        self.in_transaction_at_fetch: list[bool] = []
+
+    async def fetch(self, _projects: list[object]) -> list[TelemetrySample]:
+        self.in_transaction_at_fetch.append(self._db.in_transaction())
+        return list(self._samples)
+
+
 def _breach(slug: str, *, failed: bool = True) -> TelemetrySample:
     return TelemetrySample(
         signal_name=f"ci_conclusion:{slug}",
@@ -160,6 +179,22 @@ async def test_disabled_is_noop(
     proj = await _seed_project(db_session, "red-e", "https://github.com/x/e.git")
     src = _FakeSource([_breach("red-e")])
     assert await get_ci_watch_engine(db_session, source=src).run_cycle([proj]) == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_runs_with_pool_connection_released(
+    db_session: AsyncSession,
+) -> None:
+    """2026-07-29 pool-exhaustion regression: the earlier is_paused read must
+    not still be holding a checked-out connection when the (real-world: one
+    GitHub HTTP call per watched project) telemetry fetch runs."""
+    proj = await _seed_project(db_session, "watch-a", "https://github.com/x/w.git")
+    src = _ProbeRecordingSource(db_session, [])
+    engine = get_ci_watch_engine(db_session, source=src)
+
+    await engine.run_cycle([proj])
+
+    assert src.in_transaction_at_fetch == [False]
 
 
 # ---------------------------------------------------------------------------

@@ -14,12 +14,12 @@ import contextlib
 import html
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import CursorResult, and_, event, select, update
+from sqlalchemy import CursorResult, and_, case, event, func, not_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
@@ -35,11 +35,17 @@ from roboco.foundation.policy.communications import (
     ReescalationPolicy,
     reescalation_decision,
 )
-from roboco.models.base import AgentRole, NotificationPriority, NotificationType
+from roboco.models.base import (
+    AgentRole,
+    NotificationPriority,
+    NotificationType,
+    TaskStatus,
+)
 from roboco.services.base import BaseService, NotFoundError
 from roboco.services.notification_dedup import (
     all_recipients_recently_notified,
     clear_dedup_key,
+    duplicate_unacked_notification_exists,
 )
 from roboco.services.notification_text import task_display
 from roboco.services.repositories.query_helpers import get_agent_by_role
@@ -173,10 +179,28 @@ def defer_after_commit(
 
     @event.listens_for(sync_session, "after_commit")
     def _on_commit(_sync_session: object) -> None:
+        # after_commit also fires on SAVEPOINT release (`begin_nested()`
+        # exit), before the real commit — draining there would reintroduce
+        # the phantom-notification bug this outbox exists to prevent.
+        # `get_transaction()` (the root txn) is NOT a usable discriminator:
+        # it stays non-None at a savepoint release too (verified live —
+        # SQLAlchemy dispatches before closing the just-committed
+        # SessionTransaction, so `session._transaction` hasn't reverted
+        # yet). `get_nested_transaction()` IS: only non-None while a
+        # savepoint is the active transaction, which is exactly the frame
+        # this event fires in for a savepoint release.
+        if sync_session.get_nested_transaction() is not None:
+            return
         _schedule_pending_work(session)
 
     @event.listens_for(sync_session, "after_rollback")
     def _on_rollback(_sync_session: object) -> None:
+        # Savepoint rollback keeps pending work: every registration site
+        # flushes before deferring, so work registered inside a savepoint
+        # that then rolls back is unreachable in practice. Same
+        # discriminator as `_on_commit` above.
+        if sync_session.get_nested_transaction() is not None:
+            return
         _discard_pending_work(session)
 
 
@@ -364,6 +388,74 @@ class NotificationDeliveryService(BaseService):
             reescalation_delivered_count=n.reescalation_delivered_count,
         )
 
+    async def resolve_terminal_task_escalations(self) -> int:
+        """Auto-ack every requires_ack notification whose related task has
+        gone terminal (completed/cancelled): the escalation's premise ("this
+        needs your attention") no longer holds once the task it names is
+        done, so no recipient can meaningfully act on it.
+
+        Runs every sweep tick, independent of `expires_at`: without this, an
+        unacked escalation whose task finished out from under it keeps
+        looking "pending" (feeding both `EvidenceRepo.list_pending_notifications`,
+        which drives `i_am_idle`'s soft-block, and `list_system_notifications`,
+        which drives the escalation dispatcher) and keeps re-escalating up the
+        chain via `sweep_expired_notifications` every backoff window, all the
+        way to the CEO, until its own `expires_at` (default 2 days), for work
+        that is already done. Best-effort per row, mirroring
+        `sweep_expired_notifications`'s per-row commit/rollback isolation: one
+        bad row is logged and skipped, never aborting the rest. Returns the
+        count actually resolved.
+        """
+        result = await self.session.execute(
+            select(NotificationTable)
+            .join(TaskTable, TaskTable.id == NotificationTable.related_task_id)
+            .where(
+                NotificationTable.requires_ack.is_(True),
+                TaskTable.status.in_((TaskStatus.COMPLETED, TaskStatus.CANCELLED)),
+            )
+        )
+        candidates = list(result.scalars().all())
+        row_ids = [n.id for n in candidates if not self._notification_is_fully_acked(n)]
+        now = datetime.now(UTC)
+        resolved = 0
+        for nid in row_ids:
+            try:
+                n = await self.session.get(NotificationTable, nid)
+                if n is None or self._notification_is_fully_acked(n):
+                    continue
+                self._auto_ack_terminal_task_notification(n, now)
+                await self.session.commit()
+                resolved += 1
+                self.log.info(
+                    "Auto-resolved notification: related task is terminal",
+                    notification_id=str(nid),
+                    related_task_id=str(n.related_task_id),
+                )
+            except Exception as e:
+                await self.session.rollback()
+                self.log.warning(
+                    "Terminal-task notification auto-resolve failed",
+                    notification_id=str(nid),
+                    error=str(e),
+                )
+        return resolved
+
+    @staticmethod
+    def _auto_ack_terminal_task_notification(
+        n: NotificationTable, now: datetime
+    ) -> None:
+        """Ack every not-yet-acked recipient of `n`: its related task is
+        done, so the escalation is resolved by definition rather than by a
+        human decision. Mirrors `acknowledge_for_recipient`'s acked_by/
+        acked_at write (minus the dedup-key clear, which is per-recipient
+        Redis state a bulk sweep pass has no single recipient to key off)."""
+        acked = set(n.acked_by or [])
+        newly = [r for r in cast("list[UUID]", n.to_agents or []) if r not in acked]
+        if not newly:
+            return
+        n.acked_by = [*n.acked_by, *newly]
+        n.acked_at = {**n.acked_at, **{str(r): now.isoformat() for r in newly}}
+
     async def sweep_expired_notifications(self) -> int:
         """Re-escalate (per a backoff schedule) then log ack-required
         notifications past `expires_at`.
@@ -403,21 +495,53 @@ class NotificationDeliveryService(BaseService):
             for n in stale
             if n.requires_ack and not self._notification_is_fully_acked(n)
         ]
-        for n in unacked:
-            await self._maybe_reescalate(n, now)
+        # Per-row commit scope (the sweep owns a dedicated session — the only
+        # caller is the orchestrator's _run_sweep). One tick-wide transaction
+        # held every claimed row's lock until the final commit, so a
+        # recipient's concurrent mark-read UPDATE on an already-claimed row
+        # sat blocked until it hit the 60s lock_timeout. Committing per row
+        # also isolates one row's failure from the rest of the tick.
+        #
+        # A root `rollback()` expires every object in the session, so a
+        # bad row can't stay a live ORM instance across the except block
+        # (`str(n.id)` would need an async lazy-refresh in sync context and
+        # raise MissingGreenlet) — and every LATER row in `unacked` would be
+        # expired too, breaking the whole tick on one bad row. Snapshot ids
+        # up front and re-fetch each via `session.get` (async-safe even
+        # post-expiry) instead of iterating the ORM instances directly.
+        row_ids = [n.id for n in unacked]
+        for nid in row_ids:
+            try:
+                n = await self.session.get(NotificationTable, nid)
+                if n is None:
+                    continue
+                await self._maybe_reescalate(n, now)
+                await self.session.commit()
+            except Exception as e:
+                await self.session.rollback()
+                self.log.warning(
+                    "Re-escalation failed; row skipped this tick",
+                    notification_id=str(nid),
+                    error=str(e),
+                )
         return len(unacked)
 
     async def _maybe_reescalate(self, n: NotificationTable, now: datetime) -> None:
         """Re-escalate `n` only when its backoff schedule says it's due.
 
-        `_persist_and_deliver`'s 60s dedup guard does NOT backstop a
-        concurrent double-sweep here: `BLOCKER_ESCALATION` — the type every
-        re-escalation notification is created as — is not in
-        `_LOOP_PRONE_TYPES` (notification_dedup.py), so that guard returns
-        False unconditionally for it. The real guard is
-        `_claim_reescalation_slot`'s compare-and-set: it must succeed BEFORE
-        any delivery is attempted, so two sweep ticks racing the same row
-        can never both deliver.
+        Neither of `_persist_and_deliver`'s two dedup guards backstops a
+        concurrent double-sweep here. The Redis 60s guard is a structural
+        no-op: `BLOCKER_ESCALATION` — the type every re-escalation
+        notification is created as — is not in `_LOOP_PRONE_TYPES`
+        (notification_dedup.py), so that guard returns False unconditionally
+        for it. The DB purpose-dedup guard WOULD otherwise apply to
+        `BLOCKER_ESCALATION` (it's ACK_REQUIRED_BY_TYPE), but
+        `_re_escalate_recipient` deliberately passes
+        `bypass_purpose_dedup=True` so a legitimate repeat re-escalation
+        against a still-unacked prior row is never silently dropped. The
+        real guard against double-delivery is `_claim_reescalation_slot`'s
+        compare-and-set: it must succeed BEFORE any delivery is attempted,
+        so two sweep ticks racing the same row can never both deliver.
         """
         decision = reescalation_decision(
             now=now,
@@ -433,6 +557,12 @@ class NotificationDeliveryService(BaseService):
             return  # "wait": not due yet; "capped": already logged + done
         if not await self._claim_reescalation_slot(n, now):
             return  # another sweep tick already claimed this attempt
+        # Commit the claim immediately: the row lock the CAS took is released
+        # before any delivery work (holding it across delivery is what starved
+        # concurrent mark-read/ack UPDATEs into lock_timeout), and the burned
+        # slot is durable — a delivery failure rolling it back would un-burn
+        # the attempt and re-open the retry-forever loop the cap exists for.
+        await self.session.commit()
         delivered = await self._re_escalate_unacked(n)
         n.reescalation_delivered_count += delivered
         if n.reescalation_count >= settings.notification_max_reescalations:
@@ -523,9 +653,30 @@ class NotificationDeliveryService(BaseService):
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.BLOCKER_ESCALATION],
             read_by=[],
             acked_by=[],
+            # Stamp the same TTL a first-send blocker gets so this row is
+            # itself swept + can be re-escalated further up the chain — an
+            # un-stamped row would live forever and dead-end the ladder here.
+            expires_at=(
+                datetime.now(UTC) + timedelta(hours=settings.notification_ack_ttl_hours)
+                if settings.notification_ack_ttl_hours > 0
+                else None
+            ),
         )
         try:
-            return await self._persist_and_deliver(notification)
+            # Savepoint: a mid-flush failure otherwise poisons the session for
+            # every remaining recipient of this notification (and the caller's
+            # commit), turning one bad delivery into a whole-row failure.
+            # Every attempt at this recipient rebuilds an identical
+            # BLOCKER_ESCALATION while the prior one is still unacked BY
+            # DEFINITION (that's why we're re-escalating) — bypass DB
+            # purpose-dedup so attempt 2+ isn't silently suppressed right
+            # after `_claim_reescalation_slot` already burned the attempt
+            # slot. The CAS claim upstream, not this dedup, is what prevents
+            # a genuine double-delivery.
+            async with self.session.begin_nested():
+                return await self._persist_and_deliver(
+                    notification, bypass_purpose_dedup=True
+                )
         except Exception as e:
             self.log.warning(
                 "Re-escalation deliver failed",
@@ -607,24 +758,34 @@ class NotificationDeliveryService(BaseService):
         Returns:
             Dict with counts: total, unread, pending_ack
         """
-        # Get all notifications for agent
-        base_query = select(NotificationTable).where(
-            NotificationTable.to_agents.contains([agent_id])
+        # SQL COUNT aggregates — never materialize the full row set (this is
+        # hit on every panel-bell/Telegram cockpit poll).
+        unread_case = case(
+            (not_(NotificationTable.read_by.contains([agent_id])), 1), else_=0
         )
-
-        result = await self.session.execute(base_query)
-        notifications = list(result.scalars().all())
-
-        total = len(notifications)
-        unread = sum(1 for n in notifications if agent_id not in n.read_by)
-        pending_ack = sum(
-            1 for n in notifications if n.requires_ack and agent_id not in n.acked_by
+        pending_ack_case = case(
+            (
+                and_(
+                    NotificationTable.requires_ack.is_(True),
+                    not_(NotificationTable.acked_by.contains([agent_id])),
+                ),
+                1,
+            ),
+            else_=0,
         )
+        query = select(
+            func.count().label("total"),
+            func.coalesce(func.sum(unread_case), 0).label("unread"),
+            func.coalesce(func.sum(pending_ack_case), 0).label("pending_ack"),
+        ).where(NotificationTable.to_agents.contains([agent_id]))
+
+        result = await self.session.execute(query)
+        row = result.one()
 
         return {
-            "total": total,
-            "unread": unread,
-            "pending_ack": pending_ack,
+            "total": int(row.total),
+            "unread": int(row.unread),
+            "pending_ack": int(row.pending_ack),
         }
 
     # =========================================================================
@@ -1109,22 +1270,94 @@ class NotificationDeliveryService(BaseService):
         )
 
     async def notify_ceo_of_queue_item(
-        self, *, kind: str, id8: str, extra: str = "", title: str
+        self,
+        *,
+        kind: str,
+        id8: str,
+        extra: str = "",
+        title: str,
+        related_task_id: UUID | None = None,
     ) -> None:
-        """Best-effort push DM at the moment a held draft becomes CEO-
-        actionable — release proposals, X drafts, video posts, and roadmap
-        items used to land in the approval queue silently, with no ping
-        until the CEO happened to run ``/queue``. Reuses the exact styled
-        item line and Approve/Reject/Open keyboard ``/queue`` itself renders
-        (``telegram_inbound.render_queue_item_text`` / ``build_action_keyboard``
-        — one renderer, two callers), and the same degrade-to-no-op contract
-        as ``_notify_telegram``: a credentials/network failure only logs,
-        never raises into the originating engine.
+        """Push DM plus in-app notification at the moment a held draft
+        becomes CEO-actionable: release proposals, X drafts, video posts,
+        roadmap items, and every Board Program's per-item proposals (Mirror,
+        Pest Control, Spackle, Scales, Dogfood, ...) all route through this
+        one chokepoint. Telegram reuses the exact styled item line and
+        Approve/Reject/Open keyboard ``/queue`` itself renders
+        (``telegram_inbound.render_queue_item_text`` /
+        ``build_action_keyboard``, one renderer shared by both callers) and
+        keeps its own degrade-to-no-op contract unchanged: a
+        credentials/network failure only logs, never raises into the
+        originating engine.
+
+        The in-app row is shaped like ``notify_ceo_of_escalation`` /
+        ``notify_ceo_of_pitch`` (APPROVAL/HIGH, requires_ack, since a queue
+        item genuinely needs a CEO decision the same as those do). It stays
+        independent of the Telegram half in both directions: a persist
+        failure is caught and logged here instead of propagating (which
+        would otherwise skip the Telegram send below), and a Telegram
+        failure can never undo the already-flushed row. A missing
+        ``AgentTable`` CEO row only skips the in-app half; Telegram sends off
+        stored credentials, not that row, so its behavior stays exactly what
+        it was before this method persisted anything.
+
+        ``related_task_id`` is every caller's own held/exploration task
+        (the release proposal, the X/video draft, or the queue program's
+        shared exploration task the item lives on); without it the row can
+        never resolve: ``resolve_terminal_task_escalations``'s JOIN needs it
+        to auto-ack once the underlying decision is made (the task goes
+        terminal), and ``expires_at`` (stamped below from
+        ``notification_ack_ttl_hours``) backstops the rest via the normal
+        re-escalation/permanently-unacked path, same as every other
+        ack-required notification in this file. A caller with no resolvable
+        task (none today) simply omits it and falls back to that same
+        expires_at-only backstop.
         """
         from roboco.services.telegram_inbound import (
             build_action_keyboard,
             render_queue_item_text,
         )
+
+        ceo = await self._get_ceo_agent()
+        if ceo is not None:
+            label = kind.replace("_", " ")
+            notification = NotificationTable(
+                type=NotificationType.APPROVAL,
+                priority=NotificationPriority.HIGH,
+                from_agent=ceo.id,
+                to_agents=[ceo.id],
+                subject=f"{label.title()} awaiting review: {title[:100]}",
+                body=(
+                    f"A new {label} item is ready for your review "
+                    f"(ref {id8}{f':{extra}' if extra else ''}).\n\n"
+                    f"{title}\n\n"
+                    "Approve or reject it from the Telegram push, or review "
+                    "it in the panel's queue."
+                ),
+                related_task_id=related_task_id,
+                requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
+                expires_at=(
+                    datetime.now(UTC)
+                    + timedelta(hours=settings.notification_ack_ttl_hours)
+                    if settings.notification_ack_ttl_hours > 0
+                    else None
+                ),
+            )
+            try:
+                # Every item of one proposal cycle shares (from_agent=ceo,
+                # type=APPROVAL, related_task_id, to_agents=[ceo]): the
+                # SAME shared exploration task for a multi-item cycle; the
+                # purpose-dedup guard keys ONLY on that tuple (subject/body
+                # not compared), so without the bypass every item after the
+                # first still-unacked one would be silently dropped in-app.
+                # Each is a genuinely distinct thing to review, not a resend.
+                await self._persist_and_deliver(notification, bypass_purpose_dedup=True)
+            except Exception as exc:
+                self.log.warning(
+                    "queue_item in-app notify failed (best-effort)",
+                    kind=kind,
+                    error=str(exc),
+                )
 
         text = render_queue_item_text(kind, id8, extra, title)
         reply_markup = build_action_keyboard(kind, id8, extra)
@@ -1390,6 +1623,46 @@ class NotificationDeliveryService(BaseService):
             task_id=task_id, subject=notification.subject, actionable=True
         )
 
+    async def notify_ceo_of_supersede_branch_cut_failure(
+        self,
+        *,
+        task: TaskTable,
+        task_id: UUID,
+        branch: str,
+        error: str,
+    ) -> None:
+        """CEO notification: the background branch cut exhausted retries.
+
+        The umbrella is BLOCKED with HUMAN resolver after
+        ``_MAX_BRANCH_CUT_ATTEMPTS`` failures. The CEO can unblock the task
+        (the reconciliation sweep re-runs the cut) or cancel the umbrella.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        notification = NotificationTable(
+            type=NotificationType.APPROVAL,
+            priority=NotificationPriority.HIGH,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Supersede branch cut failed: {(task.title or 'Unknown')[:60]}",
+            body=(
+                f"Task {task_display(task, task_id)} was blocked: the background "
+                f"branch cut for '{branch}' failed after multiple retries - "
+                f"{error[:300]}.\n\n"
+                "Unblock the task to re-run the branch cut (the reconciliation "
+                "sweep picks it up automatically), or cancel the task if the "
+                "git/forge credentials or repo are the problem."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
+        )
+        await self._persist_and_deliver(notification)
+        await self._notify_telegram(
+            task_id=task_id, subject=notification.subject, actionable=True
+        )
+
     async def notify_ceo_of_completion(self, *, task: TaskTable, task_id: UUID) -> None:
         """CEO-facing completion notification with the granular effort breakdown.
 
@@ -1503,6 +1776,12 @@ class NotificationDeliveryService(BaseService):
         type ``ALERT`` whose ``to_agents`` include the auditor and spawns the
         auditor with a quality-alert prompt. This producer reactivates that
         reactive dispatch path at the QA-fail / rework chokepoints.
+
+        Bypasses DB purpose-dedup: a second ``needs_revision`` on the same
+        task from the same actor is a genuine repeat rework event that must
+        still reach the auditor even while the first ALERT sits unacked —
+        suppressing it would silently stop `_dispatch_audit_work` from
+        re-spawning the auditor on later rework cycles.
         """
         auditor = await self._get_auditor_agent()
         if not auditor:
@@ -1534,7 +1813,7 @@ class NotificationDeliveryService(BaseService):
             read_by=[],
             acked_by=[],
         )
-        await self._persist_and_deliver(notification)
+        await self._persist_and_deliver(notification, bypass_purpose_dedup=True)
 
     # ------------------------------------------------------------------
     # Private helpers for recipient resolution + persist
@@ -1590,17 +1869,31 @@ class NotificationDeliveryService(BaseService):
         """Find the auditor agent (org-wide; earliest-created if many)."""
         return await get_agent_by_role(self.session, AgentRole.AUDITOR)
 
-    async def _persist_and_deliver(self, notification: NotificationTable) -> bool:
+    async def _persist_and_deliver(
+        self, notification: NotificationTable, *, bypass_purpose_dedup: bool = False
+    ) -> bool:
         """Add to session, flush (to get an id), deliver. Caller commits.
 
         Returns True iff actually persisted+delivered, False if suppressed by
-        the 60s dedup guard below. That guard only ever applies to
+        either guard below. The Redis re-fire guard only ever applies to
         `_LOOP_PRONE_TYPES` (notification_dedup.py) — BLOCKER_ESCALATION,
         the type re-escalations use, is NOT one of them, so for that path
         this always returns True or raises; the real double-delivery guard
         for re-escalations is the CAS claim in
         `NotificationDeliveryService._claim_reescalation_slot`, upstream of
-        this call.
+        this call. The DB purpose-dedup guard applies to ACK_REQUIRED_BY_TYPE
+        action-required types (BLOCKER_ESCALATION included) — a retried
+        `i_am_blocked`/escalate past the 60s Redis window still hits this.
+
+        `bypass_purpose_dedup=True` skips ONLY the DB purpose-dedup check
+        below (never the Redis re-fire guard) for a caller whose whole point
+        is to intentionally re-send an identical (sender, type, task)
+        signal — `_re_escalate_recipient` (the re-escalation ladder) and
+        `notify_auditor_of_rework` (rework ALERTs) both pass this, since the
+        prior copy being unacked is exactly why they fire again. This is
+        scoped to the CALL PATH, not the notification type, so a first-send
+        retried blocker (the gap this dedup was added to close) is still
+        deduped normally.
         """
         # Re-fire guard (loop-prone types): this path skips the DB dedup, so
         # apply the same 60s Redis SET-NX window. Fail-open on Redis down.
@@ -1617,6 +1910,35 @@ class NotificationDeliveryService(BaseService):
                 from_agent=str(notification.from_agent)
                 if notification.from_agent is not None
                 else None,
+                type=notification.type.value if notification.type is not None else None,
+                related_task_id=str(notification.related_task_id)
+                if notification.related_task_id is not None
+                else None,
+            )
+            return False
+        # DB purpose-dedup: this path (task-handoff helpers) never went
+        # through `NotificationService._create_notification`, so it never
+        # got the same-purpose/unacked check that path applies. Without it,
+        # a retried blocker/escalate past the Redis window above re-creates
+        # a second unacked row for the same (sender, type, task, recipients).
+        # Skipped entirely when the caller opted out (see docstring above).
+        is_duplicate = (
+            not bypass_purpose_dedup
+            and notification.from_agent is not None
+            and (
+                await duplicate_unacked_notification_exists(
+                    self.session,
+                    from_agent=cast("UUID", notification.from_agent),
+                    notification_type=notification.type,
+                    related_task_id=cast("UUID | None", notification.related_task_id),
+                    to_agents=cast("list[UUID]", notification.to_agents),
+                )
+            )
+        )
+        if is_duplicate:
+            _log.info(
+                "Suppressed duplicate notification (same purpose, unacked)",
+                from_agent=str(notification.from_agent),
                 type=notification.type.value if notification.type is not None else None,
                 related_task_id=str(notification.related_task_id)
                 if notification.related_task_id is not None
@@ -1731,6 +2053,23 @@ class NotificationDeliveryService(BaseService):
         if not notification.requires_ack:
             raise ValueError("This notification does not require acknowledgment")
 
+        # Drop the per-recipient Redis dedup key so a post-ack re-send of the
+        # same notification is not suppressed by a stale 60s window. The key
+        # is per (type, sender, recipient, task, subject); only loop-prone
+        # types carry one, and clear_dedup_key is a no-op fail-open for the
+        # rest. Best-effort: a Redis miss never blocks the ack. Runs BEFORE
+        # the flush so the row lock the flush takes is never held across a
+        # Redis round-trip (a stalled Redis would starve concurrent writers
+        # on this row into lock_timeout); clearing for an ack that then fails
+        # is harmless — the key is only a re-send suppression window.
+        await clear_dedup_key(
+            ntype=notification.type,
+            from_agent=cast("UUID", notification.from_agent),
+            recipient=agent_id,
+            related_task_id=cast("UUID | None", notification.related_task_id),
+            subject=notification.subject,
+        )
+
         now = datetime.now(UTC)
         if agent_id not in notification.acked_by:
             notification.acked_by = [*notification.acked_by, agent_id]
@@ -1742,18 +2081,6 @@ class NotificationDeliveryService(BaseService):
             notification.read_by = [*notification.read_by, agent_id]
 
         await self.session.flush()
-        # Drop the per-recipient Redis dedup key so a post-ack re-send of the
-        # same notification is not suppressed by a stale 60s window. The key
-        # is per (type, sender, recipient, task, subject); only loop-prone
-        # types carry one, and clear_dedup_key is a no-op fail-open for the
-        # rest. Best-effort: a Redis miss never blocks the ack.
-        await clear_dedup_key(
-            ntype=notification.type,
-            from_agent=cast("UUID", notification.from_agent),
-            recipient=agent_id,
-            related_task_id=cast("UUID | None", notification.related_task_id),
-            subject=notification.subject,
-        )
         return notification
 
     async def mark_read_for_recipient(

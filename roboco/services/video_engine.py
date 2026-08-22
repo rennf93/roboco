@@ -514,18 +514,34 @@ class VideoEngine(BaseService):
         """Originate ONE UX/UI video-authoring task for a release announcement,
         or None (no-op).
 
-        No-ops when the flag or the release sub-switch is off; the shared
-        dedup/open-cap/project checks in ``open_video_task`` cover the rest.
-        Called from ``ReleaseProposalService.approve()``'s publish success
-        branch, right beside the X-post draft hook — never invoked by a loop
-        itself.
+        No-ops when the flag or the release sub-switch is off, or while the
+        ``engines`` maintenance-pause scope is active (the CEO's own
+        on-demand ``POST /video/request`` rides ``open_video_task`` directly
+        and is deliberately NOT gated by this scope: a maintenance pause
+        drains autonomous origination, not an explicit real-time request);
+        the shared dedup/open-cap/project checks in ``open_video_task``
+        cover the rest. Called from ``ReleaseProposalService.approve()``'s
+        publish success branch, right beside the X-post draft hook, never
+        invoked by a loop itself.
+
+        This exemption is safe only because ``open_video_task`` is a
+        structurally separate function from this one -- contrast Board
+        Programs' ``POST /{key}/run-now`` (``roboco/api/routes/board_
+        programs.py``), whose own CEO-triggered manual path shares
+        ``open_program_cycle`` with the autonomous cron/metric callers and so
+        deliberately stays honoring the pause instead of mirroring this
+        exemption.
 
         The brief is the structured changelog block (built independent of
         the local model, so it stands even when the model is down); the
         LLM-drafted (or template-fallback) one-liner is only the ``script``
         prop suggestion, never the whole brief.
         """
-        if not (settings.video_engine_enabled and settings.video_on_release):
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not (
+            settings.video_engine_enabled and settings.video_on_release
+        ) or await is_paused(self.session, PauseScope.ENGINES):
             return None
         project = (
             await get_project_service(self.session).get(project_id)
@@ -624,7 +640,10 @@ class VideoEngine(BaseService):
             await get_notification_delivery_service(
                 self.session
             ).notify_ceo_of_queue_item(
-                kind="video", id8=str(task.id)[:8], title=occasion
+                kind="video",
+                id8=str(task.id)[:8],
+                title=occasion,
+                related_task_id=cast("UUID", task.id),
             )
         except Exception as exc:
             self.log.warning(

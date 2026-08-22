@@ -63,18 +63,48 @@ class CiWatchEngine(BaseService):
     async def run_cycle(self, projects: list[Any]) -> list[TaskTable]:
         """Assess the watch set and open a fix task per red repo (bounded).
 
-        No-op unless ``ci_watch_enabled``. Returns the tasks it opened. Flushes;
-        the caller (the orchestrator loop) owns the commit. Never starts /
-        approves / merges / deploys.
+        No-op unless ``ci_watch_enabled``, or while the ``engines``
+        maintenance-pause scope is active. Returns the tasks it opened.
+        Flushes; the caller (the orchestrator loop) owns the commit. Never
+        starts / approves / merges / deploys.
+
+        The pool connection is released (mirrors content_actions.evidence()'s
+        pool-release commit, 2026-07-29 pool-exhaustion incident) before the
+        telemetry fetch below, which makes one outbound GitHub HTTP call per
+        watched project - a connection must not sit checked out for that.
+        Released again right after, so the origination writes that follow
+        start from a fresh transaction regardless of what the fetch itself
+        touched.
         """
-        if not settings.ci_watch_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.ci_watch_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return []
+        await self._release_pool_connection()
         samples = await self._source.fetch(projects)
+        await self._release_pool_connection()
         breaches = [s for s in samples if s.is_breach]
         if not breaches:
             return []
         by_slug = {str(getattr(p, "slug", "")): p for p in projects}
         return await self._originate(breaches, by_slug)
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Mirrors content_actions.evidence()'s pool-release commit: the next
+        read/write reopens a fresh transaction on demand. A poisoned session
+        rolls back instead - ending the transaction is the point, either way
+        works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     async def _originate(
         self, breaches: list[Any], by_slug: dict[str, Any]

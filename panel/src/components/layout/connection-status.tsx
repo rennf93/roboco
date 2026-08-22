@@ -34,35 +34,50 @@ export function ConnectionStatus() {
     return () => clearInterval(interval);
   }, []);
 
+  // Icon-only badge: the tooltip below is now the ONLY place the state is
+  // spelled out in words, so each hint fully explains the state rather than
+  // just naming it. role="status" + aria-label give the icon-only control
+  // its accessible name (a visible label no longer exists to fall back on);
+  // aria-live announces a state change to assistive tech without re-reading
+  // on every unchanged 30s poll (aria-live only fires when content differs).
+  const hint: Record<ConnectionState, string> = {
+    checking: "Checking the orchestrator API...",
+    connected: "Orchestrator API reachable, re-checked every 30s",
+    disconnected: "Orchestrator API unreachable, retrying every 30s",
+  };
+
   const badge =
     state === "checking" ? (
-      <Badge variant="outline" className="gap-1">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        Checking...
+      <Badge
+        variant="outline"
+        className="gap-1"
+        role="status"
+        aria-live="polite"
+        aria-label={hint.checking}
+      >
+        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
       </Badge>
     ) : state === "connected" ? (
       <Badge
         variant="outline"
         className="gap-1 border-green-500 text-green-600"
+        role="status"
+        aria-live="polite"
+        aria-label={hint.connected}
       >
-        <Wifi className="h-3 w-3" />
-        Connected
+        <Wifi className="h-3 w-3" aria-hidden="true" />
       </Badge>
     ) : (
       <Badge
         variant="outline"
         className="gap-1 border-orange-500 text-orange-600"
+        role="status"
+        aria-live="polite"
+        aria-label={hint.disconnected}
       >
-        <WifiOff className="h-3 w-3" />
-        Offline
+        <WifiOff className="h-3 w-3" aria-hidden="true" />
       </Badge>
     );
-
-  const hint: Record<ConnectionState, string> = {
-    checking: "Checking the orchestrator API…",
-    connected: "Orchestrator API reachable — re-checked every 30s",
-    disconnected: "Orchestrator API unreachable — retrying every 30s",
-  };
 
   return (
     <Tooltip>

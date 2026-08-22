@@ -262,7 +262,7 @@ async def test_cloud_auth_valid_session_cookie_passes(
     client, orch = orch_client
     fake_user = MagicMock()
     with patch(
-        "roboco.api.routes.orchestrator.resolve_session_user",
+        "roboco.api.utils.orchestrator.resolve_session_user",
         new=AsyncMock(return_value=fake_user),
     ):
         r = await client.post(
@@ -288,7 +288,7 @@ async def test_cloud_auth_invalid_session_cookie_rejected(
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     client, orch = orch_client
     with patch(
-        "roboco.api.routes.orchestrator.resolve_session_user",
+        "roboco.api.utils.orchestrator.resolve_session_user",
         new=AsyncMock(return_value=None),
     ):
         r = await client.post(

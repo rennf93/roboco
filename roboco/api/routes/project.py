@@ -4,13 +4,10 @@ Project API Routes
 CRUD operations for managing git projects/repositories.
 """
 
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-
-if TYPE_CHECKING:
-    from roboco.db.tables import ProjectTable
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -33,14 +30,14 @@ from roboco.api.schemas.project import (
     project_to_response,
     project_to_summary,
 )
+from roboco.api.utils.project import action_response as _action_response
+from roboco.api.utils.project import get_project_or_404 as _get_project_or_404
 from roboco.foundation.policy.conventions.models import ConventionsStandard
 from roboco.models.base import Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
-from roboco.services.conventions import (
-    ScaffoldResult,
-    get_conventions_service,
-)
-from roboco.services.project import ProjectService, get_project_service
+from roboco.security import guard_deco
+from roboco.services.conventions import get_conventions_service
+from roboco.services.project import get_project_service
 
 router = APIRouter()
 
@@ -145,6 +142,12 @@ async def get_project(
 
 
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600, action="log")
 async def create_project(
     data: ProjectCreateRequest,
     db: DbSession,
@@ -205,6 +208,12 @@ async def create_project(
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600, action="log")
 async def update_project(
     project_id: str,
     data: ProjectUpdateRequest,
@@ -261,6 +270,7 @@ async def update_project(
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@guard_deco.rate_limit(requests=20, window=60)
 async def delete_project(
     project_id: str,
     db: DbSession,
@@ -307,6 +317,9 @@ async def delete_project(
 
 
 @router.post("/{project_id}/workspace", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def set_workspace(
     project_id: str,
     data: SetWorkspaceRequest,
@@ -346,6 +359,9 @@ async def set_workspace(
 
 
 @router.post("/{project_id}/sync", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.content_type_filter(["application/json"])
 async def update_sync_state(
     project_id: str,
     data: SyncStateRequest,
@@ -388,6 +404,7 @@ async def update_sync_state(
 
 
 @router.post("/{project_id}/access/{agent_id}", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=30, window=60)
 async def add_agent_access(
     project_id: str,
     agent_id: UUID,
@@ -428,6 +445,7 @@ async def add_agent_access(
 
 
 @router.delete("/{project_id}/access/{agent_id}", response_model=ProjectResponse)
+@guard_deco.rate_limit(requests=30, window=60)
 async def remove_agent_access(
     project_id: str,
     agent_id: UUID,
@@ -469,28 +487,6 @@ async def remove_agent_access(
 # =============================================================================
 
 
-async def _get_project_or_404(
-    service: ProjectService, project_id: str
-) -> "ProjectTable":
-    """Resolve a project by UUID or slug, raising 404 when absent."""
-    try:
-        project = await service.get(UUID(project_id))
-    except ValueError:
-        project = await service.get_by_slug(project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project not found: {project_id}",
-        )
-    return project
-
-
-def _action_response(result: ScaffoldResult) -> ConventionsActionResponse:
-    return ConventionsActionResponse(
-        pr_number=result.pr_number, branch=result.branch, created=result.created
-    )
-
-
 @router.get("/{project_id}/conventions", response_model=ConventionsResponse)
 async def get_conventions(
     project_id: str,
@@ -518,6 +514,10 @@ async def get_conventions(
 
 
 @router.put("/{project_id}/conventions", response_model=ConventionsActionResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.block_clouds()
 async def update_conventions(
     project_id: str,
     standard: ConventionsStandard,
@@ -535,6 +535,8 @@ async def update_conventions(
 @router.post(
     "/{project_id}/conventions/restore", response_model=ConventionsActionResponse
 )
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.block_clouds()
 async def restore_conventions(
     project_id: str,
     db: DbSession,

@@ -15,13 +15,13 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.tasks import (
-    _translate_error,
     get_awaiting_ceo_approval_tasks,
     get_awaiting_pm_review_tasks,
 )
 from roboco.api.routes.tasks import (
     router as tasks_router,
 )
+from roboco.api.utils.tasks import _translate_error
 from roboco.config import settings
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
 from roboco.exceptions import GitError, TaskLifecycleError
@@ -798,6 +798,53 @@ async def test_unblock_unknown_returns_404(task_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_assign_review_pm_unknown_returns_404(task_client: dict) -> None:
+    client = task_client["client"]
+    response = await client.post(f"/api/tasks/{uuid4()}/assign-review-pm", headers=_HDR)
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_places_owning_pm(task_client: dict) -> None:
+    """The orchestrator's recovery seam: a review task with no (or a stale)
+    owner is placed with the real team-resolved PM — CLAIM_RULES has no
+    claim() edge into AWAITING_PM_REVIEW for the normal route to do this.
+
+    Resolves the expected PM via the real ``main_pm_agent()`` query rather
+    than assuming this fixture's own agent — the test DB is shared/cumulative
+    across the module, and "earliest-created" main_pm may be an older row
+    from an earlier test.
+    """
+    setup = task_client
+    client = setup["client"]
+    task = _seed_task(
+        setup,
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        team=Team.MAIN_PM,
+        assigned_to=None,
+    )
+    await setup["db"].commit()
+    expected_pm = await TaskService(setup["db"]).main_pm_agent()
+    assert expected_pm is not None
+
+    response = await client.post(f"/api/tasks/{task.id}/assign-review-pm", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["assigned_to"] == str(expected_pm.id)
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_rejects_non_review_status(task_client: dict) -> None:
+    setup = task_client
+    client = setup["client"]
+    task = _seed_task(setup, status=TaskStatus.IN_PROGRESS)
+    await setup["db"].commit()
+
+    response = await client.post(f"/api/tasks/{task.id}/assign-review-pm", headers=_HDR)
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.asyncio
 async def test_pause_unknown_returns_404(task_client: dict) -> None:
     client = task_client["client"]
     response = await client.post(f"/api/tasks/{uuid4()}/pause", headers=_HDR)
@@ -1182,7 +1229,6 @@ async def test_unblock_task_not_blocked_returns_400(task_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_unblock_task_forbidden(task_client: dict) -> None:
-
     other = await _seed_agent(task_client)
     task = _seed_task(task_client, status=TaskStatus.BLOCKED, assigned_to=other.id)
     await task_client["db"].flush()
@@ -1615,7 +1661,6 @@ async def test_activate_unknown_returns_4xx(task_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_activate_developer_forbidden(task_client: dict) -> None:
-
     app = task_client["client"]._transport.app
 
     async def _override_agent() -> AgentContext:
@@ -1668,7 +1713,6 @@ async def test_get_team_tasks_unauthorized(task_client: dict) -> None:
 async def test_get_task_stats_by_team_developer_forbidden(
     task_client: dict,
 ) -> None:
-
     app = task_client["client"]._transport.app
 
     async def _override_agent() -> AgentContext:
@@ -1779,7 +1823,6 @@ async def test_delete_task_forbidden_non_creator(task_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_developer_forbidden(task_client: dict) -> None:
-
     task = _seed_task(task_client)
     await task_client["db"].flush()
     app = task_client["client"]._transport.app

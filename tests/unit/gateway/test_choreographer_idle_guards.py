@@ -303,3 +303,72 @@ async def test_i_am_idle_still_blocks_dev_with_non_lane_held_pending() -> None:
     assert body["error"] == "invalid_state"
     assert "i_will_work_on" in body["remediate"]
     task_svc.mark_agent_idle.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Pending ack-required notifications (the fe-pm terminal-task incident).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_soft_blocks_pending_ack_for_notify_ack_role() -> None:
+    """A role that carries notify_ack (cell_pm) is soft-blocked on a pending
+    ack-required notification, and told the exact tool + notification_id to
+    call, not just a generic "clear your inbox"."""
+    agent_id = uuid4()
+    nid = str(uuid4())
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = []
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm")
+    deps = _make_deps(task=task_svc)
+    deps.evidence_repo.list_pending_notifications.return_value = [
+        {"notification_id": nid, "subject": "Re-escalation (unacked): blocked"}
+    ]
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["status"] == "idle_with_unread"
+    assert "notify_ack" in body["next"]
+    assert nid in body["next"]
+    task_svc.mark_agent_idle.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_pending_ack_never_blocks_role_without_notify_ack() -> None:
+    """A role without notify_ack (pr_reviewer) is never soft-blocked on a
+    pending ack-required notification: it could never satisfy the gate, so
+    blocking it would be a permanent dead-end rather than a fixable one."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = []
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="pr_reviewer")
+    deps = _make_deps(task=task_svc)
+    deps.evidence_repo.list_pending_notifications.return_value = [
+        {"notification_id": str(uuid4()), "subject": "stale escalation"}
+    ]
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["status"] == "idle"
+    task_svc.mark_agent_idle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pending_ack_notifications_skips_role_lookup_when_empty() -> None:
+    """The ack gate's own role lookup only fires when there is something
+    pending: no query on the common empty-inbox path (isolated from the
+    other idle_guards, which independently call agent_for of their own)."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    out = await c._pending_ack_notifications(agent_id, {"pending_notifications": []})
+    assert out == []
+    task_svc.agent_for.assert_not_awaited()

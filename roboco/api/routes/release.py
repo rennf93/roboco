@@ -6,65 +6,26 @@ cancels the proposal (freeing the one-open dedup for a fresh re-assessment).
 Nothing here publishes without the CEO's explicit POST.
 """
 
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.release import (
     ReleaseExecuteResponse,
-    ReleaseGapModel,
     ReleaseProposalResponse,
     ReleaseRejectRequest,
-    ReleaseReportModel,
 )
-from roboco.foundation.policy.content import markers
+from roboco.api.utils.release import _require_ceo, _to_response
 from roboco.security import guard_deco
 from roboco.services.release_proposal import (
     dispatch_approve,
     get_release_proposal_service,
-    is_approve_in_flight,
 )
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on release proposals")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> ReleaseProposalResponse:
-    report = markers.get_release_report(task) or {}
-    outcome = markers.get_release_execute_outcome(task)
-    return ReleaseProposalResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        required_changes=markers.get_release_required_changes(task),
-        execute_status=outcome[0] if outcome else None,
-        execute_detail=outcome[1] if outcome else None,
-        execute_in_flight=is_approve_in_flight(UUID(str(task.id))),
-        report=ReleaseReportModel(
-            proposed_version=report.get("proposed_version", ""),
-            bump_kind=report.get("bump_kind", ""),
-            change_summary=report.get("change_summary", []),
-            drafted_changelog=report.get("drafted_changelog", ""),
-            version_bump_plan=report.get("version_bump_plan", []),
-            gaps=[ReleaseGapModel(**gap) for gap in report.get("gaps", [])],
-            migration_notes=report.get("migration_notes", []),
-            gate_state=report.get("gate_state", "unknown"),
-        ),
-    )
 
 
 @router.get("/proposal", response_model=ReleaseProposalResponse)

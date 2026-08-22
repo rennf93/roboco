@@ -146,6 +146,13 @@ async def get_usage_spawn_waste(
     - by_role: per-role spawn count + unproductive count (0 output tokens) + pct
     - respawn_strikes: current wedged agent/task pairs the circuit breaker counts
     - total_spawns / unproductive_spawns / unproductive_pct: fleet totals
+
+    "Unproductive" here means zero OUTPUT TOKENS on an Anthropic session — a
+    DIFFERENT definition from ``GET /api/dashboard/metrics/spawn-waste``
+    (``MetricsService.get_spawn_waste_metrics``), which prices zero
+    forward-progress SIGNAL (no status advance/commit/progress/journal entry
+    in the session's window) and is the one the Fable-mode doctrine
+    dashboard rides.
     """
     svc = get_usage_service(db)
     return await svc.get_spawn_waste(period)

@@ -2,27 +2,23 @@
 credentials. CEO-only throughout. Nothing here posts except an explicit
 ``approve``; credentials are write-only (the API never returns plaintext)."""
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
-from roboco.api.schemas.project_fields import task_project_fields
+from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.x import (
-    XBarflyRefModel,
-    XCampaignRefModel,
     XCredentialsSetRequest,
     XCredentialsStatus,
-    XFeatureRefModel,
-    XMentionRefModel,
     XPostApproveRequest,
     XPostExecuteResponse,
     XPostHistoryResponse,
     XPostRejectRequest,
     XPostResponse,
 )
-from roboco.foundation.policy.content import markers
+from roboco.api.utils.x import require_ceo as _require_ceo
+from roboco.api.utils.x import to_history_response as _to_history_response
+from roboco.api.utils.x import to_response as _to_response
 from roboco.security import guard_deco
 from roboco.services.x_credentials import (
     XCredentialsValidationError,
@@ -30,44 +26,7 @@ from roboco.services.x_credentials import (
 )
 from roboco.services.x_post_service import XPostBodyTooLongError, get_x_post_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the X engine queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> XPostResponse:
-    body = markers.get_x_draft_body(task) or task.description or ""
-    mention = markers.get_x_mention_ref(task)
-    feature = markers.get_x_feature_ref(task)
-    campaign = markers.get_x_campaign_ref(task)
-    barfly = markers.get_barfly_reply_ref(task)
-    project_slug, project_name = task_project_fields(task)
-    return XPostResponse(
-        task_id=str(task.id),
-        source=task.source,
-        title=task.title,
-        status=_status_value(task),
-        body=body,
-        char_count=len(body),
-        release_version=markers.get_x_release_version(task),
-        mention=XMentionRefModel(**mention) if mention else None,
-        feature=XFeatureRefModel(**feature) if feature else None,
-        campaign=XCampaignRefModel(**campaign) if campaign else None,
-        barfly=XBarflyRefModel(**barfly) if barfly else None,
-        reject_reason=markers.get_x_reject_reason(task),
-        project_slug=project_slug,
-        project_name=project_name,
-    )
 
 
 @router.get("/posts", response_model=list[XPostResponse])
@@ -78,33 +37,6 @@ async def list_x_posts(
     _require_ceo(agent)
     tasks = await get_x_post_service(db).list_open_posts()
     return [_to_response(t) for t in tasks]
-
-
-def _to_history_response(task: "TaskTable") -> XPostHistoryResponse:
-    body = markers.get_x_draft_body(task) or task.description or ""
-    mention = markers.get_x_mention_ref(task)
-    feature = markers.get_x_feature_ref(task)
-    campaign = markers.get_x_campaign_ref(task)
-    barfly = markers.get_barfly_reply_ref(task)
-    project_slug, project_name = task_project_fields(task)
-    return XPostHistoryResponse(
-        task_id=str(task.id),
-        source=task.source,
-        title=task.title,
-        status=_status_value(task),
-        body=body,
-        char_count=len(body),
-        release_version=markers.get_x_release_version(task),
-        mention=XMentionRefModel(**mention) if mention else None,
-        feature=XFeatureRefModel(**feature) if feature else None,
-        campaign=XCampaignRefModel(**campaign) if campaign else None,
-        barfly=XBarflyRefModel(**barfly) if barfly else None,
-        tweet_id=markers.get_x_posted_tweet_id(task),
-        reject_reason=markers.get_x_reject_reason(task),
-        acted_at=task.updated_at or task.created_at,
-        project_slug=project_slug,
-        project_name=project_name,
-    )
 
 
 @router.get("/posts/history", response_model=list[XPostHistoryResponse])

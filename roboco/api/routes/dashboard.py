@@ -19,37 +19,23 @@ from roboco.api.schemas.dashboard import (
     CreateFlagRequest,
     CreateReportRequest,
     FlagSeverity,
+    StalledTaskResponse,
     TeamHealth,
     UsageSummary,
 )
-from roboco.models import AgentRole
+from roboco.api.utils.dashboard import require_auditor_or_ceo as _require_auditor_or_ceo
 from roboco.models.base import Team
 from roboco.models.dashboard import CreateFlagParams
 from roboco.services.dashboard import get_dashboard_service
 from roboco.services.kanban import get_kanban_service
 from roboco.services.metrics import get_metrics_service
+from roboco.services.task import get_task_service
 from roboco.services.usage import get_usage_service
 
 # Router-level panel gate (mirrors usage.py): every dashboard view is
 # panel-facing — the metrics/scorecard handlers take only DbSession, so
 # without this they'd be reachable unauthenticated on a public origin.
 router = APIRouter(dependencies=[Depends(require_panel_token)])
-
-# The auditor flag/report mutating routes are gated to the Auditor and the
-# CEO. The Auditor is the silent-observer role whose flags/reports feed the
-# CEO; the CEO overrides. Mirrors ``_require_curator`` in playbooks.py and
-# ``_require_ceo`` in release.py. Read-only auditor views (``GET
-# /auditor/flags``, ``GET /auditor/reports``, ``GET /auditor``) stay open —
-# the dashboard is observable by any authenticated operator.
-_AUDITOR_OR_CEO_ROLES = frozenset({AgentRole.AUDITOR, AgentRole.CEO})
-
-
-def _require_auditor_or_ceo(agent: CurrentAgentContext) -> None:
-    if agent.role not in _AUDITOR_OR_CEO_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the Auditor or CEO may mutate auditor flags or reports",
-        )
 
 
 # =============================================================================
@@ -556,6 +542,40 @@ async def get_rework(
     return report.to_dict()
 
 
+@router.get("/metrics/spawn-waste")
+async def get_spawn_waste(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """Spawn sessions that advanced nothing on their task, priced, by agent/team/task.
+
+    "Unproductive" here means zero forward-progress SIGNAL (no status
+    advance, commit, progress update, or journal entry within the session's
+    own window) — see ``MetricsService.get_spawn_waste_metrics``. This is a
+    DIFFERENT definition from ``GET /api/usage/spawn-waste``
+    (``UsageService.get_spawn_waste``), which flags zero OUTPUT TOKENS on an
+    Anthropic session. This is the endpoint the Fable-mode doctrine
+    dashboard rides.
+    """
+    metrics_service = get_metrics_service(db)
+    report = await metrics_service.get_spawn_waste_metrics(days=days)
+    return report.to_dict()
+
+
+@router.get("/metrics/provenance")
+async def get_provenance(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """Human- vs agent-originated task counts, classified by each task's ROOT
+    ancestor source (a delegated subtask's own `source` always reads
+    "manual" regardless of who really kicked off the work, see
+    `MetricsService.get_provenance_metrics`)."""
+    metrics_service = get_metrics_service(db)
+    report = await metrics_service.get_provenance_metrics(days=days)
+    return report.to_dict()
+
+
 @router.get("/metrics/scorecard/agent/{agent_id}")
 async def get_agent_scorecard(
     agent_id: UUID,
@@ -658,3 +678,32 @@ async def get_org_scorecard(
     metrics_service = get_metrics_service(db)
     card = await metrics_service.get_org_scorecard(team=team, days=days)
     return card.to_dict()
+
+
+# =============================================================================
+# STALLED-TASK VISIBILITY: durable give-up markers, readable without logs
+# =============================================================================
+
+
+@router.get("/stalled-tasks", response_model=list[StalledTaskResponse])
+async def get_stalled_tasks(
+    db: DbSession,
+) -> list[StalledTaskResponse]:
+    """The current stalled set: tasks the dispatcher's respawn breaker gave up
+    on. Per entry: task id/title/assignee, current status, why it stalled,
+    and how long. Query/classification logic lives in TaskService."""
+    task_service = get_task_service(db)
+    entries = await task_service.list_stalled_tasks()
+    return [
+        StalledTaskResponse(
+            task_id=e.task_id,
+            title=e.title,
+            assignee_id=e.assignee_id,
+            assignee_slug=e.assignee_slug,
+            status=e.status,
+            reason=e.reason,
+            stalled_since=e.stalled_since,
+            stalled_seconds=e.stalled_seconds,
+        )
+        for e in entries
+    ]

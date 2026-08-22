@@ -108,7 +108,7 @@ def _exp_from_jwt(token: str) -> datetime | None:
     if not isinstance(payload, dict):
         return None
     exp = payload.get("exp")
-    if not isinstance(exp, (int, float)):
+    if not isinstance(exp, int | float):
         return None
     return datetime.fromtimestamp(float(exp), tz=UTC)
 

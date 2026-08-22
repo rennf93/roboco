@@ -125,6 +125,48 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=20, ge=0)
     database_pool_timeout: int = Field(default=10, ge=1)
     database_pool_recycle: int = Field(default=1800, ge=60)
+    # A SEPARATE, smaller engine/pool for the orchestrator's background engine
+    # loops (self-heal, ci-watch, dep-update, env-sync, release-manager,
+    # x-mentions, board-program, video-render, the vault engines, telegram
+    # poll, strategy-engine, see roboco.db.base.get_engine(pool=...)) so a
+    # long-held background connection can never starve an agent-facing
+    # FastAPI request queued on the primary pool. FastAPI's get_db /
+    # get_db_committed always use the primary pool; only these loops opt in
+    # via get_db_context(pool="background"). Ceiling with the primary pool's
+    # 30 is 38 against max_connections=100 (25 already in use at idle per the
+    # 2026-07-29 incident measurement), leaving headroom for the backup
+    # container, psql, and Alembic.
+    database_background_pool_size: int = Field(default=4, ge=1)
+    database_background_max_overflow: int = Field(default=4, ge=0)
+    # Server-side guards against the lock-convoy incident class (2026-07-29):
+    # a session parked mid-transaction on non-DB work (git subprocess, an
+    # asyncio lock queue) holds its row locks + pooled connection until
+    # Postgres kills it; a statement queued on someone else's row lock gives
+    # up instead of camping on a pool slot. 0 disables (Postgres semantics).
+    # The idle default MUST clear the longest legitimate in-transaction
+    # window: a cold-workspace claim holds its transaction across the clone
+    # (workspace_clone_timeout, 300s) + dep install
+    # (workspace_dep_install_timeout_seconds, 600s) under the 900s
+    # flow_verb_slow_timeout_seconds wall — hence 20 min, not tighter.
+    database_idle_in_transaction_timeout_ms: int = Field(
+        default=1_200_000,
+        ge=0,
+        description=(
+            "Postgres idle_in_transaction_session_timeout for app "
+            "connections, in ms; 0 disables. Keep above "
+            "flow_verb_slow_timeout_seconds — claim verbs legitimately hold "
+            "a transaction across cold clone + dep install"
+        ),
+    )
+    database_lock_timeout_ms: int = Field(
+        default=60_000,
+        ge=0,
+        description=(
+            "Postgres lock_timeout for app connections, in ms; 0 disables. "
+            "A blocked statement burns a pool connection for the whole wait, "
+            "so this stays tight; losers get a clean retryable error"
+        ),
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -750,7 +792,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 7.2.0) — DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 7.6.0 / guard-core 3.12.0), DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
@@ -771,8 +813,9 @@ class Settings(BaseSettings):
         description=(
             "Fail CLOSED: when a security check raises an unhandled error, block "
             "the request instead of letting it through. Secure default for "
-            "cloud/public hosting; the NAS compose overrides this to false so a "
-            "guard-internal bug never 500s the operator's personal deploy."
+            "cloud/public hosting; the NAS compose ships this same true default "
+            "(fail-secure ON) now that the redis-blip 500 class is handled by "
+            "redis_fail_open + roboco.security's behavioral-path patch instead."
         ),
     )
     guard_passive_mode: bool = Field(
@@ -834,6 +877,42 @@ class Settings(BaseSettings):
             "bridge pool nginx itself connects FROM (still trusted "
             "unconditionally so nginx can keep presenting XFF at all) — this "
             "only scopes which XFF entries are treated as hops."
+        ),
+    )
+    guard_log_suspicious_level: (
+        Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None
+    ) = Field(
+        default="WARNING",
+        description=(
+            "Log level for guard-core's suspicious-path log lines: IP bans, "
+            "blocked countries, and every BehaviorTracker ban/log/throttle "
+            "line share this one dial (guard-core 3.10.0 replaced a patchwork "
+            "of hardcoded WARNINGs with it). Default 'WARNING' is guard-core's "
+            "own default, so behavior is byte-for-byte unchanged unless an "
+            "operator sets this. CRITICAL: setting this to empty/None "
+            "silences IP-ban logging too, not just WAF noise, so a quieter "
+            "WAF also loses the ban audit trail. An invalid level (anything "
+            "outside DEBUG/INFO/WARNING/ERROR/CRITICAL) fails config load "
+            "instead of silently mis-configuring the WAF; empty string is "
+            "accepted as the env-settable spelling of None."
+        ),
+    )
+
+    @field_validator("guard_log_suspicious_level", mode="before")
+    @classmethod
+    def _empty_guard_log_suspicious_level_as_none(cls, v: object) -> object:
+        # Env vars are always strings, so an operator has no textual way to
+        # express Python None for this Literal field short of leaving it
+        # empty; the Literal itself still rejects anything else invalid.
+        return None if v == "" else v
+
+    guard_scan_response_body: bool = Field(
+        default=False,
+        description=(
+            "Let the guard's return_pattern behavior rules inspect response "
+            "bodies, not just status codes. Off by default: byte-for-byte "
+            "unchanged behavior, and roboco's own status:404/status:401 "
+            "rules never need it."
         ),
     )
 
@@ -1143,6 +1222,16 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
         description="Cosine-similarity floor for injected memory; below it, none.",
+    )
+    institutional_memory_timeout_seconds: float = Field(
+        default=8.0,
+        gt=0,
+        description=(
+            "Deadline for the institutional-memory RAG search (embed + query) "
+            "during a claim briefing. RAG memory is a nice-to-have enrichment "
+            "— tight on purpose, so a saturated embedder can never burn the "
+            "verb's whole timeout budget and 504 the claim."
+        ),
     )
 
     # Sandboxed per-agent-spawn DB/Redis — orchestrator-provisioned throwaway
@@ -1695,6 +1784,45 @@ class Settings(BaseSettings):
             "self-hosted runner can far exceed the sub-second local-op "
             "default; short-budgeting it is what made open_pr time out before "
             "the branch reached the remote."
+        ),
+    )
+    git_diff_timeout_seconds: int = Field(
+        default=60,
+        ge=5,
+        description=(
+            'Wall-clock timeout in seconds for GET /api/git/diff\'s "diff" '
+            "stage — the two sequential local `git diff` / `git diff --stat` "
+            "subprocess calls together. Each call is already bounded "
+            "individually by git_command_timeout_seconds inside "
+            "GitService._run_git; this is the outer bound on the pair so a "
+            "stalled diff route fails closed with a 504 instead of hanging."
+        ),
+    )
+    evidence_assembly_timeout_seconds: float = Field(
+        default=45.0,
+        ge=1.0,
+        description=(
+            "TOTAL budget for one advisory-evidence build (branch fetch, "
+            "diff, list_changed_files — every slow leg) on claim_review / "
+            "claim_doc_task / claim_gate_review / evidence() / i_am_done's "
+            "success envelope. A `LegBudget` (roboco.services.gateway."
+            "choreographer.evidence_legs) is created once per build and "
+            "shared across every leg in it — each leg's wait_for gets only "
+            "what's left of this total, shrinking as legs consume it, so "
+            "summing per-leg budgets can never exceed this cap (and stays "
+            "well under flow_verb_timeout_seconds). A hung leg degrades "
+            "(evidence_gaps) instead of taking the whole verb down with it."
+        ),
+    )
+    conventions_validator_advisory_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        description=(
+            "Ceiling for the conventions-validator subprocess on the "
+            "ADVISORY claim path (claim_review) — the actual budget used is "
+            "min(this, the build's remaining evidence_assembly_timeout_seconds), "
+            "so it also shrinks with the shared LegBudget. Fail-closed paths "
+            "(i_am_done, pr_pass) keep their own hardcoded cap unchanged."
         ),
     )
 

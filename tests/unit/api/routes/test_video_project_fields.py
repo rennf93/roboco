@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from roboco.api.routes.video import (
+from roboco.api.utils.video import (
     _to_history_response,
     _to_pipeline_item,
     _to_response,

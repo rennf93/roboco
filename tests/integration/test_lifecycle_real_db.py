@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -36,6 +36,7 @@ from roboco.models.base import (
     Team,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.services.base import UnauthorizedError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 
@@ -92,9 +93,17 @@ class _StubGit:
     pr_number / commits state without disk or network I/O.
     """
 
-    def __init__(self, session: Any, task: TaskTable) -> None:
+    def __init__(
+        self,
+        session: Any,
+        task: TaskTable,
+        ceo_only_branch: str | None = None,
+    ) -> None:
         self._session = session
         self._task = task
+        # When set, pr_merge raises CEO_ONLY for this target, mirroring the
+        # production guard that reserves the head env branch for the CEO.
+        self._ceo_only_branch = ceo_only_branch
 
     async def commit(
         self,
@@ -156,11 +165,39 @@ class _StubGit:
         del branch_name, base, actor_agent_id
         return []
 
+    async def diff_and_files(
+        self,
+        *,
+        branch_name: str,
+        base: Any = None,
+        actor_agent_id: Any = None,
+        preferred_parent: Any = None,
+    ) -> tuple[str, list[str]]:
+        del preferred_parent
+        return (
+            await self.diff(
+                branch_name=branch_name, base=base, actor_agent_id=actor_agent_id
+            ),
+            await self.list_changed_files(
+                branch_name=branch_name, base=base, actor_agent_id=actor_agent_id
+            ),
+        )
+
     async def pr_target(self, pr_number: int, *, actor_agent_id: Any = None) -> str:
         del pr_number, actor_agent_id
         return "main"
 
     async def pr_merge(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        target = kwargs.get("target")
+        if self._ceo_only_branch and target == self._ceo_only_branch:
+            raise UnauthorizedError(
+                action="pr_merge",
+                reason=(
+                    f"CEO_ONLY: merging into '{target}' (this project's head"
+                    " environment branch) is reserved for the CEO via"
+                    " approve-&-merge"
+                ),
+            )
         del args, kwargs
         return {
             "merged": True,
@@ -653,6 +690,142 @@ async def test_doc_path(
     del cell_pm_agent  # asserted indirectly via cell_pm_for_team.
 
 
+@pytest.mark.asyncio
+async def test_doc_path_survives_handoff_failure_real_session(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """Round-2 regression (#doc-savepoint-expiry): _handoff_to_cell_pm's
+    `reassign()` mutates + flushes `t` inside the `begin_nested()` savepoint,
+    then `a2a.send` raises. On a REAL AsyncSession the savepoint rollback
+    fully expires every attribute of `t` — reading `t.status` /
+    `with_introspection(task=t, ...)` right after the except without
+    refreshing first raises `MissingGreenlet`, which propagates uncaught and
+    rolls back the WHOLE request (discarding the docs_complete transition the
+    warning claims survived). The equivalent unit test
+    (`test_i_documented_survives_handoff_failure`) mocks the session, so it
+    cannot reproduce this — a mock has no real ORM expiry semantics.
+    """
+    task = lifecycle_setup["task"]
+    doc_agent = lifecycle_setup["doc_agent"]
+
+    task.status = TaskStatus.AWAITING_DOCUMENTATION
+    task.pr_number = _PR_NUMBER
+    task.pr_url = _PR_URL
+    task.pr_created = True
+    task.qa_verified = True
+    task.assigned_to = None
+    task.commits = [
+        {"sha": uuid4().hex[:40], "message": "feat: /healthz", "task_id": str(task.id)}
+    ]
+    await db_session.flush()
+
+    task_service = TaskService(db_session)
+    # reassign() (a real write) runs BEFORE a2a.send inside _handoff_to_cell_pm
+    # — this raises only after that mutation has already flushed.
+    broken_a2a = AsyncMock()
+    broken_a2a.send.side_effect = RuntimeError("a2a down")
+    deps = ChoreographerDeps(
+        task=task_service,
+        work_session=_mock_work_session(),
+        git=_StubGit(db_session, task),
+        a2a=broken_a2a,
+        journal=_mock_journal_with_reflect(),
+        audit=AsyncMock(),
+        evidence_repo=_mock_evidence_repo(),
+    )
+    c = Choreographer(deps)
+
+    env = await c.claim_doc_task(doc_agent.id, task.id)
+    assert env.error is None, f"claim_doc_task failed: {env.message}"
+
+    env = await c.i_documented(
+        doc_agent.id,
+        task.id,
+        notes="Documented /healthz behaviour in docs/api/health.md",
+        files=["docs/api/health.md"],
+    )
+    body = env.as_dict()
+    # Must not 500 / propagate — this is the exact assertion that raises
+    # MissingGreenlet without the session.refresh(t) fix, since `status`
+    # reads `t.status` on the savepoint-expired object.
+    assert body["error"] is None, body
+    assert body.get("warning") is not None
+    assert "handoff" in body["warning"].lower()
+    assert body["status"] == Status.AWAITING_PM_REVIEW.value
+
+    final = await task_service.get(task.id)
+    assert final is not None
+    assert str(final.status) == Status.AWAITING_PM_REVIEW.value
+    assert final.docs_complete is True
+
+
+@pytest.mark.asyncio
+async def test_inherit_upstream_base_survives_flush_failure_real_session(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """Round-2 regression (#task-savepoint-expiry): the conflict branch
+    mutates `task` (the conflict marker + dev_notes) then `flush()`es inside
+    the `begin_nested()` savepoint. On a REAL AsyncSession a flush() failure
+    there rolls back the savepoint and fully expires every attribute of
+    `task` — the real caller (`claim_task_for_agent` ->
+    `_create_work_session_if_needed`) reads `task.project_id`/
+    `task.branch_name` right after this returns; `MissingGreenlet` is not an
+    `AttributeError`, so a `getattr` guard would not shield it, killing the
+    claim despite "never fails the claim". Forces a real, one-shot flush()
+    failure via monkeypatch — the closest realistic trigger to an actual DB
+    hiccup — mirroring `tests/unit/services/test_task_base_inheritance.py`'s
+    own project/git stubbing, but against a REAL session (that unit test's
+    mocked session cannot reproduce ORM expiry at all).
+    """
+    task = lifecycle_setup["task"]
+    project = lifecycle_setup["project"]
+    task.branch_name = "feature/backend/AAA--BBB"
+    await db_session.flush()
+
+    task_service = TaskService(db_session)
+
+    # Drive _inherit_upstream_base into the "conflict" branch (mutate +
+    # flush), mirroring the unit test's own project/git stubbing.
+    proj_svc = MagicMock()
+    proj_svc.get = AsyncMock(return_value=project)
+    git_svc = MagicMock()
+    git_svc.get_workspace = AsyncMock(return_value=MagicMock())
+    git_svc.merge_dependency_lineage = AsyncMock(
+        return_value={"status": "conflict", "files": ["a.py"]}
+    )
+    object.__setattr__(
+        task_service,
+        "_resolve_parent_branch",
+        AsyncMock(return_value="feature/main_pm/root"),
+    )
+
+    real_flush = db_session.flush
+    calls = {"n": 0}
+
+    async def _flush_once_boom() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated flush failure")
+        await real_flush()
+
+    with (
+        patch(
+            "roboco.services.project.get_project_service",
+            MagicMock(return_value=proj_svc),
+        ),
+        patch("roboco.services.git.get_git_service", MagicMock(return_value=git_svc)),
+        patch.object(db_session, "flush", _flush_once_boom),
+    ):
+        await task_service._inherit_upstream_base(task, uuid4())  # must not raise
+
+    # `task` must be readable afterward — the exact access pattern
+    # `_create_work_session_if_needed` performs right after this call
+    # returns in the real claim flow. Raises MissingGreenlet without the
+    # session.refresh(task) fix in the except block.
+    assert task.project_id == project.id
+    assert task.branch_name == "feature/backend/AAA--BBB"
+
+
 # ---------------------------------------------------------------------------
 # 5. PM complete (Cell PM, simple task): awaiting_pm_review → completed
 # ---------------------------------------------------------------------------
@@ -696,6 +869,100 @@ async def test_pm_complete_simple_task(
     final = await task_service.get(task.id)
     assert final is not None
     assert str(final.status) == Status.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_routes_ceo_only_head_branch_to_ceo(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """awaiting_pm_review leaf whose parent is a branchless coordination root
+    resolves its merge target to the project head env branch ('main'). pr_merge
+    is CEO-only there, so cell_pm_complete must catch the CEO_ONLY refusal and
+    route the leaf to awaiting_ceo_approval via the REAL TaskService (not a
+    mocked escalate_to_ceo), exercising the cell_pm role-bypass on the
+    awaiting_pm_review -> awaiting_ceo_approval transition. This is the exact
+    gap PR 883 left: its unit test mocked escalate_to_ceo, so the role gate
+    (cell_pm not in the spec-pinned allowed roles) was never exercised and the
+    integration suite caught it only on CI. Live: 5612b225/PR 856, 5b780794.
+    """
+    cell_pm_agent = lifecycle_setup["cell_pm_agent"]
+    project = lifecycle_setup["project"]
+    system_agent = lifecycle_setup["system_agent"]
+
+    # A branchless coordination-root parent: no branch of its own, so
+    # resolve_parent_branch falls back to the project head branch ('main').
+    parent = TaskTable(
+        id=uuid4(),
+        title="Coordinate the cell",
+        description="Branchless coordination root",
+        status=TaskStatus.COMPLETED,
+        priority=1,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        team=Team.BACKEND,
+        project_id=project.id,
+        created_by=system_agent.id,
+        assigned_to=cell_pm_agent.id,
+        branch_name=None,
+        acceptance_criteria=["Ship the cell"],
+    )
+    db_session.add(parent)
+    await db_session.flush()
+
+    leaf = TaskTable(
+        id=uuid4(),
+        title="Add /healthz endpoint",
+        description="Return 200 OK from /healthz",
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        team=Team.BACKEND,
+        project_id=project.id,
+        created_by=system_agent.id,
+        assigned_to=cell_pm_agent.id,
+        parent_task_id=parent.id,
+        branch_name=_BRANCH,
+        pr_number=_PR_NUMBER,
+        pr_url=_PR_URL,
+        pr_created=True,
+        qa_verified=True,
+        docs_complete=True,
+        commits=[{"sha": uuid4().hex[:40], "message": "feat: /healthz", "task_id": ""}],
+        acceptance_criteria=["Returns 200", "Includes timestamp"],
+        acceptance_criteria_status=[
+            {"criterion": "Returns 200", "referencing_artifact_id": "stub"},
+            {"criterion": "Includes timestamp", "referencing_artifact_id": "stub"},
+        ],
+    )
+    db_session.add(leaf)
+    await db_session.flush()
+
+    task_service = TaskService(db_session)
+    # ceo_only_branch='main' makes the stub's pr_merge raise CEO_ONLY for the
+    # head branch, exactly as the production guard does (git.py pr_merge).
+    deps = ChoreographerDeps(
+        task=task_service,
+        work_session=_mock_work_session(),
+        git=_StubGit(db_session, leaf, ceo_only_branch="main"),
+        a2a=AsyncMock(),
+        journal=_mock_journal_with_reflect(),
+        audit=AsyncMock(),
+        evidence_repo=_mock_evidence_repo(),
+    )
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(
+        cell_pm_agent.id,
+        UUID(str(leaf.id)),
+        notes="LGTM - routing to CEO for the head-branch merge.",
+    )
+    assert env.error is None, f"complete failed: {env.message}"
+    assert env.status == Status.AWAITING_CEO_APPROVAL.value
+
+    final = await task_service.get(UUID(str(leaf.id)))
+    assert final is not None
+    assert str(final.status) == Status.AWAITING_CEO_APPROVAL.value
 
 
 async def _seed_reviewer(db_session: AsyncSession) -> AgentTable:
@@ -763,10 +1030,22 @@ async def test_pr_review_gate_pass_path(
     assert reviewer_row.status == AgentStatus.ACTIVE
     assert reviewer_row.current_task_id == task.id
 
+    # Resolved via the same team-based query pr_pass itself uses (rather than
+    # assumed to be this fixture's own cell_pm_agent) — the shared/cumulative
+    # integration DB may carry other BACKEND/CELL_PM agents from earlier
+    # tests, and _agent_with_role_and_team has no ordering guarantee.
+    expected_pm = await svc.cell_pm_for_team(Team.BACKEND)
+    assert expected_pm is not None
+
     passed = await svc.pr_pass(reviewer_id, task.id, notes="integration verified")
     assert passed is not None
     assert str(passed.status) == Status.AWAITING_PM_REVIEW.value
-    assert passed.assigned_to is None  # cleared so the PM-closure dispatch routes
+    # Hands off to the owning cell PM (team-resolved) rather than clearing —
+    # AWAITING_PM_REVIEW has no claim() edge, so an unassigned task here has
+    # no way back to a PM.
+    assert passed.assigned_to == expected_pm.id
+    assert passed.claimed_by == expected_pm.id
+    assert passed.active_claimant_id is None
     # pr_pass releases the reviewer's fleet marker too.
     reviewer_row = await db_session.get(AgentTable, reviewer_id)
     assert reviewer_row is not None

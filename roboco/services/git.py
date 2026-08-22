@@ -135,6 +135,24 @@ def _completed_branchful_children(children: list[Any]) -> list[Any]:
     ]
 
 
+# Matches a unified diff's per-file header, e.g. "diff --git a/x.py b/x.py".
+_DIFF_GIT_HEADER_RE = re.compile(r"^diff --git a/.+ b/(.+)$")
+
+
+def _files_changed_from_diff(diff_text: str) -> list[str]:
+    """Best-effort changed-file list recovered from a full diff's headers.
+
+    Fallback for ``diff_and_files`` when the dedicated ``--name-only`` leg
+    fails but the full-diff leg succeeded: parsing the ``diff --git``
+    headers already present in ``diff_text`` beats returning an empty list
+    a reader can't tell apart from "no files changed". Not authoritative
+    (a quoted path with an embedded " b/" sequence can slip through),
+    only used when the real ``--name-only`` leg is unavailable.
+    """
+    matches = (_DIFF_GIT_HEADER_RE.match(line) for line in diff_text.splitlines())
+    return [m.group(1) for m in matches if m]
+
+
 def _network_git_timeout() -> int:
     """Budget for git ops that talk to origin (fetch / pull / push).
 
@@ -448,6 +466,13 @@ class GitService(BaseService):
         with "unable to append to .git/logs/refs/heads/...". A read-only
         op (status, log, diff, ...) never writes, so it skips the repair
         entirely.
+
+        This is also the ONE chokepoint every root-side git write routes
+        through, so it's where the ownership-repair root-sentinel marker
+        (``_ensure_agent_owned``'s ``.git/roboco-owned``, workspace.py) gets
+        invalidated — BEFORE the op runs, since the op is what's about to
+        create new root-owned files a live marker would otherwise let a
+        later ``_ensure_agent_owned`` call wrongly skip.
         """
         effective_timeout = timeout if timeout is not None else _default_git_timeout()
 
@@ -477,6 +502,12 @@ class GitService(BaseService):
 
         loop = asyncio.get_running_loop()
         op = " ".join(args[:2])
+        if _git_ownership_scope(args) != "none":
+            from roboco.services.workspace import invalidate_owned_marker
+
+            await loop.run_in_executor(
+                _GIT_EXECUTOR, invalidate_owned_marker, workspace
+            )
         t0 = time.monotonic()
         try:
             result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
@@ -574,7 +605,11 @@ class GitService(BaseService):
         return await self._token_for_project(parts[0])
 
     async def get_workspace(
-        self, project_slug: str, agent_id: UUID | None = None
+        self,
+        project_slug: str,
+        agent_id: UUID | None = None,
+        *,
+        skip_refresh: bool = False,
     ) -> Path:
         """Get the workspace path for an agent on a project."""
         project_service = get_project_service(self.session)
@@ -602,6 +637,7 @@ class GitService(BaseService):
                     agent_id=agent_id,
                     git_url=project.git_url,
                     default_branch=head_branch(project),
+                    skip_refresh=skip_refresh,
                 )
             else:
                 workspace = await workspace_service.resolve_workspace(
@@ -1074,19 +1110,24 @@ class GitService(BaseService):
         """
         task_service = get_task_service(self.session)
         try:
-            task = await task_service.get(task_uuid)
-            await task_service.add_commit(
-                task_id=task_uuid,
-                hash=commit_hash,
-                message=message,
-                agent_id=agent_id,
-            )
-            if task and task.work_session_id:
-                work_session_service = get_work_session_service(self.session)
-                await work_session_service.add_commit(
-                    require_uuid(task.work_session_id), commit_hash
+            # Savepoint: the flush below would otherwise poison the shared
+            # session on a mid-flush failure — this runs on every commit
+            # (POST /git/commit), and the route has no explicit commit of
+            # its own; DbCommitMiddleware commits the response regardless.
+            async with self.session.begin_nested():
+                task = await task_service.get(task_uuid)
+                await task_service.add_commit(
+                    task_id=task_uuid,
+                    hash=commit_hash,
+                    message=message,
+                    agent_id=agent_id,
                 )
-            await self.session.flush()
+                if task and task.work_session_id:
+                    work_session_service = get_work_session_service(self.session)
+                    await work_session_service.add_commit(
+                        require_uuid(task.work_session_id), commit_hash
+                    )
+                await self.session.flush()
         except Exception as e:
             self.log.warning(
                 "Commit linking failed; commit present on branch but "
@@ -2253,6 +2294,32 @@ class GitService(BaseService):
             return cast("dict[str, Any]", existing.json()[0])
         return None
 
+    async def resolve_repo_and_token(
+        self, project_slug: str
+    ) -> tuple[RepoRef, str] | None:
+        """DB-only resolve of a project's repo ref + decrypted token.
+
+        Split out of ``list_open_prs``/``get_latest_ci_conclusion`` so a
+        caller that wants to release its pool connection before the network
+        call can do the DB reads here FIRST, release, then call the
+        ``*_for`` IO-only sibling with the returned values - a resolve
+        immediately followed by a fresh DB read holds the pool connection
+        through whatever slow call comes next, so the split matters, not
+        just the release's position. None on a missing project/git_url,
+        an unparseable remote, or a missing token.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        try:
+            repo_ref = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        return repo_ref, git_token
+
     async def list_open_prs(self, project_slug: str) -> list[dict[str, Any]]:
         """List a project's open PRs, normalized with fork/author classification.
 
@@ -2265,16 +2332,21 @@ class GitService(BaseService):
         trust. Returns ``[]`` on a missing token, unparseable remote, or any
         GitHub error — it never raises into the poll loop.
         """
-        project = await get_project_service(self.session).get_by_slug(project_slug)
-        if project is None or not project.git_url:
+        resolved = await self.resolve_repo_and_token(project_slug)
+        if resolved is None:
             return []
-        try:
-            repo_ref = self._parse_git_url(project.git_url)
-        except GitError:
-            return []
-        git_token = await self._token_for_project(project_slug)
-        if not git_token:
-            return []
+        repo_ref, git_token = resolved
+        return await self.list_open_prs_for(project_slug, repo_ref, git_token)
+
+    async def list_open_prs_for(
+        self, project_slug: str, repo_ref: RepoRef, git_token: str
+    ) -> list[dict[str, Any]]:
+        """IO-only half of ``list_open_prs``: no DB reads, just the GitHub call.
+
+        Takes an already-resolved ``repo_ref``/``git_token`` (see
+        ``resolve_repo_and_token``) so a caller can release its pool
+        connection before this runs. Returns ``[]`` on any GitHub error.
+        """
         raw = await self._fetch_open_prs(project_slug, repo_ref, git_token)
         if raw is None:
             return []
@@ -2332,6 +2404,37 @@ class GitService(BaseService):
             "author_association": pr.get("author_association"),
         }
 
+    async def resolve_ci_query(
+        self, project_slug: str, *, branch: str | None = None
+    ) -> _CiRunQuery | None:
+        """DB-only resolve of the inputs ``get_latest_ci_conclusion`` needs.
+
+        Split out for the same pool-release reason as ``resolve_repo_and_token``:
+        a caller releases its connection after this, then calls
+        ``get_latest_ci_conclusion_for`` with the returned query - an IO-only
+        call that performs no DB reads of its own. None on a missing
+        project/git_url, an unparseable remote, or a missing token.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        try:
+            repo_ref = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        # Default to the head rung (where dev work and the release gate look);
+        # the release-commit CI wait overrides with the prod rung, where the
+        # pushed release commit actually lives.
+        return _CiRunQuery(
+            project_slug=project_slug,
+            repo_ref=repo_ref,
+            branch=branch or head_branch(project),
+            git_token=git_token,
+        )
+
     async def get_latest_ci_conclusion(
         self,
         project_slug: str,
@@ -2356,26 +2459,25 @@ class GitService(BaseService):
         with no matching Actions runs (a repo that doesn't use GitHub Actions
         yields no signal, not a false one). It never raises into the poll loop.
         """
-        project = await get_project_service(self.session).get_by_slug(project_slug)
-        if project is None or not project.git_url:
+        query = await self.resolve_ci_query(project_slug, branch=branch)
+        if query is None:
             return None
-        try:
-            repo_ref = self._parse_git_url(project.git_url)
-        except GitError:
-            return None
-        git_token = await self._token_for_project(project_slug)
-        if not git_token:
-            return None
-        # Default to the head rung (where dev work and the release gate look);
-        # the release-commit CI wait overrides with the prod rung, where the
-        # pushed release commit actually lives.
-        branch = branch or head_branch(project)
-        query = _CiRunQuery(
-            project_slug=project_slug,
-            repo_ref=repo_ref,
-            branch=branch,
-            git_token=git_token,
+        return await self.get_latest_ci_conclusion_for(
+            query, workflow=workflow, head_sha=head_sha
         )
+
+    async def get_latest_ci_conclusion_for(
+        self,
+        query: _CiRunQuery,
+        *,
+        workflow: str | None = None,
+        head_sha: str | None = None,
+    ) -> dict[str, Any] | None:
+        """IO-only half of ``get_latest_ci_conclusion``: no DB reads.
+
+        Takes an already-resolved ``query`` (see ``resolve_ci_query``) so a
+        caller can release its pool connection before this runs.
+        """
         run = await self._fetch_latest_ci_run(query, workflow, head_sha)
         if run is None:
             return None
@@ -2384,7 +2486,7 @@ class GitService(BaseService):
             "head_sha": run.get("head_sha"),
             "run_url": run.get("html_url") or "",
             "run_name": run.get("name") or "",
-            "branch": branch,
+            "branch": query.branch,
             "completed_at": run.get("updated_at"),
         }
 
@@ -5655,10 +5757,54 @@ class GitService(BaseService):
                 f"origin/{base_branch}...origin/{task.branch_name}",
             ],
         )
-        left, _, right = count.stdout.strip().partition(" ")
-        behind = int(left) if left.strip().isdigit() else 0
-        ahead = int(right) if right.strip().isdigit() else 0
+        # `git rev-list --left-right --count` separates the two counts with a
+        # TAB, not a space — `.partition(" ")` (the original parse here) never
+        # found one and silently fell through to 0/0 on every real branch,
+        # masking every genuine ahead count behind this method (harmless for
+        # the pre-existing `behind`-only callers, since a false "0 behind"
+        # just skips an unneeded freshen; not harmless for a caller that
+        # needs `ahead`). `.split()` is whitespace-agnostic, matching the
+        # already-correct sibling parse in `_ahead_behind` above.
+        parts = count.stdout.split()
+        valid = len(parts) == _REV_LIST_PARTS
+        behind = int(parts[0]) if valid and parts[0].isdigit() else 0
+        ahead = int(parts[1]) if valid and parts[1].isdigit() else 0
         return behind, ahead
+
+    async def comment_pull_request(
+        self,
+        pr_number: int,
+        *,
+        project_id: UUID,
+        comment: str,
+    ) -> None:
+        """Post a comment on PR ``pr_number`` without closing it.
+
+        Resolves the repo ref and git token directly from the project record
+        (NOT from a workspace clone) so the comment never triggers a 300s
+        clone. Used by the supersede flow to notify the contributor at
+        supersede time and at close-on-land.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise NotFoundError("PR", str(pr_number))
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project for task", str(task.id))
+
+        git_token = await self._get_project_token_or_raise(project.slug)
+        repo_ref = self._parse_git_url(project.git_url)
+        await self._forge.create_issue_comment(repo_ref, git_token, pr_number, comment)
 
     async def close_pull_request(
         self,
@@ -5940,6 +6086,35 @@ class GitService(BaseService):
             return origin_ref
         return branch_name
 
+    async def _resolve_diff_refs(
+        self,
+        *,
+        branch_name: str,
+        base: str | None,
+        actor_agent_id: UUID | None,
+        preferred_parent: str | None,
+    ) -> tuple[Any, str, str]:
+        """One (workspace, head_ref, base_ref) resolution for a diff-family call.
+
+        ``diff``, ``list_changed_files``, and ``diff_and_files`` each need the
+        identical four sequential lookups (workspace, token, head ref, base
+        ref) before they can run a ``git diff`` — factored out once so it
+        isn't duplicated per method body.
+        """
+        workspace = await self._workspace_for_branch(
+            branch_name, actor_agent_id=actor_agent_id
+        )
+        token = await self._token_for_branch(branch_name)
+        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
+        base_ref = (
+            base
+            if base is not None
+            else await self._resolve_diff_base(
+                workspace, branch_name, token=token, preferred_parent=preferred_parent
+            )
+        )
+        return workspace, head_ref, base_ref
+
     async def diff(
         self,
         *,
@@ -5963,18 +6138,17 @@ class GitService(BaseService):
         overrides the derived-parent lookup (see ``_resolve_diff_base``) for
         a caller with an authoritative parent branch name (a cross-team
         assembled-PR review) — never a literal ref like ``base="HEAD~1"``.
+
+        A caller that also needs ``list_changed_files`` for the same branch
+        should use ``diff_and_files`` instead — it resolves once and runs
+        both git subprocesses concurrently rather than paying this
+        resolution (and a second subprocess) twice.
         """
-        workspace = await self._workspace_for_branch(
-            branch_name, actor_agent_id=actor_agent_id
-        )
-        token = await self._token_for_branch(branch_name)
-        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
-        base_ref = (
-            base
-            if base is not None
-            else await self._resolve_diff_base(
-                workspace, branch_name, token=token, preferred_parent=preferred_parent
-            )
+        workspace, head_ref, base_ref = await self._resolve_diff_refs(
+            branch_name=branch_name,
+            base=base,
+            actor_agent_id=actor_agent_id,
+            preferred_parent=preferred_parent,
         )
         diff_result = await self._run_git(
             workspace, ["diff", f"{base_ref}...{head_ref}"], check=False
@@ -5998,18 +6172,14 @@ class GitService(BaseService):
         (which the gateway commit() does not call). Empty paths are
         skipped; output preserves git's order. Same default-
         branch fallback as ``diff`` (including ``preferred_parent``).
+
+        See ``diff_and_files`` when a caller needs both legs together.
         """
-        workspace = await self._workspace_for_branch(
-            branch_name, actor_agent_id=actor_agent_id
-        )
-        token = await self._token_for_branch(branch_name)
-        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
-        base_ref = (
-            base
-            if base is not None
-            else await self._resolve_diff_base(
-                workspace, branch_name, token=token, preferred_parent=preferred_parent
-            )
+        workspace, head_ref, base_ref = await self._resolve_diff_refs(
+            branch_name=branch_name,
+            base=base,
+            actor_agent_id=actor_agent_id,
+            preferred_parent=preferred_parent,
         )
         result = await self._run_git(
             workspace,
@@ -6017,6 +6187,89 @@ class GitService(BaseService):
             check=False,
         )
         return [line for line in result.stdout.splitlines() if line.strip()]
+
+    async def diff_and_files(
+        self,
+        *,
+        branch_name: str,
+        base: str | None = None,
+        actor_agent_id: UUID | None = None,
+        preferred_parent: str | None = None,
+    ) -> tuple[str, list[str]]:
+        """Return ``(diff, changed_files)`` for `branch_name` against `base`.
+
+        The combined form of ``diff`` + ``list_changed_files``: every caller
+        that previously awaited both in sequence
+        (``_build_qa_claim_evidence``, ``content_actions.evidence``)
+        re-resolved the identical workspace / token / head-ref / base-ref
+        FOUR times over and spawned two independent ``git diff`` subprocesses
+        back to back. This resolves once (``_resolve_diff_refs``) and runs
+        the full diff and the ``--name-only`` diff CONCURRENTLY off that
+        single resolution — halving the git-subprocess wall time on top of
+        removing the duplicate resolution.
+
+        Per-leg fault isolation: ``return_exceptions=True`` so a failure or
+        timeout in ONE subprocess degrades only that leg instead of
+        discarding an already-succeeded sibling result (a bare ``gather()``
+        cancels/loses the completed leg the instant the other raises). Only
+        when BOTH legs fail does the exception propagate, degrading exactly
+        as before via the caller's ``run_bounded_leg``.
+
+        A single-leg failure is NOT silent: it logs a structured warning
+        naming the leg and the underlying error, and, when the
+        ``--name-only`` leg is the one that failed, recovers the changed
+        file list from the full diff's own ``diff --git`` headers
+        (``_files_changed_from_diff``) instead of returning an empty list a
+        reader can't tell apart from "no files changed". The reverse case
+        (diff leg fails, name-only leg succeeds) has no equivalent recovery:
+        an empty diff text next to a non-empty file list is already
+        self-evidently incomplete to a reader.
+        """
+        workspace, head_ref, base_ref = await self._resolve_diff_refs(
+            branch_name=branch_name,
+            base=base,
+            actor_agent_id=actor_agent_id,
+            preferred_parent=preferred_parent,
+        )
+        spec = f"{base_ref}...{head_ref}"
+        diff_result, files_result = await asyncio.gather(
+            self._run_git(workspace, ["diff", spec], check=False),
+            self._run_git(workspace, ["diff", "--name-only", spec], check=False),
+            return_exceptions=True,
+        )
+        if isinstance(diff_result, BaseException) and isinstance(
+            files_result, BaseException
+        ):
+            raise diff_result
+        if isinstance(diff_result, BaseException):
+            self._log_diff_leg_failure("diff", branch_name, diff_result)
+            diff_text = ""
+        else:
+            diff_text = diff_result.stdout
+        if isinstance(files_result, BaseException):
+            self._log_diff_leg_failure("diff --name-only", branch_name, files_result)
+            files = _files_changed_from_diff(diff_text)
+        else:
+            files = [line for line in files_result.stdout.splitlines() if line.strip()]
+        return diff_text, files
+
+    def _log_diff_leg_failure(
+        self, leg: str, branch_name: str, error: BaseException
+    ) -> None:
+        """Structured warning for a degraded ``diff_and_files`` leg.
+
+        The only visibility a single-leg failure gets: `gather`'s
+        ``return_exceptions=True`` isolation means the caller's own
+        ``run_bounded_leg`` never sees this exception (it only propagates
+        when BOTH legs fail), so nothing else logs it.
+        """
+        self.log.warning(
+            "diff_and_files_leg_failed",
+            leg=leg,
+            branch_name=branch_name,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
 
     async def read_file_at_branch(
         self,
@@ -6133,6 +6386,8 @@ class GitService(BaseService):
         task: Any,
         *,
         preferred_parent: str | None = None,
+        timeout: float | None = None,
+        changed_files: list[str] | None = None,
     ) -> dict[str, Any]:
         """Run the conventions validator on a task's changed files.
 
@@ -6147,6 +6402,19 @@ class GitService(BaseService):
 
         ``preferred_parent`` threads to ``list_changed_files`` — the in-path
         PR-review gate's cross-team parent (see ``diff``'s docstring).
+
+        ``timeout`` overrides the validator subprocess's default budget
+        (``_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS``) — the advisory
+        ``claim_review`` path passes ``settings.
+        conventions_validator_advisory_timeout_seconds`` here; every
+        fail-closed caller (``i_am_done``, ``pr_pass``) omits it and keeps
+        the longer hardcoded cap.
+
+        ``changed_files`` lets a caller that already resolved the branch's
+        changed-file list (e.g. via ``diff_and_files``) thread it straight
+        in instead of paying for a THIRD ``list_changed_files`` resolution
+        + subprocess on top of the caller's own diff/files legs. Omit it
+        (the default) to keep the prior self-resolving behavior.
 
         The changed-file LIST above comes from git objects (``list_changed_files``
         fetches + diffs ``origin/<branch>``); the validator below reads CONTENT
@@ -6177,10 +6445,14 @@ class GitService(BaseService):
             clone_root = await self._workspace_for_branch(
                 branch, actor_agent_id=actor_agent_id
             )
-            changed = await self.list_changed_files(
-                branch_name=branch,
-                actor_agent_id=actor_agent_id,
-                preferred_parent=preferred_parent,
+            changed = (
+                changed_files
+                if changed_files is not None
+                else await self.list_changed_files(
+                    branch_name=branch,
+                    actor_agent_id=actor_agent_id,
+                    preferred_parent=preferred_parent,
+                )
             )
         except Exception as exc:
             return {
@@ -6196,11 +6468,16 @@ class GitService(BaseService):
         # content and false-passes on newly-added files.
         workspace = self._worktree_for_task(clone_root, require_uuid(task.id))
         await self._ensure_worktree_for_commit(clone_root, workspace, branch)
-        return await self._run_conventions_validator(workspace, changed)
+        return await self._run_conventions_validator(
+            workspace, changed, timeout=timeout
+        )
 
     async def _run_conventions_validator(
-        self, workspace: Path, files: list[str]
+        self, workspace: Path, files: list[str], *, timeout: float | None = None
     ) -> dict[str, Any]:
+        effective_timeout = (
+            timeout if timeout is not None else _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS
+        )
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -6216,7 +6493,7 @@ class GitService(BaseService):
         try:
             out, err = await asyncio.wait_for(
                 proc.communicate(),
-                timeout=_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS,
+                timeout=effective_timeout,
             )
         except TimeoutError:
             # Fail closed (could_not_run=True → block gate refuses the submit),
@@ -6227,10 +6504,7 @@ class GitService(BaseService):
             return {
                 "findings": [],
                 "could_not_run": True,
-                "reason": (
-                    f"validator timed out after "
-                    f"{_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS}s"
-                ),
+                "reason": (f"validator timed out after {effective_timeout}s"),
             }
         if proc.returncode != 0:
             reason = err.decode(errors="replace").strip() or "validator crashed"

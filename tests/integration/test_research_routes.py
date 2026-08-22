@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 from roboco.api.routes import research as research_route
 from roboco.api.schemas.research import FetchRequest, SearchRequest
+from roboco.api.utils import research as research_utils
 from roboco.models import AgentRole
 from roboco.models.permissions import AgentContext
 from roboco.services.research import (
@@ -63,7 +64,7 @@ def _allow_quota(monkeypatch: pytest.MonkeyPatch, *, allowed: bool = True) -> No
     async def _check(_agent_id: str, limit: int, **_: object) -> QuotaStatus:
         return QuotaStatus(allowed=allowed, used=1, limit=limit, day="2026-06-15")
 
-    monkeypatch.setattr(research_route._quota_tracker, "check_and_consume", _check)
+    monkeypatch.setattr(research_utils._quota_tracker, "check_and_consume", _check)
 
 
 def _install_service(monkeypatch: pytest.MonkeyPatch, service: _FakeService) -> None:

@@ -105,6 +105,7 @@ async def test_dispatch_pm_work_routes_barfly_source_away_from_board() -> None:
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=[task])
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._resolve_agent_slug = MagicMock(return_value="head-marketing")
     stub._BOARD_AGENTS = frozenset({"product-owner", "head-marketing"})
     stub._dispatch_roadmap_exploration = AsyncMock()
@@ -155,6 +156,16 @@ def test_barfly_prompt_names_never_invent_a_tweet() -> None:
     orch = _make_orch()
     prompt = orch._build_barfly_prompt(_barfly_task())
     assert "never invent a tweet" in prompt.lower()
+
+
+def test_barfly_prompt_names_no_links_in_reply_body() -> None:
+    """The platform appends the conversation's own URL server-side
+    (materialize_barfly_reply); the prompt must tell the drafting agent not
+    to add a second one of its own."""
+    orch = _make_orch()
+    prompt = orch._build_barfly_prompt(_barfly_task())
+    assert "appends the conversation's own URL" in prompt
+    assert "reply_body itself must contain NO links" in prompt
 
 
 def test_barfly_prompt_renders_candidates() -> None:

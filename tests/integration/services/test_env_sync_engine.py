@@ -64,6 +64,28 @@ class _FakeGit:
         }
 
 
+class _ProbeRecordingGit(_FakeGit):
+    """Records whether ``db`` held an open transaction when the cascade's
+    first GitHub call ran.
+
+    2026-07-29 pool-exhaustion regression guard: ``sync_env_branch`` stands
+    in for a real GitHub merges-API call. ``run_cycle`` must release the
+    pool connection (from the preceding ``_should_sync`` read) before
+    calling this, not hold it open.
+    """
+
+    def __init__(self, db: AsyncSession, statuses: list[str]) -> None:
+        super().__init__(statuses)
+        self._db = db
+        self.in_transaction_at_sync: list[bool] = []
+
+    async def sync_env_branch(
+        self, slug: str, target_branch: str, source_branch: str
+    ) -> dict[str, Any]:
+        self.in_transaction_at_sync.append(self._db.in_transaction())
+        return await super().sync_env_branch(slug, target_branch, source_branch)
+
+
 async def _get_or_create_agent(
     db: AsyncSession, agent_id: object, role: AgentRole, slug: str
 ) -> None:
@@ -255,6 +277,22 @@ async def test_deduped_per_repo(
     assert second == []
     assert fake2.sync_calls == []  # cascade paused at the conflicted rung
     assert len(await get_task_service(db_session).list_open_env_sync_tasks()) == 1
+
+
+@pytest.mark.asyncio
+async def test_cascade_runs_with_pool_connection_released(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-07-29 pool-exhaustion regression: the preceding _should_sync read
+    must not still be holding a checked-out connection when the (real-world:
+    GitHub merges-API) cascade call runs."""
+    proj = await _seed_project(db_session, "pool-a", "https://github.com/x/pool.git")
+    fake = _ProbeRecordingGit(db_session, ["merged"])
+    _patch_git(monkeypatch, fake)
+
+    await get_env_sync_engine(db_session).run_cycle([proj])
+
+    assert fake.in_transaction_at_sync == [False]
 
 
 @pytest.mark.asyncio

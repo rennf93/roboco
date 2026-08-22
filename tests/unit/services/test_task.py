@@ -61,6 +61,15 @@ def _build_task(**overrides: object) -> MagicMock:
         "blocker_raised_by": None,
         "commits": [],
         "dev_notes": None,
+        # Same MagicMock-autocreate trap as batch_id below: reassign() now
+        # reads active_claimant_id (to_python_uuid chokes on an unconfigured
+        # mock child), so every task-shaped mock here needs a real default.
+        "active_claimant_id": None,
+        # An unconfigured MagicMock attribute auto-creates a truthy child
+        # mock, not None, so batch_id must default to None explicitly or
+        # every plain (non-MegaTask) task-shaped mock here would silently
+        # read as a batch root-subtask to is_batch_root_subtask.
+        "batch_id": None,
     }
     base.update(overrides)
     return MagicMock(**base)
@@ -619,6 +628,23 @@ async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collision_sequencing_notify_rides_task_service_session() -> None:
+    """2026-07-29: the held-back task row is uncommitted in this transaction —
+    the notification must ride the SAME session or its related_task_id FK
+    fails (ForeignKeyViolationError seen live in cell_pm/delegate)."""
+    session = MagicMock(flush=AsyncMock())
+    svc = TaskService(session)
+    mock_ns = MagicMock()
+    mock_ns.send_collision_sequencing_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc._notify_collision_sequencing(uuid4(), uuid4(), None)
+    kwargs = mock_ns.send_collision_sequencing_notification.await_args.kwargs
+    assert kwargs["db_session"] is session
+
+
+@pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
     agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE, current_task_id=uuid4())
     result = MagicMock()
@@ -1149,6 +1175,182 @@ async def test_request_changes_rejects_wrong_status() -> None:
     assert out is None
 
 
+# ---------------------------------------------------------------------------
+# pr_pass / assign_review_pm — the #740 fix (d87e2d9b) removed the illegal
+# awaiting_pm_review -> claimed re-claim edge, which was also load-bearing:
+# it was the only way a PM re-acquired ownership after the PR gate cleared
+# it. pr_pass now hands off to the owning PM instead (mirrors pr_fail); the
+# unassigned-or-stale recovery seam is assign_review_pm.
+# ---------------------------------------------------------------------------
+
+
+def _pr_pass_svc(task: MagicMock, *, owning_pm: object) -> TaskService:
+    """A TaskService with pr_pass's helper calls stubbed — isolates the
+    ownership-handoff logic from `_validate_and_set_status`'s real
+    enforcement-layer transition/git-requirement checks (already covered
+    elsewhere) and from `_record_pr_review`'s note-writing side effect."""
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_validate_and_set_status", MagicMock())
+    _bind(svc, "_record_pr_review", MagicMock())
+    _bind(svc, "_clear_agent_current_task", AsyncMock())
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=owning_pm))
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_assigns_owning_cell_pm() -> None:
+    """A cell-team assembled task hands off to the resolved cell PM instead
+    of clearing ownership — AWAITING_PM_REVIEW has no claim() edge back in."""
+    reviewer = uuid4()
+    cell_pm = SimpleNamespace(id=uuid4())
+    task = _build_task(
+        status=TaskStatus.AWAITING_PR_REVIEW,
+        claimed_by=reviewer,
+        active_claimant_id=reviewer,
+    )
+    svc = _pr_pass_svc(task, owning_pm=cell_pm)
+    out = await svc.pr_pass(reviewer, task.id, "clean, ship it")
+    assert out is task
+    assert task.assigned_to == cell_pm.id
+    assert task.claimed_by == cell_pm.id
+    # The reviewer's own claim ends here — active_claimant_id stays cleared
+    # (mirrors pr_fail exactly; the PM's ownership is assigned_to/claimed_by).
+    assert task.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_assigns_main_pm_for_root_task() -> None:
+    """A root (main_pm-team) assembled task routes to the Main PM — same
+    `_revision_pm_for_task` resolution, just a different team branch."""
+    reviewer = uuid4()
+    main_pm = SimpleNamespace(id=uuid4())
+    task = _build_task(
+        status=TaskStatus.AWAITING_PR_REVIEW,
+        claimed_by=reviewer,
+        active_claimant_id=reviewer,
+    )
+    svc = _pr_pass_svc(task, owning_pm=main_pm)
+    out = await svc.pr_pass(reviewer, task.id, "clean, ship it")
+    assert out is task
+    assert task.assigned_to == main_pm.id
+    assert task.claimed_by == main_pm.id
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_falls_back_to_none_when_pm_unresolvable() -> None:
+    """An unresolvable owning PM leaves the task unassigned rather than
+    crashing — matches pr_fail's own fallback."""
+    reviewer = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PR_REVIEW,
+        claimed_by=reviewer,
+        active_claimant_id=reviewer,
+    )
+    svc = _pr_pass_svc(task, owning_pm=None)
+    out = await svc.pr_pass(reviewer, task.id, "clean, ship it")
+    assert out is task
+    assert task.assigned_to is None
+    assert task.claimed_by is None
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_assigns_unassigned_task() -> None:
+    """The orchestrator's pm-review dispatch seam: an unassigned
+    awaiting_pm_review task (pr_pass resolved no PM, or legacy pre-fix data)
+    gets placed with its real owner, including active_claimant_id so the
+    newly-assigned PM's own note()/commit() calls don't bounce."""
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=None,
+        claimed_by=None,
+        active_claimant_id=None,
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    cell_pm = SimpleNamespace(id=uuid4())
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=cell_pm))
+    clear_mock = AsyncMock()
+    _bind(svc, "_clear_agent_current_task", clear_mock)
+    out = await svc.assign_review_pm(task.id)
+    assert out is task
+    assert task.assigned_to == cell_pm.id
+    assert task.claimed_by == cell_pm.id
+    assert task.active_claimant_id == cell_pm.id
+    clear_mock.assert_not_awaited()  # nothing to release — was never claimed
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_corrects_stale_assignment() -> None:
+    """A block/escalate/unblock(restore=True) round trip can leave a review
+    task pointed at the wrong (escalation-target) owner with a stale active
+    claim — this must correct BOTH to the real team-resolved PM, releasing
+    the stale claimant's fleet marker."""
+    stale_pm = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=stale_pm,
+        claimed_by=stale_pm,
+        active_claimant_id=stale_pm,
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    real_pm = SimpleNamespace(id=uuid4())
+    clear_mock = AsyncMock()
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=real_pm))
+    _bind(svc, "_clear_agent_current_task", clear_mock)
+    out = await svc.assign_review_pm(task.id)
+    assert out is task
+    assert task.assigned_to == real_pm.id
+    assert task.claimed_by == real_pm.id
+    assert task.active_claimant_id == real_pm.id
+    clear_mock.assert_awaited_once_with(stale_pm, task.id)
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_noop_when_already_correct() -> None:
+    """Already correctly owned — no redundant write/notify every dispatch tick."""
+    pm = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=pm,
+        claimed_by=pm,
+        active_claimant_id=pm,
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=SimpleNamespace(id=pm)))
+    clear_mock = AsyncMock()
+    _bind(svc, "_clear_agent_current_task", clear_mock)
+    out = await svc.assign_review_pm(task.id)
+    assert out is task
+    clear_mock.assert_not_awaited()
+    session.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_assign_review_pm_rejects_wrong_status() -> None:
+    """A no-op outside awaiting_pm_review — CLAIM_RULES already covers a
+    real claim status; this seam is scoped to the review-only gap."""
+    task = _build_task(status=TaskStatus.IN_PROGRESS)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    out = await svc.assign_review_pm(task.id)
+    assert out is None
+
+
 @pytest.mark.asyncio
 async def test_admin_set_status_pre_block_restore_syncs_active_claimant() -> None:
     """The pending/in_progress restore path re-owns the task to the pre-block
@@ -1505,6 +1707,7 @@ async def test_parent_ac_coverage_marks_root_owned_claimed_by() -> None:
         acceptance_criteria=["crit a", "crit b", "crit c"],
         acceptance_criteria_ids=["id-a", "id-b", "id-c"],
         parent_ac_refs=["id-a"],
+        parent_task_id=None,
     )
     svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["id-b"])])
     assert await svc.parent_ac_coverage(parent.id) == [
@@ -1541,6 +1744,7 @@ async def test_uncovered_parent_acs_root_owned_satisfied_without_child() -> None
         acceptance_criteria=["crit a", "crit b"],
         acceptance_criteria_ids=["id-a", "id-b"],
         parent_ac_refs=["id-a"],
+        parent_task_id=None,
     )
     svc = _svc_with_children(parent, [])
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == ["crit b"]
@@ -1552,6 +1756,7 @@ async def test_unclaimed_parent_acs_root_owned_counts_as_claimed() -> None:
         acceptance_criteria=["crit a", "crit b"],
         acceptance_criteria_ids=["id-a", "id-b"],
         parent_ac_refs=["id-a"],
+        parent_task_id=None,
     )
     svc = _svc_with_children(parent, [])
     assert await svc.unclaimed_parent_acceptance_criteria(parent.id) == ["crit b"]
@@ -1569,10 +1774,114 @@ async def test_production_replay_mixed_child_and_root_owned_coverage() -> None:
         acceptance_criteria=[f"crit {i}" for i in range(5)],
         acceptance_criteria_ids=ids,
         parent_ac_refs=["id-3", "id-4"],
+        parent_task_id=None,
     )
     svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["id-0", "id-1", "id-2"])])
     assert await svc.unclaimed_parent_acceptance_criteria(parent.id) == []
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
+
+
+@pytest.mark.asyncio
+async def test_leaf_parent_ac_refs_not_root_owned_on_self() -> None:
+    # Regression: a leaf child (has parent_task_id, non-empty parent_ac_refs
+    # declared UPWARDS towards its parent, no children of its own) must NOT
+    # treat those refs as root-owned self-coverage. The live incident leaf
+    # 9bd12bd5 carried 11 parent_ac_refs that were its PARENT's criterion
+    # ids (upward refs), not its own. Under the old code those armed the AC
+    # gate and false-positive rejected cell_pm_complete with "N parent
+    # acceptance criteria not covered." The refs here deliberately do NOT
+    # match the leaf's own acceptance_criteria_ids (they reference the
+    # parent's criteria) so this test FAILS if the root_owned guard is
+    # reverted: old code returns all 3 leaf ACs as uncovered, new code
+    # returns [] (any_declared stays False, the gate is inert).
+    leaf = _build_task(
+        acceptance_criteria=["leaf a", "leaf b", "leaf c"],
+        acceptance_criteria_ids=["id-a", "id-b", "id-c"],
+        parent_ac_refs=["parent-1", "parent-2", "parent-3"],
+        parent_task_id=uuid4(),
+    )
+    svc = _svc_with_children(leaf, [])
+    assert await svc.uncovered_parent_acceptance_criteria(leaf.id) == []
+    assert await svc.unclaimed_parent_acceptance_criteria(leaf.id) == []
+
+
+@pytest.mark.asyncio
+async def test_root_owned_still_fires_for_true_root_with_uncovered_acs() -> None:
+    # A real root (parent_task_id is None) with root_owned refs AND children
+    # that do NOT cover all criteria -- the gate still fires for the
+    # uncovered ones. root_owned folds into claimed+verified, but criteria
+    # not in root_owned and not covered by a completed child still block.
+    root = _build_task(
+        acceptance_criteria=["crit a", "crit b", "crit c"],
+        acceptance_criteria_ids=["id-a", "id-b", "id-c"],
+        parent_ac_refs=["id-a"],
+        parent_task_id=None,
+    )
+    svc = _svc_with_children(root, [(TaskStatus.IN_PROGRESS, ["id-b"])])
+    assert await svc.uncovered_parent_acceptance_criteria(root.id) == [
+        "crit b",
+        "crit c",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_intermediate_task_parent_ac_refs_not_root_owned() -> None:
+    # A cell-root-level task that has a parent_task_id (it is itself a child
+    # of the Main PM root) and carries parent_ac_refs -- those refs are
+    # upward refs towards its parent, NOT root-owned coverage on itself.
+    # Same guard as the leaf case, different position in the tree.
+    cell_root = _build_task(
+        acceptance_criteria=["cell a", "cell b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=["id-a", "id-b"],
+        parent_task_id=uuid4(),
+    )
+    svc = _svc_with_children(cell_root, [(TaskStatus.COMPLETED, ["id-a"])])
+    # Only "cell b" is uncovered (no root_owned shortcut for the cell root).
+    assert await svc.uncovered_parent_acceptance_criteria(cell_root.id) == [
+        "cell b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_root_subtask_parent_ac_refs_are_root_owned() -> None:
+    # A MegaTask root-subtask carries both batch_id AND parent_task_id (the
+    # umbrella), yet it is a genuine Main-PM coordination root with its own
+    # project/branch/PR (is_batch_root_subtask). Unlike an ordinary parented
+    # cell task (test_intermediate_task_parent_ac_refs_not_root_owned above),
+    # its own parent_ac_refs DO count as root-owned self-coverage -- the
+    # write side (submit_root/cell_pm_complete's self-declare) has nowhere
+    # else to stamp a root-only criterion like PR-supersede.
+    root_subtask = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=["id-a"],
+        parent_task_id=uuid4(),  # the umbrella
+        batch_id=uuid4(),
+    )
+    svc = _svc_with_children(root_subtask, [])
+    # "crit a" is satisfied by the root-owned ref; "crit b" has no coverage.
+    assert await svc.uncovered_parent_acceptance_criteria(root_subtask.id) == [
+        "crit b",
+    ]
+    assert await svc.unclaimed_parent_acceptance_criteria(root_subtask.id) == [
+        "crit b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_root_owned_refs_fold_into_verified_for_true_root() -> None:
+    # A root with parent_ac_refs covering some of its own criteria -- those
+    # criteria count as covered (claimed+verified) even with no children.
+    root = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=["id-a"],
+        parent_task_id=None,
+    )
+    svc = _svc_with_children(root, [])
+    assert await svc.uncovered_parent_acceptance_criteria(root.id) == ["crit b"]
+    assert await svc.unclaimed_parent_acceptance_criteria(root.id) == ["crit b"]
 
 
 @pytest.mark.asyncio
@@ -2587,3 +2896,170 @@ def test_ceo_reject_finding_texts_strips_whitespace() -> None:
     actual, evidence = _ceo_reject_finding_texts("  redo it  ")
     assert actual == "redo it"
     assert evidence is None
+
+
+# ---------------------------------------------------------------------------
+# NULL-list append sites — a restored/reconstructed task row can carry a NULL
+# JSON/ARRAY column instead of `[]` (live incident: `add_progress` crashed
+# with `TypeError: Value after * must be an iterable, not NoneType` on such a
+# row). Each append site must degrade a NULL column to `[]` instead of
+# crashing the spread.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_progress_appends_when_progress_updates_is_none() -> None:
+    task = _build_task(progress_updates=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.add_progress(task.id, uuid4(), "working")
+    assert out is task
+    assert task.progress_updates is not None
+    assert len(task.progress_updates) == 1
+    assert task.progress_updates[0]["message"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_record_plan_progress_appends_when_progress_updates_is_none() -> None:
+    task = _build_task(progress_updates=None, plan=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.record_plan_progress(task.id, uuid4(), "narrative update")
+    assert out is not None
+    assert len(task.progress_updates) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_checkpoint_appends_when_checkpoints_is_none() -> None:
+    task = _build_task(checkpoints=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.add_checkpoint(task.id, uuid4(), "state summary", ["step"])
+    assert out is task
+    assert len(task.checkpoints) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_commit_appends_when_commits_is_none() -> None:
+    task = _build_task(commits=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.add_commit(task.id, "abc123", "fix bug")
+    assert out is task
+    assert len(task.commits) == 1
+    assert task.commits[0]["hash"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_appends_when_dependency_ids_is_none() -> None:
+    task = _build_task(dependency_ids=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_would_create_cycle", AsyncMock(return_value=False))
+    dep_id = uuid4()
+    out = await svc.add_dependency(task.id, dep_id)
+    assert out is True
+    assert task.dependency_ids == [dep_id]
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_appends_merge_commit_when_commits_is_none() -> None:
+    task = _build_task(commits=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    complete_mock = AsyncMock(return_value=task)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "complete", complete_mock)
+    pm_id = uuid4()
+    await svc.cell_pm_complete(pm_id, task.id, "all good", merge_commit="deadbeef")
+    assert task.commits[-1]["hash"] == "deadbeef"
+    assert task.commits[-1]["kind"] == "merge"
+    complete_mock.assert_awaited_once_with(task.id, agent_id=pm_id)
+
+
+@pytest.mark.asyncio
+async def test_block_appends_when_dependency_ids_and_blocker_ids_are_none() -> None:
+    task = _build_task(dependency_ids=None, status=TaskStatus.IN_PROGRESS)
+    blocker = _build_task(blocker_ids=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(side_effect=[task, blocker]))
+    _bind(svc, "_validate_and_set_status", MagicMock())
+    out = await svc.block(task.id, blocker.id)
+    assert out is task
+    assert task.dependency_ids == [blocker.id]
+    assert blocker.blocker_ids == [task.id]
+
+
+@pytest.mark.asyncio
+async def test_wire_cell_task_wave_chain_handles_null_root_dependency_ids() -> None:
+    """A restored/reconstructed root-subtask row with NULL ``dependency_ids``
+    must not crash the wave-chain wiring — no predecessors, no edges."""
+    cell_task = _build_task(parent_task_id=uuid4())
+    root = _build_task(dependency_ids=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(side_effect=[cell_task, root]))
+    add_dep_mock = AsyncMock()
+    _bind(svc, "add_dependency", add_dep_mock)
+    await svc.wire_cell_task_wave_chain(cell_task.id)  # must not raise
+    add_dep_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wire_by_osmosis_edge_handles_null_root_dependency_ids() -> None:
+    """Same NULL-safety as above, one level deeper (root -> cell-task -> dev)."""
+    dev_task = _build_task(parent_task_id=uuid4(), sequence=0)
+    cell_task = _build_task(parent_task_id=uuid4())
+    root = _build_task(dependency_ids=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(side_effect=[dev_task, cell_task, root]))
+    add_dep_mock = AsyncMock()
+    _bind(svc, "add_dependency", add_dep_mock)
+    await svc.wire_by_osmosis_edge(dev_task.id)  # must not raise
+    add_dep_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unblock_dependents_appends_when_completed_dependency_ids_is_none() -> (
+    None
+):
+    """A restored/reconstructed dependent row with NULL
+    completed_dependency_ids must not crash the append at this chokepoint."""
+    blocker_id = uuid4()
+    other_id = uuid4()
+    dependent = _build_task(
+        dependency_ids=[blocker_id, other_id],
+        completed_dependency_ids=None,
+        status=TaskStatus.BLOCKED,
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(all=MagicMock(return_value=[dependent]))
+            )
+        )
+    )
+    session.flush = AsyncMock()
+    svc = TaskService(session)
+    await svc._unblock_dependents(blocker_id)  # must not raise
+    assert dependent.completed_dependency_ids == [blocker_id]
+    assert dependent.dependency_ids == [other_id]
+
+
+@pytest.mark.asyncio
+async def test_list_pending_for_agent_handles_null_dependency_ids() -> None:
+    """A restored/reconstructed PENDING task with NULL dependency_ids must
+    not crash the claim-availability listing (treated as no dependencies)."""
+    task = _build_task(dependency_ids=None)
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(all=MagicMock(return_value=[task]))
+            )
+        )
+    )
+    svc = TaskService(session)
+    _bind(svc, "unmet_dependency_ids", AsyncMock(return_value=[]))
+    _bind(svc, "_claim_blocked_by_sequence", AsyncMock(return_value=None))
+    available = await svc.list_pending_for_agent(uuid4())  # must not raise
+    assert available == [task]

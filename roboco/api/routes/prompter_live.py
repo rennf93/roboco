@@ -39,8 +39,17 @@ from roboco.api.schemas.prompter_live import (
     StartLiveRequest,
     StartLiveResponse,
 )
+from roboco.api.utils.prompter_live import (
+    intake_scope_for_task as _intake_scope_for_task,
+)
+from roboco.api.utils.prompter_live import (
+    start_batch_re_interview as _start_batch_re_interview,
+)
+from roboco.api.utils.prompter_live import (
+    translate_service_error as _translate_service_error,
+)
 from roboco.security import guard_deco, prompt_injection_validator
-from roboco.services.base import NotFoundError, ServiceError, ValidationError
+from roboco.services.base import ServiceError
 from roboco.services.prompter import get_prompter_service
 from roboco.services.prompter_live import get_live_registry
 
@@ -48,28 +57,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 router = APIRouter()
-
-
-def _translate_service_error(e: ServiceError) -> HTTPException:
-    """Service error → HTTP status (mirrors the legacy prompter route)."""
-    if isinstance(e, NotFoundError):
-        return HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "not_found", "message": e.message},
-        )
-    if isinstance(e, ValidationError):
-        return HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "validation_error",
-                "message": e.message,
-                "field": e.field,
-            },
-        )
-    return HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail={"error": "internal_error", "message": e.message},
-    )
 
 
 @router.post(
@@ -159,7 +146,9 @@ async def session_status(session_id: str) -> dict[str, bool]:
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.honeypot_detection(["email", "phone", "website"])
 @guard_deco.suspicious_detection(enabled=True)
-async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, bool]:
+async def send_message(
+    session_id: str, body: LiveMessageRequest, db: DbSession
+) -> dict[str, bool]:
     """Deliver the human's message to the running intake agent."""
     delivered = await get_live_registry().deliver(session_id, body.text)
     if not delivered:
@@ -170,6 +159,7 @@ async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, b
                 "message": f"No live intake session {session_id} (spawn it first).",
             },
         )
+    await get_prompter_service(db).record_live_message(session_id, "user", body.text)
     return {"delivered": True}
 
 
@@ -213,6 +203,7 @@ async def confirm_live(
             )
     except ServiceError as e:
         raise _translate_service_error(e) from e
+    await service.mark_live_drafts_consumed(session_id, task_id)
     await db.commit()
 
     # Board route (first confirm, not a re-draft): keep the intake agent alive
@@ -304,6 +295,9 @@ async def confirm_live_batch(
             )
     except ServiceError as e:
         raise _translate_service_error(e) from e
+    await service.mark_live_drafts_consumed(
+        session_id, UUID(result["umbrella_task_id"])
+    )
     await db.commit()
 
     if (
@@ -315,59 +309,6 @@ async def confirm_live_batch(
 
     await get_orchestrator().reap_intake_session(session_id)
     return result
-
-
-async def _intake_scope_for_task(
-    db: DbSession, task: Any
-) -> tuple[str | None, str | None]:
-    """Return (project_slug, product_id) intake scope for a task — exactly one."""
-    if task.product_id is not None:
-        return None, str(task.product_id)
-    if task.project_id is not None:
-        from roboco.services.project import get_project_service
-
-        proj = await get_project_service(db).get(UUID(str(task.project_id)))
-        return (proj.slug if proj else None), None
-    return None, None
-
-
-async def _start_batch_re_interview(
-    db: DbSession, umbrella: Any, entries: list[dict[str, Any]]
-) -> StartLiveResponse:
-    """Cold re-interview for a MegaTask umbrella.
-
-    Recovers the batch's multi-repo scope from its root-subtasks' own project /
-    cell-map targets (no single project/product lives on the branchless
-    umbrella) and seeds a batch-aware redraft message. 400 only when nothing is
-    recoverable (e.g. every root-subtask was itself cancelled).
-    """
-    from roboco.services.prompter import compose_batch_redraft_message
-    from roboco.services.task import get_task_service
-
-    task_service = get_task_service(db)
-    umbrella_id = UUID(str(umbrella.id))
-    children = await task_service.get_live_subtasks(umbrella_id)
-    project_ids = await task_service.distinct_projects_for_batch(umbrella_id)
-    if not project_ids:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This MegaTask has no recoverable projects to re-interview against.",
-        )
-    initial_message = compose_batch_redraft_message(umbrella, children, entries)
-
-    session_id = uuid4().hex
-    try:
-        await get_orchestrator().start_intake_session(
-            session_id,
-            project_ids=[str(pid) for pid in project_ids],
-            initial_message=initial_message,
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start re-interview session: {exc}",
-        ) from exc
-    return StartLiveResponse(session_id=session_id, project_ids=project_ids)
 
 
 @router.post(
@@ -437,9 +378,30 @@ async def re_interview(
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
 @guard_deco.content_type_filter(["application/json"])
-async def relay_event(session_id: str, event: AgentEvent) -> dict[str, bool]:
-    """Relay one agent event from the container onto the session's stream."""
-    return {"pushed": get_live_registry().push(session_id, event.model_dump())}
+async def relay_event(
+    session_id: str, event: AgentEvent, db: DbSession
+) -> dict[str, bool]:
+    """Relay one agent event from the container onto the session's stream.
+
+    ``draft``/``batch`` events are durably persisted to ``task_drafts`` BEFORE
+    the push onto the SSE queue — closing the 2026-07-25 gap where a proposed
+    draft's only copy lived in the in-memory relay and vanished with the
+    session. ``text`` deltas are buffered per-session and flushed to
+    ``prompter_messages`` as one assistant turn on ``turn_end`` rather than
+    persisting a row per token delta.
+    """
+    registry = get_live_registry()
+    if event.kind in ("draft", "batch"):
+        await get_prompter_service(db).record_live_draft(session_id, event.data)
+    elif event.kind == "text" and event.text:
+        registry.buffer_text(session_id, event.text)
+    elif event.kind == "turn_end":
+        text = registry.flush_text(session_id)
+        if text.strip():
+            await get_prompter_service(db).record_live_message(
+                session_id, "assistant", text
+            )
+    return {"pushed": registry.push(session_id, event.model_dump())}
 
 
 _SEARCH_TASKS_DEFAULT_LIMIT = 8

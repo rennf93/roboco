@@ -11,6 +11,7 @@ Documentation for the UX/UI Cell team.
 
 - `/design/` - Design system documentation
 - `/qa/` - QA-related docs
+- `blocker-findings-audit-2026-07-29.md` - Audit of the cell's needs_revision/awaiting_pm_review backlog for open BLOCKER-severity findings
 
 ## Contributing
 

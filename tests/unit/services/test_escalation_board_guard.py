@@ -684,6 +684,7 @@ async def test_reassign_assigns_non_board_target_normally() -> None:
         task_type=TaskType.CODE,
         assigned_to=uuid4(),
         claimed_by=uuid4(),
+        active_claimant_id=None,
         status=TaskStatus.IN_PROGRESS,
     )
     _bind(svc, "get", AsyncMock(return_value=task))
@@ -706,6 +707,7 @@ async def test_reassign_none_clears_without_consulting_board_check() -> None:
         task_type=TaskType.CODE,
         assigned_to=uuid4(),
         claimed_by=uuid4(),
+        active_claimant_id=None,
         status=TaskStatus.IN_PROGRESS,
     )
     _bind(svc, "get", AsyncMock(return_value=task))

@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en" data-composition-id="release-0.28.0" data-composition-duration="36" data-fps="30">
+  <head>
+    <meta charset="utf-8" />
+    <title>RoboCo v0.28.0 Release - square (1080×1080)</title>
+    <link rel="stylesheet" href="../../kit/kit.css" />
+    <script src="props.js"></script>
+    <script src="../../kit/kit.js"></script>
+    <style>
+      /* Square cut of the v0.28.0 release clip. Tighter spacing, smaller
+         hero, and the stats overlay covers the full frame for readability.
+         Total 36s, three feature cards. */
+
+      .r28-hero {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 28px;
+        background: var(--pk-bg);
+        z-index: 30;
+        animation: r28-hero-out 0.6s var(--pk-ease) 2.6s forwards;
+      }
+      @keyframes r28-hero-out { to { opacity: 0; visibility: hidden; } }
+
+      .r28-hero__markwrap { position: relative; width: 400px; height: 400px; }
+      .r28-hero__mark {
+        width: 400px;
+        height: 400px;
+        transform: scale(0.82);
+        opacity: 0;
+        filter: drop-shadow(0 12px 60px rgba(255, 90, 31, 0.18));
+        animation: r28-mark-in 1s var(--pk-ease) 0.2s forwards;
+      }
+      @keyframes r28-mark-in { to { transform: scale(1); opacity: 1; } }
+
+      .r28-hero__ring {
+        position: absolute;
+        inset: 6px;
+        border-radius: 50%;
+        padding: 3px;
+        background: conic-gradient(from 0deg, transparent 0 78%, var(--pk-accent) 92%, transparent 100%);
+        -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+        -webkit-mask-composite: xor;
+        mask-composite: exclude;
+        opacity: 0;
+        animation: r28-ring-in 0.3s linear 0.9s forwards, r28-ring-spin 1.4s cubic-bezier(0.5, 0, 0.3, 1) 0.9s forwards;
+      }
+      @keyframes r28-ring-in { to { opacity: 1; } }
+      @keyframes r28-ring-spin { to { transform: rotate(360deg); opacity: 0; } }
+
+      .r28-hero__version {
+        font-family: var(--pk-font-display);
+        font-size: 96px;
+        color: var(--pk-text);
+        opacity: 0;
+        transform: translateY(18px);
+        animation: pk-enter-rise 0.7s var(--pk-ease) 1.2s forwards;
+      }
+      .r28-hero__tag {
+        font-size: 26px;
+        color: var(--pk-text-muted);
+        opacity: 0;
+        transform: translateY(14px);
+        animation: pk-enter-rise 0.7s var(--pk-ease) 1.5s forwards;
+      }
+
+      .pk-frame { animation-delay: 2.6s; }
+      .pk-frame__sidebar {
+        width: 220px;
+        align-items: stretch;
+        gap: 6px;
+        padding: 24px 16px 0 16px;
+        transform: translateX(-40px);
+        opacity: 0;
+        animation: r28-side-in 0.7s var(--pk-ease) 2.8s forwards;
+      }
+      @keyframes r28-side-in { to { transform: translateX(0); opacity: 1; } }
+
+      .r28-side__logo {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        background: #f4f6f8;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 0 18px 4px;
+      }
+      .r28-side__logo img { width: 30px; height: 30px; }
+
+      .r28-nav {
+        display: flex;
+        align-items: center;
+        height: 44px;
+        padding: 0 14px;
+        border-radius: 10px;
+        font-size: 18px;
+        color: var(--pk-text-muted);
+      }
+      .r28-nav--active { background: var(--pk-active-bg); color: var(--pk-active-fg); font-weight: 600; }
+
+      .pk-frame__topbar { left: 220px; height: 84px; padding: 0 32px; }
+      .pk-frame__content { left: 220px; top: 84px; }
+      .r28-user { font-size: 18px; }
+      .r28-user__chip { padding: 6px 14px; }
+
+      .pk-frame__search { width: 280px; height: 42px; font-size: 18px; }
+
+      .pk-intake { --pk-intake-top: 18px; }
+      .pk-intake__field { height: 60px; font-size: 28px; }
+      .pk-column { --pk-column-top: 130px; width: 560px; }
+      .pk-column .pk-card {
+        position: static;
+        margin-bottom: 12px;
+        padding: 18px 24px;
+        /* Springy entrance (see vertical.html); flat fades read as slides. */
+        animation-duration: 0.55s;
+        animation-timing-function: cubic-bezier(0.34, 1.4, 0.64, 1);
+      }
+      .pk-card__title { font-size: 28px; }
+      .r28-sub { font-size: 18px; }
+
+      .r28-stats {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        text-align: center;
+        background: rgba(10, 10, 10, 0.88);
+        z-index: 20;
+        font-family: var(--pk-font-display);
+        opacity: 0;
+        animation: r28-stats-in 0.4s var(--pk-ease) 21.0s forwards, r28-stats-out 0.5s var(--pk-ease) 28.0s forwards;
+      }
+      @keyframes r28-stats-in { to { opacity: 1; } }
+      .r28-stats__line {
+        font-size: 80px;
+        line-height: 1.25;
+        color: var(--pk-text);
+        opacity: 0;
+        transform: translateY(24px) scale(0.96);
+        animation: pk-enter-rise-scale 0.55s var(--pk-ease) forwards;
+      }
+      .r28-stats__line--accent { color: var(--pk-accent); }
+      @keyframes r28-stats-out { to { opacity: 0; } }
+
+      .pk-toast { --pk-toast-bottom: 84px; width: 480px; }
+
+      .pk-outro { --pk-outro-bottom: 28px; }
+      .r28-outro__logo {
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        background: #f4f6f8;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .r28-outro__logo img { width: 36px; height: 36px; }
+
+      #typeIntro { display: inline-block; overflow: hidden; white-space: pre; vertical-align: bottom; width: 0; }
+      @keyframes type-reveal { to { width: var(--type-ch, 20ch); } }
+    </style>
+  </head>
+  <body>
+    <div id="stage" data-composition-id="release-0.28.0" data-width="1080" data-height="1080" data-start="0" data-duration="36" data-fps="30">
+
+      <div class="r28-hero clip" data-start="0" data-duration="3.2" data-track-index="16">
+        <div class="r28-hero__markwrap">
+          <img class="r28-hero__mark" src="../../public/roboco-logo-darkmode.png" alt="RoboCo" />
+          <div class="r28-hero__ring"></div>
+        </div>
+        <div class="r28-hero__version">v0.28.0</div>
+        <div class="r28-hero__tag">The board finally works</div>
+      </div>
+
+      <!-- Camera: tight open, push per card beat, dead-wide before the
+           full-screen stats overlay, gentle push for the toast, settle. -->
+      <div class="pk-camera"
+           data-shots="2.6 0 10 1.03; 4.8 0 6 1.035;
+                       6.5 30 62 1.055; 9.6 26 56 1.05;
+                       11.0 28 8 1.06; 15.1 24 4 1.055;
+                       17.3 30 -46 1.06; 20.7 26 -50 1.055;
+                       21.5 0 0 1.0; 27.5 0 0 1.0;
+                       28.8 -20 -60 1.03; 31.0 -18 -58 1.028;
+                       33.5 0 0 1.0; 35.6 0 4 1.004">
+      <div class="pk-frame clip" data-start="0" data-duration="36" data-track-index="1">
+        <aside class="pk-frame__sidebar">
+          <div class="r28-side__logo"><img src="../../public/roboco-logo.png" alt="" /></div>
+          <div class="r28-nav">Overview</div>
+          <div class="r28-nav">Business</div>
+          <div class="r28-nav">Social</div>
+          <div class="r28-nav r28-nav--active">Tasks</div>
+          <div class="r28-nav">Kanban</div>
+          <div class="r28-nav">Git</div>
+          <div class="r28-nav">Agents</div>
+          <div class="r28-nav">Metrics</div>
+        </aside>
+
+        <header class="pk-frame__topbar">
+          <div class="pk-frame__search">Search tasks, agents...</div>
+          <div class="r28-user">
+            <div class="pk-frame__status clip" data-start="0" data-duration="36" data-track-index="0">
+              <span class="pk-frame__statusdot"></span>
+              <span>Live</span>
+            </div>
+            <span class="r28-user__chip">CEO · Renzo</span>
+          </div>
+        </header>
+
+        <div class="pk-frame__content">
+          <div class="pk-intake" style="animation-delay: 3.6s;">
+            <div class="pk-intake__label">New task</div>
+            <div class="pk-intake__field"><span id="typeIntro">The board finally works</span><span class="pk-caret"></span></div>
+          </div>
+
+          <div class="pk-column">
+            <div class="pk-column__header">Shipped in v0.28.0</div>
+
+            <!-- Varied beat spacing (5.5s/6.4s gaps), not a metronomic
+                 identical interval. -->
+            <div class="pk-card" style="animation-delay: 5.0s;">
+              <div class="pk-card__title">Eval harness goes real</div>
+              <div class="r28-sub">Real Docker spawns per turn now, no more mocks.</div>
+              <div class="pk-card__meta">
+                <span class="pk-chip pk-chip--gray">eval harness</span>
+              </div>
+              <div class="pk-card__status">
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 5.0s; --pk-pill-exit-delay: 6.4s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 6.6s;">completed</span>
+              </div>
+            </div>
+
+            <div class="pk-card" style="animation-delay: 10.5s;">
+              <div class="pk-card__title">12 programs, one board</div>
+              <div class="r28-sub">Pest Control to Sentinel. The board finally ships.</div>
+              <div class="pk-card__meta">
+                <span class="pk-chip pk-chip--gray">board programs</span>
+              </div>
+              <div class="pk-card__status">
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.5s; --pk-pill-exit-delay: 11.9s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 12.1s;">completed</span>
+              </div>
+            </div>
+
+            <div class="pk-card" style="animation-delay: 16.9s;">
+              <div class="pk-card__title">Release posts stop parroting</div>
+              <div class="r28-sub">Features lead the copy now, not security plumbing.</div>
+              <div class="pk-card__meta">
+                <span class="pk-chip pk-chip--gray">release posts</span>
+              </div>
+              <div class="pk-card__status">
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 16.9s; --pk-pill-exit-delay: 18.3s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 18.5s;">completed</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Same hand as the vertical cut: submit click, witness each
+               card, exit right BEFORE the full-screen stats overlay lands
+               at 21.0s (the cursor sits under its backdrop). -->
+          <div class="pk-cursor"
+               data-waypoints="4.0 520 130; 4.5 452 80; 4.8 445 76 click;
+                               5.7 250 185; 6.5 138 250; 7.9 152 262;
+                               10.1 220 340; 11.0 148 412; 13.1 134 424;
+                               16.4 215 505; 17.3 140 576; 19.0 155 588;
+                               19.8 480 700; 20.6 920 780">
+            <div class="pk-cursor__glyph"></div>
+          </div>
+
+          <div class="r28-stats">
+            <div class="r28-stats__line" style="animation-delay: 21.0s;">1 release</div>
+            <div class="r28-stats__line r28-stats__line--accent" style="animation-delay: 21.3s;">12 programs</div>
+            <div class="r28-stats__line" style="animation-delay: 21.6s;">0 copied bullets</div>
+          </div>
+
+          <div class="pk-toast" style="animation-delay: 28.5s;">
+            <div class="pk-toast__icon"></div>
+            <div class="pk-toast__body">
+              <div class="pk-toast__title" id="toastTitle">v0.28.0 shipped</div>
+              <div class="pk-toast__text" id="toastBody">I approved once. 25 agents shipped it.</div>
+            </div>
+          </div>
+
+          <div class="pk-outro" style="animation-delay: 33.0s;">
+            <span class="r28-outro__logo"><img src="../../public/roboco-logo.png" alt="" /></span>
+            <span>roboco.tech</span>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["release-0.28.0"] = {
+        id: "release-0.28.0",
+        duration: 36,
+        fps: 30,
+        animations: []
+      };
+
+      (function () {
+        var props = (window.__PROPS__ && typeof window.__PROPS__ === "object") ? window.__PROPS__ : {};
+
+        function setText(id, value) {
+          if (typeof value !== "string" || !value) return;
+          var el = document.getElementById(id);
+          if (el) el.textContent = value;
+        }
+
+        setText("toastTitle", props.toastTitle);
+        setText("toastBody", props.toastBody);
+
+        function typeReveal(el) {
+          var n = (el.textContent || "").length || 1;
+          el.style.setProperty("--type-ch", (n + 1) + "ch");
+          el.style.animation = "type-reveal " + (n * 0.07).toFixed(2) + "s steps(" + n + ", end) 4.0s forwards";
+        }
+        var typeEl = document.getElementById("typeIntro");
+        if (typeEl) {
+          if (typeof props.introText === "string" && props.introText) {
+            typeEl.textContent = props.introText;
+          }
+          typeReveal(typeEl);
+        }
+
+        window.PanelKit.choreographAllCursors();
+        window.PanelKit.choreographAllCameras();
+      })();
+    </script>
+  </body>
+</html>

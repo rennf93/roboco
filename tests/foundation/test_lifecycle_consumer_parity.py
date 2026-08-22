@@ -869,6 +869,26 @@ async def test_complete_matches_spec(role: str, status: str) -> None:
         id=task_id, status="awaiting_ceo_approval", assigned_to=None, team="backend"
     )
     task_svc.all_subtasks_terminal.return_value = True
+    # complete's merge path runs _stamp_pm_findings_verified_or_rejection,
+    # which opens a session.begin_nested() savepoint and reads the findings
+    # ledger via ReviewFindingsRepository.list_for_task (session.execute ->
+    # .scalars().all()). Unconfigured, both calls resolve to auto-generated
+    # AsyncMock children: `async with <AsyncMock>():` fails the async
+    # context-manager protocol and `<AsyncMock-result>.scalars()` returns an
+    # unawaited coroutine — caught by the verb's own except Exception, but
+    # the never-awaited coroutine leaks a RuntimeWarning at GC time.
+    task_svc.session = MagicMock()
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     git_svc = AsyncMock()
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "x"}
     git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "x"}
@@ -969,6 +989,19 @@ async def test_escalate_up_matches_spec(role: str, status: str) -> None:
         id=agent_id, role=role, team="backend", slug=None, escalation_target="main-pm"
     )
     task_svc.escalate.return_value = after
+    # escalate_up's own _ensure_pm_decision write-then-gate opens a
+    # session.begin_nested() savepoint unconditionally (even on the
+    # fresh-decision no-write path below) — an unshaped AsyncMock's
+    # auto-attribute return doesn't support `async with`, which orphans
+    # the mock's internal coroutine (AsyncMockMixin._execute_mock_call
+    # never awaited).
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     journal_svc = AsyncMock()
     # journal:decision is not on the spec — satisfy it so the verb-specific
     # preflight does not surface a non-spec tracing_gap on the allowed branch.
@@ -1268,7 +1301,33 @@ async def test_claim_review_matches_spec(role: str, status: str) -> None:
     task_svc.qa_claim.return_value = after
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
+    # claim_review's full=True briefing reads the findings ledger
+    # (findings.open_findings_for_task -> session.execute -> .scalars().all()).
+    # Unconfigured, session.execute auto-generates as an AsyncMock child whose
+    # call returns another AsyncMock; .scalars() on that is itself an
+    # unawaited coroutine — caught by open_findings_for_task's own fail-open
+    # except, but the dangling coroutine leaks a RuntimeWarning at GC time.
+    task_svc.session = MagicMock()
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     deps = _make_deps(task_svc=task_svc)
+    # _build_qa_claim_evidence unpacks git.diff_and_files' return into
+    # (diff, files_changed) — an unconfigured AsyncMock's return_value is a
+    # bare MagicMock, which is not iterable and crashes the unpack.
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.return_value = ("", [])
+    deps = ChoreographerDeps(
+        task=deps.task,
+        work_session=deps.work_session,
+        git=git_svc,
+        a2a=deps.a2a,
+        journal=deps.journal,
+        audit=deps.audit,
+        evidence_repo=deps.evidence_repo,
+    )
     c = Choreographer(deps)
 
     ctx = spec.Context(actor_id=agent_id)
@@ -1546,6 +1605,14 @@ async def test_claim_doc_task_matches_spec(role: str, status: str) -> None:
     task_svc.doc_claim.return_value = after
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
+    # claim_doc_task's full=True briefing reads the findings ledger the same
+    # way claim_review's does (see that test's comment) — same fix.
+    task_svc.session = MagicMock()
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     deps = _make_deps(task_svc=task_svc)
     c = Choreographer(deps)
 

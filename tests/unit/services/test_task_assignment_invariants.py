@@ -15,6 +15,7 @@ such. Direct ORM writes from the escalation chain are out of scope.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -311,3 +312,183 @@ def test_create_does_not_redirect_misassigned_cell_planning_child() -> None:
     assert not hasattr(svc, "_redirect_cell_team_pm_task"), (
         "create-path redirect was re-added; remove it (see audit Gap 1)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression — review-pipeline handoffs must NOT be redirected to the cell PM
+#
+# A cell-PM-owned task type (documentation / design / research / planning /
+# administrative) that enters a review state (awaiting_qa / awaiting_documentation
+# / awaiting_pr_review) is mid-handoff to a non-PM claimant (QA / documenter /
+# PR reviewer per CLAIM_RULES). The cell-PM ownership redirect is for
+# delegation/escalation routing, not for clobbering the review claimant —
+# redirecting here lands the task on the cell PM, who has no claim right on
+# these states, so it deadlocks until a human manually reassigns.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PR_REVIEW,
+    ],
+)
+@pytest.mark.parametrize(
+    "task_type",
+    [TaskType.DOCUMENTATION, TaskType.DESIGN, TaskType.RESEARCH],
+)
+@pytest.mark.asyncio
+async def test_reassign_keeps_review_handoff_for_cell_pm_owned_child(
+    status: TaskStatus, task_type: TaskType
+) -> None:
+    """The QA / documenter / PR-reviewer handoff into a review state keeps
+    the requested reviewer — the cell-PM redirect does not fire there."""
+    svc = _service()
+    reviewer_id = uuid4()
+    task = _task(
+        team=Team.BACKEND,
+        task_type=task_type,
+        assigned_to=None,
+        status=status,
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    # cell_pm_for_team must NOT be consulted when the status gate fires —
+    # if it is, the test fails because the AsyncMock has no return_value.
+    _bind(
+        svc,
+        "cell_pm_for_team",
+        AsyncMock(
+            side_effect=AssertionError(
+                "cell_pm_for_team must not run for a review-handoff state"
+            )
+        ),
+    )
+
+    result = await svc.reassign(task.id, reviewer_id)
+
+    assert result is task
+    assert task.assigned_to == reviewer_id
+    assert task.claimed_by == reviewer_id
+    assert "[ASSIGNMENT REDIRECTED]" not in (task.dev_notes or "")
+
+
+@pytest.mark.asyncio
+async def test_reassign_still_redirects_on_awaiting_pm_review() -> None:
+    """AWAITING_PM_REVIEW is NOT a review-handoff state — the cell PM is the
+    rightful owner there, so the redirect still fires. Guards against the
+    status gate over-broadening and breaking PM-review ownership."""
+    svc = _service()
+    be_pm_id = uuid4()
+    main_pm_id = uuid4()
+    task = _task(
+        team=Team.BACKEND,
+        task_type=TaskType.PLANNING,
+        assigned_to=main_pm_id,
+        status=TaskStatus.AWAITING_PM_REVIEW,
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    _bind(
+        svc,
+        "cell_pm_for_team",
+        AsyncMock(return_value=MagicMock(id=be_pm_id, slug="be-pm")),
+    )
+
+    result = await svc.reassign(task.id, main_pm_id)
+
+    assert result is task
+    assert task.assigned_to == be_pm_id
+    assert "[ASSIGNMENT REDIRECTED]" in task.dev_notes
+
+
+@pytest.mark.asyncio
+async def test_reassign_still_redirects_on_claimed_planning_child() -> None:
+    """The non-review routing paths (delegation/escalation on PENDING /
+    CLAIMED / NEEDS_REVISION) keep the redirect — the status gate only
+    covers the review-handoff states, not ownership routing."""
+    svc = _service()
+    be_pm_id = uuid4()
+    main_pm_id = uuid4()
+    task = _task(
+        team=Team.BACKEND,
+        task_type=TaskType.PLANNING,
+        assigned_to=main_pm_id,
+        status=TaskStatus.CLAIMED,
+    )
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    _bind(
+        svc,
+        "cell_pm_for_team",
+        AsyncMock(return_value=MagicMock(id=be_pm_id, slug="be-pm")),
+    )
+
+    result = await svc.reassign(task.id, main_pm_id)
+
+    assert result is task
+    assert task.assigned_to == be_pm_id
+    assert "[ASSIGNMENT REDIRECTED]" in task.dev_notes
+
+
+# ---------------------------------------------------------------------------
+# Regression: reassign_active_claim clears a stale stalled marker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reassign_active_claim_clears_stalled_marker() -> None:
+    """A PM reassigning a wedged claim to a new agent is genuine forward
+    progress, but reassign_active_claim never touches task.status, so it
+    never routes through _emit_status_transition_audit's own unconditional
+    stalled-marker clear. Without a direct clear here, the task keeps
+    reading as stalled in GET /api/dashboard/stalled-tasks while the new
+    claimant actively works it (docs/backend/api/stalled-task-marker.md's
+    claim that genuine forward progress always clears the marker)."""
+    svc = _service()
+    old_dev = uuid4()
+    new_dev = uuid4()
+    task = _task(
+        team=Team.BACKEND,
+        task_type=TaskType.CODE,
+        assigned_to=old_dev,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    task.stalled_reason = "breaker_tripped"
+    task.stalled_since = datetime.now(UTC)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+
+    result = await svc.reassign_active_claim(task.id, new_dev)
+
+    assert result is task
+    assert task.assigned_to == new_dev
+    assert task.stalled_reason is None
+    assert task.stalled_since is None
+
+
+@pytest.mark.asyncio
+async def test_reassign_active_claim_leaves_unset_marker_untouched() -> None:
+    """No accidental writes on the overwhelming common case: a task that was
+    never stalled stays that way through a reassign."""
+    svc = _service()
+    old_dev = uuid4()
+    new_dev = uuid4()
+    task = _task(
+        team=Team.BACKEND,
+        task_type=TaskType.CODE,
+        assigned_to=old_dev,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    task.stalled_reason = None
+    task.stalled_since = None
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+
+    result = await svc.reassign_active_claim(task.id, new_dev)
+
+    assert result is task
+    assert task.stalled_reason is None
+    assert task.stalled_since is None

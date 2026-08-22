@@ -119,3 +119,13 @@ class CreateNotificationParams:
     # default) preserves existing behavior for every caller that doesn't set
     # this — only send_a2a_notification's CEO-wake path overrides it today.
     requires_ack: bool | None = None
+    # Skip NotificationService's own purpose-dedup check (same sender + type +
+    # related_task_id + exact recipient set, prior unacked). Mirrors
+    # NotificationDeliveryService._persist_and_deliver's bypass_purpose_dedup
+    # flag, for callers that legitimately fire distinct notifications sharing
+    # a null related_task_id (e.g. send_notification_spawn_cap_notification,
+    # keyed on (agent_slug, notification_id) instead of a task) — without
+    # this, every such notification collapses into the same dedup bucket and
+    # only the first ever reaches its recipient. Default False preserves
+    # existing behavior for every other caller.
+    bypass_purpose_dedup: bool = False

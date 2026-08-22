@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -21,8 +22,10 @@ from roboco.db.tables import (
     TaskTable,
 )
 from roboco.foundation import identity as _foundation
+from roboco.foundation.policy.maintenance_pause import PauseScope
 from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.permissions import AgentContext
+from roboco.services.maintenance_pause import get_maintenance_pause_service
 from roboco.services.task import (
     BARFLY_SOURCE,
     CORONER_SOURCE,
@@ -46,6 +49,7 @@ CEO_UUID = _foundation.AGENTS["ceo"].uuid
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 PO_UUID = _foundation.AGENTS["product-owner"].uuid
 HOM_UUID = _foundation.AGENTS["head-marketing"].uuid
+TWO = 2
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -151,6 +155,24 @@ async def _arm_war_room(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) 
         access_token="at-test",
         access_token_secret="ats-test",
     )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _purge_maintenance_pause_rows(
+    db_session: AsyncSession,
+) -> AsyncIterator[None]:
+    """A pause the DEFECT-5 run-now test below writes (through a route that
+    commits explicitly) would otherwise outlive it in the shared, cross-
+    test-persistent DB and 409 every later run-now call in this file. Purge
+    unconditionally -- a no-op for every test here that never paused
+    anything."""
+    yield
+    await db_session.execute(
+        delete(SystemSettingTable).where(
+            SystemSettingTable.key.like("maintenance_pause.%")
+        )
+    )
+    await db_session.commit()
 
 
 def _build_app(db_session: AsyncSession, role: AgentRole, agent_id: UUID) -> FastAPI:
@@ -297,6 +319,30 @@ async def test_run_now_opens_a_cycle_then_conflicts_on_retry(
 
     second = await ceo_client.post("/api/board-programs/roadmap/run-now")
     assert second.status_code == HTTPStatus.CONFLICT
+    # DEFECT 5: the generic (non-pause) 409 must not claim a pause that
+    # isn't happening.
+    assert "pause" not in second.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_run_now_conflict_names_the_maintenance_pause_when_active(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEFECT 5: run-now's 409 must say WHY when the reason is a
+    board_programs maintenance pause, not the generic disabled/open-cycle/
+    no-project message that gives the CEO nothing actionable."""
+    await _arm_roadmap(db_session, monkeypatch)
+    await get_maintenance_pause_service(db_session).pause(
+        PauseScope.BOARD_PROGRAMS, by="ceo", hours=1
+    )
+    await db_session.commit()
+
+    resp = await ceo_client.post("/api/board-programs/roadmap/run-now")
+
+    assert resp.status_code == HTTPStatus.CONFLICT
+    assert "pause" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -337,5 +383,90 @@ async def test_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/board-programs")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Gap 5: the historical-cycles read surface behind the single rendered
+# ``last_cycle_summary`` line ``GET /api/board-programs`` returns.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_returns_historical_decisions(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    db_session.add(
+        BoardProgramCycleTable(
+            program_key="mirror",
+            exploration_task_id=None,
+            opened_at=datetime.now(UTC),
+            closed_at=datetime.now(UTC),
+            items_proposed=1,
+            items_approved=1,
+            items_rejected=0,
+            decisions=[
+                {
+                    "item_ref": "README claims a dead feature",
+                    "verdict": "approved",
+                    "reason": None,
+                    "item_snapshot": {
+                        "title": "README claims a dead feature",
+                        "materialized_task_id": str(uuid4()),
+                    },
+                }
+            ],
+        )
+    )
+    await db_session.flush()
+
+    resp = await ceo_client.get("/api/board-programs/mirror/cycles")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert len(body) == 1
+    cycle = body[0]
+    assert cycle["items_proposed"] == 1
+    assert cycle["items_approved"] == 1
+    decision = cycle["decisions"][0]
+    assert decision["item_ref"] == "README claims a dead feature"
+    assert decision["verdict"] == "approved"
+    assert decision["item_snapshot"]["title"] == "README claims a dead feature"
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_respects_limit(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    for _ in range(3):
+        db_session.add(
+            BoardProgramCycleTable(
+                program_key="sentinel",
+                exploration_task_id=None,
+                opened_at=datetime.now(UTC),
+            )
+        )
+    await db_session.flush()
+
+    resp = await ceo_client.get(
+        "/api/board-programs/sentinel/cycles", params={"limit": 2}
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert len(resp.json()) == TWO
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_unknown_key_is_404(ceo_client: AsyncClient) -> None:
+    resp = await ceo_client.get("/api/board-programs/not-a-real-program/cycles")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_list_cycles_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    await _seed_agents(db_session)
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/board-programs/mirror/cycles")
     assert resp.status_code == HTTPStatus.FORBIDDEN
     app.dependency_overrides.clear()

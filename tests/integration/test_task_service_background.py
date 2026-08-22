@@ -479,8 +479,18 @@ async def test_index_docs_with_paths_calls_index(
 
     monkeypatch.setattr("roboco.services.optimal.get_optimal_service", _get_optimal)
     docs = [{"path": "doc1.md"}, {"path": "doc2.md"}]
-    await svc._index_docs_background(uuid4(), docs)
+    task_id = uuid4()
+    await svc._index_docs_background(task_id, docs)
     fake_optimal.index_documentation.assert_awaited_once()
+
+    # These docs are re-indexed off the task's OWN in-flight documents,
+    # captured before the task's PR merges (including ones authored via
+    # Edit/Write and picked up by _capture_workspace_docs, which bypass
+    # roboco_docs_write entirely) — same live-write bug class as
+    # DocsService._index_doc_in_rag, so it must carry the same marker.
+    _, kwargs = fake_optimal.index_documentation.await_args
+    assert kwargs["provenance"] == "live_write"
+    assert kwargs["task_id"] == str(task_id)
 
 
 @pytest.mark.asyncio

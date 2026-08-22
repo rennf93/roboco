@@ -1,8 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Play } from "lucide-react";
+import { History, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,8 +12,22 @@ import { Switch } from "@/components/ui/switch";
 import { HelpTip } from "@/components/ui/help-tip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
+import {
+  DIALOG_SIZES,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { getErrorMessage } from "@/lib/api/client";
-import { boardProgramsApi, type BoardProgram } from "@/lib/api/board-programs";
+import {
+  boardProgramsApi,
+  type BoardProgram,
+  type BoardProgramCycle,
+  type BoardProgramDecision,
+} from "@/lib/api/board-programs";
 import { settingsApi } from "@/lib/api/settings";
 
 const TRIGGER_HINTS: Record<string, string> = {
@@ -27,6 +42,101 @@ function ProgramRowSkeleton() {
       <Skeleton className="h-5 w-40" />
       <Skeleton className="h-4 w-64" />
     </div>
+  );
+}
+
+function decisionSnapshotTitle(decision: BoardProgramDecision): string {
+  const snapshotTitle = decision.item_snapshot?.title;
+  return typeof snapshotTitle === "string" && snapshotTitle
+    ? snapshotTitle
+    : decision.item_ref;
+}
+
+function DecisionRow({ decision }: { decision: BoardProgramDecision }) {
+  return (
+    <div className="border-t pt-2 text-sm first:border-t-0 first:pt-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={decision.verdict === "approved" ? "default" : "secondary"}>
+          {decision.verdict}
+        </Badge>
+        <span className="font-medium">{decisionSnapshotTitle(decision)}</span>
+      </div>
+      {decision.reason && (
+        <p className="text-muted-foreground mt-1">{decision.reason}</p>
+      )}
+    </div>
+  );
+}
+
+function CycleRow({ cycle }: { cycle: BoardProgramCycle }) {
+  return (
+    <div className="rounded-lg border p-3 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span>{new Date(cycle.opened_at).toLocaleString()}</span>
+        <span>
+          {cycle.items_proposed} proposed &middot; {cycle.items_approved} approved
+          &middot; {cycle.items_rejected} rejected
+        </span>
+      </div>
+      {cycle.nothing_to_propose_reason && (
+        <p className="text-sm text-muted-foreground">
+          Nothing to propose: {cycle.nothing_to_propose_reason}
+        </p>
+      )}
+      {cycle.decisions.map((d, i) => (
+        // Decisions are an append-only, order-stable server-rendered list;
+        // no stable id exists to key on, index is safe here.
+        <DecisionRow key={i} decision={d} />
+      ))}
+    </div>
+  );
+}
+
+function ProgramHistoryDialog({ program }: { program: BoardProgram }) {
+  const [open, setOpen] = useState(false);
+  const {
+    data: cycles = [],
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["board-program-cycles", program.key],
+    queryFn: () => boardProgramsApi.cycles(program.key),
+    enabled: open,
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="ghost">
+          <History className="mr-1 h-4 w-4" /> History
+        </Button>
+      </DialogTrigger>
+      <DialogContent className={DIALOG_SIZES.lg}>
+        <DialogHeader>
+          <DialogTitle>{program.title || program.key}: cycle history</DialogTitle>
+          <DialogDescription>
+            Every recorded cycle and the CEO&apos;s per-item decisions, newest
+            first. Survives even after the exploration task behind an old
+            cycle is deleted.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[60vh] space-y-3 overflow-y-auto">
+          {isLoading ? (
+            <Skeleton className="h-16 w-full" />
+          ) : isError ? (
+            <p className="text-sm text-destructive">
+              Failed to load history.
+            </p>
+          ) : cycles.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No cycles recorded yet.
+            </p>
+          ) : (
+            cycles.map((c) => <CycleRow key={c.id} cycle={c} />)
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -132,6 +242,7 @@ function ProgramRow({ program }: { program: BoardProgram }) {
               </Button>
             </span>
           </HelpTip>
+          <ProgramHistoryDialog program={program} />
         </div>
       </div>
     </div>

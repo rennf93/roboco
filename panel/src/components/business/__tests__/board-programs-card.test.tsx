@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { BoardProgram } from "@/lib/api/board-programs";
+import type { BoardProgram, BoardProgramCycle } from "@/lib/api/board-programs";
 
 const { resolveListRef } = vi.hoisted(() => ({
   resolveListRef: { current: null as null | ((v: unknown) => void) },
@@ -25,7 +25,28 @@ function buildProgram(overrides: Partial<BoardProgram> = {}): BoardProgram {
   };
 }
 
-const { list, runNow } = vi.hoisted(() => ({
+function buildCycle(overrides: Partial<BoardProgramCycle> = {}): BoardProgramCycle {
+  return {
+    id: "cycle-1",
+    opened_at: "2026-08-01T00:00:00Z",
+    closed_at: "2026-08-01T01:00:00Z",
+    items_proposed: 1,
+    items_approved: 1,
+    items_rejected: 0,
+    nothing_to_propose_reason: null,
+    decisions: [
+      {
+        item_ref: "README claims a dead feature",
+        verdict: "approved",
+        reason: null,
+        item_snapshot: { title: "README claims a dead feature" },
+      },
+    ],
+    ...overrides,
+  };
+}
+
+const { list, runNow, cycles } = vi.hoisted(() => ({
   list: vi.fn(
     () =>
       new Promise((r) => {
@@ -33,10 +54,11 @@ const { list, runNow } = vi.hoisted(() => ({
       }),
   ),
   runNow: vi.fn(async () => buildProgram({ open_cycle: true })),
+  cycles: vi.fn(async () => [] as unknown[]),
 }));
 
 vi.mock("@/lib/api/board-programs", () => ({
-  boardProgramsApi: { list, runNow },
+  boardProgramsApi: { list, runNow, cycles },
 }));
 
 const { setFeatureFlag } = vi.hoisted(() => ({
@@ -134,5 +156,41 @@ describe("BoardProgramsCard", () => {
         false,
       ),
     );
+  });
+
+  it("does not fetch cycle history until the History dialog is opened", async () => {
+    render(withQueryClient(<BoardProgramsCard />));
+    resolveListRef.current?.([buildProgram()]);
+    await screen.findByText("roadmap");
+
+    expect(cycles).not.toHaveBeenCalled();
+  });
+
+  it("opens the History dialog and renders a past cycle's decisions", async () => {
+    cycles.mockResolvedValueOnce([buildCycle()]);
+    render(withQueryClient(<BoardProgramsCard />));
+    resolveListRef.current?.([buildProgram()]);
+    await screen.findByText("roadmap");
+
+    fireEvent.click(screen.getByRole("button", { name: /History/i }));
+
+    await waitFor(() => expect(cycles).toHaveBeenCalledWith("roadmap"));
+    expect(
+      await screen.findByText("README claims a dead feature"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("approved")).toBeInTheDocument();
+  });
+
+  it("shows an empty state when a program has no recorded cycles", async () => {
+    cycles.mockResolvedValueOnce([]);
+    render(withQueryClient(<BoardProgramsCard />));
+    resolveListRef.current?.([buildProgram()]);
+    await screen.findByText("roadmap");
+
+    fireEvent.click(screen.getByRole("button", { name: /History/i }));
+
+    expect(
+      await screen.findByText("No cycles recorded yet."),
+    ).toBeInTheDocument();
   });
 });

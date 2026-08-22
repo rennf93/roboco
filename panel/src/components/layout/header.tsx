@@ -14,6 +14,7 @@ import { NotificationBell } from "@/components/notifications/notification-bell";
 import { NotificationAlerts } from "@/components/notifications/notification-alerts";
 import { ConnectionStatus } from "./connection-status";
 import { MobileSidebar } from "./mobile-sidebar";
+import { MaintenanceControl } from "@/components/maintenance/maintenance-control";
 import {
   Tooltip,
   TooltipContent,
@@ -65,6 +66,11 @@ export function Header() {
       <div className="flex items-center gap-3">
         {/* Connection Status */}
         <ConnectionStatus />
+
+        {/* Operator maintenance pause, next to the connection indicator per
+            the CEO's brief. The persistent paused-state banner lives just
+            below the header, see (dashboard)/layout.tsx. */}
+        <MaintenanceControl />
 
         {/* Refresh current page data */}
         <TooltipProvider>

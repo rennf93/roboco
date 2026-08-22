@@ -93,6 +93,36 @@ async def test_propose_roadmap_forbidden_for_developer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_propose_roadmap_traces_payload_before_rejecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-08-08 fix: the raw payload is durably traced BEFORE the
+    role-authorization check runs, so a rejected proposal (a 200 carrying an
+    error envelope) is still replayable from the trace."""
+    traced: list[dict[str, Any]] = []
+
+    class _FakeAuditService:
+        async def log_event(self, **kwargs: Any) -> None:
+            traced.append(kwargs)
+
+    monkeypatch.setattr("roboco.services.audit.get_audit_service", _FakeAuditService)
+    items = _valid_items(3)
+
+    env = await _actions("head_marketing").propose_roadmap(
+        agent_id=uuid4(), cycle_goal="Close onboarding friction", items=items
+    )
+
+    assert env.error == "not_authorized"  # the call is still rejected
+    assert len(traced) == 1
+    assert traced[0]["event_type"] == "board_program.proposal_trace"
+    assert traced[0]["details"]["verb"] == "propose_roadmap"
+    assert traced[0]["details"]["payload"] == {
+        "cycle_goal": "Close onboarding friction",
+        "items": items,
+    }
+
+
+@pytest.mark.asyncio
 async def test_propose_roadmap_rejects_too_few_items(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -221,6 +251,9 @@ async def test_propose_roadmap_sends_telegram_push_per_item(
         assert call.kwargs["id8"] == id8
         assert call.kwargs["extra"] == f"item-{i}"
         assert call.kwargs["title"] == f"Item {i}"
+        # DEFECT 2 regression: without related_task_id the row can never
+        # auto-resolve once every item on the cycle is decided.
+        assert call.kwargs["related_task_id"] == cycle_task.id
 
 
 @pytest.mark.asyncio

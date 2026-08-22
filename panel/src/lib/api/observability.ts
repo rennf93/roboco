@@ -9,6 +9,7 @@ import type {
   MemberScorecard,
   OrgScorecard,
   TaskMetrics,
+  ProvenanceReport,
 } from "@/types";
 
 // =============================================================================
@@ -28,6 +29,13 @@ const EMPTY_REWORK: ReworkReport = {
   by_team: [],
   by_agent: [],
   rework_cost_usd: 0,
+};
+
+const EMPTY_PROVENANCE: ProvenanceReport = {
+  total: 0,
+  human_authored: 0,
+  agent_authored: 0,
+  human_rate: 0,
 };
 
 function emptyScorecard(scope: string, id: string): Scorecard {
@@ -131,6 +139,16 @@ export const observabilityApi = {
     const { data } = await api.get<ReworkReport>("/dashboard/metrics/rework", {
       params: { days, ...(team ? { team } : {}) },
     });
+    return data;
+  },
+
+  /** Human vs agent origination, GET /dashboard/metrics/provenance?days */
+  getProvenance: async (days = 30): Promise<ProvenanceReport> => {
+    if (isMockMode()) return EMPTY_PROVENANCE;
+    const { data } = await api.get<ProvenanceReport>(
+      "/dashboard/metrics/provenance",
+      { params: { days } },
+    );
     return data;
   },
 

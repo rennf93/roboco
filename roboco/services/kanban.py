@@ -27,6 +27,11 @@ from roboco.services.base import BaseService
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 
+def _count(values: Sequence[Any] | None) -> int:
+    """len() tolerant of NULL list columns on restored/imported rows."""
+    return len(values) if values else 0
+
+
 class KanbanService(BaseService):
     """
     Service for generating kanban board views.
@@ -101,9 +106,9 @@ class KanbanService(BaseService):
             target_date=task.target_date,
             complexity=task.estimated_complexity,
             is_blocked=task.status == TaskStatus.BLOCKED,
-            blocker_count=len(task.dependency_ids),
+            blocker_count=_count(task.dependency_ids),
             progress_percentage=progress,
-            commit_count=len(task.commits),
+            commit_count=_count(task.commits),
             has_subtasks=subtask_count > 0,
             subtask_count=subtask_count,
             quick_context=task.quick_context,
@@ -198,7 +203,7 @@ class KanbanService(BaseService):
 
         return KanbanBoard(
             id=f"{board_type.value}-{team.value if team else 'all'}",
-            title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",  # noqa: E501
+            title=self._board_title(team, board_type),
             board_type=board_type,
             team=team,
             columns=column_list,
@@ -206,6 +211,11 @@ class KanbanService(BaseService):
             blocked_count=blocked_count,
             last_updated=datetime.now(UTC),
         )
+
+    def _board_title(self, team: Team | None, board_type: KanbanBoardType) -> str:
+        """Shared board title: '<Team|All> <BoardType> Board'."""
+        team_label = team.value.title() if team else "All"
+        return f"{team_label} {board_type.value.title()} Board"
 
     def _get_swimlane_key(self, task: TaskTable, swimlane_by: str) -> str:
         """Get the swimlane key for a task."""
@@ -319,7 +329,7 @@ class KanbanService(BaseService):
 
         return KanbanBoard(
             id=f"{board_type.value}-{team.value if team else 'all'}-swimlane",
-            title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",  # noqa: E501
+            title=self._board_title(team, board_type),
             board_type=board_type,
             team=team,
             swimlanes=swimlanes,

@@ -19,26 +19,12 @@ from roboco.api.schemas.docs import (
     WriteDocRequest,
     WriteDocResponse,
 )
+from roboco.api.utils.docs import unauthorized_response as _unauthorized_response
+from roboco.security import guard_deco
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.docs import WriteDocInput, get_docs_service
-from roboco.services.gateway.kb_authz import docs_denial_envelope
 
 router = APIRouter()
-
-
-def _unauthorized_response(err: UnauthorizedError) -> JSONResponse:
-    """Render a docs-service denial as the gateway Envelope (HTTP 403).
-
-    The RBAC decision is made in ``DocsService`` (it raises
-    ``UnauthorizedError``); this only renders that denial at the HTTP
-    boundary. The body is the Envelope wire-dict at top level so the agent
-    receives a non-null ``remediate`` instead of a bare ``detail`` string.
-    """
-    envelope = docs_denial_envelope(err.action, err.reason)
-    return JSONResponse(
-        status_code=status.HTTP_403_FORBIDDEN,
-        content=envelope.as_dict(),
-    )
 
 
 # Module-level Query defaults
@@ -53,7 +39,14 @@ _read_path_query: str = Query(
 # =============================================================================
 
 
+# 2 MiB, not the 64 KiB used elsewhere: this route writes whole reference docs,
+# and the repo's own tree already carries an 82 KiB page and a 1.5 MiB aggregate
+# map. A cap under the real corpus would 413 a legitimate roboco_docs_write and
+# surface to the agent only as WRITE_FAILED, with no hint that size was the cause.
 @router.post("/write", response_model=WriteDocResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=2097152)
+@guard_deco.content_type_filter(["application/json"])
 async def write_doc(
     data: WriteDocRequest,
     db: DbSession,
@@ -217,6 +210,7 @@ async def list_docs(
 
 
 @router.delete("/delete")
+@guard_deco.rate_limit(requests=20, window=60)
 async def delete_doc(
     db: DbSession,
     agent: CurrentAgentContext,

@@ -23,9 +23,10 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi_users.password import PasswordHelper
 from httpx import ASGITransport, AsyncClient
+from roboco.api.app import create_app
 from roboco.api.auth.backend import SESSION_COOKIE_NAME
 from roboco.api.deps import get_db
-from roboco.api.routes.telegram import mount_telegram_miniapp_auth, webapp_auth_router
+from roboco.api.routes.telegram import webapp_auth_router
 from roboco.config import settings
 from roboco.db.tables import UserTable
 from roboco.services.telegram_credentials import get_telegram_credentials_service
@@ -109,52 +110,65 @@ async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
 
 
 # ---------------------------------------------------------------------------
-# Conditional mount — both flags required. Driven through a real request
-# rather than introspecting `app.routes`: FastAPI wraps an included router in
-# a lazily-resolved `_IncludedRouter` that doesn't expose child paths
-# directly, so a live 404-vs-not check is the accurate signal.
+# Conditional mount — both flags required. Built through the REAL
+# `roboco.api.app.create_app()` factory (the exact pattern used by
+# `tests/unit/api/test_app.py` and `tests/unit/runtime/test_rate_limit_sweep.py`)
+# rather than a test-local mirror of app.py's inline conditional-mount logic,
+# so app.py:560-571 (the actual mount gate) is the code under test.
 # ---------------------------------------------------------------------------
 
 
-async def _post_unmounted_probe(app: FastAPI) -> int:
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        resp = await c.post("/api/telegram/webapp-auth", json={"init_data": "x"})
-    return resp.status_code
+def _registered_paths(app: FastAPI) -> set[str]:
+    """Every registered path, robust to FastAPI 0.137+ routing internals.
+
+    Mirrors ``tests/unit/api/test_app.py``'s helper of the same name: from
+    0.137, ``include_router`` wraps each sub-router in an ``_IncludedRouter``
+    (a ``BaseRoute`` with no ``.path``) instead of flattening its routes into
+    ``app.routes``, so collect HTTP paths from the OpenAPI schema (the stable
+    public contract) plus each included router's prefix.
+    """
+    paths = set(app.openapi().get("paths", {}))
+    for r in app.routes:
+        path = getattr(r, "path", None)
+        if isinstance(path, str):
+            paths.add(path)
+        prefix = getattr(getattr(r, "include_context", None), "prefix", None)
+        if prefix:
+            paths.add(prefix)
+    return paths
 
 
-@pytest.mark.asyncio
-async def test_mount_skipped_when_miniapp_flag_off(
+def test_mount_skipped_when_miniapp_flag_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "telegram_miniapp_enabled", False)
-    app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
-    assert await _post_unmounted_probe(app) == HTTPStatus.NOT_FOUND
+    app = create_app()
+    assert "/api/telegram/webapp-auth" not in _registered_paths(app)
 
 
-@pytest.mark.asyncio
-async def test_mount_skipped_when_cloud_auth_off(
+def test_mount_skipped_when_cloud_auth_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "cloud_auth_enabled", False)
-    app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
-    assert await _post_unmounted_probe(app) == HTTPStatus.NOT_FOUND
+    app = create_app()
+    assert "/api/telegram/webapp-auth" not in _registered_paths(app)
 
 
-@pytest.mark.asyncio
-async def test_mount_included_when_both_armed(db_session: AsyncSession) -> None:
-    app = FastAPI()
-    mount_telegram_miniapp_auth(app, "/api/telegram")
-
-    async def _override_db() -> AsyncIterator[AsyncSession]:
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_db
-    # Mounted -> never 404 (the unmounted signal); the exchange flow itself
-    # is covered by the `client` fixture tests below.
-    assert await _post_unmounted_probe(app) != HTTPStatus.NOT_FOUND
+def test_mount_included_when_both_armed() -> None:
+    # `_armed_settings` (autouse) already has both flags on.
+    app = create_app()
+    assert "/api/telegram/webapp-auth" in _registered_paths(app)
+    # Two `LoginRateLimiter` instances are installed (one guards
+    # `/api/auth/login`, another this route) — check the union of every
+    # instance's configured paths, not just the first match.
+    limited_paths: set[str] = set()
+    for m in app.user_middleware:
+        if getattr(m.cls, "__name__", "") != "LoginRateLimiter":
+            continue
+        raw_paths = m.kwargs.get("paths")
+        if isinstance(raw_paths, tuple | list):
+            limited_paths.update(str(p) for p in raw_paths)
+    assert "/api/telegram/webapp-auth" in limited_paths
 
 
 # ---------------------------------------------------------------------------

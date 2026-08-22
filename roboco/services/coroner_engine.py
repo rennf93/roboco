@@ -78,11 +78,16 @@ class CoronerEngine(BaseService):
         """Autopsy ``incident_task_id`` (``kind`` in bounced|cancelled|budget),
         or no-op — the EVENT-triggered entry point every hook calls directly.
 
-        No-ops when the program isn't armed, an autopsy is already open, or
-        the incident task is unresolvable. Never authors content itself — the
-        Auditor does, via ``propose_postmortem`` once spawned.
+        No-ops when the program isn't armed, a ``board_programs`` maintenance
+        pause is active, an autopsy is already open, or the incident task is
+        unresolvable. Never authors content itself (the Auditor does, via
+        ``propose_postmortem`` once spawned).
         """
-        if not await program_armed(self.session, "coroner"):
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not await program_armed(self.session, "coroner") or await is_paused(
+            self.session, PauseScope.BOARD_PROGRAMS
+        ):
             return None
         task_svc = get_task_service(self.session)
         if await task_svc.list_open_coroner_cycles():

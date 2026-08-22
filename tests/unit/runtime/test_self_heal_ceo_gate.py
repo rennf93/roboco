@@ -50,6 +50,7 @@ def _pm_stub(tasks: list[dict[str, Any]]) -> MagicMock:
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=tasks)
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._resolve_agent_slug = MagicMock(return_value="main-pm")
     stub._BOARD_AGENTS = frozenset()
     stub._route_unassigned_pm_task = AsyncMock()

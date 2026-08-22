@@ -341,3 +341,19 @@ def get_role_config(role: str) -> RoleConfig:
     if role not in ROLE_CONFIGS:
         raise KeyError(f"unknown role: {role!r} (known: {sorted(ROLE_CONFIGS)})")
     return ROLE_CONFIGS[role]
+
+
+def role_carries_notify_ack(role: str) -> bool:
+    """True when `role`'s do-tool manifest includes ``notify_ack``.
+
+    The single chokepoint for any gate that expects the caller to clear an
+    ack-required notification before proceeding: a role without this tool
+    (auditor, pr_reviewer, prompter, secretary; see their do-tool tuples
+    above) can never satisfy such a gate, so blocking one of them would be a
+    permanent dead-end rather than a fixable condition. An unknown role
+    reads as False (fail toward not blocking).
+    """
+    try:
+        return "notify_ack" in get_role_config(role).do_tools
+    except KeyError:
+        return False

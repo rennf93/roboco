@@ -125,3 +125,18 @@ async def test_pr_pass_guard_inert_when_flag_off(
     monkeypatch.setattr(settings, "conventions_enabled", False)
     c = _make_choreographer(check_result=_BLOCK_RESULT)
     assert await c._conventions_guard(uuid4(), MagicMock(), {}) is None
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_guard_never_overrides_the_fail_closed_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pr_pass gate is fail-closed and must keep the validator's
+    hardcoded 120s cap — unlike claim_review's advisory path, it must
+    never pass a ``timeout`` override down to ``conventions_check_for_task``."""
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    c = _make_choreographer(check_result={"findings": [], "could_not_run": False})
+    await c._conventions_guard(uuid4(), MagicMock(), {})
+    check = c.git.conventions_check_for_task
+    check.assert_awaited_once()
+    assert "timeout" not in check.await_args.kwargs

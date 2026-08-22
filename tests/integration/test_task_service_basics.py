@@ -377,6 +377,21 @@ async def test_all_subtasks_terminal_when_no_subtasks(task_setup: dict) -> None:
     assert await svc.all_subtasks_terminal(parent.id) is True
 
 
+@pytest.mark.asyncio
+async def test_has_children_true_when_child_exists(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    await svc.create(_req(task_setup, parent_task_id=parent.id))
+    assert await svc.has_children(parent.id) is True
+
+
+@pytest.mark.asyncio
+async def test_has_children_false_for_leaf(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    leaf = await svc.create(_req(task_setup))
+    assert await svc.has_children(leaf.id) is False
+
+
 # ---------------------------------------------------------------------------
 # Agent lookups (gateway helpers)
 # ---------------------------------------------------------------------------

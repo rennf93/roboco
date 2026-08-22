@@ -90,12 +90,23 @@ async def _add_notification(
 async def test_pending_ack_only_not_masked_by_fully_acked_window(
     db_session: AsyncSession,
 ) -> None:
-    """Newest ``limit`` fully-acked rows must NOT hide the oldest unacked one."""
+    """Newest ``limit`` fully-acked rows must NOT hide the oldest unacked one.
+
+    ``list_system_notifications(pending_ack_only=True)`` reads the WHOLE
+    requires_ack set with no recipient scope (there is none to scope by,
+    it's the system-wide view), so a fixed calendar date collides with any
+    other test's real-"now"-timestamped committed row in the shared suite
+    DB (e.g. a still-unacked CEO queue-item notification another test left
+    behind). Anchoring on ``now() + 10 years`` instead keeps this test's own
+    4 rows the newest in the whole table regardless of what else is
+    committed, so the assertions only ever depend on ordering WITHIN that
+    set, not on the table being otherwise empty.
+    """
     sender_id = await _seed_sender(db_session)
     recipient_id = await _seed_recipient(db_session)
 
     limit = 3
-    base = datetime(2026, 1, 1, tzinfo=UTC)
+    base = datetime.now(UTC) + timedelta(days=3650)
     # Newest `limit` rows (largest timestamps) are fully acked; the oldest is not.
     acked_ids = [
         await _add_notification(
@@ -149,6 +160,63 @@ async def test_pending_ack_only_slices_to_limit(db_session: AsyncSession) -> Non
         pending_ack_only=True, type_filter=None, limit=limit
     )
     assert len(result) == limit
+
+
+@pytest.mark.asyncio
+async def test_get_notification_count_matches_in_memory_computation_at_scale(
+    db_session: AsyncSession,
+) -> None:
+    """SQL COUNT rewrite must match the old in-memory sum() for a large, mixed seed.
+
+    Seeds >1000 rows for one agent, mixing read/unread, acked/unacked, and
+    requires_ack true/false so all three counters exercise non-trivial values,
+    then asserts the service's result equals what the OLD Python-side
+    computation (``len(rows)`` / ``sum(agent_id not in read_by)`` /
+    ``sum(requires_ack and agent_id not in acked_by)``) would produce.
+    """
+    sender_id = await _seed_sender(db_session)
+    recipient_id = await _seed_recipient(db_session)
+    other_id = uuid4()  # noise recipient — must not affect recipient_id's counts
+
+    base = datetime(2026, 4, 1, tzinfo=UTC)
+    rows: list[NotificationTable] = []
+    seed_size = 1050
+    for i in range(seed_size):
+        read = i % 2 == 0
+        acked = i % 3 == 0
+        requires_ack = i % 5 != 0
+        n = NotificationTable(
+            type=NotificationType.REVIEW_REQUEST,
+            priority=NotificationPriority.NORMAL,
+            from_agent=sender_id,
+            to_agents=[recipient_id, other_id] if i % 7 == 0 else [recipient_id],
+            subject=f"Notification {i}",
+            body="Body text",
+            requires_ack=requires_ack,
+            acked_by=[recipient_id] if acked else [],
+            read_by=[recipient_id] if read else [],
+            timestamp=base + timedelta(seconds=i),
+        )
+        rows.append(n)
+    db_session.add_all(rows)
+    await db_session.flush()
+
+    expected_total = len(rows)
+    expected_unread = sum(1 for n in rows if recipient_id not in n.read_by)
+    expected_pending_ack = sum(
+        1 for n in rows if n.requires_ack and recipient_id not in n.acked_by
+    )
+    assert expected_unread not in (0, expected_total)
+    assert expected_pending_ack not in (0, expected_total)
+
+    service = get_notification_delivery_service(db_session)
+    counts = await service.get_notification_count(recipient_id)
+
+    assert counts == {
+        "total": expected_total,
+        "unread": expected_unread,
+        "pending_ack": expected_pending_ack,
+    }
 
 
 @pytest.mark.asyncio

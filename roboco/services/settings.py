@@ -8,11 +8,16 @@ writable, each with a validator, so the panel can't persist junk.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
 from roboco.db.tables import AgentRole, SystemSettingTable
+from roboco.foundation.policy.maintenance_pause import (
+    PauseScope,
+    validate_pause_payload,
+)
 from roboco.services.base import BaseService
 from roboco.services.repositories.query_helpers import get_agent_by_role
 
@@ -38,6 +43,20 @@ def _validate_retention_days(value: str) -> None:
 def _validate_bool(value: str) -> None:
     if value.strip().lower() not in ("true", "false"):
         raise SettingValidationError("value must be 'true' or 'false'")
+
+
+def _validate_maintenance_pause(value: str) -> None:
+    """``maintenance_pause.{scope}`` stores a JSON payload (who/when/why/
+    expiry), not a bare bool; shape enforced by the pure foundation
+    validator so the two never drift."""
+    try:
+        payload = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise SettingValidationError("value must be valid JSON") from exc
+    try:
+        validate_pause_payload(payload)
+    except ValueError as exc:
+        raise SettingValidationError(str(exc)) from exc
 
 
 _CEO_NAME_MAX_LEN = 60
@@ -149,6 +168,14 @@ _VALIDATORS = {
     "board_program.barfly.enabled": _validate_bool,
     "board_program.dogfood.enabled": _validate_bool,
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
+    # Operator maintenance pause: one JSON payload per scope (see
+    # roboco.services.maintenance_pause). Not a feature flag: it has no
+    # roboco.config attribute, is written by its own CEO-only route, and
+    # self-expires rather than persisting across a restart forever.
+    **dict.fromkeys(
+        (f"maintenance_pause.{s.value}" for s in PauseScope),
+        _validate_maintenance_pause,
+    ),
 }
 
 

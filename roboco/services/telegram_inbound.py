@@ -509,6 +509,15 @@ class TelegramInboundEngine(BaseService):
             try:
                 await self._process_update(update, creds, client)
             except Exception:
+                # A handler that raised mid-write (past its own except, or
+                # one that has none) poisons this shared session for every
+                # remaining update in the batch, and for the offset-advance
+                # commit below — roll back so one bad update can't take the
+                # rest of the cycle down with it. Handlers that already
+                # commit their own work along the way are unaffected (a
+                # rollback here only discards THIS update's own uncommitted
+                # partial writes).
+                await self.session.rollback()
                 self.log.exception(
                     "telegram update processing failed", update_id=update_id
                 )
@@ -771,14 +780,22 @@ class TelegramInboundEngine(BaseService):
         if sess is None or sess.pending_draft is None:
             return False, "No draft is pending."
         try:
-            task_id = await get_prompter_service(self.session).confirm_live_draft(
+            service = get_prompter_service(self.session)
+            task_id = await service.confirm_live_draft(
                 sess.pending_draft,
                 _CEO_UUID,
                 project_id=UUID(sess.project_id) if sess.project_id else None,
                 route="board",
             )
+            await service.mark_live_drafts_consumed(sess.session_id, task_id)
             await self.session.commit()
         except Exception as exc:
+            # A mid-write failure here poisons the shared session for every
+            # later update `run_cycle`'s loop still has to process this
+            # tick — roll back (not a savepoint: the success path already
+            # wants a real commit, not a nested one) so this failure stays
+            # contained to this one update.
+            await self.session.rollback()
             self.log.exception("telegram intake confirm failed", chat_id=chat_id)
             return False, f"Confirm failed: {exc}"
         bridge.mark_parked(chat_id, str(task_id))

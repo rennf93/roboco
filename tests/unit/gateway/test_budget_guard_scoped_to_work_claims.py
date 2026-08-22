@@ -41,6 +41,15 @@ def _over_cap_project() -> MagicMock:
 
 
 def _make_deps(task_svc: AsyncMock, **overrides: Any) -> ChoreographerDeps:
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     base: dict[str, Any] = {
         "task": task_svc,
         "work_session": AsyncMock(),
@@ -86,9 +95,9 @@ async def test_claim_review_succeeds_at_cap() -> None:
     task_svc.has_earlier_incomplete_code_sibling.return_value = False
     task_svc.qa_claim = AsyncMock(return_value=t)
     task_svc.project_month_spend_usd = AsyncMock(return_value=999.0)
-    c = Choreographer(_make_deps(task_svc))
-    cc: Any = c
-    cc._build_qa_review_evidence = AsyncMock(return_value={})
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.return_value = ("", [])
+    c = Choreographer(_make_deps(task_svc, git=git_svc))
 
     env = await c.claim_review(uuid4(), t.id)
     body = env.as_dict()

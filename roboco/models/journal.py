@@ -54,7 +54,10 @@ class JournalEntry(TimestampMixin):
     # Sentiment/mood tracking (for growth analysis)
     sentiment: str | None = Field(
         default=None,
-        description="Sentiment indicator (positive, neutral, negative, frustrated, confident, etc.)",  # noqa: E501
+        description=(
+            "Sentiment indicator (positive, neutral, negative, frustrated, "
+            "confident, etc.)"
+        ),
     )
 
     # Visibility

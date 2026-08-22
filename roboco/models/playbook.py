@@ -29,6 +29,9 @@ class Playbook(RobocoBase):
     scope: str = "org"
     source_task_ids: list[UUID] = Field(default_factory=list)
     status: PlaybookStatus = PlaybookStatus.DRAFT
+    # The Board Program that drafted this directly (e.g. "coroner",
+    # "librarian"); None for an ordinary delivery-role draft_playbook draft.
+    source_program: str | None = None
     created_by: UUID
     approved_by: UUID | None = None
     created_at: datetime | None = None

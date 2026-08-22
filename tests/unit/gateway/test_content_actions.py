@@ -31,7 +31,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     else:
         git = AsyncMock()
         git.commit.return_value = {"sha": "abc12345"}
-        git.diff.return_value = ""
+        git.diff_and_files.return_value = ("", [])
 
     a2a = overrides.get("a2a", AsyncMock())
     journal = overrides.get("journal", AsyncMock())
@@ -644,8 +644,20 @@ async def test_evidence_valid_task_returns_ok_with_pr_diff() -> None:
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "diff --git a/foo.py b/foo.py\n+added line"
+    git_svc.diff_and_files.return_value = (
+        "diff --git a/foo.py b/foo.py\n+added line",
+        [],
+    )
     workspace_svc = AsyncMock()
 
     deps = _make_deps(task=task_svc, git=git_svc, workspace=workspace_svc)
@@ -659,7 +671,7 @@ async def test_evidence_valid_task_returns_ok_with_pr_diff() -> None:
     assert body["evidence"]["pr_number"] == pr_number
     assert "diff --git" in body["evidence"]["pr_diff_summary"]
     workspace_svc.fetch_branch_for_inspection.assert_awaited_once()
-    git_svc.diff.assert_awaited_once()
+    git_svc.diff_and_files.assert_awaited_once()
 
 
 @pytest.mark.asyncio

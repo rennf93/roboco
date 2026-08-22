@@ -117,6 +117,48 @@ async def test_notify_auditor_of_rework_creates_alert_to_auditor(
 
 
 @pytest.mark.asyncio
+async def test_notify_auditor_of_rework_not_suppressed_by_existing_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second `needs_revision` on the same task from the same actor must
+    still reach the auditor even while the first ALERT is unacked (PR #742's
+    unconditional DB dedup silently suppressed this). `notify_auditor_of_rework`
+    passes `bypass_purpose_dedup=True`, so the dedup check is never even
+    consulted for this call path."""
+    auditor = _mock_agent(role="auditor", slug="auditor")
+    actor = _mock_agent(role="qa", slug="be-qa")
+    session = _session_with_agent(auditor)
+    svc = NotificationDeliveryService(session)
+    monkeypatch.setattr(svc, "_get_auditor_agent", AsyncMock(return_value=auditor))
+    monkeypatch.setattr(svc, "_get_agent_by_id", AsyncMock(return_value=actor))
+    monkeypatch.setattr(svc, "deliver", AsyncMock(return_value=True))
+    dedup_spy = AsyncMock(return_value=True)  # would suppress if ever consulted
+
+    task = _mock_task()
+    with (
+        patch(
+            "roboco.services.notification_delivery.all_recipients_recently_notified",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "roboco.services.notification_delivery.duplicate_unacked_notification_exists",
+            dedup_spy,
+        ),
+    ):
+        await svc.notify_auditor_of_rework(
+            task=task,
+            task_id=require_uuid(task.id),
+            reason="second rework on the same task",
+            actor_agent_id=actor.id,
+            actor_role="qa",
+        )
+
+    dedup_spy.assert_not_called()
+    added = [c for c in session.add.call_args_list if c.args]
+    assert len(added) == 1, "rework ALERT must deliver despite an unacked duplicate"
+
+
+@pytest.mark.asyncio
 async def test_notify_auditor_of_rework_skips_when_no_auditor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

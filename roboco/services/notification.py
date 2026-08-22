@@ -19,7 +19,10 @@ from roboco.db.tables import AgentTable, NotificationTable
 from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
-from roboco.services.notification_dedup import all_recipients_recently_notified
+from roboco.services.notification_dedup import (
+    all_recipients_recently_notified,
+    duplicate_unacked_notification_exists,
+)
 from roboco.services.notification_text import agent_display, task_display
 from roboco.utils.converters import require_uuid
 
@@ -129,6 +132,50 @@ class NotificationService:
                 subject=f"Agent {agent_slug} stuck on task {display}",
                 body=body,
                 related_task_id=task_id,
+            )
+        )
+
+    async def send_notification_spawn_cap_notification(
+        self,
+        agent_slug: str,
+        notification_id: str,
+        to_agent: str,
+        attempts: int,
+    ) -> None:
+        """Alert an overseer that a notification-spawn kept respawning its
+        target without ever being acknowledged.
+
+        Raised by the no-task_id analogue of the respawn breaker
+        (``_notification_spawn_over_cap``): unlike the task-keyed breaker
+        there is no task to key on, so the trip is identified by
+        ``(agent_slug, notification_id)`` instead. ``related_task_id`` is
+        always None for this caller, so ``bypass_purpose_dedup=True`` is
+        required — without it, NotificationService's purpose-dedup (keyed on
+        sender/type/related_task_id/recipient-set) treats every distinct
+        (agent_slug, notification_id) cap trip as a duplicate of the first
+        unacked one and silently drops it.
+        """
+        logger.info(
+            "Sending notification-spawn-cap notification",
+            agent=agent_slug,
+            notification_id=notification_id,
+            to_agent=to_agent,
+        )
+        body = (
+            f"Notification {notification_id} kept respawning agent {agent_slug} "
+            f"without ever being acknowledged ({attempts} attempts), so further "
+            "automatic spawns for it have been paused. Please investigate and "
+            "acknowledge or resolve the notification manually."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.BLOCKER_ESCALATION,
+                priority=NotificationPriority.HIGH,
+                from_agent="system",
+                to_agents=[to_agent],
+                subject=f"Agent {agent_slug} stuck on notification {notification_id}",
+                body=body,
+                bypass_purpose_dedup=True,
             )
         )
 
@@ -524,12 +571,16 @@ class NotificationService:
         to_ceo: str = "ceo",
         held_back_title: str | None = None,
         blocking_title: str | None = None,
+        db_session: AsyncSession | None = None,
     ) -> None:
         """Tell the held-back task's owner (+ CEO) it now waits on a sibling.
 
         Fired only for a newly-created collision-sequencing edge (see
         ``wire_sibling_collision_dag`` — a repeat wiring pass over an
         already-wired pair contributes no edge, so this cannot double-fire).
+        ``db_session`` must be the edge-wiring transaction's own session: the
+        held-back task row may be uncommitted there, and the FK on
+        ``related_task_id`` fails on any other connection (2026-07-29).
         """
         recipients = list(dict.fromkeys(r for r in (held_back_assignee, to_ceo) if r))
         if not recipients:
@@ -556,7 +607,8 @@ class NotificationService:
                 subject=f"Task {held_back_display} sequenced behind a sibling",
                 body=body,
                 related_task_id=held_back_task_id,
-            )
+            ),
+            db_session,
         )
 
     async def send_unblock_notification(
@@ -890,48 +942,20 @@ class NotificationService:
     ) -> bool:
         """True when an unacked same-purpose notification already exists.
 
-        Purpose-based dedup (CEO directive, 2026-06-10): same sender, type,
-        task, EQUAL recipient set, while a prior one is still unacked —
-        agents re-send the same signal (often reworded) and each copy inflates
-        the recipient's unacked set, soft-blocking i_am_idle and driving respawn
-        churn. Body text is NOT compared. Dedup applies only to ACTION-REQUIRED
-        types; informational carries distinct content per send and acking is
-        voluntary, so deduping them would silently drop broadcasts.
-
-        Recipient set must be EXACTLY equal — overlapping-but-not-equal sets
-        do NOT suppress. A blocker sent to {be-pm, main-pm} after an unacked
-        one to {be-pm} alone must reach main-pm (the prior's recipients are a
-        strict subset). Overlap is the SQL filter; the exact-set-equality check
-        runs in Python against the fetched candidate rows.
+        Thin wrapper over the shared primitive-typed query in
+        ``notification_dedup.duplicate_unacked_notification_exists`` — see
+        that function's docstring for the dedup semantics (same sender +
+        type + task, EXACT recipient-set equality, prior still unacked).
+        Kept here so callers that already hold a ``CreateNotificationParams``
+        don't have to unpack it themselves.
         """
-        related = params.related_task_id
-        if not ACK_REQUIRED_BY_TYPE.get(params.notification_type, True):
-            return False
-        new_set = set(to_agents_uuids)
-        dup_q = (
-            select(NotificationTable.id, NotificationTable.to_agents)
-            .where(NotificationTable.from_agent == from_agent_uuid)
-            .where(NotificationTable.type == params.notification_type)
-            .where(NotificationTable.to_agents.overlap(to_agents_uuids))
-            .where(~NotificationTable.acked_by.contains(to_agents_uuids))
-            .where(
-                NotificationTable.related_task_id == related
-                if related is not None
-                else NotificationTable.related_task_id.is_(None)
-            )
+        return await duplicate_unacked_notification_exists(
+            db,
+            from_agent=from_agent_uuid,
+            notification_type=params.notification_type,
+            related_task_id=params.related_task_id,
+            to_agents=to_agents_uuids,
         )
-        result = await db.execute(dup_q)
-        for row in result.all():
-            if set(row[1]) == new_set:
-                logger.info(
-                    "Suppressed duplicate notification (same purpose, unacked)",
-                    from_agent=str(from_agent_uuid),
-                    type=params.notification_type.value,
-                    related_task_id=str(related) if related is not None else None,
-                    to_agents=[str(a) for a in to_agents_uuids],
-                )
-                return True
-        return False
 
     async def _create_notification(
         self,
@@ -1031,7 +1055,11 @@ class NotificationService:
         # notification for the SAME purpose while a prior one is unacked. See
         # ``_duplicate_unacked_exists`` for the rationale + the action-only
         # scope (informational types carry distinct content per send).
-        if await self._duplicate_unacked_exists(
+        # ``bypass_purpose_dedup`` opts a caller out entirely — needed by
+        # callers whose ``related_task_id`` is always None, where the dedup
+        # key would otherwise collapse every distinct notification into one
+        # bucket (see CreateNotificationParams.bypass_purpose_dedup).
+        if not params.bypass_purpose_dedup and await self._duplicate_unacked_exists(
             db,
             from_agent_uuid=from_agent_uuid,
             params=params,

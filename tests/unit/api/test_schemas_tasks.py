@@ -43,6 +43,7 @@ from roboco.models.base import (
 )
 from roboco.models.product import ProductCellMapping
 from roboco.runtime.orchestrator import AgentOrchestrator, _format_barfly_candidates
+from structlog.testing import capture_logs
 
 _ORDER_DEFAULT = 0
 
@@ -600,6 +601,159 @@ def _hitl_blocked_task_row() -> TaskTable:
         source="manual",
         confirmed_by_human=True,
     )
+
+
+def _legacy_null_description_task_row() -> TaskTable:
+    """A real TaskTable row shaped like a restored legacy row: description is
+    NULL even though the column is declared NOT NULL and the modern write
+    path (task-completeness gate) never leaves it unset."""
+    return TaskTable(
+        id=uuid4(),
+        title="t",
+        description=None,
+        acceptance_criteria=["a"],
+        acceptance_criteria_ids=[],
+        parent_ac_refs=[],
+        status=TaskStatus.PENDING,
+        blocker_resolver_type=None,
+        priority=2,
+        sequence=0,
+        nature=TaskNature.TECHNICAL,
+        task_type=TaskType.CODE,
+        project_id=None,
+        product_id=None,
+        docs_complete=False,
+        pr_created=False,
+        board_review_complete=False,
+        team=Team.BACKEND,
+        created_by=uuid4(),
+        assigned_to=None,
+        parent_task_id=None,
+        dependency_ids=[],
+        blocker_ids=[],
+        batch_id=None,
+        created_at=datetime.now(UTC),
+        updated_at=None,
+        claimed_at=None,
+        claimed_by=None,
+        started_at=None,
+        completed_at=None,
+        target_date=None,
+        estimated_complexity=Complexity.LOW,
+        plan=None,
+        checkpoints=[],
+        progress_updates=[],
+        commits=[],
+        documents=[],
+        dev_notes=None,
+        qa_notes=None,
+        auditor_notes=None,
+        self_verified=False,
+        qa_verified=None,
+        branch_name=None,
+        pr_number=None,
+        pr_url=None,
+        source="manual",
+        confirmed_by_human=True,
+    )
+
+
+def test_task_to_response_coalesces_null_description() -> None:
+    """A legacy row with description=None (post-restore) builds a valid
+    TaskResponse with "" instead of raising a pydantic ValidationError."""
+    row = _legacy_null_description_task_row()
+    resp = task_to_response(row)
+    assert resp.description == ""
+
+
+def test_task_list_to_response_survives_one_legacy_null_description_row() -> None:
+    """One legacy NULL-description row in a list must not 500 the whole
+    GET /api/tasks response — the live incident this fix closes."""
+    rows = [_legacy_null_description_task_row(), _hitl_blocked_task_row()]
+    out = task_list_to_response(rows)
+    assert len(out) == len(rows)
+    assert out[0].description == ""
+    assert out[1].description == "d"
+
+
+def _legacy_null_title_task_row() -> TaskTable:
+    """title=None — not a coalesced field. The `description or ""` fix does
+    not save this row; only task_list_to_response's per-row guard does.
+    Proves description was not the only NOT-NULL column a restore can
+    violate (the critic's refutation of the single-field audit). Built via
+    the constructor (like _legacy_null_description_task_row) rather than
+    post-construction assignment — SQLAlchemy's typed descriptors reject a
+    None assignment to a str-typed attribute at the mypy level even though
+    the constructor kwarg itself type-checks."""
+    return TaskTable(
+        id=uuid4(),
+        title=None,
+        description="d",
+        acceptance_criteria=["a"],
+        acceptance_criteria_ids=[],
+        parent_ac_refs=[],
+        status=TaskStatus.PENDING,
+        blocker_resolver_type=None,
+        priority=2,
+        sequence=0,
+        nature=TaskNature.TECHNICAL,
+        task_type=TaskType.CODE,
+        project_id=None,
+        product_id=None,
+        docs_complete=False,
+        pr_created=False,
+        board_review_complete=False,
+        team=Team.BACKEND,
+        created_by=uuid4(),
+        assigned_to=None,
+        parent_task_id=None,
+        dependency_ids=[],
+        blocker_ids=[],
+        batch_id=None,
+        created_at=datetime.now(UTC),
+        updated_at=None,
+        claimed_at=None,
+        claimed_by=None,
+        started_at=None,
+        completed_at=None,
+        target_date=None,
+        estimated_complexity=Complexity.LOW,
+        plan=None,
+        checkpoints=[],
+        progress_updates=[],
+        commits=[],
+        documents=[],
+        dev_notes=None,
+        qa_notes=None,
+        auditor_notes=None,
+        self_verified=False,
+        qa_verified=None,
+        branch_name=None,
+        pr_number=None,
+        pr_url=None,
+        source="manual",
+        confirmed_by_human=True,
+    )
+
+
+def test_task_list_to_response_skips_row_that_still_fails_validation() -> None:
+    """A row shape the description coalesce can't fix (title=None) is
+    dropped by the list guard instead of 500ing every other row in the
+    response."""
+    good = _hitl_blocked_task_row()
+    rows = [_legacy_null_title_task_row(), good]
+    out = task_list_to_response(rows)
+    assert len(out) == 1
+    assert out[0].id == good.id
+
+
+def test_task_list_to_response_logs_the_skipped_row() -> None:
+    bad = _legacy_null_title_task_row()
+    with capture_logs() as entries:
+        task_list_to_response([bad])
+    warnings = [e for e in entries if e.get("log_level") == "warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["task_id"] == str(bad.id)
 
 
 def test_task_to_response_serializes_blocker_resolver_type() -> None:

@@ -4,46 +4,23 @@ materializes it as a BACKLOG task; nothing here starts it — normal PM
 activation takes it from there. Mirrors ``roboco.api.routes.roadmap``.
 """
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.pest_control import (
     PestHuntCycleResponse,
     PestHuntItemActionResponse,
-    PestHuntItemResponse,
     PestHuntRejectRequest,
 )
+from roboco.api.utils.pest_control import require_ceo as _require_ceo
+from roboco.api.utils.pest_control import to_response as _to_response
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.pest_control_service import get_pest_control_service
 
-if TYPE_CHECKING:
-    from roboco.db.tables import TaskTable
-
 router = APIRouter()
-
-
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or act on the pest-control queue")
-
-
-def _status_value(task: "TaskTable") -> str:
-    raw = task.status
-    return raw.value if hasattr(raw, "value") else str(raw)
-
-
-def _to_response(task: "TaskTable") -> PestHuntCycleResponse:
-    payload = markers.get_pest_hunt(task) or {}
-    items = [PestHuntItemResponse(**item) for item in payload.get("items", [])]
-    return PestHuntCycleResponse(
-        task_id=str(task.id),
-        title=task.title,
-        status=_status_value(task),
-        items=items,
-    )
 
 
 @router.get("/cycles", response_model=list[PestHuntCycleResponse])

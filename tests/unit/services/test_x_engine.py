@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -41,6 +42,7 @@ from roboco.services import x_engine as x_engine_module
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.task import (
     MEGAPHONE_SOURCE,
+    X_CAMPAIGN_SOURCE,
     X_EDITORIAL_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     X_FEATURE_SOURCE,
@@ -305,6 +307,9 @@ async def test_originate_post_sends_telegram_push(
     body = markers.get_x_draft_body(task)
     assert body is not None
     assert kwargs["title"] == body[:100]
+    # DEFECT 2 regression: without related_task_id the row can never
+    # auto-resolve once the CEO approves/rejects the draft.
+    assert kwargs["related_task_id"] == task.id
 
 
 @pytest.mark.asyncio
@@ -1465,6 +1470,88 @@ async def test_redraft_from_rejection_barfly_carries_reply_ref(
 
 
 @pytest.mark.asyncio
+async def test_redraft_from_rejection_editorial_carries_editorial_ref(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected x_editorial draft's redraft keeps its angle + rationale —
+    losing x_editorial_ref would strip the editorial context from the
+    revision prompt and the panel's angle-guidance line."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+
+    class _Exploration:
+        project_id = project.id
+
+    post_task = await engine.materialize_editorial_post(
+        exploration_task=cast("TaskTable", _Exploration()),
+        angle="Why multi-agent beats monolithic",
+        body="Original editorial post.",
+        rationale="Counter the single-agent hype wave.",
+    )
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, "A sharper editorial take.")
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Too dry")
+    assert redraft is not None
+    assert redraft.source == X_EDITORIAL_SOURCE
+    ref = markers.get_x_editorial_ref(redraft)
+    assert ref is not None
+    assert ref["angle"] == "Why multi-agent beats monolithic"
+    assert ref["rationale"] == "Counter the single-agent hype wave."
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_campaign_carries_campaign_ref(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected x_campaign draft's redraft keeps its campaign_name,
+    stage_label, publish_after, and sequence — losing x_campaign_ref would
+    strip the campaign context from the revision prompt and the panel's
+    campaign-guidance line."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+
+    class _Exploration:
+        project_id = project.id
+
+    campaign_ref = {
+        "campaign_name": "Launch Week",
+        "stage_label": "Teaser",
+        "publish_after": "2026-08-15T00:00:00Z",
+        "sequence": 1,
+    }
+    post_task = await engine.materialize_campaign_post(
+        exploration_task=cast("TaskTable", _Exploration()),
+        campaign_ref=campaign_ref,
+        body="Original campaign post.",
+    )
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, "A sharper campaign tweet.")
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Too vague")
+    assert redraft is not None
+    assert redraft.source == X_CAMPAIGN_SOURCE
+    ref = markers.get_x_campaign_ref(redraft)
+    assert ref is not None
+    assert ref["campaign_name"] == "Launch Week"
+    assert ref["stage_label"] == "Teaser"
+    assert ref["publish_after"] == "2026-08-15T00:00:00Z"
+    assert ref["sequence"] == 1
+
+
+@pytest.mark.asyncio
 async def test_redraft_from_rejection_local_model_failure_originates_nothing(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2067,6 +2154,71 @@ def test_release_prompt_contains_slop_ban_and_length_guidance() -> None:
     assert "Em dashes" in prompt
     assert "game-changer" in prompt
     assert "under 240 characters" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# IMPACT BAR (the deliverable-carries-the-post standard, distilled from a
+# reference high-impact X post) reaches every local-model drafting prompt via
+# _hom_voice -> _voice_guide -> {_release,_reply,_revision}_prompt. Sentinel
+# phrases pinned here must also appear, verbatim, in head-marketing.md's own
+# IMPACT BAR section (see test_impact_bar_parity_with_head_marketing_md
+# below), the parity check between the local-model chokepoint and
+# the cloud-agent chokepoint.
+# --------------------------------------------------------------------------- #
+
+IMPACT_BAR_SENTINELS = (
+    "IMPACT BAR",
+    "falsifiable specific",
+    "first sentence",
+    "engagement-bait",
+    "canonical, verifiable link",
+    "reader's own terms",
+)
+
+
+def test_release_prompt_carries_impact_bar() -> None:
+    voice = x_engine_module._hom_voice("RoboCo")
+    prompt = x_engine_module._release_prompt(
+        _VERSION, ["feat: new thing"], voice, "RoboCo"
+    )
+    for sentinel in IMPACT_BAR_SENTINELS:
+        assert sentinel in prompt, f"release prompt missing IMPACT BAR: {sentinel!r}"
+
+
+def test_reply_prompt_carries_impact_bar() -> None:
+    voice = x_engine_module._hom_voice("RoboCo")
+    prompt = x_engine_module._reply_prompt("great work on this", voice, "RoboCo")
+    for sentinel in IMPACT_BAR_SENTINELS:
+        assert sentinel in prompt, f"reply prompt missing IMPACT BAR: {sentinel!r}"
+
+
+def test_revision_prompt_carries_impact_bar() -> None:
+    voice = x_engine_module._hom_voice("RoboCo")
+    prompt = x_engine_module._revision_prompt(
+        "old draft body", "too vague", voice, "RoboCo", ""
+    )
+    for sentinel in IMPACT_BAR_SENTINELS:
+        assert sentinel in prompt, f"revision prompt missing IMPACT BAR: {sentinel!r}"
+
+
+def test_impact_bar_parity_with_head_marketing_md() -> None:
+    """The IMPACT BAR is authored twice, once for the local-model chokepoint
+    (``_HOM_VOICE_GUIDE`` in x_engine.py) and once for the cloud-agent
+    chokepoint (head-marketing.md's own VOICE GUIDE section). A one-sided
+    edit to either copy must fail this test loudly rather than silently
+    drift the two bars apart."""
+    identities_dir = (
+        Path(__file__).resolve().parents[3] / "agents" / "prompts" / "identities"
+    )
+    identity_text = (identities_dir / "head-marketing.md").read_text()
+    voice = x_engine_module._hom_voice("RoboCo")
+    for sentinel in IMPACT_BAR_SENTINELS:
+        assert sentinel in identity_text, (
+            f"head-marketing.md missing IMPACT BAR sentinel: {sentinel!r}"
+        )
+        assert sentinel in voice, (
+            f"_hom_voice missing IMPACT BAR sentinel: {sentinel!r}"
+        )
 
 
 # --------------------------------------------------------------------------- #

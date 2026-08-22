@@ -107,15 +107,26 @@ _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
     # claim() returns None -> INVALID_STATE -> the PM respawn-loops on its own
     # rejected root, unable to plan or idle it. Parity is locked by
     # tests/unit/services/test_pm_claim_needs_revision.py.
+    #
+    # AWAITING_PM_REVIEW is deliberately absent: granting it here once let a
+    # respawned PM's i_will_plan legally re-claim its own review-queue task,
+    # resetting it to in_progress and re-running submit_up -> pr_pass ->
+    # awaiting_pm_review forever. lifecycle.CLAIM_RULES agrees, and unlike the
+    # NEEDS_REVISION parity above (spec ⊆ runtime only, via
+    # test_runtime_pm_claim_mapping_covers_spec_claim_rules), this exact
+    # per-PM-role SET is pinned bidirectionally against spec.CLAIM_RULES by
+    # test_claim_rules_and_role_statuses_are_identical — re-adding
+    # AWAITING_PM_REVIEW here alone (without touching the spec) fails that
+    # test instead of silently reopening the loop. The choreographer's
+    # _handle_pm_reentry now steers a re-entering PM straight to
+    # complete/request_changes instead, with no claim involved.
     "cell_pm": {
         TaskStatus.PENDING,
         TaskStatus.NEEDS_REVISION,
-        TaskStatus.AWAITING_PM_REVIEW,
     },
     "main_pm": {
         TaskStatus.PENDING,
         TaskStatus.NEEDS_REVISION,
-        TaskStatus.AWAITING_PM_REVIEW,
     },
 }
 
@@ -148,7 +159,12 @@ _ESCALATABLE_TO_BLOCKED: frozenset[TaskStatus] = frozenset(
 # Review/queue states are entered unowned and re-claimed via the claim verbs
 # (claim_review, claim_doc_task, i_will_plan, ...). An admin override landing a
 # blocked task in one of these must clear the stale claim or the next claimant
-# is handed a task it cannot write to.
+# is handed a task it cannot write to. AWAITING_CEO_APPROVAL has no claim verb
+# at all (the CEO approves directly, out of band) but the same principle
+# applies: whoever held the claim before is no longer who should act, so a
+# stale active_claimant_id here is equally wrong - it misrepresents who is
+# "working" the task and would let the prior claimant keep writing notes/
+# commits via _active_claim_violation after losing ownership.
 _REVIEW_QUEUE_STATES: frozenset[TaskStatus] = frozenset(
     {
         TaskStatus.NEEDS_REVISION,
@@ -156,6 +172,7 @@ _REVIEW_QUEUE_STATES: frozenset[TaskStatus] = frozenset(
         TaskStatus.AWAITING_DOCUMENTATION,
         TaskStatus.AWAITING_PR_REVIEW,
         TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.AWAITING_CEO_APPROVAL,
     }
 )
 
@@ -261,6 +278,16 @@ def _board_cannot_own(task: TaskTable) -> bool:
         or _is_cell_team_task(task)
         or _is_coordination_task(task)
     )
+
+
+def _append_missing(values: list[Any] | None, item: Any) -> list[Any]:
+    """NULL-tolerant append-if-absent for list columns.
+
+    Restored/imported rows can carry ``None`` where the ORM default promises a
+    list; returns a list containing ``item`` exactly once either way.
+    """
+    vals = values or []
+    return vals if item in vals else [*vals, item]
 
 
 def _task_type_is_code(task_type: Any) -> bool:
@@ -528,6 +555,25 @@ class GatewayAgentView:
     team: str | None
     escalation_target: str | None
     skills: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class StalledTaskEntry:
+    """One row of the durable stalled-task set (`TaskService.list_stalled_tasks`).
+
+    Backs the read endpoint in ``roboco/api/routes`` — the route only
+    converts these into the response schema, all classification/query logic
+    lives here.
+    """
+
+    task_id: UUID
+    title: str
+    assignee_id: UUID | None
+    assignee_slug: str | None
+    status: str
+    reason: str
+    stalled_since: datetime
+    stalled_seconds: float
 
 
 def _default_claim_statuses(role: str | None) -> set[TaskStatus]:
@@ -835,6 +881,90 @@ async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
         )
 
 
+async def _evict_stranded_agent(task_id: UUID, prior_holder: UUID) -> None:
+    """Best-effort: gracefully stop a live agent container stranded by an
+    admin status override that cleared its claim out from under it.
+
+    Scheduled via ``defer_after_commit`` (see ``_schedule_stranded_eviction``)
+    rather than run inline: this does a DB lookup, an HTTP round-trip to the
+    agent's SDK, and up to a 10s ``docker stop`` plus inspect/logs/rm. Run
+    inline it would execute inside the caller's still-OPEN transaction while
+    the just-overridden task/agent rows sit lock-held (the #721/chown-storm
+    lock-convoy class) and make the caller's write latency-bound on container
+    teardown. By the time this deferred callable actually runs the caller's
+    own ``AsyncSession`` may already be closing (a FastAPI request tears its
+    session down once the route returns), so it opens a FRESH session from
+    the process session factory for its one lookup instead of touching the
+    caller's session.
+
+    ``admin_set_status`` is pure-DB: it clears the DB-side claim markers
+    (``active_claimant_id``) but never touches a live agent container, which
+    keeps flailing on ``not_authorized`` for every content verb against a
+    task it no longer legitimately holds. Mirrors the budget sweep's own
+    admin_set_status + ``stop_agent(graceful=True, ...)`` pairing;
+    release_claim is False here since the override already handled claim
+    state.
+
+    Never raises: an absent orchestrator (tests run without one), an unknown
+    agent, or no live container for this exact task are all silent no-ops.
+    """
+    try:
+        from roboco.api.deps import get_orchestrator_or_none
+        from roboco.services.agent import get_agent_service
+
+        orchestrator = get_orchestrator_or_none()
+        if orchestrator is None:
+            return
+        from roboco.db.base import get_session_factory
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            agent = await get_agent_service(session).get_by_uuid(prior_holder)
+        if agent is None:
+            return
+        instance = orchestrator.get_instance(agent.slug)
+        if instance is None or instance.current_task_id != str(task_id):
+            return
+        await orchestrator.stop_agent(
+            agent.slug,
+            graceful=True,
+            release_claim=False,
+            stop_reason="admin_status_override",
+        )
+        _module_log.warning(
+            "admin_override_evicted_stranded_agent",
+            task_id=str(task_id),
+            prior_holder=str(prior_holder),
+        )
+    except Exception as exc:
+        _module_log.warning(
+            "admin_override_eviction_failed",
+            task_id=str(task_id),
+            prior_holder=str(prior_holder),
+            error=str(exc),
+        )
+
+
+def _schedule_stranded_eviction(
+    session: AsyncSession, task_id: UUID, prior_holder: UUID
+) -> None:
+    """Defer a stranded-agent eviction to run only after ``session`` commits.
+
+    Called from ``admin_set_status`` the moment it actually clears a claim
+    that had a live holder: every caller of that chokepoint (the admin PATCH
+    route, the Secretary's CEO-directed override action) gets the eviction
+    for free instead of each call site duplicating it. See
+    ``_evict_stranded_agent`` for why this must never run inside the
+    still-open transaction.
+    """
+    from roboco.services.notification_delivery import defer_after_commit
+
+    async def _evict() -> None:
+        await _evict_stranded_agent(task_id, prior_holder)
+
+    defer_after_commit(session, _evict)
+
+
 # Source tag for a Sentinel (Board Program) exploration cycle: a PENDING task
 # the sentinel engine opens for the Auditor to assess org-wide quality drift
 # (waiver-accumulation trends, conventions-violation hotspots, docs/map
@@ -947,6 +1077,50 @@ VAULT_NOTE_SOURCE = "vault_note"
 # explicit exemption.
 EVAL_BENCH_SOURCE = "eval_bench"
 
+# The only two sources a human ever typed/approved from scratch: "manual"
+# (created directly, not via the Prompter chat) and "prompter" (a CEO-
+# confirmed Intake draft, confirmed_by_human is required at creation, see
+# api/routes/tasks.py). Every other source (self_heal, ci_watch, a Board
+# Program proposal, ...) is a system/agent origination path. NOT a substitute
+# for reading ``TaskTable.source`` directly on a given row: a delegated
+# subtask's own source is always "manual" (create_subtask never inherits the
+# parent's source, inheriting it naively would land board/engine sources on
+# children too, which several dispatch branches key off by exact match, e.g.
+# SELF_HEAL_SOURCE gates on ``source == SELF_HEAL_SOURCE and not
+# confirmed_by_human``, a child would default confirmed_by_human=False and
+# get skipped forever). Use TaskService.resolve_root_source /
+# is_human_authored to answer "who really originated this" for any task.
+HUMAN_AUTHORED_SOURCES: frozenset[str] = frozenset({"manual", "prompter"})
+
+# Sources excluded from the delivery lead-time population
+# (``get_delivery_stats_30d`` below): held CEO-approval drafts and standing
+# reports that complete the instant a Board role files/the CEO approves them,
+# not when real delivery work ships. X_SOURCES + the feature-spotlight
+# exploration cover x_post/x_reply/x_feature (+ equivalents x_editorial/
+# x_campaign/x_barfly); VIDEO_HELD_SOURCES covers the held video_post draft
+# (mp4s + captions ready for CEO approval — never dispatched, exactly like
+# X_SOURCES). RELEASE_MANAGER_SOURCE covers held release proposals. A
+# "ceo_report" (Periscope/Sentinel) is never a TaskTable row at all — filed
+# as a report, not a task — so it needs no entry here. Every board-program
+# exploration cycle (board_roadmap, board_pest_control, ...) is excluded
+# separately, by task_type == ADMINISTRATIVE, not by source.
+#
+# VIDEO_SOURCE (the video-authoring task itself) is deliberately NOT in this
+# set: per the comment on VIDEO_SOURCE above, it IS dispatched — a normal,
+# pre-assigned UX/UI code task like any other cell delivery task
+# (video_engine.open_video_task creates it task_type=CODE, status=PENDING,
+# with a real assignee) — so excluding it would drop genuine delivery work
+# from the lead-time population, the same way excluding a regular backend
+# code task would.
+LEAD_TIME_EXCLUDED_SOURCES: frozenset[str] = frozenset(
+    {
+        *X_SOURCES,
+        X_FEATURE_EXPLORATION_SOURCE,
+        *VIDEO_HELD_SOURCES,
+        RELEASE_MANAGER_SOURCE,
+    }
+)
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -1031,6 +1205,7 @@ class TaskService(BaseService):
         new_status: TaskStatus,
         agent_role: str | None = None,
         audit_agent_id: str | UUID | None = None,
+        extra_allowed_roles: tuple[str, ...] = (),
     ) -> None:
         """
         Validate and set task status with lifecycle enforcement.
@@ -1061,7 +1236,7 @@ class TaskService(BaseService):
         target = new_status.value if isinstance(new_status, TaskStatus) else new_status
 
         # Validate the transition (raises TaskLifecycleError if invalid)
-        validate_task_transition(current, target, agent_role)
+        validate_task_transition(current, target, agent_role, extra_allowed_roles)
 
         # Validate git requirements (raises GitRequirementError if not met)
         git_ctx = GitContext(
@@ -1089,6 +1264,11 @@ class TaskService(BaseService):
             is_umbrella=is_batch_umbrella(
                 batch_id=task.batch_id, parent_task_id=task.parent_task_id
             ),
+            # A PR-waived task (zero commits relative to its parent —
+            # report-only work the verb runner skipped create_pr for) is
+            # exempt from the pr_number CEO-escalation gate the same way an
+            # umbrella is, even though it carries a real branch.
+            is_pr_waived=markers.is_pr_waived(task),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -1175,6 +1355,8 @@ class TaskService(BaseService):
         """
         from roboco.db.tables import AuditLogTable
 
+        self._clear_stale_stalled_marker(task)
+
         # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
         # rework cycle. Incremented at this single chokepoint — every transition
         # path funnels its audit through here exactly once — so the rework rate
@@ -1222,6 +1404,25 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    @staticmethod
+    def _clear_stale_stalled_marker(task: TaskTable) -> None:
+        """Any status transition is genuine task movement, so a stale
+        breaker-tripped stalled marker (set by
+        ``AgentOrchestrator._pm_respawn_should_gate``) no longer applies —
+        clear it here unconditionally rather than relying solely on the
+        dispatcher's narrower same-key re-observation path
+        (``_respawn_status_change_resets`` -> ``_clear_task_stalled_marker``),
+        which never re-fires once the task's status leaves the dispatcher's
+        own fetch scope (e.g. a dev's task advancing to ``awaiting_qa``).
+        Direct attribute assignment (not the async ``clear_stalled_marker``
+        helper) since the caller is synchronous and already holds the ORM
+        object mid-transaction — it commits/rolls back atomically with the
+        transition itself. Split out of ``_emit_status_transition_audit`` to
+        keep its own complexity down (xenon budget)."""
+        if task.stalled_reason is not None:
+            task.stalled_reason = None
+            task.stalled_since = None
 
     def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
         """Coroner (Board Program) bounce trigger (spec §4): fire exactly
@@ -1468,6 +1669,48 @@ class TaskService(BaseService):
                 )
             parent_parent = parent.parent_task_id
             current_id = UUID(str(parent_parent)) if parent_parent else None
+
+    async def resolve_root_source(self, task_id: UUID) -> str | None:
+        """The ROOT ancestor's ``source`` for ``task_id``, the real provenance.
+
+        ``create_subtask`` never forwards a parent's ``source`` to its
+        child (see ``HUMAN_AUTHORED_SOURCES``), so a delegated task's own
+        ``source`` column always reads "manual" no matter what actually
+        originated the work further up the tree. This walks the
+        ``parent_task_id`` chain to the root in one recursive query
+        instead of N round trips, and returns the root's source (its own
+        source, if ``task_id`` is already a root). None only if
+        ``task_id`` doesn't exist. The depth cap is a safety net past the
+        real ``MAX_TASK_DEPTH`` invariant enforced at creation, it can
+        only ever stop a hypothetical corrupt chain, never a real one.
+        """
+        from roboco.templates.git.constants import MAX_TASK_DEPTH
+
+        row = await self.session.execute(
+            text(
+                """
+                WITH RECURSIVE ancestry(orig_id, id, parent_task_id, source, depth) AS (
+                    SELECT id, id, parent_task_id, source, 0
+                    FROM tasks WHERE id = :task_id
+                    UNION ALL
+                    SELECT a.orig_id, t.id, t.parent_task_id, t.source, a.depth + 1
+                    FROM tasks t
+                    JOIN ancestry a ON t.id = a.parent_task_id
+                    WHERE a.depth < :max_depth
+                )
+                SELECT source FROM ancestry WHERE parent_task_id IS NULL
+                """
+            ),
+            {"task_id": task_id, "max_depth": MAX_TASK_DEPTH + 4},
+        )
+        return row.scalar_one_or_none()
+
+    async def is_human_authored(self, task_id: UUID) -> bool:
+        """True when ``task_id``'s real originator (its root ancestor) is
+        a human: the root's source is in ``HUMAN_AUTHORED_SOURCES``.
+        False (never raises) for a nonexistent task_id."""
+        root_source = await self.resolve_root_source(task_id)
+        return root_source in HUMAN_AUTHORED_SOURCES
 
     @staticmethod
     def _require_target_or_umbrella(req: TaskCreateRequest) -> None:
@@ -1765,6 +2008,7 @@ class TaskService(BaseService):
         pr_url = str(pr.get("url") or "")
         pr_title = str(pr.get("title") or "")
         head_sha = str(pr.get("head_sha") or "")
+        author_login = str(pr.get("user_login") or "")
         if await self.external_review_task_exists(project_id, pr_number, head_sha):
             return None
         kind = "internal" if source == "internal_pr" else "external"
@@ -1806,6 +2050,10 @@ class TaskService(BaseService):
         # while an unchanged PR is skipped (see external_review_task_exists).
         if head_sha:
             markers.set_external_pr_head(task, head_sha)
+        # Capture the contributor's login so the supersede comments can tag
+        # them (@login) without a per-comment PR fetch.
+        if author_login:
+            markers.set_external_pr_author(task, author_login)
         await self.session.flush()
         return task
 
@@ -2658,10 +2906,14 @@ class TaskService(BaseService):
         # the contributor's commits (via _resolve_base_branch's parent-branch
         # rule), not the default branch. The marker links back to the review +
         # contributor PR for dedup and close-on-land (no parent link needed).
+        # The contributor's login rides along (author=) so the supersede
+        # comments can tag them without an extra PR fetch.
         umbrella.branch_name = branch_name
-        markers.set_external_pr_supersede(
-            umbrella, f"pr={pr_number} review={review_task_id}"
-        )
+        author = markers.get_external_pr_author(review) or ""
+        marker = f"pr={pr_number} review={review_task_id}"
+        if author:
+            marker += f" author={author}"
+        markers.set_external_pr_supersede(umbrella, marker)
         await self.session.flush()
         self.log.info(
             "Supersede umbrella created",
@@ -2693,7 +2945,7 @@ class TaskService(BaseService):
                 return task
         return None
 
-    async def supersede_umbrellas_pending_close(self) -> list[TaskTable]:
+    async def supersede_umbrellas_pending_close(self) -> list[tuple[TaskTable, int]]:
         """Landed supersede umbrellas whose contributor PR hasn't been closed yet.
 
         A supersede umbrella reaching COMPLETED is necessary but not sufficient
@@ -2703,6 +2955,9 @@ class TaskService(BaseService):
         additionally require a non-cancelled descendant that landed a PR (see
         :meth:`_supersede_replacement_landed`). The ``closed=1`` token on the
         marker line makes close-on-land idempotent (closed only once).
+
+        Returns ``(umbrella, replacement_pr_number)`` pairs so the caller can
+        link the merged replacement PR in the close comment.
         """
         result = await self.session.execute(
             select(TaskTable).where(
@@ -2710,29 +2965,67 @@ class TaskService(BaseService):
                 TaskTable.status == TaskStatus.COMPLETED,
             )
         )
-        pending: list[TaskTable] = []
+        pending: list[tuple[TaskTable, int]] = []
         for task in result.scalars().all():
             if "closed=1" in supersede_marker_line(task).split():
                 continue
-            if not await self._supersede_replacement_landed(cast("UUID", task.id)):
+            replacement_pr = await self._supersede_replacement_landed(task)
+            if replacement_pr is None:
                 continue
-            pending.append(task)
+            pending.append((task, replacement_pr))
         return pending
 
-    async def _supersede_replacement_landed(self, umbrella_id: UUID) -> bool:
-        """True if a non-cancelled descendant of the umbrella landed a PR.
+    async def supersede_umbrellas_branch_pending(self) -> list[TaskTable]:
+        """Supersede umbrellas whose branch cut is still in progress or needs retry.
 
-        Walks the umbrella's subtree (bounded by MAX_TASK_DEPTH) and returns
-        True as soon as it finds a COMPLETED task carrying a ``pr_number`` — the
-        team's merged replacement PR. Returns False when every code descendant
-        was cancelled (force-completed umbrella), so close-on-land then leaves
-        the contributor PR open.
+        A ``branch_pending`` marker means the CEO's supersede action committed
+        the umbrella but the background branch cut (fetch
+        ``refs/pull/{n}/head`` + push) has not completed yet. A
+        ``branch_cut_failed`` marker on a non-BLOCKED, non-CANCELLED umbrella
+        means the CEO unblocked it after exhaustion and the sweep should
+        re-run the cut. The reconciliation sweep re-runs the cut for both so
+        an orchestrator restart does not strand the umbrella.
         """
-        frontier: list[UUID] = [umbrella_id]
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+        )
+        pending: list[TaskTable] = []
+        for task in result.scalars().all():
+            if markers.is_branch_pending(task) or (
+                markers.is_branch_cut_failed(task) and task.status != TaskStatus.BLOCKED
+            ):
+                pending.append(task)
+        return pending
+
+    async def _supersede_replacement_landed(self, umbrella: TaskTable) -> int | None:
+        """The replacement PR number for a landed supersede umbrella.
+
+        Prefers the umbrella's OWN ``pr_number``: the umbrella is a real
+        Main-PM coordination root and ``submit_root`` stamps its merged root
+        PR directly on it, so this is the canonical replacement PR the
+        close-on-land comment should link (previously never consulted, so
+        the comment could point at an internal cell PR instead, or find no
+        qualifying descendant and skip closing the contributor PR forever).
+        Falls back to walking the umbrella's subtree (bounded by
+        MAX_TASK_DEPTH) for a COMPLETED descendant carrying a ``pr_number``,
+        needed only when the umbrella itself has none (e.g. the CEO
+        force-completed it over a cancelled code subtask). The descendant
+        query is ordered (creation time, then id) so multiple qualifying
+        siblings resolve the same way on every call instead of depending on
+        unspecified row order.
+        """
+        if umbrella.pr_number is not None:
+            return int(umbrella.pr_number)
+        frontier: list[UUID] = [cast("UUID", umbrella.id)]
         seen: set[UUID] = set()
         while frontier:
             result = await self.session.execute(
-                select(TaskTable).where(TaskTable.parent_task_id.in_(frontier))
+                select(TaskTable)
+                .where(TaskTable.parent_task_id.in_(frontier))
+                .order_by(TaskTable.created_at.asc(), TaskTable.id.asc())
             )
             frontier = []
             for child in result.scalars().all():
@@ -2743,9 +3036,9 @@ class TaskService(BaseService):
                     continue
                 seen.add(child_id)
                 if child.status == TaskStatus.COMPLETED and child.pr_number is not None:
-                    return True
+                    return int(child.pr_number)
                 frontier.append(child_id)
-        return False
+        return None
 
     async def mark_supersede_pr_closed(self, task_id: UUID) -> None:
         """Record that a landed supersede's contributor PR has been closed.
@@ -3243,56 +3536,73 @@ class TaskService(BaseService):
         from roboco.services.project import get_project_service
 
         try:
-            project = await get_project_service(self.session).get(
-                UUID(str(task.project_id))
-            )
-            if not project:
-                return
-            base_branch = await self._resolve_parent_branch(task, project)
-            branch_name = str(task.branch_name)
-            if not base_branch or base_branch == branch_name:
-                return
-            git_service = get_git_service(self.session)
-            workspace = await git_service.get_workspace(project.slug, agent_id)
-            result = await git_service.merge_dependency_lineage(
-                workspace,
-                require_uuid(task.id),
-                branch_name,
-                base_branch,
-                project_slug=project.slug,
-            )
-            status = result.get("status")
-            if status == "merged":
-                # The one path that changes branch content — leave a trail.
-                self.log.info(
-                    "upstream base inherited into task branch",
-                    task_id=str(task.id),
-                    branch_name=branch_name,
-                    base_branch=base_branch,
+            # Savepoint: the two flush() calls below would otherwise poison
+            # the shared session on a mid-flush failure — this runs mid-claim,
+            # immediately followed by _create_work_session_if_needed (a
+            # required write) and the claim route's eventual commit.
+            async with self.session.begin_nested():
+                project = await get_project_service(self.session).get(
+                    UUID(str(task.project_id))
                 )
-            elif status == "conflict":
-                self._note_base_inheritance_conflict(task, base_branch, result)
-                await self.session.flush()
-            elif status == "merged_push_failed":
-                # Local merge succeeded, push to origin failed. Self-heals on
-                # the dev's next real push, but tell the dev so a failed
-                # submit isn't a mystery.
-                self._append_base_inheritance_dev_note(
-                    task,
-                    f"Upstream base {base_branch!r} was merged locally but the "
-                    f"push to origin failed; your next push carries it forward.",
+                if not project:
+                    return
+                base_branch = await self._resolve_parent_branch(task, project)
+                branch_name = str(task.branch_name)
+                if not base_branch or base_branch == branch_name:
+                    return
+                git_service = get_git_service(self.session)
+                workspace = await git_service.get_workspace(project.slug, agent_id)
+                result = await git_service.merge_dependency_lineage(
+                    workspace,
+                    require_uuid(task.id),
+                    branch_name,
+                    base_branch,
+                    project_slug=project.slug,
                 )
-                await self.session.flush()
-            elif status not in ("already_ancestor", "missing_ref"):
-                # missing_ref is quiet: a merged-and-deleted parent branch
-                # simply has nothing left to inherit.
-                self.log.warning(
-                    "upstream base inheritance incomplete",
-                    task_id=str(task.id),
-                    base_branch=base_branch,
-                    status=status,
-                )
+                status = result.get("status")
+                if status == "merged":
+                    # The one path that changes branch content — leave a trail.
+                    self.log.info(
+                        "upstream base inherited into task branch",
+                        task_id=str(task.id),
+                        branch_name=branch_name,
+                        base_branch=base_branch,
+                    )
+                elif status == "conflict":
+                    self._note_base_inheritance_conflict(task, base_branch, result)
+                    await self.session.flush()
+                elif status == "merged_push_failed":
+                    # Local merge succeeded, push to origin failed. Self-heals on
+                    # the dev's next real push, but tell the dev so a failed
+                    # submit isn't a mystery.
+                    self._append_base_inheritance_dev_note(
+                        task,
+                        f"Upstream base {base_branch!r} was merged locally but the "
+                        f"push to origin failed; your next push carries it forward.",
+                    )
+                    await self.session.flush()
+                elif status not in ("already_ancestor", "missing_ref"):
+                    # missing_ref is quiet: a merged-and-deleted parent branch
+                    # simply has nothing left to inherit.
+                    self.log.warning(
+                        "upstream base inheritance incomplete",
+                        task_id=str(task.id),
+                        base_branch=base_branch,
+                        status=status,
+                    )
         except Exception:
+            # The savepoint rollback on ANY exception in the block above —
+            # not just the flush() calls' own failures — fully expires
+            # every attribute of `task` once the conflict/merged_push_failed
+            # branches mutated it (dev_notes / the conflict note). Reading
+            # task.id right below (and the caller, claim_task_for_agent's
+            # _create_work_session_if_needed, reading task.project_id /
+            # task.branch_name right after this returns) would otherwise
+            # raise MissingGreenlet — not an AttributeError, so a getattr
+            # guard doesn't shield it — killing the claim despite "never
+            # fails the claim". A refresh failure means the DB is genuinely
+            # broken; let it raise, that's an honest failure.
+            await self.session.refresh(task)
             self.log.warning(
                 "upstream base inheritance errored",
                 task_id=str(task.id),
@@ -3428,6 +3738,94 @@ class TaskService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def mark_stalled(self, task_id: UUID, reason: str) -> None:
+        """Set the durable stalled marker (see `roboco.models.base.StalledReason`).
+
+        Called by the orchestrator's respawn breaker (`_pm_respawn_should_gate`)
+        at the exact point it fires the one-shot CEO notification, so the
+        give-up decision is readable on the task row without container logs.
+        The caller already enforces one-shot-per-trip discipline via its own
+        in-memory `notified` flag — this always (re)stamps `stalled_since` to
+        now, which is correct for a fresh trip after a cooldown self-heal
+        attempt failed.
+        """
+        await self.session.execute(
+            update(TaskTable)
+            .where(TaskTable.id == task_id)
+            .values(stalled_reason=reason, stalled_since=datetime.now(UTC))
+        )
+
+    async def clear_stalled_marker(self, task_id: UUID) -> None:
+        """Clear the stalled marker on genuine forward progress.
+
+        Conditioned on `stalled_reason` already being set so the overwhelming
+        majority of calls (a task that was never stalled) skip the write.
+        """
+        await self.session.execute(
+            update(TaskTable)
+            .where(TaskTable.id == task_id, TaskTable.stalled_reason.is_not(None))
+            .values(stalled_reason=None, stalled_since=None)
+        )
+
+    async def list_stalled_tasks(self) -> list[StalledTaskEntry]:
+        """The current stalled set: every task with a durable stalled marker.
+
+        Backs the `GET` read endpoint — all query/classification logic lives
+        here per the architectural standard (routes stay thin).
+
+        Excludes terminal (completed/cancelled) tasks at the query level as a
+        defensive backstop: ``_emit_status_transition_audit`` (the single
+        chokepoint every status transition funnels through) now clears the
+        marker unconditionally on any transition, so a completed/cancelled
+        task should never actually carry a marker in practice — but this
+        filter keeps a terminal task out of the list even if some future path
+        sets terminal status without going through that chokepoint. Mirrors
+        the terminal-status pair ``_is_terminal_task`` checks.
+        """
+        result = await self.session.execute(
+            select(
+                TaskTable.id,
+                TaskTable.title,
+                TaskTable.assigned_to,
+                AgentTable.slug,
+                TaskTable.status,
+                TaskTable.stalled_reason,
+                TaskTable.stalled_since,
+            )
+            .outerjoin(AgentTable, AgentTable.id == TaskTable.assigned_to)
+            .where(
+                TaskTable.stalled_reason.is_not(None),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.stalled_since.asc())
+        )
+        now = datetime.now(UTC)
+        entries = []
+        for row in result.all():
+            stalled_since = row.stalled_since
+            since_aware = (
+                stalled_since
+                if stalled_since is None or stalled_since.tzinfo is not None
+                else stalled_since.replace(tzinfo=UTC)
+            )
+            entries.append(
+                StalledTaskEntry(
+                    task_id=row.id,
+                    title=row.title,
+                    assignee_id=row.assigned_to,
+                    assignee_slug=row.slug,
+                    status=row.status.value
+                    if hasattr(row.status, "value")
+                    else row.status,
+                    reason=row.stalled_reason,
+                    stalled_since=since_aware,
+                    stalled_seconds=(now - since_aware).total_seconds()
+                    if since_aware
+                    else 0.0,
+                )
+            )
+        return entries
+
     async def record_section_note(
         self, task_id: UUID, content_type: str, payload: Any
     ) -> None:
@@ -3540,6 +3938,15 @@ class TaskService(BaseService):
         the PM on a dev task it cannot do (a respawn loop). The in-band escalate
         and block-down transitions are untouched — this fires only on
         re-activation, and only when a pre-block snapshot exists.
+
+        A non-blocked override into a review/queue state (see
+        ``_REVIEW_QUEUE_STATES``) that clears a live ``active_claimant_id``
+        also schedules a post-commit eviction of that claimant's container
+        (``_schedule_stranded_eviction``), unconditionally, not gated on
+        ``force``, since a bypassed status is orthogonal to whether an agent
+        got stranded holding the old claim. Every caller of this method (the
+        admin PATCH route, the Secretary's override action) gets this for
+        free.
         """
         task = await self.get(task_id)
         if not task:
@@ -3577,6 +3984,15 @@ class TaskService(BaseService):
             # The stale claimant is no longer active on THIS task — release
             # its fleet marker (mirrors every other claim-clearing site).
             await self._clear_agent_current_task(prior_claimant, task_id)
+            # A claim just got cleared out from under a live holder, so evict
+            # its container regardless of `force`. `force` only gates whether
+            # the STATUS bypass itself is acknowledged (hatch/resurrection);
+            # a stranded agent flailing not_authorized is a consequence of
+            # the claim clearing above, not of the force flag, so it must
+            # not be conditioned on it (previously only a force=True override
+            # scheduled this, stranding an agent on every unforced one).
+            if prior_claimant is not None:
+                _schedule_stranded_eviction(self.session, task_id, prior_claimant)
         task.status = new_status
         await self.session.flush()
         self._emit_status_transition_audit(
@@ -3614,6 +4030,7 @@ class TaskService(BaseService):
         # Process in reverse order to delete leaves before parents
         descendants = await self.get_all_descendants(task_id)
         descendants.reverse()  # Delete deepest children first
+        removed_ids = [task_id, *(getattr(d, "id", None) for d in descendants)]
 
         for descendant in descendants:
             await self.session.delete(descendant)
@@ -3627,6 +4044,13 @@ class TaskService(BaseService):
 
         await self.session.delete(task)
         await self.session.flush()
+
+        # Cascade the dependency cleanup so BLOCKED dependents auto-revive.
+        # Must run after the flush so deleted rows are gone before dependents
+        # are re-checked. Idempotent — a second prune finds no matching edge.
+        for removed_id in removed_ids:
+            if removed_id is not None:
+                await self._unblock_dependents(removed_id)
 
         self.log.info("Task deleted", task_id=str(task_id))
         return True
@@ -3724,11 +4148,18 @@ class TaskService(BaseService):
         if task.assigned_to and str(task.assigned_to) != str(agent.id):
             markers.set_original_developer(task, task.assigned_to)
 
+    # Consulted only inside _finalize_claim (both its target-status write and
+    # its branch-failure rollback's reversal-audit check), reached only via
+    # claim() -> _validate_claim_preconditions -> _get_valid_claim_statuses,
+    # which already screens the pre-claim status against _ROLE_CLAIM_STATUSES
+    # per role. AWAITING_PM_REVIEW is deliberately absent: no role's
+    # _ROLE_CLAIM_STATUSES grants it anymore (the i_will_plan re-claim loop
+    # fix), so _finalize_claim can never run with that pre-claim status —
+    # listing it here would be dead weight, not an independent gate.
     _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]] = {
         TaskStatus.PENDING,
         TaskStatus.AWAITING_QA,
         TaskStatus.AWAITING_DOCUMENTATION,
-        TaskStatus.AWAITING_PM_REVIEW,
     }
 
     async def _claim_blocked_by_dependencies(self, task: TaskTable) -> bool:
@@ -4920,7 +5351,17 @@ class TaskService(BaseService):
                     doc_paths.append(self._resolve_doc_abspath(rel_path))
 
             if doc_paths:
-                count = await optimal.index_documentation(doc_paths, project="roboco")
+                # Same "not yet merged" provenance as roboco_docs_write's own
+                # index call — this re-indexes the task's own in-flight docs
+                # (including ones authored via Edit/Write and captured by
+                # _capture_workspace_docs above, which bypass roboco_docs_write
+                # entirely), so it must be marked live_write too.
+                count = await optimal.index_documentation(
+                    doc_paths,
+                    project="roboco",
+                    provenance="live_write",
+                    task_id=str(task_id),
+                )
                 self.log.debug(
                     "Indexed docs",
                     task_id=str(task_id),
@@ -5675,9 +6116,7 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        if blocker_task_id not in task.dependency_ids:
-            new_deps = [*task.dependency_ids, blocker_task_id]
-            task.dependency_ids = new_deps
+        task.dependency_ids = _append_missing(task.dependency_ids, blocker_task_id)
         # Task-dependency blocks always resolve when the blocker task
         # completes — that's inherently an agent-resolvable condition.
         task.blocker_resolver_type = BlockerResolverType.AGENT
@@ -5692,8 +6131,8 @@ class TaskService(BaseService):
 
         # Update the blocker task to reference this as blocked
         blocker = await self.get(blocker_task_id)
-        if blocker and task_id not in blocker.blocker_ids:
-            blocker.blocker_ids = [*blocker.blocker_ids, task_id]
+        if blocker:
+            blocker.blocker_ids = _append_missing(blocker.blocker_ids, task_id)
             await self.session.flush()
 
         self.log.info(
@@ -6611,20 +7050,33 @@ class TaskService(BaseService):
             # by submit_for_qa's handoff), so the explicit audit_agent_id from
             # the caller wins.
             captured_dev_id = audit_agent_id or to_python_uuid(task.claimed_by)
+            # Capture the prior claimant (the dev) before it's overwritten
+            # below, mirroring _maybe_advance_to_pm_review's own capture —
+            # this is the mirror-image entry into the same parallel-completion
+            # transition (pr_created arriving second instead of docs_complete).
+            prior_claimant = to_python_uuid(task.active_claimant_id)
             self._validate_and_set_status(
                 task,
                 TaskStatus.AWAITING_PM_REVIEW,
                 "developer",
                 audit_agent_id=captured_dev_id,
             )
-            # Clear assignment so PM can claim the task for review
-            task.assigned_to = None
-            task.claimed_by = None
+            # Assign to the owning PM (walks the parent chain — see
+            # _resolve_pm_for_review) instead of clearing to None: CLAIM_RULES
+            # has no claim() edge into AWAITING_PM_REVIEW, so an unassigned
+            # task here has no way back to a PM (the pr_pass ownership-
+            # clearing wedge, same bug class, same fix).
+            owning_pm = await self._resolve_pm_for_review(task)
+            task.assigned_to = cast("Any", owning_pm) if owning_pm else None
+            task.claimed_by = cast("Any", owning_pm) if owning_pm else None
+            task.active_claimant_id = cast("Any", owning_pm) if owning_pm else None
+            await self._clear_agent_current_task(prior_claimant, task_id)
             self.log.info(
                 "PR created, awaiting PM review",
                 task_id=str(task_id),
                 pr_number=pr_number,
                 docs_complete=task.docs_complete,
+                routed_to_pm=str(owning_pm) if owning_pm else None,
             )
         else:
             # PR created but docs not yet complete
@@ -6649,6 +7101,11 @@ class TaskService(BaseService):
         batch umbrella — without this, umbrella completion deadlocks in
         in_progress (``submit_pm_review`` returns None, the Main PM loops on
         ``complete`` -> invalid_state forever).
+
+        A PR-waived task (real branch, zero commits relative to its parent —
+        report-only work the verb runner already skipped create_pr for) is
+        exempt from the pr_created/pr_number half the same way: it still
+        needs a branch (it is not branchless), but it legitimately has no PR.
         """
         if task.status != TaskStatus.IN_PROGRESS:
             self.log.warning(
@@ -6666,7 +7123,10 @@ class TaskService(BaseService):
                 task_id=str(task_id),
             )
             return False
-        if (not task.pr_created or not task.pr_number) and not is_umbrella:
+        pr_waived = markers.is_pr_waived(task)
+        if (not task.pr_created or not task.pr_number) and not (
+            is_umbrella or pr_waived
+        ):
             self.log.warning(
                 "Cannot submit for PM review - PR must be created first",
                 task_id=str(task_id),
@@ -6909,8 +7369,12 @@ class TaskService(BaseService):
         them completed — mirrors the CEO-approve guard but applies to
         the PM's own awaiting_pm_review → completed transition.
         Root parent tasks and tasks without a work_session skip this
-        check (escalation to CEO handles them).
+        check (escalation to CEO handles them). A PR-waived task (zero
+        commits relative to its parent — report-only work) has no PR to
+        merge by design, so it is exempt too.
         """
+        if markers.is_pr_waived(task):
+            return True
         if not task.work_session_id:
             return True
         result = await self.session.execute(
@@ -7149,12 +7613,70 @@ class TaskService(BaseService):
     # CEO APPROVAL WORKFLOW
     # =========================================================================
 
+    def _escalate_to_ceo_refusal(
+        self, task: TaskTable, *, allow_subtask_ceo_merge: bool = False
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Eligibility checks for ``escalate_to_ceo``, extracted to keep that
+        method's own cyclomatic complexity within the xenon gate. Returns
+        ``(log_message, log_kwargs)`` when escalation must be refused, or
+        ``None`` when `task` is eligible.
+
+        ``allow_subtask_ceo_merge`` bypasses the parent/root guard for a leaf
+        whose PR targets the CEO-only head env branch (a branchless
+        coordination-root parent makes ``resolve_parent_branch`` fall back to
+        the project head branch, so ``pr_merge`` would CEO_ONLY-fail and the
+        cell PM would bounce escalate_up -> main-pm forever). Set only by
+        ``cell_pm_complete``'s head-branch routing; the ``escalate_to_ceo``
+        verb never passes it."""
+        if task.status != TaskStatus.AWAITING_PM_REVIEW:
+            return (
+                "Cannot escalate to CEO - task not in PM review",
+                {"current_status": task.status.value},
+            )
+        # Only parent (root) tasks can be escalated to CEO (not subtasks) —
+        # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
+        # carries its own project/branch/PR and behaves as a root for
+        # git/CEO purposes (is_batch_root_subtask). A plain subtask (no
+        # batch_id) is still refused - UNLESS allow_subtask_ceo_merge routes a
+        # leaf whose PR targets the CEO-only head branch (see the param doc).
+        if (
+            task.parent_task_id
+            and not is_batch_root_subtask(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            )
+            and not allow_subtask_ceo_merge
+        ):
+            return (
+                "Cannot escalate subtask to CEO - only parent tasks allowed",
+                {"parent_task_id": str(task.parent_task_id)},
+            )
+        # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
+        # MegaTask umbrella, which is branchless by design (assembles no PR of
+        # its own; each root-subtask carries its own project/branch/PR). It
+        # escalates to the CEO with no pr_number once every root-subtask is
+        # done. A PR-waived root (zero commits relative to its parent —
+        # report-only work) is exempt the same way: it has a real branch, but
+        # legitimately no PR to point the CEO at.
+        if (
+            not task.pr_number
+            and not is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            )
+            and not markers.is_pr_waived(task)
+        ):
+            return (
+                "Cannot escalate to CEO - task has no PR",
+                {"pr_created": task.pr_created},
+            )
+        return None
+
     async def escalate_to_ceo(
         self,
         task_id: UUID,
         agent_role: str = "cell_pm",
         notes: str | None = None,
         actor_agent_id: UUID | None = None,
+        allow_subtask_ceo_merge: bool = False,
     ) -> TaskTable | None:
         """
         Escalate a task to CEO for final approval (PM only).
@@ -7173,6 +7695,13 @@ class TaskService(BaseService):
                 to the specific PM/Board agent (every sibling transition
                 forwards the actor; without it the record is role-only and
                 ambiguous across same-role PMs).
+            allow_subtask_ceo_merge: Bypass the parent/root guard for a leaf
+                whose PR targets the CEO-only head env branch (a branchless
+                coordination-root parent makes ``resolve_parent_branch`` fall
+                back to the project head branch, so ``pr_merge`` would
+                CEO_ONLY-fail and the cell PM would bounce escalate_up ->
+                main-pm forever). Set only by ``cell_pm_complete``'s head-branch
+                routing; the ``escalate_to_ceo`` verb never passes it.
 
         Returns:
             The escalated task or None if escalation not allowed
@@ -7181,54 +7710,27 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Only allow escalation from awaiting_pm_review
-        if task.status != TaskStatus.AWAITING_PM_REVIEW:
-            self.log.warning(
-                "Cannot escalate to CEO - task not in PM review",
-                task_id=str(task_id),
-                current_status=task.status.value,
-            )
-            return None
-
-        # Only parent (root) tasks can be escalated to CEO (not subtasks) —
-        # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
-        # carries its own project/branch/PR and behaves as a root for
-        # git/CEO purposes (is_batch_root_subtask). A plain subtask (no
-        # batch_id) is still refused.
-        if task.parent_task_id and not is_batch_root_subtask(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
-        ):
-            self.log.warning(
-                "Cannot escalate subtask to CEO - only parent tasks allowed",
-                task_id=str(task_id),
-                parent_task_id=str(task.parent_task_id),
-            )
-            return None
-
-        # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
-        # MegaTask umbrella, which is branchless by design (assembles no PR of
-        # its own; each root-subtask carries its own project/branch/PR). It
-        # escalates to the CEO with no pr_number once every root-subtask is done.
-        if not task.pr_number and not is_batch_umbrella(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
-        ):
-            self.log.warning(
-                "Cannot escalate to CEO - task has no PR",
-                task_id=str(task_id),
-                pr_created=task.pr_created,
-            )
+        refusal = self._escalate_to_ceo_refusal(
+            task, allow_subtask_ceo_merge=allow_subtask_ceo_merge
+        )
+        if refusal:
+            message, kwargs = refusal
+            self.log.warning(message, task_id=str(task_id), **kwargs)
             return None
 
         # Store the escalation note as a marker, not quick_context soup.
         if notes:
             markers.set_transition_note(task, "escalate_to_ceo", notes)
 
-        # Validate transition with PM role requirement
+        # Validate transition with PM role requirement. A cell PM routing a
+        # CEO-only head-branch leaf here (allow_subtask_ceo_merge) is the one
+        # caller licensed to take this spec-pinned transition as cell_pm.
         self._validate_and_set_status(
             task,
             TaskStatus.AWAITING_CEO_APPROVAL,
             agent_role,
             audit_agent_id=actor_agent_id,
+            extra_allowed_roles=("cell_pm",) if allow_subtask_ceo_merge else (),
         )
         await self.session.flush()
 
@@ -7284,8 +7786,14 @@ class TaskService(BaseService):
             )
             return None
 
-        # Verify PR is merged (CEO merges as final action before approving)
-        if task.work_session_id:
+        # Verify PR is merged (CEO merges as final action before approving).
+        # A PR-waived task (real branch, zero commits relative to its parent —
+        # report-only work the verb runner already skipped create_pr for)
+        # keeps a real work_session whose pr_status never becomes "merged"
+        # (there was never a PR to merge) — exempt it the same way the
+        # umbrella/pr_number gates elsewhere are, or it strands in
+        # awaiting_ceo_approval needing manual status surgery.
+        if task.work_session_id and not markers.is_pr_waived(task):
             work_session_result = await self.session.execute(
                 select(WorkSessionTable).where(
                     WorkSessionTable.id == task.work_session_id
@@ -7315,7 +7823,11 @@ class TaskService(BaseService):
                 stamp_addressed_verified,
             )
 
-            await stamp_addressed_verified(self.session, task_id, origin="ceo")
+            # Savepoint: mark_verified's flush would otherwise poison the
+            # shared session on a mid-flush failure — every completion
+            # side-effect below (and the caller's eventual commit) reuses it.
+            async with self.session.begin_nested():
+                await stamp_addressed_verified(self.session, task_id, origin="ceo")
         except Exception as exc:
             self.log.warning(
                 "ceo-origin findings verify-stamp failed (best-effort)",
@@ -8012,12 +8524,7 @@ class TaskService(BaseService):
             return None
 
         if cancellation_note:
-            task.dev_notes = (
-                f"{task.dev_notes}\n{cancellation_note}"
-                if task.dev_notes
-                else cancellation_note
-            )
-            await self.session.flush()
+            await self._append_cancel_note(task, cancellation_note)
 
         # Cancel all descendants first (children, grandchildren, etc.)
         # Skip tasks already in terminal states (completed or cancelled).
@@ -8030,6 +8537,52 @@ class TaskService(BaseService):
         # this; the narrow catch + refusal keeps a future per-edge role
         # gate from silently orphaning.) Non-validation errors propagate.
         descendants = await self.get_all_descendants(task_id)
+        cancelled_count, cancelled_now = await self._cascade_cancel_descendants(
+            task_id, descendants, agent_role
+        )
+
+        # Validate transition with PM role requirement
+        await self._cancel_task_self(task, agent_role, cancelled_now)
+
+        # Cascade the dependency cleanup the COMPLETE path runs. Without
+        # this, a task BLOCKED on the cancelled one is never auto-revived
+        # and the stale id lingers in every dependent's dependency_ids
+        # forever.
+        await self._prune_cancelled_dependencies(task_id, descendants)
+
+        # Origin fix: a cancelled child may have declared parent_ac_refs that
+        # no surviving sibling covers, leaving the roll-up gate
+        # (_parent_acs_covered_envelope) demanding coverage for already-
+        # finished work once a replacement is delegated. Warn-and-surface
+        # only — no hard gate; the PM re-declares via declare_coverage.
+        orphaned = await self._audit_orphaned_acs(task_id, task, cancelled_now)
+
+        await self._index_cancel_event(
+            task_id, task, agent_role, cancelled_count, orphaned
+        )
+
+        return task
+
+    async def _append_cancel_note(
+        self, task: TaskTable, cancellation_note: str
+    ) -> None:
+        """Append the cancellation note to ``dev_notes`` and flush."""
+        task.dev_notes = (
+            f"{task.dev_notes}\n{cancellation_note}"
+            if task.dev_notes
+            else cancellation_note
+        )
+        await self.session.flush()
+
+    async def _cascade_cancel_descendants(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+        agent_role: str,
+    ) -> tuple[int, list[TaskTable]]:
+        """Cascade-cancel every non-terminal descendant, refusing the whole
+        cancel on a role-validation failure so an orphaned subtree is never
+        left under a cancelled parent."""
         cancelled_count = 0
         cancelled_now: list[TaskTable] = []
         for descendant in descendants:
@@ -8070,8 +8623,17 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 cancelled_count=cancelled_count,
             )
+        return cancelled_count, cancelled_now
 
-        # Validate transition with PM role requirement
+    async def _cancel_task_self(
+        self,
+        task: TaskTable,
+        agent_role: str,
+        cancelled_now: list[TaskTable],
+    ) -> None:
+        """Validate+set the task itself to CANCELLED, abandon its work
+        session, close its PR, delete its branch, flush, and alert the
+        coroner."""
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
@@ -8080,11 +8642,27 @@ class TaskService(BaseService):
         await self.session.flush()
         await self._alert_coroner_of_cancel(task)
 
-        # Origin fix: a cancelled child may have declared parent_ac_refs that
-        # no surviving sibling covers, leaving the roll-up gate
-        # (_parent_acs_covered_envelope) demanding coverage for already-
-        # finished work once a replacement is delegated. Warn-and-surface
-        # only — no hard gate; the PM re-declares via declare_coverage.
+    async def _prune_cancelled_dependencies(
+        self,
+        task_id: UUID,
+        descendants: list[TaskTable],
+    ) -> None:
+        """Prune dependency edges for the whole cancelled subtree (root +
+        all descendants) so blocked dependents auto-revive. Idempotent for
+        already-terminal descendants whose edges may have been pruned
+        before — a second prune just finds no matching edge."""
+        for cancelled_id in (task_id, *(getattr(d, "id", None) for d in descendants)):
+            if cancelled_id is not None:
+                await self._unblock_dependents(cancelled_id)
+
+    async def _audit_orphaned_acs(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        cancelled_now: list[TaskTable],
+    ) -> list[str]:
+        """Detect parent ACs orphaned by the cancel, warn + emit audit, and
+        stash the transient result on the task for same-request callers."""
         orphaned = await self._detect_orphaned_parent_acs(cancelled_now)
         if orphaned:
             self.log.warning(
@@ -8098,8 +8676,17 @@ class TaskService(BaseService):
         # schema change; upgrade to a real field if a caller needs it
         # across a request boundary.
         task.orphaned_parent_acs = orphaned
+        return orphaned
 
-        # Index lifecycle event (fire-and-forget)
+    async def _index_cancel_event(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        agent_role: str,
+        cancelled_count: int,
+        orphaned: list[str],
+    ) -> None:
+        """Fire-and-forget lifecycle-event index for the cancel."""
         bg_task = asyncio.create_task(
             self._index_lifecycle_event_background(
                 task_id=task_id,
@@ -8115,8 +8702,6 @@ class TaskService(BaseService):
         )
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
-
-        return task
 
     async def _detect_orphaned_parent_acs(
         self, cancelled: list[TaskTable]
@@ -8175,7 +8760,11 @@ class TaskService(BaseService):
             )
 
             delivery = get_notification_delivery_service(self.session)
-            await delivery.notify_ceo_of_completion(task=task, task_id=task_id)
+            # Savepoint: notify_ceo_of_completion's session.add/flush would
+            # otherwise poison the shared session on a mid-flush failure —
+            # ceo_approve emits an event and the caller commits right after.
+            async with self.session.begin_nested():
+                await delivery.notify_ceo_of_completion(task=task, task_id=task_id)
         except Exception as exc:
             self.log.warning(
                 "Completion notification failed",
@@ -8214,6 +8803,23 @@ class TaskService(BaseService):
                 error=str(e),
             )
 
+    @staticmethod
+    def _move_dependency_to_completed(task: TaskTable, completed_task_id: UUID) -> None:
+        """Prune ``completed_task_id`` from ``dependency_ids``, remembering it
+        on ``completed_dependency_ids`` so the unblock briefing can name which
+        upstream task just landed (otherwise the only record is destroyed
+        here). NULL-tolerant: a restored/reconstructed row can carry ``None``
+        on either column instead of ``[]``.
+        """
+        task.dependency_ids = [
+            dep_id
+            for dep_id in (task.dependency_ids or [])
+            if dep_id != completed_task_id
+        ]
+        task.completed_dependency_ids = _append_missing(
+            task.completed_dependency_ids, completed_task_id
+        )
+
     async def _unblock_dependents(self, completed_task_id: UUID) -> None:
         """Unblock tasks that were waiting on the completed task."""
         result = await self.session.execute(
@@ -8224,17 +8830,7 @@ class TaskService(BaseService):
         blocked_tasks = result.scalars().all()
 
         for task in blocked_tasks:
-            # Remove the completed task from dependencies, but remember it so the
-            # unblock briefing can tell the revived dependent which upstream task
-            # just landed (otherwise the only record of it is destroyed here).
-            task.dependency_ids = [
-                dep_id for dep_id in task.dependency_ids if dep_id != completed_task_id
-            ]
-            if completed_task_id not in task.completed_dependency_ids:
-                task.completed_dependency_ids = [
-                    *task.completed_dependency_ids,
-                    completed_task_id,
-                ]
+            self._move_dependency_to_completed(task, completed_task_id)
             # If no more dependencies, unblock (system action - no role validation)
             if not task.dependency_ids and task.status == TaskStatus.BLOCKED:
                 await self._revive_unblocked_dependent(task)
@@ -8340,7 +8936,7 @@ class TaskService(BaseService):
             "message": message,
             "percentage": percentage,
         }
-        task.progress_updates = [*task.progress_updates, update]
+        task.progress_updates = [*(task.progress_updates or []), update]
         await self.session.flush()
 
         return task
@@ -8384,7 +8980,7 @@ class TaskService(BaseService):
 
         percentage = _derive_plan_pct(sub_tasks, fallback_percentage)
         task.progress_updates = [
-            *task.progress_updates,
+            *(task.progress_updates or []),
             {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "agent_id": str(agent_id),
@@ -8414,14 +9010,14 @@ class TaskService(BaseService):
             return None
 
         checkpoint = {
-            "id": str(UUID(int=len(task.checkpoints))),
+            "id": str(UUID(int=len(task.checkpoints or []))),
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(agent_id),
             "state_summary": state_summary,
             "remaining_work": remaining_work,
             "notes": notes,
         }
-        task.checkpoints = [*task.checkpoints, checkpoint]
+        task.checkpoints = [*(task.checkpoints or []), checkpoint]
         await self.session.flush()
 
         return task
@@ -8444,7 +9040,7 @@ class TaskService(BaseService):
             "timestamp": datetime.now(UTC).isoformat(),
             "author_agent_id": str(agent_id) if agent_id else None,
         }
-        task.commits = [*task.commits, commit]
+        task.commits = [*(task.commits or []), commit]
         await self.session.flush()
 
         return task
@@ -8849,7 +9445,7 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return False
-        if depends_on_id in task.dependency_ids:
+        if depends_on_id in (task.dependency_ids or []):
             return False  # idempotent re-add
         if await self._would_create_cycle(task_id, depends_on_id):
             raise ConflictError(
@@ -8857,7 +9453,7 @@ class TaskService(BaseService):
                 "close a dependency cycle",
                 resource_type="task_dependency",
             )
-        task.dependency_ids = [*task.dependency_ids, depends_on_id]
+        task.dependency_ids = [*(task.dependency_ids or []), depends_on_id]
         await self.session.flush()
         return True
 
@@ -8944,6 +9540,7 @@ class TaskService(BaseService):
                 held_back_assignee=str(owner) if owner is not None else None,
                 held_back_title=held_back_title,
                 blocking_title=blocking_title,
+                db_session=self.session,
             )
         except Exception as e:
             self.log.warning("Collision-sequencing notify failed", error=str(e))
@@ -8975,7 +9572,7 @@ class TaskService(BaseService):
         root = await self.get(UUID(str(cell_task.parent_task_id)))
         if root is None:
             return
-        predecessor_root_ids = list(root.dependency_ids)
+        predecessor_root_ids = list(root.dependency_ids or [])
         cell_tasks_by_root: dict = {}
         for pred_root_id in predecessor_root_ids:
             cell_tasks_by_root[pred_root_id] = await self.get_subtasks(
@@ -9016,7 +9613,7 @@ class TaskService(BaseService):
         if root is None:
             return
         groups: list = []
-        for pred_root_id in list(root.dependency_ids):
+        for pred_root_id in list(root.dependency_ids or []):
             for pred_ct in await self.get_subtasks(UUID(str(pred_root_id))):
                 groups.append(await self.get_subtasks(UUID(str(pred_ct.id))))
         for dep_id in by_osmosis_tail_dev_tasks(is_first, groups):
@@ -9312,11 +9909,37 @@ class TaskService(BaseService):
         return {row[0].value: row[1] for row in result.all()}
 
     async def get_delivery_stats_30d(self) -> dict[str, Any]:
-        """Return completed-task count and median lead time for the last 30 days.
+        """Return completed-task count and median lead time for real delivery
+        work completed in the last 30 days.
+
+        The population is scoped to one well-defined unit per piece of work —
+        **root delivery tasks** (``parent_task_id IS NULL``) — so a Main-PM
+        coordination root is counted once, never again for each of its cell
+        tasks and dev subtasks. For a MegaTask, that root is the branchless
+        umbrella (its root-subtasks are children of the umbrella and are
+        excluded); a single-task delivery's root is the coordination root
+        itself.
+
+        It further excludes non-delivery rows that would otherwise pollute
+        "intake to merged" with completions that carry no real delivery
+        lead time:
+
+        - ``task_type == administrative`` — process/administrative tasks and
+          every board-program exploration cycle (board_roadmap,
+          board_pest_control, ...), which complete the moment a Board role
+          files its proposal, not when anything ships.
+        - :data:`LEAD_TIME_EXCLUDED_SOURCES` — held CEO-approval drafts (X
+          posts, video posts, release proposals) that complete the instant
+          the CEO approves them, seconds after being drafted.
+
+        ``completed_30d`` and ``median_lead_time_hours`` are computed from
+        the SAME filtered row set, so the two figures always describe the
+        same population.
 
         Queries tasks WHERE status=completed AND completed_at IS NOT NULL AND
-        completed_at >= now()-30d.  Lead time is ``completed_at - created_at``
-        expressed in hours; the median is computed with :func:`statistics.median`.
+        completed_at >= now()-30d, plus the scoping above.  Lead time is
+        ``completed_at - created_at`` expressed in hours; the median is
+        computed with :func:`statistics.median`.
 
         Returns::
 
@@ -9333,6 +9956,9 @@ class TaskService(BaseService):
                 TaskTable.status == TaskStatus.COMPLETED,
                 TaskTable.completed_at.is_not(None),
                 TaskTable.completed_at >= cutoff,
+                TaskTable.parent_task_id.is_(None),
+                TaskTable.task_type != TaskType.ADMINISTRATIVE,
+                TaskTable.source.notin_(LEAD_TIME_EXCLUDED_SOURCES),
             )
         )
         rows = result.all()
@@ -10203,7 +10829,7 @@ class TaskService(BaseService):
         tasks = list(result.scalars().all())
         available: list[TaskTable] = []
         for task in tasks:
-            if await self.unmet_dependency_ids(list(task.dependency_ids)):
+            if await self.unmet_dependency_ids(list(task.dependency_ids or [])):
                 continue
             if await self._claim_blocked_by_sequence(task) is not None:
                 continue
@@ -10256,6 +10882,17 @@ class TaskService(BaseService):
         statuses = result.scalars().all()
         return all(s in terminal for s in statuses)
 
+    async def has_children(self, task_id: UUID) -> bool:
+        """True iff this task has at least one subtask, any status.
+
+        Distinguishes a coordination node from a leaf for the PM/dev routing
+        classifier (``AgentOrchestrator._classify_cell_code_task``).
+        """
+        result = await self.session.execute(
+            select(TaskTable.id).where(TaskTable.parent_task_id == task_id).limit(1)
+        )
+        return result.first() is not None
+
     async def terminal_children_count(self, task_id: UUID) -> int:
         """Count of direct subtasks in a terminal status (COMPLETED/CANCELLED).
 
@@ -10306,12 +10943,17 @@ class TaskService(BaseService):
         declaration still counts as "coverage tracking is active here").
 
         ``root_owned`` is the parent's OWN ``parent_ac_refs`` (declared on
-        itself via ``declare_coverage(task_id=<own root>, ...)``) — criteria
+        itself via ``declare_coverage(task_id=<own root>, ...)``), criteria
         only the root's own machinery satisfies (e.g. PR-supersede, closing a
-        contributor PR), never a cell. Root-owned refs are unconditionally
-        folded into both ``claimed`` and ``verified``: there is no child
-        status to gate on, the work happens at/after the root's own
-        submit/supersede by construction.
+        contributor PR), never a cell. Only applies when the loaded task IS a
+        root: either a true root (``parent_task_id is None``) or a MegaTask
+        root-subtask (``is_batch_root_subtask``, parented by the umbrella yet
+        a genuine coordination root with its own project/branch/PR for git/CEO
+        purposes). A plain parented task's ``parent_ac_refs`` are upward refs
+        towards its own parent, not self-coverage, and stay inert. Root-owned
+        refs are unconditionally folded into both ``claimed`` and ``verified``:
+        there is no child status to gate on, the work happens at/after the
+        root's own submit/supersede by construction.
 
         A parent whose ``acceptance_criteria_ids`` is empty or out of length
         with ``acceptance_criteria`` (a legacy row from before every AC
@@ -10337,7 +10979,14 @@ class TaskService(BaseService):
                 claimed |= refset
             if status == TaskStatus.COMPLETED:
                 verified |= refset
-        root_owned = self._normalize_ac_refs(parent, parent.parent_ac_refs)
+        parent_is_root = parent.parent_task_id is None or is_batch_root_subtask(
+            batch_id=parent.batch_id, parent_task_id=parent.parent_task_id
+        )
+        root_owned = (
+            self._normalize_ac_refs(parent, parent.parent_ac_refs)
+            if parent_is_root
+            else set()
+        )
         if root_owned:
             any_declared = True
             claimed |= root_owned
@@ -10675,6 +11324,20 @@ class TaskService(BaseService):
         )
         return task
 
+    @staticmethod
+    def _clear_stale_active_claimant(
+        task: TaskTable, effective_assignee: UUID | None
+    ) -> None:
+        """Clear ``active_claimant_id`` when ``reassign`` hands the task to
+        someone else. No-op when there was no live claim, or the claim
+        already matches the new owner (an idempotent re-hand must not wipe
+        a legitimately-set claim). See ``reassign``'s docstring for why
+        this is always safe to do unconditionally otherwise.
+        """
+        prior_claimant = to_python_uuid(task.active_claimant_id)
+        if prior_claimant is not None and prior_claimant != effective_assignee:
+            task.active_claimant_id = cast("Any", None)
+
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
@@ -10685,6 +11348,24 @@ class TaskService(BaseService):
         documenter, doc → cell_pm). Pass ``None`` to clear assignment so
         no agent gets respawned (e.g. after escalating to CEO, who acts
         via the UI).
+
+        A stale ``active_claimant_id`` left pointing at whoever held the
+        claim before this hand-off is cleared below when it no longer
+        matches the new owner - WHO should act just moved, so the old
+        claim must move with it or the prior claimant keeps standing as
+        "actively working" (and, via ``_active_claim_violation``, keeps the
+        ability to write notes/commits) after losing ownership. Every
+        caller here hands off to a NEW owner as the tail end of its own
+        turn (dev → qa, qa → doc, doc → pm, escalate_to_ceo → None), so
+        clearing is always safe: it is never "pulling the rug" out from
+        under a live in-flight verb, only releasing a grip the caller
+        itself just relinquished. This mirrors ``_REVIEW_QUEUE_STATES``'
+        clearing in ``admin_set_status`` / ``_admin_out_of_blocked``, and
+        leaves the agent-row ACTIVE marker (``current_task_id``) untouched
+        - that is ``reassign_active_claim``'s job for CLAIMED/IN_PROGRESS
+        hand-offs, and AWAITING_PM_REVIEW's own recovery seam
+        (``assign_review_pm``) re-establishes ``active_claimant_id`` there
+        before the PM is ever spawned.
 
         Returns the refreshed task, or None if the task no longer exists.
         """
@@ -10730,6 +11411,7 @@ class TaskService(BaseService):
         task.claimed_by = (
             cast("Any", effective_assignee) if effective_assignee else None
         )
+        self._clear_stale_active_claimant(task, effective_assignee)
         await self.session.flush()
         self.log.info(
             "Task reassigned",
@@ -10791,6 +11473,14 @@ class TaskService(BaseService):
         reason: str
         dev_notes_line: str | None
 
+    _REVIEW_HANDOFF_STATUSES = frozenset(
+        {
+            TaskStatus.AWAITING_QA,
+            TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.AWAITING_PR_REVIEW,
+        }
+    )
+
     async def _resolve_cell_pm_redirect(
         self, task: TaskTable, requested_assignee: UUID | None
     ) -> "TaskService._CellPmRedirect":
@@ -10815,6 +11505,8 @@ class TaskService(BaseService):
             reason="noop",
             dev_notes_line=None,
         )
+        if task.status in self._REVIEW_HANDOFF_STATUSES:
+            return noop
         if not _is_cell_pm_owned_task(task):
             return noop
         assert task.team is not None  # guarded by _is_cell_pm_owned_task
@@ -10939,6 +11631,12 @@ class TaskService(BaseService):
         task.claimed_at = now
         task.last_heartbeat_at = now
         task.active_claimant_id = cast("Any", effective_assignee)
+        # This is a genuine hand-off of forward progress to a new claimant,
+        # but it never touches task.status, so it never routes through
+        # _emit_status_transition_audit's own stalled-marker clear. Without
+        # this a task reassigned off a wedged agent keeps reading as stalled
+        # in the dashboard while the new claimant actively works it.
+        self._clear_stale_stalled_marker(task)
         await self._retarget_agent_claim(old_assignee, effective_assignee, task_id)
         await self.session.flush()
         self.log.info(
@@ -11257,9 +11955,15 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """Reviewer passes the gate: awaiting_pr_review -> awaiting_pm_review.
 
-        Clears the claim so the PM-closure dispatcher routes the now-unassigned
-        task to the owning PM to merge — the same path a leaf takes after
-        docs_complete. Mirrors qa_pass.
+        Hands off to the owning PM (cell PM for a cell team, else the Main
+        PM — the same resolution ``pr_fail`` uses) instead of clearing
+        ownership: CLAIM_RULES deliberately excludes AWAITING_PM_REVIEW (no
+        claim() edge into it — the i_will_plan re-claim-loop fix), so an
+        unassigned task here has no way back to a PM and wedges the closure
+        dispatcher's complete() ownership guard (assigned_to != pm_agent_id)
+        forever. active_claimant_id still clears — the reviewer's claim on
+        THIS task ends here, and the PM's ownership is assigned_to/claimed_by
+        only (mirrors pr_fail exactly).
         """
         task = await self.get(task_id)
         if task is None or task.status != TaskStatus.AWAITING_PR_REVIEW:
@@ -11276,8 +11980,9 @@ class TaskService(BaseService):
             )
         captured = to_python_uuid(task.claimed_by)
         self._record_pr_review(task, summary=notes, verdict="passed")
-        task.assigned_to = None
-        task.claimed_by = None
+        pm = await self._revision_pm_for_task(task)
+        task.assigned_to = cast("Any", pm.id) if pm is not None else None
+        task.claimed_by = cast("Any", pm.id) if pm is not None else None
         task.active_claimant_id = cast("Any", None)
         # The gate reviewer's claim on THIS task ends here — release the
         # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking).
@@ -11289,7 +11994,58 @@ class TaskService(BaseService):
             audit_agent_id=captured,
         )
         await self.session.flush()
-        self.log.info("Assembled PR passed review", task_id=str(task_id))
+        self.log.info(
+            "Assembled PR passed review",
+            task_id=str(task_id),
+            routed_to_pm=str(pm.id) if pm is not None else None,
+        )
+        return task
+
+    async def assign_review_pm(self, task_id: UUID) -> TaskTable | None:
+        """Recovery seam: (re)assign an ``awaiting_pm_review`` task to its
+        owning PM.
+
+        CLAIM_RULES deliberately excludes AWAITING_PM_REVIEW (no claim()
+        edge into it — the i_will_plan re-claim-loop fix), so the normal
+        claim() route can't place an unassigned review task with its real
+        owner, and a task that went through a block/escalate/
+        unblock(restore=True) round trip can come back with status restored
+        but ownership stuck on the stale escalation target. Called by the
+        orchestrator's pm-review dispatchers right before spawning, using
+        the same team-based resolution ``pr_fail``/``pr_pass`` use. Also
+        sets ``active_claimant_id`` (unlike pr_pass/pr_fail, which leave it
+        to a subsequent claim() that AWAITING_PM_REVIEW has none of) so the
+        newly-assigned PM's own note()/commit() calls don't bounce off
+        ``_active_claim_violation`` before ever claiming — mirrors
+        ``_maybe_advance_to_pm_review``'s identical concern. A no-op outside
+        awaiting_pm_review, and when the resolved owner already matches.
+        """
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
+        if task is None or task.status != TaskStatus.AWAITING_PM_REVIEW:
+            return None
+        pm = await self._revision_pm_for_task(task)
+        pm_id = cast("Any", pm.id) if pm is not None else None
+        if to_python_uuid(task.assigned_to) == to_python_uuid(pm_id) and to_python_uuid(
+            task.active_claimant_id
+        ) == to_python_uuid(pm_id):
+            return task
+        prior_claimant = to_python_uuid(task.active_claimant_id)
+        task.assigned_to = pm_id
+        task.claimed_by = pm_id
+        task.active_claimant_id = pm_id
+        if prior_claimant is not None and prior_claimant != to_python_uuid(pm_id):
+            await self._clear_agent_current_task(prior_claimant, task_id)
+        await self.session.flush()
+        self.log.info(
+            "Reassigned awaiting_pm_review task to owning PM",
+            task_id=str(task_id),
+            pm_id=str(pm.id) if pm is not None else None,
+        )
         return task
 
     async def pr_fail(
@@ -11749,7 +12505,7 @@ class TaskService(BaseService):
                 "author_agent_id": str(pm_agent_id),
                 "kind": "merge",
             }
-            task.commits = [*task.commits, merge_entry]
+            task.commits = [*(task.commits or []), merge_entry]
             await self.session.flush()
         return await self.complete(task_id, agent_id=pm_agent_id)
 

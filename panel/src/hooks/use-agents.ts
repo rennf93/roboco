@@ -244,6 +244,15 @@ const AGENT_ROSTER: Agent[] = [
     cell: "ux_ui",
     status: "idle" as AgentState,
   },
+  {
+    id: "26",
+    agent_id: "cell-pr-reviewer-2",
+    name: "PR Reviewer (Overflow)",
+    role: "pr_reviewer" as AgentRole,
+    team: "board" as Team,
+    cell: null,
+    status: "idle" as AgentState,
+  },
 ];
 
 // Query keys

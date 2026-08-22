@@ -120,16 +120,19 @@ class _RedraftLockUnavailable(Exception):
 # adapted from agents/prompts/teams/ux_ui.md's "AI tells to avoid" — the local-
 # model release/reply drafts previously ran on one throwaway sentence with
 # neither. ``{product_name}`` is filled in by ``_hom_voice`` so the shared
-# style examples never hardcode a literal brand name.
+# style examples never hardcode a literal brand name. The IMPACT BAR section
+# is likewise ported verbatim from head-marketing.md's own IMPACT BAR (kept
+# in parity by tests/unit/services/test_x_engine.py's sentinel-phrase check)
+# so the local-model chokepoint and the cloud-agent chokepoint hold the same
+# bar, not two copies that can drift.
 _HOM_VOICE_GUIDE = """VOICE, with the reasoning behind each rule:
 - Confident, not hedgy: you're announcing something that shipped and works —
   say "{product_name} now does X," never "we think this might help with X."
 - Concise: one post, one idea; if a caveat doesn't fit, cut the caveat, not
   the point.
-- No emoji spam: one deliberate emoji at most (e.g. a rocket on a launch);
-  three reads like a bot.
-- No hashtags unless truly apt: a hashtag on every post is noise, it earns
-  its place only in a real active conversation.
+- No emoji, ever: even one reads as a bot, not a company.
+- No hashtags, ever: a hashtag on every post is noise, and there's no
+  post where it earns its place.
 - Speak as "we": you represent the company, not a persona.
 - Plain text: no markdown, no bullet lists, no thread — X renders anything
   else as visibly broken.
@@ -143,10 +146,45 @@ BANNED — an instant rewrite if any of these appear in the draft:
 - Em dashes.
 - "game-changer", "seamless", "effortless", "supercharge", "unleash",
   "elevate", "dive in", "we're excited/thrilled to announce".
-- Exclamation-mark pileups (more than one "!" anywhere in the post).
+- Any exclamation point anywhere in the post.
 - A rhetorical question as the opening line.
 - "X isn't just Y, it's Z" constructions.
 - Rule-of-three adjective chains ("fast, reliable, and powerful").
+
+IMPACT BAR, with the reasoning behind each rule (what makes a post get read
+instead of scrolled past):
+- Open with the deliverable: a verb plus the concrete artifact noun
+  (feature, tool, benchmark, release) in the first sentence, never a topic
+  announcement or an abstract noun ("initiative," "journey," "effort").
+  This rule as written applies to standalone posts (announcement,
+  spotlight, editorial, campaign); a reply instead answers the person's
+  actual point first and names the deliverable inside that answer.
+- Carry one falsifiable specific: a real number, threshold, name, or
+  artifact. A post that could describe any product is rejected copy.
+- Demonstrate, don't claim: hand the reader the thing itself (a link, a
+  number, a named mechanism), not adjectives about it.
+- One canonical, verifiable link when one exists (the repo, the release,
+  the docs page), placed near the close, never buried mid-sentence, and
+  never more than one.
+- Name the verification in one clause when a neutral one exists (CI green,
+  third-party review, a benchmark run); it pre-empts "just spin" replies
+  before they get written.
+- Zero emoji, zero hashtags, zero exclamation points, zero engagement-bait
+  ("like/RT", "drop your thoughts", "who's building?").
+- Close on substance or an inclusive invitation (try it, read it, build on
+  it), never a slogan, never self-congratulation.
+- Name the cadence for a standing practice ("every release," "weekly"), so
+  it reads as practice, not a stunt.
+- State the reader's payoff in the reader's own terms before any
+  implementation detail; a non-expert should be able to restate why they
+  care.
+
+IMPACT CHECK before a draft ships: does sentence one name the deliverable;
+is there one number, name, or artifact a skeptic could verify; is the link,
+if present, singular and near the end. Any "no" means rewrite, not send.
+These three checks are the hard floor; when the 280-char limit forces a
+choice, satisfy these three first and treat every other rule above as
+best-effort.
 
 STYLE EXAMPLES — voice only, do not reuse this content, write fresh copy
 grounded in the real facts you were given:
@@ -188,7 +226,7 @@ def _fallback_release_body(version: str, product_name: str) -> str:
     # Deliberately generic: the deterministic fallback must never quote a raw
     # changelog bullet — internal plumbing jargon read as the release headline.
     return (
-        f"{product_name} v{version} just shipped — new features, fixes, and "
+        f"{product_name} v{version} just shipped: new features, fixes, and "
         "performance work across the board. Full release notes on GitHub."
     )
 
@@ -404,14 +442,6 @@ def _sections_since(
 # ._redraft_context) — module-level + dict-dispatched rather than growing
 # if-chains in the two methods, so a fifth X source registers by adding one
 # dict entry each, not another branch (xenon budget).
-#
-# ponytail: X_EDITORIAL_SOURCE and X_CAMPAIGN_SOURCE have no registered
-# extractor here or in ``_carry_redraft_markers`` — a rejected editorial/
-# campaign post still redrafts (the generic, unlocked fallback in
-# ``_redraft_identity``/``_redraft_context`` below), it just loses its
-# ``x_editorial_ref``/``x_campaign_ref`` marker on the redraft, so the panel's
-# angle/campaign-guidance line won't render for it. Add an entry to both dicts
-# below + a branch in ``_carry_redraft_markers`` when that's needed. --------
 
 
 def _redraft_identity_x_post(task: TaskTable) -> tuple[str, str] | None:
@@ -434,6 +464,18 @@ def _redraft_identity_x_barfly(task: TaskTable) -> tuple[str, str] | None:
     return (X_BARFLY_SOURCE, str(tweet_id)) if tweet_id else None
 
 
+def _redraft_identity_x_editorial(task: TaskTable) -> tuple[str, str] | None:
+    angle = (markers.get_x_editorial_ref(task) or {}).get("angle")
+    return (X_EDITORIAL_SOURCE, str(angle)) if angle else None
+
+
+def _redraft_identity_x_campaign(task: TaskTable) -> tuple[str, str] | None:
+    ref = markers.get_x_campaign_ref(task)
+    if ref and ref.get("campaign_name") and ref.get("sequence") is not None:
+        return (X_CAMPAIGN_SOURCE, f"{ref['campaign_name']}:{ref['sequence']}")
+    return None
+
+
 _REDRAFT_IDENTITY_EXTRACTORS: dict[
     str, Callable[[TaskTable], tuple[str, str] | None]
 ] = {
@@ -441,6 +483,8 @@ _REDRAFT_IDENTITY_EXTRACTORS: dict[
     X_REPLY_SOURCE: _redraft_identity_x_reply,
     X_FEATURE_SOURCE: _redraft_identity_x_feature,
     X_BARFLY_SOURCE: _redraft_identity_x_barfly,
+    X_EDITORIAL_SOURCE: _redraft_identity_x_editorial,
+    X_CAMPAIGN_SOURCE: _redraft_identity_x_campaign,
 }
 
 
@@ -464,11 +508,80 @@ def _redraft_context_x_barfly(post_task: TaskTable) -> str:
     return f"This is a reply to this X conversation:\n{text}" if text else ""
 
 
+def _redraft_context_x_editorial(post_task: TaskTable) -> str:
+    ref = markers.get_x_editorial_ref(post_task)
+    if not ref:
+        return ""
+    return (
+        f"This is an editorial (Megaphone) post with angle: {ref['angle']}. "
+        f"Rationale: {ref['rationale']}."
+    )
+
+
+def _redraft_context_x_campaign(post_task: TaskTable) -> str:
+    ref = markers.get_x_campaign_ref(post_task)
+    if not ref:
+        return ""
+    return (
+        f"This is a campaign (War Room) post for {ref['campaign_name']}, "
+        f"stage {ref['stage_label']} (sequence {ref['sequence']}, "
+        f"publish after {ref['publish_after']})."
+    )
+
+
 _REDRAFT_CONTEXT_BUILDERS: dict[str, Callable[[TaskTable], str]] = {
     X_POST_SOURCE: _redraft_context_x_post,
     X_REPLY_SOURCE: _redraft_context_x_reply,
     X_FEATURE_SOURCE: _redraft_context_x_feature,
     X_BARFLY_SOURCE: _redraft_context_x_barfly,
+    X_EDITORIAL_SOURCE: _redraft_context_x_editorial,
+    X_CAMPAIGN_SOURCE: _redraft_context_x_campaign,
+}
+
+
+def _carry_x_post_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    version = markers.get_x_release_version(post_task)
+    if version:
+        markers.set_x_release_version(new_task, version)
+
+
+def _carry_x_reply_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_x_mention_ref(post_task)
+    if ref:
+        markers.set_x_mention_ref(new_task, ref)
+
+
+def _carry_x_feature_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_x_feature_ref(post_task)
+    if ref:
+        markers.set_x_feature_ref(new_task, ref)
+
+
+def _carry_x_barfly_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_barfly_reply_ref(post_task)
+    if ref:
+        markers.set_barfly_reply_ref(new_task, ref)
+
+
+def _carry_x_editorial_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_x_editorial_ref(post_task)
+    if ref:
+        markers.set_x_editorial_ref(new_task, ref)
+
+
+def _carry_x_campaign_marker(new_task: TaskTable, post_task: TaskTable) -> None:
+    ref = markers.get_x_campaign_ref(post_task)
+    if ref:
+        markers.set_x_campaign_ref(new_task, ref)
+
+
+_REDRAFT_MARKER_CARRIERS: dict[str, Callable[[TaskTable, TaskTable], None]] = {
+    X_POST_SOURCE: _carry_x_post_marker,
+    X_REPLY_SOURCE: _carry_x_reply_marker,
+    X_FEATURE_SOURCE: _carry_x_feature_marker,
+    X_BARFLY_SOURCE: _carry_x_barfly_marker,
+    X_EDITORIAL_SOURCE: _carry_x_editorial_marker,
+    X_CAMPAIGN_SOURCE: _carry_x_campaign_marker,
 }
 
 
@@ -554,9 +667,14 @@ class XEngine(BaseService):
         reached. Called from ``ReleaseProposalService.approve()``'s publish
         success branch — never invoked by the loop itself. ``project_id``
         scopes the draft to the released project; omitted falls back to the
-        deployment-anchor project.
+        deployment-anchor project. Also no-ops while the ``engines``
+        maintenance-pause scope is active.
         """
-        if not settings.x_engine_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.x_engine_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return None
         client = await self._client()
         if not client.configured:
@@ -616,11 +734,23 @@ class XEngine(BaseService):
 
     # ---- mentions (periodic poll) ------------------------------------------
 
+    async def _mentions_poll_gated(self) -> bool:
+        """True when the mentions-poll cycle must no-op: the engine or the
+        mention-reply sub-switch is off, or the ``engines`` maintenance-pause
+        scope is active. Split out of ``run_cycle`` to keep its own
+        complexity flat (xenon budget)."""
+        if not (settings.x_engine_enabled and settings.x_replies_enabled):
+            return True
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        return await is_paused(self.session, PauseScope.ENGINES)
+
     async def run_cycle(self) -> list[TaskTable]:
         """One mentions-poll pass: fetch, filter, dedup, draft, hold. No-op
         list unless the engine AND the mention-reply sub-switch are on and
-        credentials are configured (release posting doesn't use this path)."""
-        if not (settings.x_engine_enabled and settings.x_replies_enabled):
+        credentials are configured (release posting doesn't use this path),
+        or while the ``engines`` maintenance-pause scope is active."""
+        if await self._mentions_poll_gated():
             return []
         client = await self._client()
         if not client.configured:
@@ -1140,7 +1270,10 @@ class XEngine(BaseService):
             await get_notification_delivery_service(
                 self.session
             ).notify_ceo_of_queue_item(
-                kind="xpost", id8=str(task.id)[:8], title=body[:100]
+                kind="xpost",
+                id8=str(task.id)[:8],
+                title=body[:100],
+                related_task_id=cast("UUID", task.id),
             )
         except Exception as exc:
             self.log.warning(
@@ -1423,11 +1556,10 @@ class XEngine(BaseService):
         """(source, key) discriminating one draft's underlying item from
         another of the same source: release version for x_post, mention id
         for x_reply, feature slug for x_feature, target tweet id for
-        x_barfly. None when the task carries no such marker or the source
-        has no registered extractor (x_editorial/x_campaign — see the
-        ponytail note above the extractor dicts). Dict-dispatched (not an
-        if-chain) to keep this flat as new X sources register (xenon
-        budget)."""
+        x_barfly, angle for x_editorial, campaign_name:sequence for
+        x_campaign. None when the task carries no such marker.
+        Dict-dispatched (not an if-chain) to keep this flat as new X sources
+        register (xenon budget)."""
         extractor = _REDRAFT_IDENTITY_EXTRACTORS.get(task.source)
         return extractor(task) if extractor is not None else None
 
@@ -1537,22 +1669,9 @@ class XEngine(BaseService):
         itself reject/approve-able through the normal flow. The feature
         source's seen-slug bookkeeping is NOT repeated here — the original
         draft already marked it seen at authoring time."""
-        if post_task.source == X_POST_SOURCE:
-            version = markers.get_x_release_version(post_task)
-            if version:
-                markers.set_x_release_version(new_task, version)
-        elif post_task.source == X_REPLY_SOURCE:
-            ref = markers.get_x_mention_ref(post_task)
-            if ref:
-                markers.set_x_mention_ref(new_task, ref)
-        elif post_task.source == X_FEATURE_SOURCE:
-            ref = markers.get_x_feature_ref(post_task)
-            if ref:
-                markers.set_x_feature_ref(new_task, ref)
-        elif post_task.source == X_BARFLY_SOURCE:
-            ref = markers.get_barfly_reply_ref(post_task)
-            if ref:
-                markers.set_barfly_reply_ref(new_task, ref)
+        carrier = _REDRAFT_MARKER_CARRIERS.get(post_task.source or "")
+        if carrier:
+            carrier(new_task, post_task)
 
 
 def get_x_engine(session: AsyncSession, client: XClient | None = None) -> XEngine:

@@ -74,12 +74,17 @@ class DocsSyncEngine(BaseService):
     ) -> TaskTable | None:
         """If enabled, open one docs-update task for this release.
 
-        Returns the created task, or None when disabled, when roboco-website is
+        Returns the created task, or None when disabled, while the
+        ``engines`` maintenance-pause scope is active, when roboco-website is
         not registered, when either cap is reached, or when a task for this
         version is already open. Flushes; the caller (release_proposal) owns
         the commit. Never starts / approves / merges.
         """
-        if not settings.docs_sync_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.docs_sync_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return None
 
         project = await get_project_service(self.session).get_by_slug(

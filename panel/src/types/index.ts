@@ -225,6 +225,17 @@ export interface Task {
   constraints?: string | null;
   acceptance_criteria: string[];
   status: TaskStatus;
+  // Who resolves a blocked task: "agent" (dispatcher can respawn) or
+  // "human" (dispatcher must skip — the task is stalled/needs you).
+  // None outside the "blocked" status. Matches backend TaskResponse.
+  blocker_resolver_type?: string | null;
+  // Durable stalled marker (see GET /dashboard/stalled-tasks): set when the
+  // dispatcher's respawn breaker gives up on this task, cleared on genuine
+  // forward progress. Null when never stalled. Independent of status/
+  // blocker_resolver_type - a stalled task can be in_progress, not just
+  // blocked.
+  stalled_reason?: string | null;
+  stalled_since?: string | null;
   priority: number; // 0=P0(highest), 1=P1, 2=P2, 3=P3(lowest)
   // Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). null = use the task-type default.
   budget_usd?: number | null;
@@ -663,6 +674,22 @@ export interface CEOOverview {
   key_metrics: Record<string, unknown>;
   auditor_alerts: Record<string, unknown>;
   roadmap_progress: Record<string, unknown>;
+}
+
+// =============================================================================
+// STALLED TASKS (matching backend schemas/dashboard.py StalledTaskResponse)
+// =============================================================================
+
+/** One task the dispatcher's respawn breaker has given up on - GET /dashboard/stalled-tasks */
+export interface StalledTask {
+  task_id: string;
+  title: string;
+  assignee_id: string | null;
+  assignee_slug: string | null;
+  status: string;
+  reason: string;
+  stalled_since: string;
+  stalled_seconds: number;
 }
 
 // =============================================================================
@@ -1465,6 +1492,14 @@ export interface Scorecard {
   rework_rate: number;
   tokens: number;
   cost_usd: number;
+}
+
+/** Human- vs agent-originated task counts (root-source classification). */
+export interface ProvenanceReport {
+  total: number;
+  human_authored: number;
+  agent_authored: number;
+  human_rate: number;
 }
 
 // --- Granular per-member metrics (v0.15.0) ---

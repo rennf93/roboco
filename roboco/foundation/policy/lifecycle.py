@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Literal
 # the lifecycle tables that depend on it. New consumers may also import
 # from `roboco.foundation.identity` directly.
 from roboco.foundation.identity import Role, Team
+from roboco.foundation.policy.content import markers
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -245,14 +246,12 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         frozenset({Role.DOCUMENTER}),
     ),
     StatusTransition(Status.NEEDS_REVISION, Status.CLAIMED, "claim", None),
-    # A PM re-claims an awaiting_pm_review task it already owns (CLAIM_RULES
-    # grants this to CELL_PM/MAIN_PM) — see the "claim" ActionSpec comment.
-    StatusTransition(
-        Status.AWAITING_PM_REVIEW,
-        Status.CLAIMED,
-        "claim",
-        frozenset({Role.CELL_PM, Role.MAIN_PM}),
-    ),
+    # No AWAITING_PM_REVIEW -> CLAIMED edge: a PM re-entering its own
+    # review-queue task is steered by the choreographer's i_will_plan
+    # re-entry contract straight to complete/request_changes, never via a
+    # claim (a claim edge here let i_will_plan legally reset the task and
+    # loop the submit_up -> pr_pass -> awaiting_pm_review cycle forever —
+    # see the CLAIM_RULES comment below).
     # Start
     StatusTransition(Status.CLAIMED, Status.IN_PROGRESS, "start", None),
     # Block / pause / resume
@@ -454,14 +453,6 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
                 Status.AWAITING_QA,
                 Status.AWAITING_DOCUMENTATION,
                 Status.AWAITING_PR_REVIEW,
-                # A PM re-claims a review/queue task it already owns (e.g. after
-                # a respawn) via i_will_plan — CLAIM_RULES[CELL_PM/MAIN_PM]
-                # grants AWAITING_PM_REVIEW. Without it here, can_invoke_intent
-                # rejected i_will_plan on an awaiting_pm_review task with
-                # invalid_state even though CLAIM_RULES said it was allowed.
-                # test_claim_rules_match_pre_gateway_table keeps this source set
-                # and CLAIM_RULES in sync.
-                Status.AWAITING_PM_REVIEW,
             }
         ),
         target_status=Status.CLAIMED,
@@ -749,21 +740,22 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     # agent its own assigned tasks. (A per-instance ownership gate at the gateway
     # would diverge from this spec — the parity invariant forbids that.)
     #
-    # AWAITING_PM_REVIEW: a PM re-claims its own review-queue task (e.g. after
-    # a respawn) via i_will_plan. roboco/services/task.py's
-    # _ROLE_CLAIM_STATUSES already granted this to "cell_pm"/"main_pm" on the
-    # stated belief that "the spec (lifecycle.CLAIM_RULES) grants it" — but
-    # CLAIM_RULES never actually did, so can_invoke_intent silently rejected
-    # every i_will_plan attempt on an awaiting_pm_review task with
-    # invalid_state regardless of what the service layer allowed. Added here
-    # to match; test_claim_rules_match_pre_gateway_table asserts CLAIM_RULES
-    # and the service table stay in sync so they can't diverge again.
-    Role.CELL_PM: frozenset(
-        {Status.PENDING, Status.NEEDS_REVISION, Status.AWAITING_PM_REVIEW}
-    ),
-    Role.MAIN_PM: frozenset(
-        {Status.PENDING, Status.NEEDS_REVISION, Status.AWAITING_PM_REVIEW}
-    ),
+    # AWAITING_PM_REVIEW is deliberately ABSENT here — do not re-add it. A task
+    # in this status already passed the in-path PR gate and is waiting on the
+    # owning PM's merge decision (complete / request_changes), not on
+    # re-planning. A prior revision granted CELL_PM/MAIN_PM a claim from
+    # AWAITING_PM_REVIEW so a respawned PM could "re-claim its own review-queue
+    # task", but claim composes into i_will_plan's (claim, set_plan, start)
+    # sequence: every respawn legally re-claimed the task, reset it to
+    # in_progress, and re-ran the full submit_up -> pr_pass ->
+    # awaiting_pm_review cycle — looping forever with no progress (one
+    # production task cycled 11 times across 37 spawns in 4h before this was
+    # caught). A PM re-entering its own AWAITING_PM_REVIEW task is now steered
+    # by the choreographer's i_will_plan re-entry contract (_handle_pm_reentry)
+    # straight to complete/request_changes, with no claim and no status change
+    # — closing the edge that made the reset possible in the first place.
+    Role.CELL_PM: frozenset({Status.PENDING, Status.NEEDS_REVISION}),
+    Role.MAIN_PM: frozenset({Status.PENDING, Status.NEEDS_REVISION}),
     Role.PRODUCT_OWNER: frozenset(),
     Role.HEAD_MARKETING: frozenset(),
     Role.AUDITOR: frozenset(),
@@ -801,6 +793,7 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "be-pr-reviewer": "backend",
     "fe-pr-reviewer": "frontend",
     "ux-pr-reviewer": "ux_ui",
+    "cell-pr-reviewer-2": None,  # shared cell-gate overflow, serves all cells
     "ceo": None,
 }
 
@@ -904,6 +897,18 @@ def _next_hint_pm_idle(_t: Any) -> str:
     return "idle until subtasks finish"
 
 
+def _next_hint_submit_up(t: Any) -> str:
+    if markers.is_pr_waived(t):
+        return (
+            "no diff to review — PR creation was waived (report-only"
+            " subtree); complete(task_id) merges it directly"
+        )
+    return (
+        "cell→root PR opened + in review; the cell reviewer will pr_pass,"
+        " then complete(task_id) merges it"
+    )
+
+
 def _next_hint_pr_gate_review(_t: Any) -> str:
     return (
         "review the assembled PR diff against the parent objective + full"
@@ -912,7 +917,12 @@ def _next_hint_pr_gate_review(_t: Any) -> str:
     )
 
 
-def _next_hint_submit_root(_t: Any) -> str:
+def _next_hint_submit_root(t: Any) -> str:
+    if markers.is_pr_waived(t):
+        return (
+            "no diff to review — PR creation was waived (report-only"
+            " subtree); complete(task_id) escalates to the CEO directly"
+        )
     return (
         "root→master PR opened; the main reviewer will review it,"
         " then complete(task_id) escalates to the CEO"
@@ -1566,10 +1576,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         # The Cell PM owns cell completion — it merges the cell→root PR
         # via complete(). Main PM only completes the ROOT task.
-        next_hint=lambda _t: (
-            "cell→root PR opened + in review; the cell reviewer will pr_pass,"
-            " then complete(task_id) merges it"
-        ),
+        next_hint=_next_hint_submit_up,
     ),
     "submit_root": IntentSpec(
         name="submit_root",
@@ -1688,6 +1695,14 @@ def _invalid_source_remediate(
             "your part is done — this task already moved to QA review; you "
             "are not blocked on it anymore. Call i_am_idle() to pick up new "
             "work. Do NOT retry i_am_blocked/unclaim against a task QA owns."
+        )
+    if status is Status.NEEDS_REVISION and action == "block":
+        return (
+            f"the task has moved to '{status.value}' (an admin/reviewer "
+            "action) while you held it; you no longer hold the active claim "
+            "on it. Call unclaim() to release it, then give_me_work() to "
+            "pick up new work — do NOT retry i_am_blocked against a task "
+            "that has already moved on."
         )
     return (
         f"call give_me_work() to find a task in"

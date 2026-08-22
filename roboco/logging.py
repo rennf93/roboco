@@ -8,6 +8,7 @@ for production and colored console output for development.
 import logging
 import logging.handlers
 import os
+import re as _re
 import sys
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
@@ -39,8 +40,6 @@ def add_app_context(
 # `ghs_`/`gho_`) plus bearer tokens and generic "key = <value>" shapes. The
 # regex is intentionally loose on length so it catches tokens regardless of
 # future format tweaks.
-import re as _re  # noqa: E402 — module-local alias only
-
 _SECRET_PATTERNS: list[_re.Pattern[str]] = [
     _re.compile(r"(github_pat_[A-Za-z0-9_]{20,})"),
     _re.compile(r"(ghp_[A-Za-z0-9_]{20,})"),

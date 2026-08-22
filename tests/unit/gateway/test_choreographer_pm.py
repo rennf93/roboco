@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from sqlalchemy.exc import OperationalError
 
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
@@ -51,6 +52,18 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
     base["task"].session.execute = AsyncMock(
         return_value=MagicMock(
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+    # That same verified-stamp now runs inside its own savepoint (a mid-flush
+    # failure must not poison the shared session) — an unconfigured
+    # AsyncMock's begin_nested() call returns a raw unawaited coroutine,
+    # which `async with` cannot use. Same shape as the execute default above;
+    # a test's own explicit begin_nested config (e.g. submit_root's) is the
+    # identical shape, so overwriting it here is a no-op for those tests.
+    base["task"].session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
         )
     )
     return ChoreographerDeps(**base)
@@ -480,6 +493,47 @@ async def test_cell_pm_complete_not_assigned_returns_not_authorized() -> None:
 
     env = await c.cell_pm_complete(pm_id, task_id, notes="x")
     assert env.as_dict()["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_passes_ownership_guard_after_pr_pass_handoff() -> None:
+    """#740 (d87e2d9b) removed the illegal awaiting_pm_review -> claimed
+    re-claim edge, which used to be the PM's only way back to ownership
+    after the PR gate — pr_pass cleared assigned_to to None, so the owning
+    PM's complete() dead-ended on this exact guard forever
+    (not_authorized). pr_pass now hands off to the resolved owning PM
+    instead (see TaskService.pr_pass), so a task in the real post-gate
+    shape — assigned_to == the calling PM, no subtasks — must clear this
+    guard rather than bounce."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=None,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
+    git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "merge-abc"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="reviewed and approved")
+    assert env.as_dict().get("error") != "not_authorized"
+    assert env.error is None
 
 
 @pytest.mark.asyncio
@@ -958,6 +1012,61 @@ async def test_escalate_up_blocks_without_journal_decision() -> None:
 
 
 @pytest.mark.asyncio
+async def test_escalate_up_survives_journal_write_lock_timeout() -> None:
+    """Regression: a journal:decision INSERT that lock-times out (a
+    concurrent claim transaction holding the task row's FK share lock —
+    live production 500) used to be swallowed by ``_ensure_pm_decision``
+    with no rollback/savepoint, poisoning the session so the very next
+    attribute touch (``_escalate_up_preflight`` reading ``t.id``) raised an
+    unhandled ``PendingRollbackError``. The write is now savepoint-guarded
+    (``begin_nested()``): the failure is contained and no unhandled
+    exception escapes ``escalate_up``.
+
+    Round-2 fix (transient-failure gate bypass): a lock-timeout with a
+    non-empty rationale already in hand (``reason``) no longer falls through
+    to a tracing_gap rejection either — the PM answered the gate's actual
+    question (why); the write was only ever a convenience. Laundering
+    transient DB congestion into a rejected/blocked PM verb is exactly the
+    bug this closes — see test_pm_decision_transient_failure_* below for the
+    gate-helper-level unit coverage.
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="blocked", assigned_to=pm_id, team="backend")
+    after = MagicMock(**{**t.__dict__, "assigned_to": uuid4()})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm", escalation_target="main-pm"
+    )
+    task_svc.escalate.return_value = after
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
+    journal_svc.write_decision.side_effect = OperationalError(
+        "INSERT INTO journal_entries (id, ...) VALUES (...)",
+        {},
+        Exception("canceling statement due to lock timeout"),
+    )
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_up(pm_id, task_id, reason="needs cross-cell coordination")
+
+    # The savepoint was actually engaged — proves the fix is wired in, not
+    # merely that AsyncMock happened to swallow the raise on its own.
+    task_svc.session.begin_nested.assert_called()
+    # No unhandled exception escaped escalate_up, AND the gate is satisfied
+    # by the verb's own rationale instead of rejecting a DB hiccup.
+    body = env.as_dict()
+    assert body["error"] is None, body
+    task_svc.escalate.assert_awaited_once()
+    # The task is still fully readable afterward — this is exactly where
+    # the production trace crashed with PendingRollbackError on t.id.
+    assert t.id == task_id
+
+
+@pytest.mark.asyncio
 async def test_escalate_up_no_target_returns_invalid_state() -> None:
     """Verb-specific preflight: PM whose escalation_target is unconfigured.
 
@@ -1392,3 +1501,70 @@ async def test_declare_coverage_self_declare_rejected_for_non_owner() -> None:
     env = await c.declare_coverage(pm_id, root_id, ["id-a"])
     assert env.error == "invalid_state"
     task_svc.add_parent_ac_refs.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_self_declare_rejected_for_non_root() -> None:
+    """Root-owned self-declare on a coordination task that HAS a parent (e.g.
+    a cell coordination root parented to a Main PM root) is rejected. The
+    read-side guard in _parent_ac_ref_sets only treats a task's own
+    parent_ac_refs as self-coverage when parent_task_id is None, so
+    self-declaring here would stamp refs that silently do nothing at the
+    gate. Reject up front rather than return a silent no-op."""
+    pm_id = uuid4()
+    cell_root_id = uuid4()
+    cell_root = MagicMock(
+        id=cell_root_id,
+        assigned_to=pm_id,
+        parent_task_id=uuid4(),
+        batch_id=None,  # a plain parented coordination task, not a MegaTask
+        acceptance_criteria=["cell a", "cell b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = cell_root
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, cell_root_id, ["id-a"])
+    assert env.error == "invalid_state"
+    task_svc.add_parent_ac_refs.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_self_declare_accepted_for_batch_root_subtask() -> None:
+    """Root-owned self-declare on a MegaTask root-subtask (batch_id set AND
+    parented by the umbrella) IS accepted: it is a genuine Main-PM
+    coordination root with its own project/branch/PR (is_batch_root_subtask),
+    unlike the plain parented cell root rejected above. Without this, a
+    root-subtask carrying a root-only criterion (e.g. PR-supersede) has no
+    path to coverage and submit_root blocks on it forever."""
+    pm_id = uuid4()
+    root_subtask_id = uuid4()
+    root_subtask = MagicMock(
+        id=root_subtask_id,
+        assigned_to=pm_id,
+        parent_task_id=uuid4(),  # the umbrella
+        batch_id=uuid4(),
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = root_subtask
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="board")
+    task_svc.unknown_ac_refs = MagicMock(return_value=[])
+    task_svc.add_parent_ac_refs.return_value = root_subtask
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, root_subtask_id, ["id-a"])
+    assert env.error is None, env.as_dict()
+    task_svc.add_parent_ac_refs.assert_awaited_once_with(
+        root_subtask_id, ["id-a"], declared_by=pm_id
+    )
+    # Self-declare targets its own uncovered-set, never a parent_task_id.
+    task_svc.uncovered_parent_acceptance_criteria.assert_awaited_once_with(
+        root_subtask_id
+    )

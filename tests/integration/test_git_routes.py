@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from http import HTTPStatus
 from types import SimpleNamespace
@@ -14,8 +15,9 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
-from roboco.api.routes.git import _translate_error
 from roboco.api.routes.git import router as git_router
+from roboco.api.utils.git import _translate_error
+from roboco.config import settings
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.exceptions import GitCommandError, GitTimeoutError
 from roboco.models import AgentRole, AgentStatus, Team
@@ -488,6 +490,74 @@ async def test_diff_service_error(git_client: dict) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_diff_workspace_resolution_real_stall_returns_bounded_504(
+    git_client: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """get_workspace genuinely stalls past a short bound -> 504 naming the
+    stalled stage, not a mocked exception."""
+    monkeypatch.setattr(settings, "workspace_clone_timeout", 0.05)
+
+    async def _stall(*_args: object, **_kwargs: object) -> str:
+        await asyncio.sleep(0.3)
+        return "/tmp/ws"
+
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = _stall
+        mock_get.return_value = svc
+        response = await git_client["client"].get(
+            f"/api/git/diff?project_slug={git_client['project'].slug}",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert "workspace resolution" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_diff_diff_stage_real_stall_returns_bounded_504(
+    git_client: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The diff/diff-stat stage genuinely stalls past a short bound -> 504
+    naming the stalled stage, not a mocked exception."""
+    monkeypatch.setattr(settings, "git_diff_timeout_seconds", 0.05)
+
+    async def _stall(*_args: object, **_kwargs: object) -> MagicMock:
+        await asyncio.sleep(0.3)
+        return MagicMock(stdout="unreachable")
+
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc._run_git = _stall
+        mock_get.return_value = svc
+        response = await git_client["client"].get(
+            f"/api/git/diff?project_slug={git_client['project'].slug}",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert "diff" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_diff_workspace_resolution_git_timeout_error_returns_bounded_504(
+    git_client: dict,
+) -> None:
+    """A real GitTimeoutError raised inside get_workspace (the internal
+    _run_git subprocess bound, not asyncio.wait_for's own cancellation)
+    still translates to the same stage-naming 504."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(side_effect=GitTimeoutError("git clone", 30))
+        mock_get.return_value = svc
+        response = await git_client["client"].get(
+            f"/api/git/diff?project_slug={git_client['project'].slug}",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert "workspace resolution" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

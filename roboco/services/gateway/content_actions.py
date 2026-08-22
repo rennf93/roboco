@@ -35,6 +35,10 @@ from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.models.base import TaskStatus
 from roboco.services.content_notes import content_type_for_role
 from roboco.services.gateway.choreographer import findings as findings_lib
+from roboco.services.gateway.choreographer.evidence_legs import (
+    LegBudget,
+    run_bounded_leg,
+)
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -1183,6 +1187,30 @@ class ContentActions:
         except ValueError:
             return None
 
+    async def _trace_board_proposal(
+        self, *, agent_id: UUID, verb: str, payload: dict[str, Any]
+    ) -> None:
+        """Durably trace a board-program ``propose_*`` payload BEFORE any
+        validation runs.
+
+        The 2026-07-25 incident: a rejected/mis-persisted proposal came back
+        as a 200 carrying an error envelope, with the raw payload living
+        nowhere but that one HTTP response — unrecoverable once the caller
+        moved on. Uses ``AuditService``'s own independent session/commit
+        (never ``self.task.session``), so the trace survives even when this
+        verb's own validation rejects the call outright and no downstream
+        write ever happens. Best-effort — ``AuditService.log_event`` never
+        raises, so a trace failure can never block the proposal itself.
+        """
+        from roboco.services.audit import get_audit_service
+
+        await get_audit_service().log_event(
+            event_type="board_program.proposal_trace",
+            agent_id=agent_id,
+            details={"verb": verb, "payload": payload},
+            severity="info",
+        )
+
     async def draft_playbook(
         self,
         *,
@@ -1556,7 +1584,11 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_pitch(pitch=pitch)
+            # Savepoint: this persists a notification row, so a mid-flush DB
+            # failure swallowed here would otherwise poison the session and
+            # blow up the commit-at-send with PendingRollbackError.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_pitch(pitch=pitch)
         except Exception as exc:
             logger.warning("pitch telegram notify failed (best-effort)", error=str(exc))
 
@@ -1693,6 +1725,11 @@ class ContentActions:
         stays open (and this verb keeps refusing) until every item is
         terminal.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_roadmap",
+            payload={"cycle_goal": cycle_goal, "items": items},
+        )
         role = await self._caller_role(agent_id)
         if role not in _ROADMAP_ROLES:
             return Envelope.not_authorized(
@@ -1776,6 +1813,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -1927,6 +1965,9 @@ class ContentActions:
         terminal. Mirrors ``propose_roadmap`` — no top-level theme goal here,
         just the items.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id, verb="propose_bug_hunt", payload={"items": items}
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2001,6 +2042,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2153,6 +2195,9 @@ class ContentActions:
         resolved to a real BACKLOG/PENDING task here) that approval MUTATES
         (reprioritize) or cancels, never creates.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id, verb="propose_rebalance", payload={"items": items}
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2228,6 +2273,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("target_task_title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2378,6 +2424,9 @@ class ContentActions:
         terminal. Mirrors ``propose_bug_hunt`` — no top-level theme goal
         here, just the items.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id, verb="propose_gap_fill", payload={"items": items}
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2453,6 +2502,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2606,6 +2656,11 @@ class ContentActions:
         terminal. Mirrors ``propose_gap_fill`` — no top-level theme goal
         here, just the items.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_messaging_fixes",
+            payload={"items": items},
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2681,6 +2736,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2833,6 +2889,11 @@ class ContentActions:
         terminal. Mirrors ``propose_messaging_fixes`` — no top-level theme
         goal here, just the items.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_friction_fixes",
+            payload={"items": items},
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -2908,6 +2969,7 @@ class ContentActions:
                     id8=id8,
                     extra=str(item.get("id") or ""),
                     title=item.get("title") or "untitled",
+                    related_task_id=task.id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -3009,6 +3071,19 @@ class ContentActions:
         ``x_feature_ref`` marker for approve time to read. Defaults leave the
         flow byte-for-byte unchanged.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_feature_spotlight",
+            payload={
+                "feature_slug": feature_slug,
+                "feature_title": feature_title,
+                "body": body,
+                "wants_video": wants_video,
+                "video_script": video_script,
+                "skip": skip,
+                "skip_reason": skip_reason,
+            },
+        )
         role = await self._caller_role(agent_id)
         if role not in _FEATURE_SPOTLIGHT_ROLES:
             return Envelope.not_authorized(
@@ -3142,6 +3217,11 @@ class ContentActions:
         per-item CEO decision to leave the exploration open for, mirroring
         the x_feature complete-at-propose asymmetry. One call per cycle.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_editorial_post",
+            payload={"angle": angle, "body": body, "rationale": rationale},
+        )
         role = await self._caller_role(agent_id)
         if role not in _MEGAPHONE_ROLES:
             return Envelope.not_authorized(
@@ -3372,6 +3452,11 @@ class ContentActions:
         materialized draft individually in the existing X post queue, not on
         this task.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_conversation_replies",
+            payload={"items": items},
+        )
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         role = await self._caller_role(agent_id)
@@ -3609,6 +3694,17 @@ class ContentActions:
         prompt, same untrusted-text posture as X mentions / vault notes
         (screen-and-flag, never drop).
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_market_brief",
+            payload={
+                "headline": headline,
+                "findings": findings,
+                "threats": threats,
+                "opportunities": opportunities,
+                "positioning_note": positioning_note,
+            },
+        )
         role = await self._caller_role(agent_id)
         if role not in _PERISCOPE_ROLES:
             return Envelope.not_authorized(
@@ -3806,9 +3902,11 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_periscope_brief(
-                task=task, task_id=task.id, headline=headline
-            )
+            # Savepoint: persists a notification row — see _notify_pitch.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_periscope_brief(
+                    task=task, task_id=task.id, headline=headline
+                )
         except Exception as exc:
             logger.warning(
                 "periscope telegram notify failed (best-effort)", error=str(exc)
@@ -3960,6 +4058,15 @@ class ContentActions:
         spend tables, the Auditor's own read of the codebase), never
         untrusted web/external text, so there is nothing to screen.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_quality_report",
+            payload={
+                "headline": headline,
+                "items": items,
+                "overall_assessment": overall_assessment,
+            },
+        )
         role = await self._caller_role(agent_id)
         if role not in _SENTINEL_ROLES:
             return Envelope.not_authorized(
@@ -4048,9 +4155,11 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_sentinel_report(
-                task=task, task_id=task.id, headline=headline
-            )
+            # Savepoint: persists a notification row — see _notify_pitch.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_sentinel_report(
+                    task=task, task_id=task.id, headline=headline
+                )
         except Exception as exc:
             logger.warning(
                 "sentinel telegram notify failed (best-effort)", error=str(exc)
@@ -4230,6 +4339,11 @@ class ContentActions:
         task in the same call — mirrors ``propose_market_brief``'s
         complete-at-propose shape, batched over N posts.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_campaign",
+            payload={"campaign_name": campaign_name, "posts": posts},
+        )
         role = await self._caller_role(agent_id)
         if role not in _WAR_ROOM_ROLES:
             return Envelope.not_authorized(
@@ -4398,6 +4512,17 @@ class ContentActions:
         it with. commit + open_pr afterward sends the composition through
         the normal PR-review gate.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_video",
+            payload={
+                "composition_id": composition_id,
+                "x_caption": x_caption,
+                "tiktok_caption": tiktok_caption,
+                "platforms": platforms,
+                "input_props": input_props,
+            },
+        )
         from roboco.foundation.identity import Team
 
         team = await self._caller_team(agent_id)
@@ -4600,6 +4725,7 @@ class ContentActions:
                     tags=["coroner", "postmortem"],
                 ),
                 created_by=agent_id,
+                source_program="coroner",
             )
         except ConflictError as exc:
             return None, Envelope.invalid_state(
@@ -4749,6 +4875,7 @@ class ContentActions:
                         tags=["librarian", "auto-authored"],
                     ),
                     created_by=agent_id,
+                    source_program="librarian",
                 )
             except ConflictError as exc:
                 return created, Envelope.invalid_state(
@@ -4778,6 +4905,11 @@ class ContentActions:
         spawn curates them — a deliberate, documented self-curation
         asymmetry (see ``agents/prompts/identities/auditor.md``).
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_playbook_drafts",
+            payload={"drafts": drafts},
+        )
         role = await self._caller_role(agent_id)
         if role not in _LIBRARIAN_ROLES:
             return Envelope.not_authorized(
@@ -4842,11 +4974,13 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_librarian_drafts(
-                task=task,
-                task_id=task.id,
-                titles=[d["title"] for d in created],
-            )
+            # Savepoint: persists a notification row — see _notify_pitch.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_librarian_drafts(
+                    task=task,
+                    task_id=task.id,
+                    titles=[d["title"] for d in created],
+                )
         except Exception as exc:
             logger.warning(
                 "librarian telegram notify failed (best-effort)", error=str(exc)
@@ -4867,6 +5001,17 @@ class ContentActions:
         a report, not a list of items the CEO decides one by one). Call
         exactly once per autopsy cycle.
         """
+        await self._trace_board_proposal(
+            agent_id=agent_id,
+            verb="propose_postmortem",
+            payload={
+                "incident_summary": incident_summary,
+                "root_cause": root_cause,
+                "failed_stage": failed_stage,
+                "process_change": process_change,
+                "playbook": playbook,
+            },
+        )
         role = await self._caller_role(agent_id)
         if role not in _CORONER_ROLES:
             return Envelope.not_authorized(
@@ -4953,12 +5098,14 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_postmortem(
-                task=task,
-                task_id=task.id,
-                incident_summary=incident_summary,
-                process_change_kind=process_change_kind,
-            )
+            # Savepoint: persists a notification row — see _notify_pitch.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_postmortem(
+                    task=task,
+                    task_id=task.id,
+                    incident_summary=incident_summary,
+                    process_change_kind=process_change_kind,
+                )
         except Exception as exc:
             logger.warning(
                 "coroner postmortem telegram notify failed (best-effort)",
@@ -5375,6 +5522,27 @@ class ContentActions:
         ``files_changed`` and ``pr_diff_summary`` are pulled from git (against
         the branch's parent — the authoritative source) rather than the latest
         commit's delta, so reviewers see the full multi-commit change set.
+
+        The workspace-branch-fetch leg and the combined git diff leg
+        (``diff_and_files`` — one workspace/token/head/base resolution, the
+        full diff and the ``--name-only`` diff run concurrently as
+        subprocesses) each run bounded via ``run_bounded_leg`` against ONE
+        shared ``LegBudget`` for this call — a timeout skips that piece and
+        records a note (naming both the diff and files_changed losses — a
+        combined-leg timeout kills both together) in ``evidence_gaps``
+        instead of hanging this advisory (read-only, non-gating) verb for
+        the whole ``flow_verb_timeout_seconds`` budget.
+
+        The three independent DB-only reads (journal highlights, ancestor
+        context, open findings) run BEFORE the pool-release commit below —
+        not alongside the git legs — so a connection doesn't have to sit
+        checked out for the (potentially minutes-long) git work. They are
+        awaited SEQUENTIALLY, not gathered: ``evidence_repo`` and
+        ``self.task`` share the same request-scoped ``AsyncSession`` (see
+        ``deps.py``), and SQLAlchemy's ``AsyncSession`` does not support
+        concurrent queries — this matches the pre-dedup behavior (these
+        reads were sequential before the pool-release commit was added),
+        so latency is unchanged in practice.
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -5390,19 +5558,6 @@ class ContentActions:
             and not await self._is_caller_dependency(agent_id, t)
         ):
             return _ownership_violation(task_id)
-        if t.branch_name and t.work_session_id:
-            await self.workspace.fetch_branch_for_inspection(
-                agent_id=agent_id, branch_name=t.branch_name
-            )
-        diff = ""
-        files_changed: list[str] = []
-        if t.branch_name:
-            diff = await self.git.diff(
-                branch_name=t.branch_name, actor_agent_id=agent_id
-            )
-            files_changed = await self.git.list_changed_files(
-                branch_name=t.branch_name, actor_agent_id=agent_id
-            )
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id, include_ancestors=True
         )
@@ -5410,6 +5565,59 @@ class ContentActions:
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, task_id
         )
+        # Release the request's transaction before the git work below: fetch +
+        # diff can run for minutes (cold workspace, serialized behind the
+        # per-workspace ensure lock), and an open transaction pins one of the
+        # pool's connections for that whole time — enough concurrent evidence
+        # calls exhaust the pool (2026-07-29 incident). Reads after this
+        # reopen a fresh transaction on demand; expire_on_commit=False keeps
+        # ``t`` usable. A poisoned session (PendingRollbackError) rolls back
+        # instead — the point is ending the transaction, either way works.
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.task.session.commit()
+        except PendingRollbackError:
+            await self.task.session.rollback()
+        evidence_gaps: list[str] = []
+        budget = LegBudget(settings.evidence_assembly_timeout_seconds)
+        if t.branch_name and t.work_session_id:
+            # subprocess_timeout self-bounds the underlying git-fetch
+            # subprocess (on the shared DEFAULT asyncio executor, not
+            # git.py's dedicated pool) to roughly this leg's own share of
+            # the budget, so an abandoned wait_for doesn't leave the
+            # subprocess occupying a thread for up to workspace_clone_timeout
+            # (300s) after we've already given up on it.
+            await run_bounded_leg(
+                self.workspace.fetch_branch_for_inspection(
+                    agent_id=agent_id,
+                    branch_name=t.branch_name,
+                    subprocess_timeout=budget.remaining(),
+                ),
+                default=None,
+                budget=budget,
+                leg="branch fetch",
+                hint=(
+                    "the diff below may reflect a stale workspace; review "
+                    "the PR diff on GitHub directly"
+                ),
+                task_id=task_id,
+                gaps=evidence_gaps,
+            )
+        diff = ""
+        files_changed: list[str] = []
+        if t.branch_name:
+            diff, files_changed = await run_bounded_leg(
+                self.git.diff_and_files(
+                    branch_name=t.branch_name, actor_agent_id=agent_id
+                ),
+                default=("", []),
+                budget=budget,
+                leg="pr diff + files_changed",
+                hint="review the PR diff on GitHub directly",
+                task_id=task_id,
+                gaps=evidence_gaps,
+            )
         ev = build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,
@@ -5417,6 +5625,7 @@ class ContentActions:
             pr_diff_summary=diff,
             revision_findings=open_findings,
             parent_context=parent_context,
+            evidence_gaps=evidence_gaps,
         )
         return Envelope.ok(
             status=str(t.status),
@@ -6261,12 +6470,19 @@ class ContentActions:
         notification_id: UUID,
     ) -> Envelope:
         """Read one notification (also marks it read)."""
+        from roboco.services.base import NotFoundError
+
+        # Only the two domain outcomes map to not_found; a DB error (e.g. the
+        # mark-read UPDATE hitting lock_timeout) must propagate so the session
+        # is rolled back — swallowing it here poisoned the session and blew up
+        # the commit-at-send with PendingRollbackError, while lying to the
+        # agent that an existing notification didn't exist.
         try:
             n = await self._deps.notification_delivery.get_for_recipient_and_mark_read(
                 notification_id=notification_id,
                 agent_id=agent_id,
             )
-        except Exception:
+        except (NotFoundError, PermissionError):
             return Envelope.not_found(
                 message=f"notification {notification_id} not found"
             )

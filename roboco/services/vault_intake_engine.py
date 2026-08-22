@@ -234,6 +234,12 @@ class VaultIntakeEngine(BaseService):
                 path=rel_path,
                 hits=screened.hits,
             )
+        # Released right before the local-LLM chat call below (up to
+        # _CHAT_TIMEOUT_SECONDS=60s of HTTP IO), per note - not once for the
+        # whole cycle, so the hold never accumulates across a multi-note
+        # batch. Mirrors content_actions.evidence()'s pool-release commit
+        # (2026-07-29 pool-exhaustion incident).
+        await self._release_pool_connection()
         extraction = await self._extract(screened.rendered, note_path.stem)
         extraction = _NoteExtraction(
             extraction.title,
@@ -252,6 +258,22 @@ class VaultIntakeEngine(BaseService):
         await self.session.flush()
         self._append_feedback_callout(note_path, task)
         return task
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Mirrors content_actions.evidence()'s pool-release commit / the
+        background engines' own ``_release_pool_connection``: the next
+        read/write reopens a fresh transaction on demand. A poisoned session
+        rolls back instead - ending the transaction is the point, either way
+        works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     async def _extract(
         self, screened_body: str, fallback_title: str

@@ -7,13 +7,15 @@ settings.guard_enabled.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi import FastAPI
 from guard import SecurityMiddleware
+from pydantic import ValidationError
 from roboco import security
-from roboco.config import settings
+from roboco.api.app import create_app
+from roboco.config import Settings, settings
 
 if TYPE_CHECKING:
     from guard_core.protocols.request_protocol import GuardRequest
@@ -244,3 +246,215 @@ def test_guard_whitelist_appends_emergency_extras(
     assert cfg.whitelist is not None
     assert "203.0.113.5" in cfg.whitelist
     assert "172.16.0.0/12" in cfg.whitelist
+
+
+# --- guard_log_suspicious_level ---------------------------------------------
+
+
+def test_build_security_config_reads_log_suspicious_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_log_suspicious_level", "ERROR")
+    assert security.build_security_config().log_suspicious_level == "ERROR"
+
+
+def test_build_security_config_defaults_log_suspicious_level_to_warning() -> None:
+    """guard-core's own default, so an operator who never sets this sees
+    byte-for-byte unchanged behavior."""
+    assert settings.guard_log_suspicious_level == "WARNING"
+    assert security.build_security_config().log_suspicious_level == "WARNING"
+
+
+def test_guard_log_suspicious_level_rejects_invalid_value() -> None:
+    """An invalid level fails config load instead of silently mis-configuring
+    the WAF (the whole point of the field: a typo must never pass through as
+    a quiet no-op). model_validate takes an untyped mapping, so this exercises
+    real runtime rejection of a value the field's own static type already
+    rules out at every normal call site."""
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"guard_log_suspicious_level": "BOGUS"})
+
+
+def test_guard_log_suspicious_level_empty_string_becomes_none() -> None:
+    """Env vars are always strings; empty is the only textual way to reach
+    None, which CRITICALLY silences IP-ban logging too, not just WAF noise."""
+    s = Settings.model_validate({"guard_log_suspicious_level": ""})
+    assert s.guard_log_suspicious_level is None
+
+
+# --- endpoint_rate_limits: the cookie-minting paths -------------------------
+
+
+def test_build_security_config_rate_limits_both_credential_endpoints() -> None:
+    """Both routes that mint a session cookie are capped, not just the password
+    one: /telegram/webapp-auth mints the identical cookie with no password."""
+    cfg = security.build_security_config()
+    window = (settings.login_max_attempts, 60)
+    assert cfg.endpoint_rate_limits["/api/auth/login"] == window
+    assert cfg.endpoint_rate_limits["/api/telegram/webapp-auth"] == window
+
+
+def test_endpoint_rate_limits_track_login_max_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cap reuses the operator's own setting. A constant here would quietly
+    override login_max_attempts and make raising it a no-op."""
+    monkeypatch.setattr(settings, "login_max_attempts", 3)
+    assert security._endpoint_rate_limits()["/api/auth/login"] == (3, 60)
+
+
+def test_build_security_config_does_not_rate_limit_other_paths() -> None:
+    """The override is scoped to the credential endpoints, not a blanket
+    tightening: every other path still rides the global baseline."""
+    cfg = security.build_security_config()
+    assert set(cfg.endpoint_rate_limits) == {
+        "/api/auth/login",
+        "/api/telegram/webapp-auth",
+    }
+
+
+# --- fail_secure / redis_fail_open must stay paired ---------------------------
+
+
+def test_redis_failure_never_takes_down_a_fail_secure_deployment() -> None:
+    """The two flags cover different failures and must not be read as one dial.
+
+    fail_secure blocks on a BUG in a check. redis_fail_open covers redis being
+    UNAVAILABLE, which is not a security signal. With redis_fail_open False, a
+    redis restart on the same host makes every stateful check raise and
+    fail_secure turns that into a 500 on every guarded route until redis is
+    back. That is a self-inflicted outage, so the pairing is load-bearing.
+    """
+    cfg = security.build_security_config()
+    assert cfg.redis_fail_open is True
+    assert cfg.enable_redis is True
+
+
+# --- boot smoke: guard-core 3.12.0 construction-time validation -----------
+
+
+def test_build_security_config_constructs_under_guard_core_3_12() -> None:
+    """guard-core 3.12.0 rejects a bare-substring return_pattern rule at
+    SecurityConfig construction unless behavior_scan_response_body=True; this
+    used to crash at MODULE IMPORT (the module-level security_config), which
+    would have taken the orchestrator down at boot."""
+    security.build_security_config()
+
+
+def test_app_boots_with_guard_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real app factory, not just build_security_config() in isolation:
+    guards against a construction-time crash reachable only through the full
+    create_app() -> apply_guard() path."""
+    monkeypatch.setattr(settings, "guard_enabled", True)
+    app = create_app()
+    assert _has_security_middleware(app)
+
+
+def test_global_behavior_rules_use_status_patterns() -> None:
+    """A bare substring pattern ('404') is rejected at construction unless
+    behavior_scan_response_body=True; status: is the validation-exempt form
+    that actually matches a response's status code."""
+    cfg = security.build_security_config()
+    patterns = {r.pattern for r in cfg.global_behavior_rules}
+    assert "status:404" in patterns
+    assert "status:401" in patterns
+
+
+# --- immutability: guard-core 3.12.0 freezes config collections -----------
+
+
+def _append(seq: Any, item: str) -> None:
+    """Untyped indirection: cfg.whitelist's static type is tuple[str, ...],
+    which has no .append. Going through Any is how this test actually calls
+    the mutation guard-core removed, instead of merely asserting the
+    runtime type."""
+    seq.append(item)
+
+
+def test_whitelist_is_immutable_after_construction() -> None:
+    """guard-core 3.12.0 coerces list/set/dict collection fields to
+    tuple/frozenset/MappingProxyType at construction; in-place mutation now
+    raises. Documents the new contract for editors who reach for list-style
+    mutation on a config field."""
+    cfg = security.build_security_config()
+    assert isinstance(cfg.whitelist, tuple)
+    with pytest.raises(AttributeError):
+        _append(cfg.whitelist, "1.2.3.4")
+
+
+# --- agent_sensitive_headers: telemetry payloads never carry auth material -
+
+
+def test_agent_kwargs_empty_when_telemetry_off() -> None:
+    assert security._agent_kwargs() == {}
+
+
+def test_agent_sensitive_headers_present_when_telemetry_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    kwargs = security._agent_kwargs()
+    assert kwargs["agent_sensitive_headers"] == [
+        "x-agent-token",
+        "authorization",
+        "cookie",
+        "x-api-key",
+    ]
+
+
+# --- guard_scan_response_body: default-off response-body inspection -------
+
+
+def test_guard_scan_response_body_defaults_false() -> None:
+    assert security.build_security_config().behavior_scan_response_body is False
+
+
+def test_guard_scan_response_body_threads_through_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_scan_response_body", True)
+    assert security.build_security_config().behavior_scan_response_body is True
+
+
+# --- add_status_route: internal readiness probe ----------------------------
+
+
+def test_apply_guard_adds_status_route_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_enabled", True)
+    app = FastAPI()
+    security.apply_guard(app)
+    assert "/_guard/status" in {getattr(r, "path", None) for r in app.routes}
+
+
+def test_apply_guard_omits_status_route_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_enabled", False)
+    app = FastAPI()
+    security.apply_guard(app)
+    assert "/_guard/status" not in {getattr(r, "path", None) for r in app.routes}
+
+
+# --- block_clouds() decorator sanity: silent-filter path still resolves ---
+
+
+def test_block_clouds_argless_route_still_resolves_route_config() -> None:
+    """block_cloud_providers at CONFIG level raises on an unrecognized name;
+    the block_clouds() DECORATOR path instead silently filters unknown names.
+    An argless route must still resolve a real route config carrying the
+    default trio, guarding against a future named-provider typo silently
+    vanishing the whole route's config instead of just the bad name."""
+
+    @security.guard_deco.block_clouds()
+    async def _guard_test_block_clouds_route() -> dict[str, bool]:
+        return {"ok": True}
+
+    route_id = _guard_test_block_clouds_route._guard_route_id
+    route_config = security.guard_deco.get_route_config(route_id)
+    assert route_config is not None
+    # guard-core 3.13.0 will widen the argless default to all six supported
+    # providers (adds DigitalOcean/Linode/Vultr). When this pin breaks on
+    # that bump, decide: accept all six, or pass the classic three explicitly.
+    assert route_config.block_cloud_providers == {"AWS", "GCP", "Azure"}

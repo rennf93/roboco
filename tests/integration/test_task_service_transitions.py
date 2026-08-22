@@ -39,6 +39,7 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
 from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import Table, select
+from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -96,6 +97,30 @@ def _req(setup: dict, **overrides: Any) -> TaskCreateRequest:
         estimated_complexity=overrides.pop("estimated_complexity", Complexity.MEDIUM),
         **overrides,
     )
+
+
+# ---------------------------------------------------------------------------
+# JSON columns bind None as SQL NULL, not the JSON scalar `null`
+#
+# `checkpoints`/`progress_updates`/`commits`/`documents` are JSON, not ARRAY,
+# so a plain NOT NULL constraint does NOT stop a Python None from persisting
+# — the default SQLAlchemy JSON binding writes it as the JSON scalar `null`,
+# which satisfies NOT NULL while still deserializing back to Python `None`.
+# That silent path is exactly how the corrupted `progress_updates` row that
+# crashed `add_progress` in production got written. `JSON(none_as_null=True)`
+# closes it: a None write now hits the real NOT NULL constraint at flush.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_progress_updates_none_raises_not_null_at_flush(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.progress_updates = None
+    with pytest.raises(IntegrityError, match="not-null constraint"):
+        await db_session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -1778,6 +1803,79 @@ async def test_unblock_dependents_keeps_blocked_when_other_deps_remain(
     # but the one dependency that did complete is recorded.
     assert blocker.id in refreshed.completed_dependency_ids
     assert other_blocker.id not in refreshed.completed_dependency_ids
+
+
+# ---------------------------------------------------------------------------
+# delete / cancel must cascade the dependency prune + revive blocked dependents
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_unblocks_blocked_dependent(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A task BLOCKED on a deleted task must be auto-revived — the delete
+    path cascades the same _unblock_dependents prune the COMPLETE path runs.
+    Without it the BLOCKED dependent is never revived (it is past the claim
+    gate, which only treats a missing dep row as "met" for PENDING claims)."""
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    dependent = await svc.create(_req(task_setup))
+    dependent.status = TaskStatus.BLOCKED
+    dependent.dependency_ids = [blocker.id]
+    await db_session.flush()
+
+    deleted = await svc.delete(blocker.id)
+    assert deleted is True
+
+    refreshed = await svc.get(dependent.id)
+    assert refreshed is not None
+    assert blocker.id not in refreshed.dependency_ids
+    # Revived out of BLOCKED — back to workable state.
+    assert refreshed.status != TaskStatus.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_delete_prunes_stale_dependency_from_pending_dependent(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A PENDING dependent's stale dep id is pruned on delete (data hygiene);
+    it is not revived because it was never BLOCKED."""
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    dependent = await svc.create(_req(task_setup))
+    dependent.dependency_ids = [blocker.id]
+    await db_session.flush()
+
+    await svc.delete(blocker.id)
+
+    refreshed = await svc.get(dependent.id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.PENDING
+    assert blocker.id not in refreshed.dependency_ids
+
+
+@pytest.mark.asyncio
+async def test_cancel_unblocks_blocked_dependent(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Cancelling a blocker revives a BLOCKED dependent the same way — the
+    cancelled id is pruned and the dependent resumes. A cancelled task is
+    terminal, so it must never hold a dependent in BLOCKED forever."""
+    svc = task_setup["svc"]
+    blocker = await svc.create(_req(task_setup))
+    dependent = await svc.create(_req(task_setup))
+    dependent.status = TaskStatus.BLOCKED
+    dependent.dependency_ids = [blocker.id]
+    await db_session.flush()
+
+    cancelled = await svc.cancel(blocker.id, agent_role="cell_pm")
+    assert cancelled is not None
+
+    refreshed = await svc.get(dependent.id)
+    assert refreshed is not None
+    assert blocker.id not in refreshed.dependency_ids
+    assert refreshed.status != TaskStatus.BLOCKED
 
 
 # ---------------------------------------------------------------------------

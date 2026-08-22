@@ -235,6 +235,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-pm.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-pm
     entrypoint: ["/bin/sh", "-c", "echo 'Agent PM image built'"]
     restart: "no"
@@ -248,6 +250,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-dev-be.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-dev-be
     entrypoint: ["/bin/sh", "-c", "echo 'Agent Backend Dev image built'"]
     restart: "no"
@@ -261,6 +265,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-dev-fe.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-dev-fe
     entrypoint: ["/bin/sh", "-c", "echo 'Agent Frontend Dev image built'"]
     restart: "no"
@@ -274,6 +280,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-qa-be.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-qa-be
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Backend QA image built"']
     restart: "no"
@@ -287,6 +295,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-qa-fe.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-qa-fe
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Frontend QA image built"']
     restart: "no"
@@ -300,6 +310,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-ux.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-ux
     entrypoint: ["/bin/sh", "-c", 'echo "Agent UX/UI image built"']
     restart: "no"
@@ -313,6 +325,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-doc.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-doc
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Documenter image built"']
     restart: "no"
@@ -327,6 +341,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-prompter.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-prompter
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Intake image built"']
     restart: "no"
@@ -337,6 +353,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-secretary.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-secretary
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Secretary image built"']
     restart: "no"
@@ -350,6 +368,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-pr-reviewer.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-pr-reviewer
     entrypoint: ["/bin/sh", "-c", 'echo "Agent PR Reviewer image built"']
     restart: "no"
@@ -363,6 +383,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-grok.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-grok
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok image built"']
     restart: "no"
@@ -375,6 +397,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-grok-prompter.Dockerfile
+      additional_contexts:
+        roboco-agent-grok: "service:agent-grok-image"
     image: roboco-agent-grok-prompter
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok Prompter image built"']
     restart: "no"
@@ -385,6 +409,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-grok-secretary.Dockerfile
+      additional_contexts:
+        roboco-agent-grok: "service:agent-grok-image"
     image: roboco-agent-grok-secretary
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok Secretary image built"']
     restart: "no"
@@ -399,6 +425,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-codex.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-codex
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Codex image built"']
     restart: "no"
@@ -414,6 +442,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-gemini.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-gemini
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Gemini image built"']
     restart: "no"
@@ -429,6 +459,8 @@ services:
     build:
       context: .
       dockerfile: docker/agent-kimi.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-kimi
     entrypoint: ["/bin/sh", "-c", 'echo "Agent Kimi image built"']
     restart: "no"
@@ -631,7 +663,7 @@ services:
       ROBOCO_VAULT_REPORT_ENABLED: ${ROBOCO_VAULT_REPORT_ENABLED:-true}
       ROBOCO_VAULT_KB_ENABLED: ${ROBOCO_VAULT_KB_ENABLED:-true}
       ROBOCO_VAULT_KB_DIRS: ${ROBOCO_VAULT_KB_DIRS:-RoboCo/Notes}
-      ROBOCO_VAULT_KB_INTERVAL_SECONDS: ${ROBOCO_VAULT_KB_INTERVAL_SECONDS:-900}
+      ROBOCO_VAULT_KB_INTERVAL_SECONDS: ${ROBOCO_VAULT_KB_INTERVAL_SECONDS:-3600}
       #   - Board roadmap engine: weekly, opens ONE held exploration task for
       #     the Product Owner, who proposes a themed cycle of roadmap items;
       #     the CEO approves each item individually into the backlog.
@@ -715,13 +747,14 @@ services:
       # / log-only calibration (WAF false-positive review, see
       # docs/rag/architecture/http-security-guard.md) came back clean, CEO
       # approved flipping to active now that cloud auth + Tailscale are armed.
-      # Guard mounts, observes, AND BLOCKS matching requests. FAIL_SECURE=false
-      # so a guard-internal error never 500s this personal deploy. Left OFF
-      # entirely in the registry compose.
+      # Guard mounts, observes, AND BLOCKS matching requests. FAIL_SECURE=true
+      # (fail-secure ON): a guard-internal check error blocks the request
+      # rather than letting it through. Left OFF entirely in the registry
+      # compose.
       # enforce_https follows ROBOCO_ENVIRONMENT (dev on the NAS → not enforced).
       ROBOCO_GUARD_ENABLED: ${ROBOCO_GUARD_ENABLED:-true}
       ROBOCO_GUARD_PASSIVE_MODE: ${ROBOCO_GUARD_PASSIVE_MODE:-false}
-      ROBOCO_GUARD_FAIL_SECURE: ${ROBOCO_GUARD_FAIL_SECURE:-false}
+      ROBOCO_GUARD_FAIL_SECURE: ${ROBOCO_GUARD_FAIL_SECURE:-true}
       # Emergency-lockdown whitelist escape hatch. Without this line here,
       # setting it in .env silently does nothing — only vars listed in this
       # stanza reach the container.
@@ -732,6 +765,9 @@ services:
       # goes inert for /tg. Same "must be listed here to reach the container"
       # rule as the emergency whitelist above.
       ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
+      # Log level for guard-core's suspicious-path lines (IP bans, blocked
+      # countries, BehaviorTracker). Same "must be listed here" rule as above.
+      ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL: ${ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL:-WARNING}
       ROBOCO_AGENT_TOOL_CALL_HALT: ${ROBOCO_AGENT_TOOL_CALL_HALT:-600}
       ROBOCO_AGENT_TOOL_CALL_WARN: ${ROBOCO_AGENT_TOOL_CALL_WARN:-200}
       # Per-task/project cost budgets (default-off subsystem; also on the

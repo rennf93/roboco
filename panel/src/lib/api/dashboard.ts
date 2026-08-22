@@ -8,6 +8,7 @@ import type {
   FlagSeverity,
   CEOOverview as CEOOverviewType,
   Task,
+  StalledTask,
 } from "@/types";
 import {
   isMockMode,
@@ -577,6 +578,18 @@ export const dashboardApi = {
       return createMockKanbanBoard(teamTasks);
     }
     const { data } = await api.get<KanbanBoard>(`/dashboard/kanban/${team}`);
+    return data;
+  },
+
+  // The current stalled set - every task the dispatcher's respawn breaker
+  // has given up on (the durable stalled_reason/stalled_since marker), from
+  // the dedicated GET /dashboard/stalled-tasks endpoint. Independent of
+  // status: a stalled task can be in_progress, not just blocked.
+  getStalledTasks: async (): Promise<StalledTask[]> => {
+    if (isMockMode()) {
+      return [];
+    }
+    const { data } = await api.get<StalledTask[]>("/dashboard/stalled-tasks");
     return data;
   },
 };

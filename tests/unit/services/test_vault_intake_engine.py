@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 from roboco.config import settings as cfg
 from roboco.db.tables import AgentTable, ProjectTable, VaultSeenNoteTable
 from roboco.foundation import identity as _foundation
@@ -29,11 +30,11 @@ from roboco.services import vault_intake_engine as vie_module
 from roboco.services.task import VAULT_NOTE_SOURCE, get_task_service
 from roboco.services.vault_intake_engine import VaultIntakeEngine
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
-
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 PO_UUID = _foundation.AGENTS["product-owner"].uuid
@@ -41,6 +42,42 @@ MAIN_PM_UUID = _foundation.AGENTS["main-pm"].uuid
 SLUG = "roboco"
 ONE = 1
 TWO = 2
+
+
+@pytest_asyncio.fixture
+async def db_session(_test_database_url: str) -> AsyncIterator[AsyncSession]:
+    """Savepoint-isolated override, shadowing tests/conftest.py's plain-
+    rollback fixture for THIS module only (pytest resolves a module-level
+    fixture over a conftest.py one of the same name).
+
+    ``VaultIntakeEngine._process_note`` now commits mid-cycle to release the
+    pool connection before the local-LLM chat call (up to 60s of HTTP IO,
+    the 2026-07-29 pool-exhaustion fix), for every note that reaches
+    extraction, meaning most tests in this module. A plain rollback-at-
+    teardown only undoes UNCOMMITTED state, so those mid-test commits would
+    otherwise leak rows into the shared session-scoped test database.
+    Mirrors tests/integration/services/conftest.py's fixture exactly: nests
+    the test in one real transaction and gives the session a SAVEPOINT
+    (``join_transaction_mode="create_savepoint"``); every commit under
+    test only ends the savepoint, and the real transaction is what rolls
+    back at teardown.
+    """
+    engine = create_async_engine(_test_database_url, future=True)
+    async with engine.connect() as connection:
+        await connection.begin()
+        factory = async_sessionmaker(
+            bind=connection,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        async with factory() as session:
+            try:
+                yield session
+            finally:
+                await session.close()
+        await connection.rollback()
+    await engine.dispose()
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -343,6 +380,7 @@ async def test_dispatch_pm_work_routes_vault_draft_to_board_review_only() -> Non
     stub = MagicMock()
     stub._fetch_tasks = AsyncMock(return_value=[_vault_task_dict()])
     stub._is_task_handled_this_tick = MagicMock(return_value=False)
+    stub._is_paused = AsyncMock(return_value=False)
     stub._resolve_agent_slug = MagicMock(return_value="product-owner")
     stub._BOARD_AGENTS = frozenset({"product-owner", "head-marketing"})
     stub._handle_board_assigned_task = AsyncMock()
@@ -372,6 +410,43 @@ async def test_vault_draft_never_dev_dispatched() -> None:
 
     stub._spawn_pending_dev.assert_not_awaited()
     stub._handle_dev_existing_owner.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# Pool-release before the local-LLM chat call (2026-07-29 incident class)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_releases_pool_before_chat_call(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """_process_note commits (releasing the pool connection) before the
+    local-LLM chat call - up to 60s of HTTP IO that must not hold a checked-
+    out connection. Without the release, the already-seen check right before
+    it is a read-only SELECT, so commit is never called before _chat runs."""
+    await _seed(db_session)
+    inbox = _enable(monkeypatch, tmp_path)
+    _write(inbox, "pool.md", _FRONTMATTER_TAGGED)
+    order: list[str] = []
+    real_commit = db_session.commit
+
+    async def _tracked_commit() -> None:
+        order.append("commit")
+        await real_commit()
+
+    monkeypatch.setattr(db_session, "commit", _tracked_commit)
+
+    async def _fake_chat(_prompt: str) -> str | None:
+        order.append("chat")
+        return None
+
+    monkeypatch.setattr(vie_module, "_chat", _fake_chat)
+    drafts = await VaultIntakeEngine(db_session).run_cycle()
+    assert len(drafts) == ONE
+    assert "commit" in order
+    assert "chat" in order
+    assert order.index("commit") < order.index("chat")
 
 
 # --------------------------------------------------------------------------- #

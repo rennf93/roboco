@@ -38,6 +38,17 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings); a test that
+    # needs real ledger data monkeypatches the findings module functions
+    # directly (see below), so this default never masks that.
+    base["task"].session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -107,8 +118,7 @@ async def test_claim_review_evidence_carries_prior_findings(
     task_svc.list_paused_for_agent.return_value = []
     task_svc.qa_claim.return_value = t_claimed
     git_svc = AsyncMock()
-    git_svc.diff.return_value = ""
-    git_svc.list_changed_files.return_value = []
+    git_svc.diff_and_files.return_value = ("", [])
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 

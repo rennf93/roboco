@@ -33,7 +33,6 @@ from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
-from roboco.services.notification import NotificationService
 from roboco.services.notification_delivery import get_notification_delivery_service
 from roboco.services.project import get_project_service
 from roboco.services.release_readiness import (
@@ -109,15 +108,21 @@ class ReleaseManagerEngine(BaseService):
     async def run_cycle(self) -> TaskTable | None:
         """Assess and, if warranted, originate one held proposal. Else no-op.
 
-        No-op unless ``release_manager_enabled``. Originates only past the
+        No-op unless ``release_manager_enabled``, or while the ``engines``
+        maintenance-pause scope is active. Originates only past the
         threshold, with a green gate, and when no proposal is already open. The
         proposal is held for the CEO; this never starts/approves/publishes.
         """
-        if not settings.release_manager_enabled:
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.release_manager_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
             return None
         task_svc = get_task_service(self.session)
         if await task_svc.list_open_release_proposals():
             return None  # one open proposal at a time
+        await self._release_pool_connection()
         report = await self._ready_report()
         if report is None:
             return None
@@ -129,6 +134,29 @@ class ReleaseManagerEngine(BaseService):
             )
             return None
         return await self._originate(report, cast("UUID", project.id))
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Called right before the readiness assessment below, and again inside
+        ``_production_assess`` right after its own CI-query DB resolve (see
+        that method) and inside ``WorkspaceService.ensure_read_clone`` right
+        after its own token DB resolve - the assessment's read-clone
+        fetch/clone, CI status HTTP call, and git subprocess snapshot are
+        each released into separately, not held across as one long span,
+        since each of those steps does its own fresh DB read immediately
+        beforehand that a release here alone can't prevent. Mirrors
+        content_actions.evidence()'s pool-release commit (2026-07-29
+        pool-exhaustion incident): the next read/write reopens a fresh
+        transaction on demand. A poisoned session rolls back instead -
+        ending the transaction is the point, either way works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     async def _ready_report(self) -> ReleaseReadinessReport | None:
         """Assess and return a report only when a release is actually warranted.
@@ -191,24 +219,15 @@ class ReleaseManagerEngine(BaseService):
     async def _notify_ceo(
         self, report: ReleaseReadinessReport, task: TaskTable
     ) -> None:
-        gaps = f" {len(report.gaps)} gap(s) to review." if report.gaps else ""
-        body = (
-            f"[release] Ready to cut v{report.proposed_version} "
-            f"({report.bump_kind}). {len(report.change_summary)} change(s) "
-            f"since the last tag.{gaps}\n\n"
-            "Review the drafted CHANGELOG + version bumps and approve or "
-            "reject-with-changes in the panel — nothing publishes until you do."
-        )
-        try:
-            await NotificationService().send_ack_notification(
-                from_agent="system",
-                to_agent="ceo",
-                body=body,
-                task_id=str(task.id),
-                db_session=self.session,
-            )
-        except Exception as exc:
-            self.log.warning("release CEO notify failed (best-effort)", error=str(exc))
+        """Push the queue-item DM + in-app row for the freshly-opened release
+        proposal. Used to also fire a second, separate ``send_ack_notification``
+        ALERT for the same event (from_agent="system" vs this call's CEO
+        self-notify): two pending-ack rows for one proposal, with no dedup
+        path merging them since the sender differed. Removed: this call alone
+        carries the better payload (the styled Telegram push with an
+        Approve/Reject/Open keyboard, plus an in-app row that now resolves via
+        ``related_task_id`` the moment the CEO decides, see
+        ``notify_ceo_of_queue_item``'s docstring)."""
         try:
             await get_notification_delivery_service(
                 self.session
@@ -216,6 +235,7 @@ class ReleaseManagerEngine(BaseService):
                 kind="release",
                 id8=str(task.id)[:8],
                 title=f"v{report.proposed_version} ready",
+                related_task_id=cast("UUID", task.id),
             )
         except Exception as exc:
             self.log.warning(
@@ -255,10 +275,22 @@ class ReleaseManagerEngine(BaseService):
                 "release-manager: read-clone HEAD resolve failed", error=str(exc)
             )
             head_sha = None
-        ci = await get_git_service(self.session).get_latest_ci_conclusion(
-            slug,
-            workflow=(settings.self_heal_ci_workflow or None),
-            head_sha=head_sha,
+        # Resolve (DB: project + token) THEN release THEN fetch (HTTP only) -
+        # get_latest_ci_conclusion's own first statement is a fresh get_by_slug
+        # DB read, so calling it directly here would re-check-out a connection
+        # and hold it through the HTTP call below, same as if no release ever
+        # ran. resolve_ci_query/get_latest_ci_conclusion_for split the two.
+        git_service = get_git_service(self.session)
+        ci_query = await git_service.resolve_ci_query(slug)
+        await self._release_pool_connection()
+        ci = (
+            await git_service.get_latest_ci_conclusion_for(
+                ci_query,
+                workflow=(settings.self_heal_ci_workflow or None),
+                head_sha=head_sha,
+            )
+            if ci_query is not None
+            else None
         )
         conclusion = None if head_sha is None else (ci or {}).get("conclusion")
         # Env-branches diff baseline: the read clone is pinned to head, so fetch

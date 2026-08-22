@@ -92,8 +92,14 @@ _LEGACY_OPERATIONAL_EDGES: dict[Status, frozenset[Status]] = {
     Status.VERIFYING: frozenset({Status.NEEDS_REVISION, Status.PENDING}),
     # QA can park a task as blocked while waiting on dev clarification.
     Status.AWAITING_QA: frozenset({Status.BLOCKED}),
-    # PM claim + PM reject path on review queue.
-    Status.AWAITING_PM_REVIEW: frozenset({Status.CLAIMED, Status.NEEDS_REVISION}),
+    # PM reject path on review queue. No CLAIMED edge here (removed): a PM
+    # claiming its own awaiting_pm_review task used to legally reset it to
+    # in_progress via i_will_plan's composed claim, looping submit_up ->
+    # pr_pass -> awaiting_pm_review forever. lifecycle.CLAIM_RULES /
+    # _ROLE_CLAIM_STATUSES close the edge upstream of this legacy view; the
+    # choreographer's _handle_pm_reentry now steers a re-entering PM to
+    # complete/request_changes instead.
+    Status.AWAITING_PM_REVIEW: frozenset({Status.NEEDS_REVISION}),
     # Re-entry from revision back into active dev work (without re-claim), or
     # voluntary unclaim back to the pool (TaskService.unclaim_for_agent) — a
     # dev sent back for revision otherwise had no legal exit but in_progress.
@@ -108,13 +114,6 @@ _LEGACY_ROLE_GATES: dict[tuple[Status, Status], tuple[str, ...]] = {
     (Status.IN_PROGRESS, Status.NEEDS_REVISION): ("qa",),
     # PM completing their own work.
     (Status.IN_PROGRESS, Status.COMPLETED): (
-        "cell_pm",
-        "head_marketing",
-        "main_pm",
-        "product_owner",
-    ),
-    # PM claim of review queue.
-    (Status.AWAITING_PM_REVIEW, Status.CLAIMED): (
         "cell_pm",
         "head_marketing",
         "main_pm",
@@ -194,6 +193,7 @@ def validate_task_transition(
     current_status: str,
     target_status: str,
     agent_role: str | None = None,
+    extra_allowed_roles: tuple[str, ...] = (),
 ) -> bool:
     """Validate a task state transition against the spec-derived view.
 
@@ -215,7 +215,16 @@ def validate_task_transition(
 
     if agent_role:
         allowed_roles = ROLE_RESTRICTED_TRANSITIONS.get((current_status, target_status))
-        if allowed_roles and agent_role not in allowed_roles:
+        # extra_allowed_roles widens the gate for one call only: cell_pm
+        # routing a CEO-only head-branch leaf to the CEO merge turn takes
+        # awaiting_pm_review -> awaiting_ceo_approval (spec-pinned to
+        # main_pm / board) via escalate_to_ceo(allow_subtask_ceo_merge=True).
+        # The regular escalate_to_ceo verb never passes it.
+        if (
+            allowed_roles
+            and agent_role not in allowed_roles
+            and agent_role not in extra_allowed_roles
+        ):
             raise TaskLifecycleError(
                 current_status=current_status,
                 target_status=target_status,
@@ -232,10 +241,13 @@ def can_agent_transition(
     current_status: str,
     target_status: str,
     agent_role: str,
+    extra_allowed_roles: tuple[str, ...] = (),
 ) -> bool:
     """Non-raising variant of :func:`validate_task_transition`."""
     try:
-        return validate_task_transition(current_status, target_status, agent_role)
+        return validate_task_transition(
+            current_status, target_status, agent_role, extra_allowed_roles
+        )
     except TaskLifecycleError:
         return False
 
@@ -354,6 +366,10 @@ class GitContext:
     # root is is_coordination too but DOES get a pr_number (via submit_root), so
     # this is umbrella-specific, not all-coordination.
     is_umbrella: bool = False
+    # A PR-waived task (real branch, zero commits relative to its parent —
+    # report-only work the verb runner skipped create_pr for) is exempt from
+    # the same pr_number gate: it legitimately has no PR to point the CEO at.
+    is_pr_waived: bool = False
 
 
 def validate_git_requirements(
@@ -417,11 +433,13 @@ def _check_ceo_escalation_gate(
     transition: tuple[str, str], git_ctx: GitContext
 ) -> None:
     """awaiting_pm_review -> awaiting_ceo_approval needs a recorded pr_number,
-    EXCEPT a MegaTask umbrella, which is branchless and assembles no PR."""
+    EXCEPT a MegaTask umbrella (branchless, assembles no PR) or a PR-waived
+    task (real branch, zero commits — report-only work)."""
     if (
         transition == ("awaiting_pm_review", "awaiting_ceo_approval")
         and git_ctx.pr_number is None
         and not git_ctx.is_umbrella
+        and not git_ctx.is_pr_waived
     ):
         raise GitRequirementError(
             transition=transition,

@@ -262,3 +262,56 @@ Same schema as prior releases: one `captions.json` next to the HTML with self-ve
 ### Smoke-test invariants
 
 `release-0.27.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with `data-duration="40"` and the HyperFrames params, the kit CSS/JS wiring is present, **four** feature cards each carry a progress-to-completed pill swap and include the exact titles ("WAF knows the real IP", "Telegram Mini App V6", "Codex and Gemini join", "Cost-tiered routing"), the stats overlay renders the three-line receipt (1 release / 4 providers / 0 bans), the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, no em dashes slip into on-screen copy or captions, and — the finding a prior revision cycle on this composition caught — the four card-beat gaps are asserted non-uniform (`new Set(gaps).size > 1`), regression-guarding against silently reusing `release-0.26.0`'s identical 5.0s/5.0s/5.0s spacing.
+
+## Release-specific example: `release-0.28.0`
+
+`compositions/release-0.28.0/` is a panel-demo kit clip for the RoboCo v0.28.0 release, mirroring the structure and pacing of `release-0.25.0` through `release-0.27.0`. It builds on the `kit/` register instead of the text-card style, so it has no `theme.css` of its own.
+
+The composition runs **36 seconds** total — shorter than the prior three 40s cuts because this release names three shipped highlights, not four, and the tail (receipt, toast, outro) gets more breathing room rather than a fourth card padded in to match the usual count. The story is "the board finally works" (the release notes' own bolded phrase, and the hero tagline / panel intake text): the CEO types "The board finally works" into the panel intake at 3.6s, then three shipped feature cards enter the kanban column one per scene and flip from `in progress` to `completed`:
+
+1. **Eval harness goes real** — enters at 5.0s, completes at 6.6s ("Real Docker spawns per turn now, no more mocks."). `python -m roboco.eval run` now drives a real `AgentOrchestrator.spawn_agent` per turn instead of the injectable scripted stub, with `_generate_mcp_config` guaranteeing spawned containers never reach production.
+2. **12 programs, one board** — enters at 10.5s, completes at 12.1s ("Pest Control to Sentinel. The board finally ships."). The `BoardProgram` registry replaces the bespoke roadmap/spotlight loops with twelve named programs (Pest Control, Spackle, Scales, Dogfood, Periscope, Megaphone, Mirror, Barfly, War Room, Coroner, Librarian, Sentinel), every artifact still held for the CEO.
+3. **Release posts stop parroting** — enters at 16.9s, completes at 18.5s ("Features lead the copy now, not security plumbing."). The X announcement drafter no longer quotes the changelog's first bold bullet verbatim; highlights reorder to marketing order and the fallback template can never quote a bullet.
+
+Each card gets roughly five to six seconds of fully visible time before the next enters, with card-beat gaps varied (5.5s / 6.4s) per the craft bar's anti-metronome rule rather than a uniform interval. A cursor clicks the intake at 4.8s (submit), then witnesses each card completing without further clicks, the stats overlay shows "1 release / 12 programs / 0 copied bullets" (the third line calling back to the release-post fix) from 21.0s to 28.0s, the toast "v0.28.0 shipped / I approved once. 25 agents shipped it." runs from 28.5s, and the "roboco.tech" outro lands at 33.0s and holds through the end.
+
+The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pill`, `pk-cursor`, `pk-toast`, and `pk-outro` pieces from `kit/`, plus the typing reveal wired through `props.js`. Each feature card uses the `pk-pill--swap-out` / `pk-pill--swap-in` pattern to replace the `in progress` pill with `completed` on the same beat.
+
+### Preview / test this composition
+
+```bash
+npx hyperframes preview compositions/release-0.28.0/vertical.html
+npx hyperframes preview compositions/release-0.28.0/square.html
+pnpm test   # release-0.28.0.test.js is picked up by vitest
+```
+
+### `props.js` shape
+
+```js
+{
+  introText: string,   // text that types into the panel intake field
+  toastTitle: string, // headline inside the shipping toast
+  toastBody: string,   // sub-line inside the shipping toast
+}
+```
+
+`window.__ORIENTATION__` is set for local preview only; the sidecar overwrites both globals at render time.
+
+### `captions.json`
+
+Same schema as prior releases: one `captions.json` next to the HTML with self-verified X and TikTok captions. The X caption totals **210 characters** (within the 280 limit); the TikTok caption **396 characters** (within the 2200 limit):
+
+```json
+{
+  "composition_id": "release-0.28.0",
+  "occasion": "release: RoboCo v0.28.0",
+  "platforms": {
+    "x":      { "caption": "v0.28.0 is out.\nThe eval harness spawns real agents in real containers now. No more mocks.\nThe board finally works: 12 programs, from Pest Control to Sentinel.\nI approved once. 25 agents shipped it.\nroboco.tech", "char_count": 210, "limit": 280,  "within_limit": true },
+    "tiktok": { "caption": "v0.28.0 is out.\n\nThe eval harness spawns real agents in real containers now. Docker required, no more mocks.\n\nThe board finally works. Twelve programs: Pest Control hunts bugs, Sentinel watches for drift, ten more in between.\n\nRelease announcements stopped copying the changelog word for word.\n\nI approved once. 25 agents shipped it.\n\nroboco.tech\n\n#buildinpublic #aiagents #devtools #indiehackers", "char_count": 396, "limit": 2200, "within_limit": true }
+  }
+}
+```
+
+### Smoke-test invariants
+
+`release-0.28.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with `data-duration="36"` and the HyperFrames params, the kit CSS/JS wiring is present, **three** feature cards each carry a progress-to-completed pill swap and include the exact titles ("Eval harness goes real", "12 programs, one board", "Release posts stop parroting"), the stats overlay renders the three-line receipt (1 release / 12 programs / 0 copied bullets), the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, no em dashes slip into on-screen copy or captions, and the three card-beat gaps are asserted non-uniform (`new Set(gaps).size > 1`).

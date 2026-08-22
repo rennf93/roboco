@@ -12,6 +12,8 @@ from roboco.api.schemas.v1.flow import (
     DelegateRequest,
     IWillPlanRequest,
     IWillWorkOnRequest,
+    OpenQuestionCreate,
+    RiskCreate,
     SubTaskCreate,
 )
 from roboco.models.base import Complexity
@@ -199,24 +201,28 @@ def test_i_will_plan_request_rejects_thin_approach() -> None:
     assert "approach" in str(exc.value)
 
 
-def test_i_will_plan_request_rejects_overlong_subtask_title() -> None:
-    with pytest.raises(ValidationError):
-        IWillPlanRequest(
-            task_id=uuid4(),
-            plan="plan",
-            approach="a" * 150,
-            sub_tasks=[SubTaskCreate(title="t" * 201, description="d" * 30)],
-        )
+def test_i_will_plan_request_truncates_overlong_subtask_title() -> None:
+    """title >200 chars is truncated to 200 (197 + "..."), never rejected —
+    same treatment as approach (a 422 here threw away an otherwise-good plan,
+    the 2026-08 live incident)."""
+    req = IWillPlanRequest(
+        task_id=uuid4(),
+        plan="plan",
+        approach="a" * 150,
+        sub_tasks=[SubTaskCreate(title="t" * 201, description="d" * 30)],
+    )
+    assert req.sub_tasks[0].title == "t" * 197 + "..."
 
 
-def test_i_will_plan_request_rejects_overlong_subtask_description() -> None:
-    with pytest.raises(ValidationError):
-        IWillPlanRequest(
-            task_id=uuid4(),
-            plan="plan",
-            approach="a" * 150,
-            sub_tasks=[SubTaskCreate(title="ok title", description="d" * 601)],
-        )
+def test_i_will_plan_request_truncates_overlong_subtask_description() -> None:
+    """description >600 chars is truncated to 600, never rejected."""
+    req = IWillPlanRequest(
+        task_id=uuid4(),
+        plan="plan",
+        approach="a" * 150,
+        sub_tasks=[SubTaskCreate(title="ok title", description="d" * 601)],
+    )
+    assert req.sub_tasks[0].description == "d" * 597 + "..."
 
 
 def test_i_will_plan_request_rejects_thin_subtask_description() -> None:
@@ -230,29 +236,30 @@ def test_i_will_plan_request_rejects_thin_subtask_description() -> None:
         )
 
 
-def test_delegate_request_rejects_overlong_acceptance_criterion() -> None:
-    """An AC item >200 chars is rejected — a criterion that long is a restated
-    description, not a verifiable outcome."""
-    long_ac = "x" * 201
-    with pytest.raises(ValidationError) as exc:
-        DelegateRequest.model_validate(
-            {
-                "parent_task_id": uuid4(),
-                "title": "t",
-                "description": "add the new endpoint plus tests",
-                "assigned_to": "be-dev-1",
-                "team": "backend",
-                "task_type": "code",
-                "nature": "technical",
-                "estimated_complexity": "medium",
-                "acceptance_criteria": [long_ac],
-            }
-        )
-    assert "acceptance_criteria" in str(exc.value)
+def test_delegate_request_truncates_overlong_acceptance_criterion() -> None:
+    """An AC item >200 chars is truncated to 200, never rejected — the list
+    count cap (<=7) stays a hard reject (dropping ACs is data loss); a
+    verbose criterion's tail truncating is not."""
+    long_ac = "x" * 250
+    req = DelegateRequest.model_validate(
+        {
+            "parent_task_id": uuid4(),
+            "title": "t",
+            "description": "add the new endpoint plus tests",
+            "assigned_to": "be-dev-1",
+            "team": "backend",
+            "task_type": "code",
+            "nature": "technical",
+            "estimated_complexity": "medium",
+            "acceptance_criteria": [long_ac],
+        }
+    )
+    assert req.acceptance_criteria == ["x" * 197 + "..."]
 
 
 def test_delegate_request_rejects_too_many_acceptance_criteria() -> None:
-    """An AC list >7 items is rejected — over-decomposition of criteria."""
+    """An AC list >7 items is STILL rejected — dropping ACs silently would
+    be data loss, unlike truncating one verbose item's tail."""
     with pytest.raises(ValidationError) as exc:
         DelegateRequest.model_validate(
             {
@@ -268,3 +275,135 @@ def test_delegate_request_rejects_too_many_acceptance_criteria() -> None:
             }
         )
     assert "acceptance_criteria" in str(exc.value)
+
+
+def test_delegate_request_truncates_overlong_title() -> None:
+    """DelegateRequest.title >200 chars is truncated to 200, never rejected."""
+    req = DelegateRequest(
+        parent_task_id=uuid4(),
+        title="t" * 250,
+        description="add the new endpoint plus tests",
+        assigned_to="be-dev-1",
+        team="backend",
+        task_type="code",
+        nature="technical",
+        estimated_complexity=Complexity.MEDIUM,
+        acceptance_criteria=["returns 200"],
+    )
+    assert req.title == "t" * 197 + "..."
+
+
+def test_risk_create_truncates_overlong_risk_and_mitigation() -> None:
+    risk = RiskCreate(risk="r" * 350, mitigation="m" * 650)
+    assert risk.risk == "r" * 297 + "..."
+    assert risk.mitigation == "m" * 597 + "..."
+
+
+def test_open_question_create_truncates_overlong_question() -> None:
+    q = OpenQuestionCreate(question="q" * 350)
+    assert q.question == "q" * 297 + "..."
+
+
+def test_short_valid_fields_pass_through_unchanged() -> None:
+    """No accidental mutation: input at/under the caps is untouched."""
+    sub_task = SubTaskCreate(title="ok title", description="d" * 30)
+    assert sub_task.title == "ok title"
+    assert sub_task.description == "d" * 30
+
+    risk = RiskCreate(risk="short risk", mitigation="short mitigation")
+    assert risk.risk == "short risk"
+    assert risk.mitigation == "short mitigation"
+
+    question = OpenQuestionCreate(question="is this in scope?")
+    assert question.question == "is this in scope?"
+
+    req = DelegateRequest(
+        parent_task_id=uuid4(),
+        title="Add user lookup endpoint",
+        description="add the new endpoint plus tests",
+        assigned_to="be-dev-1",
+        team="backend",
+        task_type="code",
+        nature="technical",
+        estimated_complexity=Complexity.MEDIUM,
+        acceptance_criteria=["returns 200 for valid input"],
+    )
+    assert req.title == "Add user lookup endpoint"
+    assert req.acceptance_criteria == ["returns 200 for valid input"]
+
+
+# ---------------------------------------------------------------------------
+# IWillWorkOnRequest.steps/risks/open_questions (2026-08 fast-follow): same
+# incident class as the PM-side fields above, but these stayed plain
+# list[dict[str, str]] — the choreographer's _thin_subtask_hint gate applies
+# the SAME 200/600/300/600/300-char limits to a dev's steps/risks/
+# open_questions as it does to a PM's sub_tasks/risks/open_questions, so an
+# overlong dev field hard-stranded i_will_work_on exactly like an overlong
+# PM sub_task did.
+# ---------------------------------------------------------------------------
+
+
+def test_i_will_work_on_request_truncates_overlong_step_description() -> None:
+    """A step description >600 chars is clamped to 600, never rejected."""
+    req = IWillWorkOnRequest(
+        task_id=uuid4(),
+        steps=[{"title": "ok title", "description": "d" * 601}],
+    )
+    assert req.steps[0]["description"] == "d" * 597 + "..."
+    assert req.steps[0]["title"] == "ok title"
+
+
+def test_i_will_work_on_request_truncates_overlong_step_title() -> None:
+    """A step title >200 chars is clamped to 200, never rejected."""
+    req = IWillWorkOnRequest(
+        task_id=uuid4(),
+        steps=[{"title": "t" * 201, "description": "d" * 30}],
+    )
+    assert req.steps[0]["title"] == "t" * 197 + "..."
+
+
+def test_i_will_work_on_request_truncates_overlong_risk() -> None:
+    """risk/mitigation entries clamp exactly like RiskCreate."""
+    req = IWillWorkOnRequest(
+        task_id=uuid4(),
+        risks=[{"risk": "r" * 350, "mitigation": "m" * 650}],
+    )
+    assert req.risks[0]["risk"] == "r" * 297 + "..."
+    assert req.risks[0]["mitigation"] == "m" * 597 + "..."
+
+
+def test_i_will_work_on_request_truncates_overlong_open_question() -> None:
+    req = IWillWorkOnRequest(
+        task_id=uuid4(),
+        open_questions=[{"question": "q" * 350, "answered": False}],
+    )
+    assert req.open_questions[0]["question"] == "q" * 297 + "..."
+    # non-str value on a known/unclamped key passes through untouched.
+    assert req.open_questions[0]["answered"] is False
+
+
+def test_i_will_work_on_request_short_fields_pass_through_unchanged() -> None:
+    """No accidental mutation: input at/under the caps is untouched."""
+    req = IWillWorkOnRequest(
+        task_id=uuid4(),
+        steps=[{"title": "ok title", "description": "d" * 30}],
+        risks=[{"risk": "short risk", "mitigation": "short mitigation"}],
+        open_questions=[{"question": "is this in scope?", "answered": False}],
+    )
+    assert req.steps == [{"title": "ok title", "description": "d" * 30}]
+    assert req.risks == [{"risk": "short risk", "mitigation": "short mitigation"}]
+    assert req.open_questions == [{"question": "is this in scope?", "answered": False}]
+
+
+def test_i_will_work_on_request_non_dict_step_still_reported_by_real_validation() -> (
+    None
+):
+    """A malformed (non-dict) entry is left alone by the clamp — it still
+    hits the real ``list[dict[str, str]]`` type check and raises, so the
+    clamp can't mask a genuinely malformed payload."""
+    with pytest.raises(ValidationError) as exc:
+        IWillWorkOnRequest(
+            task_id=uuid4(),
+            steps=[{"title": "t"}, "not a dict"],  # type: ignore[list-item]
+        )
+    assert "steps" in str(exc.value)
