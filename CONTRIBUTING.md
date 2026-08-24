@@ -24,7 +24,7 @@ The first time you open a pull request, the CLA Assistant bot will comment with 
 
 1. Fork the repository and branch off **`slave`**, not `master`.
 
-   `slave` is the development trunk that every change lands on first. `master` is production and only the maintainer merges into it. A PR opened against `master` will be asked to retarget, so save yourself the round trip:
+`slave` is the development trunk that every change lands on first. `master` is production and only the maintainer merges into it. A PR opened against `master` will be asked to retarget, so save yourself the round trip:
 
    ```bash
    git remote add upstream https://github.com/rennf93/roboco.git
