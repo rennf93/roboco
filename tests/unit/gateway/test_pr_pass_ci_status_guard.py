@@ -24,6 +24,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.foundation.policy import lifecycle as spec_module
+from roboco.foundation.policy.content import Finding, Severity
 from roboco.services.gateway.choreographer import (
     Choreographer,
     ChoreographerDeps,
@@ -51,6 +52,18 @@ def _make_choreographer() -> Choreographer:
     base["task"].session.execute = AsyncMock(
         return_value=MagicMock(
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+    # The drift guard wraps the findings insertion in a savepoint
+    # (``async with self.task.session.begin_nested()``). Without this mock
+    # the ``async with`` silently fails and ``insert_and_render`` is never
+    # called — the test would verify the rejection envelope but not AC6
+    # (the findings-ledger write). Matches the pattern in
+    # test_choreographer_completion_guards.py:43 and test_verb_runner.py:89.
+    base["task"].session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
         )
     )
     return Choreographer(ChoreographerDeps(**base))
@@ -254,6 +267,50 @@ async def test_scope_relaxation_blocks_when_files_outside_declared_scope() -> No
     assert "outside" in (env.message or "").lower()
     # The in-scope file must NOT be named as a drift file.
     assert "panel/src/foo.tsx" not in (env.message or "")
+
+
+@pytest.mark.asyncio
+async def test_scope_relaxation_drift_writes_findings_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC6: when the drift guard detects an out-of-scope file, it records
+    each drifted file as a findings-ledger row via
+    ``findings_lib.insert_and_render`` (origin=pr_gate) before returning the
+    rejection envelope. Without the ``begin_nested`` mock in
+    ``_make_choreographer`` the savepoint silently fails and the ledger
+    write is skipped — this test catches that regression."""
+    insert_mock = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.gateway.choreographer.pr_gate.findings_lib.insert_and_render",
+        insert_mock,
+    )
+    reviewer_id = uuid4()
+    t_before = _t(intends_to_touch=["panel/**"])
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+    c.git.get_pr_ci_status = AsyncMock(
+        return_value={"state": "failure", "failing_checks": ["Analyze (python)"]}
+    )
+    c.git.list_changed_files = AsyncMock(
+        return_value=["panel/src/foo.tsx", "roboco/services/hack.py"]
+    )
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    # The rejection envelope still fires.
+    assert env.error == "invalid_state"
+    assert "roboco/services/hack.py" in (env.message or "")
+    # The findings-ledger write was attempted exactly once.
+    insert_mock.assert_awaited_once()
+    call = insert_mock.call_args
+    assert call.kwargs.get("origin") == "pr_gate"
+    findings: list[Finding] = call.kwargs.get("findings") or []
+    drifted = [f for f in findings if f.file == "roboco/services/hack.py"]
+    assert len(drifted) == 1
+    assert drifted[0].severity == Severity.MAJOR
+    assert "CodeQL scope relaxation" in (drifted[0].evidence or "")
+    # The in-scope file must not appear as a finding.
+    assert not any(f.file == "panel/src/foo.tsx" for f in findings)
 
 
 @pytest.mark.asyncio
