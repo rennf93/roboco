@@ -792,9 +792,13 @@ _JUDGE_HEADER = (
 
 
 def _qa_judge_prompt(
-    fixture: BenchTaskSpec, criteria: str, notes: str, **extra: object
+    fixture: BenchTaskSpec,
+    criteria: str,
+    notes: str,
+    *,
+    injected_defect: str | None = None,
 ) -> str:
-    defect_desc = extra.get("injected_defect") or "(unspecified defect)"
+    defect_desc = injected_defect or "(unspecified defect)"
     return (
         _JUDGE_HEADER + "You are grading a QA review. The QA agent reviewed a PR that "
         "contained an INJECTED DEFECT. A score of 5 means the QA agent "
@@ -810,9 +814,12 @@ def _qa_judge_prompt(
 
 
 def _pm_judge_prompt(
-    fixture: BenchTaskSpec, criteria: str, notes: str, **extra: object
+    fixture: BenchTaskSpec,
+    criteria: str,
+    notes: str,
+    *,
+    expected_coverage: tuple[str, ...] = (),
 ) -> str:
-    expected_coverage = extra.get("expected_coverage") or ()
     coverage_list = (
         "\n".join(f"- {c}" for c in expected_coverage)
         if expected_coverage
@@ -833,9 +840,12 @@ def _pm_judge_prompt(
 
 
 def _dev_judge_prompt(
-    fixture: BenchTaskSpec, criteria: str, notes: str, **extra: object
+    fixture: BenchTaskSpec,
+    criteria: str,
+    notes: str,
+    *,
+    diff: str = "",
 ) -> str:
-    diff = extra.get("diff") or ""
     return (
         _JUDGE_HEADER + f"Task: {fixture.title}\n"
         f"Acceptance criteria:\n{criteria}\n\n"
