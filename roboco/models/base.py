@@ -60,6 +60,24 @@ class BlockerResolverType(StrEnum):
     HUMAN = "human"  # HITL/CEO only — dispatcher must NOT respawn
 
 
+class StalledReason(StrEnum):
+    """Why the dispatcher gave up respawning a task.
+
+    A durable, task-readable record of a give-up decision the dispatcher
+    made server-side — so a wedged task is visible on the task row itself,
+    not just in container logs / a bell notification that ages out.
+    Stored as a plain string column (not a DB enum) so a new reason can be
+    added without an ``ALTER TYPE`` migration.
+    """
+
+    BREAKER_TRIPPED = "breaker_tripped"  # _pm_respawn_should_gate strike cap hit
+    # Intentionally unused: `_notification_spawn_over_cap` (the no-task_id
+    # analogue of the breaker-tripped path) notifies the CEO on trip but has
+    # no task_id to key a durable marker on. Reserved for a future
+    # task-keyed variant of that path, not dead code to remove.
+    NOTIFICATION_CAP = "notification_cap"
+
+
 class TaskType(StrEnum):
     """Task classification. ALL types follow git workflow."""
 

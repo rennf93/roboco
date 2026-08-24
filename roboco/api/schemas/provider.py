@@ -122,6 +122,8 @@ class OpenRouterModelEntry(BaseModel):
     context_length: int | None = None
     prompt_price: float | None = None
     completion_price: float | None = None
+
+
 # =============================================================================
 
 

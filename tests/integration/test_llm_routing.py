@@ -513,7 +513,8 @@ async def test_apply_mode_openrouter_enables_provider(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     provider_svc = ProviderService(svc.session)
     openrouter = next(
-        p for p in await provider_svc.list_providers(include_disabled=True)
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
         if p.type == ModelProvider.OPENROUTER
     )
     assert openrouter.enabled is False  # seeded disabled in fixture

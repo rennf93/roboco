@@ -1311,9 +1311,9 @@ async def test_openrouter_models_returns_results_with_key(
     assert len(body) == 1  # only deepseek matches the query
     assert body[0]["id"] == "deepseek/deepseek-chat"
     assert body[0]["name"] == "DeepSeek Chat"
-    assert body[0]["context_length"] == 64000
-    assert body[0]["prompt_price"] == 0.000001
-    assert body[0]["completion_price"] == 0.000002
+    assert body[0]["context_length"] == 64000  # noqa: PLR2004
+    assert body[0]["prompt_price"] == 0.000001  # noqa: PLR2004
+    assert body[0]["completion_price"] == 0.000002  # noqa: PLR2004
     # The key must never appear in the response body
     assert "sk-or-v1-test-key-abcdef" not in response.text
 
@@ -1368,8 +1368,6 @@ async def test_openrouter_key_forbidden_for_developer(
     transport = ASGITransport(app=app)
     hdr = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"}
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(
-            "/api/providers/openrouter-key", headers=hdr
-        )
+        response = await client.get("/api/providers/openrouter-key", headers=hdr)
     app.dependency_overrides.clear()
     assert response.status_code == HTTPStatus.FORBIDDEN

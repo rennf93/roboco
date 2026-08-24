@@ -183,12 +183,15 @@ async def probe_openrouter_models(
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
-        return [], f"Connection to OpenRouter timed out after {_OPENROUTER_MODELS_TIMEOUT}s"
+        return (
+            [],
+            f"Connection to OpenRouter timed out after {_OPENROUTER_MODELS_TIMEOUT}s",
+        )
     except httpx.ConnectError:
         return [], "Could not connect to OpenRouter — service may be offline"
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code
-        if status_code == 401:
+        if status_code == 401:  # noqa: PLR2004
             return [], "OpenRouter API key is invalid or expired"
         return [], f"OpenRouter returned HTTP {status_code}"
     except Exception as exc:
@@ -209,7 +212,11 @@ async def probe_openrouter_models(
             continue
         model_id = m.get("id", "")
         name = m.get("name", "")
-        if query_lower and query_lower not in model_id.lower() and query_lower not in name.lower():
+        if (
+            query_lower
+            and query_lower not in model_id.lower()
+            and query_lower not in name.lower()
+        ):
             continue
         models.append(
             {
@@ -583,7 +590,15 @@ class ModelRoutingService(BaseService):
     async def derive_mode(
         self,
     ) -> Literal[
-        "anthropic", "grok", "codex", "gemini", "kimi", "openrouter", "ollama", "mix", "self_hosted"
+        "anthropic",
+        "grok",
+        "codex",
+        "gemini",
+        "kimi",
+        "openrouter",
+        "ollama",
+        "mix",
+        "self_hosted",
     ]:
         """Return the current "mode" label for the Settings UI.
 
