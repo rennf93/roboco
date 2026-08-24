@@ -66,6 +66,7 @@ class RAGResponse:
     context_used: int  # Number of context chunks used
     search_stats: dict[str, int] = field(default_factory=dict)  # Results per index
     search_errors: dict[str, str] = field(default_factory=dict)  # Errors per index
+    gaps: list[str] = field(default_factory=list)  # Indexes that timed out
 
 
 @dataclass
