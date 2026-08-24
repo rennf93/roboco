@@ -36,7 +36,6 @@ if TYPE_CHECKING:
 
     from roboco.llm.providers import AgentProvider, ProviderRegistry
     from roboco.services.llm import AgentRoute
-    from roboco.services.maintenance_pause import PauseScope
     from roboco.services.task import TaskService
 import structlog
 from fastapi import status as http_status
@@ -115,37 +114,6 @@ AGENT_BASE_IMAGE = "roboco-agent-base"
 # Minutes in an hour, for formatting an elapsed duration as "Xh Ym".
 _MINUTES_PER_HOUR = 60
 
-# Supersede contributor PR comments - a coherent pair. The at-supersede comment
-# posts when the CEO takes the PR over; the at-close comment posts when the
-# replacement lands and the contributor PR is retired. Both are prefixed with an
-# ``@{author}`` tag (when the contributor's login is known) so the original
-# developer is notified and nudged toward the replacement PR.
-SUPERSEDE_PR_COMMENT = (
-    "Thanks for this contribution! We reviewed it and are taking the work "
-    "over internally to finish and harden it to our standards. The "
-    "implementation continues on branch `{branch}` as an internal task; "
-    "your PR informed the approach and is appreciated. This PR will be "
-    "closed once our replacement lands. Feel free to reach out with any "
-    "questions."
-)
-SUPERSEDE_PR_CLOSE_COMMENT = (
-    "Our replacement PR #{replacement_pr} has been merged, finishing and "
-    "hardening the work to our standards based on your contribution. This "
-    "PR is closed as superseded. Thanks for the contribution! If we missed "
-    "something from your PR, please open a new one and we will pick it up."
-)
-
-
-def _supersede_author_prefix(author: str) -> str:
-    """The ``@login `` prefix for a supersede comment, or "" when unknown."""
-    return f"@{author} " if author else ""
-
-
-# Max background branch-cut attempts before escalating to BLOCKED (HUMAN
-# resolver). The sweep retries with exponential backoff between attempts.
-_MAX_BRANCH_CUT_ATTEMPTS = 3
-_BRANCH_CUT_BACKOFF_BASE_SECONDS = 60.0
-
 # Port on which each agent's Claude Code SDK server listens inside its container.
 # Referenced by write-hooks (_finalize_spawn_session, _sweep_token_snapshots,
 # _sweep_budget_exceeded) to build the SDK health/usage URL.
@@ -185,17 +153,6 @@ _EXPECTED_STOP_MAX_ENTRIES = 200
 # the task pending-unassigned forever. Generous enough to cover the PM's next
 # tool call; short enough that a genuinely abandoned task recovers fast.
 _CREATOR_ROUTE_GRACE_SECONDS = 600
-# _dispatch_pm_work's fetch is the one dispatcher NOT team-scoped (it triages
-# every fresh pending task org-wide, board/main_pm/marketing-assigned or not),
-# unlike every other dispatcher, whose fetch is narrowed by team/source/status
-# and never competes for the same window. GET /tasks's default limit (100),
-# ordered by priority/sequence/created_at (not recency), silently truncates
-# once org-wide pending tasks exceed it: a materialized board-program root
-# (team=main_pm, default priority) can fall outside the fetched window and
-# never be seen, i.e. "assigned but nothing routes it". Raised to the route's
-# own declared max (Query(..., le=500) on GET /tasks) so this dispatcher sees
-# the whole queue any realistically-sized backlog can produce.
-_PM_DISPATCH_FETCH_LIMIT = 500
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
@@ -441,7 +398,6 @@ AGENT_IMAGES: dict[str, str] = {
     "be-pr-reviewer": "roboco-agent-pr-reviewer",
     "fe-pr-reviewer": "roboco-agent-pr-reviewer",
     "ux-pr-reviewer": "roboco-agent-pr-reviewer",
-    "cell-pr-reviewer-2": "roboco-agent-pr-reviewer",
     # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
     INTAKE_AGENT_ID: "roboco-agent-prompter",
     # Secretary — persistent Agent-SDK driver with gated CEO authority.
@@ -588,6 +544,24 @@ KIMI_USAGE_DATA_DIR = os.environ.get("ROBOCO_KIMI_USAGE_DIR", "/data/kimi-usage"
 # 60s codex/gemini default.
 _KIMI_RATE_LIMIT_EXIT_CODE = 75
 _KIMI_AUTH_EXIT_CODE = 78
+
+# In-orchestrator path where each OPENROUTER agent's usage capture is visible
+# — the openrouter analogue of KIMI_USAGE_DATA_DIR (see there for the mount
+# shape). OpenRouter usage is captured from the opencode --format json stream
+# (see roboco.llm.providers.openrouter_cli_usage).
+OPENROUTER_USAGE_DATA_DIR = os.environ.get(
+    "ROBOCO_OPENROUTER_USAGE_DIR", "/data/openrouter-usage"
+)
+
+# A one-shot OpenRouter container exits with these SAME codes for the SAME
+# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention —
+# see docker/scripts/openrouter-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected OpenRouter rate-limit/quota error, 78 (EX_CONFIG) when the
+# openrouter_cli_config --check auth preflight finds OPENROUTER_API_KEY
+# missing (the Ollama shape — a static key, no expiry read). Scoped by
+# provider_type (ModelProvider.OPENROUTER), never by exit code alone.
+_OPENROUTER_RATE_LIMIT_EXIT_CODE = 75
+_OPENROUTER_AUTH_EXIT_CODE = 78
 
 
 # =============================================================================
@@ -1005,22 +979,6 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     return source == SELF_HEAL_SOURCE and not task.get("confirmed_by_human")
 
 
-def _is_branch_pending(task: dict[str, Any]) -> bool:
-    """A supersede umbrella whose branch cut is still in progress or failed.
-
-    The dispatcher must NOT route it to Main PM until the background branch
-    cut completes and clears the marker. ``branch_cut_failed`` (set after a
-    failed cut, kept through the retry backoff or after a CEO unblock of a
-    BLOCKED umbrella) is treated the same way: the sweep re-runs the cut and
-    clears the marker on success. ``orchestration_markers`` is carried on the
-    task dict from ``task_to_response`` so the dispatcher sees it.
-    """
-    om = task.get("orchestration_markers")
-    if not isinstance(om, dict):
-        return False
-    return bool(om.get("branch_pending")) or bool(om.get("branch_cut_failed"))
-
-
 def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
@@ -1069,11 +1027,6 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
 
     Returns True when handled — the caller must not fall through to the
     board-review / PM-assigned paths — False for a normal PM/board task.
-
-    A ``board_programs``-scope maintenance pause leaves a matched task
-    PENDING and untouched (still returns True; it must never fall through
-    to the two-reviewer board-review path, which is the wrong flow for a
-    solo-authored program task) rather than dispatching the explorer spawn.
     """
     dispatch: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {
         ROADMAP_SOURCE: orch._dispatch_roadmap_exploration,
@@ -1095,10 +1048,6 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
     handler = dispatch.get(source) if isinstance(source, str) else None
     if handler is None:
         return False
-    from roboco.services.maintenance_pause import PauseScope
-
-    if await orch._is_paused(PauseScope.BOARD_PROGRAMS):
-        return True
     await handler(task)
     return True
 
@@ -1302,11 +1251,6 @@ class AgentOrchestrator:
         # spawn two umbrellas for the same PR (the check is read-then-write
         # with no DB-level uniqueness).
         self._supersede_lock = asyncio.Lock()
-        # In-flight branch cuts (umbrella id strings) so the reconciliation
-        # sweep does not double-spawn a second _cut_supersede_branch for an
-        # umbrella whose first cut is still running (~90-390s). Cleared in
-        # _cut_supersede_branch's finally block.
-        self._supersede_cuts_in_flight: set[str] = set()
         # Serialize concurrent live-chat starts for the single-id interactive
         # agents (intake / secretary). Each has a fixed agent id, so two
         # concurrent starts race on the container name (``docker run --name
@@ -1330,11 +1274,6 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
-        # In-path PR-gate CI-status cache: (project_slug, pr_number) ->
-        # (monotonic fetch time, state). Bounds get_pr_ci_status calls to
-        # roughly one per _GATE_CI_STATUS_CACHE_TTL_SECONDS per PR instead
-        # of one per dispatch tick per task (see _gate_task_ci_pending).
-        self._gate_ci_status_cache: dict[tuple[str, int], tuple[float, str | None]] = {}
         # Dispatcher heartbeat throttle (see _emit_dispatcher_heartbeat).
         self._last_dispatch_heartbeat: datetime | None = None
         # Serializes the fire-and-forget respawn-tracker upserts so same-key
@@ -1973,6 +1912,47 @@ class AgentOrchestrator:
         except OSError as exc:
             logger.warning(
                 "could not pre-create kimi usage dir; kimi agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _openrouter_usage_root() -> Path:
+        """The base dir all per-agent openrouter usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(OPENROUTER_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-openrouter-usage"
+
+    @staticmethod
+    def _openrouter_usage_dir(agent_id: str) -> Path:
+        """Per-agent openrouter usage dir under :meth:`_openrouter_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_openrouter_usage_dir``) and the finalize read side
+        (``_openrouter_usage_json``), mirroring ``_kimi_usage_dir``.
+        """
+        return AgentOrchestrator._openrouter_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_openrouter_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's openrouter usage dir before the mount.
+
+        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._openrouter_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create openrouter usage dir; agent may EACCES",
                 agent_id=agent_id,
                 path=str(target),
                 error=str(exc),
@@ -3291,6 +3271,10 @@ class AgentOrchestrator:
                 "gemini_usage": f"{DATA_HOST_PATH}/gemini-usage/{config.agent_id}",
                 # Per-agent kimi usage dir (KIMI only); same shape.
                 "kimi_usage": f"{DATA_HOST_PATH}/kimi-usage/{config.agent_id}",
+                # Per-agent openrouter usage dir (OPENROUTER only); same shape.
+                "openrouter_usage": (
+                    f"{DATA_HOST_PATH}/openrouter-usage/{config.agent_id}"
+                ),
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -3321,6 +3305,11 @@ class AgentOrchestrator:
             ),
             "kimi_usage": str(
                 Path(tempfile.gettempdir()) / "roboco-kimi-usage" / config.agent_id
+            ),
+            "openrouter_usage": str(
+                Path(tempfile.gettempdir())
+                / "roboco-openrouter-usage"
+                / config.agent_id
             ),
             "prompt": str(
                 Path(tempfile.gettempdir())
@@ -3703,7 +3692,10 @@ class AgentOrchestrator:
         official CLI, one-shot delivery roles only — see
         roboco.llm.providers.gemini for the V1 scope), and KIMI (Moonshot,
         official CLI, one-shot delivery roles only — see
-        roboco.llm.providers.kimi for the V1 scope).
+        roboco.llm.providers.kimi for the V1 scope), and OPENROUTER (any
+        OpenRouter model via the opencode CLI, the Ollama shape — static key
+        via env, no auth mount; one-shot delivery roles only — see
+        roboco.llm.providers.openrouter for the V1 scope).
         """
         if self._provider_registry is None:
             from roboco.llm.providers import (
@@ -3711,6 +3703,7 @@ class AgentOrchestrator:
                 GeminiCliProvider,
                 GrokCliProvider,
                 KimiCliProvider,
+                OpenRouterProvider,
                 ProviderRegistry,
             )
             from roboco.models.base import ModelProvider
@@ -3738,6 +3731,12 @@ class AgentOrchestrator:
             registry.register(
                 ModelProvider.KIMI,
                 KimiCliProvider(self, image=_qualify_agent_image("roboco-agent-kimi")),
+            )
+            registry.register(
+                ModelProvider.OPENROUTER,
+                OpenRouterProvider(
+                    self, image=_qualify_agent_image("roboco-agent-openrouter")
+                ),
             )
             self._provider_registry = registry
         return self._provider_registry
@@ -5070,7 +5069,7 @@ class AgentOrchestrator:
 
     _NOTIFICATION_COOLDOWN_PRUNE_AT = 512
 
-    async def _notification_spawn_cooled(
+    def _notification_spawn_cooled(
         self, agent_slug: str, notification_id: str | None
     ) -> bool:
         """True when this (agent, notification) spawn is suppressed.
@@ -5104,7 +5103,7 @@ class AgentOrchestrator:
         last = store.get(key)
         if last is not None and (now - last) < cooldown:
             return True
-        if await self._notification_spawn_over_cap(key, store, counts, now):
+        if self._notification_spawn_over_cap(key, store, counts, now):
             return True
         counts[key] = counts.get(key, 0) + 1
         store[key] = now
@@ -5112,7 +5111,7 @@ class AgentOrchestrator:
             self._prune_notification_spawn_maps(now - cooldown)
         return False
 
-    async def _notification_spawn_over_cap(
+    def _notification_spawn_over_cap(
         self,
         key: tuple[str, str],
         store: dict[tuple[str, str], float],
@@ -5123,9 +5122,7 @@ class AgentOrchestrator:
         ``notification_spawn_max_attempts`` times without the notification being
         acknowledged — the no-task_id analogue of the PM respawn breaker.
         Re-stamps so the capped entry survives pruning (which would otherwise
-        drop the count and reset the cap); logs and notifies the CEO exactly
-        once at the trip (matching ``_notify_stuck_agent``'s best-effort
-        pattern) — never re-fires on later suppressed spawns for the same key.
+        drop the count and reset the cap); logs exactly once at the trip.
         """
         max_attempts = settings.notification_spawn_max_attempts
         attempts = counts.get(key, 0)
@@ -5143,36 +5140,7 @@ class AgentOrchestrator:
                 attempts=attempts,
                 max_attempts=max_attempts,
             )
-            await self._notify_notification_spawn_capped(
-                agent_slug=key[0], notification_id=key[1], attempts=attempts
-            )
         return True
-
-    async def _notify_notification_spawn_capped(
-        self, agent_slug: str, notification_id: str, attempts: int
-    ) -> None:
-        """One-shot alert to the CEO that the notification-spawn cap tripped.
-
-        Best-effort, mirroring ``_notify_stuck_agent``: a notification
-        failure must not wedge dispatch, so any error is logged and
-        swallowed.
-        """
-        from roboco.services.notification import NotificationService
-
-        try:
-            await NotificationService().send_notification_spawn_cap_notification(
-                agent_slug=agent_slug,
-                notification_id=notification_id,
-                to_agent="ceo",
-                attempts=attempts,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to send notification-spawn-cap notification",
-                agent_slug=agent_slug,
-                notification_id=notification_id,
-                error=str(exc),
-            )
 
     def _prune_notification_spawn_maps(self, cutoff: float) -> None:
         """Drop cooldown/count entries stamped before ``cutoff`` (both maps
@@ -5572,9 +5540,7 @@ class AgentOrchestrator:
             )
 
             if initial_message:
-                self._schedule_intake_first_message(
-                    session_id, initial_message, persist=True
-                )
+                self._schedule_intake_first_message(session_id, initial_message)
             return instance
 
     async def reap_intake_session(self, session_id: str) -> None:
@@ -6160,17 +6126,9 @@ class AgentOrchestrator:
             self._persist_respawn_record(agent_slug, task_id, dict(record))
         )
 
-    def _schedule_intake_first_message(
-        self, session_id: str, text: str, *, persist: bool = False
-    ) -> None:
-        """Fire-and-forget the opening message once the container is reachable.
-
-        ``persist`` is True only for intake sessions (durably recorded via
-        ``PrompterService``, matching every later turn) — the Secretary's
-        equivalent call site leaves it False since Secretary chats have no
-        durable-message table wired.
-        """
-        self._schedule_bg(self._deliver_when_ready(session_id, text, persist=persist))
+    def _schedule_intake_first_message(self, session_id: str, text: str) -> None:
+        """Fire-and-forget the opening message once the container is reachable."""
+        self._schedule_bg(self._deliver_when_ready(session_id, text))
 
     async def _deliver_when_ready(
         self,
@@ -6179,52 +6137,19 @@ class AgentOrchestrator:
         *,
         attempts: int = 30,
         delay: float = 1.0,
-        persist: bool = False,
     ) -> None:
-        """Retry-deliver the first message until the container receiver is up.
-
-        This is the single seam every intake opening turn (a fresh ``/live/start``,
-        a cold or MegaTask re-interview brief, and a Telegram-bridged
-        ``/newtask``) converges through — closing it here, rather than at each
-        caller, is what makes the fix cover all of them. ``persist=True``
-        durably records the turn in ``prompter_messages`` once delivered, so the
-        first message survives a restart exactly like every later one
-        (``send_message`` already does this for turn 2+).
-        """
+        """Retry-deliver the first message until the container receiver is up."""
         from roboco.services.prompter_live import get_live_registry
 
         registry = get_live_registry()
         for _ in range(attempts):
             if await registry.deliver(session_id, text):
-                if persist:
-                    await self._persist_intake_first_message(session_id, text)
                 return
             await asyncio.sleep(delay)
         logger.warning(
             "Intake first message never delivered (receiver never came up)",
             session_id=session_id,
         )
-
-    async def _persist_intake_first_message(self, session_id: str, text: str) -> None:
-        """Durably record a live intake session's opening human turn.
-
-        Best-effort (mirrors ``_inject_board_brief_into_parked_intake``): a
-        persistence failure is logged, never raised into the delivery path.
-        """
-        from roboco.db.base import get_db_context
-        from roboco.services.prompter import get_prompter_service
-
-        try:
-            async with get_db_context() as db:
-                await get_prompter_service(db).record_live_message(
-                    session_id, "user", text
-                )
-        except Exception as exc:
-            logger.warning(
-                "Failed to persist intake opening message",
-                session_id=session_id,
-                error=str(exc),
-            )
 
     # =========================================================================
     # AGENT STOPPING
@@ -8351,13 +8276,8 @@ Start by:
         async with session_factory() as db:
             deliv_svc = get_notification_delivery_service(db)
             try:
-                # Resolve terminal-task escalations FIRST: sweep_expired_
-                # notifications runs its own independent query right after,
-                # so a row acked here is already excluded from that query's
-                # unacked/re-escalation path in the same tick.
-                resolved = await deliv_svc.resolve_terminal_task_escalations()
                 expired = await deliv_svc.sweep_expired_notifications()
-                if resolved or expired:
+                if expired:
                     await db.commit()
             except Exception as e:
                 await db.rollback()
@@ -8394,240 +8314,28 @@ Start by:
         await self._sweep_superseded_prs()
 
     async def _sweep_superseded_prs(self) -> None:
-        """Retire the contributor PR for any supersede umbrella that landed,
-        and reconcile branch_pending umbrellas stranded by an orchestrator
-        restart.
+        """Retire the contributor PR for any supersede umbrella that landed.
 
         Dormant in a standard deployment: when no ``external_pr_supersede``
         umbrellas exist the lookup returns nothing and no GitHub call is made,
         so this is safe to run unconditionally on every sweep.
-
-        Each landed umbrella's contributor-PR close runs in its OWN fresh
-        session (``_close_one_superseded_pr``), never one session held across
-        the whole pending list: this sweep ticks every 60s forever, so a
-        single session held across N sequential GitHub close calls (each an
-        HTTP round trip) was the highest-frequency pool-hold offender of the
-        2026-07-29 pool-exhaustion incident class. Mirrors
-        ``_reconcile_umbrella_row``'s per-row isolation two methods below.
         """
         from roboco.db.base import get_session_factory
+        from roboco.services.git import GitService
+        from roboco.services.task import get_task_service
 
         system_id = _foundation.AGENTS["system"].uuid
         session_factory = get_session_factory()
-        pending = await self._collect_supersede_close_pending(session_factory)
-        for uid, replacement_pr in pending:
-            await self._close_one_superseded_pr(
-                uid, replacement_pr, system_id, session_factory
-            )
-
-        # Reconcile branch_pending / branch_cut_failed umbrellas (restart-safe).
-        to_reconcile = await self._collect_supersede_reconciliations(session_factory)
-        for uid, slug, pr_num, pid, branch in to_reconcile:
-            # F2: claim the in-flight slot before spawning.
-            if uid in self._supersede_cuts_in_flight:
-                continue
-            self._supersede_cuts_in_flight.add(uid)
-            logger.info(
-                "supersede: reconciling branch_pending umbrella",
-                umbrella_id=uid,
-                pr_number=pr_num,
-            )
-            bg = asyncio.create_task(
-                self._cut_supersede_branch(
-                    umbrella_id=uid,
-                    project_slug=slug,
-                    pr_number=pr_num,
-                    project_id=pid,
-                    branch_name=branch,
-                )
-            )
-            self._bg_tasks.add(bg)
-            bg.add_done_callback(self._bg_tasks.discard)
-
-    async def _collect_supersede_close_pending(
-        self, session_factory: Any
-    ) -> list[tuple[str, int]]:
-        """(umbrella id, replacement PR) pairs pending a contributor-PR close.
-
-        Read in its own short session, closed before the per-row close loop
-        in ``_sweep_superseded_prs``. A lookup failure here is best-effort
-        and returns [] (mirrors ``_collect_supersede_reconciliations``).
-        """
-        from roboco.services.task import get_task_service
-
-        try:
-            async with session_factory() as db:
-                task_service = get_task_service(db)
-                pending = await task_service.supersede_umbrellas_pending_close()
-                return [(str(u.id), pr) for u, pr in pending]
-        except Exception as e:
-            logger.warning("Supersede close-on-land sweep lookup failed", error=str(e))
-            return []
-
-    async def _close_one_superseded_pr(
-        self,
-        uid: str,
-        replacement_pr: int,
-        system_id: "UUID",
-        session_factory: Any,
-    ) -> None:
-        """Close ONE landed umbrella's contributor PR in its own fresh session.
-
-        Per-row session + per-row commit, isolated from siblings (mirrors
-        ``_reconcile_umbrella_row``): one bad PR (deleted, revoked PAT) is
-        logged and skipped rather than aborting every other umbrella queued
-        this tick, and the pool connection this row checks out for the
-        GitHub HTTP call below is released the moment the row finishes.
-        """
-        from roboco.services.git import GitService
-        from roboco.services.task import get_task_service
-        from roboco.utils.converters import require_uuid
-
-        try:
-            async with session_factory() as db:
-                task_service = get_task_service(db)
-                umbrella = await task_service.get(require_uuid(uid))
-                if umbrella is None:
-                    return
-                marker = _markers.get_external_pr_supersede(umbrella) or ""
-                pr_number = self._parse_supersede_pr(marker)
-                if pr_number is None:
-                    return
-                author = self._parse_supersede_author(marker)
-                comment = _supersede_author_prefix(
-                    author
-                ) + SUPERSEDE_PR_CLOSE_COMMENT.format(replacement_pr=replacement_pr)
+        async with session_factory() as db:
+            try:
                 git = GitService(db)
-                try:
-                    await git.close_pull_request(
-                        pr_number,
-                        comment=comment,
-                        delete_branch=False,
-                        actor_agent_id=system_id,
-                        # PR numbers are per-repo; scope the close to THIS
-                        # umbrella's project so a same-numbered PR in another
-                        # project's repo is never resolved (and closed) by
-                        # mistake.
-                        project_id=cast("UUID", umbrella.project_id),
-                    )
-                except Exception:
-                    # A permanent close failure (deleted PR, revoked PAT) would
-                    # otherwise re-fire + re-log every tick forever; keep it a
-                    # single warning rather than a per-tick stack trace.
-                    logger.warning("close-on-land failed", pr_number=pr_number)
-                    return
-                await task_service.mark_supersede_pr_closed(cast("UUID", umbrella.id))
-                await db.commit()
-        except Exception as e:
-            logger.warning(
-                "Supersede close-on-land sweep row failed; umbrella skipped",
-                umbrella_id=uid,
-                error=str(e),
-            )
-
-    async def _collect_supersede_reconciliations(
-        self, session_factory: Any
-    ) -> list[tuple[str, str, int, Any, str]]:
-        """Build the (uid, slug, pr, pid, branch) list for the sweep to spawn.
-
-        The candidate id list is looked up in its own session (a lookup
-        failure here is best-effort and returns []); each umbrella is then
-        reconciled in its OWN fresh session via ``_reconcile_umbrella_row``
-        so one persistently-failing umbrella cannot starve every sibling on
-        the sweep tick (mirrors the notification re-escalation sweep's
-        per-row isolation, #721/#730).
-        """
-        import time
-
-        from roboco.services.task import get_task_service
-
-        now = time.time()
-        try:
-            async with session_factory() as db:
                 task_service = get_task_service(db)
-                pending = await task_service.supersede_umbrellas_branch_pending()
-                umbrella_ids = [str(u.id) for u in pending]
-        except Exception as e:
-            logger.warning("Supersede branch-pending sweep lookup failed", error=str(e))
-            return []
-        to_reconcile: list[tuple[str, str, int, Any, str]] = []
-        for uid in umbrella_ids:
-            entry = await self._reconcile_umbrella_row(uid, now, session_factory)
-            if entry is not None:
-                to_reconcile.append(entry)
-        return to_reconcile
-
-    async def _reconcile_umbrella_row(
-        self, uid: str, now: float, session_factory: Any
-    ) -> tuple[str, str, int, Any, str] | None:
-        """Reconcile ONE umbrella in its own session, isolated from siblings.
-
-        A fresh session per row means a lookup error, or a commit/flush
-        failure inside ``_reconcile_one_umbrella``'s CEO-unblock reset, can
-        never poison or roll back any other row's session; the failing
-        umbrella is logged and skipped this tick, retried on the next.
-        """
-        from roboco.foundation.policy.content import markers as _sm
-        from roboco.services.project import get_project_service
-        from roboco.services.task import get_task_service
-        from roboco.utils.converters import require_uuid
-
-        try:
-            async with session_factory() as db:
-                task_service = get_task_service(db)
-                project_service = get_project_service(db)
-                umbrella = await task_service.get(require_uuid(uid))
-                if umbrella is None:
-                    return None
-                return await self._reconcile_one_umbrella(
-                    umbrella, now, project_service, db, _sm
-                )
-        except Exception as e:
-            logger.warning(
-                "Supersede branch-pending sweep row failed; umbrella skipped",
-                umbrella_id=uid,
-                error=str(e),
-            )
-            return None
-
-    async def _reconcile_one_umbrella(
-        self, umbrella: Any, now: float, project_service: Any, db: Any, _sm: Any
-    ) -> tuple[str, str, int, Any, str] | None:
-        """Check one umbrella for sweep reconciliation. Returns the tuple to
-        spawn, or None if it should be skipped (in-flight, backoff, no PR)."""
-        uid = str(umbrella.id)
-        if uid in self._supersede_cuts_in_flight:
-            return None
-        retry_at = _sm.get_branch_cut_next_retry_at(umbrella)
-        if retry_at is not None and now < retry_at:
-            return None
-        # branch_cut_failed but NOT branch_pending: CEO unblocked after
-        # exhaustion. Re-arm for a fresh cut.
-        if _sm.is_branch_cut_failed(umbrella) and not _sm.is_branch_pending(umbrella):
-            _sm.mark_branch_pending(umbrella)
-            _sm.clear_branch_cut_failed(umbrella)
-            _sm.clear_branch_cut_next_retry_at(umbrella)
-            await db.flush()
-            await db.commit()
-        # The marker lives in orchestration_markers (migration 041), NOT
-        # quick_context: reading quick_context here returned None after the
-        # marker refactor, so a stranded branch_pending umbrella was never
-        # reconciled (same bug class as close-on-land).
-        pr_number = self._parse_supersede_pr(
-            _sm.get_external_pr_supersede(umbrella) or ""
-        )
-        if pr_number is None:
-            return None
-        project = await project_service.get(cast("UUID", umbrella.project_id))
-        if project is None:
-            return None
-        return (
-            uid,
-            project.slug,
-            pr_number,
-            cast("UUID", umbrella.project_id),
-            umbrella.branch_name or "",
-        )
+                closed = await self._close_superseded_prs(git, task_service, system_id)
+                if closed:
+                    await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.warning("Supersede close-on-land sweep failed", error=str(e))
 
     async def _sweep_dangling_images(self) -> None:
         """Prune dangling (<none>) Docker images left by agent-image rebuilds.
@@ -9443,7 +9151,7 @@ Start by:
         from roboco.services.strategy_engine import get_strategy_engine
 
         try:
-            async with get_db_context(pool="background") as db:
+            async with get_db_context() as db:
                 await get_strategy_engine(db).run_cycle()
             state.failures = 0
             state.notified = False
@@ -9495,7 +9203,7 @@ Start by:
         while self._running:
             try:
                 await asyncio.sleep(interval)
-                async with get_db_context(pool="background") as db:
+                async with get_db_context() as db:
                     ingested = await self._poll_external_prs_once(db)
                 if ingested:
                     self._dispatch_wake.set()
@@ -9532,7 +9240,7 @@ Start by:
         while self._running:
             try:
                 await asyncio.sleep(interval)
-                async with get_db_context(pool="background") as db:
+                async with get_db_context() as db:
                     await get_self_heal_engine(db).run_cycle()
                     await db.commit()
                 self._record_loop_heartbeat("self_heal", interval)
@@ -9575,7 +9283,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.ci_watch_engine import get_ci_watch_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             watch_set = await self._load_ci_watch_set(db)
             if not watch_set:
                 logger.warning(
@@ -9664,7 +9372,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.dep_update_engine import get_dep_update_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             projects = await self._load_dep_update_set(db)
             if not projects:
                 logger.warning(
@@ -9709,7 +9417,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.env_sync_engine import get_env_sync_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             projects = await self._load_env_sync_set(db)
             if not projects:
                 logger.warning(
@@ -9769,7 +9477,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.release_manager_engine import get_release_manager_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             await get_release_manager_engine(db).run_cycle()
             await db.commit()
 
@@ -9802,7 +9510,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.x_engine import get_x_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             await get_x_engine(db).run_cycle()
             await db.commit()
 
@@ -9851,7 +9559,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.board_programs import get_board_program_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             await get_board_program_engine(db).run_due_programs()
             await db.commit()
 
@@ -9881,7 +9589,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.vault_intake_engine import get_vault_intake_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             await get_vault_intake_engine(db).run_cycle()
             await db.commit()
 
@@ -9913,7 +9621,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.vault_janitor import get_vault_janitor
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             await get_vault_janitor(db).run_cycle()
             await db.commit()
 
@@ -9943,7 +9651,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.vault_kb_engine import get_vault_kb_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             await get_vault_kb_engine(db).run_cycle()
             await db.commit()
 
@@ -9977,7 +9685,7 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.telegram_inbound import get_telegram_inbound_engine
 
-        async with get_db_context(pool="background") as db:
+        async with get_db_context() as db:
             await get_telegram_inbound_engine(db).run_cycle()
             await db.commit()
 
@@ -10007,44 +9715,22 @@ Start by:
         """One render pass: render every completed authoring task carrying an
         unrendered composition. Testable w/o the sleep.
 
-        Only resolves the id list here; each id is then handed to
-        ``_render_video_task``, which owns its own short session boundaries
-        (see that method's docstring). This loop itself never holds a
-        session across a task's render.
-
-        Skips the whole pass while the ``engines`` maintenance-pause scope is
-        active: rendering calls the video-renderer sidecar and materializes
-        a new held video_post draft, both autonomous origination work. A
-        skipped tick is retried next cycle once resumed, so nothing is lost.
+        commit per-task so a raise mid-cycle no longer rolls back prior
+        renders (and the next cycle no longer re-renders + re-originates a
+        second held video_post draft). The committed ``render_status=
+        "rendered"`` is the idempotency key the next scan skips.
         """
         from roboco.db import get_db_context
-        from roboco.services.maintenance_pause import PauseScope, is_paused
         from roboco.services.task import get_task_service
 
-        async with get_db_context(pool="background") as db:
-            if await is_paused(db, PauseScope.ENGINES):
-                return
-            task_ids = [
-                t.id for t in await get_task_service(db).list_completed_video_tasks()
-            ]
-        for task_id in task_ids:
-            await self._render_video_task(task_id)
+        async with get_db_context() as db:
+            tasks = await get_task_service(db).list_completed_video_tasks()
+            for task in tasks:
+                await self._render_video_task(db, task)
+                await db.commit()
 
-    async def _render_video_task(self, task_id: Any) -> None:
+    async def _render_video_task(self, db: Any, task: Any) -> None:
         """Render one completed authoring task's composition, or skip/retry/fail.
-
-        Runs in separate short DB sessions, never one held across the
-        render: ``_resolve_video_render`` reads what to render and closes;
-        ``_render_both_cuts`` opens its own session only for the project +
-        read-clone resolve, closed before the renderer.render() calls (each
-        drives the render sidecar over HTTP for tens to hundreds of
-        seconds, the worst DB-pool-hold offender by 2-3 orders of
-        magnitude when the video engine is armed, 2026-07-29
-        pool-exhaustion incident class); the result is then written in a
-        FRESH session that RE-FETCHES the task by id rather than reusing
-        the resolve-phase reference, since that session has
-        ``expire_on_commit=False``, so a stale in-memory attribute would
-        otherwise go unnoticed instead of being re-read.
 
         Skips silently when the dev hasn't called ``propose_video`` yet (no
         ``composition_id``) or the task already reached a terminal render state
@@ -10054,94 +9740,35 @@ Start by:
         broken task never blocks the cycle, and is RETRIED on later cycles up to
         ``_MAX_VIDEO_RENDER_ATTEMPTS`` before being marked terminally failed.
         """
-        resolved = await self._resolve_video_render(task_id)
-        if resolved is None:
+        from roboco.foundation.policy.content import markers
+
+        draft = markers.get_video_draft(task) or {}
+        composition_id = draft.get("composition_id")
+        if not composition_id or draft.get("render_status") in ("rendered", "failed"):
             return
-        draft, composition_id, project_id = resolved
         try:
             mp4_paths = await self._render_both_cuts(
-                draft, composition_id, str(task_id), project_id
+                db, draft, composition_id, str(task.id), task.project_id
             )
-        except Exception as exc:
-            await self._fail_video_render_attempt(task_id, draft, exc)
-            return
-        await self._finish_video_render(task_id, draft, mp4_paths)
-
-    async def _resolve_video_render(
-        self, task_id: Any
-    ) -> tuple[dict[str, Any], str, Any] | None:
-        """What to render for ONE task, read in a short session released
-        before the render below. None when there's nothing to render yet
-        (no ``propose_video`` call) or the render already reached a
-        terminal state."""
-        from roboco.db import get_db_context
-        from roboco.foundation.policy.content import markers
-        from roboco.services.task import get_task_service
-
-        async with get_db_context(pool="background") as db:
-            task = await get_task_service(db).get(task_id)
-            if task is None:
-                return None
-            draft = markers.get_video_draft(task) or {}
-            composition_id = draft.get("composition_id")
-            if not composition_id or draft.get("render_status") in (
-                "rendered",
-                "failed",
-            ):
-                return None
-            return draft, composition_id, task.project_id
-
-    async def _finish_video_render(
-        self, task_id: Any, draft: dict[str, Any], mp4_paths: dict[str, str]
-    ) -> None:
-        """Re-fetch the task in a fresh session and materialize the render
-        result. Never reuses the resolve-phase task reference across the
-        render gap, see ``_render_video_task``'s docstring."""
-        from roboco.db import get_db_context
-        from roboco.services.task import get_task_service
-
-        async with get_db_context(pool="background") as db:
-            task = await get_task_service(db).get(task_id)
-            if task is None:
-                return
             await self._materialize_video_post(db, task, draft, mp4_paths)
-
-    async def _fail_video_render_attempt(
-        self, task_id: Any, draft: dict[str, Any], exc: Exception
-    ) -> None:
-        """Record one failed render attempt in a fresh session, re-fetching
-        the task by id (see ``_render_video_task``'s docstring). Retries on
-        later cycles up to ``_MAX_VIDEO_RENDER_ATTEMPTS`` before terminally
-        failing the task and alerting the CEO."""
-        from roboco.db import get_db_context
-        from roboco.foundation.policy.content import markers
-        from roboco.services.task import get_task_service
-
-        attempts = int(draft.get("render_attempts", 0)) + 1
-        terminal = attempts >= _MAX_VIDEO_RENDER_ATTEMPTS
-        payload = {**draft, "render_attempts": attempts, "render_error": str(exc)}
-        if terminal:
-            payload["render_status"] = "failed"
-        title = ""
-        async with get_db_context(pool="background") as db:
-            task = await get_task_service(db).get(task_id)
-            if task is None:
-                return
+        except Exception as exc:
+            attempts = int(draft.get("render_attempts", 0)) + 1
+            terminal = attempts >= _MAX_VIDEO_RENDER_ATTEMPTS
+            payload = {**draft, "render_attempts": attempts, "render_error": str(exc)}
+            if terminal:
+                payload["render_status"] = "failed"
             markers.set_video_draft(task, payload)
-            title = task.title
-        logger.warning(
-            "video-render: render attempt failed",
-            task_id=str(task_id),
-            attempts=attempts,
-            terminal=terminal,
-            error=str(exc),
-        )
-        if terminal:
-            await self._notify_video_render_failure(task_id, title, str(exc))
+            logger.warning(
+                "video-render: render attempt failed",
+                task_id=str(task.id),
+                attempts=attempts,
+                terminal=terminal,
+                error=str(exc),
+            )
+            if terminal:
+                await self._notify_video_render_failure(task, str(exc))
 
-    async def _notify_video_render_failure(
-        self, task_id: Any, title: str, last_error: str
-    ) -> None:
+    async def _notify_video_render_failure(self, task: Any, last_error: str) -> None:
         """Send one CEO alert that a video render exhausted its retries.
 
         Best-effort, mirroring ``_notify_strategy_engine_failure`` — a
@@ -10155,18 +9782,19 @@ Start by:
                 to_agent="ceo",
                 body=(
                     f"[video engine] render terminally failed for task "
-                    f"{title!r} ({_MAX_VIDEO_RENDER_ATTEMPTS} attempts "
+                    f"{task.title!r} ({_MAX_VIDEO_RENDER_ATTEMPTS} attempts "
                     f"exhausted): {last_error}"
                 ),
-                task_id=task_id,
+                task_id=task.id,
             )
         except Exception:
             logger.exception(
-                "video-render failure-notify dropped", task_id=str(task_id)
+                "video-render failure-notify dropped", task_id=str(task.id)
             )
 
     async def _render_both_cuts(
         self,
+        db: Any,
         draft: dict[str, Any],
         composition_id: str,
         render_key: str,
@@ -10177,26 +9805,17 @@ Start by:
         "square": path}. ``render_key`` (the source task id) scopes each
         cut's output path. ``project_id`` is the task's own ``project_id`` —
         never a fixed slug — so a video task authored against any opted-in
-        project renders from that project's ``motion/`` dir, not RoboCo's.
-
-        The project + read-clone resolve runs in its own short session,
-        closed BEFORE the renderer.render() calls below (see
-        ``_render_video_task``'s docstring for why).
-        """
-        from roboco.db import get_db_context
+        project renders from that project's ``motion/`` dir, not RoboCo's."""
         from roboco.services.project import get_project_service
         from roboco.services.video_renderer_client import get_video_renderer
         from roboco.services.workspace import WorkspaceError, get_workspace_service
 
-        async with get_db_context(pool="background") as db:
-            project = (
-                await get_project_service(db).get(project_id) if project_id else None
+        project = await get_project_service(db).get(project_id) if project_id else None
+        if project is None or not project.slug:
+            raise WorkspaceError(
+                f"video-render: task's project not resolvable ({project_id})"
             )
-            if project is None or not project.slug:
-                raise WorkspaceError(
-                    f"video-render: task's project not resolvable ({project_id})"
-                )
-            workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
+        workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
         motion_dir = str(workspace / "motion")
         input_props = draft.get("input_props") or {}
         renderer = get_video_renderer()
@@ -10325,23 +9944,6 @@ Start by:
             canonical.append(project)
         return canonical
 
-    @staticmethod
-    async def _release_pool_connection(db: "AsyncSession") -> None:
-        """End ``db``'s current transaction so its pool connection is returned.
-
-        Mirrors content_actions.evidence()'s pool-release commit / the
-        background engines' own ``_release_pool_connection`` (2026-07-29
-        pool-exhaustion incident): the next read/write reopens a fresh
-        transaction on demand. A poisoned session rolls back instead - ending
-        the transaction is the point, either way works.
-        """
-        from sqlalchemy.exc import PendingRollbackError
-
-        try:
-            await db.commit()
-        except PendingRollbackError:
-            await db.rollback()
-
     async def _poll_external_prs_once(self, db: "AsyncSession") -> int:
         """One discovery pass across active repos; returns tasks ingested.
 
@@ -10353,18 +9955,6 @@ Start by:
         org's own and never ingested, regardless of author — the rest split
         into external/fork PRs and (when internal review is on) org-repo PRs
         opened outside the task flow. Commits once at the end.
-
-        The pool connection is released (``_release_pool_connection``) right
-        before each project's PR fetch below, a GitHub HTTP call - per-project,
-        not once for the whole batch, so the hold never accumulates across
-        every active repo in one poll tick. The resolve (project row + token,
-        both DB reads) runs BEFORE the release, not via ``list_open_prs``
-        itself: that convenience method does its own ``get_by_slug``/token
-        DB reads as its first statements, so calling it right after a release
-        would re-check-out a connection and hold it through the very HTTP
-        call the release exists to free it for. ``resolve_repo_and_token`` +
-        ``list_open_prs_for`` split the DB-resolve from the IO so nothing
-        DB-backed runs between the release and the HTTP call.
         """
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
@@ -10377,12 +9967,7 @@ Start by:
         allowlist = {a.lower() for a in settings.external_pr_author_allowlist}
         ingested = 0
         for project in self._projects_one_per_repo(projects):
-            resolved = await git.resolve_repo_and_token(project.slug)
-            await self._release_pool_connection(db)
-            if resolved is None:
-                continue
-            repo_ref, git_token = resolved
-            for pr in await git.list_open_prs_for(project.slug, repo_ref, git_token):
+            for pr in await git.list_open_prs(project.slug):
                 if await self._ingest_pr_if_reviewable(
                     task_service, project, pr, system_id, allowlist
                 ):
@@ -10446,34 +10031,65 @@ Start by:
         )
         return created is not None
 
+    async def _close_superseded_prs(
+        self, git: Any, task_service: Any, system_id: "UUID"
+    ) -> int:
+        """Close + link the contributor PR for each landed supersede umbrella.
+
+        Idempotent: each umbrella is marked ``closed=1`` after its contributor PR
+        is closed, so it is processed once. ``delete_branch=False`` — the
+        contributor's branch lives on their fork; we never touch it. Caller
+        commits.
+        """
+        closed = 0
+        for umbrella in await task_service.supersede_umbrellas_pending_close():
+            pr_number = self._parse_supersede_pr(umbrella.quick_context or "")
+            if pr_number is None:
+                continue
+            try:
+                await git.close_pull_request(
+                    pr_number,
+                    comment=(
+                        "Superseded by the roboco team's own PR — the work was "
+                        "finished and hardened to our standards. Thanks for the "
+                        "contribution!"
+                    ),
+                    delete_branch=False,
+                    actor_agent_id=system_id,
+                    # PR numbers are per-repo — scope the close to THIS
+                    # umbrella's project so a same-numbered PR in another
+                    # project's repo is never resolved (and closed) by mistake.
+                    project_id=cast("UUID", umbrella.project_id),
+                )
+            except Exception:
+                # A permanent close failure (deleted PR, revoked PAT) would
+                # otherwise re-fire + re-log every tick forever; keep it a single
+                # warning rather than a per-tick stack trace.
+                logger.warning("close-on-land failed", pr_number=pr_number)
+                continue
+            await task_service.mark_supersede_pr_closed(cast("UUID", umbrella.id))
+            closed += 1
+        return closed
+
     @staticmethod
-    def _parse_supersede_pr(marker_line: str) -> int | None:
+    def _parse_supersede_pr(quick_context: str) -> int | None:
         """Extract the contributor PR number from a supersede umbrella marker.
 
-        The marker value is ``pr={n} review={uuid} [author={login}] [closed=1]``
-        stored under the ``external_pr_supersede`` key in ``orchestration_markers``
-        (migration 041). It used to ride in ``quick_context`` prefixed with the key
-        name; the refactor moved it to the typed column but left this parser on
-        ``quick_context``, so close-on-land never found the PR number and never
-        fired. ``pr=`` is unique among the tokens (``review=`` / ``author=`` /
-        ``closed=1`` don't start with ``pr=``), so a whitespace split + prefix match
-        is exact.
+        Anchored to the marker line so a CEO note containing ``pr=`` on a later
+        line of the multi-writer ``quick_context`` can't be misread as the PR.
         """
-        for part in marker_line.split():
-            if part.startswith("pr="):
-                try:
-                    return int(part[3:])
-                except ValueError:
-                    return None
+        for raw in quick_context.splitlines():
+            line = raw.strip()
+            if not line.startswith("external_pr_supersede"):
+                continue
+            for part in line.split():
+                if part.startswith("pr="):
+                    try:
+                        return int(part[3:])
+                    except ValueError:
+                        return None
+            return None
         return None
-
-    @staticmethod
-    def _parse_supersede_author(marker_line: str) -> str:
-        """Extract the contributor login from a supersede umbrella marker, or ""."""
-        for part in marker_line.split():
-            if part.startswith("author="):
-                return part[len("author=") :]
-        return ""
 
     @staticmethod
     def _pr_author_allowed(pr: dict[str, Any], allowlist: set[str]) -> bool:
@@ -10500,28 +10116,18 @@ Start by:
         """CEO-authorized takeover of a reviewed external PR.
 
         Confirms the review task (this CEO action is the human confirmation that
-        authorizes running the contributor's code), creates the supersede
-        umbrella (committed with a ``branch_pending`` marker), and returns
-        immediately. The branch cut (workspace resolve + fetch
-        ``refs/pull/{n}/head`` + push) runs in a background task so the CEO
-        does not hit the 60s client timeout. The dispatcher skips a
-        ``branch_pending`` umbrella so Main PM is not routed until the branch
-        is ready. On success the marker is cleared and the dispatcher is
-        woken; on failure the sweep retries with exponential backoff up to
-        ``_MAX_BRANCH_CUT_ATTEMPTS`` times, after which the umbrella is
-        BLOCKED (HUMAN resolver) and the CEO is notified with the recovery
-        action (unblock to re-run the cut, or cancel). A reconciliation sweep
-        on the sweep tick recovers umbrellas stranded by an orchestrator
-        restart and retries failed cuts after the backoff window.
+        authorizes running the contributor's code), cuts a roboco-owned branch
+        off the contributor's fork head (refs/pull/{n}/head — the only point
+        untrusted code enters a roboco branch), and creates the supersede
+        umbrella for Main PM to delegate to a cell. Returns a status dict.
         """
         from roboco.db import get_db_context
-        from roboco.foundation.policy.content import markers
         from roboco.models.base import TaskStatus
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
         from roboco.services.task import get_task_service
 
-        # Serialize concurrent CEO calls (double-click) - the dedup check and
+        # Serialize concurrent CEO calls (double-click) — the dedup check and
         # the umbrella/branch creation are not atomic across DB sessions.
         async with self._supersede_lock, get_db_context() as db:
             task_service = get_task_service(db)
@@ -10537,16 +10143,15 @@ Start by:
             if review.status != TaskStatus.COMPLETED:
                 return {
                     "ok": False,
-                    "error": "review not complete - review the PR first",
+                    "error": "review not complete — review the PR first",
                 }
             project = await get_project_service(db).get(cast("UUID", review.project_id))
             if project is None:
                 return {"ok": False, "error": "project not found"}
             pr_number = int(review.pr_number)
             project_id = cast("UUID", review.project_id)
-            # Idempotent: a repeat call returns the existing umbrella - no second
-            # branch cut, no duplicate cell takeover. Covers branch_pending
-            # umbrellas too (a retry during the cut short-circuits here).
+            # Idempotent: a repeat call returns the existing umbrella — no second
+            # branch cut, no duplicate cell takeover.
             existing = await task_service.find_supersede_umbrella(project_id, pr_number)
             if existing is not None:
                 return {
@@ -10559,291 +10164,29 @@ Start by:
             branch_name = f"feature/main_pm/supersede-pr-{pr_number}"
             # The CEO authorized fetching + finishing the contributor's code.
             review.confirmed_by_human = True
-            # Create the umbrella with branch_pending marker BEFORE any git op.
-            # The commit here is the point of no return - the umbrella exists
-            # and the dispatcher gate (branch_pending) holds it until the
-            # background branch cut clears the marker.
+            # Create the umbrella BEFORE the push: a create failure then can't
+            # orphan a pushed branch. Only a commit failure after the push could
+            # (rare) — the branch is logged so an orphan stays discoverable.
             umbrella = await task_service.create_supersede_umbrella(
                 review_task_id=review_task_id,
                 branch_name=branch_name,
                 created_by=system_id,
             )
-            # create_supersede_umbrella returns None only if the review task
-            # is missing or not a PR-review source - both already validated
-            # above. If a race deletes the review between the check and the
-            # create, the .id access raises (500, acceptable for that race).
-            umbrella = cast("Any", umbrella)
-            umbrella_id = str(umbrella.id)
-            markers.mark_branch_pending(umbrella)
-            await db.flush()
-            # Try the contributor comment in the fast path (skip_refresh: the
-            # comment only needs the remote URL, not fresh refs). If it fails
-            # (workspace not cloned yet, forge error), the background task
-            # retries via the supersede_comment_posted marker.
+            umbrella_id = str(umbrella.id) if umbrella is not None else None
             git = GitService(db)
-            try:
-                author = self._parse_supersede_author(
-                    markers.get_external_pr_supersede(umbrella) or ""
-                )
-                comment = _supersede_author_prefix(
-                    author
-                ) + SUPERSEDE_PR_COMMENT.format(branch=branch_name)
-                await git.comment_pull_request(
-                    pr_number,
-                    project_id=project_id,
-                    comment=comment,
-                )
-                markers.mark_supersede_comment_posted(umbrella)
-                await db.flush()
-            except Exception as exc:
-                logger.warning(
-                    "supersede: fast-path contributor comment failed, "
-                    "deferring to background task",
-                    pr_number=pr_number,
-                    error=str(exc),
-                )
-            await db.commit()
-            # Claim the in-flight slot BEFORE releasing the supersede lock so a
-            # reconciliation sweep tick landing between the commit and the
-            # spawn cannot double-spawn a concurrent branch cut.
-            self._supersede_cuts_in_flight.add(umbrella_id)
-        # Background the slow git ops (workspace clone up to 300s, fetch +
-        # checkout + push, each 30s). Fire-and-forget; the reconciliation
-        # sweep recovers on restart.
-        bg = asyncio.create_task(
-            self._cut_supersede_branch(
-                umbrella_id=umbrella_id,
-                project_slug=project.slug,
-                pr_number=pr_number,
-                project_id=project_id,
-                branch_name=branch_name,
-            )
-        )
-        self._bg_tasks.add(bg)
-        bg.add_done_callback(self._bg_tasks.discard)
-        return {
-            "ok": True,
-            "supersede_task_id": umbrella_id,
-            "branch": branch_name,
-            "status": "cutting_branch",
-        }
-
-    async def _cut_supersede_branch(
-        self,
-        *,
-        umbrella_id: str,
-        project_slug: str,
-        pr_number: int,
-        project_id: "UUID",
-        branch_name: str,
-    ) -> None:
-        """Background branch cut for a supersede umbrella.
-
-        Resolves the workspace (skip_refresh: the branch is cut from
-        ``refs/pull/{n}/head``, not an existing local branch), posts the
-        contributor PR comment if it was not posted in the fast path, fetches
-        the PR head ref, and pushes the roboco-owned branch. On success
-        clears ``branch_pending`` and wakes the dispatcher. On failure
-        increments the ``branch_cut_failed`` attempt count and applies a
-        backoff so the reconciliation sweep retries; after
-        ``_MAX_BRANCH_CUT_ATTEMPTS`` failures the umbrella is BLOCKED (HUMAN
-        resolver) and the CEO is notified. Called from
-        ``supersede_external_pr`` (asyncio task) and from the reconciliation
-        sweep (restart-safe).
-        """
-        from roboco.db import get_db_context
-        from roboco.foundation.policy.content import markers
-        from roboco.models.base import TaskStatus
-        from roboco.services.git import GitService
-        from roboco.services.task import get_task_service
-        from roboco.utils.converters import require_uuid
-
-        try:
-            async with get_db_context() as db:
-                task_service = get_task_service(db)
-                umbrella = await task_service.get(require_uuid(umbrella_id))
-                if umbrella is None or umbrella.status == TaskStatus.CANCELLED:
-                    return
-                # If branch_cut_failed but NOT branch_pending, this was
-                # unblocked by the CEO after exhaustion — reset for a fresh
-                # cut. (The sweep also does this, but guard here too in case
-                # the spawn came from supersede_external_pr's retry path.)
-                # Commit (not flush) the instant the reset lands: the git
-                # work below (workspace resolve + branch cut) can genuinely
-                # raise, and get_db_context's except clause rolls back the
-                # WHOLE session on any exception, so a flush-only reset would
-                # be discarded along with it, so if the comment was already
-                # posted on an earlier attempt (skipping that block's own
-                # commit) a raise here would revert branch_pending to False
-                # and make _fail_supersede_branch_cut's own guard silently
-                # drop this attempt's failure bookkeeping.
-                if markers.is_branch_cut_failed(
-                    umbrella
-                ) and not markers.is_branch_pending(umbrella):
-                    markers.mark_branch_pending(umbrella)
-                    markers.clear_branch_cut_failed(umbrella)
-                    markers.clear_branch_cut_next_retry_at(umbrella)
-                    await db.commit()
-                # Already completed by a prior run (race with sweep).
-                if not markers.is_branch_pending(umbrella):
-                    return
-                git = GitService(db)
-                system_id = _foundation.AGENTS["system"].uuid
-                # Post the contributor comment if the fast path did not.
-                if not markers.is_supersede_comment_posted(umbrella):
-                    try:
-                        author = self._parse_supersede_author(
-                            markers.get_external_pr_supersede(umbrella) or ""
-                        )
-                        comment = _supersede_author_prefix(
-                            author
-                        ) + SUPERSEDE_PR_COMMENT.format(branch=branch_name)
-                        await git.comment_pull_request(
-                            pr_number,
-                            project_id=project_id,
-                            comment=comment,
-                        )
-                        markers.mark_supersede_comment_posted(umbrella)
-                        # Commit (not flush) the instant the comment lands: the
-                        # branch-cut step below is real network git and can
-                        # genuinely raise, and get_db_context's except clause
-                        # rolls back the WHOLE session on any exception, so a
-                        # flush-only marker would be discarded along with it,
-                        # and the retry would repost a duplicate comment on the
-                        # contributor's public PR.
-                        await db.commit()
-                    except Exception as exc:
-                        logger.warning(
-                            "supersede: background contributor comment failed",
-                            pr_number=pr_number,
-                            error=str(exc),
-                        )
-                logger.warning(
-                    "supersede: cutting roboco branch off untrusted fork PR head",
-                    branch=branch_name,
-                    pr_number=pr_number,
-                    project=project_slug,
-                )
-                workspace = await git.get_workspace(
-                    project_slug, agent_id=system_id, skip_refresh=True
-                )
-                await git.create_branch_from_pr_head(
-                    workspace, project_slug, pr_number, branch_name
-                )
-                # Success: clear the gate, clear any prior failure markers,
-                # and wake the dispatcher.
-                markers.clear_branch_pending(umbrella)
-                markers.clear_branch_cut_failed(umbrella)
-                markers.clear_branch_cut_next_retry_at(umbrella)
-                await db.commit()
-            self._dispatch_wake.set()
-        except Exception as exc:
-            logger.error(
-                "supersede: background branch cut failed",
-                umbrella_id=umbrella_id,
+            workspace = await git.get_workspace(project.slug, agent_id=system_id)
+            logger.warning(
+                "supersede: cutting roboco branch off untrusted fork PR head",
                 branch=branch_name,
                 pr_number=pr_number,
-                error=str(exc),
+                project=project.slug,
             )
-            await self._fail_supersede_branch_cut(umbrella_id, branch_name, exc)
-        finally:
-            # F2: release the in-flight slot so the sweep can retry.
-            self._supersede_cuts_in_flight.discard(umbrella_id)
-
-    async def _fail_supersede_branch_cut(
-        self, umbrella_id: str, branch_name: str, exc: Exception
-    ) -> None:
-        """Handle a supersede branch-cut failure with retry + backoff.
-
-        On failures below ``_MAX_BRANCH_CUT_ATTEMPTS``: keep
-        ``branch_pending``, increment ``branch_cut_failed`` attempt count,
-        and set a ``branch_cut_next_retry_at`` backoff so the sweep retries
-        without hammering every 60s. On the final failure: clear
-        ``branch_pending``, set BLOCKED (HUMAN resolver), and notify the CEO.
-        The commit happens BEFORE the notification (F7) so a notify failure
-        can't roll back the status transition.
-        """
-        import time
-
-        from roboco.db import get_db_context
-        from roboco.foundation.policy.content import markers
-        from roboco.models.base import BlockerResolverType, TaskStatus
-        from roboco.services.task import get_task_service
-        from roboco.utils.converters import require_uuid
-
-        try:
-            async with get_db_context() as db:
-                task_service = get_task_service(db)
-                umbrella = await task_service.get(require_uuid(umbrella_id))
-                if umbrella is None:
-                    return
-                # If the marker was already cleared (a concurrent sweep
-                # succeeded), do not block a finished umbrella.
-                if not markers.is_branch_pending(umbrella):
-                    return
-                attempts = markers.get_branch_cut_attempts(umbrella) + 1
-                if attempts < _MAX_BRANCH_CUT_ATTEMPTS:
-                    # Retry with backoff: keep branch_pending so the sweep
-                    # re-runs the cut after the backoff window expires.
-                    backoff = _BRANCH_CUT_BACKOFF_BASE_SECONDS * (2 ** (attempts - 1))
-                    markers.mark_branch_cut_failed(umbrella, attempts)
-                    markers.set_branch_cut_next_retry_at(
-                        umbrella, time.time() + backoff
-                    )
-                    await db.commit()
-                    logger.warning(
-                        "supersede: branch cut failed, will retry",
-                        umbrella_id=umbrella_id,
-                        attempts=attempts,
-                        backoff_seconds=backoff,
-                        error=str(exc),
-                    )
-                    return
-                # Exhausted retries: escalate to BLOCKED.
-                umbrella.blocker_resolver_type = BlockerResolverType.HUMAN
-                markers.mark_branch_cut_failed(umbrella, attempts)
-                markers.clear_branch_pending(umbrella)
-                markers.clear_branch_cut_next_retry_at(umbrella)
-                await task_service.admin_set_status(
-                    require_uuid(umbrella_id),
-                    TaskStatus.BLOCKED,
-                    actor_role="system",
-                )
-                await db.commit()
-            # F7: notify CEO AFTER the commit so a notify failure can't
-            # roll back the BLOCKED transition. Best-effort in its own
-            # session.
-            try:
-                async with get_db_context() as notify_db:
-                    from roboco.services.notification_delivery import (
-                        get_notification_delivery_service,
-                    )
-
-                    notify_task_service = get_task_service(notify_db)
-                    umbrella_fresh = await notify_task_service.get(
-                        require_uuid(umbrella_id)
-                    )
-                    if umbrella_fresh is not None:
-                        delivery = get_notification_delivery_service(notify_db)
-                        await delivery.notify_ceo_of_supersede_branch_cut_failure(
-                            task=umbrella_fresh,
-                            task_id=require_uuid(umbrella_id),
-                            branch=branch_name,
-                            error=str(exc),
-                        )
-                        await notify_db.commit()
-            except Exception as notify_exc:
-                logger.warning(
-                    "supersede: CEO notify failed after branch cut failure",
-                    umbrella_id=umbrella_id,
-                    error=str(notify_exc),
-                )
-        except Exception as inner:
-            logger.warning(
-                "supersede: failed to handle branch cut failure",
-                umbrella_id=umbrella_id,
-                error=str(inner),
+            await git.create_branch_from_pr_head(
+                workspace, project.slug, pr_number, branch_name
             )
+            await db.commit()
+        self._dispatch_wake.set()
+        return {"ok": True, "supersede_task_id": umbrella_id, "branch": branch_name}
 
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.
@@ -12144,7 +11487,7 @@ Start by:
         elif role == "pm":
             candidates = [f"{prefix}-pm"]
         elif role == "pr_reviewer":
-            candidates = [f"{prefix}-pr-reviewer", "cell-pr-reviewer-2"]
+            candidates = [f"{prefix}-pr-reviewer"]
         else:
             return None
 
@@ -12230,16 +11573,8 @@ Start by:
         client: httpx.AsyncClient,
         status: str | list[str],
         team: str | None = None,
-        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch tasks by status and optional team filter.
-
-        ``limit`` forwards to ``GET /tasks``'s own ``limit`` query param
-        (default 100 server-side); omit to keep that default. A caller whose
-        fetch is NOT team-scoped needs this raised (see
-        ``_dispatch_pm_work``'s docstring for why an unscoped fetch can
-        silently truncate).
-        """
+        """Fetch tasks by status and optional team filter."""
         # If multiple statuses, make separate requests and combine results
         statuses = status if isinstance(status, list) else [status]
         all_tasks: list[dict[str, Any]] = []
@@ -12248,8 +11583,6 @@ Start by:
             params: dict[str, Any] = {"status": single_status}
             if team:
                 params["team"] = team
-            if limit is not None:
-                params["limit"] = limit
 
             try:
                 resp = await client.get(f"{self._api_url}/tasks", params=params)
@@ -12373,7 +11706,7 @@ Start by:
             return "cell_pm"
         return None
 
-    def _classify_cell_code_task(self, complexity: str, has_children: bool) -> str:
+    def _classify_cell_code_task(self, text: str, complexity: str) -> str:
         """Route a cell-owned code task WITHIN its cell (dev or cell_pm).
 
         Implementation work that belongs to a CELL never escalates to the
@@ -12382,19 +11715,8 @@ Start by:
         board/main_pm keyword heuristics fire on it is how a cell code task
         ended up "reviewed" by the board and a PM ended up owning (and
         deadlocking) a dev code task.
-
-        Keyword matching (``_has_pm_keywords``) was retired from this decision:
-        ordinary dev prose ("review", "dependencies", "sync") false-positived
-        a leaf fix task to cell_pm, which can't execute code and just
-        plan/delegate/escalate-looped. Only an actual coordination node
-        (already has children) or a genuine decomposition candidate (high
-        complexity) goes to cell_pm now.
-
-        Deliberate trade: a childless medium-complexity task now routes to
-        dev (the retired keyword net used to catch some of these); high
-        complexity remains the decomposition escape hatch to cell_pm.
         """
-        if has_children or complexity == "high":
+        if self._has_pm_keywords(text) or complexity == "high":
             return "cell_pm"
         return "dev"
 
@@ -12418,9 +11740,7 @@ Start by:
 
         return "dev"
 
-    def _classify_code_task(
-        self, task: dict[str, Any], has_children: bool = False
-    ) -> str:
+    def _classify_code_task(self, task: dict[str, Any]) -> str:
         """Classify a generic `code` task via keyword/complexity heuristics."""
         team = task.get("team")
         title = (task.get("title") or "").lower()
@@ -12430,13 +11750,11 @@ Start by:
 
         cell_teams = frozenset(t.value for t in CELL_TEAMS)
         if team in cell_teams:
-            return self._classify_cell_code_task(complexity, has_children)
+            return self._classify_cell_code_task(text, complexity)
 
         return self._classify_strategic_code_task(text, team, complexity)
 
-    def _classify_task_routing(
-        self, task: dict[str, Any], has_children: bool = False
-    ) -> str:
+    def _classify_task_routing(self, task: dict[str, Any]) -> str:
         """
         Classify a task for routing based on task_type, team, complexity, and keywords.
 
@@ -12452,7 +11770,7 @@ Start by:
         if team in self._TEAM_ROUTING_MAP:
             return self._TEAM_ROUTING_MAP[team]
 
-        return self._classify_code_task(task, has_children)
+        return self._classify_code_task(task)
 
     # Team to PM mapping for routing
     _TEAM_PM_MAP: ClassVar[dict[str, str]] = {
@@ -13043,28 +12361,14 @@ Start now: evidence(task_id="{task_id}")
         need to inject a mock service do so by building an instance via
         ``__new__`` (bypassing this method) and calling
         ``_reap_with_service`` directly.
-
-        THE TRAP: while ``dispatch`` is paused, agents legitimately stop
-        bumping their gateway heartbeat (no new turn is being dispatched for
-        them), so an otherwise-idle-but-fine claim would read as wedged past
-        the TTL and get unclaimed + respawned, the exact opposite of paused.
-        But the pause must not blind the fleet to a genuinely wedged/stuck/
-        broken-gateway container: those kills are liveness-based, not
-        dispatch-based, and a paused fleet can still burn spend on a runaway
-        agent for up to ``MAX_PAUSE_HOURS``. So the reap still runs every
-        tick; only its DB-level unclaim fallback (the part that only helps
-        if a respawn can follow, which a paused fleet won't do) is gated on
-        ``dispatch_paused`` -- see ``_reap_with_service``.
         """
         from roboco.db.base import get_session_factory
-        from roboco.services.maintenance_pause import PauseScope, is_paused
         from roboco.services.task import TaskService
 
         factory = get_session_factory()
         async with factory() as db:
-            dispatch_paused = await is_paused(db, PauseScope.DISPATCH)
             svc = TaskService(db)
-            await self._reap_with_service(svc, dispatch_paused=dispatch_paused)
+            await self._reap_with_service(svc)
             await db.commit()
         await self._sandbox_janitor_sweep()
 
@@ -13588,101 +12892,56 @@ Start now: evidence(task_id="{task_id}")
             and not await self._maybe_recover_broken_gateway(t)
         )
 
-    async def _reap_with_service(
-        self, svc: "TaskService", *, dispatch_paused: bool = False
-    ) -> None:
+    async def _reap_with_service(self, svc: "TaskService") -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
-        Each candidate is delegated to ``_reap_one_stale_claim``, which
-        decides skip-vs-reap and, when a reap is due, hands off to
-        ``_unclaim_stale_claim`` -- wrapped there in try/except so a single
-        bad row doesn't abort the dispatch tick. See
-        ``_reap_one_stale_claim`` for the pause-ordering guarantee: the
-        liveness/kill checks always run; only the final DB unclaim is gated
-        on ``dispatch_paused``.
-        """
-        cutoff = datetime.now(UTC) - timedelta(seconds=self._claim_heartbeat_ttl)
-        candidates = await svc.list_in_progress_or_claimed()
-        for t in candidates:
-            await self._reap_one_stale_claim(svc, t, cutoff, dispatch_paused)
-
-    def _heartbeat_is_stale(self, ts: Any, cutoff: datetime) -> bool:
-        """True when a claim's heartbeat is missing or past ``cutoff``."""
-        return ts is None or ts < cutoff
-
-    async def _reap_one_stale_claim(
-        self,
-        svc: "TaskService",
-        t: Any,
-        cutoff: datetime,
-        dispatch_paused: bool,
-    ) -> None:
-        """Decide skip-vs-reap for one candidate claim.
-
-        ``dispatch_paused`` narrows the ``dispatch``-scope maintenance pause
-        to just the final DB-level unclaim: the wedged-grok / stuck-claude /
-        broken-gateway kill checks nested in ``_should_skip_live_reap`` are
-        liveness/heartbeat based, not dispatch based, and always run FIRST --
-        a genuinely wedged container must never idle unmonitored for the
-        length of a pause. Unclaiming only helps a task that a respawn can
-        follow, which a paused fleet won't do this tick, so that step alone
-        is deferred until the pause lifts. A claim whose assignee still has a
-        live container is otherwise skipped entirely: the heartbeat is a
-        stale proxy there, and reaping a working agent only churns the task.
-        """
-        ts = t.last_heartbeat_at
-        if not self._heartbeat_is_stale(ts, cutoff):
-            return
-        # A live container is spared unless it is wedged (grok) or its
-        # gateway is broken-but-alive past the grace window - see
-        # _should_skip_live_reap, which kills + evicts those so we fall
-        # through to release + respawn. This check always runs, paused
-        # or not.
-        if await self._should_skip_live_reap(t, ts):
-            return
-        # A provider-parked agent (session-limit / overload / grok-429)
-        # is OFFLINE with a dead container and a ``rate_limit_lifted``
-        # WaitingRecord. The probe-resume loop owns its recovery - do
-        # NOT reap the claim, or probe-success would respawn the agent
-        # on a task it no longer owns.
-        if self._assignee_is_provider_parked(t):
-            return
-        if dispatch_paused:
-            # The pause-sensitive step: no respawn will follow this
-            # tick, so leave the claim as-is (any wedged container
-            # above was already killed regardless).
-            return
-        await self._unclaim_stale_claim(svc, t, ts)
-
-    async def _unclaim_stale_claim(
-        self, svc: "TaskService", t: Any, ts: datetime | None
-    ) -> None:
-        """Release one stale claim to pending.
-
-        try/except so a single bad row doesn't abort the dispatch tick - the
-        reaper must keep ticking even if one task's release somehow fails.
+        Wraps each ``unclaim_for_reaper`` in try/except so a single bad row
+        doesn't abort the dispatch tick — the reaper must keep ticking even
+        if one task's release somehow fails. A claim whose assignee still has
+        a live container is skipped: the heartbeat is a stale proxy there, and
+        reaping a working agent only churns the task.
         """
         from roboco.utils.converters import require_uuid
 
-        task_id = require_uuid(t.id)
-        reaped_agent = getattr(t, "assigned_to", None) or getattr(t, "claimed_by", None)
-        try:
-            await svc.unclaim_for_reaper(task_id)
-            logger.warning(
-                "stale claim reaped",
-                task_id=str(task_id),
-                last_heartbeat=ts.isoformat() if ts else None,
-            )
-        except Exception as exc:
-            logger.error(
-                "stale-claim reap failed; continuing",
-                task_id=str(task_id),
-                error=str(exc),
-            )
-        else:
-            await self._notify_stale_claim_reaped(
-                task_id, reaped_agent, ts, getattr(t, "title", None)
-            )
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._claim_heartbeat_ttl)
+        candidates = await svc.list_in_progress_or_claimed()
+        for t in candidates:
+            ts = t.last_heartbeat_at
+            if ts is None or ts < cutoff:
+                # A live container is spared unless it is wedged (grok) or its
+                # gateway is broken-but-alive past the grace window — see
+                # _should_skip_live_reap, which kills + evicts those so we fall
+                # through to release + respawn.
+                if await self._should_skip_live_reap(t, ts):
+                    continue
+                # A provider-parked agent (session-limit / overload / grok-429)
+                # is OFFLINE with a dead container and a ``rate_limit_lifted``
+                # WaitingRecord. The probe-resume loop owns its recovery — do
+                # NOT reap the claim, or probe-success would respawn the agent
+                # on a task it no longer owns.
+                if self._assignee_is_provider_parked(t):
+                    continue
+                task_id = require_uuid(t.id)
+                reaped_agent = getattr(t, "assigned_to", None) or getattr(
+                    t, "claimed_by", None
+                )
+                try:
+                    await svc.unclaim_for_reaper(task_id)
+                    logger.warning(
+                        "stale claim reaped",
+                        task_id=str(task_id),
+                        last_heartbeat=ts.isoformat() if ts else None,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "stale-claim reap failed; continuing",
+                        task_id=str(task_id),
+                        error=str(exc),
+                    )
+                else:
+                    await self._notify_stale_claim_reaped(
+                        task_id, reaped_agent, ts, getattr(t, "title", None)
+                    )
 
     async def _notify_stale_claim_reaped(
         self,
@@ -13716,17 +12975,6 @@ Start now: evidence(task_id="{task_id}")
                 error=str(exc),
             )
 
-    async def _is_paused(self, scope: "PauseScope") -> bool:
-        """Open a short-lived session and check ``scope``'s maintenance-pause
-        state. ``is_paused`` itself never raises (it fails closed
-        internally), so no extra try/except is needed at call sites."""
-        from roboco.db.base import get_session_factory
-        from roboco.services.maintenance_pause import is_paused
-
-        factory = get_session_factory()
-        async with factory() as db:
-            return await is_paused(db, scope)
-
     async def _dispatch_all_work(self) -> None:
         """Run all dispatchers to check for and assign work.
 
@@ -13745,15 +12993,6 @@ Start now: evidence(task_id="{task_id}")
         spawn an agent for a task whose previous holder is dead. Without
         this ordering, the spawn pass could race against a stale claim and
         skip work the reaper would have freed in the same tick.
-
-        A ``dispatch``-scope maintenance pause drains every spawn-issuing
-        dispatcher here EXCEPT ``pm_work``, which always runs: it also
-        routes Board Program exploration dispatch (a separate,
-        independently-paused ``board_programs`` scope, see
-        ``_dispatch_board_program_exploration``), so it cannot be skipped
-        wholesale without incorrectly coupling the two scopes. ``pm_work``
-        itself skips its own non-board-program branches while paused (see
-        ``_dispatch_pm_work``).
         """
         self._tick_handled_tasks = set()
 
@@ -13766,58 +13005,42 @@ Start now: evidence(task_id="{task_id}")
             logger.error("Stale-claim reaper failed; continuing tick", error=str(e))
 
         # Enforce the GROK cost ceiling (budget kill-switch parity). Wrapped so a
-        # failure never blocks dispatch; the next tick retries. Unrelated to the
-        # maintenance pause: a genuinely runaway-cost container is a real signal,
-        # not a "nothing is happening" false positive, so it is never suppressed
-        # by a pause; only NEW spawns are.
+        # failure never blocks dispatch; the next tick retries.
         try:
             await self._enforce_grok_cost_budget()
         except Exception as e:
             logger.error("Grok cost-budget sweep failed; continuing tick", error=str(e))
 
-        from roboco.services.maintenance_pause import PauseScope
-
-        dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
-
         dispatchers: list[tuple[str, Any]] = []
         async with httpx.AsyncClient(
             timeout=30.0, headers=_system_api_headers()
         ) as client:
-            dispatchers = [("pm_work", self._dispatch_pm_work(client))]
-            if not dispatch_paused:
-                dispatchers += [
-                    ("pm_closure_work", self._dispatch_pm_closure_work(client)),
-                    (
-                        "revision_coordination",
-                        self._dispatch_revision_coordination_roots(client),
-                    ),
-                    ("dev_work", self._dispatch_dev_work(client)),
-                    ("qa_work", self._dispatch_qa_work(client)),
-                    # pr_gate_work runs BEFORE pr_review_work: both can spawn
-                    # the shared pr-reviewer-1 (root→master gate reviews vs.
-                    # inbound external/fork PR reviews), and the internal gate
-                    # blocks the delivery pipeline while an external PR can
-                    # wait a tick - see _dispatch_pr_gate_work's docstring.
-                    ("pr_gate_work", self._dispatch_pr_gate_work(client)),
-                    ("pr_review_work", self._dispatch_pr_review_work(client)),
-                    ("doc_work", self._dispatch_doc_work(client)),
-                    ("pm_review_work", self._dispatch_pm_review_work(client)),
-                    ("marketing_work", self._dispatch_marketing_work(client)),
-                    ("blocker_work", self._dispatch_blocker_work(client)),
-                    (
-                        "claimed_without_agent",
-                        self._dispatch_claimed_without_agent(client),
-                    ),
-                    ("escalation_work", self._dispatch_escalation_work(client)),
-                    ("approval_work", self._dispatch_approval_work(client)),
-                    ("a2a_work", self._dispatch_a2a_work(client)),
-                    ("audit_work", self._dispatch_audit_work(client)),
-                    (
-                        "vault_curation_work",
-                        self._dispatch_vault_curation_work(client),
-                    ),
-                    ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
-                ]
+            dispatchers = [
+                ("pm_work", self._dispatch_pm_work(client)),
+                ("pm_closure_work", self._dispatch_pm_closure_work(client)),
+                (
+                    "revision_coordination",
+                    self._dispatch_revision_coordination_roots(client),
+                ),
+                ("dev_work", self._dispatch_dev_work(client)),
+                ("qa_work", self._dispatch_qa_work(client)),
+                ("pr_review_work", self._dispatch_pr_review_work(client)),
+                ("pr_gate_work", self._dispatch_pr_gate_work(client)),
+                ("doc_work", self._dispatch_doc_work(client)),
+                ("pm_review_work", self._dispatch_pm_review_work(client)),
+                ("marketing_work", self._dispatch_marketing_work(client)),
+                ("blocker_work", self._dispatch_blocker_work(client)),
+                (
+                    "claimed_without_agent",
+                    self._dispatch_claimed_without_agent(client),
+                ),
+                ("escalation_work", self._dispatch_escalation_work(client)),
+                ("approval_work", self._dispatch_approval_work(client)),
+                ("a2a_work", self._dispatch_a2a_work(client)),
+                ("audit_work", self._dispatch_audit_work(client)),
+                ("vault_curation_work", self._dispatch_vault_curation_work(client)),
+                ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
+            ]
             for name, coro in dispatchers:
                 try:
                     await coro
@@ -13889,11 +13112,6 @@ Start now: evidence(task_id="{task_id}")
             self._schedule_respawn_persist(
                 agent_slug, str(task_id), self._pm_respawn_tracker[key]
             )
-            # Genuine forward progress: clear any durable stalled marker set
-            # by a prior trip on this task. Fire-and-forget, same discipline
-            # as the counter write-through above — the hot dispatch path
-            # never blocks on this DB write.
-            self._schedule_bg(self._clear_task_stalled_marker(agent_slug, str(task_id)))
             return True
         record["last_status"] = current_status
         revisits = record.get("revisit_resets", 0)
@@ -14064,64 +13282,12 @@ Start now: evidence(task_id="{task_id}")
                 ),
             )
             # A skipped spawn pauses the loop but can't advance the task; alert
-            # an overseer once so a wedged agent isn't silently stranded, and
-            # record a durable marker on the task itself (readable without
-            # container logs) alongside that one-shot notification. Both are
-            # one-shot per trip, gated by the same `notified` flag.
+            # an overseer once so a wedged agent isn't silently stranded.
             if not record.get("notified"):
                 record["notified"] = True
                 self._schedule_respawn_persist(agent_slug, str(task_id), record)
-                await self._mark_task_stalled(task_id)
                 await self._notify_stuck_agent(agent_slug, task_id, current_status)
         return tripped
-
-    async def _mark_task_stalled(self, task_id: str) -> None:
-        """Record a durable stalled marker on the task (breaker-tripped path).
-
-        Best-effort: a write failure must not wedge dispatch, so any error is
-        logged and swallowed — the CEO notification still fires regardless.
-        """
-        from uuid import UUID
-
-        from roboco.db.base import get_db_context
-        from roboco.models.base import StalledReason
-        from roboco.services.task import TaskService
-
-        try:
-            async with get_db_context() as db:
-                await TaskService(db).mark_stalled(
-                    UUID(task_id), reason=StalledReason.BREAKER_TRIPPED.value
-                )
-        except Exception as exc:
-            logger.warning(
-                "Failed to record stalled marker",
-                task_id=task_id,
-                error=str(exc),
-            )
-
-    async def _clear_task_stalled_marker(self, agent_slug: str, task_id: str) -> None:
-        """Clear the durable stalled marker on genuine forward progress.
-
-        Fire-and-forget (scheduled via `_schedule_bg`) so the hot dispatch
-        path never blocks on this DB write — mirroring
-        `_schedule_respawn_persist`'s write-through discipline. Best-effort:
-        a write failure is logged and swallowed.
-        """
-        from uuid import UUID
-
-        from roboco.db.base import get_db_context
-        from roboco.services.task import TaskService
-
-        try:
-            async with get_db_context() as db:
-                await TaskService(db).clear_stalled_marker(UUID(task_id))
-        except Exception as exc:
-            logger.warning(
-                "Failed to clear stalled marker",
-                agent_id=agent_slug,
-                task_id=task_id,
-                error=str(exc),
-            )
 
     async def _notify_stuck_agent(
         self, agent_slug: str, task_id: str, task_status: str | None
@@ -14997,14 +14163,8 @@ Start now: evidence(task_id="{task_id}")
         try:
             async with get_db_context() as db:
                 message = await self._compose_parked_intake_redraft(db, task_id)
-                if message is None:
-                    return
-                # Best-effort, its own try/except: a persistence hiccup (or, in
-                # tests, a non-UUID fake session id) must never block delivering
-                # the board's feedback back into the live conversation.
-                await self._persist_parked_redraft_message(
-                    db, session.session_id, message
-                )
+            if message is None:
+                return
             delivered = await get_live_registry().deliver(session.session_id, message)
             logger.info(
                 "Injected board feedback into parked intake",
@@ -15015,25 +14175,6 @@ Start now: evidence(task_id="{task_id}")
             logger.warning(
                 "Failed to inject board feedback into parked intake",
                 task_id=task_id,
-                error=str(exc),
-            )
-
-    async def _persist_parked_redraft_message(
-        self, db: "AsyncSession", session_id: str, message: str
-    ) -> None:
-        """Durably record the board-feedback message injected into a parked
-        intake session. Best-effort: never let a persistence failure block
-        delivering the feedback into the live conversation."""
-        from roboco.services.prompter import get_prompter_service
-
-        try:
-            await get_prompter_service(db).record_live_message(
-                session_id, "user", message
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to persist parked intake redraft message",
-                session_id=session_id,
                 error=str(exc),
             )
 
@@ -15114,51 +14255,13 @@ Start now: evidence(task_id="{task_id}")
         )
         return False
 
-    async def _task_has_children(self, task_id: str | None) -> bool:
-        """Dispatch-time probe: does ``task_id`` already have subtasks?
-
-        Feeds the cell code-task classifier — a task with children is a
-        coordination node (cell_pm); a childless leaf routes on complexity
-        alone. Fails closed (False) on any lookup error: an unclassifiable
-        leaf is safer routed to dev than mistakenly parked on a PM.
-        """
-        if not task_id:
-            return False
-        from uuid import UUID
-
-        from roboco.db.base import get_db_context
-        from roboco.services.task import TaskService
-
-        try:
-            async with get_db_context() as db:
-                return await TaskService(db).has_children(UUID(task_id))
-        except Exception as exc:
-            logger.warning(
-                "Children probe failed; classifying as childless",
-                task_id=task_id,
-                error=str(exc),
-            )
-            return False
-
     async def _route_unassigned_pm_task(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
         """Classify and route an unassigned pending task to its target agent."""
         if await self._pending_claim_blocked(task.get("id")):
             return
-        # Only the cell code-task classifier consults has_children; skip the
-        # DB round-trip for every other task_type/team (planning, research,
-        # board, main_pm, marketing, ...) that never looks at it.
-        cell_teams = frozenset(t.value for t in CELL_TEAMS)
-        needs_children_probe = (
-            task.get("task_type", "code") == "code" and task.get("team") in cell_teams
-        )
-        has_children = (
-            await self._task_has_children(task.get("id"))
-            if needs_children_probe
-            else False
-        )
-        routing = self._classify_task_routing(task, has_children)
+        routing = self._classify_task_routing(task)
         agent_id = await self._get_routing_target(routing, task)
 
         if not agent_id:
@@ -15215,25 +14318,8 @@ Start now: evidence(task_id="{task_id}")
 
         Monitors: pending tasks (both assigned and unassigned)
         Spawns: product-owner, main-pm, be-pm, fe-pm, ux-pm (or devs for simple)
-
-        Mixed dispatch-pause scope: a ``dispatch``-scope pause skips this
-        method's own PM/board-review routing (below) but never the Board
-        Program exploration branch, which is gated independently by
-        ``board_programs`` scope inside ``_dispatch_board_program_
-        exploration``, the two scopes must stay decoupled even though they
-        share this one dispatcher.
-
-        Fetches with ``_PM_DISPATCH_FETCH_LIMIT`` (not the API's 100
-        default): this is the one dispatcher whose fetch is NOT team-scoped
-        (see that constant's comment for the silent-truncation class of bug
-        a plain default fetch would reintroduce here).
         """
-        from roboco.services.maintenance_pause import PauseScope
-
-        tasks = await self._fetch_tasks(
-            client, "pending", limit=_PM_DISPATCH_FETCH_LIMIT
-        )
-        dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
+        tasks = await self._fetch_tasks(client, "pending")
 
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
@@ -15242,11 +14328,6 @@ Start now: evidence(task_id="{task_id}")
             # (external-PR review, release proposals, X posts/replies, and a
             # not-yet-confirmed self-heal fix task) — see _is_held_ceo_source.
             if _is_held_ceo_source(task):
-                continue
-            # A supersede umbrella whose branch cut is still in progress
-            # (background task or pending reconciliation). Main PM must not
-            # be routed until the branch is ready.
-            if _is_branch_pending(task):
                 continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
@@ -15259,16 +14340,12 @@ Start now: evidence(task_id="{task_id}")
                 # register (xenon budget). Falls through to the generic
                 # board/PM-assigned handlers only for a non-program task.
                 if not await _dispatch_board_program_exploration(self, task):
-                    if dispatch_paused:
-                        continue
                     if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                         await self._handle_board_assigned_task(task, assigned_to)
                     else:
                         await self._handle_pm_assigned_task(task, assigned_to)
                 continue
 
-            if dispatch_paused:
-                continue
             await self._route_unassigned_pm_task(client, task)
 
     async def _dispatch_revision_coordination_roots(
@@ -16218,104 +15295,20 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             )
             break
 
-    # Bounds get_pr_ci_status calls to roughly one per PR per window instead
-    # of one per dispatch tick per task - the dispatch loop polls every
-    # `dispatcher_interval` (30s default) and can wake far more often on a
-    # busy fleet (trigger_dispatch fires on every status transition).
-    _GATE_CI_STATUS_CACHE_TTL_SECONDS: ClassVar[float] = 60.0
-
-    async def _fetch_gate_ci_state(self, slug: str, pr_number: int) -> str | None:
-        """Best-effort CI ``state`` lookup for the gate CI-pending check.
-
-        Reuses ``GitService.get_pr_ci_status`` - the exact signal ``pr_pass``
-        itself blocks on. Returns ``None`` on any lookup failure so the
-        caller fails open (never strands a task over a transient error).
-        """
-        from roboco.db import get_db_context
-        from roboco.services.git import GitService
-
-        try:
-            async with get_db_context() as db:
-                status = await GitService(db).get_pr_ci_status(slug, pr_number)
-        except Exception as exc:
-            logger.warning(
-                "gate CI status lookup failed",
-                project_slug=slug,
-                pr_number=pr_number,
-                error=str(exc),
-            )
-            return None
-        return status.get("state") if isinstance(status, dict) else None
-
-    async def _gate_task_ci_pending(self, task: dict[str, Any]) -> bool:
-        """True while the assembled PR's head-commit CI is still running or
-        not yet scheduled.
-
-        Without this, the dispatcher spawns a reviewer that immediately hits
-        ``pr_pass``'s own CI-pending block and exits, respawning every tick
-        until the respawn breaker trips and pages the CEO (live 2026-08: 7
-        rejected ``pr_pass`` calls in ~12 min on each of two tasks). The
-        lookup is cached per (slug, pr_number) for
-        ``_GATE_CI_STATUS_CACHE_TTL_SECONDS``.
-
-        Fails open (``False`` - spawn proceeds) on a missing project_slug/
-        pr_number, a lookup error, or any non-pending state (including
-        ``no_ci_configured``, ``error``, ``success``, ``failure``) - a
-        reviewer must still be spawned for a repo with no CI configured, or
-        to act on a genuinely-failing PR via ``pr_fail``. Only ``pending``
-        and ``pending_not_scheduled`` hold the spawn back.
-        """
-        slug = task.get("project_slug")
-        pr_number = task.get("pr_number")
-        if not slug or not pr_number:
-            return False
-        cache_key = (str(slug), int(pr_number))
-        now = time.monotonic()
-        cached = self._gate_ci_status_cache.get(cache_key)
-        ttl = self._GATE_CI_STATUS_CACHE_TTL_SECONDS
-        if cached is not None and now - cached[0] < ttl:
-            state = cached[1]
-        else:
-            state = await self._fetch_gate_ci_state(str(slug), int(pr_number))
-            self._gate_ci_status_cache[cache_key] = (now, state)
-        return state in ("pending", "pending_not_scheduled")
-
     async def _dispatch_pr_gate_work(self, client: httpx.AsyncClient) -> None:
         """Dispatch in-path PR-review-gate tasks (awaiting_pr_review) to reviewers.
 
         Routes by level: a cell→root task (team backend/frontend/ux_ui) goes to
         that cell's reviewer (be/fe/ux-pr-reviewer); the root→master task goes to
-        the main reviewer (pr-reviewer-1) - the SAME shared reviewer
-        ``_dispatch_pr_review_work`` uses for inbound external/fork PRs, so this
-        dispatcher runs BEFORE it in ``_dispatch_all_work``'s order: an
-        assembled root PR blocks the whole delivery pipeline (every PM merge
-        downstream waits on it) while an external PR can wait a tick, so ties
-        for the shared reviewer must favor the internal gate. Without this
-        order a busy external-PR queue starves the root→master gate
-        indefinitely (live 2026-08: two cell tasks self-routed via their
-        dedicated cell reviewers while two Main-PM root tasks sat on
-        assignee=main-pm until the CEO manually intervened). The reviewer
-        claims the task itself via ``claim_gate_review`` (no pre-claim -
-        mirrors the external-PR dispatcher); the ``is_agent_active`` guard +
-        one-reviewer-per-cell prevent a double-spawn, and ``spawned`` bounds
-        each reviewer to one task per tick. A task whose assembled PR's CI is
-        still pending is skipped entirely (see ``_gate_task_ci_pending``) so
-        the reviewer isn't spawned only to be immediately CI-blocked.
-
-        When a cell's dedicated reviewer is active on another gate task,
-        ``_select_agent_for_cell`` falls back to the shared
-        ``cell-pr-reviewer-2`` (board-team, image-identical), so a same-cell
-        pile-up no longer serializes 12-14 min on a single reviewer.
-        ``cell-pr-reviewer-2`` is never used for the root→master gate or
-        inbound external PRs (both hardcode pr-reviewer-1), preserving the
-        run-order starvation guard above.
+        the main reviewer (pr-reviewer-1). The reviewer claims the task itself via
+        ``claim_gate_review`` (no pre-claim — mirrors the external-PR dispatcher);
+        the ``is_agent_active`` guard + one-reviewer-per-cell prevent a
+        double-spawn, and ``spawned`` bounds each reviewer to one task per tick.
         """
         tasks = await self._fetch_tasks(client, "awaiting_pr_review")
         spawned: set[str] = set()
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
-                continue
-            if await self._gate_task_ci_pending(task):
                 continue
             team = task.get("team")
             if team in ("backend", "frontend", "ux_ui"):
@@ -16956,7 +15949,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 if self._is_agent_active(agent_slug):
                     continue
 
-                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
                     continue
                 if not await self._notification_has_live_work(client, notif):
                     continue
@@ -16989,7 +15982,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 if self._is_agent_active(agent_slug):
                     continue
 
-                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
                     continue
                 if not await self._notification_has_live_work(client, notif):
                     continue
@@ -17019,7 +16012,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             alert = await self._next_unobserved_audit_alert(client)
             if alert is not None:
                 alert_id = str(alert["id"])
-                if not await self._notification_spawn_cooled("auditor", alert_id):
+                if not self._notification_spawn_cooled("auditor", alert_id):
                     await self.spawn_agent(
                         agent_id="auditor",
                         initial_prompt=self._build_audit_prompt(
@@ -17043,7 +16036,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             return
         if not await self._has_recent_delivery_activity(client):
             return
-        if await self._notification_spawn_cooled("auditor", "_scheduled_audit"):
+        if self._notification_spawn_cooled("auditor", "_scheduled_audit"):
             return
         await self.spawn_agent(
             agent_id="auditor",
@@ -17432,7 +16425,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                     continue
 
                 # Agent is offline - spawn them with A2A context
-                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
                     continue
                 await self.spawn_agent(
                     agent_id=agent_slug,
@@ -18251,11 +17244,9 @@ follow-up -> spotlight) — for the CEO to review. You author this alone.
 5. propose_campaign(campaign_name="<short name>", posts=[...])
      — call this EXACTLY ONCE with 2-6 posts IN ORDER. Each post is an
        object with: body (the tweet text, plain, <=280 chars, in your voice —
-       see the VOICE GUIDE, and clearing the IMPACT BAR in your identity:
-       deliverable noun in the first sentence, one falsifiable specific, no
-       hashtags/emoji/exclamations), publish_after (ISO 8601 datetime,
-       future, strictly ascending across posts), stage_label (one of
-       'teaser', 'launch', 'follow_up', 'spotlight', 'other').
+       see the VOICE GUIDE), publish_after (ISO 8601 datetime, future,
+       strictly ascending across posts), stage_label (one of 'teaser',
+       'launch', 'follow_up', 'spotlight', 'other').
 
    If there is genuinely nothing this cycle worth a campaign — no real
    highlights on a release trigger, nothing fresh on an on-demand run —
@@ -18520,10 +17511,8 @@ RECENTLY REJECTED BY THE CEO — avoid repeating these angles: {rejected_line}
    the CEO can enable), not in the already-covered list above, and worth
    telling people about.
 4. Draft ONE post in your voice (see your identity's VOICE GUIDE) — plain
-   text, no markdown, no thread, max 280 characters, never invent a
-   capability that doesn't exist, and it must clear the IMPACT BAR in your
-   identity (deliverable noun in the first sentence, one falsifiable
-   specific, no hashtags/emoji/exclamations).
+   text, no markdown, no thread, max 280 characters, and never invent a
+   capability that doesn't exist.
 5. propose_feature_spotlight(feature_slug="<a short stable slug>",
    feature_title="<human-readable feature name>", body="<the post>")
      — call this EXACTLY ONCE.
@@ -18642,12 +17631,7 @@ SCREENED CANDIDATES:
    someone else in a way that makes a RoboCo reply redundant.
 3. For each one, draft a reply in your voice (see your identity's VOICE
    GUIDE): answer or add value to the actual conversation, plain text, max
-   280 characters, never invent facts about RoboCo, and it must clear the
-   IMPACT BAR in your identity (deliverable noun in the first sentence, one
-   falsifiable specific, no hashtags/emoji/exclamations). The platform
-   appends the conversation's own URL to your reply automatically, so
-   reply_body itself must contain NO links; the IMPACT BAR's one-link rule
-   is satisfied by that appended URL.
+   280 characters, never invent facts about RoboCo.
 4. propose_conversation_replies(items=[...])
      — call this EXACTLY ONCE with 1-{max_items} items. Each item is an
        object with: tweet_id (REQUIRED — must be one of the candidate ids
@@ -18779,10 +17763,8 @@ there is no separate approval surface.
    (a process/craft note), 'changelog_highlight' (one specific shipped
    change), or 'other'.
 4. Draft ONE post in your voice (see your identity's VOICE GUIDE) — plain
-   text, no markdown, no thread, max 280 characters, never invent a
-   capability that doesn't exist, and it must clear the IMPACT BAR in your
-   identity (deliverable noun in the first sentence, one falsifiable
-   specific, no hashtags/emoji/exclamations).
+   text, no markdown, no thread, max 280 characters, and never invent a
+   capability that doesn't exist.
 5. propose_editorial_post(angle="<one of the four above>", body="<the post>",
    rationale="<why this angle, this cycle>")
      — call this EXACTLY ONCE.

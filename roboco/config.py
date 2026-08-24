@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.29.0"
+    app_version: str = "0.28.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -125,19 +125,6 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=20, ge=0)
     database_pool_timeout: int = Field(default=10, ge=1)
     database_pool_recycle: int = Field(default=1800, ge=60)
-    # A SEPARATE, smaller engine/pool for the orchestrator's background engine
-    # loops (self-heal, ci-watch, dep-update, env-sync, release-manager,
-    # x-mentions, board-program, video-render, the vault engines, telegram
-    # poll, strategy-engine, see roboco.db.base.get_engine(pool=...)) so a
-    # long-held background connection can never starve an agent-facing
-    # FastAPI request queued on the primary pool. FastAPI's get_db /
-    # get_db_committed always use the primary pool; only these loops opt in
-    # via get_db_context(pool="background"). Ceiling with the primary pool's
-    # 30 is 38 against max_connections=100 (25 already in use at idle per the
-    # 2026-07-29 incident measurement), leaving headroom for the backup
-    # container, psql, and Alembic.
-    database_background_pool_size: int = Field(default=4, ge=1)
-    database_background_max_overflow: int = Field(default=4, ge=0)
     # Server-side guards against the lock-convoy incident class (2026-07-29):
     # a session parked mid-transaction on non-DB work (git subprocess, an
     # asyncio lock queue) holds its row locks + pooled connection until
@@ -792,7 +779,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 7.6.0 / guard-core 3.12.0), DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 7.2.0) — DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
@@ -813,9 +800,8 @@ class Settings(BaseSettings):
         description=(
             "Fail CLOSED: when a security check raises an unhandled error, block "
             "the request instead of letting it through. Secure default for "
-            "cloud/public hosting; the NAS compose ships this same true default "
-            "(fail-secure ON) now that the redis-blip 500 class is handled by "
-            "redis_fail_open + roboco.security's behavioral-path patch instead."
+            "cloud/public hosting; the NAS compose overrides this to false so a "
+            "guard-internal bug never 500s the operator's personal deploy."
         ),
     )
     guard_passive_mode: bool = Field(
@@ -877,42 +863,6 @@ class Settings(BaseSettings):
             "bridge pool nginx itself connects FROM (still trusted "
             "unconditionally so nginx can keep presenting XFF at all) — this "
             "only scopes which XFF entries are treated as hops."
-        ),
-    )
-    guard_log_suspicious_level: (
-        Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None
-    ) = Field(
-        default="WARNING",
-        description=(
-            "Log level for guard-core's suspicious-path log lines: IP bans, "
-            "blocked countries, and every BehaviorTracker ban/log/throttle "
-            "line share this one dial (guard-core 3.10.0 replaced a patchwork "
-            "of hardcoded WARNINGs with it). Default 'WARNING' is guard-core's "
-            "own default, so behavior is byte-for-byte unchanged unless an "
-            "operator sets this. CRITICAL: setting this to empty/None "
-            "silences IP-ban logging too, not just WAF noise, so a quieter "
-            "WAF also loses the ban audit trail. An invalid level (anything "
-            "outside DEBUG/INFO/WARNING/ERROR/CRITICAL) fails config load "
-            "instead of silently mis-configuring the WAF; empty string is "
-            "accepted as the env-settable spelling of None."
-        ),
-    )
-
-    @field_validator("guard_log_suspicious_level", mode="before")
-    @classmethod
-    def _empty_guard_log_suspicious_level_as_none(cls, v: object) -> object:
-        # Env vars are always strings, so an operator has no textual way to
-        # express Python None for this Literal field short of leaving it
-        # empty; the Literal itself still rejects anything else invalid.
-        return None if v == "" else v
-
-    guard_scan_response_body: bool = Field(
-        default=False,
-        description=(
-            "Let the guard's return_pattern behavior rules inspect response "
-            "bodies, not just status codes. Off by default: byte-for-byte "
-            "unchanged behavior, and roboco's own status:404/status:401 "
-            "rules never need it."
         ),
     )
 
@@ -1786,18 +1736,6 @@ class Settings(BaseSettings):
             "the branch reached the remote."
         ),
     )
-    git_diff_timeout_seconds: int = Field(
-        default=60,
-        ge=5,
-        description=(
-            'Wall-clock timeout in seconds for GET /api/git/diff\'s "diff" '
-            "stage — the two sequential local `git diff` / `git diff --stat` "
-            "subprocess calls together. Each call is already bounded "
-            "individually by git_command_timeout_seconds inside "
-            "GitService._run_git; this is the outer bound on the pair so a "
-            "stalled diff route fails closed with a 504 instead of hanging."
-        ),
-    )
     evidence_assembly_timeout_seconds: float = Field(
         default=45.0,
         ge=1.0,
@@ -2163,6 +2101,47 @@ class Settings(BaseSettings):
             "forking the shared OAuth refresh-token chain and triggering "
             "fleet-wide Kimi re-login; override via "
             "ROBOCO_KIMI_MAX_CONCURRENT only if you understand that risk"
+        ),
+    )
+    # OpenRouter — the Ollama shape, not Grok. A static metered API key
+    # injected via env (OPENROUTER_API_KEY + OPENROUTER_BASE_URL), no ~/. auth
+    # mount and no refresh loop (see roboco.llm.providers.openrouter). The
+    # default base URL is OpenRouter's public endpoint; the operator's key is
+    # stored Fernet-encrypted by the routing service (set_openrouter_api_key).
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description=(
+            "OpenRouter API base URL injected as OPENROUTER_BASE_URL at "
+            "spawn. Override via ROBOCO_OPENROUTER_BASE_URL"
+        ),
+    )
+    # The default OpenRouter model id (provider/model form, e.g.
+    # "anthropic/claude-sonnet-4") passed to `opencode run --model` when the
+    # routing assignment does not pin a specific model. The live catalog is
+    # searched on demand (GET /providers/openrouter/models) and the picked
+    # model id is stored via provider_type_override — this is only the floor.
+    openrouter_cli_model: str = Field(
+        default="anthropic/claude-sonnet-4",
+        description=(
+            "Default OpenRouter model id (provider/model) passed to opencode "
+            "when no per-assignment model is pinned. Override via "
+            "ROBOCO_OPENROUTER_CLI_MODEL"
+        ),
+    )
+    openrouter_http_referer: str = Field(
+        default="",
+        description=(
+            "Optional HTTP-Referer sent on OpenRouter requests (OpenRouter "
+            "surfaces it on the usage dashboard). Override via "
+            "ROBOCO_OPENROUTER_HTTP_REFERER"
+        ),
+    )
+    openrouter_x_title: str = Field(
+        default="RoboCo",
+        description=(
+            "Optional X-Title sent on OpenRouter requests (site name shown on "
+            "the OpenRouter usage dashboard). Override via "
+            "ROBOCO_OPENROUTER_X_TITLE"
         ),
     )
     # An interactive intake/secretary chat the human abandoned (closed the tab
