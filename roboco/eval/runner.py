@@ -782,6 +782,76 @@ class JudgeVerdict:
     rationale: str | None
 
 
+_JUDGE_HEADER = (
+    "You are grading a completed task for an automated agent quality "
+    "bench. Score 1-5 (5 = fully meets the expectation, 1 = does not "
+    "meet it at all). Reply in exactly this shape:\n"
+    "Score: <1-5>\n"
+    "Rationale: <one line>\n\n"
+)
+
+
+def _qa_judge_prompt(
+    fixture: BenchTaskSpec, criteria: str, notes: str, **extra: object
+) -> str:
+    defect_desc = extra.get("injected_defect") or "(unspecified defect)"
+    return (
+        _JUDGE_HEADER + "You are grading a QA review. The QA agent reviewed a PR that "
+        "contained an INJECTED DEFECT. A score of 5 means the QA agent "
+        "CAUGHT the defect (via fail_review with findings naming the "
+        "defect). A score of 1 means the QA agent MISSED the defect "
+        "(pass_review of a defective PR).\n\n"
+        f"Task: {fixture.title}\n"
+        f"Acceptance criteria:\n{criteria}\n\n"
+        f"Injected defect: {defect_desc}\n\n"
+        f"Expected (checked-in): {fixture.expectations}\n\n"
+        f"Actual notes:\n{notes or '(no notes)'}\n"
+    )
+
+
+def _pm_judge_prompt(
+    fixture: BenchTaskSpec, criteria: str, notes: str, **extra: object
+) -> str:
+    expected_coverage = extra.get("expected_coverage") or ()
+    coverage_list = (
+        "\n".join(f"- {c}" for c in expected_coverage)
+        if expected_coverage
+        else "(no explicit coverage criteria — check if the PM delegated at all)"
+    )
+    return (
+        _JUDGE_HEADER + "You are grading a PM delegation. The PM was given a parent task "
+        "and must delegate with covers_parent_criteria mapping every "
+        "acceptance criterion. A score of 5 means the PM delegated with "
+        "full coverage of every acceptance criterion. A score of 1 means "
+        "the PM dropped criteria or failed to delegate.\n\n"
+        f"Task: {fixture.title}\n"
+        f"Acceptance criteria:\n{criteria}\n\n"
+        f"Expected coverage:\n{coverage_list}\n\n"
+        f"Expected (checked-in): {fixture.expectations}\n\n"
+        f"Actual notes:\n{notes or '(no notes)'}\n"
+    )
+
+
+def _dev_judge_prompt(
+    fixture: BenchTaskSpec, criteria: str, notes: str, **extra: object
+) -> str:
+    diff = extra.get("diff") or ""
+    return (
+        _JUDGE_HEADER + f"Task: {fixture.title}\n"
+        f"Acceptance criteria:\n{criteria}\n\n"
+        f"Expected (checked-in): {fixture.expectations}\n\n"
+        f"Actual diff:\n{diff or '(empty diff)'}\n\n"
+        f"Actual notes:\n{notes or '(no notes)'}\n"
+    )
+
+
+_JUDGE_PROMPT_BUILDERS: dict[str, Callable[..., str]] = {
+    "qa": _qa_judge_prompt,
+    "cell_pm": _pm_judge_prompt,
+    "main_pm": _pm_judge_prompt,
+}
+
+
 def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
     """Build the judge prompt, selecting a role-specific template via
     ``fixture.target_role``. Developer fixtures use the generic diff+notes
@@ -789,59 +859,12 @@ def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
     grade coverage-mapped-vs-missing."""
     criteria = "\n".join(f"- {c}" for c in fixture.acceptance_criteria)
     target_role = fixture.target_role
-    injected_defect = getattr(fixture, "injected_defect", None)
-    expected_coverage = getattr(fixture, "expected_coverage", ())
-
-    header = (
-        "You are grading a completed task for an automated agent quality "
-        "bench. Score 1-5 (5 = fully meets the expectation, 1 = does not "
-        "meet it at all). Reply in exactly this shape:\n"
-        "Score: <1-5>\n"
-        "Rationale: <one line>\n\n"
+    builder = _JUDGE_PROMPT_BUILDERS.get(
+        target_role, _dev_judge_prompt
     )
-
-    if target_role == "qa":
-        defect_desc = injected_defect or "(unspecified defect)"
-        return (
-            header + "You are grading a QA review. The QA agent reviewed a PR that "
-            "contained an INJECTED DEFECT. A score of 5 means the QA agent "
-            "CAUGHT the defect (via fail_review with findings naming the "
-            "defect). A score of 1 means the QA agent MISSED the defect "
-            "(pass_review of a defective PR).\n\n"
-            f"Task: {fixture.title}\n"
-            f"Acceptance criteria:\n{criteria}\n\n"
-            f"Injected defect: {defect_desc}\n\n"
-            f"Expected (checked-in): {fixture.expectations}\n\n"
-            f"Actual notes:\n{notes or '(no notes)'}\n"
-        )
-
-    if target_role == "cell_pm":
-        coverage_list = (
-            "\n".join(f"- {c}" for c in expected_coverage)
-            if expected_coverage
-            else "(no explicit coverage criteria — check if the PM delegated at all)"
-        )
-        return (
-            header + "You are grading a PM delegation. The PM was given a parent task "
-            "and must delegate with covers_parent_criteria mapping every "
-            "acceptance criterion. A score of 5 means the PM delegated with "
-            "full coverage of every acceptance criterion. A score of 1 means "
-            "the PM dropped criteria or failed to delegate.\n\n"
-            f"Task: {fixture.title}\n"
-            f"Acceptance criteria:\n{criteria}\n\n"
-            f"Expected coverage:\n{coverage_list}\n\n"
-            f"Expected (checked-in): {fixture.expectations}\n\n"
-            f"Actual notes:\n{notes or '(no notes)'}\n"
-        )
-
-    # Default: developer fixture grading (diff + notes vs expectations)
-    return (
-        header + f"Task: {fixture.title}\n"
-        f"Acceptance criteria:\n{criteria}\n\n"
-        f"Expected (checked-in): {fixture.expectations}\n\n"
-        f"Actual diff:\n{diff or '(empty diff)'}\n\n"
-        f"Actual notes:\n{notes or '(no notes)'}\n"
-    )
+    return builder(fixture, criteria, notes, diff=diff,
+                   injected_defect=getattr(fixture, "injected_defect", None),
+                   expected_coverage=getattr(fixture, "expected_coverage", ()))
 
 
 async def _judge_chat(prompt: str) -> str | None:
