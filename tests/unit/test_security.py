@@ -371,11 +371,15 @@ def _append(seq: Any, item: str) -> None:
     seq.append(item)
 
 
-def test_whitelist_is_list_after_construction() -> None:
-    """guard 7.6.0 no longer coerces collection fields to immutable types;
-    whitelist stays a list as passed."""
+def test_whitelist_is_immutable_after_construction() -> None:
+    """guard-core 3.12.0 coerces list/set/dict collection fields to
+    tuple/frozenset/MappingProxyType at construction; in-place mutation now
+    raises. Documents the new contract for editors who reach for list-style
+    mutation on a config field."""
     cfg = security.build_security_config()
-    assert isinstance(cfg.whitelist, list)
+    assert isinstance(cfg.whitelist, tuple)
+    with pytest.raises(AttributeError):
+        _append(cfg.whitelist, "1.2.3.4")
 
 
 # --- agent_sensitive_headers: telemetry payloads never carry auth material -
@@ -398,26 +402,39 @@ def test_agent_sensitive_headers_present_when_telemetry_armed(
     ]
 
 
-# --- apply_guard: middleware mounted when armed ----------------------------
+# --- guard_scan_response_body: default-off response-body inspection -------
 
 
-def test_apply_guard_mounts_middleware_when_enabled(
+def test_guard_scan_response_body_defaults_false() -> None:
+    assert security.build_security_config().behavior_scan_response_body is False
+
+
+def test_guard_scan_response_body_threads_through_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_scan_response_body", True)
+    assert security.build_security_config().behavior_scan_response_body is True
+
+
+# --- add_status_route: internal readiness probe ----------------------------
+
+
+def test_apply_guard_adds_status_route_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "guard_enabled", True)
     app = FastAPI()
     security.apply_guard(app)
-    # guard.status module was removed in 7.6.0; verify middleware mounts instead.
-    assert any("SecurityMiddleware" in str(m.cls) for m in app.user_middleware)
+    assert "/_guard/status" in {getattr(r, "path", None) for r in app.routes}
 
 
-def test_apply_guard_no_middleware_when_disabled(
+def test_apply_guard_omits_status_route_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "guard_enabled", False)
     app = FastAPI()
     security.apply_guard(app)
-    assert not any("SecurityMiddleware" in str(m.cls) for m in app.user_middleware)
+    assert "/_guard/status" not in {getattr(r, "path", None) for r in app.routes}
 
 
 # --- block_clouds() decorator sanity: silent-filter path still resolves ---

@@ -22,6 +22,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from guard import SecurityConfig, SecurityDecorator, SecurityMiddleware
+from guard import status as guard_status
 from guard.adapters import StarletteGuardResponse
 from guard.lifespan import make_lifespan
 from guard_core.core.behavioral.processor import BehavioralProcessor
@@ -783,11 +784,11 @@ def build_security_config() -> SecurityConfig:
         # here lets guard peel forwarded LAN IPs as trusted hops and fall back to
         # the whitelisted docker-bridge peer, bypassing the block — see
         # test_nginx_forwarded_lan_client_is_not_whitelisted.
-        trusted_proxies=[
+        trusted_proxies=(
             "127.0.0.1",
             "::1",
             "172.16.0.0/12",
-        ],
+        ),
         trusted_proxy_depth=1,
         trust_x_forwarded_proto=True,
         # Calibrate-then-enforce.
@@ -834,11 +835,14 @@ def build_security_config() -> SecurityConfig:
         # The internal agent mesh skips all checks (WAF + IP-ban) — see
         # _INTERNAL_NETWORKS. External traffic via nginx carries the real
         # client IP (XFF, depth 1) and is still fully scrutinized.
-        whitelist=list(_guard_whitelist()),
+        whitelist=_guard_whitelist(),
         exclude_paths=_EXCLUDE_PATHS,
         security_headers=_SECURITY_HEADERS,
-        threat_ban_config=dict(_THREAT_BAN_CONFIG),
-        global_behavior_rules=list(_BEHAVIOR_RULES),
+        threat_ban_config=_THREAT_BAN_CONFIG,
+        global_behavior_rules=_BEHAVIOR_RULES,
+        # Off by default: roboco's own return_pattern rules match on status:
+        # only, which never needs a response body read.
+        behavior_scan_response_body=settings.guard_scan_response_body,
         # Signature WAF on, but calibrated: free-text bodies excluded (below).
         enable_penetration_detection=True,
         excluded_detection_headers=_TRACING_HEADERS,
@@ -869,6 +873,10 @@ def apply_guard(app: FastAPI) -> None:
         # stamp state.client_ip before the guard's extraction reads it.
         app.add_middleware(ClientIpResolutionMiddleware)
         app.state.guard_decorator = guard_deco
+        # Internal readiness probe (GET /_guard/status). nginx only routes
+        # /api and /ws to the orchestrator, so this is reachable on the
+        # docker mesh / localhost:8000 only -- the intent.
+        guard_status.add_status_route(app)
         logger.info(
             "fastapi-guard armed",
             passive=settings.guard_passive_mode,
