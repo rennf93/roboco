@@ -54,6 +54,29 @@ _AUTH_FAILURE_PATTERN = re.compile(
 )
 
 
+def _dict_error_text(error: dict[str, Any]) -> str | None:
+    """Extract error text from a dict-shaped ``error`` field.
+
+    Handles opencode's ``{"error":{"name":..., "data":{"message":...}}}`` shape
+    plus a bare ``{"error":{"message":...}}`` fallback and a ``data`` string.
+    """
+    parts: list[str] = []
+    name = error.get("name")
+    if isinstance(name, str) and name:
+        parts.append(name)
+    data = error.get("data")
+    if isinstance(data, dict):
+        message = data.get("message")
+        if isinstance(message, str) and message:
+            parts.append(message)
+    elif isinstance(data, str) and data:
+        parts.append(data)
+    message = error.get("message")
+    if isinstance(message, str) and message:
+        parts.append(message)
+    return " ".join(parts) if parts else None
+
+
 def _error_text_from_event(event: dict[str, Any]) -> str | None:
     """Pull a structured error message off one JSONL event, or ``None``.
 
@@ -69,21 +92,7 @@ def _error_text_from_event(event: dict[str, Any]) -> str | None:
         return None
     error = event.get("error")
     if isinstance(error, dict):
-        parts: list[str] = []
-        name = error.get("name")
-        if isinstance(name, str) and name:
-            parts.append(name)
-        data = error.get("data")
-        if isinstance(data, dict):
-            message = data.get("message")
-            if isinstance(message, str) and message:
-                parts.append(message)
-        elif isinstance(data, str) and data:
-            parts.append(data)
-        message = error.get("message")
-        if isinstance(message, str) and message:
-            parts.append(message)
-        return " ".join(parts) if parts else None
+        return _dict_error_text(error)
     if isinstance(error, str) and error:
         return error
     message = event.get("message")
