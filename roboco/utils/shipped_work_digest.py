@@ -21,11 +21,13 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from roboco.logging import get_logger
 from roboco.models.base import TaskStatus
-from roboco.services.release_readiness import _read_changelog, _unreleased_body
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = get_logger(__name__)
 
 # Completed-task digest cap — bounds the section regardless of how busy the
 # week was. Preserved verbatim from the original MegaphoneEngine constant.
@@ -77,11 +79,19 @@ async def _unreleased_changelog(session: AsyncSession, roboco_project_slug: str)
     clone; ``""`` when the file/section is absent, blank, or unreadable —
     never raises (caller renders the empty case explicitly)."""
     try:
+        from roboco.services.release_readiness import (  # noqa: PLC0415
+            _read_changelog,
+            _unreleased_body,
+        )
         from roboco.services.workspace import get_workspace_service  # noqa: PLC0415
 
         root = await get_workspace_service(session).ensure_read_clone(
             roboco_project_slug
         )
         return _unreleased_body(_read_changelog(Path(root)))
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "shipped-work-digest: changelog read failed (best-effort)",
+            error=str(exc),
+        )
         return ""
