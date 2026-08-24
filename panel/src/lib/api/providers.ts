@@ -18,6 +18,26 @@ export interface GrokKeyStatus {
   enabled: boolean;
 }
 
+export interface OpenRouterKeyStatus {
+  key_set: boolean;
+}
+
+/** One model entry returned by the OpenRouter model search endpoint. */
+export interface OpenRouterModel {
+  model_name: string;
+  display_name: string;
+  context_length: number | null;
+  pricing: {
+    prompt: string | null;
+    completion: string | null;
+  } | null;
+}
+
+/** Payload for setting or clearing the OpenRouter API key. */
+export interface SetOpenRouterKeyRequest {
+  api_key: string;
+}
+
 export interface ModelAssignment {
   id: string;
   scope: AssignmentScope;
@@ -38,6 +58,7 @@ export type RoutingMode =
   | "kimi"
   | "ollama"
   | "self_hosted"
+  | "openrouter"
   | "mix"
   | "cost_tiered";
 
@@ -154,6 +175,21 @@ export const providersApi = {
     return data;
   },
 
+  getOpenRouterKey: async (): Promise<OpenRouterKeyStatus> => {
+    const { data } = await api.get<OpenRouterKeyStatus>(
+      "/providers/openrouter-key",
+    );
+    return data;
+  },
+
+  setOpenRouterKey: async (apiKey: string): Promise<OpenRouterKeyStatus> => {
+    const { data } = await api.put<OpenRouterKeyStatus>(
+      "/providers/openrouter-key",
+      { api_key: apiKey } satisfies SetOpenRouterKeyRequest,
+    );
+    return data;
+  },
+
   getMode: async (): Promise<ModeSnapshot> => {
     const { data } = await api.get<ModeSnapshot>("/providers");
     return data;
@@ -193,6 +229,16 @@ export const providersApi = {
   getSelfHostedModels: async (): Promise<SelfHostedModel[]> => {
     const { data } = await api.get<SelfHostedModel[]>(
       "/providers/self-hosted/models",
+    );
+    return data;
+  },
+
+  searchOpenRouterModels: async (
+    query: string,
+  ): Promise<OpenRouterModel[]> => {
+    const { data } = await api.get<OpenRouterModel[]>(
+      "/providers/openrouter/models",
+      { params: { q: query } },
     );
     return data;
   },

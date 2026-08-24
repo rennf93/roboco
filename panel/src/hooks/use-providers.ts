@@ -12,6 +12,9 @@ export const providerKeys = {
   catalog: () => [...providerKeys.all, "catalog"] as const,
   ollamaKey: () => [...providerKeys.all, "ollama-key"] as const,
   grokKey: () => [...providerKeys.all, "grok-key"] as const,
+  openRouterKey: () => [...providerKeys.all, "openrouter-key"] as const,
+  openRouterModels: (query: string) =>
+    [...providerKeys.all, "openrouter-models", query] as const,
   mode: () => [...providerKeys.all, "mode"] as const,
   selfHostedConfig: () => [...providerKeys.all, "self-hosted-config"] as const,
   selfHostedModels: () => [...providerKeys.all, "self-hosted-models"] as const,
@@ -65,6 +68,34 @@ export function useSetGrokKey() {
       qc.invalidateQueries({ queryKey: providerKeys.grokKey() });
       qc.invalidateQueries({ queryKey: providerKeys.mode() });
     },
+  });
+}
+
+export function useOpenRouterKey() {
+  return useQuery({
+    queryKey: providerKeys.openRouterKey(),
+    queryFn: () => providersApi.getOpenRouterKey(),
+    staleTime: 60_000,
+  });
+}
+
+export function useSetOpenRouterKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (apiKey: string) => providersApi.setOpenRouterKey(apiKey),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.openRouterKey() });
+      qc.invalidateQueries({ queryKey: providerKeys.mode() });
+    },
+  });
+}
+
+export function useSearchOpenRouterModels(query: string) {
+  return useQuery({
+    queryKey: providerKeys.openRouterModels(query),
+    queryFn: () => providersApi.searchOpenRouterModels(query),
+    enabled: query.trim().length > 0,
+    staleTime: 60_000,
   });
 }
 
