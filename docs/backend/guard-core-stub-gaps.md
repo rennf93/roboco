@@ -14,11 +14,13 @@ PR #945 (`95d2525d`) fixed 9 mypy errors in `roboco/security.py` and `tests/unit
 **Errors 3-6 (type mismatches): `cast()` from `typing`.** The four kwargs whose source values are `tuple` / `MappingProxyType` are wrapped in `cast()` targeting the `list` / `dict` type mypy expects. This is preferred over `type: ignore` because it documents the expected type explicitly rather than silencing the check. The cast is a no-op at runtime — Python's `cast()` returns its second argument unchanged.
 
 ```python
-# security.py — the four cast() sites
+# security.py — the four cast() sites (kwargs inside the SecurityConfig(...) call)
+# fmt: off
 trusted_proxies=cast("list[str]", ("127.0.0.1", "::1", "172.16.0.0/12")),
 whitelist=cast("list[str] | None", _guard_whitelist()),
 threat_ban_config=cast("dict[str, ThreatBanConfig]", _THREAT_BAN_CONFIG),
 global_behavior_rules=cast("list[BehaviorRuleConfig]", _BEHAVIOR_RULES),
+# fmt: on
 ```
 
 **Errors 1-2, 7-9 (missing stub attributes/kwargs): `type: ignore` with waivers.** Five sites where the stub gap cannot be bridged with a cast (the attribute or kwarg simply does not exist in the stubs) carry `type: ignore` comments, each waived in `.roboco/conventions.yml` under `no_lint_suppressions`:
