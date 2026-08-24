@@ -176,6 +176,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
 
         result = resp.json()
         total = result.get("total", 0)
+        gaps = result.get("gaps", [])
         # Caveat AFTER capping content, so the cap can never truncate it away.
         capped = _cap_result_content(result.get("results", []))
         results = _append_live_write_caveat(capped)
@@ -185,7 +186,13 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             "total": total,
             "results": results,
         }
-        if total == 0:
+        if gaps:
+            response["gaps"] = gaps
+            response["hint"] = (
+                f"Partial results: {len(gaps)} index(es) timed out"
+                f" ({', '.join(gaps)}). Results may be incomplete."
+            )
+        if total == 0 and not gaps:
             response["hint"] = (
                 "No results. Try roboco_ask_mentor(question) for better answers."
             )
@@ -239,6 +246,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
         result = resp.json()
         answer = result.get("answer", "")
         context_used = result.get("context_used", 0)
+        gaps = result.get("gaps", [])
         # Caveat AFTER capping content, so the cap can never truncate it away.
         capped_citations = _cap_result_content(result.get("citations", []), limit=8)
         citations = _append_live_write_caveat(capped_citations)
@@ -249,8 +257,14 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             "citations": citations,
             "context_used": context_used,
         }
+        if gaps:
+            response["gaps"] = gaps
+            response["hint"] = (
+                f"Partial results: {len(gaps)} index(es) timed out"
+                f" ({', '.join(gaps)}). Answer may be incomplete."
+            )
         # Guide to mentor for better results
-        if context_used == 0 or "couldn't find" in answer.lower():
+        if (context_used == 0 or "couldn't find" in answer.lower()) and not gaps:
             response["hint"] = (
                 "Limited results. roboco_ask_mentor(question) searches more sources "
                 "and supports follow-up questions."

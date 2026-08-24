@@ -369,6 +369,15 @@ async def rag_query(
             detail=f"RAG query failed: {e}",
         ) from e
 
+    gaps = getattr(response, "gaps", [])
+
+    # Total outage: every index timed out, no citations returned.
+    if not response.citations and gaps:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"All RAG indexes timed out: {', '.join(gaps)}",
+        )
+
     return RAGQueryResponse(
         answer=response.answer,
         citations=[
@@ -385,6 +394,7 @@ async def rag_query(
         context_used=response.context_used,
         search_stats=response.search_stats if response.search_stats else None,
         search_errors=response.search_errors if response.search_errors else None,
+        gaps=gaps,
     )
 
 
