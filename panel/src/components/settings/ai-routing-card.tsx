@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
+import api from "@/lib/api/client";
 import {
   useApplyMode,
   useApplyPreset,
@@ -44,6 +46,7 @@ import {
   Cpu,
   Gauge,
   Gem,
+  Globe,
   Key,
   KeyRound,
   Moon,
@@ -61,6 +64,10 @@ import {
 } from "@/lib/api/providers";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
+import {
+  OpenRouterProviderKeyRow,
+  useOpenRouterKeyStatus,
+} from "@/components/settings/provider-key-card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -159,6 +166,48 @@ const COMPLEXITY_ROLE_LABELS: Record<string, string> = {
   documenter: "Documenter",
 };
 
+// OpenRouter model entry from GET /providers/openrouter/models?q= (API contract,
+// mirrors fe-dev-1's parallel type). Pricing fields are per-token floats as
+// strings — OpenRouter's native format.
+interface OpenRouterModel {
+  model_name: string;
+  display_name: string;
+  context_length: number;
+  pricing: {
+    prompt: string;
+    completion: string;
+  };
+}
+
+// Format a per-token price as human-readable per-million-token, e.g.
+// "0.000003" → "$3.00/1M". Zero → "Free" (OpenRouter has free models).
+function formatPricePerMillion(price: string | number): string {
+  const num = typeof price === "string" ? parseFloat(price) : price;
+  if (isNaN(num) || num === 0) return "Free";
+  return `$${(num * 1_000_000).toFixed(2)}/1M`;
+}
+
+// Surface specific OpenRouter failure reasons instead of a generic message
+// (HoM UX requirement c): 400 = no key, 401 = auth, 429 = rate limit, timeout.
+function openRouterSearchErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "response" in error) {
+    const status = (error as { response?: { status?: number } }).response
+      ?.status;
+    if (status === 400)
+      return "OpenRouter API key not set — save your key above first.";
+    if (status === 401)
+      return "OpenRouter auth failure — your API key may be invalid or expired.";
+    if (status === 429)
+      return "OpenRouter rate limit — too many requests, try again in a moment.";
+  }
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: string }).code;
+    if (code === "ECONNABORTED" || code === "ETIMEDOUT")
+      return "OpenRouter search timed out — try again in a moment.";
+  }
+  return "OpenRouter API is unavailable — try again in a moment.";
+}
+
 export function AIRoutingCard() {
   const { data: catalog = [] } = useCatalog();
   const { data: keyStatus } = useOllamaKey();
@@ -191,7 +240,9 @@ export function AIRoutingCard() {
   const applyMode = useApplyMode();
 
   const hasOllamaKey = !!keyStatus?.has_key;
-  const currentMode: RoutingMode = snapshot?.mode ?? "anthropic";
+  const currentMode = (snapshot?.mode ?? "anthropic") as
+    | RoutingMode
+    | "openrouter";
 
   // Track the latest self-hosted test result so ModeButton can gate access.
   const [selfHostedTestResult, setSelfHostedTestResult] =
@@ -258,6 +309,36 @@ export function AIRoutingCard() {
       toast.error("Save failed: " + errMsg(e));
     }
   };
+
+  // --- OpenRouter API key status + model search ---
+  const { data: openRouterKeyStatus } = useOpenRouterKeyStatus();
+  const hasOpenRouterKey = !!openRouterKeyStatus?.key_set;
+  const [openRouterModel, setOpenRouterModel] = useState("");
+  const [openRouterSearch, setOpenRouterSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(openRouterSearch), 300);
+    return () => clearTimeout(timer);
+  }, [openRouterSearch]);
+
+  const {
+    data: openRouterModels,
+    isLoading: openRouterSearchLoading,
+    isError: openRouterSearchError,
+    error: openRouterSearchErr,
+  } = useQuery({
+    queryKey: ["providers", "openrouter-models", debouncedSearch],
+    queryFn: async () => {
+      const { data } = await api.get<OpenRouterModel[]>(
+        "/providers/openrouter/models",
+        { params: { q: debouncedSearch } },
+      );
+      return data;
+    },
+    enabled: debouncedSearch.length > 0 && hasOpenRouterKey,
+    staleTime: 60_000,
+  });
 
   // --- Mix mode state: agent_slug → model_name ---
   const initialMix = useMemo(() => {
@@ -424,6 +505,32 @@ export function AIRoutingCard() {
       await applyMode.mutateAsync({ mode: "ollama" });
       toast.success(
         "Role/global routing now on Ollama — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToOpenRouter = async () => {
+    if (!hasOpenRouterKey) {
+      toast.error("Save the OpenRouter API key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to OpenRouter? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced. " +
+          "V1: delivery roles only, not Intake/Secretary.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({
+        mode: "openrouter" as unknown as RoutingMode,
+        ...(openRouterModel ? { default_model: openRouterModel } : {}),
+      });
+      toast.success(
+        "Role/global routing now on OpenRouter — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -815,11 +922,11 @@ export function AIRoutingCard() {
         </CardTitle>
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
-          <code className="px-1"> ~/.claude </code> auth; Grok (xAI) and Ollama
-          Cloud use the API keys you save below; Codex, Gemini, and Kimi
-          authenticate via their own mounted CLI subscriptions (no key needed) —
-          V1: delivery roles only, not Intake/Secretary; Self-Hosted connects to
-          any OpenAI-compatible endpoint you run locally.
+          <code className="px-1"> ~/.claude </code> auth; Grok (xAI), Ollama
+          Cloud, and OpenRouter use the API keys you save below; Codex, Gemini,
+          and Kimi authenticate via their own mounted CLI subscriptions (no key
+          needed) — V1: delivery roles only, not Intake/Secretary; Self-Hosted
+          connects to any OpenAI-compatible endpoint you run locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -944,6 +1051,11 @@ export function AIRoutingCard() {
                 </p>
               )}
             </section>
+
+            <Separator />
+
+            {/* -------- OpenRouter key -------- */}
+            <OpenRouterProviderKeyRow />
           </div>
 
           {/* -------- Self-Hosted LLM -------- */}
@@ -958,10 +1070,10 @@ export function AIRoutingCard() {
 
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
+          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-10 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -1020,6 +1132,19 @@ export function AIRoutingCard() {
               active={currentMode === "ollama"}
               onClick={flipToOllama}
               disabled={applyMode.isPending || !hasOllamaKey}
+            />
+            <ModeButton
+              icon={<Globe className="h-4 w-4" />}
+              label="OpenRouter"
+              description={
+                hasOpenRouterKey
+                  ? "Every agent uses OpenRouter (pick a model below)."
+                  : "Save the OpenRouter key first."
+              }
+              active={currentMode === "openrouter"}
+              onClick={flipToOpenRouter}
+              disabled={applyMode.isPending || !hasOpenRouterKey}
+              labelHint="One key unlocks hundreds of models on OpenRouter — GLM, DeepSeek, Qwen, Claude, GPT and more. Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Server className="h-4 w-4" />}
@@ -1102,6 +1227,15 @@ export function AIRoutingCard() {
               Intake/Secretary.
             </p>
           ) : null}
+          {currentMode === "openrouter" || currentMode === "mix" ? (
+            <p className="text-xs text-muted-foreground">
+              OpenRouter agents run on the opencode CLI; one API key unlocks
+              hundreds of models (GLM, DeepSeek, Qwen, Claude, GPT and more).
+              The same command / secret-exfiltration guard, prompt-injection
+              guard, and per-agent cost cap all apply. V1: delivery roles only
+              — not available for Intake/Secretary.
+            </p>
+          ) : null}
         </section>
 
         {/* -------- Self-Hosted model picker (when self_hosted mode active) -------- */}
@@ -1141,6 +1275,92 @@ export function AIRoutingCard() {
                   ))}
                 </SelectContent>
               </Select>
+            </section>
+          </>
+        )}
+
+        {/* -------- OpenRouter model picker (when openrouter mode active) -------- */}
+        {currentMode === "openrouter" && (
+          <>
+            <Separator />
+            <section className="space-y-2">
+              <Label className="text-sm font-medium">
+                OpenRouter default model
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Search OpenRouter&apos;s catalog and pick a model for all
+                agents in OpenRouter mode. Pricing shown per million tokens.
+              </p>
+              <Input
+                type="text"
+                value={openRouterSearch}
+                onChange={(e) => setOpenRouterSearch(e.target.value)}
+                placeholder="Search models…"
+                className="w-full max-w-sm"
+                disabled={!hasOpenRouterKey}
+              />
+              {!hasOpenRouterKey ? (
+                <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  Save your OpenRouter API key above to search and pick models.
+                </p>
+              ) : openRouterSearchError && debouncedSearch ? (
+                <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  {openRouterSearchErrorMessage(openRouterSearchErr)}
+                </p>
+              ) : openRouterSearchLoading && debouncedSearch ? (
+                <p className="text-xs text-muted-foreground">Searching…</p>
+              ) : openRouterModels && openRouterModels.length > 0 ? (
+                <div className="max-h-64 overflow-y-auto rounded-md border">
+                  {openRouterModels.map((m) => (
+                    <button
+                      key={m.model_name}
+                      type="button"
+                      onClick={() => setOpenRouterModel(m.model_name)}
+                      className={
+                        "flex w-full items-center justify-between p-2 text-left text-xs hover:bg-muted/50 " +
+                        (openRouterModel === m.model_name ? "bg-primary/5" : "")
+                      }
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">
+                          {m.display_name}
+                        </div>
+                        <div className="text-muted-foreground font-mono truncate">
+                          {m.model_name}
+                        </div>
+                        {m.context_length > 0 && (
+                          <div className="text-muted-foreground">
+                            {m.context_length.toLocaleString()} ctx
+                          </div>
+                        )}
+                      </div>
+                      <div className="ml-2 shrink-0 text-right">
+                        <div>
+                          {formatPricePerMillion(m.pricing.prompt)} in
+                        </div>
+                        <div className="text-muted-foreground">
+                          {formatPricePerMillion(m.pricing.completion)} out
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : openRouterModels &&
+                openRouterModels.length === 0 &&
+                debouncedSearch &&
+                !openRouterSearchLoading ? (
+                <p className="rounded-md border p-3 text-xs text-muted-foreground">
+                  No models found for &quot;{debouncedSearch}&quot;. Try a
+                  different search.
+                </p>
+              ) : null}
+              {openRouterModel && (
+                <p className="text-xs text-muted-foreground">
+                  Selected: <span className="font-mono">{openRouterModel}</span>
+                </p>
+              )}
             </section>
           </>
         )}
@@ -1494,7 +1714,8 @@ function ProviderBadge({
     | "gemini"
     | "kimi"
     | "ollama"
-    | "self-hosted";
+    | "self-hosted"
+    | "openrouter";
 }) {
   const styles: Record<string, string> = {
     anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
@@ -1504,6 +1725,7 @@ function ProviderBadge({
     openai: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400",
     gemini: "bg-sky-500/20 text-sky-700 dark:text-sky-400",
     kimi: "bg-amber-500/20 text-amber-700 dark:text-amber-400",
+    openrouter: "bg-indigo-500/20 text-indigo-700 dark:text-indigo-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
@@ -1513,6 +1735,7 @@ function ProviderBadge({
     openai: "C",
     gemini: "Ge",
     kimi: "K",
+    openrouter: "OR",
   };
   return (
     <span

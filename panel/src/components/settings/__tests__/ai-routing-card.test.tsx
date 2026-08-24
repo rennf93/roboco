@@ -124,6 +124,19 @@ vi.mock("@/lib/api/providers", () => ({
   COMPLEXITY_OVERRIDE_ROLES: ["developer", "qa", "documenter"],
 }));
 
+// OpenRouter key + model-search use the api client directly (not via
+// providersApi), so mock the client to return a default no-key response.
+vi.mock("@/lib/api/client", () => ({
+  default: {
+    get: vi.fn(async (url: string) => {
+      if (url === "/providers/openrouter-key")
+        return { data: { key_set: false } };
+      return { data: [] };
+    }),
+    put: vi.fn(async () => ({ data: { key_set: false } })),
+  },
+}));
+
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
@@ -459,7 +472,7 @@ describe("AIRoutingCard", () => {
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
-    expect(screen.getAllByText("not set")).toHaveLength(2); // Grok + Ollama
+    expect(screen.getAllByText("not set")).toHaveLength(3); // Grok + Ollama + OpenRouter
 
     const grokInput = screen.getByPlaceholderText("xai-…");
     fireEvent.change(grokInput, { target: { value: "xai-secret" } });
@@ -593,7 +606,7 @@ describe("AIRoutingCard", () => {
     ).toBe("closed");
 
     const notSetBadges = screen.getAllByText("not set");
-    expect(notSetBadges).toHaveLength(2);
+    expect(notSetBadges).toHaveLength(3); // Grok + Ollama + OpenRouter
     for (const badge of notSetBadges) {
       expect(badge.getAttribute("data-state")).toBe("closed");
     }
