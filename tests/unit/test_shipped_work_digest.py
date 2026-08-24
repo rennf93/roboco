@@ -12,11 +12,15 @@ lines rather than an empty string or a raised exception.
 
 from __future__ import annotations
 
+import importlib
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from roboco.models.base import Team
 from roboco.utils.shipped_work_digest import shipped_work_digest
-from structlog.testing import capture_logs
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _mock_session(rows: list[tuple]) -> MagicMock:
@@ -89,21 +93,26 @@ async def test_degradation_changelog_exception_does_not_raise() -> None:
     assert "(not available this cycle)" in got
 
 
-async def test_changelog_exception_emits_warning_log() -> None:
+async def test_changelog_exception_emits_warning_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A changelog read that raises internally emits a warning log before
-    degrading to the empty string — restoring the observability the original
-    MegaphoneEngine implementation had."""
+    degrading to the empty string. The module-level structlog logger is
+    patched with a Mock so the assertion is deterministic regardless of
+    structlog's processor-chain / cache state at the point this test runs in
+    the full suite (``capture_logs`` and ``caplog`` both depend on that
+    state and fail when ``setup_logging`` reconfigures structlog after the
+    logger's first-use cache)."""
     session = _mock_session(rows=[])
+    fake_logger = MagicMock()
+    _swd = importlib.import_module("roboco.utils.shipped_work_digest")
+    monkeypatch.setattr(_swd, "logger", fake_logger)
 
-    with (
-        patch(
-            "roboco.services.workspace.get_workspace_service",
-            side_effect=RuntimeError("clone blew up"),
-        ),
-        capture_logs() as logs,
+    with patch(
+        "roboco.services.workspace.get_workspace_service",
+        side_effect=RuntimeError("clone blew up"),
     ):
         await shipped_work_digest(session, "roboco-api")
 
-    warning_logs = [e for e in logs if e["log_level"] == "warning"]
-    assert warning_logs, "changelog read failure must emit a warning log"
-    assert "changelog" in warning_logs[0]["event"].lower()
+    fake_logger.warning.assert_called_once()
+    assert "changelog" in fake_logger.warning.call_args.args[0].lower()
