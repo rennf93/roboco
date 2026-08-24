@@ -71,11 +71,7 @@ class StalledReason(StrEnum):
     """
 
     BREAKER_TRIPPED = "breaker_tripped"  # _pm_respawn_should_gate strike cap hit
-    # Intentionally unused: `_notification_spawn_over_cap` (the no-task_id
-    # analogue of the breaker-tripped path) notifies the CEO on trip but has
-    # no task_id to key a durable marker on. Reserved for a future
-    # task-keyed variant of that path, not dead code to remove.
-    NOTIFICATION_CAP = "notification_cap"
+    NOTIFICATION_CAP = "notification_cap"  # reserved: no-task_id spawn-cap path
 
 
 class TaskType(StrEnum):
