@@ -19,10 +19,10 @@ from __future__ import annotations
 import re
 from ipaddress import ip_address, ip_network
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from guard import SecurityConfig, SecurityDecorator, SecurityMiddleware
-from guard import status as guard_status
+from guard import status as guard_status  # type: ignore[attr-defined]
 from guard.adapters import StarletteGuardResponse
 from guard.lifespan import make_lifespan
 from guard_core.core.behavioral.processor import BehavioralProcessor
@@ -784,10 +784,13 @@ def build_security_config() -> SecurityConfig:
         # here lets guard peel forwarded LAN IPs as trusted hops and fall back to
         # the whitelisted docker-bridge peer, bypassing the block — see
         # test_nginx_forwarded_lan_client_is_not_whitelisted.
-        trusted_proxies=(
-            "127.0.0.1",
-            "::1",
-            "172.16.0.0/12",
+        trusted_proxies=cast(
+            "list[str]",
+            (
+                "127.0.0.1",
+                "::1",
+                "172.16.0.0/12",
+            ),
         ),
         trusted_proxy_depth=1,
         trust_x_forwarded_proto=True,
@@ -835,14 +838,14 @@ def build_security_config() -> SecurityConfig:
         # The internal agent mesh skips all checks (WAF + IP-ban) — see
         # _INTERNAL_NETWORKS. External traffic via nginx carries the real
         # client IP (XFF, depth 1) and is still fully scrutinized.
-        whitelist=_guard_whitelist(),
+        whitelist=cast("list[str] | None", _guard_whitelist()),
         exclude_paths=_EXCLUDE_PATHS,
         security_headers=_SECURITY_HEADERS,
-        threat_ban_config=_THREAT_BAN_CONFIG,
-        global_behavior_rules=_BEHAVIOR_RULES,
+        threat_ban_config=cast("dict[str, ThreatBanConfig]", _THREAT_BAN_CONFIG),
+        global_behavior_rules=cast("list[BehaviorRuleConfig]", _BEHAVIOR_RULES),
         # Off by default: roboco's own return_pattern rules match on status:
         # only, which never needs a response body read.
-        behavior_scan_response_body=settings.guard_scan_response_body,
+        behavior_scan_response_body=settings.guard_scan_response_body,  # type: ignore[call-arg]
         # Signature WAF on, but calibrated: free-text bodies excluded (below).
         enable_penetration_detection=True,
         excluded_detection_headers=_TRACING_HEADERS,
