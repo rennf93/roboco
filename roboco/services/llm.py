@@ -202,7 +202,13 @@ async def probe_openrouter_models(
         return [], "An unexpected error occurred while probing OpenRouter."
 
     raw_models = data.get("data", []) if isinstance(data, dict) else []
-    query_lower = query.lower()
+    return _filter_openrouter_models(raw_models, query.lower()), None
+
+
+def _filter_openrouter_models(
+    raw_models: list[Any], query_lower: str
+) -> list[dict[str, Any]]:
+    """Filter raw OpenRouter model dicts to tools-supporting, query-matching entries."""
     models: list[dict[str, Any]] = []
     for m in raw_models:
         if not isinstance(m, dict):
@@ -226,7 +232,7 @@ async def probe_openrouter_models(
                 "pricing": m.get("pricing", {}),
             }
         )
-    return models, None
+    return models
 
 
 @dataclass(frozen=True)
@@ -793,32 +799,26 @@ class ModelRoutingService(BaseService):
             exactly one caller: the `POST /providers` route) — never from
             startup, a migration, or a background loop.
         """
-        if mode == "anthropic":
-            await self._apply_anthropic()
-        elif mode == "grok":
-            await self._apply_grok(default_model)
-        elif mode == "codex":
-            await self._apply_codex(default_model)
-        elif mode == "gemini":
-            await self._apply_gemini(default_model)
-        elif mode == "kimi":
-            await self._apply_kimi(default_model)
-        elif mode == "openrouter":
-            await self._apply_openrouter(default_model)
-        elif mode == "ollama":
-            await self._apply_ollama(default_model)
-        elif mode == "self_hosted":
-            await self._apply_self_hosted(default_model)
-        elif mode == "mix":
-            await self._apply_mix(per_agent)
-        elif mode == "cost_tiered":
-            await self._apply_cost_tiered()
-        else:
+        dispatch: dict[str, Any] = {
+            "anthropic": self._apply_anthropic,
+            "grok": lambda: self._apply_grok(default_model),
+            "codex": lambda: self._apply_codex(default_model),
+            "gemini": lambda: self._apply_gemini(default_model),
+            "kimi": lambda: self._apply_kimi(default_model),
+            "openrouter": lambda: self._apply_openrouter(default_model),
+            "ollama": lambda: self._apply_ollama(default_model),
+            "self_hosted": lambda: self._apply_self_hosted(default_model),
+            "mix": lambda: self._apply_mix(per_agent),
+            "cost_tiered": self._apply_cost_tiered,
+        }
+        handler = dispatch.get(mode)
+        if handler is None:
             raise ValueError(
                 f"Unknown mode '{mode}'."
                 " Use 'anthropic', 'grok', 'codex', 'gemini', 'kimi', 'openrouter',"
                 " 'ollama', 'self_hosted', 'mix', or 'cost_tiered'."
             )
+        await handler()
 
     async def _wipe_mode_switch_assignments(self) -> None:
         """Delete plain ROLE/GLOBAL assignments on a mode switch — sparing two
