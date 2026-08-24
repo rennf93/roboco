@@ -971,6 +971,37 @@ async def test_record_learning(optimal_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_learning_best_effort_skip_on_embedder_failure(
+    optimal_client: AsyncClient,
+) -> None:
+    """A transient embedder failure (Ollama timeout) must not 500 the agent's
+    learning-record request — knowledge sharing is best-effort. Regression for
+    the RuntimeError that used to propagate from OptimalService.record_learning.
+    """
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.record_learning = AsyncMock(
+            side_effect=RuntimeError(
+                "Failed to record learning: Ollama request timed out: "
+            )
+        )
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/learnings/record",
+            json={
+                "content": "Something useful",
+                "category": "patterns",
+                "shareable": True,
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["status"] == "skipped"
+    assert body["learning_id"] == ""
+
+
+@pytest.mark.asyncio
 async def test_search_learnings(optimal_client: AsyncClient) -> None:
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()

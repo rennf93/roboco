@@ -888,10 +888,25 @@ def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
                 {"api_error": resp.text},
             )
 
+        body = resp.json()
+        # The route returns status="skipped" (learning_id="") when the embedding
+        # backend is transiently down — best-effort, not a hard failure. Surface
+        # it honestly so the agent doesn't re-record a dropped lesson in a loop.
+        status = body.get("status", "recorded")
+        learning_id = body.get("learning_id", "")
+        if status == "skipped" or not learning_id:
+            return {
+                "status": "skipped",
+                "message": (
+                    "Learning could not be indexed (knowledge backend "
+                    "unavailable); no action needed, it will not be retried."
+                ),
+                "learning_id": "",
+            }
         return {
             "status": "recorded",
             "message": "Learning recorded for future agents",
-            "learning_id": resp.json().get("learning_id", ""),
+            "learning_id": learning_id,
         }
 
     @mcp.tool()
