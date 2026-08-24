@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.28.0"
+    app_version: str = "0.29.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -125,6 +125,19 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=20, ge=0)
     database_pool_timeout: int = Field(default=10, ge=1)
     database_pool_recycle: int = Field(default=1800, ge=60)
+    # A SEPARATE, smaller engine/pool for the orchestrator's background engine
+    # loops (self-heal, ci-watch, dep-update, env-sync, release-manager,
+    # x-mentions, board-program, video-render, the vault engines, telegram
+    # poll, strategy-engine, see roboco.db.base.get_engine(pool=...)) so a
+    # long-held background connection can never starve an agent-facing
+    # FastAPI request queued on the primary pool. FastAPI's get_db /
+    # get_db_committed always use the primary pool; only these loops opt in
+    # via get_db_context(pool="background"). Ceiling with the primary pool's
+    # 30 is 38 against max_connections=100 (25 already in use at idle per the
+    # 2026-07-29 incident measurement), leaving headroom for the backup
+    # container, psql, and Alembic.
+    database_background_pool_size: int = Field(default=4, ge=1)
+    database_background_max_overflow: int = Field(default=4, ge=0)
     # Server-side guards against the lock-convoy incident class (2026-07-29):
     # a session parked mid-transaction on non-DB work (git subprocess, an
     # asyncio lock queue) holds its row locks + pooled connection until
@@ -779,7 +792,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 7.2.0) — DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 7.6.0 / guard-core 3.12.0), DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
@@ -800,8 +813,9 @@ class Settings(BaseSettings):
         description=(
             "Fail CLOSED: when a security check raises an unhandled error, block "
             "the request instead of letting it through. Secure default for "
-            "cloud/public hosting; the NAS compose overrides this to false so a "
-            "guard-internal bug never 500s the operator's personal deploy."
+            "cloud/public hosting; the NAS compose ships this same true default "
+            "(fail-secure ON) now that the redis-blip 500 class is handled by "
+            "redis_fail_open + roboco.security's behavioral-path patch instead."
         ),
     )
     guard_passive_mode: bool = Field(
@@ -863,6 +877,18 @@ class Settings(BaseSettings):
             "bridge pool nginx itself connects FROM (still trusted "
             "unconditionally so nginx can keep presenting XFF at all) — this "
             "only scopes which XFF entries are treated as hops."
+        ),
+    )
+    guard_log_suspicious_level: (
+        Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None
+    ) = Field(
+        default="WARNING",
+        description=(
+            "Log level for guard-core's suspicious-path log lines: IP bans, "
+            "blocked countries, and every BehaviorTracker ban/log emit. Set to "
+            "DEBUG during calibration to see every evaluated request, or CRITICAL "
+            "to suppress all but the most severe. None disables the suspicious "
+            "log line entirely (the guard event still fires)."
         ),
     )
 
