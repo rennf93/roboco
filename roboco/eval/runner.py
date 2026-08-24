@@ -826,7 +826,8 @@ def _pm_judge_prompt(
         else "(no explicit coverage criteria — check if the PM delegated at all)"
     )
     return (
-        _JUDGE_HEADER + "You are grading a PM delegation. The PM was given a parent task "
+        _JUDGE_HEADER
+        + "You are grading a PM delegation. The PM was given a parent task "
         "and must delegate with covers_parent_criteria mapping every "
         "acceptance criterion. A score of 5 means the PM delegated with "
         "full coverage of every acceptance criterion. A score of 1 means "
@@ -869,12 +870,15 @@ def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
     grade coverage-mapped-vs-missing."""
     criteria = "\n".join(f"- {c}" for c in fixture.acceptance_criteria)
     target_role = fixture.target_role
-    builder = _JUDGE_PROMPT_BUILDERS.get(
-        target_role, _dev_judge_prompt
+    builder = _JUDGE_PROMPT_BUILDERS.get(target_role, _dev_judge_prompt)
+    return builder(
+        fixture,
+        criteria,
+        notes,
+        diff=diff,
+        injected_defect=getattr(fixture, "injected_defect", None),
+        expected_coverage=getattr(fixture, "expected_coverage", ()),
     )
-    return builder(fixture, criteria, notes, diff=diff,
-                   injected_defect=getattr(fixture, "injected_defect", None),
-                   expected_coverage=getattr(fixture, "expected_coverage", ()))
 
 
 async def _judge_chat(prompt: str) -> str | None:
