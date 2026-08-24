@@ -417,11 +417,17 @@ def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
                     if team_str in _TEAM_PREFIX:
                         # Cell role path — seed the full cell company and
                         # cut a bench cell branch for leaf PRs to merge into.
+                        # Deduplicate: when dev_slug IS a cell agent (e.g.
+                        # ``be-qa`` for a QA bench), the naive list would add
+                        # it twice and miss ``be-dev-1`` (the PM delegate
+                        # target).  The set union always includes all four cell
+                        # roles plus dev_slug.
                         team = Team(team_str)
                         prefix = _TEAM_PREFIX[team_str]
                         _seed_company(
                             stack,
-                            [dev_slug, f"{prefix}-qa", f"{prefix}-doc", f"{prefix}-pm"],
+                            {dev_slug, f"{prefix}-dev-1",
+                             f"{prefix}-qa", f"{prefix}-doc", f"{prefix}-pm"},
                         )
                         project_id, project_slug = _seed_project(
                             stack, team, dev_uuid
@@ -1234,7 +1240,11 @@ class EvalRunner:
         spawner = self._make_spawner(env.stack)
         # PM parent-task: drive one delegation turn, then score (the parent
         # won't go terminal from one PM turn — max_stages=1 stops the loop).
-        max_stages = 1 if is_parent else None
+        # QA entry: drive one QA review turn, then score — the QA agent either
+        # catches the defect (fail_review → needs_revision) or misses it
+        # (pass_review → awaiting_documentation); either way the bench is
+        # about the QA turn, not the downstream lifecycle.
+        max_stages = 1 if (is_parent or entry_status == "awaiting_qa") else None
         final_task, stalled = asyncio.run(
             _drive_task_to_terminal(
                 env.stack,
