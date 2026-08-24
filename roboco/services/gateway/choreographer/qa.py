@@ -197,8 +197,8 @@ class QAMixin(_Base):
         # (a prior attempt committed the claim but the evidence assembly
         # timed out), skip the re-claim and go straight to evidence rebuild.
         if to_python_uuid(t.active_claimant_id) != qa_agent_id:
-            t = await self.task.qa_claim(qa_agent_id, task_id)
-            if t is None:
+            claimed = await self.task.qa_claim(qa_agent_id, task_id)
+            if claimed is None:
                 return await self._emit_rejection(
                     Envelope.not_authorized(
                         message=(
@@ -211,6 +211,7 @@ class QAMixin(_Base):
                     task_id=task_id,
                     verb="claim_review",
                 )
+            t = claimed
             await self.task.mark_evidence_inspected(task_id)
             await self.task.session.commit()
 

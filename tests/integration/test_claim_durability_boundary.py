@@ -89,7 +89,7 @@ async def _seed(
     qa_agent = AgentTable(
         id=uuid4(),
         name="BE QA",
-        slug="be-qa",
+        slug=f"be-qa-{uuid4().hex[:8]}",
         role=AgentRole.QA,
         team=Team.BACKEND,
         status=AgentStatus.ACTIVE,
@@ -336,7 +336,7 @@ async def test_qa_claim_different_agent_refused(
         qa_b_agent = AgentTable(
             id=qa_b,
             name="BE QA 2",
-            slug="be-qa-2",
+            slug=f"be-qa-2-{uuid4().hex[:8]}",
             role=AgentRole.QA,
             team=Team.BACKEND,
             status=AgentStatus.ACTIVE,

@@ -202,8 +202,8 @@ class DocMixin(_Base):
         # full rationale. Same-agent retry: if the task is already claimed by
         # THIS documenter, skip the re-claim and go straight to evidence.
         if to_python_uuid(t.active_claimant_id) != doc_agent_id:
-            t = await self.task.doc_claim(doc_agent_id, task_id)
-            if t is None:
+            claimed = await self.task.doc_claim(doc_agent_id, task_id)
+            if claimed is None:
                 return await self._emit_rejection(
                     Envelope.not_authorized(
                         message=(
@@ -217,6 +217,7 @@ class DocMixin(_Base):
                     task_id=task_id,
                     verb="claim_doc_task",
                 )
+            t = claimed
             await self.task.session.commit()
 
         # The documenter's clone is separate from the dev's;
