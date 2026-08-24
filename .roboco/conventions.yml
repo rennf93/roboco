@@ -154,15 +154,32 @@ waivers:
     reason: >-
       Two `type: ignore` suppressions document guard-core / fastapi-guard
       stub gaps, not silenced debt. (1) `from guard import status as
-      guard_status  # type: ignore[attr-defined]` — `guard.status` exists as
-      a runtime submodule (guard/status.py, verified across 7.3.1 and 7.6.0)
-      but the pydantic.mypy plugin does not expose it as a module attribute
-      of the `guard` package; the import path is correct and the suppression
-      is the narrow fix. (2) `behavior_scan_response_body=...  # type:
-      ignore[call-arg]` — the kwarg exists on `SecurityConfig` at runtime
-      (model_fields confirms `bool`) but the pydantic.mypy plugin does not
-      surface it in the generated `__init__` signature. Both are upstream
-      stub/plugin gaps that resolve when the package ships matching types.
+      guard_status  # type: ignore[attr-defined]` — `guard/status.py` exists
+      in guard 7.6.0 (the CI target, verified in /app/.venv which carries
+      guard 7.6.0 with status.py and add_status_route) but guard's
+      `__init__.py` does not re-export the submodule, so mypy reports
+      attr-defined. Python's submodule import machinery resolves it at
+      runtime. The stale workspace venv carries guard 7.3.1 which lacks
+      status.py — the import fails there but works on CI with >=7.6.0.
+      (2) `behavior_scan_response_body=...  # type: ignore[call-arg]` — the
+      kwarg exists on `SecurityConfig` at runtime (model_fields confirms
+      `bool`) but the pydantic.mypy plugin does not surface it in the
+      generated `__init__` signature. Both are upstream stub/plugin gaps
+      that resolve when the package ships matching types.
+  - path: tests/unit/test_security.py
+    rule: no_lint_suppressions
+    reason: >-
+      Three `type: ignore` suppressions document guard-core 3.12.0 stub
+      gaps, not silenced debt. (1) `# type: ignore[unreachable]` on the
+      `pytest.raises(AttributeError)` block — guard-core 3.12.0 coerces
+      collection fields to immutable types (tuple/frozenset/
+      MappingProxyType) at construction, so in-place `.append()` raises
+      at runtime, but mypy infers the body is unreachable because the
+      stub types report `list`. (2-3) `# type: ignore[attr-defined]` on
+      two `behavior_scan_response_body` attribute accesses — the field
+      exists on `SecurityConfig` at runtime (model_fields confirms `bool`)
+      but the pydantic.mypy plugin does not surface it in the generated
+      class signature. All three are upstream stub/plugin gaps.
   - path: roboco/api/routes/board_programs.py
     rule: no_models_in_routes
     reason: >-
