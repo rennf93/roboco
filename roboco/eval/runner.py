@@ -426,12 +426,15 @@ def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
                         prefix = _TEAM_PREFIX[team_str]
                         _seed_company(
                             stack,
-                            {dev_slug, f"{prefix}-dev-1",
-                             f"{prefix}-qa", f"{prefix}-doc", f"{prefix}-pm"},
+                            {
+                                dev_slug,
+                                f"{prefix}-dev-1",
+                                f"{prefix}-qa",
+                                f"{prefix}-doc",
+                                f"{prefix}-pm",
+                            },
                         )
-                        project_id, project_slug = _seed_project(
-                            stack, team, dev_uuid
-                        )
+                        project_id, project_slug = _seed_project(stack, team, dev_uuid)
                         cell_id, cell_branch = _seed_bench_cell(
                             stack, project_id, team, prefix
                         )
@@ -441,9 +444,7 @@ def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
                         # provides only the main_pm agent and a project.
                         team = Team(team_str or "main_pm")
                         _seed_company(stack, [dev_slug])
-                        project_id, project_slug = _seed_project(
-                            stack, team, dev_uuid
-                        )
+                        project_id, project_slug = _seed_project(stack, team, dev_uuid)
                         cell_id, cell_branch = None, None
 
                     yield BenchEnvironment(
@@ -599,6 +600,8 @@ def _prepare_qa_entry(
         row.status = TaskStatus.AWAITING_QA
 
     stack.run_db(_run)
+
+
 # Stage driving — the seam between a real spawn and a scripted stand-in
 # ---------------------------------------------------------------------------
 
@@ -800,8 +803,7 @@ def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
     if target_role == "qa":
         defect_desc = injected_defect or "(unspecified defect)"
         return (
-            header
-            + "You are grading a QA review. The QA agent reviewed a PR that "
+            header + "You are grading a QA review. The QA agent reviewed a PR that "
             "contained an INJECTED DEFECT. A score of 5 means the QA agent "
             "CAUGHT the defect (via fail_review with findings naming the "
             "defect). A score of 1 means the QA agent MISSED the defect "
@@ -817,11 +819,10 @@ def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
         coverage_list = (
             "\n".join(f"- {c}" for c in expected_coverage)
             if expected_coverage
-            "(no explicit coverage criteria — check if the PM delegated at all)"
+            else "(no explicit coverage criteria — check if the PM delegated at all)"
         )
         return (
-            header
-            + "You are grading a PM delegation. The PM was given a parent task "
+            header + "You are grading a PM delegation. The PM was given a parent task "
             "and must delegate with covers_parent_criteria mapping every "
             "acceptance criterion. A score of 5 means the PM delegated with "
             "full coverage of every acceptance criterion. A score of 1 means "
@@ -835,8 +836,7 @@ def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
 
     # Default: developer fixture grading (diff + notes vs expectations)
     return (
-        header
-        + f"Task: {fixture.title}\n"
+        header + f"Task: {fixture.title}\n"
         f"Acceptance criteria:\n{criteria}\n\n"
         f"Expected (checked-in): {fixture.expectations}\n\n"
         f"Actual diff:\n{diff or '(empty diff)'}\n\n"
@@ -1178,9 +1178,7 @@ class EvalRunner:
         results: list[FixtureResult] = []
         with _bench_environment(role_slug) as env:
             for fixture in chosen:
-                results.append(
-                    self._run_fixture(env, prefix, role_slug, fixture)
-                )
+                results.append(self._run_fixture(env, prefix, role_slug, fixture))
 
         cohort = CohortResult(
             role_slug=role_slug, cohort_name=cohort_name, fixtures=results

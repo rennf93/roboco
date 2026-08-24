@@ -46,6 +46,10 @@ if TYPE_CHECKING:
     from tests.e2e_smoke.harness import E2EStack
 
 _FIXTURE_KEY = "bugfix-off-by-one"
+# IWillPlanRequest.approach enforces min_length=150 — the scripted PM arc
+# builds an approach well above that floor; this constant keeps the
+# defensive assertion readable without a magic-value lint violation.
+_MIN_APPROACH_LEN = 150
 _FIXED_FIX = (
     "def paginate(items, page, size):\n"
     "    start = (page - 1) * size\n"
@@ -68,7 +72,7 @@ def _fixture() -> BenchTaskSpec:
     raise AssertionError(f"{_FIXTURE_KEY!r} fixture not found in FIXTURES")
 
 
-def _qa_fixture() -> types.SimpleNamespace:
+def _qa_fixture() -> Any:
     """A QA-entry fixture: same repo_files as the bugfix fixture (the buggy
     code IS the injected defect), but ``target_role='qa'`` and
     ``entry_status='awaiting_qa'`` so the runner pre-advances the task to
@@ -92,7 +96,7 @@ def _qa_fixture() -> types.SimpleNamespace:
     )
 
 
-def _pm_fixture() -> types.SimpleNamespace:
+def _pm_fixture() -> Any:
     """A PM parent-task fixture: the PM must delegate with
     ``covers_parent_criteria`` mapping every acceptance criterion."""
     base = _fixture()
@@ -199,7 +203,9 @@ def _pm_delegate_arc(
         "self-verifies every acceptance criterion. Single-file change, low risk, "
         "no cross-cell dependencies."
     )
-    assert len(approach) >= 150, f"approach too short ({len(approach)} chars)"
+    assert len(approach) >= _MIN_APPROACH_LEN, (
+        f"approach too short ({len(approach)} chars)"
+    )
 
     def _plan() -> dict[str, Any]:
         return pm.flow(
@@ -243,7 +249,10 @@ def _pm_delegate_arc(
             "delegate",
             parent_task_id=tid,
             title="Fix off-by-one in paginate()",
-            description="Fix the slice bound in paginate.py so the last item of every page is included.",
+            description=(
+                "Fix the slice bound in paginate.py so the last item of "
+                "every page is included."
+            ),
             assigned_to="be-dev-1",
             team="backend",
             task_type="code",
@@ -387,9 +396,7 @@ def test_eval_runner_drives_qa_fixture_with_defect_catch() -> None:
     QA entry plumbing (pre-advancement, claim_review, fail_review) without
     Docker."""
     runner = EvalRunner(
-        make_spawner=lambda stack: _ScriptedBenchSpawner(
-            stack, target_role="qa"
-        ),
+        make_spawner=lambda stack: _ScriptedBenchSpawner(stack, target_role="qa"),
         judge=_FakeJudge(),
         fixture_timeout_seconds=60.0,
     )
@@ -418,9 +425,7 @@ def test_eval_runner_drives_pm_fixture_with_delegation() -> None:
     entry plumbing (parent task, i_will_plan, delegate with coverage) without
     Docker."""
     runner = EvalRunner(
-        make_spawner=lambda stack: _ScriptedBenchSpawner(
-            stack, target_role="cell_pm"
-        ),
+        make_spawner=lambda stack: _ScriptedBenchSpawner(stack, target_role="cell_pm"),
         judge=_FakeJudge(),
         fixture_timeout_seconds=60.0,
     )
