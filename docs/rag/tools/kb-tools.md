@@ -31,8 +31,23 @@ index concurrently with a **per-index 15s timeout** (inner to the route's 30s
 outer bound). If an index does not finish, the others still return their
 results and the response carries a `gaps` list naming the timed-out indexes
 (e.g. `["journals unavailable: timed out after 15s"]`), empty when all indexes
-completed. A slow index no longer discards the whole result set. See
-`docs/backend/services/optimal-per-index-timeout.md` for the service contract.
+completed. A slow index no longer discards the whole result set.
+
+When `gaps` is non-empty, the MCP tool response includes the `gaps` list and a
+`hint` string: `"Partial results: N index(es) timed out (name1, ...). Results
+may be incomplete."` (or "Answer may be incomplete" for `roboco_rag_query`).
+When there are no gaps, both are omitted — the response is identical to the
+pre-change shape. The "No results / try mentor" hint is suppressed on a
+partial-results response so it isn't mistaken for a no-match query.
+
+At the HTTP level, a **total outage** (every index timed out, no results
+returned) returns a 504 error envelope, not HTTP 200 — partial degradation
+never masks a total outage. A search that completes with zero results and no
+gaps is still a 200 (a legitimate "nothing matched", not a failure).
+
+See `docs/backend/services/optimal-per-index-timeout.md` for the service
+contract and `docs/backend/api/optimal-gaps-surface.md` for the route/schema/
+MCP surface.
 
 ## Mentor (Conversational)
 

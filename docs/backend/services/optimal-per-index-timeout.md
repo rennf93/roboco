@@ -92,13 +92,18 @@ All callers of `OptimalService.search` / `search_with_embedding` /
 - `_search_single_index`'s new `gaps` param is optional (`list[str] | None`).
 - `RAGResponse.gaps` defaults to `[]`.
 
-## Route / MCP wiring (separate task)
+## Route / MCP wiring
 
-Surfacing `gaps` in the `/kb/search` and `/rag/query` response schemas and the
-MCP tool is the work of the parallel route/schema/MCP task (Unit B). The service
-contract — `search_with_gaps()` returning `(results, gaps)` and `RAGResponse`
-carrying `gaps` — is what this task ships; routes still call `search()` and
-return their existing schemas until Unit B lands.
+The route handlers, response schemas, and MCP tool surface for `gaps` are
+documented in
+[`docs/backend/api/optimal-gaps-surface.md`](../api/optimal-gaps-surface.md).
+In summary: `/kb/search` and `/rag/query` call `search_with_gaps()` / read
+`RAGResponse.gaps`, return HTTP 200 with the `gaps` field on partial success,
+and return a 504 error envelope only on total outage (no results/citations AND
+gaps non-empty). The MCP tools surface `gaps` plus a partial-results hint to the
+agent. The service contract — `search_with_gaps()` returning `(results, gaps)`
+and `RAGResponse` carrying `gaps` — is what this doc covers; the route/schema/
+MCP side is the companion doc above.
 
 ## Degradation pattern reference
 
