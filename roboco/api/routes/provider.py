@@ -23,6 +23,8 @@ from roboco.api.schemas.provider import (
     GrokKeyStatus,
     ModeResponse,
     OllamaKeyStatus,
+    OpenRouterKeyStatus,
+    OpenRouterModelEntry,
     RoutingPresetApplyResponse,
     RoutingPresetSummary,
     SaveRoutingPresetRequest,
@@ -32,20 +34,21 @@ from roboco.api.schemas.provider import (
     SelfHostedTestResponse,
     SetGrokKeyRequest,
     SetOllamaKeyRequest,
+    SetOpenRouterKeyRequest,
     assignment_to_response,
     routing_preset_to_summary,
 )
-from roboco.api.utils.provider import (
-    parse_complexity_override as _parse_complexity_override,
-)
-from roboco.api.utils.provider import provider_remediation as _provider_remediation
 from roboco.billing.pricing import input_price_per_million
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.models.runtime import ROLE_MODEL_MAP
 from roboco.security import guard_deco
 from roboco.services.base import NotFoundError
-from roboco.services.llm import get_model_routing_service, probe_ollama_tags
+from roboco.services.llm import (
+    get_model_routing_service,
+    probe_ollama_tags,
+    probe_openrouter_models,
+)
 from roboco.services.provider import ProviderUpdate, get_provider_service
 from roboco.utils.converters import require_uuid
 
@@ -62,6 +65,45 @@ router = APIRouter()
 _COMPLEXITY_OVERRIDE_ROLES: frozenset[str] = frozenset(
     {"developer", "qa", "documenter"}
 )
+
+# Human remediation hint per provider type, for a complexity override that
+# resolves to a not-ready (disabled / unconfigured) provider.
+_PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
+    ModelProvider.GROK: "Save the Grok (xAI) API key first (PUT /providers/grok-key).",
+    ModelProvider.OLLAMA_CLOUD: (
+        "Save an Ollama Cloud API key first (PUT /providers/ollama-key)."
+    ),
+    ModelProvider.LOCAL: (
+        "Configure + test the self-hosted server first (PUT /providers/self-hosted)."
+    ),
+    ModelProvider.ANTHROPIC: "The Anthropic provider is disabled — re-enable it first.",
+    ModelProvider.OPENAI: (
+        "Codex authenticates via a mounted ChatGPT-subscription ~/.codex "
+        "directory, not a key — enable it via the Codex mode button, or "
+        "assign a Codex model to an agent in Mix mode (both force-enable "
+        "the row)."
+    ),
+    ModelProvider.GEMINI: (
+        "Gemini authenticates via a mounted OAuth ~/.gemini credential, not "
+        "a key — enable it via the Gemini mode button, or assign a Gemini "
+        "model to an agent in Mix mode (both force-enable the row)."
+    ),
+    ModelProvider.KIMI: (
+        "Kimi authenticates via a shared, symlinked-in ~/.kimi-code "
+        "subscription credential, not a key — enable it via the Kimi mode "
+        "button, or assign a Kimi model to an agent in Mix mode (both "
+        "force-enable the row)."
+    ),
+    ModelProvider.OPENROUTER: (
+        "Save the OpenRouter API key first (PUT /providers/openrouter-key)."
+    ),
+}
+
+
+def _provider_remediation(provider_type: ModelProvider) -> str:
+    return _PROVIDER_REMEDIATION.get(
+        provider_type, f"The {provider_type.value} provider is not configured."
+    )
 
 
 # =============================================================================
@@ -203,6 +245,141 @@ async def set_grok_key(
         has_key=bool(provider.auth_token_encrypted),
         enabled=provider.enabled,
     )
+
+
+# =============================================================================
+# OPENROUTER API KEY
+# =============================================================================
+
+
+@router.get("/openrouter-key", response_model=OpenRouterKeyStatus)
+async def get_openrouter_key_status(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> OpenRouterKeyStatus:
+    """Return whether the OpenRouter key is set + enabled."""
+    require_pm_or_above(agent.role, "view the OpenRouter key status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    openrouter = next(
+        (p for p in providers if p.type == ModelProvider.OPENROUTER),
+        None,
+    )
+    if openrouter is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="OpenRouter provider not seeded. Run alembic upgrade head.",
+        )
+    return OpenRouterKeyStatus(
+        has_key=bool(openrouter.auth_token_encrypted),
+        enabled=openrouter.enabled,
+    )
+
+
+@router.put("/openrouter-key", response_model=OpenRouterKeyStatus)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
+async def set_openrouter_key(
+    data: SetOpenRouterKeyRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> OpenRouterKeyStatus:
+    """Set or clear the OpenRouter API key.
+
+    Empty string → clears and disables the provider. Any other value →
+    Fernet-encrypts + marks enabled. Used against
+    https://openrouter.ai/api/v1.
+    """
+    require_pm_or_above(agent.role, "set the OpenRouter key")
+    routing = get_model_routing_service(db)
+    try:
+        provider = await routing.set_openrouter_api_key(data.api_key)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+    return OpenRouterKeyStatus(
+        has_key=bool(provider.auth_token_encrypted),
+        enabled=provider.enabled,
+    )
+
+
+# =============================================================================
+# OPENROUTER MODEL SEARCH (live catalog proxy)
+# =============================================================================
+
+
+@router.get("/openrouter/models", response_model=list[OpenRouterModelEntry])
+async def get_openrouter_models(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    q: str = "",
+) -> list[OpenRouterModelEntry]:
+    """Proxy a model search to OpenRouter's live API.
+
+    Returns only models that support tool calls, filtered by the ``q``
+    substring (case-insensitive match on model id / name). Raises 400 if
+    no OpenRouter API key is configured. The key is decrypted server-side
+    and never reaches the browser.
+    """
+    require_pm_or_above(agent.role, "search OpenRouter models")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    openrouter = next(
+        (p for p in providers if p.type == ModelProvider.OPENROUTER),
+        None,
+    )
+    if openrouter is None or not openrouter.auth_token_encrypted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "OpenRouter API key is not configured. "
+                "Set it first via PUT /providers/openrouter-key."
+            ),
+        )
+    api_key = await provider_svc.get_decrypted_token(require_uuid(openrouter.id))
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "OpenRouter API key is not configured. "
+                "Set it first via PUT /providers/openrouter-key."
+            ),
+        )
+    models, error = await probe_openrouter_models(api_key, query=q)
+    if error is not None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"OpenRouter model search failed: {error}",
+        )
+    entries: list[OpenRouterModelEntry] = []
+    for m in models:
+        pricing = m.get("pricing") or {}
+        prompt_price = _safe_float(pricing.get("prompt"))
+        completion_price = _safe_float(pricing.get("completion"))
+        entries.append(
+            OpenRouterModelEntry(
+                id=m.get("id", ""),
+                name=m.get("name", ""),
+                context_length=m.get("context_length"),
+                prompt_price=prompt_price,
+                completion_price=completion_price,
+            )
+        )
+    return entries
+
+
+def _safe_float(value: str | None) -> float | None:
+    """Convert OpenRouter's string pricing rates to float, or None."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
 
 
 # =============================================================================
@@ -440,6 +617,26 @@ async def apply_mode(
 # =============================================================================
 # COMPLEXITY OVERRIDES (cost-tiered routing: compound ROLE(":"complexity) rows)
 # =============================================================================
+
+
+def _parse_complexity_override(
+    scope_value: str, model_name: str
+) -> ComplexityOverrideResponse | None:
+    """Parse a ROLE scope_value into a response row, or None if not a
+    well-formed "role:low"/"role:high" compound key (a plain role row, or a
+    malformed compound value, are both silently skipped)."""
+    role, sep, complexity = scope_value.partition(":")
+    if not sep or not role:
+        return None
+    if complexity == "low":
+        return ComplexityOverrideResponse(
+            role=role, complexity="low", model_name=model_name
+        )
+    if complexity == "high":
+        return ComplexityOverrideResponse(
+            role=role, complexity="high", model_name=model_name
+        )
+    return None
 
 
 @router.get("/complexity-overrides", response_model=list[ComplexityOverrideResponse])

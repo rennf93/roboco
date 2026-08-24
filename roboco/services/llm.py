@@ -29,6 +29,25 @@ Self-hosted (LOCAL) provider support:
   they bypass catalog validation).
 - resolve_for_agent() checks reachability of the LOCAL base_url
   and falls back to Anthropic if the server is unreachable.
+
+OpenRouter provider support:
+- derive_mode() returns 'openrouter' when there is exactly one
+  GLOBAL assignment pointing to the OPENROUTER provider.
+- apply_mode('openrouter', ...) enables the OPENROUTER provider and
+  sets a GLOBAL assignment to the given model id via
+  provider_type_override (OpenRouter models are NOT in the static
+  MODEL_CATALOG — the catalog is live, searched on demand via
+  GET /providers/openrouter/models).
+- set_openrouter_api_key() Fernet-encrypts the API key on the
+  provider row (mirrors set_grok_api_key). Empty string clears +
+  disables; non-empty encrypts + enables.
+- Cost-tier limitation: OpenRouter models have no rows in the
+  _PRICING table (cost is attributed from OpenRouter's own metered
+  usage.cost, not the static per-token table), so
+  input_price_per_million returns 0.0 for any OpenRouter model —
+  the cost-tiered complexity-override downgrade-only comparator
+  treats them as the cheapest tier. See _apply_openrouter's
+  docstring for the full caveat.
 """
 
 from __future__ import annotations
@@ -89,12 +108,13 @@ _COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = ()
 # hits ruff's PLR0911 the moment a new provider is added, as GEMINI did).
 _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
     ModelProvider,
-    Literal["grok", "codex", "gemini", "kimi", "ollama", "self_hosted"],
+    Literal["grok", "codex", "gemini", "kimi", "openrouter", "ollama", "self_hosted"],
 ] = {
     ModelProvider.GROK: "grok",
     ModelProvider.OPENAI: "codex",
     ModelProvider.GEMINI: "gemini",
     ModelProvider.KIMI: "kimi",
+    ModelProvider.OPENROUTER: "openrouter",
     ModelProvider.OLLAMA_CLOUD: "ollama",
     ModelProvider.LOCAL: "self_hosted",
 }
@@ -132,6 +152,74 @@ async def probe_ollama_tags(base_url: str) -> tuple[list[str], str | None]:
             error=exc.__class__.__name__,
         )
         return [], "An unexpected error occurred while probing the self-hosted server."
+
+
+_OPENROUTER_MODELS_TIMEOUT = 10.0
+_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+
+async def probe_openrouter_models(
+    api_key: str, query: str = ""
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Fetch the model list from OpenRouter's live API.
+
+    Hits ``https://openrouter.ai/api/v1/models`` with the bearer key and
+    returns only models that support tool calls, filtered by the optional
+    ``query`` substring (case-insensitive match on the model id / name).
+    Returns ``(models, None)`` on success or ``([], error_message)`` on
+    any failure. Never raises — mirrors ``probe_ollama_tags``.
+
+    Each model dict carries: ``id`` (the OpenRouter model slug, e.g.
+    ``"deepseek/deepseek-chat"``), ``name`` (display name), ``context_length``,
+    ``pricing`` (the OpenRouter pricing sub-dict with ``prompt`` /
+    ``completion`` per-token rates as strings).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_OPENROUTER_MODELS_TIMEOUT) as client:
+            resp = await client.get(
+                _OPENROUTER_MODELS_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.TimeoutException:
+        return [], f"Connection to OpenRouter timed out after {_OPENROUTER_MODELS_TIMEOUT}s"
+    except httpx.ConnectError:
+        return [], "Could not connect to OpenRouter — service may be offline"
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        if status_code == 401:
+            return [], "OpenRouter API key is invalid or expired"
+        return [], f"OpenRouter returned HTTP {status_code}"
+    except Exception as exc:
+        _log.error(
+            "Unexpected error probing OpenRouter models",
+            error=exc.__class__.__name__,
+        )
+        return [], "An unexpected error occurred while probing OpenRouter."
+
+    raw_models = data.get("data", []) if isinstance(data, dict) else []
+    query_lower = query.lower()
+    models: list[dict[str, Any]] = []
+    for m in raw_models:
+        if not isinstance(m, dict):
+            continue
+        supported = m.get("supported_parameters") or []
+        if "tools" not in supported:
+            continue
+        model_id = m.get("id", "")
+        name = m.get("name", "")
+        if query_lower and query_lower not in model_id.lower() and query_lower not in name.lower():
+            continue
+        models.append(
+            {
+                "id": model_id,
+                "name": name,
+                "context_length": m.get("context_length"),
+                "pricing": m.get("pricing", {}),
+            }
+        )
+    return models, None
 
 
 @dataclass(frozen=True)
@@ -462,6 +550,7 @@ class ModelRoutingService(BaseService):
             ModelProvider.GEMINI,
             ModelProvider.OPENAI,
             ModelProvider.KIMI,
+            ModelProvider.OPENROUTER,
         ):
             provider_svc = ProviderService(self.session)
             await provider_svc.update_provider(
@@ -494,7 +583,7 @@ class ModelRoutingService(BaseService):
     async def derive_mode(
         self,
     ) -> Literal[
-        "anthropic", "grok", "codex", "gemini", "kimi", "ollama", "mix", "self_hosted"
+        "anthropic", "grok", "codex", "gemini", "kimi", "openrouter", "ollama", "mix", "self_hosted"
     ]:
         """Return the current "mode" label for the Settings UI.
 
@@ -560,6 +649,27 @@ class ModelRoutingService(BaseService):
         )
         # Re-fetch for the caller.
         return await self._get_seeded_provider(ModelProvider.GROK)
+
+    async def set_openrouter_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the OpenRouter provider's API key.
+
+        Empty string clears + disables; a real key Fernet-encrypts + enables.
+        Operates on the single pre-seeded OpenRouter row — no provider
+        creation happens here. The key is a standard OpenRouter API key used
+        against https://openrouter.ai/api/v1.
+        """
+        provider = await self._get_seeded_provider(ModelProvider.OPENROUTER)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(provider.id),
+            ProviderUpdate(
+                auth_token=api_key if api_key else None,
+                clear_auth_token=not api_key,
+                enabled=bool(api_key),
+            ),
+        )
+        # Re-fetch for the caller.
+        return await self._get_seeded_provider(ModelProvider.OPENROUTER)
 
     async def resolve_provider_for_model(
         self, model_name: str
@@ -678,6 +788,8 @@ class ModelRoutingService(BaseService):
             await self._apply_gemini(default_model)
         elif mode == "kimi":
             await self._apply_kimi(default_model)
+        elif mode == "openrouter":
+            await self._apply_openrouter(default_model)
         elif mode == "ollama":
             await self._apply_ollama(default_model)
         elif mode == "self_hosted":
@@ -689,8 +801,8 @@ class ModelRoutingService(BaseService):
         else:
             raise ValueError(
                 f"Unknown mode '{mode}'."
-                " Use 'anthropic', 'grok', 'codex', 'gemini', 'kimi', 'ollama',"
-                " 'self_hosted', 'mix', or 'cost_tiered'."
+                " Use 'anthropic', 'grok', 'codex', 'gemini', 'kimi', 'openrouter',"
+                " 'ollama', 'self_hosted', 'mix', or 'cost_tiered'."
             )
 
     async def _wipe_mode_switch_assignments(self) -> None:
@@ -831,6 +943,51 @@ class ModelRoutingService(BaseService):
             model_name=model_name,
         )
         self.log.info("Mode applied: kimi", default_model=model_name)
+
+    async def _apply_openrouter(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to an OpenRouter model.
+
+        OpenRouter models are NOT in the static ``MODEL_CATALOG`` — the
+        catalog is live (operator searches via GET /providers/openrouter/
+        models). The assignment is upserted with
+        ``provider_type_override=ModelProvider.OPENROUTER`` so the catalog
+        lookup is skipped and the model id is stored directly against the
+        OpenRouter provider row.
+
+        Cost-tier limitation: OpenRouter models have no rows in the
+        ``_PRICING`` table (cost is attributed from OpenRouter's own
+        metered ``usage.cost`` at the provider layer, not the static
+        per-token table), so ``input_price_per_million`` returns ``0.0``
+        for any OpenRouter model name — the cost-tiered complexity-override
+        downgrade-only comparator treats them as the cheapest tier. An
+        operator who pins a role to an OpenRouter model that is actually
+        costlier than the Anthropic baseline will not be stopped by the
+        comparator. This is a known ceiling documented here; it is
+        acceptable because the operator is making a deliberate choice
+        (the mode button or a Mix pin, not an accidental override).
+
+        AGENT_SLUG pins and complexity overrides are preserved (see
+        ``_wipe_mode_switch_assignments``).
+        """
+        await self._wipe_mode_switch_assignments()
+        # Force-enable the OPENROUTER provider row (belt-and-suspenders
+        # against a row disabled by a key clear — the mode button should
+        # route to OpenRouter regardless, and the key check is the
+        # operator's responsibility at set-time).
+        openrouter = await self._get_seeded_provider(ModelProvider.OPENROUTER)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(openrouter.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or "deepseek/deepseek-chat"
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+            provider_type_override=ModelProvider.OPENROUTER,
+        )
+        self.log.info("Mode applied: openrouter", default_model=model_name)
 
     async def _apply_ollama(self, default_model: str | None) -> None:
         """Wipe role/global assignments, set GLOBAL to an Ollama Cloud model.

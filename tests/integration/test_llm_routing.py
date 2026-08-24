@@ -75,7 +75,15 @@ async def llm_setup(
         type=ModelProvider.KIMI,
         enabled=True,
     )
-    db_session.add_all([anthropic, grok, ollama, openai, gemini, kimi])
+    # Mirrors migration 094_seed_openrouter_provider's contract: enabled=False
+    # at seed time (key-gated, like GROK) — no base_url, no key until the
+    # operator sets one via set_openrouter_api_key.
+    openrouter = ProviderConfigTable(
+        name="openrouter-test",
+        type=ModelProvider.OPENROUTER,
+        enabled=False,
+    )
+    db_session.add_all([anthropic, grok, ollama, openai, gemini, kimi, openrouter])
     await db_session.flush()
     yield {"svc": ModelRoutingService(db_session)}
 
@@ -471,6 +479,93 @@ async def test_apply_mode_kimi_enables_kimi_provider(llm_setup: dict) -> None:
     refetched = await provider_svc.get_provider(cast("UUID", kimi.id))
     assert refetched is not None
     assert refetched.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_openrouter_sets_global(llm_setup: dict) -> None:
+    """apply_mode('openrouter') wipes assignments and sets a GLOBAL default
+    to the OpenRouter model via provider_type_override (OpenRouter models
+    are NOT in the static catalog)."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="openrouter")
+    assignments = await svc.list_assignments()
+    assert len(assignments) == 1
+    assert assignments[0].scope == AssignmentScope.GLOBAL
+    assert assignments[0].model_name == "deepseek/deepseek-chat"
+    assert assignments[0].provider.type == ModelProvider.OPENROUTER
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_openrouter_custom_model(llm_setup: dict) -> None:
+    """apply_mode('openrouter', default_model=X) stores X directly via
+    provider_type_override — no catalog lookup, no ValueError."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="openrouter", default_model="qwen/qwen-2.5-72b-instruct")
+    assignments = await svc.list_assignments()
+    assert assignments[0].model_name == "qwen/qwen-2.5-72b-instruct"
+    assert assignments[0].provider.type == ModelProvider.OPENROUTER
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_openrouter_enables_provider(llm_setup: dict) -> None:
+    """apply_mode('openrouter') force-enables the OPENROUTER row —
+    belt-and-suspenders against a row disabled by a key clear."""
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    openrouter = next(
+        p for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.OPENROUTER
+    )
+    assert openrouter.enabled is False  # seeded disabled in fixture
+    await svc.apply_mode(mode="openrouter")
+    refetched = await provider_svc.get_provider(cast("UUID", openrouter.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_openrouter_when_only_openrouter_global(
+    llm_setup: dict,
+) -> None:
+    """A pure-OPENROUTER global assignment reports "openrouter", not the
+    catch-all "mix" (the original derive_mode returned for any single
+    GLOBAL row it did not know)."""
+    svc = llm_setup["svc"]
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL,
+        scope_value=None,
+        model_name="deepseek/deepseek-chat",
+        provider_type_override=ModelProvider.OPENROUTER,
+    )
+    assert await svc.derive_mode() == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_set_openrouter_api_key_encrypts_and_enables(
+    llm_setup: dict,
+) -> None:
+    """set_openrouter_api_key encrypts the key and enables the provider row,
+    mirroring set_grok_api_key. Empty string clears + disables."""
+    svc = llm_setup["svc"]
+    provider = await svc.set_openrouter_api_key("sk-or-test-key-12345")
+    assert provider.auth_token_encrypted is not None
+    assert provider.enabled is True
+    # Key never stored in plaintext
+    assert "sk-or-test-key-12345" not in str(provider.auth_token_encrypted)
+
+    # Clear
+    provider = await svc.set_openrouter_api_key("")
+    assert provider.auth_token_encrypted is None
+    assert provider.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_openrouter_end_to_end_reachable(llm_setup: dict) -> None:
+    """The full reachability chain: apply_mode -> derive_mode reflects it ->
+    resolve_for_agent routes to the OpenRouter provider."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="openrouter")
+    assert await svc.derive_mode() == "openrouter"
 
 
 @pytest.mark.asyncio

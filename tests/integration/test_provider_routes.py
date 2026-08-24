@@ -1157,3 +1157,219 @@ async def test_presets_developer_forbidden(
         response = await client.get("/api/providers/presets", headers=hdr)
     app.dependency_overrides.clear()
     assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+# =============================================================================
+# OpenRouter endpoints
+# =============================================================================
+
+
+@pytest_asyncio.fixture
+async def app_client_with_openrouter(
+    db_session: AsyncSession,
+) -> AsyncIterator[AsyncClient]:
+    """App client pre-seeded with Anthropic and OpenRouter providers.
+
+    The OpenRouter row is seeded disabled (mirrors migration 094) — no key
+    until the operator sets one via PUT /providers/openrouter-key.
+    """
+    app = _make_app(db_session)
+    suffix = uuid4().hex[:8]
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
+    await db_session.flush()
+    db_session.add(
+        ProviderConfigTable(
+            name=f"anthropic-or-{suffix}",
+            type=ModelProvider.ANTHROPIC,
+            enabled=True,
+        )
+    )
+    db_session.add(
+        ProviderConfigTable(
+            name=f"openrouter-{suffix}",
+            type=ModelProvider.OPENROUTER,
+            enabled=False,
+        )
+    )
+    await db_session.flush()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_openrouter_key_status_unconfigured(
+    app_client_with_openrouter: AsyncClient,
+) -> None:
+    """GET /openrouter-key returns has_key=false, enabled=false when the
+    provider is seeded but no key has been set."""
+    response = await app_client_with_openrouter.get(
+        "/api/providers/openrouter-key", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["has_key"] is False
+    assert body["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_set_openrouter_key_encrypts_and_enables(
+    app_client_with_openrouter: AsyncClient,
+) -> None:
+    """PUT /openrouter-key with a real key encrypts it and enables the
+    provider. The response body never contains the key itself."""
+    response = await app_client_with_openrouter.put(
+        "/api/providers/openrouter-key",
+        json={"api_key": "sk-or-v1-test-key-abcdef"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["has_key"] is True
+    assert body["enabled"] is True
+    # The key must never appear in the response body
+    assert "sk-or-v1-test-key-abcdef" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_set_openrouter_key_empty_clears(
+    app_client_with_openrouter: AsyncClient,
+) -> None:
+    """PUT /openrouter-key with an empty string clears and disables."""
+    # Set first
+    await app_client_with_openrouter.put(
+        "/api/providers/openrouter-key",
+        json={"api_key": "sk-or-v1-test-key-abcdef"},
+        headers=_HDR_PM,
+    )
+    # Clear
+    response = await app_client_with_openrouter.put(
+        "/api/providers/openrouter-key",
+        json={"api_key": ""},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["has_key"] is False
+    assert body["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_openrouter_models_returns_400_without_key(
+    app_client_with_openrouter: AsyncClient,
+) -> None:
+    """GET /openrouter/models returns 400 when no key is configured."""
+    response = await app_client_with_openrouter.get(
+        "/api/providers/openrouter/models", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert "not configured" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_openrouter_models_returns_results_with_key(
+    app_client_with_openrouter: AsyncClient,
+) -> None:
+    """GET /openrouter/models proxies to OpenRouter and returns
+    tools-supporting models. The key never appears in the response body."""
+    # Set a key first
+    await app_client_with_openrouter.put(
+        "/api/providers/openrouter-key",
+        json={"api_key": "sk-or-v1-test-key-abcdef"},
+        headers=_HDR_PM,
+    )
+
+    # Mock the probe so no real HTTP call is made
+    fake_models = [
+        {
+            "id": "deepseek/deepseek-chat",
+            "name": "DeepSeek Chat",
+            "context_length": 64000,
+            "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+        },
+        {
+            "id": "qwen/qwen-2.5-72b-instruct",
+            "name": "Qwen 2.5 72B Instruct",
+            "context_length": 131072,
+            "pricing": {"prompt": "0.0000005", "completion": "0.000001"},
+        },
+    ]
+    with patch(
+        "roboco.api.routes.provider.probe_openrouter_models",
+        new_callable=AsyncMock,
+        return_value=(fake_models, None),
+    ):
+        response = await app_client_with_openrouter.get(
+            "/api/providers/openrouter/models?q=deepseek",
+            headers=_HDR_PM,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert len(body) == 1  # only deepseek matches the query
+    assert body[0]["id"] == "deepseek/deepseek-chat"
+    assert body[0]["name"] == "DeepSeek Chat"
+    assert body[0]["context_length"] == 64000
+    assert body[0]["prompt_price"] == 0.000001
+    assert body[0]["completion_price"] == 0.000002
+    # The key must never appear in the response body
+    assert "sk-or-v1-test-key-abcdef" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_openrouter_models_503_on_probe_error(
+    app_client_with_openrouter: AsyncClient,
+) -> None:
+    """GET /openrouter/models returns 503 when the probe fails (e.g.
+    OpenRouter API timeout)."""
+    await app_client_with_openrouter.put(
+        "/api/providers/openrouter-key",
+        json={"api_key": "sk-or-v1-test-key-abcdef"},
+        headers=_HDR_PM,
+    )
+    with patch(
+        "roboco.api.routes.provider.probe_openrouter_models",
+        new_callable=AsyncMock,
+        return_value=([], "Connection timed out"),
+    ):
+        response = await app_client_with_openrouter.get(
+            "/api/providers/openrouter/models", headers=_HDR_PM
+        )
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_openrouter_returns_200_and_reflects_mode(
+    app_client_with_openrouter: AsyncClient,
+) -> None:
+    """POST /providers with mode=openrouter sets a GLOBAL assignment to
+    the default OpenRouter model and reports mode=openrouter."""
+    response = await app_client_with_openrouter.post(
+        "/api/providers",
+        json={"mode": "openrouter"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["mode"] == "openrouter"
+    assert len(body["assignments"]) == 1
+    assert body["assignments"][0]["provider_type"] == "openrouter"
+    assert body["assignments"][0]["model_name"] == "deepseek/deepseek-chat"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_key_forbidden_for_developer(
+    db_session: AsyncSession,
+) -> None:
+    """GET /openrouter-key is forbidden for a developer role."""
+    app = _make_app(db_session, role=AgentRole.DEVELOPER, team=Team.BACKEND)
+    transport = ASGITransport(app=app)
+    hdr = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/providers/openrouter-key", headers=hdr
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.FORBIDDEN
