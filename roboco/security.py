@@ -78,7 +78,7 @@ async def _process_usage_rules_fail_open(
         )
 
 
-setattr(BehavioralProcessor, "process_usage_rules", _process_usage_rules_fail_open)
+BehavioralProcessor.process_usage_rules = _process_usage_rules_fail_open
 
 # Route-level return_pattern rules (behavior_analysis() decorators). Roboco
 # has none of these today (every route-level rule is rule_type="frequency",
@@ -107,7 +107,7 @@ async def _process_return_rules_fail_open(
         )
 
 
-setattr(BehavioralProcessor, "process_return_rules", _process_return_rules_fail_open)
+BehavioralProcessor.process_return_rules = _process_return_rules_fail_open
 
 # global_behavior_rules (_BEHAVIOR_RULES below) run through THIS seam, not
 # process_return_rules -- roboco's status:404/status:401 rules are global,
@@ -136,11 +136,7 @@ async def _process_global_return_rules_fail_open(
         )
 
 
-setattr(
-    BehavioralProcessor,
-    "process_global_return_rules",
-    _process_global_return_rules_fail_open,
-)
+BehavioralProcessor.process_global_return_rules = _process_global_return_rules_fail_open
 
 # Body bytes scanned by the custom validators — enough to catch injected
 # preambles without reading unbounded payloads.
