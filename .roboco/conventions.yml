@@ -149,6 +149,20 @@ waivers:
       imports `_validate` — importing it at the top of this file would
       create a real import cycle. The E402 suppression documents a genuine
       circular-import constraint, not silenced debt.
+  - path: roboco/security.py
+    rule: no_lint_suppressions
+    reason: >-
+      Two `type: ignore` suppressions document guard-core / fastapi-guard
+      stub gaps, not silenced debt. (1) `from guard import status as
+      guard_status  # type: ignore[attr-defined]` — `guard.status` exists as
+      a runtime submodule (guard/status.py, verified across 7.3.1 and 7.6.0)
+      but the pydantic.mypy plugin does not expose it as a module attribute
+      of the `guard` package; the import path is correct and the suppression
+      is the narrow fix. (2) `behavior_scan_response_body=...  # type:
+      ignore[call-arg]` — the kwarg exists on `SecurityConfig` at runtime
+      (model_fields confirms `bool`) but the pydantic.mypy plugin does not
+      surface it in the generated `__init__` signature. Both are upstream
+      stub/plugin gaps that resolve when the package ships matching types.
   - path: roboco/api/routes/board_programs.py
     rule: no_models_in_routes
     reason: >-
