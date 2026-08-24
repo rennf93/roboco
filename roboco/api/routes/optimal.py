@@ -219,16 +219,35 @@ async def search(
     try:
         async with asyncio.timeout(search_timeout):
             service = await get_optimal_service()
-            results = await service.search(
-                query=request.query,
-                context=context,
-                top_k=request.top_k,
-            )
+            # Use search_with_gaps when available (Unit A) to surface
+            # per-index timeout gaps; fall back to search() + empty gaps
+            # for backwards compatibility.
+            search_with_gaps = getattr(service, "search_with_gaps", None)
+            if search_with_gaps is not None:
+                results, gaps = await search_with_gaps(
+                    query=request.query,
+                    context=context,
+                    top_k=request.top_k,
+                )
+            else:
+                results = await service.search(
+                    query=request.query,
+                    context=context,
+                    top_k=request.top_k,
+                )
+                gaps = []
     except TimeoutError as e:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=f"Search timed out after {search_timeout}s",
         ) from e
+
+    # Total outage: every index timed out, no results returned.
+    if not results and gaps:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"All search indexes timed out: {', '.join(gaps)}",
+        )
 
     return SearchResponse(
         results=[
@@ -243,6 +262,7 @@ async def search(
         ],
         query=request.query,
         total=len(results),
+        gaps=gaps,
     )
 
 
@@ -349,6 +369,15 @@ async def rag_query(
             detail=f"RAG query failed: {e}",
         ) from e
 
+    gaps = getattr(response, "gaps", [])
+
+    # Total outage: every index timed out, no citations returned.
+    if not response.citations and gaps:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"All RAG indexes timed out: {', '.join(gaps)}",
+        )
+
     return RAGQueryResponse(
         answer=response.answer,
         citations=[
@@ -365,6 +394,7 @@ async def rag_query(
         context_used=response.context_used,
         search_stats=response.search_stats if response.search_stats else None,
         search_errors=response.search_errors if response.search_errors else None,
+        gaps=gaps,
     )
 
 
