@@ -19,6 +19,7 @@ Documentation for the Frontend Cell team.
 
 - [`a2a-filtering.md`](./a2a-filtering.md) — A2A filter bar, conversation list, and pulse-flash hook
 - [`a2a-conversation-first-layout.md`](./a2a-conversation-first-layout.md) — Agent identity colors, connection states, context pane, transcript motion, and empty/error states
+- [`openrouter-provider.md`](./openrouter-provider.md) — OpenRouter foundation: `ModelProvider.OPENROUTER`, `providersApi` key/model-search client functions, and `useOpenRouterKey`/`useSetOpenRouterKey`/`useSearchOpenRouterModels` hooks
 - [`hooks.md`](./hooks.md) — `usePageRefresh`/`PageRefreshProvider` and `useStalledTasks` usage and API reference
 - [`stalled-needs-you.md`](./stalled-needs-you.md) — the Stalled/Needs-You feature: shared `useStalledTasks` hook, Overview section, Tasks filter, and detail-header chip; backend contract and empty/error state rules
 - [`forms/forms-audit.md`](./forms/forms-audit.md) — the living panel-forms ↔ backend-schema consistency audit (settings page + project + task dialogs); update the matching row in the same PR as any schema change
