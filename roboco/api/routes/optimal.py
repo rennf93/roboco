@@ -93,6 +93,20 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+def _parse_index_types(raw: list[str] | None) -> list[IndexType] | None:
+    """Parse a request's ``index_types`` list into validated ``IndexType``
+    values, or ``None`` when unset. Raises 400 on an invalid type string."""
+    if not raw:
+        return None
+    try:
+        return [IndexType(t) for t in raw]
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid index type: {e}",
+        ) from e
+
+
 # =============================================================================
 # INDEXING ENDPOINTS
 # =============================================================================
@@ -197,15 +211,7 @@ async def search(
     import asyncio
 
     # Build query context
-    index_types = None
-    if request.index_types:
-        try:
-            index_types = [IndexType(t) for t in request.index_types]
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid index type: {e}",
-            ) from e
+    index_types = _parse_index_types(request.index_types)
 
     context = QueryContext(
         project=request.project,
@@ -324,15 +330,7 @@ async def rag_query(
     import asyncio
 
     # Build query context
-    index_types = None
-    if request.index_types:
-        try:
-            index_types = [IndexType(t) for t in request.index_types]
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid index type: {e}",
-            ) from e
+    index_types = _parse_index_types(request.index_types)
 
     context = QueryContext(
         project=request.project,
@@ -415,15 +413,7 @@ async def get_context(
     import asyncio
 
     # Build query context
-    index_types = None
-    if request.index_types:
-        try:
-            index_types = [IndexType(t) for t in request.index_types]
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid index type: {e}",
-            ) from e
+    index_types = _parse_index_types(request.index_types)
 
     context = QueryContext(
         project=request.project,
