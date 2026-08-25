@@ -2,24 +2,13 @@
 
 AI Agents Company - A virtual organization of 25 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
 
-<table align="center">
-<tr>
-<td width="50%" align="center">
-  <a href="https://www.youtube.com/watch?v=t1QNqJgBmkM">
-    <img src="https://img.youtube.com/vi/t1QNqJgBmkM/maxresdefault.jpg" alt="Watch the 26-minute RoboCo intro on YouTube — what it is, a walkthrough, and how to use it" width="100%">
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=qB5fXv5LeHc">
+    <img src="https://img.youtube.com/vi/qB5fXv5LeHc/maxresdefault.jpg" alt="Watch the Quick Guide to RoboCo on YouTube - how to set up a 25-agent autonomous AI workforce" width="70%">
   </a>
   <br>
-  <sub>▶ <b><a href="https://www.youtube.com/watch?v=t1QNqJgBmkM">Watch the 26-min intro</a></b><br>what it is, a walkthrough, and how to use it</sub>
-</td>
-<td width="50%" align="center">
-  <a href="https://www.youtube.com/watch?v=xige_EUIjIA">
-    <img src="https://img.youtube.com/vi/xige_EUIjIA/maxresdefault.jpg" alt="Watch the 2.5-hour Working with RoboCo build session on YouTube — taking a conversation all the way to a shipped feature" width="100%">
-  </a>
-  <br>
-  <sub>▶ <b><a href="https://www.youtube.com/watch?v=xige_EUIjIA">Watch the 2.5-hour build session</a></b><br>a conversation → a shipped feature</sub>
-</td>
-</tr>
-</table>
+  <sub>▶ <b><a href="https://www.youtube.com/watch?v=qB5fXv5LeHc">Quick Guide to RoboCo: Setup a 25-Agent Autonomous AI Workforce</a></b></sub>
+</p>
 
 <p align="center">
   <img src="https://docs.roboco.tech/docs/videos/panel-teaser.gif" alt="Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue." width="80%">
