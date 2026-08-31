@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from roboco.mcp.search_server import (
     _NOT_CONFIGURED,
     _handle_fetch,
@@ -97,4 +97,4 @@ async def test_fetch_success_shapes_payload() -> None:
 
 def test_create_search_mcp_server_builds() -> None:
     server = create_search_mcp_server("be-pm")
-    assert isinstance(server, FastMCP)
+    assert isinstance(server, MCPServer)

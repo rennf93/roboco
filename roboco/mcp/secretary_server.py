@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from roboco.agent_sdk.secretary_driver import (
     _do_read_state,
@@ -29,7 +29,7 @@ from roboco.agent_sdk.secretary_driver import (
     _do_submit_directive,
 )
 
-mcp = FastMCP("roboco-secretary")
+mcp = MCPServer("roboco-secretary")
 
 
 @mcp.tool()
@@ -62,7 +62,7 @@ async def search_tasks(q: str, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def submit_directive(kind: str, payload: dict[str, Any]) -> str:
+async def submit_directive(kind: str, payload: dict[str, Any] | None = None) -> str:
     """Act on the CEO's command.
 
     'kind' is one of: relay_message (payload: text), update_charter

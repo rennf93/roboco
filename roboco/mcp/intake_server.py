@@ -25,7 +25,7 @@ import os
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 _TIMEOUT = 15.0
 
@@ -34,7 +34,7 @@ _SEARCH_QUERY_MAX_LEN = 200
 _SEARCH_DEFAULT_LIMIT = 8
 _SEARCH_MAX_LIMIT = 10
 
-mcp = FastMCP("roboco-intake")
+mcp = MCPServer("roboco-intake")
 
 
 def _api_base() -> str:

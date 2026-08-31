@@ -13,7 +13,7 @@ Tools:
 
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from roboco.mcp.schemas import WriteDocInput
 from roboco.mcp.utils import ApiClient, format_error_response
@@ -157,7 +157,7 @@ async def _handle_delete(
 # =============================================================================
 
 
-def create_docs_mcp_server(agent_id: str) -> FastMCP:
+def create_docs_mcp_server(agent_id: str) -> MCPServer:
     """
     Create a Documentation MCP server for a specific agent.
 
@@ -165,9 +165,9 @@ def create_docs_mcp_server(agent_id: str) -> FastMCP:
         agent_id: The agent identifier (e.g., "be-doc")
 
     Returns:
-        Configured FastMCP server
+        Configured MCPServer server
     """
-    mcp = FastMCP(f"roboco-docs-{agent_id}", json_response=True)
+    mcp = MCPServer(f"roboco-docs-{agent_id}")
     client = ApiClient(agent_id)
 
     @mcp.tool()

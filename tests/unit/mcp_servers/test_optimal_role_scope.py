@@ -162,7 +162,7 @@ async def test_full_toolset_escape_hatch(monkeypatch: pytest.MonkeyPatch) -> Non
 # `results` use (content/source/score/index_type/metadata — confirmed in
 # roboco/api/schemas/optimal.py), so _append_live_write_caveat wires in
 # unchanged. This exercises the real tool bodies end-to-end (via
-# FastMCP.call_tool), not just the shared helper in isolation above.
+# MCPServer.call_tool), not just the shared helper in isolation above.
 # ---------------------------------------------------------------------------
 
 _LIVE_WRITE_ITEM = {
@@ -201,13 +201,10 @@ async def _call_tool(
     with patch.object(
         ApiClient, "post", new=AsyncMock(return_value=_FakeApiResponse(api_payload))
     ):
-        # call_tool's declared return type (Sequence[ContentBlock] |
-        # dict[str, Any]) doesn't match its actual runtime shape with
-        # convert_result=True (a (content_blocks, structured_dict) pair), so
-        # keep it untyped here rather than fighting mypy's union-unpack
-        # inference over a stub that doesn't reflect reality.
+        # call_tool returns CallToolResult in mcp 2.x; the handler's dict
+        # payload rides .structured_content (None when the tool errored).
         raw: Any = await server.call_tool(tool_name, arguments)
-    structured = raw[1]
+    structured = raw.structured_content
     assert isinstance(structured, dict)
     return structured
 

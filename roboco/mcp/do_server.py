@@ -21,7 +21,7 @@ from typing import Any
 
 import httpx
 import structlog
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from roboco.agents_config import get_agent_team
 
@@ -236,7 +236,7 @@ def _normalize_exception_envelope(
     return None
 
 
-mcp = FastMCP("roboco-do")
+mcp = MCPServer("roboco-do")
 log = structlog.get_logger()
 
 

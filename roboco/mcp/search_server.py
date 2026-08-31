@@ -9,7 +9,7 @@ external request itself. Mounted conditionally per role by the orchestrator
 
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from roboco.mcp.utils import ApiClient, format_error_response
 
@@ -80,9 +80,9 @@ async def _handle_fetch(
     }
 
 
-def create_search_mcp_server(agent_id: str) -> FastMCP:
+def create_search_mcp_server(agent_id: str) -> MCPServer:
     """Create a Web Research MCP server bound to a specific agent."""
-    mcp = FastMCP(f"roboco-search-{agent_id}", json_response=True)
+    mcp = MCPServer(f"roboco-search-{agent_id}")
     client = ApiClient(agent_id)
 
     @mcp.tool()

@@ -25,7 +25,7 @@ import os
 from typing import Any
 
 from fastapi import status as http_status
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 
 from roboco.mcp.utils import ApiClient, format_error_response
@@ -125,7 +125,7 @@ def _append_live_write_caveat(items: list[Any]) -> list[Any]:
     return out
 
 
-def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_search_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register search tools available to all agents."""
 
     @mcp.tool()
@@ -281,7 +281,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_indexing_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_indexing_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register indexing tools (permission-controlled at API level)."""
 
     @mcp.tool()
@@ -381,7 +381,7 @@ def _register_indexing_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_utility_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_utility_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register utility tools."""
 
     @mcp.tool()
@@ -432,7 +432,7 @@ def _register_utility_tools(mcp: FastMCP, client: ApiClient) -> None:
 # =========================================================================
 
 
-def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_mentor_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register mentor (conversational RAG) tools."""
 
     @mcp.tool()
@@ -503,7 +503,7 @@ def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_error_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_error_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register error pattern tools."""
 
     @mcp.tool()
@@ -606,7 +606,7 @@ def _register_error_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_decision_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_decision_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register decision memory tools."""
 
     @mcp.tool()
@@ -696,7 +696,7 @@ def _register_decision_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_standards_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_standards_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register standards and validation tools."""
 
     @mcp.tool()
@@ -836,7 +836,7 @@ def _register_standards_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_learning_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register learning tools."""
 
     @mcp.tool()
@@ -961,7 +961,7 @@ def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
         return response
 
 
-def _register_index_management_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_index_management_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register index management tools for administrative operations."""
 
     @mcp.tool()
@@ -1079,7 +1079,7 @@ def _register_index_management_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_proactive_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_proactive_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register proactive context tools."""
 
     @mcp.tool()
@@ -1177,9 +1177,9 @@ def _role_wants(group: str, role: str) -> bool:
     return role in allowed
 
 
-def create_optimal_mcp_server(agent_id: str) -> FastMCP:
+def create_optimal_mcp_server(agent_id: str) -> MCPServer:
     """Create an Optimal MCP server for a specific agent, scoped to its role."""
-    mcp = FastMCP(f"roboco-optimal-{agent_id}", json_response=True)
+    mcp = MCPServer(f"roboco-optimal-{agent_id}")
     client = ApiClient(agent_id)
     role = os.environ.get("ROBOCO_AGENT_ROLE", "")
     full_toolset = bool(os.environ.get("ROBOCO_ALLOW_FULL_TOOLSET"))

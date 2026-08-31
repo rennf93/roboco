@@ -16,7 +16,7 @@ import os
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from roboco.agents_config import get_agent_team
 
@@ -50,7 +50,7 @@ def _headers() -> dict[str, str]:
 
 _TIMEOUT = 15
 
-mcp = FastMCP("roboco-git-readonly")
+mcp = MCPServer("roboco-git-readonly")
 
 # Char cap for diff text returned into the agent's context (~5K tokens). Kept
 # local (not imported from the gateway) so this MCP stays dependency-light in

@@ -22,7 +22,7 @@ from typing import Annotated, Any
 
 import httpx
 import structlog
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BeforeValidator
 
 from roboco.agents_config import get_agent_team
@@ -264,7 +264,7 @@ def _classify_rejection(payload: dict[str, Any]) -> str | None:
     return None
 
 
-mcp = FastMCP("roboco-flow")
+mcp = MCPServer("roboco-flow")
 log = structlog.get_logger()
 
 
