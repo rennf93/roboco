@@ -30,13 +30,22 @@ package's shared session-scoped ``e2e_stack`` fixture.
 from __future__ import annotations
 
 import asyncio
+import importlib
+import os
+import sys
 import types
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from roboco.config import settings
 from roboco.eval.fixtures import FIXTURES
-from roboco.eval.runner import BenchJudge, EvalRunner, JudgeVerdict, _bench_environment
+from roboco.eval.runner import (
+    BenchJudge,
+    EvalRunner,
+    JudgeVerdict,
+    _bench_environment,
+    _build_judge_prompt,
+)
 from tests.e2e_smoke.arcs import Company, dev_arc, doc_arc, qa_arc
 from tests.e2e_smoke.harness import ScriptedAgent, expect_error, expect_ok
 
@@ -225,23 +234,47 @@ def _pm_delegate_arc(
             ],
         )
 
-    # The claim-time tracing gate demands a note before i_will_plan succeeds
-    # — same pattern as dev_arc's i_will_work_on retry.
+    # The claim-time tracing gate demands a journal:decision before
+    # i_will_plan succeeds — same pattern as dev_arc's i_will_work_on retry.
     expect_error(_plan(), "tracing_gap", "pm first i_will_plan")
     expect_ok(
         pm.do(
             "note",
-            scope="note",
+            scope="decision",
             task_id=tid,
             text=(
-                "Initial assessment: a single-file bug fix delegated to one "
-                "backend developer child; the off-by-one slice bound is the "
-                "root cause and the fix is a one-line change."
+                "Delegation rationale: the off-by-one slice bound is a "
+                "single-file root cause and the fix is a one-line change, so "
+                "one backend developer child owns the whole fix and "
+                "self-verifies every acceptance criterion; no split needed."
             ),
+            chosen="single backend developer child owns the whole fix",
         ),
-        "pm note at claim",
+        "pm decision note at claim",
     )
     expect_ok(_plan(), "pm i_will_plan retry")
+
+    # The delegate verb also demands a resumption handoff (quick_context)
+    # before delegating — leave it, then retry the delegation.
+    expect_ok(
+        pm.do(
+            "note",
+            scope="handoff",
+            task_id=tid,
+            text=(
+                "Quick-context handoff: parent planned, single child delegate pending."
+            ),
+            done=(
+                "Planned the paginate fix: one backend developer child owns "
+                "the single-file slice-bound correction end to end."
+            ),
+            next=(
+                "Delegate to be-dev-1 with covers_parent_criteria spanning "
+                "every parent acceptance criterion."
+            ),
+        ),
+        "pm handoff note before delegate",
+    )
 
     # Delegate with covers_parent_criteria mapping every acceptance criterion.
     expect_ok(
@@ -262,6 +295,9 @@ def _pm_delegate_arc(
                 "paginate(list(range(10)), page=1, size=3) returns [0, 1, 2]",
             ],
             covers_parent_criteria=criteria,
+            # Collision surface the delegate verb now requires (the
+            # SequencingService input): the child touches the fixture file.
+            intends_to_touch=["bench/pm-delegate-pagination-fix/paginate.py"],
         ),
         "pm delegate with coverage",
     )
@@ -294,6 +330,18 @@ class _ScriptedBenchSpawner:
         await asyncio.to_thread(self._run_stage_sync, task, agent_slug)
 
     def _run_stage_sync(self, task: dict[str, Any], agent_slug: str) -> None:
+        # The shared MCP server modules cache ORCHESTRATOR_URL at import, and
+        # the harness only reloads them when AGENT_ID changes — so a same
+        # -agent arc running after a prior test's stack (a different port)
+        # would POST to a dead URL. Repoint both servers at THIS stack before
+        # driving any arc.
+        os.environ["ROBOCO_ORCHESTRATOR_URL"] = self._stack.base_url
+        for name in ("roboco.mcp.do_server", "roboco.mcp.flow_server"):
+            module = sys.modules.get(name) or importlib.import_module(name)
+            if getattr(module, "ORCHESTRATOR_URL", None) != self._stack.base_url:
+                # Module dict (not a plain attribute) — mypy flags a ModuleType
+                # attribute assignment and B010 flags setattr-with-constant.
+                module.__dict__["ORCHESTRATOR_URL"] = self._stack.base_url
         from roboco.agents_config import get_agent_role
 
         role = get_agent_role(agent_slug)
@@ -357,6 +405,68 @@ class _FakeJudge(BenchJudge):
     ) -> JudgeVerdict:
         return JudgeVerdict(
             score=_EXPECTED_JUDGE_SCORE, rationale="scripted test: assumed correct"
+        )
+
+
+def test_judge_prompts_and_scores_are_role_specific(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The REAL per-role prompt builders and the real score parsing.
+
+    The runner-driving tests above all pass ``judge=_FakeJudge``, so the
+    real per-role builders were exercised nowhere — a signature mismatch in
+    ``_build_judge_prompt``'s dispatch would surface at runtime as a
+    swallowed ``TypeError`` (``BenchJudge.score`` returning ``score=None``).
+    This test drives the real builders with the checked-in fixtures: each
+    role's prompt carries its role-specific section (QA the injected
+    defect, PM the expected coverage list), each passes cleanly through
+    the dispatcher, and ``BenchJudge.score`` against a stubbed
+    ``_judge_chat`` parses the ``Score:`` line into a verdict."""
+
+    def _by_key(key: str) -> BenchTaskSpec:
+        for f in FIXTURES:
+            if f.key == key:
+                return f
+        raise AssertionError(f"{key!r} fixture not found in FIXTURES")
+
+    dev_fixture = _by_key("bugfix-off-by-one")
+    qa_fixture = _by_key("qa-catch-off-by-one")
+    pm_fixture = _by_key("pm-delegate-pagination-fix")
+
+    dev_prompt = _build_judge_prompt(dev_fixture, diff="def paginate(...)", notes="")
+    qa_prompt = _build_judge_prompt(qa_fixture, diff="", notes="")
+    pm_prompt = _build_judge_prompt(pm_fixture, diff="", notes="")
+
+    # Developer: generic diff grading — no role-specific section.
+    assert "Actual diff:" in dev_prompt
+    assert "def paginate(...)" in dev_prompt
+    assert "INJECTED DEFECT" not in dev_prompt
+    assert "Expected coverage:" not in dev_prompt
+    # QA: defect-caught-vs-missed grading, naming the real injected defect.
+    assert "INJECTED DEFECT" in qa_prompt
+    assert qa_fixture.injected_defect is not None  # checked-in fixture sets it
+    assert qa_fixture.injected_defect in qa_prompt
+    # PM: coverage-mapped-vs-missing grading, listing the expected coverage.
+    assert "Expected coverage:" in pm_prompt
+    for criterion in pm_fixture.expected_coverage:
+        assert criterion in pm_prompt
+
+    captured: list[str] = []
+
+    async def _fake_judge_chat(prompt: str) -> str | None:
+        captured.append(prompt)
+        return "Score: 4\nRationale: role-specific grading"
+
+    monkeypatch.setattr("roboco.eval.runner._judge_chat", _fake_judge_chat)
+    for fixture, prompt, diff in (
+        (dev_fixture, dev_prompt, "def paginate(...)"),
+        (qa_fixture, qa_prompt, ""),
+        (pm_fixture, pm_prompt, ""),
+    ):
+        verdict = asyncio.run(BenchJudge().score(fixture=fixture, diff=diff, notes=""))
+        assert captured[-1] == prompt
+        assert verdict == JudgeVerdict(
+            score=4, rationale="Score: 4\nRationale: role-specific grading"
         )
 
 

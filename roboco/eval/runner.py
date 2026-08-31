@@ -85,7 +85,7 @@ from roboco.config import settings
 from roboco.eval.fixtures import FIXTURES, BenchTaskSpec
 from roboco.foundation import identity as _foundation
 from roboco.models import Team
-from roboco.models.base import Complexity
+from roboco.models.base import Complexity, TaskType
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -518,6 +518,11 @@ def _create_bench_task(
     assignee = assignee_slug or dev_slug
     creator_uuid = _foundation.AGENTS[dev_slug].uuid
     assignee_uuid = _foundation.AGENTS[assignee].uuid
+    # A PM parent-task fixture is a coordination task — PMs coordinate and
+    # never execute code (TaskService's PM_NO_CODE guard), so a code-typed
+    # parent pre-assigned to the cell_pm is rejected at create. A parent the
+    # PM delegates WITH covers_parent_criteria is a planning task by nature.
+    task_type = TaskType.PLANNING if fixture.is_parent else fixture.task_type
     holder: dict[str, Any] = {}
 
     async def _run(session: Any) -> None:
@@ -527,7 +532,7 @@ def _create_bench_task(
             acceptance_criteria=list(fixture.acceptance_criteria),
             team=team,
             created_by=creator_uuid,
-            task_type=fixture.task_type,
+            task_type=task_type,
             nature=fixture.nature,
             estimated_complexity=Complexity.LOW,
             project_id=project_id,
@@ -565,7 +570,11 @@ def _prepare_qa_entry(
     from roboco.models.base import TaskStatus
 
     base = env.cell_branch or "master"
-    branch = f"feature/bench/{fixture.key}/{uuid4().hex[:8]}"
+    # The branch must satisfy the repo's branch convention
+    # ({type}/{team}/seg1--seg2 — merge_chain._BRANCH_RE): the gateway
+    # validates it on the QA claim path, so a free-form name like
+    # ``feature/bench/<key>/<hex>`` raises "invalid branch" on claim_review.
+    branch = f"bug/{env.team.value}/{fixture.key}--{uuid4().hex[:8]}"
     origin_branch(stack, branch, start=base)
 
     # Commit the fixture's repo_files as the "developer's fix" (with defect)
@@ -856,29 +865,27 @@ def _dev_judge_prompt(
     )
 
 
-_JUDGE_PROMPT_BUILDERS: dict[str, Callable[..., str]] = {
-    "qa": _qa_judge_prompt,
-    "cell_pm": _pm_judge_prompt,
-    "main_pm": _pm_judge_prompt,
-}
-
-
 def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
     """Build the judge prompt, selecting a role-specific template via
     ``fixture.target_role``. Developer fixtures use the generic diff+notes
     grading prompt. QA fixtures grade defect-caught-vs-missed. PM fixtures
-    grade coverage-mapped-vs-missing."""
+    grade coverage-mapped-vs-missing. Each builder receives only the kwargs
+    it actually consumes (the project's ARG001 lint forbids unused args, so
+    the builders keep narrow signatures and the dispatcher branches on
+    ``fixture.target_role``) — passing a full unified kwarg set raised
+    ``TypeError`` at dispatch, which ``BenchJudge.score`` swallowed as
+    ``score=None``."""
     criteria = "\n".join(f"- {c}" for c in fixture.acceptance_criteria)
     target_role = fixture.target_role
-    builder = _JUDGE_PROMPT_BUILDERS.get(target_role, _dev_judge_prompt)
-    return builder(
-        fixture,
-        criteria,
-        notes,
-        diff=diff,
-        injected_defect=getattr(fixture, "injected_defect", None),
-        expected_coverage=getattr(fixture, "expected_coverage", ()),
-    )
+    if target_role == "qa":
+        return _qa_judge_prompt(
+            fixture, criteria, notes, injected_defect=fixture.injected_defect
+        )
+    if target_role in ("cell_pm", "main_pm"):
+        return _pm_judge_prompt(
+            fixture, criteria, notes, expected_coverage=fixture.expected_coverage
+        )
+    return _dev_judge_prompt(fixture, criteria, notes, diff=diff)
 
 
 async def _judge_chat(prompt: str) -> str | None:
@@ -1232,8 +1239,8 @@ class EvalRunner:
         dev_slug: str,
         fixture: BenchTaskSpec,
     ) -> FixtureResult:
-        entry_status = getattr(fixture, "entry_status", "pending")
-        is_parent = getattr(fixture, "is_parent", False)
+        entry_status = fixture.entry_status
+        is_parent = fixture.is_parent
         target_role = fixture.target_role
 
         # QA fixtures: skip _seed_fixture_repo (the repo_files go on the
