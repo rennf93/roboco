@@ -162,10 +162,10 @@ async def test_full_toolset_escape_hatch(monkeypatch: pytest.MonkeyPatch) -> Non
 # `results` use (content/source/score/index_type/metadata — confirmed in
 # roboco/api/schemas/optimal.py), so _append_live_write_caveat wires in
 # unchanged. This exercises the real tool bodies end-to-end (via
-# FastMCP.call_tool), not just the shared helper in isolation above.
+# MCPServer.call_tool), not just the shared helper in isolation above.
 # ---------------------------------------------------------------------------
 
-_LIVE_WRITE_ITEM = {
+_LIVE_WRITE_ITEM: dict[str, Any] = {
     "content": "the /v2/widgets endpoint accepts a `color` field",
     "source": "roboco://docs/x.md",
     "score": 0.9,
@@ -201,13 +201,10 @@ async def _call_tool(
     with patch.object(
         ApiClient, "post", new=AsyncMock(return_value=_FakeApiResponse(api_payload))
     ):
-        # call_tool's declared return type (Sequence[ContentBlock] |
-        # dict[str, Any]) doesn't match its actual runtime shape with
-        # convert_result=True (a (content_blocks, structured_dict) pair), so
-        # keep it untyped here rather than fighting mypy's union-unpack
-        # inference over a stub that doesn't reflect reality.
+        # call_tool returns CallToolResult in mcp 2.x; the handler's dict
+        # payload rides .structured_content (None when the tool errored).
         raw: Any = await server.call_tool(tool_name, arguments)
-    structured = raw[1]
+    structured = raw.structured_content
     assert isinstance(structured, dict)
     return structured
 
@@ -247,3 +244,124 @@ async def test_rag_query_caveats_live_write_citations(
         monkeypatch,
     )
     assert result["citations"][0]["content"].endswith(_LIVE_WRITE_CAVEAT)
+
+
+# ---------------------------------------------------------------------------
+# Post-flip contract: the provenance flip (live_write -> repo_tree when the
+# writing task's root chain reaches terminal completed) must make the caveat
+# disappear at every entry point, because the append is gated purely on
+# metadata.provenance. Each test below feeds the SAME hit to the real tool
+# body first with provenance=repo_tree (no caveat, content byte-for-byte)
+# then with provenance=live_write (caveat appended), seeding the value
+# directly in the mocked API response.
+# ---------------------------------------------------------------------------
+
+_REPO_TREE_ITEM = {
+    **_LIVE_WRITE_ITEM,
+    "metadata": {**_LIVE_WRITE_ITEM["metadata"], "provenance": "repo_tree"},
+}
+
+
+async def _assert_caveat_gates_on_provenance(
+    tool_name: str,
+    tool_arguments: dict[str, Any],
+    api_payload_builder: Any,
+    results_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call ``tool_name`` once with a repo_tree hit and once with the same
+    hit marked live_write; assert the caveat tracks the provenance value."""
+    repo_tree_result = await _call_tool(
+        "developer",
+        tool_name,
+        tool_arguments,
+        api_payload_builder([_REPO_TREE_ITEM]),
+        monkeypatch,
+    )
+    assert _LIVE_WRITE_CAVEAT not in repo_tree_result[results_key][0]["content"]
+    assert (
+        repo_tree_result[results_key][0]["content"]
+        == "the /v2/widgets endpoint accepts a `color` field"
+    )
+
+    live_write_result = await _call_tool(
+        "developer",
+        tool_name,
+        tool_arguments,
+        api_payload_builder([_LIVE_WRITE_ITEM]),
+        monkeypatch,
+    )
+    assert live_write_result[results_key][0]["content"].endswith(_LIVE_WRITE_CAVEAT)
+
+
+def _kb_search_payload(results: list[Any]) -> dict[str, Any]:
+    return {"results": results, "total": len(results)}
+
+
+def _rag_query_payload(results: list[Any]) -> dict[str, Any]:
+    return {"answer": "…", "citations": results, "context_used": len(results)}
+
+
+def _ask_mentor_payload(results: list[Any]) -> dict[str, Any]:
+    return {
+        "answer": "…",
+        "sources": results,
+        "conversation_id": "c-1",
+        "suggested_followups": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_kb_search_caveats_live_write_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = await _call_tool(
+        "developer",
+        "roboco_kb_search",
+        {"query": "widgets API color field"},
+        {
+            "results": [_LIVE_WRITE_ITEM],
+            "total": 1,
+        },
+        monkeypatch,
+    )
+    assert result["results"][0]["content"].endswith(_LIVE_WRITE_CAVEAT)
+
+
+@pytest.mark.asyncio
+async def test_kb_search_caveat_gates_on_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _assert_caveat_gates_on_provenance(
+        "roboco_kb_search",
+        {"query": "widgets API color field"},
+        _kb_search_payload,
+        "results",
+        monkeypatch,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rag_query_caveat_gates_on_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _assert_caveat_gates_on_provenance(
+        "roboco_rag_query",
+        {"query": "how does the widgets API work?"},
+        _rag_query_payload,
+        "citations",
+        monkeypatch,
+    )
+
+
+@pytest.mark.asyncio
+async def test_ask_mentor_caveat_gates_on_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _assert_caveat_gates_on_provenance(
+        "roboco_ask_mentor",
+        {"question": "how does the widgets API work?"},
+        _ask_mentor_payload,
+        "sources",
+        monkeypatch,
+    )
