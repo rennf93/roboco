@@ -39,6 +39,36 @@ plainly typed `RoutingMode`.
   or null prompt/completion renders "—" instead of throwing, and a null
   `context_length` simply omits the context line.
 
+## UI behavior
+
+- **Key row** (`OpenRouterProviderKeyRow`): password input with Save/Clear;
+  the green "Saved" badge appears only after the mutation's `onSuccess` and
+  clears on any input change, never optimistically.
+- **Mode button + flip**: the OpenRouter `ModeButton` (Globe icon) is disabled
+  until the key is set. Confirming the flip replaces role/global assignments
+  while keeping per-agent pins and complexity overrides; the payload passes
+  `mode: "openrouter"` plus the picked model as `default_model` only when one
+  is selected.
+- **Model picker states** (rendered only in `openrouter` mode): with no key
+  the input is disabled behind an amber "Save your OpenRouter API key above…"
+  notice; a failing search renders the status-specific copy below; zero
+  results render `No models found for "…"`. There is no preload — the query
+  fires only for a non-empty debounced search while the key is set.
+
+The picker surfaces the cause of a failure through `openRouterSearchErrorMessage`
+(the panel-side counterpart to the backend's park-reason surfacing for exit 75/78):
+
+| Failure | Copy |
+| --- | --- |
+| HTTP 400 | "OpenRouter API key not set — save your key above first." |
+| HTTP 401 | "OpenRouter auth failure — your API key may be invalid or expired." |
+| HTTP 429 | "OpenRouter rate limit — too many requests, try again in a moment." |
+| `ECONNABORTED` / `ETIMEDOUT` | "OpenRouter search timed out — try again in a moment." |
+| Anything else | "OpenRouter API is unavailable — try again in a moment." |
+
+The `ProviderBadge` gains an `openrouter` variant (indigo, "OR") — a new entry
+in the existing per-provider color map, no new visual language.
+
 ## Mix mode / per-agent pins
 
 The Mix-mode per-agent select lists only backend catalog models
@@ -49,6 +79,11 @@ by decision** (recorded in the cell PM's journal). Do not extend the select
 to synthesize OpenRouter entries; the exclusions ship intentionally.
 
 ## Testing
+
+```bash
+cd panel
+pnpm test ai-routing-card
+```
 
 Focused coverage lives in
 `panel/src/components/settings/__tests__/ai-routing-card.test.tsx`:
