@@ -168,3 +168,30 @@ waivers:
       `BoardProgramResponse` staying colocated with the route handlers is
       what trips this file's mixed-concern (model + route) finding. Tracked
       as the same pre-existing, explicitly out-of-scope item.
+  - path: roboco/security.py
+    rule: no_lint_suppressions
+    reason: >-
+      Two `type: ignore` suppressions document guard-core / fastapi-guard
+      3.12.0 / 7.6.0 type-stub gaps, not silenced debt. (1)
+      `from guard import status as guard_status  # type: ignore[attr-defined]`
+      — `guard/status.py` exists in guard 7.6.0 and Python's submodule import
+      machinery resolves it at runtime, but `guard.__init__` does not
+      re-export it so the stub's attr-defined check is simply wrong. (2)
+      `behavior_scan_response_body=...  # type: ignore[call-arg]` — the kwarg
+      exists on SecurityConfig at runtime (pydantic model_fields confirms it)
+      but the pydantic-mypy plugin does not surface it in the generated
+      __init__ signature. The four collection fields whose stubs declare
+      `list`/`dict` while runtime construction coerces them to immutable
+      types are bridged with explicit `cast()` calls (runtime no-ops) rather
+      than suppressions.
+  - path: tests/unit/test_security.py
+    rule: no_lint_suppressions
+    reason: >-
+      Three `type: ignore` suppressions document guard-core 3.12.0 stub
+      gaps, not silenced debt. (1) `# type: ignore[unreachable]` on the
+      `pytest.raises(AttributeError)` body — guard-core 3.12.0 coerces
+      collection fields to immutable types at construction, so in-place
+      mutation raises AttributeError at runtime while the stub types report
+      `list`. (2-3) `# type: ignore[attr-defined]` on the
+      `behavior_scan_response_body` accesses — same pydantic-mypy plugin gap
+      as the call-arg suppression above.
