@@ -10,7 +10,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession, require_panel_token
+from roboco.api.deps import (
+    CurrentAgentContext,
+    DbSession,
+    require_ceo_role,
+    require_panel_token,
+)
 from roboco.api.schemas.dashboard import (
     AuditorDashboard,
     AuditorFlag,
@@ -25,7 +30,6 @@ from roboco.api.schemas.dashboard import (
     UsageSummary,
 )
 from roboco.api.utils.dashboard import require_auditor_or_ceo as _require_auditor_or_ceo
-from roboco.models import AgentRole
 from roboco.models.base import Team
 from roboco.models.dashboard import CreateFlagParams
 from roboco.services.dashboard import get_dashboard_service
@@ -332,11 +336,7 @@ async def get_portfolio_projects(
 ) -> list[PortfolioProjectMetrics]:
     """CEO-gated cross-project portfolio: per-project delivery, rework,
     open findings, and this month's budget burn — most active first."""
-    if agent.role is not AgentRole.CEO:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the CEO may view the project portfolio",
-        )
+    require_ceo_role(agent.role, action="view the project portfolio")
     entries = await get_dashboard_service(db).get_portfolio(days)
     return [
         PortfolioProjectMetrics(

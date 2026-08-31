@@ -1485,7 +1485,10 @@ class MetricsService(BaseService):
 
         active_rows = await self.session.execute(
             select(TaskTable.project_id, func.count(TaskTable.id))
-            .where(TaskTable.status.notin_(_PORTFOLIO_HELD_STATUSES))
+            .where(
+                TaskTable.status.notin_(_PORTFOLIO_HELD_STATUSES),
+                TaskTable.project_id.is_not(None),
+            )
             .group_by(TaskTable.project_id)
         )
         for project_id, count in active_rows.all():

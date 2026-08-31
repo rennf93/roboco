@@ -1,13 +1,14 @@
 # CEO Portfolio Endpoint (`GET /api/dashboard/portfolio`)
 
-> **PR:** #965 (task `b3960175`) — **Status:** QA-passed
+> **PR:** #966 (task `1e0b4c7b`, the assembled portfolio branch) — **Status:** QA-passed
+> **Leaf delivery:** sibling task `b3960175`, PR #965
 > **Related:** `docs/map/api-routes-schemas.md` (route table), `docs/map/metrics-observability.md` (MetricsService slice)
 
 ## Overview
 
 The CEO governs 5 products (roboco-api, cc-tg-hub-be, discord-vexa-bridge, guard-core-saas, vexa-ai), but every pre-existing dashboard endpoint was per-team or org-wide — there was no cross-project aggregation. `GET /api/dashboard/portfolio` fills that gap: one call returns a per-project metrics row for every governed project so the CEO can see the whole fleet's delivery, rework, open findings, and budget burn side by side.
 
-The endpoint is **CEO-gated**: any authenticated non-CEO panel token receives `403`. It sits on the existing `/api/dashboard` router, which is router-level panel-gated like the rest of the dashboard surface; the CEO check is an explicit inline role guard on top of that (`roboco/api/routes/dashboard.py:327`).
+The endpoint is **CEO-gated**: any authenticated non-CEO panel token receives `403`. It sits on the existing `/api/dashboard` router, which is router-level panel-gated like the rest of the dashboard surface; the CEO check routes through the shared `require_ceo_role` helper (roboco/api/deps.py), the single source of truth for route-level CEO gates.
 
 ## Endpoint
 
@@ -19,7 +20,7 @@ GET /api/dashboard/portfolio?days={1..90}
 |---|---|---|---|
 | `days` | 30 | `ge=1, le=90` | Trailing window for median lead time and rework rate (query validation returns `422` outside the range) |
 
-Auth: panel token (router-wide `Depends(require_panel_token)` pattern) **plus** an explicit `agent.role is not AgentRole.CEO → 403` check with detail `"Only the CEO may view the project portfolio"`. No agent role may read it.
+Auth: panel token (router-wide `Depends(require_panel_token)` pattern) **plus** the shared `require_ceo_role` gate (`action="view the project portfolio"` → `403`, detail `"Only the CEO may view the project portfolio"`). No agent role may read it.
 
 ## Response
 
