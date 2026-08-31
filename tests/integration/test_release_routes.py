@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
@@ -17,14 +18,20 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes import release as release_route
 from roboco.api.routes.release import router as release_router
+from roboco.api.routes.releases import router as releases_router
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
-from roboco.foundation.policy.content import markers
+from roboco.foundation.policy.content import Finding, Severity, markers
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskNature, TaskStatus, TaskType
 from roboco.models.permissions import AgentContext
 from roboco.services.release_executor import ReleaseResult
 from roboco.services.release_proposal import ReleaseProposalService
-from roboco.services.release_readiness import ReleaseReadinessReport, report_to_dict
+from roboco.services.release_readiness import (
+    Gap,
+    ReleaseReadinessReport,
+    report_to_dict,
+)
+from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.task import RELEASE_MANAGER_SOURCE, TaskService
 from sqlalchemy import delete
 
@@ -426,4 +433,243 @@ async def test_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
     assert get_resp.status_code == HTTPStatus.FORBIDDEN
     assert approve_resp.status_code == HTTPStatus.FORBIDDEN
     assert reject_resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# GET /releases/{version}/certificate — the exportable gate-chain artifact
+# ---------------------------------------------------------------------------
+
+_PUBLISHED_AT = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+
+
+async def _seed_published_proposal(
+    session: AsyncSession,
+    *,
+    completed_at: datetime = _PUBLISHED_AT,
+    report: ReleaseReadinessReport | None = None,
+) -> tuple[ProjectTable, TaskTable]:
+    """A COMPLETED (= published) release proposal; returns (project, task)."""
+    system = await _seed_agent(session, AgentRole.SYSTEM, "system")
+    project = ProjectTable(
+        id=uuid4(),
+        name="RoboCo",
+        slug=f"roboco-{uuid4().hex[:6]}",
+        git_url="https://example.com/roboco.git",
+        assigned_cell=Team.BACKEND,
+        created_by=system.id,
+    )
+    session.add(project)
+    await session.flush()
+    task = TaskTable(
+        id=uuid4(),
+        title=f"Release proposal: v{_VERSION}",
+        description="proposal body",
+        acceptance_criteria=["CEO approves"],
+        status=TaskStatus.COMPLETED,
+        completed_at=completed_at,
+        priority=2,
+        task_type=TaskType.ADMINISTRATIVE,
+        nature=TaskNature.NON_TECHNICAL,
+        project_id=project.id,
+        created_by=system.id,
+        team=Team.MAIN_PM,
+        source=RELEASE_MANAGER_SOURCE,
+        confirmed_by_human=False,
+        orchestration_markers={"release_report": report_to_dict(report or _report())},
+    )
+    session.add(task)
+    await session.flush()
+    return project, task
+
+
+async def _seed_delivery_task(
+    session: AsyncSession,
+    project: ProjectTable,
+    completed_at: datetime,
+    **spec: Any,
+) -> TaskTable:
+    """A COMPLETED delivery task; optional spec keys ``title`` / ``source`` /
+    ``criteria`` / ``qa_notes`` override the defaults."""
+    task = TaskTable(
+        id=uuid4(),
+        title=spec.get("title", "Delivery work"),
+        description="body",
+        acceptance_criteria=spec.get("criteria") or [],
+        status=TaskStatus.COMPLETED,
+        completed_at=completed_at,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=project.id,
+        created_by=project.created_by,
+        team=Team.BACKEND,
+        source=spec.get("source", "manual"),
+        confirmed_by_human=True,
+        qa_notes=spec.get("qa_notes"),
+    )
+    session.add(task)
+    await session.flush()
+    return task
+
+
+@pytest_asyncio.fixture
+async def cert_ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
+    app = FastAPI()
+    app.include_router(releases_router, prefix="/api/releases")
+
+    async def _override_db() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    async def _override_agent() -> AgentContext:
+        return AgentContext(agent_id=uuid4(), role=AgentRole.CEO, team=None)
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_agent_context] = _override_agent
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_certificate_packages_release_gate_chain(
+    db_session: AsyncSession, cert_ceo_client: AsyncClient
+) -> None:
+    project, _proposal = await _seed_published_proposal(db_session)
+    delivered = await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=1),
+        title="Ship certificate endpoint",
+        criteria=["route exists", "CEO gated"],
+        # Only 1 of 2 criteria stamped by QA → qa_passed False.
+        qa_notes="[AC] route exists — verified: routes/releases.py:30\n",
+    )
+    all_clear = await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=2),
+        title="Docs sweep",
+    )
+    # Engine-held artifact: not delivered work, must stay out of task_states.
+    await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=3),
+        source=RELEASE_MANAGER_SOURCE,
+        title="X post draft",
+    )
+    # Completed after this release's publication: belongs to the next window.
+    await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT + timedelta(hours=1),
+        title="Too late",
+    )
+    repo = ReviewFindingsRepository(db_session)
+    await repo.insert_many(
+        task_id=UUID(str(delivered.id)),
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[
+            Finding(
+                severity=Severity.MAJOR,
+                expected="thin route",
+                actual="DB query in handler",
+            )
+        ],
+    )
+    await repo.insert_many(
+        task_id=UUID(str(all_clear.id)),
+        origin="pr_gate",
+        round=1,
+        author_slug="pr-reviewer",
+        findings=[
+            Finding(
+                severity=Severity.MINOR,
+                expected="docstring",
+                actual="missing",
+            )
+        ],
+    )
+    row = (await repo.list_for_task(UUID(str(all_clear.id))))[0]
+    row.status = "addressed"
+    await db_session.flush()
+
+    resp = await cert_ceo_client.get(f"/api/releases/{_VERSION}/certificate")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["version"] == _VERSION
+    assert body["ci_verdict"] == "green"
+    assert body["conventions_clean"] is True  # report carries no gaps
+    assert body["changelog_excerpt"].startswith("## [0.13.0]")
+    assert body["ceo_approved_at"] is not None
+    titles = {t["title"] for t in body["task_states"]}
+    assert titles == {"Ship certificate endpoint", "Docs sweep"}
+    failed = next(
+        t for t in body["task_states"] if t["title"] == "Ship certificate endpoint"
+    )
+    assert failed["qa_passed"] is False
+    assert (failed["criteria_total"], failed["criteria_verified"]) == (2, 1)
+    passed = next(t for t in body["task_states"] if t["title"] == "Docs sweep")
+    assert passed["qa_passed"] is True  # no criterion to verify
+    findings = body["findings_summary"]
+    assert findings["open"]["major"] == 1
+    assert findings["open"]["minor"] == 0
+    assert findings["closed"]["minor"] == 1
+    assert findings["waived"] == {"blocker": 0, "major": 0, "minor": 0, "nit": 0}
+    # The v-prefixed tag form resolves to the same certificate.
+    assert (
+        await cert_ceo_client.get(f"/api/releases/v{_VERSION}/certificate")
+    ).status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_certificate_conventions_dirty_when_classification_gap(
+    db_session: AsyncSession, cert_ceo_client: AsyncClient
+) -> None:
+    report = ReleaseReadinessReport(
+        proposed_version=_VERSION,
+        bump_kind="patch",
+        change_summary=[],
+        drafted_changelog="## [0.13.0]\n",
+        version_bump_plan=[],
+        gaps=[Gap(category="classification", detail="1 manual subject")],
+        migration_notes=[],
+        gate_state="green",
+    )
+    await _seed_published_proposal(db_session, report=report)
+    resp = await cert_ceo_client.get(f"/api/releases/{_VERSION}/certificate")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["conventions_clean"] is False
+
+
+@pytest.mark.asyncio
+async def test_certificate_404_for_unpublished_version(
+    cert_ceo_client: AsyncClient,
+) -> None:
+    resp = await cert_ceo_client.get("/api/releases/9.9.9/certificate")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_certificate_requires_ceo(db_session: AsyncSession) -> None:
+    await _seed_published_proposal(db_session)  # the row must exist; no read follows
+    app = FastAPI()
+    app.include_router(releases_router, prefix="/api/releases")
+
+    async def _override_db() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    async def _override_agent() -> AgentContext:
+        return AgentContext(agent_id=uuid4(), role=AgentRole.DEVELOPER, team=None)
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_agent_context] = _override_agent
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/releases/{_VERSION}/certificate")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
     app.dependency_overrides.clear()
