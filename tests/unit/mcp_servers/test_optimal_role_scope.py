@@ -201,10 +201,12 @@ async def _call_tool(
     with patch.object(
         ApiClient, "post", new=AsyncMock(return_value=_FakeApiResponse(api_payload))
     ):
-        # call_tool returns CallToolResult in mcp 2.x; the handler's dict
-        # payload rides .structured_content (None when the tool errored).
+        # mcp 1.29 (the lockfile pin) returns a tuple (unstructured,
+        # structured_content) whose second element carries the handler's
+        # dict payload (None when the tool errored); mcp 2.x instead returns
+        # a CallToolResult object. Unwrap both shapes.
         raw: Any = await server.call_tool(tool_name, arguments)
-    structured = raw.structured_content
+    structured = raw[1] if isinstance(raw, tuple) else raw.structured_content
     assert isinstance(structured, dict)
     return structured
 
