@@ -21,8 +21,8 @@ from ipaddress import ip_address, ip_network
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+import guard.status as guard_status
 from guard import SecurityConfig, SecurityDecorator, SecurityMiddleware
-from guard import status as guard_status
 from guard.adapters import StarletteGuardResponse
 from guard.lifespan import make_lifespan
 from guard_core.core.behavioral.processor import BehavioralProcessor
