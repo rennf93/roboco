@@ -12,7 +12,6 @@ import React from "react";
 import type {
   ComplexityOverride,
   ModeSnapshot,
-  OpenRouterModel,
   RoutingPreset,
 } from "@/lib/api/providers";
 import { AssignmentScope, ModelProvider } from "@/types";
@@ -23,9 +22,6 @@ const {
   setOllamaKey,
   getGrokKey,
   setGrokKey,
-  getOpenRouterKey,
-  setOpenRouterKey,
-  searchOpenRouterModels,
   getMode,
   applyMode,
   getSelfHostedConfig,
@@ -71,9 +67,6 @@ const {
   setOllamaKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   getGrokKey: vi.fn(async () => ({ has_key: false, enabled: true })),
   setGrokKey: vi.fn(async () => ({ has_key: true, enabled: true })),
-  getOpenRouterKey: vi.fn(async () => ({ key_set: false })),
-  setOpenRouterKey: vi.fn(async () => ({ key_set: true })),
-  searchOpenRouterModels: vi.fn(async (): Promise<OpenRouterModel[]> => []),
   getMode: vi.fn(async () => ({ mode: "anthropic", assignments: [] })),
   applyMode: vi.fn(
     async (payload: { mode: string }): Promise<ModeSnapshot> => ({
@@ -121,9 +114,6 @@ vi.mock("@/lib/api/providers", () => ({
     setOllamaKey,
     getGrokKey,
     setGrokKey,
-    getOpenRouterKey,
-    setOpenRouterKey,
-    searchOpenRouterModels,
     getMode,
     applyMode,
     getSelfHostedConfig,
@@ -425,9 +415,6 @@ describe("AIRoutingCard", () => {
     setOllamaKey.mockClear();
     getGrokKey.mockClear();
     setGrokKey.mockClear();
-    getOpenRouterKey.mockClear();
-    setOpenRouterKey.mockClear();
-    searchOpenRouterModels.mockClear();
     getMode.mockClear();
     applyMode.mockClear();
     getSelfHostedConfig.mockClear();
@@ -479,7 +466,7 @@ describe("AIRoutingCard", () => {
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
-    expect(screen.getAllByText("not set")).toHaveLength(3); // Grok + Ollama + OpenRouter
+    expect(screen.getAllByText("not set")).toHaveLength(2); // Grok + Ollama
 
     const grokInput = screen.getByPlaceholderText("xai-…");
     fireEvent.change(grokInput, { target: { value: "xai-secret" } });
@@ -613,7 +600,7 @@ describe("AIRoutingCard", () => {
     ).toBe("closed");
 
     const notSetBadges = screen.getAllByText("not set");
-    expect(notSetBadges).toHaveLength(3); // Grok + Ollama + OpenRouter
+    expect(notSetBadges).toHaveLength(2);
     for (const badge of notSetBadges) {
       expect(badge.getAttribute("data-state")).toBe("closed");
     }
@@ -651,12 +638,12 @@ describe("AIRoutingCard", () => {
         {
           scope: "agent_slug",
           scope_value: "be-dev-1",
-          model_name: "glm-5.2:cloud",
+          model_name: "glm-5.3:cloud",
         },
         {
           scope: "agent_slug",
           scope_value: "auditor",
-          model_name: "glm-5.2:cloud",
+          model_name: "glm-5.3:cloud",
         },
       ],
     } as Awaited<ReturnType<typeof getMode>>;
@@ -1265,255 +1252,6 @@ describe("AIRoutingCard", () => {
 
       await waitFor(() => expect(deletePreset).toHaveBeenCalledWith("p1"));
       confirmSpy.mockRestore();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // OpenRouter model picker — consumes the shared useSearchOpenRouterModels
-  // hook (debounced, no preload) and renders the nullable pricing contract.
-  // -------------------------------------------------------------------------
-
-  describe("OpenRouter model picker", () => {
-    // Renders the card with OpenRouter mode applied and a saved key, then
-    // returns the search input once the key status has landed and the input
-    // is enabled (typing into a disabled input would silently no-op).
-    async function openPicker() {
-      getOpenRouterKey.mockResolvedValueOnce({ key_set: true });
-      getMode.mockResolvedValueOnce({ mode: "openrouter", assignments: [] });
-      render(withQueryClient(<AIRoutingCard />));
-      const input = await screen.findByPlaceholderText("Search models…");
-      await waitFor(() => expect(input).not.toBeDisabled());
-      return input;
-    }
-
-    it("applies mode='openrouter' on confirm when the key is set", async () => {
-      getOpenRouterKey.mockResolvedValueOnce({ key_set: true });
-      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-      render(withQueryClient(<AIRoutingCard />));
-      await screen.findByText("Grok (xAI) API key");
-      // The OpenRouter button is key-gated — wait for the key status to land
-      // (until then the click would silently no-op on a disabled button).
-      const openRouterButton = await waitFor(() => {
-        const button = screen.getByText("OpenRouter").closest("button")!;
-        expect(button).not.toBeDisabled();
-        return button;
-      });
-
-      fireEvent.click(openRouterButton);
-
-      await waitFor(() =>
-        expect(applyMode).toHaveBeenCalledWith({ mode: "openrouter" }),
-      );
-      confirmSpy.mockRestore();
-    });
-
-    it("does not preload the models query and debounces keystrokes before fetching", async () => {
-      await openPicker();
-
-      // No preload: the query stays idle until something is typed.
-      expect(searchOpenRouterModels).not.toHaveBeenCalled();
-
-      fireEvent.change(screen.getByPlaceholderText("Search models…"), {
-        target: { value: "glm" },
-      });
-
-      // Debounced: nothing fetched immediately after the keystroke.
-      expect(searchOpenRouterModels).not.toHaveBeenCalled();
-
-      await waitFor(
-        () => expect(searchOpenRouterModels).toHaveBeenCalledWith("glm"),
-        { timeout: 3000 },
-      );
-    });
-
-    it("renders null-safe pricing: missing pricing, the '-1' sentinel, and sub-cent values", async () => {
-      searchOpenRouterModels.mockResolvedValueOnce([
-        {
-          model_name: "vendor/unpriced",
-          display_name: "Unpriced Model",
-          context_length: null,
-          pricing: null,
-        },
-        {
-          model_name: "vendor/sentinel",
-          display_name: "Sentinel Model",
-          context_length: 32000,
-          // "-1" is OpenRouter's unknown-price sentinel.
-          pricing: { prompt: "-1", completion: "0.0000014" },
-        },
-        {
-          model_name: "vendor/tiny",
-          display_name: "Tiny Model",
-          context_length: null,
-          // $0.003/1M — sub-cent must keep its third decimal, not "$0.00".
-          pricing: { prompt: "0.000000003", completion: null },
-        },
-      ]);
-      await openPicker();
-      fireEvent.change(screen.getByPlaceholderText("Search models…"), {
-        target: { value: "vendor" },
-      });
-
-      await screen.findByText("Sentinel Model", {}, { timeout: 3000 });
-
-      const rowFor = (name: string) =>
-        screen.getByText(name).closest("button") as HTMLElement;
-
-      // Null pricing → "—" on both sides; null context_length → no ctx line.
-      expect(
-        within(rowFor("Unpriced Model")).getByText("— in"),
-      ).toBeInTheDocument();
-      expect(
-        within(rowFor("Unpriced Model")).getByText("— out"),
-      ).toBeInTheDocument();
-      expect(
-        within(rowFor("Unpriced Model")).queryByText(/ctx/),
-      ).not.toBeInTheDocument();
-
-      // "-1" sentinel never renders as a negative dollar figure; the priced
-      // completion renders normally; the context line survives a null-pricing
-      // sibling.
-      expect(
-        within(rowFor("Sentinel Model")).getByText("— in"),
-      ).toBeInTheDocument();
-      expect(
-        within(rowFor("Sentinel Model")).getByText("$1.40/1M out"),
-      ).toBeInTheDocument();
-      expect(
-        within(rowFor("Sentinel Model")).getByText("32,000 ctx"),
-      ).toBeInTheDocument();
-
-      // Sub-cent per-million values render with a third decimal; null
-      // completion → "—".
-      expect(
-        within(rowFor("Tiny Model")).getByText("$0.003/1M in"),
-      ).toBeInTheDocument();
-      expect(
-        within(rowFor("Tiny Model")).getByText("— out"),
-      ).toBeInTheDocument();
-      // Coverage-run load stacks a 300ms real-timer debounce on top of the
-      // async query — past the default 5s per-test ceiling in CI.
-    }, 15_000);
-
-    it("maps a failing models query to status-specific error copy (401 → auth failure)", async () => {
-      searchOpenRouterModels.mockRejectedValueOnce({
-        response: { status: 401 },
-      });
-      const search = await openPicker();
-      fireEvent.change(search, { target: { value: "glm" } });
-
-      await screen.findByText(
-        /OpenRouter auth failure — your API key may be invalid or expired/,
-        {},
-        { timeout: 3000 },
-      );
-      expect(screen.queryByText(/No models found/)).not.toBeInTheDocument();
-    });
-
-    it("maps a 429 to the rate-limit copy and an unknown failure to the generic fallback", async () => {
-      searchOpenRouterModels.mockRejectedValueOnce({
-        response: { status: 429 },
-      });
-      const search = await openPicker();
-      fireEvent.change(search, { target: { value: "glm" } });
-
-      await screen.findByText(
-        /OpenRouter rate limit — too many requests, try again in a moment/,
-        {},
-        { timeout: 3000 },
-      );
-      expect(screen.queryByText(/No models found/)).not.toBeInTheDocument();
-      // Coverage-run load stacks the 300ms real-timer debounce on top of the
-      // async query — same ceiling relief as the pricing test above.
-    }, 15_000);
-
-    it("maps a timed-out models query to the timeout copy", async () => {
-      searchOpenRouterModels.mockRejectedValueOnce({
-        code: "ECONNABORTED",
-      });
-      const search = await openPicker();
-      fireEvent.change(search, { target: { value: "glm" } });
-
-      await screen.findByText(
-        /OpenRouter search timed out — try again in a moment/,
-        {},
-        { timeout: 3000 },
-      );
-    });
-
-    it("shows the empty-state message when the search returns no models", async () => {
-      const search = await openPicker();
-      fireEvent.change(search, { target: { value: "zzz" } });
-
-      await screen.findByText(/No models found for/, {}, { timeout: 3000 });
-      expect(screen.getByText(/Try a different search/)).toBeInTheDocument();
-    });
-
-    it("shows the key-not-set notice instead of results when no key is saved", async () => {
-      getMode.mockResolvedValueOnce({ mode: "openrouter", assignments: [] });
-      render(withQueryClient(<AIRoutingCard />));
-      await screen.findByText(/Save your OpenRouter API key above/);
-      expect(searchOpenRouterModels).not.toHaveBeenCalled();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // OpenRouter key row — the "Saved" badge is onSuccess-only: it never
-  // appears while the mutation is pending or on failure, and clears on any
-  // input change.
-  // -------------------------------------------------------------------------
-
-  describe("OpenRouter key row", () => {
-    async function saveKey(key: string) {
-      const input = screen.getByPlaceholderText("sk-or-…");
-      fireEvent.change(input, { target: { value: key } });
-      const openRouterSection = screen
-        .getByText("OpenRouter API key")
-        .closest("section")!;
-      const saveButton = Array.from(
-        openRouterSection.querySelectorAll("button"),
-      ).find((b) => b.textContent === "Save")!;
-      fireEvent.click(saveButton);
-      return input;
-    }
-
-    it("shows the Saved badge only after the mutation succeeds, and clears it on input change", async () => {
-      render(withQueryClient(<AIRoutingCard />));
-      await screen.findByText("OpenRouter API key");
-
-      let resolveSave!: (v: { key_set: boolean }) => void;
-      setOpenRouterKey.mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveSave = resolve;
-          }),
-      );
-      const input = await saveKey("sk-or-secret");
-
-      // Not yet: mutation still pending — no optimistic "Saved".
-      expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-
-      resolveSave({ key_set: true });
-      await screen.findByText("Saved");
-
-      // Any input change clears the badge again.
-      fireEvent.change(input, { target: { value: "sk-or-2" } });
-      expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-    });
-
-    it("never shows Saved when the save fails", async () => {
-      setOpenRouterKey.mockRejectedValueOnce(new Error("boom"));
-      render(withQueryClient(<AIRoutingCard />));
-      const input = await saveKey("sk-or-secret");
-
-      await waitFor(() =>
-        expect(toast.error).toHaveBeenCalledWith(
-          expect.stringContaining("Save failed"),
-        ),
-      );
-      expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-      // The failed input is preserved so the operator can retry.
-      expect((input as HTMLInputElement).value).toBe("sk-or-secret");
     });
   });
 });
