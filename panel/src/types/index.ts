@@ -1502,6 +1502,46 @@ export interface ProvenanceReport {
   human_rate: number;
 }
 
+/** Ended, task-scoped spawn sessions that advanced nothing on their task
+ * (no status advance, commit, progress update, or journal entry in the
+ * session's own window), priced. Serves the zero-progress spawn-waste
+ * metric — GET /dashboard/metrics/spawn-waste — NOT the older
+ * /usage/spawn-waste zero-output-token definition. */
+export interface AgentSpawnWasteRow {
+  agent_slug: string;
+  sessions: number;
+  zero_progress_sessions: number;
+  zero_progress_cost_usd: number;
+  rate: number;
+}
+
+export interface TeamSpawnWasteRow {
+  team: string;
+  sessions: number;
+  zero_progress_sessions: number;
+  zero_progress_cost_usd: number;
+  rate: number;
+}
+
+export interface TaskSpawnWasteRow {
+  task_id: string;
+  sessions: number;
+  zero_progress_sessions: number;
+  zero_progress_cost_usd: number;
+  rate: number;
+}
+
+export interface SpawnWasteReport {
+  total_sessions: number;
+  zero_progress_sessions: number;
+  zero_progress_cost_usd: number;
+  total_cost_usd: number;
+  zero_progress_cost_share: number;
+  by_agent: AgentSpawnWasteRow[];
+  by_team: TeamSpawnWasteRow[];
+  by_task: TaskSpawnWasteRow[];
+}
+
 // --- Granular per-member metrics (v0.15.0) ---
 
 export interface StageEffort {

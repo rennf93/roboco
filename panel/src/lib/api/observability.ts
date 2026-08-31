@@ -10,6 +10,7 @@ import type {
   OrgScorecard,
   TaskMetrics,
   ProvenanceReport,
+  SpawnWasteReport,
 } from "@/types";
 
 // =============================================================================
@@ -36,6 +37,17 @@ const EMPTY_PROVENANCE: ProvenanceReport = {
   human_authored: 0,
   agent_authored: 0,
   human_rate: 0,
+};
+
+const EMPTY_SPAWN_WASTE: SpawnWasteReport = {
+  total_sessions: 0,
+  zero_progress_sessions: 0,
+  zero_progress_cost_usd: 0,
+  total_cost_usd: 0,
+  zero_progress_cost_share: 0,
+  by_agent: [],
+  by_team: [],
+  by_task: [],
 };
 
 function emptyScorecard(scope: string, id: string): Scorecard {
@@ -147,6 +159,18 @@ export const observabilityApi = {
     if (isMockMode()) return EMPTY_PROVENANCE;
     const { data } = await api.get<ProvenanceReport>(
       "/dashboard/metrics/provenance",
+      { params: { days } },
+    );
+    return data;
+  },
+
+  /** Zero-progress spawn waste (sessions that advanced nothing on their
+   * task, priced) — GET /dashboard/metrics/spawn-waste?days. Distinct from
+   * the /usage/spawn-waste zero-output-token metric. */
+  getSpawnWaste: async (days = 30): Promise<SpawnWasteReport> => {
+    if (isMockMode()) return EMPTY_SPAWN_WASTE;
+    const { data } = await api.get<SpawnWasteReport>(
+      "/dashboard/metrics/spawn-waste",
       { params: { days } },
     );
     return data;
