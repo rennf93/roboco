@@ -10,7 +10,12 @@ This change adds a real **per-index** timeout, inner to the route's 30s outer bo
 _PER_INDEX_SEARCH_TIMEOUT = 15.0
 ```
 
-Each index plugin's `search_with_embedding()` call is wrapped in `asyncio.wait_for(..., timeout=_PER_INDEX_SEARCH_TIMEOUT)` independently, so one slow index cannot consume the whole request budget. On `TimeoutError` the index is recorded in a `gaps` list and a failure `SearchOutcome` is returned instead of propagating — the other indexes still return their results. The route-level 30s `asyncio.timeout` stays as the outer bound; the per-index 15s bound is inner.
+Each index plugin's `search_with_embedding()` call is wrapped in `asyncio.wait_for(..., timeout=_PER_INDEX_SEARCH_TIMEOUT)` independently, so one slow index cannot consume the whole request budget. A non-returning index is recorded in a `gaps` list and a failure `SearchOutcome` is returned instead of propagating — the other indexes still return their results. Both failure shapes are caught:
+
+- **Timeout** (`TimeoutError` from `asyncio.wait_for`) — gap entry `"{index} unavailable: timed out after 15s"`.
+- **Non-timeout failure** — either a general exception raised by the plugin (gap entry `"{index} unavailable: failed: {type(e).__name__}"`) or a returned `SearchOutcome(success=False)` (gap entry `"{index} unavailable: failed: {outcome.error_message}"`). Before this revision only `TimeoutError` was caught, so a non-timeout-failed index was logged but never named in `gaps` — and a total non-timeout outage rendered as HTTP 200 with `total: 0`, masking the outage behind the route's `if not results and gaps:` guard.
+
+The route-level 30s `asyncio.timeout` stays as the outer bound; the per-index 15s bound is inner.
 
 ## Public surface
 
@@ -22,7 +27,7 @@ async def search_with_gaps(
 ) -> tuple[list[SearchResult], list[str]]
 ```
 
-Returns `(results, gaps)` where `gaps` is a list of strings, each naming an index that timed out (e.g. `"journals unavailable: timed out after 15s"`). Empty when every index completed. This is the method the in-scope routes (`/kb/search`, `/rag/query`) and the MCP tool surface should call when they want to surface partial-result degradation to the caller.
+Returns `(results, gaps)` where `gaps` is a list of strings, each naming an index that did not return — a timeout entry (e.g. `"journals unavailable: timed out after 15s"`) or a non-timeout failure entry (e.g. `"journals unavailable: failed: RuntimeError"`). Empty when every index completed. This is the method the in-scope routes (`/kb/search`, `/rag/query`) and the MCP tool surface should call when they want to surface partial-result degradation to the caller.
 
 ### `search()` — backward compatible
 
@@ -33,7 +38,7 @@ Returns `(results, gaps)` where `gaps` is a list of strings, each naming an inde
 
 ### `query()` and `RAGResponse.gaps`
 
-`_aggregate_citations()` now returns a 4-tuple `(citations, stats, errors, gaps)`; `_search_single_index()` accepts an optional `gaps` param and, on timeout, appends the index name to it and records an error in the buffer instead of propagating. `query()` threads `gaps` into the returned `RAGResponse`:
+`_aggregate_citations()` now returns a 4-tuple `(citations, stats, errors, gaps)`; `_search_single_index()` accepts an optional `gaps` param and, on a timeout or a non-timeout failure (raised exception or a returned `SearchOutcome(success=False)`), appends the index to the gaps list with the same `"timed out"` / `"failed:"` wording as the search path while still recording the error in the buffer's `stats` (as `-1`) and `search_errors` — the rag response keeps its per-index error detail alongside the new gap entry. `query()` threads `gaps` into the returned `RAGResponse`:
 
 ```python
 @dataclass
@@ -64,4 +69,4 @@ The route handlers, response schemas, and MCP tool surface for `gaps` are docume
 
 ## Degradation pattern reference
 
-The pattern mirrors `evidence_legs.run_bounded_leg`: a bounded leg, and on timeout the failing unit is named in a visible gaps list while the successful units still return their results. `_bounded_index_search()` is the module-level helper that wraps a single `(IndexType, plugin)` entry's search in `asyncio.wait_for` and, on `TimeoutError`, appends a human-readable string to the shared `gaps` list and returns a failure `SearchOutcome`. Reuse this helper rather than adding another per-call timeout when extending the fan-out.
+The pattern mirrors `evidence_legs.run_bounded_leg`: a bounded leg, and on timeout or unexpected failure the failing unit is named in a visible gaps list while the successful units still return their results. `_bounded_index_search()` is the module-level helper that wraps a single `(IndexType, plugin)` entry's search in `asyncio.wait_for` and, on `TimeoutError`, a general exception, or a returned `SearchOutcome(success=False)`, appends a human-readable string to the shared `gaps` list and returns a failure `SearchOutcome`. Reuse this helper rather than adding another per-call timeout when extending the fan-out.
