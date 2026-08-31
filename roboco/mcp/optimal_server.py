@@ -75,14 +75,12 @@ _RESULT_CONTENT_CAP = 800
 # in-flight doc read indistinguishably from one describing merged/deployed
 # reality. See DocsIndexPlugin.prepare_metadata for how the marker is set.
 #
-# ponytail: the marker never flips back to "repo_tree" on merge — there's no
-# lifecycle hook from PR-merge back into the KB, and the periodic re-scan
-# only walks docs/rag + docs/map (siblings of the team dirs roboco_docs_write
-# targets), so a caveat persists until an operator/startup reindex re-derives
-# the doc's metadata from the repo tree. Treat it as "verify against git",
-# not "this is unmerged". Upgrade path: stamp the doc's task_id (already
-# carried in metadata) and flip provenance to "repo_tree" when that task's
-# root chain reaches a terminal completed state.
+# Lifecycle: the marker is temporary now. TaskService's completion hook
+# (_flip_docs_provenance_background → DocsIndexPlugin.flip_task_provenance)
+# flips the stamped task_id's chunk provenance back to "repo_tree" once the
+# writing task's ROOT chain reaches terminal completed, so a caveat only
+# outlives its own PR — never the master merge. Do not also gate this
+# append on the flip service; it stays purely provenance-gated.
 _LIVE_WRITE_CAVEAT = (
     "[caveat: written during in-flight work — verify the contract exists on "
     "the deployed tree/git before relying on it]"
