@@ -51,3 +51,12 @@ Between "task completed" and "flip ran" there is a small async window (the flip 
 - `tests/unit/services/optimal_brain/test_docs_index_provenance.py` — store SQL/params for the flip, empty-ids no-op, plugin delegation.
 - `tests/integration/test_task_provenance_flip.py` — the trigger: flip fires with the root's whole sorted subtree ids; no flip while the root is non-terminal; a parentless task flips itself; flip failures swallowed + logged; guard failures never break completion hooks.
 - `tests/integration/test_docs_service.py::test_doc_flips_to_repo_tree_when_root_chain_completes` (beside the existing `live_write` provenance tests) — the end-to-end doc-written-then-chain-completes lifecycle.
+
+### Caveat-gating regression tests (search-result layer)
+
+The flip only removes the caveat because the append logic is gated purely on `metadata.provenance == "live_write"` — there is no flip-aware branch inside `roboco/mcp/optimal_server.py`. That contract is locked in `tests/unit/mcp_servers/test_optimal_role_scope.py` so a future change can never silently regress one of the three entry points:
+
+- `test_kb_search_caveats_live_write_results` — the entry-point caveat test for `roboco_kb_search` (previously only the shared helper was covered on that path): a live_write hit returned by the real tool body carries the caveat.
+- `test_kb_search_caveat_gates_on_provenance`, `test_rag_query_caveat_gates_on_provenance`, `test_ask_mentor_caveat_gates_on_provenance` — per-entry-point post-flip contract tests. Each feeds the SAME hit to the real tool body (via `MCPServer.call_tool` with `ApiClient` mocked) first with `provenance: "repo_tree"` (asserted: no caveat, content byte-for-byte unchanged) and then with `provenance: "live_write"` (asserted: caveat appended), sharing one `_assert_caveat_gates_on_provenance` helper.
+
+These tests seed the provenance value directly in the mocked API response, so they exercise the gating itself — independent of whether the flip has shipped. One test-infra note: the file's `_call_tool` helper unwraps both mcp shapes (a `(unstructured, structured)` tuple from mcp 1.x, a `CallToolResult` with `.structured_content` from mcp 2.x), so the suite passes under either lockfile pin.
