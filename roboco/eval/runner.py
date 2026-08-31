@@ -42,15 +42,35 @@ exactly as they would in a real deployment). The injectable scripted
 unit-test fallback — it drives the SAME real MCP flow/do tool functions
 e2e_smoke's ``ScriptedAgent`` uses, proving the runner's
 polling/scoring/DB plumbing without touching Docker. ``python -m roboco.eval
-run`` works end to end for a developer-role cohort; it needs a Docker daemon
-+ built agent images for the real spawn path.
+run`` works end to end for every supported role cohort; it needs a Docker
+daemon + built agent images for the real spawn path.
 
-Scope cut: only developer-role fixtures are supported (``run_cohort``
-refuses any other role). QA/documenter/cell-PM only ever pick up a task a
-developer has already advanced through the lifecycle — there is no
-"freshly PENDING task assigned straight to QA" shape to bench them with the
-same one-task-per-fixture design. A QA/PM-focused bench would need a
-different fixture shape (a pre-built PR to review) and is future work.
+Role coverage: ``run_cohort`` scores developer, qa, cell_pm, and main_pm
+cohorts, each against fixtures with the matching ``target_role``. The three
+non-developer entry shapes (one task per fixture, as with a developer):
+
+* ``developer`` — a fresh PENDING leaf under the bench cell; the loop drives
+  dev → QA → doc → PM to ``completed`` (unchanged).
+* ``qa`` — the runner itself pre-builds the review turn: it commits the
+  fixture's repo files onto a fresh task branch (they are NOT seeded onto
+  master, so the branch-vs-cell diff is the change under review), opens the
+  PR, and parks the task at ``awaiting_qa``. The fixture is a defect trap by
+  construction — its repo files carry the "fix attempt" whose content
+  contradicts the acceptance criteria — and the scored question is
+  catch-vs-miss: a ``fail_review`` (needs_revision) is a caught defect and
+  the loop's designed success terminal (the deterministic pass); a
+  ``pass_review`` of the defective PR flows on through doc → PM to
+  ``completed`` (a deterministic miss). The QA judge prompt grades catch
+  quality within those shapes.
+* ``cell_pm`` / ``main_pm`` — the fixture task is a PARENT, not a leaf:
+  pending under the bench cell for ``cell_pm``; a fresh coordination ROOT
+  for ``main_pm``, which has no cell team and therefore no bench cell (the
+  environment skips the cell setup entirely — see ``_bench_environment``).
+  The scored turn is the PM's plan-and-delegate: did it ``delegate`` with
+  ``covers_parent_criteria`` mapping EVERY parent acceptance criterion? The
+  drive loop stops once the delegated child exists — a main_pm root's honest
+  terminal is the CEO human gate, and the delegated child's own dev/QA/doc
+  chain is a different cohort's subject, not this one's.
 """
 
 from __future__ import annotations
@@ -96,10 +116,10 @@ _TERMINAL_STATUSES = {"completed", "cancelled"}
 # a stall, distinct from a genuine timeout, but never mistaken for success.
 _HUMAN_GATED_STATUSES = {"awaiting_ceo_approval", "blocked", "paused"}
 
-# status -> the role responsible for advancing it. A bench fixture is a leaf
-# task (no parent, no PR-review gate — see the module docstring), so every
-# other status (backlog, awaiting_pr_review, ...) never legitimately occurs;
-# reaching one is scored as a stall (`_STAGE_ROLE.get(status)` -> None).
+# status -> the role responsible for advancing a DEVELOPER-entry fixture (a
+# parentless leaf). PM-entry fixtures override the pending/claimed/in_progress
+# rows to the role under test (see ``_stage_role``); every other status never
+# legitimately occurs for a leaf and is scored as a stall.
 _STAGE_ROLE: dict[str, str] = {
     "pending": "developer",
     "claimed": "developer",
@@ -111,6 +131,39 @@ _STAGE_ROLE: dict[str, str] = {
 }
 _ROLE_SUFFIX = {"qa": "qa", "documenter": "doc", "cell_pm": "pm"}
 _TEAM_PREFIX = {"backend": "be", "frontend": "fe", "ux_ui": "ux"}
+
+# Roles whose fixtures do NOT enter as a fresh developer leaf (QA enters at a
+# pre-built AWAITING_QA review turn; the PM roles enter as a PARENT task).
+_BENCH_ROLES = frozenset({"developer", "qa", "cell_pm", "main_pm"})
+# A PM-entry fixture's scored turn is its plan-and-delegate; those are the
+# statuses where the role under test owns the stage (a developer's, normally).
+_PM_STAGE_STATUSES = frozenset({"pending", "claimed", "in_progress", "verifying"})
+
+
+def _stage_role(status: str, target_role: str) -> str | None:
+    """Status -> owning role, entry-aware.
+
+    A cell_pm/main_pm fixture's task is a PARENT: pending/claimed/in_progress
+    normally mean "a developer owns this leaf", but for a PM-entry fixture
+    they mean "the PM has not delegated yet" — override them to the role
+    under test. Every other status keeps the default leaf mapping.
+    """
+    if target_role in {"cell_pm", "main_pm"} and status in _PM_STAGE_STATUSES:
+        return target_role
+    return _STAGE_ROLE.get(status)
+
+
+def _stage_agent_slug(role: str, target_role: str, role_slug: str, prefix: str) -> str:
+    """The slug that drives one stage. The role under test drives its own
+    stage (a qa cohort IS the be-qa agent; a main_pm cohort IS main-pm);
+    supporting roles derive from the cell prefix. main_pm is org-level —
+    never a ``{prefix}-`` cell member."""
+    if role == target_role:
+        return role_slug
+    if role == "main_pm":
+        return "main-pm"
+    return f"{prefix}-{_ROLE_SUFFIX[role]}"
+
 
 # ---------------------------------------------------------------------------
 # Scratch Postgres — mirrors tests/conftest.py's `_test_database_url` fixture
@@ -218,8 +271,13 @@ class BenchEnvironment:
     project_id: UUID
     project_slug: str
     team: Team
-    cell_id: UUID
-    cell_branch: str
+    # None for a main_pm environment: main_pm is org-level — no cell team, so
+    # no bench cell to cut leaf PRs into. PM fixtures need neither: their
+    # scored artifact is the delegation, not a merged diff.
+    cell_id: UUID | None
+    cell_branch: str | None
+    role: str
+    prefix: str
 
 
 def _seed_company(stack: E2EStack, slugs: Iterable[str]) -> None:
@@ -348,7 +406,7 @@ def _seed_bench_cell(
 
 
 @contextlib.contextmanager
-def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
+def _bench_environment(role_slug: str) -> Iterator[BenchEnvironment]:
     """Stand up the disposable e2e_smoke-style stack + one bench project +
     the fixed company of agents needed to run a fixture end to end."""
     try:
@@ -360,11 +418,34 @@ def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
             "clone of the repo, not an installed package"
         ) from exc
 
-    team_str = get_agent_team(dev_slug)
-    if team_str not in _TEAM_PREFIX:
-        raise ValueError(f"{dev_slug!r} has no known cell team ({team_str!r})")
-    team = Team(team_str)
-    prefix = _TEAM_PREFIX[team_str]
+    role = get_agent_role(role_slug)
+    team_str = get_agent_team(role_slug)
+    if role == "main_pm":
+        # main_pm is org-level: no cell team, so no bench cell — the
+        # explicit non-cell environment path. The project still declares a
+        # concrete (backend) cell so the workspace/project machinery has a
+        # cell to resolve; the fixture task itself carries Team.MAIN_PM.
+        team = Team.BACKEND
+        prefix = "be"
+        slugs = ["main-pm", "be-dev-1", "be-qa", "be-doc", "be-pm"]
+    else:
+        if team_str not in _TEAM_PREFIX:
+            raise ValueError(f"{role_slug!r} has no known cell team ({team_str!r})")
+        team = Team(team_str)
+        prefix = _TEAM_PREFIX[team_str]
+        # The role under test plus the supporting cast its lifecycle can
+        # reach (dedup: a qa cohort role_slug IS the {prefix}-qa agent).
+        slugs = list(
+            dict.fromkeys(
+                [
+                    role_slug,
+                    f"{prefix}-dev-1",
+                    f"{prefix}-qa",
+                    f"{prefix}-doc",
+                    f"{prefix}-pm",
+                ]
+            )
+        )
 
     with _scratch_database() as db_url:
         root_path = Path(tempfile.mkdtemp(prefix="roboco-eval-"))
@@ -384,21 +465,24 @@ def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
                 # intake watcher, KB ingest, weekly report) that this harness
                 # never starts (no AgentOrchestrator.start() call) and are
                 # therefore already inert; patched anyway so a future harness
-                # change that does start them fails closed, not open.
+                # change that does start them fails closed, not open. The
+                # patch is role-agnostic: it wraps the environment, so every
+                # entry point (developer leaf, pre-built QA review, PM
+                # parent/root) is covered.
                 mp.setattr(settings, "obsidian_vault_enabled", False)
                 mp.setattr(settings, "vault_intake_enabled", False)
                 mp.setattr(settings, "vault_kb_enabled", False)
                 mp.setattr(settings, "vault_report_enabled", False)
                 try:
-                    dev_uuid = _foundation.AGENTS[dev_slug].uuid
-                    _seed_company(
-                        stack,
-                        [dev_slug, f"{prefix}-qa", f"{prefix}-doc", f"{prefix}-pm"],
-                    )
-                    project_id, project_slug = _seed_project(stack, team, dev_uuid)
-                    cell_id, cell_branch = _seed_bench_cell(
-                        stack, project_id, team, prefix
-                    )
+                    owner_uuid = _foundation.AGENTS[slugs[0]].uuid
+                    _seed_company(stack, slugs)
+                    project_id, project_slug = _seed_project(stack, team, owner_uuid)
+                    if role == "main_pm":
+                        cell_id, cell_branch = None, None
+                    else:
+                        cell_id, cell_branch = _seed_bench_cell(
+                            stack, project_id, team, prefix
+                        )
                     yield BenchEnvironment(
                         stack=stack,
                         project_id=project_id,
@@ -406,6 +490,8 @@ def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
                         team=team,
                         cell_id=cell_id,
                         cell_branch=cell_branch,
+                        role=role,
+                        prefix=prefix,
                     )
                 finally:
                     mp.undo()
@@ -446,21 +532,24 @@ def _create_bench_task(
     *,
     stack: E2EStack,
     project_id: UUID,
-    dev_slug: str,
+    owner_slug: str,
     fixture: BenchTaskSpec,
     team: Team,
-    parent_task_id: UUID,
+    parent_task_id: UUID | None,
+    creator_slug: str | None = None,
 ) -> UUID:
-    """Create the real task (TaskService.create), pre-assigned to `dev_slug`
-    — the "PM pre-assigned this" shape every dev-entry task in production
-    already uses (e.g. the video engine's authoring tasks) — as a child of
-    the environment's bench cell (see ``_seed_bench_cell``) so its eventual
-    PR merges into a real cell branch, not the project's protected default
-    branch."""
+    """Create the real task (TaskService.create), pre-assigned to
+    `owner_slug` — the "PM pre-assigned this" shape every dev-entry task in
+    production already uses (e.g. the video engine's authoring tasks).
+    Developer-entry fixtures are children of the environment's bench cell
+    (see ``_seed_bench_cell``) so their eventual PR merges into a real cell
+    branch, not the project's protected default branch; a main_pm fixture is
+    a coordination ROOT (parent_task_id=None, Team.MAIN_PM)."""
     from roboco.models.task import TaskCreateRequest
     from roboco.services.task import EVAL_BENCH_SOURCE, get_task_service
 
-    dev_uuid = _foundation.AGENTS[dev_slug].uuid
+    owner_uuid = _foundation.AGENTS[owner_slug].uuid
+    creator_uuid = _foundation.AGENTS[creator_slug or owner_slug].uuid
     holder: dict[str, Any] = {}
 
     async def _run(session: Any) -> None:
@@ -469,13 +558,13 @@ def _create_bench_task(
             description=fixture.description,
             acceptance_criteria=list(fixture.acceptance_criteria),
             team=team,
-            created_by=dev_uuid,
+            created_by=creator_uuid,
             task_type=fixture.task_type,
             nature=fixture.nature,
             estimated_complexity=Complexity.LOW,
             project_id=project_id,
             parent_task_id=parent_task_id,
-            assigned_to=dev_uuid,
+            assigned_to=owner_uuid,
             source=EVAL_BENCH_SOURCE,
             confirmed_by_human=True,
         )
@@ -484,6 +573,78 @@ def _create_bench_task(
 
     stack.run_db(_run)
     return cast("UUID", holder["id"])
+
+
+def _cut_bench_branch(
+    stack: E2EStack, task_id: UUID, *, base_branch: str, team: Team
+) -> str:
+    """Cut + push a task branch from `base_branch` and stamp the task row's
+    ``branch_name`` — the same system-side seeding ``_seed_bench_cell`` /
+    ``set_branch_name`` do, used for the PM-entry parents whose claim would
+    otherwise need to derive a branch mid-flight."""
+
+    from tests.e2e_smoke.arcs import origin_branch, set_branch_name
+
+    branch = f"feature/{team.value}/bench-pm-{uuid4().hex[:8]}"
+    origin_branch(stack, branch, start=base_branch)
+    set_branch_name(stack, task_id, branch)
+    return branch
+
+
+def _prebuild_qa_review(
+    stack: E2EStack,
+    *,
+    base_branch: str,
+    team: Team,
+    fixture: BenchTaskSpec,
+    task_id: UUID,
+) -> None:
+    """QA-entry setup: commit the fixture's repo files onto a fresh task
+    branch cut from the cell branch, open the PR, and park the task at
+    ``awaiting_qa`` — standing in for the developer turn a QA bench fixture
+    deliberately skips.
+
+    The fixture's repo files are committed ONLY here (never seeded onto
+    master), so the branch-vs-cell diff IS the change under review: the
+    fixture's "fix attempt", which a trap fixture deliberately writes to
+    contradict its own acceptance criteria (the injected defect). This is
+    system-side seeding in the ``_seed_bench_cell`` style — direct PR +
+    row writes standing in for a scripted developer turn."""
+    from tests.e2e_smoke.harness import _git
+
+    def _run_git() -> tuple[str, dict[str, Any]]:
+        admin = stack.github.admin_clone
+        _git(admin, "fetch", "origin", "--prune")
+        branch = f"feature/{team.value}/bench-qa-{uuid4().hex[:8]}"
+        _git(admin, "checkout", "-B", branch, f"origin/{base_branch}")
+        for rel_path, content in fixture.repo_files:
+            path = admin / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            _git(admin, "add", rel_path)
+        _git(admin, "commit", "-m", f"bench: PR under review for {fixture.key}")
+        _git(admin, "push", "origin", branch)
+        pr = stack.github.create_pr(
+            title=fixture.title,
+            body=fixture.description,
+            head=branch,
+            base=base_branch,
+        )
+        return branch, pr
+
+    branch, pr = _run_git()
+
+    async def _park(session: Any) -> None:
+        from roboco.db.tables import TaskTable
+        from roboco.models.base import TaskStatus
+
+        row = await session.get(TaskTable, task_id)
+        row.branch_name = branch
+        row.pr_number = pr["number"]
+        row.pr_created = True
+        row.status = TaskStatus.AWAITING_QA
+
+    stack.run_db(_park)
 
 
 # ---------------------------------------------------------------------------
@@ -569,22 +730,54 @@ async def _claim_for_pm(
         await client.post(f"{api}/tasks/{task_id}/claim", json={"agent_id": pm_slug})
 
 
+def _child_rows(stack: E2EStack, task_id: UUID) -> list[dict[str, Any]]:
+    """The fixture task's live children — for a PM-entry fixture the drive
+    loop's stop signal (a delegated child existing = the scored turn
+    happened). Read in a worker thread: ``E2EStack.run_db`` needs a loopless
+    thread (same constraint the scripted arcs document)."""
+    from sqlalchemy import select
+
+    from roboco.db.tables import TaskTable
+
+    async def _run(session: Any) -> list[dict[str, Any]]:
+        rows = (
+            (
+                await session.execute(
+                    select(TaskTable).where(TaskTable.parent_task_id == task_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [{"id": str(r.id), "status": str(r.status)} for r in rows]
+
+    return cast("list[dict[str, Any]]", stack.run_db(_run))
+
+
 async def _drive_task_to_terminal(
     stack: E2EStack,
     spawner: StageSpawner,
     task_id: UUID,
     *,
-    dev_slug: str,
+    role_slug: str,
     prefix: str,
+    target_role: str,
     fixture_timeout_seconds: float,
 ) -> tuple[dict[str, Any], bool]:
     """Poll ``task_id`` to a terminal state, invoking ``spawner.run_stage``
-    for whichever role owns the current status, until terminal or the hard
-    per-fixture timeout.
+    for whichever role owns the current status, until terminal (or the
+    entry point's designed stop), or the hard per-fixture timeout.
 
     Returns ``(final_task_dict, stalled)``. ``stalled`` is True when the loop
-    gave up (timeout, a human-gated status, or a status with no owning
-    role) rather than reaching a genuine terminal state.
+    gave up (timeout, a human-gated status, or a status with no owning role)
+    rather than reaching a genuine terminal state or the role's designed
+    bench endpoint:
+
+    * a QA-entry fixture stops at ``needs_revision`` — the QA agent bounced
+      the defective PR, i.e. caught the injected defect;
+    * a PM-entry fixture stops once the delegated child exists — the scored
+      plan-and-delegate turn happened (the loop keeps giving the PM stages
+      until then, so a PM that never delegates stalls at the timeout).
     """
     from roboco.runtime.orchestrator import _system_api_headers
 
@@ -597,21 +790,48 @@ async def _drive_task_to_terminal(
     async with httpx.AsyncClient(timeout=30.0, headers=_system_api_headers()) as client:
         task = (await client.get(f"{api}/tasks/{task_id}")).json()
         while True:
-            status = task.get("status")
-            if status in _TERMINAL_STATUSES:
-                return task, False
-            if status in _HUMAN_GATED_STATUSES:
-                return task, True
-            role = _STAGE_ROLE.get(status)
+            stopped, stalled = await _bench_stop(
+                stack, task_id, task.get("status"), target_role
+            )
+            if stopped:
+                return task, stalled
+            role = _stage_role(task.get("status"), target_role)
             if role is None or time.monotonic() >= deadline:
                 return task, True
-            agent_slug = (
-                dev_slug if role == "developer" else f"{prefix}-{_ROLE_SUFFIX[role]}"
-            )
-            if role == "cell_pm" and not task.get("assigned_to"):
+            agent_slug = _stage_agent_slug(role, target_role, role_slug, prefix)
+            if role in {"cell_pm", "main_pm"} and not task.get("assigned_to"):
                 await _claim_for_pm(client, api, str(task_id), agent_slug)
             await spawner.run_stage(task=task, agent_slug=agent_slug)
             task = (await client.get(f"{api}/tasks/{task_id}")).json()
+
+
+async def _bench_stop(
+    stack: E2EStack, task_id: UUID, status: str | None, target_role: str
+) -> tuple[bool, bool]:
+    """The driving loop's stop conditions — terminal, human-gated, or the
+    entry point's designed bench endpoint. Returns ``(stopped, stalled)``.
+
+    * a QA-entry fixture stops at ``needs_revision`` — the QA agent bounced
+      the defective PR, i.e. caught the injected defect;
+    * a PM-entry fixture stops once the delegated child exists — the scored
+      plan-and-delegate turn happened (a PM that never delegates stalls at
+      the timeout instead)."""
+    if status in _TERMINAL_STATUSES:
+        return True, False
+    if status in _HUMAN_GATED_STATUSES:
+        return True, True
+    if target_role == "qa" and status == "needs_revision":
+        # QA bench: the review verdict IS the deliverable — a fail means the
+        # QA agent caught the injected defect. Stop here rather than benching
+        # the (different-role) rework turn.
+        return True, False
+    if target_role in {"cell_pm", "main_pm"} and status in _PM_STAGE_STATUSES:
+        children = await asyncio.to_thread(_child_rows, stack, task_id)
+        if children:
+            # The scored turn landed: the PM delegated. Stop — the child's
+            # dev/QA/doc chain is a different cohort's subject.
+            return True, False
+    return False, False
 
 
 # ---------------------------------------------------------------------------
@@ -629,20 +849,68 @@ class JudgeVerdict:
 
 
 def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
+    """Role-aware judge prompt, selected on ``fixture.target_role``.
+
+    The generic developer template grades the delivered diff against the
+    checked-in expectation. The QA template grades catch-vs-miss (the diff
+    is the PR under review — a trap fixture's injected defect — and the
+    notes are the QA agent's review notes). The PM template grades the
+    delegation: ``diff`` carries the delegation record (delegated children
+    + their ``covers_parent_criteria`` mapping), not a git diff — a PM
+    fixture's deliverable is the mapping, and the child work itself belongs
+    to a different cohort.
+    """
     criteria = "\n".join(f"- {c}" for c in fixture.acceptance_criteria)
-    return (
-        "You are grading a completed engineering task against its checked-in "
-        "expectation, for an automated agent quality bench. Score 1-5 (5 = "
-        "fully meets the expectation, 1 = does not meet it at all). Reply in "
-        "exactly this shape:\n"
-        "Score: <1-5>\n"
-        "Rationale: <one line>\n\n"
-        f"Task: {fixture.title}\n"
-        f"Acceptance criteria:\n{criteria}\n\n"
-        f"Expected (checked-in): {fixture.expectations}\n\n"
-        f"Actual diff:\n{diff or '(empty diff)'}\n\n"
-        f"Actual notes:\n{notes or '(no notes)'}\n"
-    )
+
+    def _reply_shape() -> str:
+        return "Reply in exactly this shape:\nScore: <1-5>\nRationale: <one line>\n\n"
+
+    head = f"{fixture.title}\n"
+    ac_block = f"Acceptance criteria:\n{criteria}\n\n"
+    expected_block = f"Expected (checked-in): {fixture.expectations}\n\n"
+
+    if fixture.target_role == "qa":
+        grading = (
+            "You are grading a QA review turn for an automated agent quality "
+            "bench. The diff below is the PR that was put in front of the QA "
+            "agent; it may contain an injected defect. Score 1-5 where 5 "
+            "means the QA agent CAUGHT the defect — it failed the review and "
+            "its notes name the concrete defect in the diff that violates "
+            "the acceptance criteria — and 1 means the QA agent MISSED it "
+            "(approved a change that violates the acceptance criteria). "
+            + _reply_shape()
+        )
+        evidence_block = (
+            f"PR under review (diff):\n{diff or '(empty diff)'}\n\n"
+            f"QA review notes:\n{notes or '(no notes)'}\n"
+        )
+    elif fixture.target_role in {"cell_pm", "main_pm"}:
+        grading = (
+            "You are grading a PM planning turn for an automated agent "
+            "quality bench. The delegation record below lists the children "
+            "the PM delegated and the ``covers_parent_criteria`` refs each "
+            "child declared. Score 1-5 where 5 means the PM delegated with "
+            "``covers_parent_criteria`` mapping EVERY acceptance criterion "
+            "(coverage-mapped), and 1 means criteria were dropped or left "
+            "unmapped (or the PM delegated nothing). " + _reply_shape()
+        )
+        evidence_block = (
+            f"Delegation record:\n{diff or '(no children delegated)'}\n\n"
+            f"PM notes:\n{notes or '(no notes)'}\n"
+        )
+    else:
+        grading = (
+            "You are grading a completed engineering task against its "
+            "checked-in expectation, for an automated agent quality bench. "
+            "Score 1-5 (5 = fully meets the expectation, 1 = does not meet "
+            "it at all). " + _reply_shape()
+        )
+        evidence_block = (
+            f"Actual diff:\n{diff or '(empty diff)'}\n\n"
+            f"Actual notes:\n{notes or '(no notes)'}\n"
+        )
+
+    return grading + f"\nTask: {head}\n" + ac_block + expected_block + evidence_block
 
 
 async def _judge_chat(prompt: str) -> str | None:
@@ -720,9 +988,16 @@ class FixtureResult:
     fixture_key: str
     metrics: DeterministicMetrics
     judge: JudgeVerdict
+    target_role: str = "developer"
+    # Role-aware pass judgment, computed at run time (None = use the default
+    # completed-and-not-stalled semantics). QA-entry: needs_revision = caught
+    # the injected defect. PM-entry: the delegation covers every parent AC.
+    role_pass: bool | None = None
 
     @property
     def passed(self) -> bool:
+        if self.role_pass is not None:
+            return self.role_pass
         return self.metrics.final_status == "completed" and not self.metrics.stalled
 
 
@@ -877,6 +1152,55 @@ def _task_diff(stack: E2EStack, base_branch: str, branch_name: str | None) -> st
         return ""
 
 
+def _pm_delegation_summary(stack: E2EStack, task_id: UUID) -> tuple[str, bool]:
+    """Render the PM-entry fixture's delegation record (each delegated child
+    + its ``covers_parent_criteria`` refs) and compute full coverage against
+    the parent's acceptance criteria. Both feed the bench output: the record
+    is what the PM judge prompt grades, and the boolean is the deterministic
+    coverage-mapped-vs-dropped verdict.
+
+    An AC is covered when its id (``acceptance_criteria_ids``) or its exact
+    text appears in some child's ``parent_ac_refs`` — the same id-or-exact-
+    text matcher the delegate/submit_up coverage gates use."""
+    from sqlalchemy import select
+
+    from roboco.db.tables import TaskTable
+
+    async def _run(session: Any) -> tuple[str, bool]:
+        parent = (
+            await session.execute(select(TaskTable).where(TaskTable.id == task_id))
+        ).scalar_one()
+        children = (
+            (
+                await session.execute(
+                    select(TaskTable).where(TaskTable.parent_task_id == task_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        acs = list(parent.acceptance_criteria or [])
+        ac_ids = list(parent.acceptance_criteria_ids or [])
+        if not acs:
+            return "", True
+        refs = {ref for c in children for ref in (c.parent_ac_refs or [])}
+        pairs = list(zip(ac_ids, acs, strict=False)) or [(None, ac) for ac in acs]
+        covered = [
+            text
+            for pid, text in pairs
+            if (pid is not None and pid in refs) or (text in refs)
+        ]
+        lines = [
+            f"- {str(c.title)!r} (status={c.status!s}): "
+            f"covers_parent_criteria={list(c.parent_ac_refs or [])}"
+            for c in children
+        ]
+        summary = "\n".join(lines) or "(no children delegated)"
+        return summary, len(covered) == len(acs) and bool(children)
+
+    return cast("tuple[str, bool]", stack.run_db(_run))
+
+
 def _collected_notes(stack: E2EStack, task_id: UUID) -> str:
     from sqlalchemy import select
 
@@ -937,8 +1261,8 @@ def _print_table(cohort: CohortResult) -> None:
 
 class EvalRunner:
     """Runs one cohort (a labeled (role, model/provider config) run) through
-    every developer-role golden-task fixture and prints + returns the
-    scored result."""
+    every golden-task fixture matching the cohort's role and prints + returns
+    the scored result."""
 
     def __init__(
         self,
@@ -965,24 +1289,20 @@ class EvalRunner:
         json_out: Path | None = None,
     ) -> CohortResult:
         role = get_agent_role(role_slug)
-        if role != "developer":
+        if role not in _BENCH_ROLES:
             raise ValueError(
-                f"eval bench only scores developer-role agents right now "
-                f"(got {role_slug!r} -> role={role!r}); see the module "
-                "docstring's scope-cut note"
+                f"eval bench only scores developer/qa/cell_pm/main_pm "
+                f"cohorts (got {role_slug!r} -> role={role!r}); a new role "
+                "first needs an entry-point shape in the module docstring"
             )
-        team_str = get_agent_team(role_slug)
-        if team_str not in _TEAM_PREFIX:
-            raise ValueError(f"{role_slug!r} has no known cell team ({team_str!r})")
-        prefix = _TEAM_PREFIX[team_str]
-        chosen = [f for f in (fixtures or FIXTURES) if f.target_role == "developer"]
+        chosen = [f for f in (fixtures or FIXTURES) if f.target_role == role]
         if not chosen:
-            raise ValueError("no fixtures matched target_role='developer'")
+            raise ValueError(f"no fixtures matched target_role={role!r}")
 
         results: list[FixtureResult] = []
         with _bench_environment(role_slug) as env:
             for fixture in chosen:
-                results.append(self._run_fixture(env, prefix, role_slug, fixture))
+                results.append(self._run_fixture(env, role_slug, fixture))
 
         cohort = CohortResult(
             role_slug=role_slug, cohort_name=cohort_name, fixtures=results
@@ -995,41 +1315,136 @@ class EvalRunner:
     def _run_fixture(
         self,
         env: BenchEnvironment,
-        prefix: str,
-        dev_slug: str,
+        role_slug: str,
         fixture: BenchTaskSpec,
     ) -> FixtureResult:
-        _seed_fixture_repo(env.stack, fixture)
-        # The bench cell branch is cut once per environment and never given
-        # commits of its own — fast-forward it to master's just-updated tip
-        # so THIS fixture's newly-pushed bench/<key>/ files are actually
-        # present when the leaf's own branch is cut from it below.
-        _fast_forward_branch(env.stack, env.cell_branch, onto="master")
+        target_role = fixture.target_role
         started_at = datetime.now(UTC)
-        task_id = _create_bench_task(
-            stack=env.stack,
-            project_id=env.project_id,
-            dev_slug=dev_slug,
-            fixture=fixture,
-            team=env.team,
-            parent_task_id=env.cell_id,
-        )
-
+        task_id = _create_bench_entry_task(env, role_slug, fixture)
         spawner = self._make_spawner(env.stack)
         final_task, stalled = asyncio.run(
             _drive_task_to_terminal(
                 env.stack,
                 spawner,
                 task_id,
-                dev_slug=dev_slug,
-                prefix=prefix,
+                role_slug=role_slug,
+                prefix=env.prefix,
+                target_role=target_role,
                 fixture_timeout_seconds=self._fixture_timeout_seconds,
             )
         )
         metrics = _deterministic_metrics(
-            env.stack, task_id, started_at, stalled, final_task.get("status", "unknown")
+            env.stack,
+            task_id,
+            started_at,
+            stalled,
+            final_task.get("status", "unknown"),
         )
-        diff = _task_diff(env.stack, env.cell_branch, final_task.get("branch_name"))
+        diff, role_pass = _role_verdict(
+            env,
+            task_id,
+            target_role,
+            final_status=final_task.get("status", "unknown"),
+            branch_name=final_task.get("branch_name"),
+            stalled=stalled,
+        )
         notes = _collected_notes(env.stack, task_id)
         judge = asyncio.run(self._judge.score(fixture=fixture, diff=diff, notes=notes))
-        return FixtureResult(fixture_key=fixture.key, metrics=metrics, judge=judge)
+        return FixtureResult(
+            fixture_key=fixture.key,
+            metrics=metrics,
+            judge=judge,
+            target_role=target_role,
+            role_pass=role_pass,
+        )
+
+
+def _create_bench_entry_task(
+    env: BenchEnvironment, role_slug: str, fixture: BenchTaskSpec
+) -> UUID:
+    """Create the fixture task in its role's entry shape. QA: the repo files
+    ARE the PR under review (never seeded onto master) — prebuild the review
+    turn. PM: a PARENT task (cell_pm pending under the bench cell; main_pm a
+    fresh coordination ROOT — no bench cell, parent_task_id=None,
+    Team.MAIN_PM) whose branch is cut up front so its claim needs no
+    mid-flight branch derivation. Developer: the original seeded leaf."""
+    target_role = fixture.target_role
+    if target_role == "qa":
+        task_id = _create_bench_task(
+            stack=env.stack,
+            project_id=env.project_id,
+            owner_slug=role_slug,
+            fixture=fixture,
+            team=env.team,
+            parent_task_id=env.cell_id,
+            creator_slug=f"{env.prefix}-dev-1",
+        )
+        _prebuild_qa_review(
+            env.stack,
+            base_branch=env.cell_branch or "master",
+            team=env.team,
+            fixture=fixture,
+            task_id=task_id,
+        )
+    elif target_role in {"cell_pm", "main_pm"}:
+        task_id = _create_bench_task(
+            stack=env.stack,
+            project_id=env.project_id,
+            owner_slug=role_slug,
+            fixture=fixture,
+            team=Team.MAIN_PM if target_role == "main_pm" else env.team,
+            parent_task_id=env.cell_id if target_role == "cell_pm" else None,
+            creator_slug="main-pm"
+            if target_role == "main_pm"
+            else f"{env.prefix}-dev-1",
+        )
+        _cut_bench_branch(
+            env.stack,
+            task_id,
+            base_branch=env.cell_branch or "master",
+            team=env.team,
+        )
+    else:
+        _seed_fixture_repo(env.stack, fixture)
+        # The bench cell branch is cut once per environment and never
+        # given commits of its own — fast-forward it to master's
+        # just-updated tip so THIS fixture's newly-pushed bench/<key>/
+        # files are actually present when the leaf's own branch is cut
+        # from it below.
+        assert env.cell_branch is not None
+        _fast_forward_branch(env.stack, env.cell_branch, onto="master")
+        task_id = _create_bench_task(
+            stack=env.stack,
+            project_id=env.project_id,
+            owner_slug=role_slug,
+            fixture=fixture,
+            team=env.team,
+            parent_task_id=env.cell_id,
+        )
+    return task_id
+
+
+def _role_verdict(
+    env: BenchEnvironment,
+    task_id: UUID,
+    target_role: str,
+    *,
+    final_status: str,
+    branch_name: str | None,
+    stalled: bool,
+) -> tuple[str, bool | None]:
+    """The role-aware judge input (``diff``) and deterministic pass verdict.
+
+    PM: the judge input is the delegation record and full coverage is the
+    pass. QA: a trap fixture's deterministic pass is "the QA agent bounced
+    the defective PR" (needs_revision under the fixture timeout); a completed
+    run means the defective PR was approved (missed) — still scored, judged
+    harshly. Developer: the branch diff, default completed-and-not-stalled.
+    """
+    if target_role in {"cell_pm", "main_pm"}:
+        diff, coverage_ok = _pm_delegation_summary(env.stack, task_id)
+        return diff, coverage_ok and not stalled
+    diff = _task_diff(env.stack, env.cell_branch or "master", branch_name)
+    if target_role == "qa":
+        return diff, final_status == "needs_revision" and not stalled
+    return diff, None

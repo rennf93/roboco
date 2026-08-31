@@ -66,7 +66,8 @@ class SearchResponse(BaseModel):
     total: int
     gaps: list[str] = Field(
         default_factory=list,
-        description="Indexes that timed out (empty when all completed)",
+        description="Indexes that did not return — timed out or failed "
+        "(empty when all completed)",
     )
 
 
@@ -85,7 +86,8 @@ class RAGQueryResponse(BaseModel):
     )
     gaps: list[str] = Field(
         default_factory=list,
-        description="Indexes that timed out (empty when all completed)",
+        description="Indexes that did not return — timed out or failed "
+        "(empty when all completed)",
     )
 
 

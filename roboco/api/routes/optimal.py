@@ -248,11 +248,11 @@ async def search(
             detail=f"Search timed out after {search_timeout}s",
         ) from e
 
-    # Total outage: every index timed out, no results returned.
+    # Total outage: every index timed out or failed, no results returned.
     if not results and gaps:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=f"All search indexes timed out: {', '.join(gaps)}",
+            detail=f"All search indexes failed or timed out: {', '.join(gaps)}",
         )
 
     return SearchResponse(
@@ -369,11 +369,11 @@ async def rag_query(
 
     gaps = getattr(response, "gaps", [])
 
-    # Total outage: every index timed out, no citations returned.
+    # Total outage: every index timed out or failed, no citations returned.
     if not response.citations and gaps:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=f"All RAG indexes timed out: {', '.join(gaps)}",
+            detail=f"All RAG indexes failed or timed out: {', '.join(gaps)}",
         )
 
     return RAGQueryResponse(
