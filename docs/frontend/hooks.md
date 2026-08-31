@@ -137,6 +137,10 @@ The hook does not call a dedicated stalled endpoint. `dashboardApi.getStalledTas
 
 All labels shown to the user (status, `blocker_resolver_type`, stalled membership) come verbatim from the backend response — no client-side relabeling or fabricated text. The only client-computed display value is the duration string in the Overview panel, which is display formatting over `task.updated_at`, not a stall condition.
 
+## OpenRouter hooks
+
+The OpenRouter provider hooks (`useOpenRouterKey`, `useSetOpenRouterKey`, `useSearchOpenRouterModels`) live in `panel/src/hooks/use-providers.ts` and follow the same TanStack Query shape as the Grok and self-hosted hooks. They are documented in full — types, API contract, and usage notes for the consuming UI task — in [`openrouter-provider.md`](./openrouter-provider.md).
+
 ## Data-hook null-guard audit
 
 Every useQuery hook in `panel/src/hooks/` has been audited for missing `enabled` guards on undefined/null IDs, staleTime mismatches, and refetchInterval leaks on unmount.
