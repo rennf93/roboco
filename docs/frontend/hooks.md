@@ -137,6 +137,42 @@ The hook does not call a dedicated stalled endpoint. `dashboardApi.getStalledTas
 
 All labels shown to the user (status, `blocker_resolver_type`, stalled membership) come verbatim from the backend response — no client-side relabeling or fabricated text. The only client-computed display value is the duration string in the Overview panel, which is display formatting over `task.updated_at`, not a stall condition.
 
+## `useZeroProgressSpawnWaste`
+
+Returns the zero-progress spawn-waste report — ended, task-scoped spawn sessions that advanced nothing on their task (no status advance, commit, progress update, or journal entry within the session's own window), priced in USD, with per-agent, per-team, and per-task breakdowns. Serves the Delivery observability surfaces; consumed by the zero-progress spawn-waste card on the Delivery tab.
+
+```tsx
+import { useZeroProgressSpawnWaste } from "@/hooks/use-observability";
+
+const { data: report, isLoading, isError, refetch } = useZeroProgressSpawnWaste(30);
+```
+
+### Not that spawn-waste
+
+`GET /dashboard/metrics/spawn-waste` (this hook) is a **different metric** from the pre-existing `GET /usage/spawn-waste` surfaced by `useSpawnWaste` in `panel/src/hooks/use-usage.ts`:
+
+| | `useZeroProgressSpawnWaste` | `useSpawnWaste` (use-usage.ts) |
+|---|---|---|
+| Endpoint | `GET /dashboard/metrics/spawn-waste?days` | `GET /usage/spawn-waste?period` |
+| Flags | Sessions with zero **forward-progress signal** (no status advance, commit, progress, or journal entry) | Sessions with zero **output tokens** (Anthropic) |
+| Window | `days` (1-90, default 30) | `period` (UsagePeriod, default 24h) |
+
+The wrong-endpoint failure mode (plumbing the dashboard card to `/usage/spawn-waste`) has shipped once before, which is why the hook is named `useZeroProgressSpawnWaste` — the plain `useSpawnWaste` name is taken — and why the drift-guard test in `panel/src/lib/api/__tests__/observability.test.ts` asserts the literal `/dashboard/metrics/spawn-waste` path. If that test fails, a client method drifted to the wrong endpoint; do not "fix" it by relaxing the assertion.
+
+### Data source
+
+`observabilityApi.getSpawnWaste(days)` on `panel/src/lib/api/observability.ts` returns `SpawnWasteReport` (`panel/src/types/index.ts`), mirroring the backend `SpawnWasteReport.to_dict()` (`roboco/models/metrics.py`): five aggregate fields (`total_sessions`, `zero_progress_sessions`, `zero_progress_cost_usd`, `total_cost_usd`, `zero_progress_cost_share`) plus three breakdown rows — `by_agent: AgentSpawnWasteRow[]`, `by_team: TeamSpawnWasteRow[]`, `by_task: TaskSpawnWasteRow[]` — each carrying `{sessions, zero_progress_sessions, zero_progress_cost_usd, rate}` keyed by `agent_slug` / `team` / `task_id` respectively. The zero-progress classification (and its pricing) is the backend's own — `MetricsService.get_spawn_waste_metrics`; the frontend never re-derives it.
+
+### API reference
+
+| Return | Type | Notes |
+|--------|------|-------|
+| `data` | `SpawnWasteReport \| undefined` | The full report. Mock mode returns an all-zero report with empty breakdown arrays. |
+
+- **Query key:** `["observability", "spawn-waste", days]` (`observabilityKeys.spawnWaste(days)`).
+- **Refetch interval:** 60 seconds.
+- **Mock mode:** returns `EMPTY_SPAWN_WASTE` (all-zero aggregates, empty `by_agent`/`by_team`/`by_task`).
+
 ## Data-hook null-guard audit
 
 Every useQuery hook in `panel/src/hooks/` has been audited for missing `enabled` guards on undefined/null IDs, staleTime mismatches, and refetchInterval leaks on unmount.
