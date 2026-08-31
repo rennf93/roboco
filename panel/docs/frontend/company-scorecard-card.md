@@ -35,7 +35,9 @@ The charter `objectives` field on `CockpitSummary` is `Record<string, unknown>[]
 
 ### "No data yet" fallback
 
-Each card guards its metric with a `hasData` check (`value != null`, covering both `null` and `undefined`). When the metric is absent the card renders "No data yet" in italic muted text instead of a value — mirroring the `SpeedSection` pattern. For the two fields backed by the cockpit service (`first_pass_yield`, `escaped_defects`), the fallback triggers only on a genuine null/empty result — not on a missing field, since the backend now populates both (`cockpit.py:76-77`). The card never fabricates a value or a label.
+Each card guards its metric with a `hasData` check (`value != null`, covering both `null` and `undefined`). When the metric is absent the card renders "No data yet" in italic muted text instead of a value — mirroring the `SpeedSection` pattern. The card never fabricates a value or a label.
+
+**Runtime reality (2026-08-31): all three objective cards currently render "No data yet" every time.** The backend populates the three metrics under the `delivery` sub-object (`roboco/services/cockpit.py:75-77`, `roboco/api/schemas/cockpit.py` `DeliverySummary`), but `ScorecardBody` passes them to `ObjectivesSection` from the TOP level of the response (`data.first_pass_yield` etc.), which `CockpitSummary` never sends. The `hasData` guard therefore always sees `undefined`. The panel-side fix (read `data.delivery.*`) is tracked by the approved pest-control item "Scorecard shows 'No data yet' forever ...".
 
 ## CockpitSummary type changes
 
@@ -53,9 +55,9 @@ first_pass_yield?: number | null;
 escaped_defects?: number | null;
 ```
 
-Both are optional and nullable so the UI degrades cleanly when the backend returns a genuine null/empty result. `first_pass_yield` is a 0–1 fraction formatted as a percentage, matching the phone's `pctOrDash(scorecard.first_pass_yield)` convention in `tg-metrics-tab.tsx`. `median_lead_time_hours` is unchanged — it already existed at the top level of the type and `SpeedSection` reads it from there.
+Both are optional and nullable so the UI degrades cleanly when the backend returns a genuine null/empty result. `first_pass_yield` is a 0–1 fraction formatted as a percentage, matching the phone's `pctOrDash(scorecard.first_pass_yield)` convention in `tg-metrics-tab.tsx`. `median_lead_time_hours` is declared top-level in the panel type and `SpeedSection` reads it from there, but the backend only sends it under `delivery`, so `SpeedSection` is in the same "No data yet" always state as the objective cards until the panel fix above lands.
 
-The cockpit service has shipped both fields: `first_pass_yield` is populated from the scorecard and `escaped_defects` from `ReviewFindingsRepository.escaped_defects_since` (`cockpit.py:76-77`). The two objective cards display live values; "No data yet" appears only on a genuine null/empty result.
+The cockpit service has shipped both fields: `first_pass_yield` is populated from the scorecard and `escaped_defects` from `ReviewFindingsRepository.escaped_defects_since` (`cockpit.py:75-77`), under the `delivery` sub-object, not the top level the card reads. Until the panel fix above lands the objective cards do NOT display live values; see "Runtime reality" above.
 
 ## Card structure
 
