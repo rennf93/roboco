@@ -7,12 +7,14 @@ const {
   mockRework,
   mockProvenance,
   mockTeamScorecard,
+  mockZeroProgressSpawnWaste,
 } = vi.hoisted(() => ({
   mockCycleTime: vi.fn(),
   mockBottlenecks: vi.fn(),
   mockRework: vi.fn(),
   mockProvenance: vi.fn(),
   mockTeamScorecard: vi.fn(),
+  mockZeroProgressSpawnWaste: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-observability", () => ({
@@ -21,12 +23,27 @@ vi.mock("@/hooks/use-observability", () => ({
   useRework: mockRework,
   useProvenance: mockProvenance,
   useTeamScorecard: mockTeamScorecard,
+  useZeroProgressSpawnWaste: mockZeroProgressSpawnWaste,
 }));
 
 import { DeliveryTabContent } from "../delivery-tab";
 
 describe("DeliveryTabContent, Task Provenance card", () => {
   beforeEach(() => {
+    mockZeroProgressSpawnWaste.mockReturnValue({
+      data: {
+        total_sessions: 0,
+        zero_progress_sessions: 0,
+        zero_progress_cost_usd: 0,
+        total_cost_usd: 0,
+        zero_progress_cost_share: 0,
+        by_agent: [],
+        by_team: [],
+        by_task: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
     mockCycleTime.mockReturnValue({ data: [], isLoading: false });
     mockBottlenecks.mockReturnValue({ data: undefined, isLoading: false });
     mockRework.mockReturnValue({

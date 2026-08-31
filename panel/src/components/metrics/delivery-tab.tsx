@@ -27,6 +27,7 @@ import {
   useTeamScorecard,
 } from "@/hooks/use-observability";
 import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
+import { ZeroProgressSpawnWasteCard } from "./zero-progress-spawn-waste-card";
 import type { Scorecard } from "@/types";
 
 const CELLS = ["backend", "frontend", "ux_ui"] as const;
@@ -400,6 +401,7 @@ export function DeliveryTabContent() {
         <ReworkCard />
         <ProvenanceCard />
       </div>
+      <ZeroProgressSpawnWasteCard />
       <div className="grid gap-4 md:grid-cols-3">
         {CELLS.map((team) => (
           <CellScorecard key={team} team={team} />

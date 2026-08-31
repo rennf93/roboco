@@ -12,6 +12,7 @@ import type {
   OrgScorecard,
   TaskMetrics,
   ProvenanceReport,
+  SpawnWasteReport,
 } from "@/types";
 
 // =============================================================================
@@ -28,6 +29,8 @@ export const observabilityKeys = {
     [...observabilityKeys.all, "rework", days, team ?? "all"] as const,
   provenance: (days: number) =>
     [...observabilityKeys.all, "provenance", days] as const,
+  spawnWaste: (days: number) =>
+    [...observabilityKeys.all, "spawn-waste", days] as const,
   teamScorecard: (team: string, days: number) =>
     [...observabilityKeys.all, "scorecard", "team", team, days] as const,
   ceoScorecard: (days: number) =>
@@ -90,6 +93,17 @@ export function useProvenance(days = 30) {
   return useQuery<ProvenanceReport>({
     queryKey: observabilityKeys.provenance(days),
     queryFn: () => observabilityApi.getProvenance(days),
+    refetchInterval: 60_000,
+  });
+}
+
+/** Zero-progress spawn waste (sessions that advanced nothing on their task,
+ * priced). Named to avoid the unrelated useSpawnWaste in use-usage.ts,
+ * which rides the /usage/spawn-waste zero-output-token metric. */
+export function useZeroProgressSpawnWaste(days = 30) {
+  return useQuery<SpawnWasteReport>({
+    queryKey: observabilityKeys.spawnWaste(days),
+    queryFn: () => observabilityApi.getSpawnWaste(days),
     refetchInterval: 60_000,
   });
 }
