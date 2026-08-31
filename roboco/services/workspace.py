@@ -773,6 +773,9 @@ class WorkspaceService:
         ``reset --hard`` + ``checkout -b`` that clobbered a still-active root.
         """
         if not (worktree.exists() and (worktree / ".git").is_file()):
+            # Stale registrations (checkout dir deleted out-of-band while the
+            # admin dir survives) make `worktree add` fatal — prune first.
+            self._worktree_git(clone_root, ["worktree", "prune"], check=False)
             self._park_clone_root_off_branch(clone_root, branch)
             branch_exists = (
                 self._worktree_git(
@@ -796,19 +799,68 @@ class WorkspaceService:
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
     async def ensure_worktree_for_resume(
-        self, clone_root: Path, worktree: Path, branch: str
+        self,
+        clone_root: Path,
+        worktree: Path,
+        branch: str,
+        project_slug: str | None = None,
     ) -> None:
         """Re-add a pruned/evicted worktree on resume (no ``-b`` — branch exists).
 
         Committed work survives in the branch ref; only the working tree was
         removed (reaper / cancel / disk pressure). Idempotent: a present
-        worktree is a no-op.
+        worktree is a no-op. A missing local ``refs/heads/{branch}`` (cleaned
+        up while the worktree was evicted) is recovered from ``origin`` first
+        (token-aware when ``project_slug`` resolves), never fatals with
+        "invalid reference". ``project_slug`` is optional: callers that know
+        it get an authenticated fetch; the rest fall back to unauthenticated.
         """
         if not (worktree.exists() and (worktree / ".git").is_file()):
+            # Stale registrations (checkout dir deleted out-of-band while the
+            # admin dir survives) make `worktree add` fatal — prune first.
+            self._worktree_git(clone_root, ["worktree", "prune"], check=False)
             self._park_clone_root_off_branch(clone_root, branch)
-            res = self._worktree_git(
-                clone_root, ["worktree", "add", str(worktree), branch], check=False
+            add_args = ["worktree", "add", str(worktree), branch]
+            local = self._worktree_git(
+                clone_root,
+                ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+                check=False,
             )
+            if local.returncode != 0:
+                # Live wedge (2026-08-31): a commit/claim-time re-add hit a
+                # clone whose local branch ref was already deleted (`worktree
+                # add` fataled "invalid reference"; the fresh-claim path
+                # recreates refs, this path never did). Recover the SAME way
+                # ensure_worktree_self_heal does: fetch + create the local ref
+                # from origin/<branch>; a never-pushed branch falls back to -b
+                # from origin/HEAD (no pushed work to lose).
+                await self._fetch_branch_ref(clone_root, branch, project_slug)
+                remote = self._worktree_git(
+                    clone_root,
+                    [
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        f"refs/remotes/origin/{branch}",
+                    ],
+                    check=False,
+                )
+                if remote.returncode == 0:
+                    self._worktree_git(
+                        clone_root,
+                        ["branch", branch, f"refs/remotes/origin/{branch}"],
+                        check=False,
+                    )
+                else:
+                    add_args = [
+                        "worktree",
+                        "add",
+                        str(worktree),
+                        "-b",
+                        branch,
+                        "origin/HEAD",
+                    ]
+            res = self._worktree_git(clone_root, add_args, check=False)
             if res.returncode != 0:
                 raise WorkspaceError(
                     f"git worktree re-add failed for {branch}: {res.stderr.strip()}"
@@ -818,7 +870,7 @@ class WorkspaceService:
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
     async def _fetch_branch_ref(
-        self, clone_root: Path, branch: str, project_slug: str
+        self, clone_root: Path, branch: str, project_slug: str | None
     ) -> None:
         """Token-aware ``git fetch origin <branch>`` into clone_root. Best-effort.
 
@@ -831,9 +883,13 @@ class WorkspaceService:
         from roboco.utils.crypto import EncryptionError
 
         project_service = get_project_service(self.session)
-        project = await project_service.get_by_slug(project_slug)
+        project = (
+            await project_service.get_by_slug(project_slug)
+            if project_slug is not None
+            else None
+        )
         git_token: str | None = None
-        if project is not None:
+        if project is not None and project_slug is not None:
             try:
                 git_token = await project_service.get_decrypted_token_by_slug(
                     project_slug
