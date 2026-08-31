@@ -38,6 +38,11 @@ from roboco.api.schemas.provider import (
     assignment_to_response,
     routing_preset_to_summary,
 )
+from roboco.api.utils.provider import (
+    parse_complexity_override,
+    provider_remediation,
+    safe_float,
+)
 from roboco.billing.pricing import input_price_per_million
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
@@ -65,45 +70,6 @@ router = APIRouter()
 _COMPLEXITY_OVERRIDE_ROLES: frozenset[str] = frozenset(
     {"developer", "qa", "documenter"}
 )
-
-# Human remediation hint per provider type, for a complexity override that
-# resolves to a not-ready (disabled / unconfigured) provider.
-_PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
-    ModelProvider.GROK: "Save the Grok (xAI) API key first (PUT /providers/grok-key).",
-    ModelProvider.OLLAMA_CLOUD: (
-        "Save an Ollama Cloud API key first (PUT /providers/ollama-key)."
-    ),
-    ModelProvider.LOCAL: (
-        "Configure + test the self-hosted server first (PUT /providers/self-hosted)."
-    ),
-    ModelProvider.ANTHROPIC: "The Anthropic provider is disabled — re-enable it first.",
-    ModelProvider.OPENAI: (
-        "Codex authenticates via a mounted ChatGPT-subscription ~/.codex "
-        "directory, not a key — enable it via the Codex mode button, or "
-        "assign a Codex model to an agent in Mix mode (both force-enable "
-        "the row)."
-    ),
-    ModelProvider.GEMINI: (
-        "Gemini authenticates via a mounted OAuth ~/.gemini credential, not "
-        "a key — enable it via the Gemini mode button, or assign a Gemini "
-        "model to an agent in Mix mode (both force-enable the row)."
-    ),
-    ModelProvider.KIMI: (
-        "Kimi authenticates via a shared, symlinked-in ~/.kimi-code "
-        "subscription credential, not a key — enable it via the Kimi mode "
-        "button, or assign a Kimi model to an agent in Mix mode (both "
-        "force-enable the row)."
-    ),
-    ModelProvider.OPENROUTER: (
-        "Save the OpenRouter API key first (PUT /providers/openrouter-key)."
-    ),
-}
-
-
-def _provider_remediation(provider_type: ModelProvider) -> str:
-    return _PROVIDER_REMEDIATION.get(
-        provider_type, f"The {provider_type.value} provider is not configured."
-    )
 
 
 # =============================================================================
@@ -358,8 +324,8 @@ async def get_openrouter_models(
     entries: list[OpenRouterModelEntry] = []
     for m in models:
         pricing = m.get("pricing") or {}
-        prompt_price = _safe_float(pricing.get("prompt"))
-        completion_price = _safe_float(pricing.get("completion"))
+        prompt_price = safe_float(pricing.get("prompt"))
+        completion_price = safe_float(pricing.get("completion"))
         entries.append(
             OpenRouterModelEntry(
                 id=m.get("id", ""),
@@ -370,16 +336,6 @@ async def get_openrouter_models(
             )
         )
     return entries
-
-
-def _safe_float(value: str | None) -> float | None:
-    """Convert OpenRouter's string pricing rates to float, or None."""
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
 
 
 # =============================================================================
@@ -619,26 +575,6 @@ async def apply_mode(
 # =============================================================================
 
 
-def _parse_complexity_override(
-    scope_value: str, model_name: str
-) -> ComplexityOverrideResponse | None:
-    """Parse a ROLE scope_value into a response row, or None if not a
-    well-formed "role:low"/"role:high" compound key (a plain role row, or a
-    malformed compound value, are both silently skipped)."""
-    role, sep, complexity = scope_value.partition(":")
-    if not sep or not role:
-        return None
-    if complexity == "low":
-        return ComplexityOverrideResponse(
-            role=role, complexity="low", model_name=model_name
-        )
-    if complexity == "high":
-        return ComplexityOverrideResponse(
-            role=role, complexity="high", model_name=model_name
-        )
-    return None
-
-
 @router.get("/complexity-overrides", response_model=list[ComplexityOverrideResponse])
 async def get_complexity_overrides(
     db: DbSession,
@@ -652,7 +588,7 @@ async def get_complexity_overrides(
     for row in rows:
         if row.scope != AssignmentScope.ROLE or not row.scope_value:
             continue
-        parsed = _parse_complexity_override(row.scope_value, row.model_name)
+        parsed = parse_complexity_override(row.scope_value, row.model_name)
         if parsed is not None:
             overrides.append(parsed)
     return overrides
@@ -727,7 +663,7 @@ async def set_complexity_override(
     if not provider.enabled or (
         provider.type == ModelProvider.LOCAL and not provider.base_url
     ):
-        remediation = _provider_remediation(provider.type)
+        remediation = provider_remediation(provider.type)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(

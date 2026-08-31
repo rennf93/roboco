@@ -15,7 +15,6 @@ Create Date: 2026-08-24
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "094_modelprovider_openrouter"
@@ -25,11 +24,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.get_context().autocommit_block()
-    op.execute(
-        sa.text("ALTER TYPE modelprovider ADD VALUE IF NOT EXISTS 'openrouter'")
-    )
-    op.get_context().end_autocommit_block()
+    # The ALTER TYPE must run and COMMIT before migration 095 seeds a row
+    # using 'openrouter' (Postgres forbids using a freshly added enum value
+    # in the same transaction that added it). Mirrors migration 090 (kimi)
+    # exactly — including the offline --sql rendering the enum-parity test
+    # reads. Idempotent via IF NOT EXISTS.
+    with op.get_context().autocommit_block():
+        op.execute("ALTER TYPE modelprovider ADD VALUE IF NOT EXISTS 'openrouter'")
 
 
 def downgrade() -> None:

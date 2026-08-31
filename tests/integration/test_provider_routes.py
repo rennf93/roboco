@@ -23,6 +23,7 @@ from roboco.models import AgentRole, Team
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.models.permissions import AgentContext
+from roboco.services.llm import _filter_openrouter_models
 from sqlalchemy import delete, select
 
 if TYPE_CHECKING:
@@ -1282,25 +1283,36 @@ async def test_openrouter_models_returns_results_with_key(
         headers=_HDR_PM,
     )
 
-    # Mock the probe so no real HTTP call is made
-    fake_models = [
+    # Mock the probe so no real HTTP call is made — but route the raw
+    # OpenRouter-shaped payloads through the REAL _filter_openrouter_models
+    # (honouring the ?q kwarg the route passes), so the test exercises the
+    # actual query-filtering path instead of returning an unfiltered stub.
+    fake_raw_models = [
         {
             "id": "deepseek/deepseek-chat",
             "name": "DeepSeek Chat",
             "context_length": 64000,
+            "supported_parameters": ["tools"],
             "pricing": {"prompt": "0.000001", "completion": "0.000002"},
         },
         {
             "id": "qwen/qwen-2.5-72b-instruct",
             "name": "Qwen 2.5 72B Instruct",
             "context_length": 131072,
+            "supported_parameters": ["tools"],
             "pricing": {"prompt": "0.0000005", "completion": "0.000001"},
         },
     ]
+
+    async def _fake_probe(
+        _api_key: str, query: str = ""
+    ) -> tuple[list[dict[str, object]], str | None]:
+        return _filter_openrouter_models(fake_raw_models, query.lower()), None
+
+    probe_mock = AsyncMock(side_effect=_fake_probe)
     with patch(
         "roboco.api.routes.provider.probe_openrouter_models",
-        new_callable=AsyncMock,
-        return_value=(fake_models, None),
+        probe_mock,
     ):
         response = await app_client_with_openrouter.get(
             "/api/providers/openrouter/models?q=deepseek",
@@ -1316,6 +1328,9 @@ async def test_openrouter_models_returns_results_with_key(
     assert body[0]["completion_price"] == 0.000002  # noqa: PLR2004
     # The key must never appear in the response body
     assert "sk-or-v1-test-key-abcdef" not in response.text
+    # The ?q= query param reached the probe
+    assert probe_mock.call_args is not None
+    assert probe_mock.call_args.kwargs["query"] == "deepseek"
 
 
 @pytest.mark.asyncio
