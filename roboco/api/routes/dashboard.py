@@ -19,11 +19,13 @@ from roboco.api.schemas.dashboard import (
     CreateFlagRequest,
     CreateReportRequest,
     FlagSeverity,
+    PortfolioProjectMetrics,
     StalledTaskResponse,
     TeamHealth,
     UsageSummary,
 )
 from roboco.api.utils.dashboard import require_auditor_or_ceo as _require_auditor_or_ceo
+from roboco.models import AgentRole
 from roboco.models.base import Team
 from roboco.models.dashboard import CreateFlagParams
 from roboco.services.dashboard import get_dashboard_service
@@ -320,6 +322,35 @@ async def get_ceo_team_details(
     metrics_service = get_metrics_service(db)
     team_metrics = await metrics_service.get_all_team_metrics()
     return [tm.to_dict() for tm in team_metrics]
+
+
+@router.get("/portfolio", response_model=list[PortfolioProjectMetrics])
+async def get_portfolio_projects(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    days: int = Query(default=30, ge=1, le=90),
+) -> list[PortfolioProjectMetrics]:
+    """CEO-gated cross-project portfolio: per-project delivery, rework,
+    open findings, and this month's budget burn — most active first."""
+    if agent.role is not AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the CEO may view the project portfolio",
+        )
+    entries = await get_dashboard_service(db).get_portfolio(days)
+    return [
+        PortfolioProjectMetrics(
+            project_id=e.project_id,
+            project_slug=e.project_slug,
+            project_name=e.project_name,
+            active_task_count=e.active_task_count,
+            median_lead_time_hours=e.median_lead_time_hours,
+            rework_rate=e.rework_rate,
+            open_findings_count=e.open_findings_count,
+            monthly_budget_burn_usd=e.monthly_budget_burn_usd,
+        )
+        for e in entries
+    ]
 
 
 # =============================================================================
