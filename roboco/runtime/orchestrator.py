@@ -322,7 +322,18 @@ _ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
 # ollama.com HTTP 429 body (the weekly glm-5.3:cloud limit surfaces here).
 # Specific to the API error formatter so an agent writing about limits can't
 # false-match and park the whole ollama fleet.
-_OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = ("rate limit exceeded",)
+_OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = (
+    "rate limit exceeded",
+    # The Claude SDK's own structured api_retry system line (e.g.
+    # "error_status":429,"error":"rate_limit"), unreachable from agent prose
+    # because a plain sentence cannot contain these JSON-key fragments.
+    'error_status":429',
+    'error":"rate_limit',
+)
+
+# LOCAL (self-hosted Ollama) rides the Ollama API shape: the same 429 bodies
+# and the same SDK retry lines as the cloud provider.
+_LOCAL_RATE_LIMIT_MARKERS = _OLLAMA_RATE_LIMIT_MARKERS
 
 # ponytail: marker map drives the detector — adding a provider later is a
 # table row, not a new branch. Grok and Gemini are deliberately absent (both
@@ -330,6 +341,7 @@ _OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = ("rate limit exceeded",)
 _RATE_LIMIT_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     ModelProvider.ANTHROPIC.value: _ANTHROPIC_RATE_LIMIT_MARKERS,
     ModelProvider.OLLAMA_CLOUD.value: _OLLAMA_RATE_LIMIT_MARKERS,
+    ModelProvider.LOCAL.value: _LOCAL_RATE_LIMIT_MARKERS,
 }
 _OVERLOAD_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     ModelProvider.ANTHROPIC.value: _ANTHROPIC_OVERLOAD_MARKERS,
@@ -9260,6 +9272,19 @@ Start by:
         Bumps error_count and respawns while under the cap; at exactly the cap
         escalates once to humans (subsequent crashes stay quiet to avoid spam).
         """
+        from roboco.services.maintenance_pause import PauseScope
+
+        # While the fleet is dispatch-paused a crash must NOT respawn (the
+        # dispatcher and the reaper both skip paused fleets): the container
+        # stays offline and error_count is left untouched so the crash after
+        # resume gets a full retry budget instead of inheriting this one.
+        if await self._is_paused(PauseScope.DISPATCH):
+            logger.info(
+                "Crashed agent left offline: dispatch pause is armed",
+                agent_id=agent_id,
+                task_id=instance.current_task_id,
+            )
+            return
         instance.error_count += 1
         max_retries = 3
         if instance.error_count < max_retries:

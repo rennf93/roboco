@@ -18,6 +18,7 @@ from roboco.config import settings
 from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
     _OVERLOAD_RETRY_AFTER_S,
+    _RATE_LIMIT_MARKERS_BY_PROVIDER,
     _RATE_LIMIT_RETRY_AFTER_S,
     AgentOrchestrator,
     AgentState,
@@ -59,6 +60,8 @@ def orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
     orch._instances = {}
     orch._bg_tasks = set()
     orch._resume_confirm_delay = 0.0  # #71: deterministic liveness confirmation
+    # Default to unpaused; the pause-race test overrides this.
+    monkeypatch.setattr(orch, "_is_paused", AsyncMock(return_value=False))
     return orch
 
 
@@ -444,3 +447,59 @@ async def test_clean_ollama_output_is_not_a_rate_limit(
         )
         is None
     )
+
+
+# The Claude SDK's structured api_retry system line: the observed GLM/Ollama 429
+# does NOT contain the ollama.com prose ("rate limit exceeded"), so without
+# these markers the detector finds nothing and the agent crash-respawns
+# straight back into the 429.
+_API_RETRY_LINE = (
+    '{"type":"system","subtype":"api_retry","attempt":5,"max_retries":10,'
+    '"retry_delay_ms":9103,"error_status":429,"error":"rate_limit"}'
+)
+
+
+def test_local_uses_the_ollama_rate_limit_markers() -> None:
+    assert (
+        _RATE_LIMIT_MARKERS_BY_PROVIDER["local"]
+        == _RATE_LIMIT_MARKERS_BY_PROVIDER["ollama_cloud"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_detects_sdk_api_retry_429_line(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=_API_RETRY_LINE)
+    )
+    for provider in ("ollama_cloud", "local"):
+        assert (
+            await orch._provider_rate_limit_park_target("be-dev-1", _instance(provider))
+            == provider
+        )
+
+
+def test_api_retry_markers_match_lowercased() -> None:
+    # The scan lowercases the tail; the markers must survive that unchanged.
+    lowered = _API_RETRY_LINE.lower()
+    assert 'error_status":429' in lowered
+    assert 'error":"rate_limit' in lowered
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pause_blocks_crash_respawn(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While the fleet is dispatch-paused a crash must not respawn."""
+    inst = _instance()
+    inst.error_count = 0
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "_is_paused", AsyncMock(return_value=True))
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._crash_retry_or_escalate("be-dev-1", inst)
+
+    spawn.assert_not_awaited()
+    assert inst.error_count == 0  # full retry budget preserved for post-resume

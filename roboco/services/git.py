@@ -372,8 +372,8 @@ _HTTP_NOT_FOUND = 404
 # changelog for a description (create_pr posts it verbatim) wedged its release
 # on exactly that. Clamped at the two transport chokepoints (_post_pr for
 # creation, _patch_pr_title_body for updates) so every present and future
-# caller — gateway create_pr, the legacy template path, conventions PRs, env
-# sync PRs — is covered without each call site knowing the limit exists.
+# caller (gateway create_pr, the legacy template path, conventions PRs, env
+# sync PRs) is covered without each call site knowing the limit exists.
 _GH_PR_BODY_LIMIT = 65536
 _GH_PR_BODY_KEEP = 60000
 _GH_PR_TITLE_LIMIT = 256
