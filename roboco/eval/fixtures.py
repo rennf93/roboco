@@ -20,12 +20,25 @@ from roboco.models.base import TaskNature, TaskType
 class BenchTaskSpec:
     """One golden task: seeded repo state + brief + graded expectation.
 
-    ``target_role`` is always ``"developer"`` — the only role a task can be
-    freshly assigned to from PENDING with no prior work already done (QA /
-    documenter / cell-PM only ever pick up a task a developer has already
-    advanced through the lifecycle). Kept as an explicit field rather than
-    hardcoded at the call site so a future QA/PM-focused bench fixture has
-    somewhere to say otherwise.
+    ``target_role`` selects which role the bench drives: ``"developer"`` for a
+    standard leaf task (enters at pending), ``"qa"`` for a catch-a-defect
+    review scenario (enters at awaiting_qa with a pre-built PR), or
+    ``"cell_pm"`` / ``"main_pm"`` for a delegation-planning scenario.
+
+    ``entry_status`` is the lifecycle status the task enters at (default
+    ``"pending"``). QA fixtures use ``"awaiting_qa"`` — the task skips the
+    developer phase and the QA agent reviews a pre-built PR.
+
+    ``injected_defect`` (QA fixtures only) describes the defect the QA agent
+    must catch. The fixture's ``repo_files`` contain the DEFECTIVE version of
+    the code; the QA agent's job is to ``fail_review`` the PR, not fix it.
+
+    ``is_parent`` (PM fixtures only) marks the task as a parent requiring
+    delegation with ``covers_parent_criteria`` rather than a parentless leaf.
+
+    ``expected_coverage`` (PM fixtures only) is the set of criteria the PM
+    must map onto its delegated subtasks via ``covers_parent_criteria``. The
+    judge grades coverage-mapped-vs-missing.
     """
 
     key: str
@@ -37,6 +50,10 @@ class BenchTaskSpec:
     repo_files: tuple[tuple[str, str], ...]
     expectations: str
     target_role: str = "developer"
+    entry_status: str = "pending"
+    injected_defect: str | None = None
+    is_parent: bool = False
+    expected_coverage: tuple[str, ...] = ()
 
 
 FIXTURES: tuple[BenchTaskSpec, ...] = (
@@ -257,6 +274,92 @@ FIXTURES: tuple[BenchTaskSpec, ...] = (
             "simplifying to 1.1 without a broader fix — it should not "
             "invent an unrelated explanation, and legacy_calc.py itself "
             "must be untouched."
+        ),
+    ),
+    BenchTaskSpec(
+        key="qa-catch-off-by-one",
+        title="Review PR: off-by-one in paginate()",
+        description=(
+            "A developer submitted a PR for `bench/qa-catch-off-by-one/"
+            "paginate.py` claiming the pagination is correct. Review the "
+            "PR for defects — the code may contain a bug the developer "
+            "missed. If you find a defect, fail_review with a structured "
+            "finding naming the file, line, and fix."
+        ),
+        acceptance_criteria=(
+            "The off-by-one defect in paginate.py is identified (slice end "
+            "is page * size - 1 instead of page * size)",
+            "fail_review is called with a finding naming the defective "
+            "line and the correct fix",
+        ),
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        repo_files=(
+            (
+                "bench/qa-catch-off-by-one/paginate.py",
+                "def paginate(items, page, size):\n"
+                "    start = (page - 1) * size\n"
+                "    end = page * size - 1\n"
+                "    return items[start:end]\n",
+            ),
+        ),
+        expectations=(
+            "The QA agent catches the off-by-one: the slice end is "
+            "`page * size - 1` instead of `page * size`, dropping the "
+            "last item of every page. A correct review calls fail_review "
+            "with a finding at the `end = page * size - 1` line. A "
+            "pass_review here is a miss — the defect is real."
+        ),
+        target_role="qa",
+        entry_status="awaiting_qa",
+        injected_defect=(
+            "The slice end is page * size - 1 instead of page * size, "
+            "dropping the last item of every page."
+        ),
+    ),
+    BenchTaskSpec(
+        key="pm-delegate-pagination-fix",
+        title="Delegate: fix pagination and add input validation",
+        description=(
+            "A parent task requiring delegation to a developer. "
+            "`bench/pm-delegate-pagination-fix/paginate.py` has two "
+            "issues: (1) an off-by-one in the slice end that drops the "
+            "last item of every page, and (2) no input validation — "
+            "page or size <= 0 should raise ValueError. Delegate to a "
+            "developer with covers_parent_criteria mapping both criteria."
+        ),
+        acceptance_criteria=(
+            "paginate(list(range(10)), page=1, size=3) returns [0, 1, 2]",
+            "paginate(list(range(10)), page=4, size=3) returns [9] (the "
+            "last, previously-dropped item)",
+            "paginate(items, page=0, size=3) and paginate(items, "
+            "page=1, size=0) both raise ValueError",
+        ),
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        repo_files=(
+            (
+                "bench/pm-delegate-pagination-fix/paginate.py",
+                "def paginate(items, page, size):\n"
+                "    start = (page - 1) * size\n"
+                "    end = page * size - 1\n"
+                "    return items[start:end]\n",
+            ),
+        ),
+        expectations=(
+            "The PM delegates with covers_parent_criteria mapping all "
+            "three acceptance criteria onto the delegated subtask(s). A "
+            "correct delegation names each criterion; a missing mapping "
+            "is a coverage gap the judge flags."
+        ),
+        target_role="cell_pm",
+        is_parent=True,
+        expected_coverage=(
+            "paginate(list(range(10)), page=1, size=3) returns [0, 1, 2]",
+            "paginate(list(range(10)), page=4, size=3) returns [9] (the "
+            "last, previously-dropped item)",
+            "paginate(items, page=0, size=3) and paginate(items, "
+            "page=1, size=0) both raise ValueError",
         ),
     ),
 )

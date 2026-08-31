@@ -58,12 +58,12 @@ def test_repo_file_paths_within_a_fixture_are_unique() -> None:
         assert len(paths) == len(set(paths)), f"{f.key}: duplicate paths {paths}"
 
 
-def test_target_role_is_developer_for_every_fixture() -> None:
-    """Matches EvalRunner.run_cohort's current scope cut (see runner.py's
-    module docstring) — every fixture must be runnable by the one role the
-    bench supports today."""
+def test_target_role_is_known_for_every_fixture() -> None:
+    """Every fixture targets a role the bench supports: developer, qa,
+    cell_pm, or main_pm (see BenchTaskSpec.target_role docstring)."""
+    valid_roles = {"developer", "qa", "cell_pm", "main_pm"}
     for f in FIXTURES:
-        assert f.target_role == "developer", f.key
+        assert f.target_role in valid_roles, f"{f.key}: unknown role {f.target_role!r}"
 
 
 def test_bench_task_spec_is_frozen() -> None:
@@ -72,3 +72,37 @@ def test_bench_task_spec_is_frozen() -> None:
     mutable_view = cast("Any", spec)
     with pytest.raises(dataclasses.FrozenInstanceError):
         mutable_view.title = "mutated"
+
+
+def test_developer_fixtures_have_default_new_fields() -> None:
+    """The 6 original developer fixtures are backward-compatible: the new
+    optional fields carry their defaults (entry_status=pending, no injected
+    defect, not a parent, no expected coverage)."""
+    for f in FIXTURES:
+        if f.target_role == "developer":
+            assert f.entry_status == "pending", f.key
+            assert f.injected_defect is None, f.key
+            assert f.is_parent is False, f.key
+            assert f.expected_coverage == (), f.key
+
+
+def test_qa_fixture_has_injected_defect_and_awaiting_qa_entry() -> None:
+    """QA fixtures enter at awaiting_qa with a pre-built PR and carry an
+    injected_defect the QA agent must catch."""
+    qa_fixtures = [f for f in FIXTURES if f.target_role == "qa"]
+    assert qa_fixtures, "no QA fixture found"
+    for f in qa_fixtures:
+        assert f.entry_status == "awaiting_qa", f.key
+        assert f.injected_defect is not None, f"{f.key} has no injected_defect"
+        assert f.is_parent is False, f.key
+
+
+def test_pm_fixture_is_parent_with_expected_coverage() -> None:
+    """PM fixtures are parent tasks with expected_coverage the PM must map
+    via covers_parent_criteria."""
+    pm_fixtures = [f for f in FIXTURES if f.target_role in ("cell_pm", "main_pm")]
+    assert pm_fixtures, "no PM fixture found"
+    for f in pm_fixtures:
+        assert f.is_parent is True, f"{f.key} is not a parent"
+        assert f.expected_coverage, f"{f.key} has no expected_coverage"
+        assert f.injected_defect is None, f.key
