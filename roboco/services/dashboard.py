@@ -12,13 +12,14 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import AgentTable, TaskTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.models.base import AgentStatus, TaskStatus, Team
 from roboco.models.dashboard import (
     AuditQueueItem,
     CreateFlagParams,
     DashboardStorage,
     FlagData,
+    ProjectPortfolioMetricsData,
     ReportData,
     TeamHealthData,
 )
@@ -279,6 +280,39 @@ class DashboardService(BaseService):
             "warning_count": self.count_unresolved_flags("warning"),
             "last_report_at": last_time.isoformat() if last_time else None,
         }
+
+    async def get_portfolio(self, days: int = 30) -> list[ProjectPortfolioMetricsData]:
+        """Per-project metrics for the CEO's cross-fleet portfolio view.
+
+        Merges project identities onto ``MetricsService.get_portfolio_metrics``'
+        per-project numbers, then sorts most-active-first. Every project is
+        listed once — a project with no activity still shows, zeroed — so the
+        CEO sees the whole governed fleet, not only busy repos.
+        """
+        project_rows = (
+            await self.session.execute(
+                select(ProjectTable.id, ProjectTable.slug, ProjectTable.name)
+            )
+        ).all()
+        metrics_by_project = await self.metrics.get_portfolio_metrics(days=days)
+
+        entries = []
+        for row in project_rows:
+            m = metrics_by_project.get(row.id, {})
+            entries.append(
+                ProjectPortfolioMetricsData(
+                    project_id=row.id,
+                    project_slug=row.slug,
+                    project_name=row.name,
+                    active_task_count=m.get("active_task_count", 0),
+                    median_lead_time_hours=m.get("median_lead_time_hours"),
+                    rework_rate=m.get("rework_rate", 0.0),
+                    open_findings_count=m.get("open_findings_count", 0),
+                    monthly_budget_burn_usd=m.get("monthly_budget_burn_usd", 0.0),
+                )
+            )
+        entries.sort(key=lambda e: e.active_task_count, reverse=True)
+        return entries
 
     async def get_roadmap_progress(self) -> dict[str, Any]:
         """Get roadmap progress from high-priority tasks."""
