@@ -4,7 +4,7 @@ Scope: `roboco/mcp/` (every server file + `schemas/` + `utils.py`). Repo root: `
 
 ## Purpose
 
-The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` server processes that run **inside each agent container** and expose the RoboCo intent-verb / content-tool / RAG / docs / git-readonly / intake / secretary / web-research surfaces to the Claude Code or grok-CLI runtime as MCP tools. They are thin bridges — every tool either POSTs to the orchestrator's HTTP gateway (`/api/v1/flow/*`, `/api/v1/do/*`, `/api/git/*`, `/optimal/*`, `/docs/*`, `/research/*`, `/api/secretary/*`, `/api/prompter/live/*`) or, for the flow/do path, additionally forwards rejections to a per-container SDK loopback (`ROBOCO_SDK_URL`) that runs the per-verb circuit breaker. The orchestrator (not the MCP layer) is the authority for role scoping, state transitions, and git-side effects; the MCP layer only shapes calls, classifies rejections, and substitutes `circuit_open` envelopes when the breaker trips.
+The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mcp 2.x; was `FastMCP` in 1.x) server processes that run **inside each agent container** and expose the RoboCo intent-verb / content-tool / RAG / docs / git-readonly / intake / secretary / web-research surfaces to the Claude Code or grok-CLI runtime as MCP tools. They are thin bridges — every tool either POSTs to the orchestrator's HTTP gateway (`/api/v1/flow/*`, `/api/v1/do/*`, `/api/git/*`, `/optimal/*`, `/docs/*`, `/research/*`, `/api/secretary/*`, `/api/prompter/live/*`) or, for the flow/do path, additionally forwards rejections to a per-container SDK loopback (`ROBOCO_SDK_URL`) that runs the per-verb circuit breaker. The orchestrator (not the MCP layer) is the authority for role scoping, state transitions, and git-side effects; the MCP layer only shapes calls, classifies rejections, and substitutes `circuit_open` envelopes when the breaker trips.
 
 ## Files
 
@@ -29,11 +29,11 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` serve
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `mcp` (flow) | `FastMCP` | `flow_server.py:252` | Server instance `roboco-flow`; tools registered onto it at import time. |
-| `mcp` (do) | `FastMCP` | `do_server.py:220` | Server instance `roboco-do`. |
-| `mcp` (git-readonly) | `FastMCP` | `git_readonly.py:31` | Server instance `roboco-git-readonly`. |
-| `mcp` (intake) | `FastMCP` | `intake_server.py:32` | Server instance `roboco-intake`. |
-| `mcp` (secretary) | `FastMCP` | `secretary_server.py:30` | Server instance `roboco-secretary`. |
+| `mcp` (flow) | `MCPServer` | `flow_server.py:267` | Server instance `roboco-flow`; tools registered onto it at import time. |
+| `mcp` (do) | `MCPServer` | `do_server.py:239` | Server instance `roboco-do`. |
+| `mcp` (git-readonly) | `MCPServer` | `git_readonly.py:53` | Server instance `roboco-git-readonly`. |
+| `mcp` (intake) | `MCPServer` | `intake_server.py:37` | Server instance `roboco-intake`. |
+| `mcp` (secretary) | `MCPServer` | `secretary_server.py:32` | Server instance `roboco-secretary`. |
 | `StrList` | type alias | `flow_server.py:39` | `Annotated[list[str], BeforeValidator(coerce_str_list)]` — tolerates Claude SDK's nested XML-ish tool-input shapes before MCP validation rejects. |
 | `_CIRCUIT_REJECTION_KINDS` | frozenset | `flow_server.py:66`, `do_server.py:50` | The 4 breaker-counted kinds: `tracing_gap`, `invalid_state`, `not_authorized`, `incomplete_input`. |
 | `_DICT_ERROR_CODE_MAP` | dict | `flow_server.py:89`, `do_server.py:73` | Exact code→kind map for known RobocoError codes (e.g. `AUTHENTICATION_REQUIRED`→`not_authorized`). Unknown codes fall through to a substring branch for forward-compat. Added in 536bbb64 to fix AUTHENTICATION_REQUIRED mis-routing (#161). |
@@ -219,7 +219,7 @@ roboco/mcp/
 - `roboco.mcp.utils.ApiClient` / `format_error_response` (optimal, docs, search).
 
 **External:**
-- `mcp.server.fastmcp.FastMCP` — MCP server framework (all servers).
+- `mcp.server.mcpserver.MCPServer` — MCP server framework (all servers; mcp 2.x rename of 1.x `mcp.server.fastmcp.FastMCP`).
 - `pydantic` (`BaseModel`, `Field`, `BeforeValidator`, `Annotated`) — input validation.
 - `httpx` — sync (flow/do/git-readonly) + async (utils ApiClient, intake) HTTP.
 - `structlog` — logging (flow/do).

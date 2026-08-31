@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Migrated the eight MCP servers to the mcp 2.x SDK.** The 2026-08-31 lock refresh (GLM 5.3 upgrade, commit `5a6d25805`) bumped `mcp` 1.29.0 to 2.1.1 under pyproject's unpinned `"mcp"` dependency, and mcp 2.x removes `mcp.server.fastmcp` outright (`FastMCP` is now `MCPServer` in `mcp.server.mcpserver`), which broke all 30 e2e-smoke lifecycle tests at import and produced 46 mypy errors across every `roboco/mcp/*` server. Nothing was missing from the venv — the API moved. All servers (`flow`, `do`, `optimal`, `docs`, `search`, `intake`, `secretary`, `git_readonly`) and the two mcp unit tests now import `MCPServer`; `json_response=True` was dropped from the three factory constructors (`docs`, `optimal`, `search`) because mcp 2.x moves transport params off the constructor to `run()`/`sse_app()`/`streamable_http_app()`, and it was inert for these stdio-only servers anyway. `call_tool()`'s direct-call return changed from the 1.x `(content_blocks, structured_dict)` pair to a `CallToolResult`, so `test_optimal_role_scope` reads `.structured_content` instead of unpacking the tuple. `submit_directive`'s `payload` annotation gained `| None = None` to match its own runtime tolerance (`payload or {}`) — the mismatch was always there but mcp 1.x's untyped `@mcp.tool()` decorator hid it from mypy; mcp 2.x types the decorator, surfacing it. mcp 2.x also stops reading `MCP_*` env vars and `pydantic-settings` files (none were relied on) and swaps its HTTP stack to `httpx2` (lock-level only; no code imports httpx via mcp).
+
 ## [0.29.0] - 2026-08-21
 
 ### Added
