@@ -7276,6 +7276,86 @@ class TaskService(BaseService):
             return None
         return all_descendants
 
+    async def _completed_root_subtree_ids(self, task: TaskTable) -> list[str] | None:
+        """Task-id strings of the completing task's ROOT subtree — but only
+        when the root ancestor is terminal-COMPLETED.
+
+        The docs-provenance flip guard: a doc written by a leaf/cell task
+        carries the caveat until the WHOLE root chain ships, so a leaf
+        completion while the root is still in flight returns None. Uses the
+        same recursive-ancestry CTE pattern as :meth:`resolve_root_source`.
+        The depth caps are safety nets past the real ``MAX_TASK_DEPTH``
+        invariant; they can only ever stop a hypothetical corrupt chain.
+        """
+        from roboco.templates.git.constants import MAX_TASK_DEPTH
+
+        max_depth = MAX_TASK_DEPTH + 4
+        root_row = await self.session.execute(
+            text(
+                """
+                WITH RECURSIVE ancestry(id, parent_task_id, status, depth) AS (
+                    SELECT id, parent_task_id, status, 0
+                    FROM tasks WHERE id = :task_id
+                    UNION ALL
+                    SELECT t.id, t.parent_task_id, t.status, a.depth + 1
+                    FROM tasks t
+                    JOIN ancestry a ON t.id = a.parent_task_id
+                    WHERE a.depth < :max_depth
+                )
+                SELECT id, status FROM ancestry WHERE parent_task_id IS NULL
+                """
+            ),
+            {"task_id": str(task.id), "max_depth": max_depth},
+        )
+        root = root_row.first()
+        if root is None:
+            return None
+        root_id, root_status = root
+        if root_status != TaskStatus.COMPLETED.value:
+            return None
+        subtree_rows = await self.session.execute(
+            text(
+                """
+                WITH RECURSIVE subtree(id, depth) AS (
+                    SELECT id, 0 FROM tasks WHERE id = :root_id
+                    UNION ALL
+                    SELECT t.id, s.depth + 1
+                    FROM tasks t
+                    JOIN subtree s ON t.parent_task_id = s.id
+                    WHERE s.depth < :max_depth
+                )
+                SELECT id FROM subtree
+                """
+            ),
+            {"root_id": str(root_id), "max_depth": max_depth},
+        )
+        return [str(row[0]) for row in subtree_rows.all()]
+
+    async def _flip_docs_provenance_background(self, task_ids: list[str]) -> None:
+        """Flip KB docs written by *task_ids* from live_write to repo_tree.
+
+        Best-effort, mirroring DocsService._index_doc_in_rag: a KB/store
+        failure is a structlog warning and NEVER propagates — the task
+        completion that fired it is already committed.
+        """
+        try:
+            # Import here to avoid circular dependency
+            from roboco.services.optimal import get_optimal_service
+
+            optimal = await get_optimal_service()
+            flipped = await optimal.flip_docs_task_provenance(task_ids)
+            self.log.info(
+                "Flipped docs live_write provenance to repo_tree",
+                task_ids=task_ids,
+                flipped=flipped,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Failed to flip docs provenance on completion",
+                task_ids=task_ids,
+                error=str(e),
+            )
+
     async def _trigger_completion_hooks(
         self, task: TaskTable, agent_id: UUID | None
     ) -> None:
@@ -7309,6 +7389,26 @@ class TaskService(BaseService):
             )
             self._background_tasks.add(decision_task)
             decision_task.add_done_callback(self._background_tasks.discard)
+
+        # Docs provenance flip: when this completion exhausts the writing
+        # task's root chain, un-caveat every live_write doc of the subtree.
+        # The guard resolves inline (it must see the status change this
+        # transaction just flushed); the KB flip itself is fire-and-forget.
+        try:
+            subtree = await self._completed_root_subtree_ids(task)
+        except Exception as e:
+            self.log.warning(
+                "Docs provenance-flip guard failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+            subtree = None
+        if subtree:
+            flip_task = asyncio.create_task(
+                self._flip_docs_provenance_background(subtree)
+            )
+            self._background_tasks.add(flip_task)
+            flip_task.add_done_callback(self._background_tasks.discard)
 
     async def _apply_complete_approval_chain(
         self,

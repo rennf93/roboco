@@ -297,6 +297,44 @@ class VectorStore:
                     records,
                 )
 
+    async def flip_provenance(
+        self,
+        *,
+        ids: list[str],
+        from_value: str,
+        to_value: str,
+    ) -> int:
+        """Targeted, in-place ``provenance`` flip over a stamped-task-id set.
+
+        Updates every chunk whose ``task_id`` metadata is one of *ids* AND
+        whose ``provenance`` metadata currently equals *from_value*, to
+        *to_value*. Returns the number of rows updated. The narrow
+        metadata-surgery path TaskService's completion hook drives — no
+        delete + re-embed, no reindex, no repo-tree re-derivation (those
+        would rewrite unchanged docs).
+        """
+        if not ids:
+            return 0
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                self._q(
+                    """
+                    UPDATE {table}
+                    SET metadata = jsonb_set(
+                        metadata, '{provenance}', to_jsonb($3::text)
+                    )
+                    WHERE metadata->>'task_id' = ANY($1::text[])
+                      AND metadata->>'provenance' = $2::text
+                    RETURNING id
+                    """
+                ),
+                ids,
+                from_value,
+                to_value,
+            )
+        return len(rows)
+
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
