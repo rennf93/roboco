@@ -85,16 +85,20 @@ export function useSetOpenRouterKey() {
     mutationFn: (apiKey: string) => providersApi.setOpenRouterKey(apiKey),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: providerKeys.openRouterKey() });
+      // Applying a mode also reads this so refresh it too.
       qc.invalidateQueries({ queryKey: providerKeys.mode() });
     },
   });
 }
 
-export function useSearchOpenRouterModels(query: string) {
+/** Query: search OpenRouter's catalog. Debouncing the input lives in the
+ * component; `enabled` (key set + non-empty query) keeps the query idle so
+ * nothing preloads while the picker is untouched. */
+export function useSearchOpenRouterModels(query: string, enabled: boolean) {
   return useQuery({
     queryKey: providerKeys.openRouterModels(query),
     queryFn: () => providersApi.searchOpenRouterModels(query),
-    enabled: query.trim().length > 0,
+    enabled: enabled && query.length > 0,
     staleTime: 60_000,
   });
 }
