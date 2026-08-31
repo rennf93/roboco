@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
-import api from "@/lib/api/client";
 import {
   useApplyMode,
   useApplyPreset,
@@ -12,9 +10,11 @@ import {
   useDeletePreset,
   useGrokKey,
   useOllamaKey,
+  useOpenRouterKey,
   useRoutingMode,
   useRoutingPresets,
   useSavePreset,
+  useSearchOpenRouterModels,
   useSetComplexityOverride,
   useSetGrokKey,
   useSetOllamaKey,
@@ -60,14 +60,12 @@ import { AssignmentScope, AgentRole, ModelProvider } from "@/types";
 import {
   COMPLEXITY_OVERRIDE_ROLES,
   type ComplexityLevel,
+  type OpenRouterModel,
   type SelfHostedModel,
 } from "@/lib/api/providers";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
-import {
-  OpenRouterProviderKeyRow,
-  useOpenRouterKeyStatus,
-} from "@/components/settings/provider-key-card";
+import { OpenRouterProviderKeyRow } from "@/components/settings/provider-key-card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -166,25 +164,21 @@ const COMPLEXITY_ROLE_LABELS: Record<string, string> = {
   documenter: "Documenter",
 };
 
-// OpenRouter model entry from GET /providers/openrouter/models?q= (API contract,
-// mirrors fe-dev-1's parallel type). Pricing fields are per-token floats as
-// strings — OpenRouter's native format.
-interface OpenRouterModel {
-  model_name: string;
-  display_name: string;
-  context_length: number;
-  pricing: {
-    prompt: string;
-    completion: string;
-  };
-}
+// OpenRouter models come from the shared contract in @/lib/api/providers
+// (OpenRouterModel) — pricing / prompt / completion / context_length are all
+// nullable because OpenRouter's catalog genuinely contains unpriced models.
 
 // Format a per-token price as human-readable per-million-token, e.g.
-// "0.000003" → "$3.00/1M". Zero → "Free" (OpenRouter has free models).
+// "0.000003" → "$3.00/1M". Zero/negative (OpenRouter's "-1" unknown-price
+// sentinel) → "—"; sub-cent per-million values keep a third decimal so they
+// don't render as "$0.00/1M".
 function formatPricePerMillion(price: string | number): string {
-  const num = typeof price === "string" ? parseFloat(price) : price;
-  if (isNaN(num) || num === 0) return "Free";
-  return `$${(num * 1_000_000).toFixed(2)}/1M`;
+  const perMillion =
+    (typeof price === "string" ? parseFloat(price) : price) * 1_000_000;
+  if (isNaN(perMillion) || perMillion <= 0) return "—";
+  return perMillion < 0.01
+    ? `$${perMillion.toFixed(3)}/1M`
+    : `$${perMillion.toFixed(2)}/1M`;
 }
 
 // Surface specific OpenRouter failure reasons instead of a generic message
@@ -240,9 +234,7 @@ export function AIRoutingCard() {
   const applyMode = useApplyMode();
 
   const hasOllamaKey = !!keyStatus?.has_key;
-  const currentMode = (snapshot?.mode ?? "anthropic") as
-    | RoutingMode
-    | "openrouter";
+  const currentMode: RoutingMode = snapshot?.mode ?? "anthropic";
 
   // Track the latest self-hosted test result so ModeButton can gate access.
   const [selfHostedTestResult, setSelfHostedTestResult] =
@@ -311,7 +303,7 @@ export function AIRoutingCard() {
   };
 
   // --- OpenRouter API key status + model search ---
-  const { data: openRouterKeyStatus } = useOpenRouterKeyStatus();
+  const { data: openRouterKeyStatus } = useOpenRouterKey();
   const hasOpenRouterKey = !!openRouterKeyStatus?.key_set;
   const [openRouterModel, setOpenRouterModel] = useState("");
   const [openRouterSearch, setOpenRouterSearch] = useState("");
@@ -327,18 +319,7 @@ export function AIRoutingCard() {
     isLoading: openRouterSearchLoading,
     isError: openRouterSearchError,
     error: openRouterSearchErr,
-  } = useQuery({
-    queryKey: ["providers", "openrouter-models", debouncedSearch],
-    queryFn: async () => {
-      const { data } = await api.get<OpenRouterModel[]>(
-        "/providers/openrouter/models",
-        { params: { q: debouncedSearch } },
-      );
-      return data;
-    },
-    enabled: debouncedSearch.length > 0 && hasOpenRouterKey,
-    staleTime: 60_000,
-  });
+  } = useSearchOpenRouterModels(debouncedSearch, hasOpenRouterKey);
 
   // --- Mix mode state: agent_slug → model_name ---
   const initialMix = useMemo(() => {
@@ -526,7 +507,7 @@ export function AIRoutingCard() {
       return;
     try {
       await applyMode.mutateAsync({
-        mode: "openrouter" as unknown as RoutingMode,
+        mode: "openrouter",
         ...(openRouterModel ? { default_model: openRouterModel } : {}),
       });
       toast.success(
@@ -663,9 +644,7 @@ export function AIRoutingCard() {
       return;
     try {
       await applyMode.mutateAsync({ mode: "cost_tiered" });
-      toast.success(
-        "Cost-tiered default seeded (developer:low → Haiku)",
-      );
+      toast.success("Cost-tiered default seeded (developer:low → Haiku)");
     } catch (e) {
       toast.error("Apply failed: " + errMsg(e));
     }
@@ -766,7 +745,9 @@ export function AIRoutingCard() {
       toast.error("Pick a preset first");
       return;
     }
-    if (!confirm(`Delete preset "${selectedPreset?.name ?? selectedPresetId}"?`))
+    if (
+      !confirm(`Delete preset "${selectedPreset?.name ?? selectedPresetId}"?`)
+    )
       return;
     try {
       await deletePreset.mutateAsync(selectedPresetId);
@@ -1232,8 +1213,8 @@ export function AIRoutingCard() {
               OpenRouter agents run on the opencode CLI; one API key unlocks
               hundreds of models (GLM, DeepSeek, Qwen, Claude, GPT and more).
               The same command / secret-exfiltration guard, prompt-injection
-              guard, and per-agent cost cap all apply. V1: delivery roles only
-              — not available for Intake/Secretary.
+              guard, and per-agent cost cap all apply. V1: delivery roles only —
+              not available for Intake/Secretary.
             </p>
           ) : null}
         </section>
@@ -1288,8 +1269,8 @@ export function AIRoutingCard() {
                 OpenRouter default model
               </Label>
               <p className="text-xs text-muted-foreground">
-                Search OpenRouter&apos;s catalog and pick a model for all
-                agents in OpenRouter mode. Pricing shown per million tokens.
+                Search OpenRouter&apos;s catalog and pick a model for all agents
+                in OpenRouter mode. Pricing shown per million tokens.
               </p>
               <Input
                 type="text"
@@ -1313,7 +1294,7 @@ export function AIRoutingCard() {
                 <p className="text-xs text-muted-foreground">Searching…</p>
               ) : openRouterModels && openRouterModels.length > 0 ? (
                 <div className="max-h-64 overflow-y-auto rounded-md border">
-                  {openRouterModels.map((m) => (
+                  {openRouterModels.map((m: OpenRouterModel) => (
                     <button
                       key={m.model_name}
                       type="button"
@@ -1330,7 +1311,7 @@ export function AIRoutingCard() {
                         <div className="text-muted-foreground font-mono truncate">
                           {m.model_name}
                         </div>
-                        {m.context_length > 0 && (
+                        {m.context_length != null && m.context_length > 0 && (
                           <div className="text-muted-foreground">
                             {m.context_length.toLocaleString()} ctx
                           </div>
@@ -1338,10 +1319,16 @@ export function AIRoutingCard() {
                       </div>
                       <div className="ml-2 shrink-0 text-right">
                         <div>
-                          {formatPricePerMillion(m.pricing.prompt)} in
+                          {m.pricing && m.pricing.prompt
+                            ? formatPricePerMillion(m.pricing.prompt)
+                            : "—"}{" "}
+                          in
                         </div>
                         <div className="text-muted-foreground">
-                          {formatPricePerMillion(m.pricing.completion)} out
+                          {m.pricing && m.pricing.completion
+                            ? formatPricePerMillion(m.pricing.completion)
+                            : "—"}{" "}
+                          out
                         </div>
                       </div>
                     </button>
@@ -1372,7 +1359,10 @@ export function AIRoutingCard() {
             <Label className="text-sm font-medium">Routing presets</Label>
           </HelpTip>
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed p-2">
-            <Select value={selectedPresetId} onValueChange={setSelectedPresetId}>
+            <Select
+              value={selectedPresetId}
+              onValueChange={setSelectedPresetId}
+            >
               <SelectTrigger size="sm" className="w-48 text-xs">
                 <SelectValue
                   placeholder={
@@ -1475,7 +1465,11 @@ export function AIRoutingCard() {
               >
                 Clear all
               </Button>
-              <Button size="sm" onClick={saveMix} disabled={applyMode.isPending}>
+              <Button
+                size="sm"
+                onClick={saveMix}
+                disabled={applyMode.isPending}
+              >
                 {applyMode.isPending ? "Saving…" : "Save mix"}
               </Button>
             </div>
@@ -1571,9 +1565,7 @@ export function AIRoutingCard() {
         <Separator />
         <section className="space-y-3">
           <HelpTip label="Downgrade-only by policy: a role+complexity override can never point to a costlier tier than that role's baseline model — this lever only saves cost, it never spends more. Coordinator roles (cell_pm, main_pm), pr_reviewer, and board/CEO-facing roles aren't offered a row here at all; tier pinning for those is deliberate — cell_pm especially, since a coordinator is the last place to gamble a downgrade.">
-            <Label className="text-sm font-medium">
-              Complexity overrides
-            </Label>
+            <Label className="text-sm font-medium">Complexity overrides</Label>
           </HelpTip>
           <p className="text-xs text-muted-foreground">
             Pin a role to a cheaper model for LOW- or HIGH-complexity tasks

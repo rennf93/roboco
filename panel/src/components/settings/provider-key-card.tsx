@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import api from "@/lib/api/client";
+import { useOpenRouterKey, useSetOpenRouterKey } from "@/hooks/use-providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,47 +10,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { HelpTip } from "@/components/ui/help-tip";
 import { Check, Key, KeyRound } from "lucide-react";
 import { toast } from "sonner";
-
-// API contract type — mirrors fe-dev-1's OpenRouterKeyStatus (parallel work).
-interface OpenRouterKeyStatus {
-  key_set: boolean;
-}
-
-// Shared query key so react-query deduplicates across the ProviderKeyRow and
-// the AIRoutingCard's own key-status read for ModeButton gating.
-export const openRouterKeyQueryKey = ["providers", "openrouter-key"] as const;
-
-/** Query: fetch the OpenRouter key status (key_set boolean). */
-export function useOpenRouterKeyStatus() {
-  return useQuery({
-    queryKey: openRouterKeyQueryKey,
-    queryFn: async () => {
-      const { data } = await api.get<OpenRouterKeyStatus>(
-        "/providers/openrouter-key",
-      );
-      return data;
-    },
-    staleTime: 60_000,
-  });
-}
-
-/** Mutation: save or clear (empty string) the OpenRouter API key. */
-function useSetOpenRouterKey() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (apiKey: string) => {
-      const { data } = await api.put<OpenRouterKeyStatus>(
-        "/providers/openrouter-key",
-        { api_key: apiKey },
-      );
-      return data;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: openRouterKeyQueryKey });
-      qc.invalidateQueries({ queryKey: ["providers", "mode"] });
-    },
-  });
-}
 
 /**
  * OpenRouter key row — password input, Save and Clear buttons.
@@ -62,7 +20,7 @@ function useSetOpenRouterKey() {
  * operator edits the field.
  */
 export function OpenRouterProviderKeyRow() {
-  const { data: keyStatus } = useOpenRouterKeyStatus();
+  const { data: keyStatus } = useOpenRouterKey();
   const setKeyMut = useSetOpenRouterKey();
 
   const hasKey = !!keyStatus?.key_set;
