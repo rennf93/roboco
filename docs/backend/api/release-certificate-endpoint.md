@@ -23,22 +23,24 @@ The endpoint is registered in `roboco/api/app.py` via `_mount_release_routers`, 
 
 ```python
 class ReleaseCertificateResponse(BaseModel):
-    version: str                      # normalized (v-prefix dropped)
-    generated_at: datetime            # UTC, at request time
-    ci_verdict: str                   # "green" | "red" | "unknown" (readiness report gate_state)
-    conventions_clean: bool           # see derivation below
-    ceo_approved_at: datetime | None  # the proposal task's completed_at (CEO approval == publish)
-    changelog_excerpt: str            # readiness report drafted_changelog
+    version: str  # normalized (v-prefix dropped)
+    generated_at: datetime  # UTC, at request time
+    ci_verdict: str  # "green" | "red" | "unknown" (readiness report gate_state)
+    conventions_clean: bool  # see derivation below
+    ceo_approved_at: datetime | None  # proposal task completed_at
+    changelog_excerpt: str  # readiness report drafted_changelog
     task_states: list[ReleaseCertificateTaskState]
     findings_summary: ReleaseCertificateFindingsSummary
+
 
 class ReleaseCertificateTaskState(BaseModel):
     task_id: str
     title: str
     status: str
-    criteria_total: int     # the task's acceptance-criterion count
-    criteria_verified: int  # QA's '[AC] <criterion> — verified: <evidence>' line count in qa_notes
-    qa_passed: bool         # criteria_verified >= criteria_total (no-AC tasks count as passed)
+    criteria_total: int  # the task's acceptance-criterion count
+    criteria_verified: int  # QA '[AC]' verified-stamp count in qa_notes
+    qa_passed: bool  # criteria_verified >= criteria_total (no-AC tasks pass)
+
 
 class ReleaseCertificateSeverityCounts(BaseModel):
     blocker: int = 0
@@ -46,8 +48,9 @@ class ReleaseCertificateSeverityCounts(BaseModel):
     minor: int = 0
     nit: int = 0
 
+
 class ReleaseCertificateFindingsSummary(BaseModel):
-    open: ReleaseCertificateSeverityCounts    # unaddressed findings
+    open: ReleaseCertificateSeverityCounts  # unaddressed findings
     closed: ReleaseCertificateSeverityCounts  # status 'addressed' or 'verified'
     waived: ReleaseCertificateSeverityCounts  # Auditor-waived minor/nit findings
 ```
