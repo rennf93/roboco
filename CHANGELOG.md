@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **CEO-gated `GET /api/dashboard/portfolio` — the first per-project metrics view of the governed fleet (task `1e0b4c7b`, PR #966, the assembled portfolio branch; the route leaf was delivered by sibling task `b3960175`, PR #965).** The CEO governs 5 products but every prior dashboard endpoint was per-team or org-wide. The new endpoint returns one `PortfolioProjectMetrics` row per project — `project_id`/`project_slug`/`project_name`, `active_task_count`, `median_lead_time_hours`, `rework_rate`, `open_findings_count`, `monthly_budget_burn_usd` — sorted most-active-first; a project with no activity still appears, zeroed. All aggregation is server-side (task `1e0b4c7b`'s `MetricsService.get_portfolio_metrics`): active = statuses minus `{backlog, completed, cancelled}`; median lead time + rework rate are read from ONE windowed completed-tasks pass (median, not mean — agent lead times are heavy-tailed); open findings are SQL-grouped from the revision-findings ledger rather than the capped `ReviewFindingsRepository.list_open_findings` dashboard fetch; the calendar-month burn mirrors `TaskService.project_month_spend_usd`'s pricing (open spawn sessions priced live from token counts) in one batched query instead of N per-project queries. The route carries the dashboard router's FIRST explicit per-route role gate (non-CEO panel token → `403`), on top of the router-wide panel-token dependency. Integration tests cover the seeded aggregation math (month-boundary-safe) and the CEO-only 403. See `docs/backend/api/dashboard-portfolio.md`.
+
 ## [0.29.0] - 2026-08-21
 
 ### Added

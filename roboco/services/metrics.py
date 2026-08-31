@@ -5,12 +5,13 @@ Collects and aggregates metrics for reporting and dashboards.
 Tracks velocity, blockers, completion rates, and agent performance.
 """
 
+import statistics
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from uuid import UUID
 
-from sqlalchemy import and_, bindparam, func, literal, select, text
+from sqlalchemy import String, and_, bindparam, func, literal, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import (
@@ -19,6 +20,7 @@ from roboco.db.tables import (
     AuditLogTable,
     JournalEntryTable,
     MemberPerformanceDailyTable,
+    TaskReviewFindingTable,
     TaskTable,
 )
 from roboco.foundation.policy.stage_effort import compute_stage_effort
@@ -104,6 +106,14 @@ CRITICAL_BLOCKED_RATIO = 0.3
 SLOW_BLOCKED_RATIO = 0.15
 STALE_TASK_THRESHOLD = 5
 
+# Portfolio "active" = work in flight: everything except the PM-setup pool and
+# the two terminal states. Backlog is parked, not active; cancelled never was.
+# Tasks with a null project_id (board/product tasks) never appear here —
+# the dashboard is grouped BY project.
+_PORTFOLIO_HELD_STATUSES = frozenset(
+    {TaskStatus.BACKLOG, TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+)
+
 
 def _calculate_completion_rate(completed: int, created: int) -> float:
     """Calculate task completion rate."""
@@ -118,6 +128,67 @@ def _calculate_avg_blocked_hours(blocked_hours: list[float]) -> float | None:
 def _format_period(days: int) -> str:
     """Format days as period string."""
     return f"{days}d"
+
+
+def _default_portfolio_row() -> dict[str, Any]:
+    """Zeroed per-project row, applied when a project shows up in any single
+    aggregation slice but no other."""
+    return {
+        "active_task_count": 0,
+        "median_lead_time_hours": None,
+        "rework_rate": 0.0,
+        "open_findings_count": 0,
+        "monthly_budget_burn_usd": 0.0,
+    }
+
+
+async def _portfolio_spend_by_project(session: AsyncSession) -> dict[UUID, float]:
+    """This calendar month's agent-spawn burn, grouped by project, one query.
+
+    Mirrors ``TaskService.project_month_spend_usd``'s pricing (open sessions
+    priced live from token counts; start-month attribution), batched for every
+    project at once instead of one query per project.
+    """
+    from roboco.billing.pricing import calculate_cost
+
+    month_start = datetime.now(UTC).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    task_id_str = cast("Any", TaskTable.id).cast(String)
+    result = await session.execute(
+        select(
+            TaskTable.project_id,
+            AgentSpawnSessionTable.estimated_cost_usd,
+            AgentSpawnSessionTable.ended_at,
+            AgentSpawnSessionTable.model,
+            AgentSpawnSessionTable.tokens_input,
+            AgentSpawnSessionTable.tokens_output,
+            AgentSpawnSessionTable.tokens_cache_read,
+            AgentSpawnSessionTable.tokens_cache_write,
+        )
+        .select_from(AgentSpawnSessionTable)
+        .join(TaskTable, task_id_str == AgentSpawnSessionTable.task_id)
+        .where(
+            TaskTable.project_id.is_not(None),
+            AgentSpawnSessionTable.started_at >= month_start,
+        )
+    )
+    burn: dict[UUID, float] = {}
+    for row in result.all():
+        if row.project_id is None:
+            continue  # filtered server-side; narrows for mypy
+        cost = row.estimated_cost_usd
+        if cost is None and row.ended_at is None:
+            cost = calculate_cost(
+                model=row.model,
+                tokens_input=row.tokens_input,
+                tokens_output=row.tokens_output,
+                tokens_cache_read=row.tokens_cache_read,
+                tokens_cache_write=row.tokens_cache_write,
+            )
+        if cost:
+            burn[row.project_id] = burn.get(row.project_id, 0.0) + cost
+    return burn
 
 
 class MetricsService(BaseService):
@@ -1388,6 +1459,94 @@ class MetricsService(BaseService):
             by_agent=by_agent,
             rework_cost_usd=cost,
         )
+
+    async def get_portfolio_metrics(self, days: int = 30) -> dict[UUID, dict[str, Any]]:
+        """Per-project aggregation for the CEO's cross-fleet portfolio view.
+
+        All numbers are computed server-side, grouped by ``tasks.project_id``:
+
+        - ``active_task_count`` — non-backlog, non-terminal tasks (see
+          ``_PORTFOLIO_HELD_STATUSES``).
+        - ``median_lead_time_hours`` / ``rework_rate`` — over completed tasks
+          in the `days` window, from the SAME population (mean is the wrong
+          summary for the heavy-tailed lead times a fleet of agent runs
+          produces; the median resists the tails).
+        - ``open_findings_count`` — SQL-grouped over the revision-findings
+          ledger joined through the task's project (no row cap, unlike
+          ``ReviewFindingsRepository.list_open_findings``, which is a capped
+          dashboard-queue fetch).
+        - ``monthly_budget_burn_usd`` — calendar-month spawn burn, see
+          ``_portfolio_spend_by_project``.
+
+        Only projects with in-flight or windowed activity appear in the
+        result; the caller (``DashboardService``) merges project identities.
+        """
+        portfolio: dict[UUID, dict[str, Any]] = {}
+
+        active_rows = await self.session.execute(
+            select(TaskTable.project_id, func.count(TaskTable.id))
+            .where(
+                TaskTable.status.notin_(_PORTFOLIO_HELD_STATUSES),
+                TaskTable.project_id.is_not(None),
+            )
+            .group_by(TaskTable.project_id)
+        )
+        for project_id, count in active_rows.all():
+            portfolio[project_id] = _default_portfolio_row()
+            portfolio[project_id]["active_task_count"] = count
+
+        # Completed tasks in the window: lead time + rework read from the SAME
+        # rows, so the three figures always describe one population.
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        completed_rows = await self.session.execute(
+            select(
+                TaskTable.project_id,
+                TaskTable.created_at,
+                TaskTable.completed_at,
+                TaskTable.revision_count,
+            ).where(
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.completed_at.is_not(None),
+                TaskTable.completed_at >= cutoff,
+                TaskTable.project_id.is_not(None),
+            )
+        )
+        by_project: dict[UUID, list[tuple[float, int]]] = {}
+        for (
+            project_id,
+            created_at,
+            completed_at,
+            revision_count,
+        ) in completed_rows.all():
+            lead = (completed_at - created_at).total_seconds() / 3600
+            by_project.setdefault(project_id, []).append((lead, revision_count))
+        for project_id, entries in by_project.items():
+            row = portfolio.setdefault(project_id, _default_portfolio_row())
+            row["median_lead_time_hours"] = round(
+                statistics.median(lead for lead, _ in entries), 2
+            )
+            reworked = sum(1 for _, revision_count in entries if revision_count > 0)
+            row["rework_rate"] = round(reworked / len(entries), 4)
+
+        findings_rows = await self.session.execute(
+            select(TaskTable.project_id, func.count())
+            .select_from(TaskReviewFindingTable)
+            .join(TaskTable, TaskTable.id == TaskReviewFindingTable.task_id)
+            .where(
+                TaskReviewFindingTable.status == STATUS_OPEN,
+                TaskTable.project_id.is_not(None),
+            )
+            .group_by(TaskTable.project_id)
+        )
+        for project_id, count in findings_rows.all():
+            row = portfolio.setdefault(project_id, _default_portfolio_row())
+            row["open_findings_count"] = count
+
+        spend = await _portfolio_spend_by_project(self.session)
+        for project_id, cost in spend.items():
+            row = portfolio.setdefault(project_id, _default_portfolio_row())
+            row["monthly_budget_burn_usd"] = round(cost, 4)
+        return portfolio
 
     async def get_spawn_waste_metrics(self, days: int = 30) -> SpawnWasteReport:
         """Spawn sessions that advanced nothing on their task, priced.
