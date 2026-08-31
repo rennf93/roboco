@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from fastapi import FastAPI
 from guard import SecurityMiddleware
+from guard_core.models import VALID_CLOUD_PROVIDERS
 from pydantic import ValidationError
 from roboco import security
 from roboco.api.app import create_app
@@ -444,8 +445,9 @@ def test_block_clouds_argless_route_still_resolves_route_config() -> None:
     """block_cloud_providers at CONFIG level raises on an unrecognized name;
     the block_clouds() DECORATOR path instead silently filters unknown names.
     An argless route must still resolve a real route config carrying the
-    default trio, guarding against a future named-provider typo silently
-    vanishing the whole route's config instead of just the bad name."""
+    library's full default provider set, guarding against a future
+    named-provider typo silently vanishing the whole route's config instead
+    of just the bad name."""
 
     @security.guard_deco.block_clouds()
     async def _guard_test_block_clouds_route() -> dict[str, bool]:
@@ -454,7 +456,8 @@ def test_block_clouds_argless_route_still_resolves_route_config() -> None:
     route_id = _guard_test_block_clouds_route._guard_route_id
     route_config = security.guard_deco.get_route_config(route_id)
     assert route_config is not None
-    # guard-core 3.13.0 will widen the argless default to all six supported
-    # providers (adds DigitalOcean/Linode/Vultr). When this pin breaks on
-    # that bump, decide: accept all six, or pass the classic three explicitly.
-    assert route_config.block_cloud_providers == {"AWS", "GCP", "Azure"}
+    # Argless block_clouds() fills set(VALID_CLOUD_PROVIDERS); guard-core
+    # 3.13.0 widened that default from the classic trio (AWS/GCP/Azure) to
+    # all six supported providers (adds DigitalOcean/Linode/Vultr). Derived
+    # from the library constant so it tracks future additions automatically.
+    assert route_config.block_cloud_providers == set(VALID_CLOUD_PROVIDERS)
