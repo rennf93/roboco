@@ -170,6 +170,10 @@ The endpoint is CEO-gated: any non-CEO panel token receives `403`, so a non-CEO 
 - **Refetch interval:** 60 seconds.
 - **Mock mode:** returns `[]`.
 
+## OpenRouter hooks
+
+The OpenRouter provider hooks (`useOpenRouterKey`, `useSetOpenRouterKey`, `useSearchOpenRouterModels`) live in `panel/src/hooks/use-providers.ts` and follow the same TanStack Query shape as the Grok and self-hosted hooks. They are documented in full — types, API contract, and usage notes for the consuming UI task — in [`openrouter-provider.md`](./openrouter-provider.md).
+
 ## Data-hook null-guard audit
 
 Every useQuery hook in `panel/src/hooks/` has been audited for missing `enabled` guards on undefined/null IDs, staleTime mismatches, and refetchInterval leaks on unmount.
