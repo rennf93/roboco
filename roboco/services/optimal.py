@@ -85,22 +85,38 @@ async def _bounded_index_search(
 ) -> SearchOutcome:
     """Wrap a single index search in a per-index timeout.
 
-    On timeout, append the index name to ``gaps`` and return a failure
-    outcome instead of propagating — following the degradation pattern from
-    ``evidence_legs.run_bounded_leg``.
+    On timeout or unexpected failure, append the index name to ``gaps`` and
+    return a failure outcome instead of propagating — following the
+    degradation pattern from ``evidence_legs.run_bounded_leg``.
     """
     index_type, plugin = entry
     try:
-        return await asyncio.wait_for(
+        outcome = await asyncio.wait_for(
             plugin.search_with_embedding(query_embedding, query_text, top_k=top_k),
             timeout=timeout,
         )
+        if not outcome.success:
+            # The plugin returned a failure outcome without raising — still a
+            # gap, or a total non-timeout outage reads as HTTP 200 total:0.
+            gaps.append(
+                f"{index_type.value} unavailable: failed: "
+                f"{outcome.error_message or 'unknown error'}"
+            )
+        return outcome
     except TimeoutError:
         gaps.append(f"{index_type.value} unavailable: timed out after {timeout:.0f}s")
         return SearchOutcome(
             results=[],
             success=False,
             error_message=f"Timed out after {timeout:.0f}s",
+            index_type=index_type,
+        )
+    except Exception as e:
+        gaps.append(f"{index_type.value} unavailable: failed: {type(e).__name__}")
+        return SearchOutcome(
+            results=[],
+            success=False,
+            error_message=f"failed: {type(e).__name__}: {e}",
             index_type=index_type,
         )
 
@@ -1429,8 +1445,8 @@ class OptimalService:
 
         Like ``search()`` but each index is bounded by
         ``_PER_INDEX_SEARCH_TIMEOUT`` independently. Returns
-        ``(results, gaps)`` where ``gaps`` lists indexes that timed out —
-        empty when all completed.
+        ``(results, gaps)`` where ``gaps`` lists indexes that did not return
+        (timed out or failed) — empty when all completed.
         """
         if not self._initialized:
             raise RuntimeError("OptimalService not initialized")
@@ -1474,9 +1490,9 @@ class OptimalService:
     ) -> None:
         """Search one index with a pre-computed embedding; update buf in place.
 
-        Bounded by ``_PER_INDEX_SEARCH_TIMEOUT`` — on timeout, the index is
-        recorded in ``gaps`` (when provided) and an error is logged in buf
-        instead of propagating.
+        Bounded by ``_PER_INDEX_SEARCH_TIMEOUT`` — on timeout or unexpected
+        failure, the index is recorded in ``gaps`` (when provided) and an
+        error is logged in buf instead of propagating.
         """
         index_type, plugin = entry
         if await plugin.count() == 0:
@@ -1504,11 +1520,30 @@ class OptimalService:
                 timeout=_PER_INDEX_SEARCH_TIMEOUT,
             )
             return
+        except Exception as e:
+            if gaps is not None:
+                gaps.append(
+                    f"{index_type.value} unavailable: failed: {type(e).__name__}"
+                )
+            buf.stats[index_type.value] = -1  # -1 indicates error
+            buf.errors[index_type.value] = f"failed: {type(e).__name__}: {e}"
+            logger.warning(
+                "RAG search failed for index",
+                index_type=index_type.value,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return
 
         if outcome.success:
             buf.stats[index_type.value] = len(outcome.results)
             buf.citations.extend(outcome.results)
         else:
+            if gaps is not None:
+                gaps.append(
+                    f"{index_type.value} unavailable: failed: "
+                    f"{outcome.error_message or 'unknown error'}"
+                )
             buf.stats[index_type.value] = -1  # -1 indicates error
             buf.errors[index_type.value] = outcome.error_message or "Unknown"
             logger.warning(
@@ -1523,7 +1558,8 @@ class OptimalService:
         """Embed once, then search the requested indexes concurrently.
 
         Returns ``(citations, stats, errors, gaps)`` where ``gaps`` lists
-        indexes that timed out under the per-index timeout.
+        indexes that did not return under the per-index timeout (timed out
+        or failed).
         """
         buf = _QueryAggregationBuffer()
         gaps: list[str] = []

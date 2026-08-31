@@ -256,7 +256,7 @@ async def test_search_total_outage_returns_504(
         )
     assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
     body = response.json()
-    assert "All search indexes timed out" in body["detail"]
+    assert "All search indexes failed or timed out" in body["detail"]
 
 
 @pytest.mark.asyncio
@@ -277,6 +277,60 @@ async def test_search_no_results_no_gaps_is_200(
     body = response.json()
     assert body["total"] == 0
     assert body["gaps"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_total_non_timeout_outage_returns_504(
+    optimal_client: AsyncClient,
+) -> None:
+    """Every index fails (non-timeout), no results → HTTP 504, not a 200."""
+
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.search_with_gaps = AsyncMock(
+            return_value=(
+                [],
+                [
+                    "errors unavailable: failed: RuntimeError",
+                    "standards unavailable: failed: ConnectionError",
+                ],
+            ),
+        )
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/kb/search",
+            json={"query": "outage", "top_k": 5},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    body = response.json()
+    assert "All search indexes failed or timed out" in body["detail"]
+    assert "failed: RuntimeError" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_search_partial_non_timeout_failure_names_failed_indexes(
+    optimal_client: AsyncClient,
+) -> None:
+    """Some indexes fail non-timeout, others return → 200 with gaps naming them."""
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.search_with_gaps = AsyncMock(
+            return_value=(
+                [_search_result(IndexType.ERRORS)],
+                ["standards unavailable: failed: ConnectionError"],
+            ),
+        )
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/kb/search",
+            json={"query": "partial failure", "top_k": 5},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["total"] == 1
+    assert body["gaps"] == ["standards unavailable: failed: ConnectionError"]
 
 
 # ---------------------------------------------------------------------------
@@ -1178,7 +1232,7 @@ async def test_rag_query_total_outage_returns_504(
         )
     assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
     body = response.json()
-    assert "All RAG indexes timed out" in body["detail"]
+    assert "All RAG indexes failed or timed out" in body["detail"]
 
 
 @pytest.mark.asyncio
@@ -1207,6 +1261,41 @@ async def test_rag_query_no_citations_no_gaps_is_200(
     assert response.status_code == HTTPStatus.OK
     body = response.json()
     assert body["gaps"] == []
+
+
+@pytest.mark.asyncio
+async def test_rag_query_total_non_timeout_outage_returns_504(
+    optimal_client: AsyncClient,
+) -> None:
+    """Every RAG index fails (non-timeout), no citations → HTTP 504, not a 200."""
+    rag_response = SimpleNamespace(
+        answer="",
+        citations=[],
+        query="nothing",
+        context_used=0,
+        search_stats={},
+        search_errors={
+            "errors": "failed: RuntimeError: vector store unreachable",
+            "standards": "failed: ConnectionError: connection refused",
+        },
+        gaps=[
+            "errors unavailable: failed: RuntimeError",
+            "standards unavailable: failed: ConnectionError",
+        ],
+    )
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.query = AsyncMock(return_value=rag_response)
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/rag/query",
+            json={"query": "nothing"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    body = response.json()
+    assert "All RAG indexes failed or timed out" in body["detail"]
+    assert "failed: RuntimeError" in body["detail"]
 
 
 @pytest.mark.asyncio
