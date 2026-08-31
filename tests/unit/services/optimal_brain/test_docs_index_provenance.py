@@ -13,11 +13,12 @@ two apart; ``mcp/optimal_server.py`` renders the caveat (separate test file).
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.services.optimal_brain.indexes.base import IngestResult
 from roboco.services.optimal_brain.indexes.docs import DocsIndexPlugin
+from roboco.services.optimal_brain.vector_store import VectorStore
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -107,3 +108,101 @@ async def test_index_sources_defaults_to_repo_tree_provenance(tmp_path: Path) ->
     assert captured_kwargs
     assert captured_kwargs[0]["provenance"] == "repo_tree"
     assert captured_kwargs[0]["task_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# The completion-triggered flip: live_write → repo_tree by stamped task_id
+# ---------------------------------------------------------------------------
+
+
+def _make_store_with_conn() -> tuple[VectorStore, AsyncMock]:
+    """VectorStore wired to a mock pool yielding one mock conn (same pattern
+    as test_replace_chunks_atomic) so the UPDATE's SQL/params are assertable
+    without a live pgvector database."""
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[{"id": 1}, {"id": 2}])
+    pool = MagicMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=cm)
+    store = VectorStore(
+        dsn="postgresql://test", table_name="chunks_documentation", vector_dimension=3
+    )
+    store._pool = pool  # injected for the test
+    return store, conn
+
+
+@pytest.mark.asyncio
+async def test_flip_updates_only_matching_live_write_chunks() -> None:
+    """The store-level flip UPDATEs chunks whose task_id is one of the
+    completing root's subtree ids AND whose current provenance is live_write
+    — docs from unrelated tasks (task_id not in the set) and already-
+    flipped docs (provenance=repo_tree) are structurally out of scope."""
+    store, conn = _make_store_with_conn()
+
+    flipped = await store.flip_provenance(
+        ids=["task-a", "task-b"],
+        from_value="live_write",
+        to_value="repo_tree",
+    )
+
+    mock_rows_updated = 2
+    assert flipped == mock_rows_updated
+    sql, *params = conn.fetch.await_args.args
+    assert "UPDATE" in sql and "jsonb_set" in sql and "ANY" in sql
+    assert "task_id" in sql and "provenance" in sql
+    # One UPDATE with all three bound params; no delete/re-embed/reindex.
+    assert conn.fetch.await_count == 1
+    assert list(params) == [
+        ["task-a", "task-b"],
+        "live_write",
+        "repo_tree",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_flip_with_no_task_ids_is_a_no_op() -> None:
+    """An empty subtree id set touches the store never."""
+    store, conn = _make_store_with_conn()
+
+    flipped = await store.flip_provenance(
+        ids=[], from_value="live_write", to_value="repo_tree"
+    )
+
+    assert flipped == 0
+    assert conn.fetch.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_flip_task_provenance_delegates_to_store() -> None:
+    """DocsIndexPlugin.flip_task_provenance routes the subtree ids through
+    the narrow metadata-update path — no reindex, no repo-tree re-derivation,
+    unrelated tasks never enter the query."""
+    plugin = _plugin()
+    store = MagicMock()
+    mock_rows_updated = 7
+    store.flip_provenance = AsyncMock(return_value=mock_rows_updated)
+    plugin._store = store
+    plugin._initialized = True
+
+    flipped = await plugin.flip_task_provenance(["task-a"])
+
+    assert flipped == mock_rows_updated
+    store.flip_provenance.assert_awaited_once_with(
+        ids=["task-a"],
+        from_value="live_write",
+        to_value="repo_tree",
+    )
+
+
+@pytest.mark.asyncio
+async def test_plugin_flip_with_empty_task_ids_never_touches_store() -> None:
+    plugin = _plugin()
+    store = MagicMock()
+    store.flip_provenance = AsyncMock()
+    plugin._store = store
+    plugin._initialized = True
+
+    assert await plugin.flip_task_provenance([]) == 0
+    store.flip_provenance.assert_not_awaited()

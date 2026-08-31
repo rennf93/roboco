@@ -820,6 +820,31 @@ class OptimalService:
             return count
         return await plugin.add_sources(sources)
 
+    async def flip_docs_task_provenance(
+        self,
+        task_ids: list[str],
+        from_provenance: str = "live_write",
+        to_provenance: str = "repo_tree",
+    ) -> int:
+        """Flip chunk provenance on docs written by the given tasks.
+
+        The TaskService completion hook's flip path: docs a task wrote
+        mid-task were stamped ``provenance="live_write"`` + its task_id;
+        this updates the provenance on those chunks IN PLACE (queried by
+        the stamped task_id — no repo-tree re-derivation, no reindex of
+        unchanged docs). Returns the number of chunks flipped.
+        """
+        plugin = self._get_plugin(IndexType.DOCUMENTATION)
+        if isinstance(plugin, DocsIndexPlugin):
+            return await plugin.flip_task_provenance(
+                task_ids, from_provenance, to_provenance
+            )
+        logger.debug(
+            "Docs provenance flip skipped: no DocsIndexPlugin registered",
+            index_type=IndexType.DOCUMENTATION.value,
+        )
+        return 0
+
     async def _track_indexed_document(
         self,
         index_type: IndexType,
