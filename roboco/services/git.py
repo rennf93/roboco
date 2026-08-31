@@ -366,6 +366,35 @@ _FAILING_CHECK_CONCLUSIONS = frozenset(
 _HTTP_NOT_FOUND = 404
 
 
+# --- GitHub PR title/body hard limits ---------------------------------------
+# GitHub's PR API rejects a body over 65536 chars and a title over 256 chars
+# with a 422 that every retry just hits again. A root task with a pasted
+# changelog for a description (create_pr posts it verbatim) wedged its release
+# on exactly that. Clamped at the two transport chokepoints (_post_pr for
+# creation, _patch_pr_title_body for updates) so every present and future
+# caller — gateway create_pr, the legacy template path, conventions PRs, env
+# sync PRs — is covered without each call site knowing the limit exists.
+_GH_PR_BODY_LIMIT = 65536
+_GH_PR_BODY_KEEP = 60000
+_GH_PR_TITLE_LIMIT = 256
+
+
+def _cap_pr_body(body: str) -> str:
+    """Truncate an oversized PR body safely under GitHub's 65536-char cap."""
+    if len(body) <= _GH_PR_BODY_LIMIT:
+        return body
+    marker = (
+        f"\n\n... [truncated] PR body was {len(body)} characters; GitHub limit "
+        "is 65536; full description lives on the task."
+    )
+    return body[:_GH_PR_BODY_KEEP] + marker
+
+
+def _cap_pr_title(title: str) -> str:
+    """Truncate an oversized PR title to GitHub's 256-char limit."""
+    return title[:_GH_PR_TITLE_LIMIT] if len(title) > _GH_PR_TITLE_LIMIT else title
+
+
 def _latest_check_runs_by_name(
     check_runs: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -2558,8 +2587,8 @@ class GitService(BaseService):
                     git_token,
                     head=str(payload.get("head", "")),
                     base=str(payload.get("base", "")),
-                    title=str(payload.get("title", "")),
-                    body=str(payload.get("body", "")),
+                    title=_cap_pr_title(str(payload.get("title", ""))),
+                    body=_cap_pr_body(str(payload.get("body", ""))),
                 ),
             )
         except httpx.HTTPError as e:
@@ -3074,6 +3103,10 @@ class GitService(BaseService):
         them onto invalid_state envelopes. 404 → "PR not found"; any
         other non-2xx surfaces the GitHub validation text inline.
         """
+        if "title" in payload:
+            payload["title"] = _cap_pr_title(payload["title"])
+        if "body" in payload:
+            payload["body"] = _cap_pr_body(payload["body"])
         try:
             resp = await self._forge.update_pr(
                 repo_ref, git_token, pr_number, payload=payload
