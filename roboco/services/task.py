@@ -7329,7 +7329,11 @@ class TaskService(BaseService):
             ),
             {"root_id": str(root_id), "max_depth": max_depth},
         )
-        return [str(row[0]) for row in subtree_rows.all()]
+        # Sorted: the recursive CTE has no ORDER BY, so its row order is
+        # unspecified — the flip matches ids via ANY($1) and is
+        # order-agnostic, and a deterministic return keeps tests/log lines
+        # stable for every caller.
+        return sorted(str(row[0]) for row in subtree_rows.all())
 
     async def _flip_docs_provenance_background(self, task_ids: list[str]) -> None:
         """Flip KB docs written by *task_ids* from live_write to repo_tree.
