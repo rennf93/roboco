@@ -550,14 +550,14 @@ def test_get_a2a_route_hint_unknown_from_agent_falls_through() -> None:
 # A2A_ALLOWED_PAIRS — the switchboard's static org-chart pair matrix
 # ---------------------------------------------------------------------------
 
-_EXPECTED_PAIR_COUNT = 93
+_EXPECTED_PAIR_COUNT = 98
 _EXPECTED_GROUP_COUNTS = {
     "board": 3,
-    "ceo": 23,
+    "ceo": 24,
     "cell-backend": 15,
     "cell-frontend": 15,
     "cell-ux_ui": 15,
-    "cross": 16,
+    "cross": 20,
     "pm-chain": 6,
 }
 

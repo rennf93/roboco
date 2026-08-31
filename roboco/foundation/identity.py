@@ -222,10 +222,14 @@ AGENTS: dict[str, AgentRow] = {
         Team.BOARD,
         _u("00000000-0000-0000-0004-000000000007"),
     ),
-    # In-path PR-review gate reviewers — one per cell, team-scoped so the
+    # In-path PR-review gate reviewers, one per cell, team-scoped so the
     # dispatcher routes each cell's assembled cell→root PR to its own reviewer.
     # Same PR_REVIEWER role/image as pr-reviewer-1 (which serves the root→master
     # gate + inbound external PRs); these only ever review their cell's gate.
+    # A shared board-team overflow reviewer (cell-pr-reviewer-2) is defined
+    # after them as the second candidate in _select_agent_for_cell's
+    # pr_reviewer branch, so a same-cell pile-up no longer serializes on one
+    # reviewer when the dedicated one is active.
     "be-pr-reviewer": AgentRow(
         "be-pr-reviewer",
         Role.PR_REVIEWER,
@@ -243,6 +247,21 @@ AGENTS: dict[str, AgentRow] = {
         Role.PR_REVIEWER,
         Team.UX_UI,
         _u("00000000-0000-0000-0003-000000000006"),
+    ),
+    # Shared cell-gate overflow reviewer, a floater (board-team, like
+    # pr-reviewer-1) that backs up ALL three cells' dedicated reviewers. When
+    # a cell's own reviewer (be/fe/ux-pr-reviewer) is active on another gate
+    # task, _select_agent_for_cell falls back to this one so a pile-up no
+    # longer serializes 12-14 min on a single reviewer. It is cell-gate
+    # overflow ONLY: _dispatch_pr_review_work (inbound external PRs) and the
+    # root→master gate both hardcode pr-reviewer-1, so this reviewer never
+    # touches root/inbound work and can't reintroduce the root→master
+    # starvation _dispatch_pr_gate_work's run-order guards against.
+    "cell-pr-reviewer-2": AgentRow(
+        "cell-pr-reviewer-2",
+        Role.PR_REVIEWER,
+        Team.BOARD,
+        _u("00000000-0000-0000-0004-000000000008"),
     ),
 }
 

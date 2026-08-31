@@ -195,7 +195,11 @@ services:
     # /dev/shm ("Chrome crashed"); give it real shared memory.
     shm_size: "1gb"
     mem_limit: "2g"
-    cpus: 2
+    # Cap is env-overridable so a 1-CPU host (small cloud VM, Docker Desktop
+    # with a 1-CPU VM) still starts; Docker rejects a `cpus` value above the
+    # host's available count instead of clamping. Default 1 works everywhere;
+    # raise it on a multi-core box for faster renders.
+    cpus: "${ROBOCO_VIDEO_RENDERER_CPUS:-1}"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s

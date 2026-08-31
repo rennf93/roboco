@@ -1246,11 +1246,23 @@ async def record_learning(
         shareable=request.shareable,
         tags=request.tags,
     )
-    learning_id = await service.record_learning(params)
+    # Best-effort: knowledge sharing must not crash the agent's request when
+    # the embedding backend (Ollama) is transiently unavailable. The shared
+    # service raises so the task-completion dead-letter path still fires; the
+    # agent-facing route translates that into a soft "skipped" so the agent
+    # moves on instead of looping on a 500. See "Organizational memory loop".
+    try:
+        learning_id = await service.record_learning(params)
+    except Exception as exc:
+        logger.warning(
+            "record_learning best-effort skip: embedder unavailable",
+            error=str(exc),
+        )
+        return LearningRecordResponse(learning_id="", status="skipped")
 
     return LearningRecordResponse(
         learning_id=learning_id,
-        status="recorded",
+        status="recorded" if learning_id else "skipped",
     )
 
 

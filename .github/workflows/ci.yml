@@ -31,6 +31,14 @@ on:
       - 'scripts/**'
       - 'docker/**'
       - 'docker-compose.yml'
+      # The compose-sync gate (Makefile) enforces docker-compose.yaml ==
+      # docker-compose.yml, and docker-compose.registry.yml is what
+      # `make quickstart` pulls. A commit touching only the twin or the
+      # registry file fired no run, so the fail-closed release gate read
+      # the missing conclusion as "unknown" and blocked every proposal;
+      # a compose-sync drift also slipped through uncaught. Watch all three.
+      - 'docker-compose.yaml'
+      - 'docker-compose.registry.yml'
       - 'Makefile'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -69,6 +77,14 @@ on:
       - 'scripts/**'
       - 'docker/**'
       - 'docker-compose.yml'
+      # The compose-sync gate (Makefile) enforces docker-compose.yaml ==
+      # docker-compose.yml, and docker-compose.registry.yml is what
+      # `make quickstart` pulls. A commit touching only the twin or the
+      # registry file fired no run, so the fail-closed release gate read
+      # the missing conclusion as "unknown" and blocked every proposal;
+      # a compose-sync drift also slipped through uncaught. Watch all three.
+      - 'docker-compose.yaml'
+      - 'docker-compose.registry.yml'
       - 'Makefile'
       - 'pyproject.toml'
       - 'uv.lock'
