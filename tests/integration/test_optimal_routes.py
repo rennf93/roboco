@@ -170,6 +170,9 @@ async def test_search_invalid_index_type(optimal_client: AsyncClient) -> None:
 async def test_search_success(optimal_client: AsyncClient) -> None:
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()
+        # Explicitly None so the route's getattr fallback uses search() instead
+        # of the AsyncMock auto-attribute (which is truthy and breaks tuple unpacking).
+        mock_service.search_with_gaps = None
         mock_service.search = AsyncMock(return_value=[_search_result()])
         mock_get.return_value = mock_service
         response = await optimal_client.post(
@@ -185,6 +188,7 @@ async def test_search_success(optimal_client: AsyncClient) -> None:
 async def test_search_with_index_types(optimal_client: AsyncClient) -> None:
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()
+        mock_service.search_with_gaps = None
         mock_service.search = AsyncMock(return_value=[])
         mock_get.return_value = mock_service
         response = await optimal_client.post(
@@ -205,6 +209,128 @@ async def test_find_similar(optimal_client: AsyncClient) -> None:
             "/api/optimal/kb/similar?source=foo.py", headers=_HDR
         )
     assert response.status_code == HTTPStatus.OK
+
+
+# ---------------------------------------------------------------------------
+# Search — partial-result gaps
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_partial_success_with_gaps(
+    optimal_client: AsyncClient,
+) -> None:
+    """Some indexes complete, others time out → HTTP 200 with results + gaps."""
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.search_with_gaps = AsyncMock(
+            return_value=([_search_result()], ["errors", "standards"]),
+        )
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/kb/search",
+            json={"query": "partial", "top_k": 5},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["total"] == 1
+    assert body["gaps"] == ["errors", "standards"]
+
+
+@pytest.mark.asyncio
+async def test_search_total_outage_returns_504(
+    optimal_client: AsyncClient,
+) -> None:
+    """Every index times out, no results → HTTP 504 error envelope."""
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.search_with_gaps = AsyncMock(
+            return_value=([], ["errors", "standards", "decisions"]),
+        )
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/kb/search",
+            json={"query": "nothing", "top_k": 5},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    body = response.json()
+    assert "All search indexes failed or timed out" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_search_no_results_no_gaps_is_200(
+    optimal_client: AsyncClient,
+) -> None:
+    """Search completes with zero results and no gaps → HTTP 200 (not an outage)."""
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.search_with_gaps = AsyncMock(return_value=([], []))
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/kb/search",
+            json={"query": "empty", "top_k": 5},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["total"] == 0
+    assert body["gaps"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_total_non_timeout_outage_returns_504(
+    optimal_client: AsyncClient,
+) -> None:
+    """Every index fails (non-timeout), no results → HTTP 504, not a 200."""
+
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.search_with_gaps = AsyncMock(
+            return_value=(
+                [],
+                [
+                    "errors unavailable: failed: RuntimeError",
+                    "standards unavailable: failed: ConnectionError",
+                ],
+            ),
+        )
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/kb/search",
+            json={"query": "outage", "top_k": 5},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    body = response.json()
+    assert "All search indexes failed or timed out" in body["detail"]
+    assert "failed: RuntimeError" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_search_partial_non_timeout_failure_names_failed_indexes(
+    optimal_client: AsyncClient,
+) -> None:
+    """Some indexes fail non-timeout, others return → 200 with gaps naming them."""
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.search_with_gaps = AsyncMock(
+            return_value=(
+                [_search_result(IndexType.ERRORS)],
+                ["standards unavailable: failed: ConnectionError"],
+            ),
+        )
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/kb/search",
+            json={"query": "partial failure", "top_k": 5},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["total"] == 1
+    assert body["gaps"] == ["standards unavailable: failed: ConnectionError"]
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +357,7 @@ async def test_rag_query_success(optimal_client: AsyncClient) -> None:
         context_used=1,
         search_stats={"docs": 1},
         search_errors=None,
+        gaps=[],
     )
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()
@@ -1026,6 +1153,7 @@ async def test_search_learnings(optimal_client: AsyncClient) -> None:
 async def test_search_timeout(optimal_client: AsyncClient) -> None:
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()
+        mock_service.search_with_gaps = None
         mock_service.search = AsyncMock(side_effect=TimeoutError("timeout"))
         mock_get.return_value = mock_service
         response = await optimal_client.post(
@@ -1048,6 +1176,126 @@ async def test_rag_query_timeout(optimal_client: AsyncClient) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_rag_query_partial_success_with_gaps(
+    optimal_client: AsyncClient,
+) -> None:
+    """RAG returns answer + citations plus gaps naming timed-out indexes → 200."""
+    rag_response = SimpleNamespace(
+        answer="Partial answer based on limited context",
+        citations=[_search_result()],
+        query="partial",
+        context_used=1,
+        search_stats={"documentation": 1},
+        search_errors=None,
+        gaps=["errors", "standards"],
+    )
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.query = AsyncMock(return_value=rag_response)
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/rag/query",
+            json={"query": "partial"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["gaps"] == ["errors", "standards"]
+    assert len(body["citations"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_rag_query_total_outage_returns_504(
+    optimal_client: AsyncClient,
+) -> None:
+    """Every RAG index times out, no citations → HTTP 504 error envelope."""
+    rag_response = SimpleNamespace(
+        answer="",
+        citations=[],
+        query="nothing",
+        context_used=0,
+        search_stats={},
+        search_errors=None,
+        gaps=["errors", "standards", "decisions"],
+    )
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.query = AsyncMock(return_value=rag_response)
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/rag/query",
+            json={"query": "nothing"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    body = response.json()
+    assert "All RAG indexes failed or timed out" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_rag_query_no_citations_no_gaps_is_200(
+    optimal_client: AsyncClient,
+) -> None:
+    """RAG completes with zero citations and no gaps → HTTP 200 (not an outage)."""
+    rag_response = SimpleNamespace(
+        answer="I couldn't find anything relevant.",
+        citations=[],
+        query="empty",
+        context_used=0,
+        search_stats={},
+        search_errors=None,
+        gaps=[],
+    )
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.query = AsyncMock(return_value=rag_response)
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/rag/query",
+            json={"query": "empty"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["gaps"] == []
+
+
+@pytest.mark.asyncio
+async def test_rag_query_total_non_timeout_outage_returns_504(
+    optimal_client: AsyncClient,
+) -> None:
+    """Every RAG index fails (non-timeout), no citations → HTTP 504, not a 200."""
+    rag_response = SimpleNamespace(
+        answer="",
+        citations=[],
+        query="nothing",
+        context_used=0,
+        search_stats={},
+        search_errors={
+            "errors": "failed: RuntimeError: vector store unreachable",
+            "standards": "failed: ConnectionError: connection refused",
+        },
+        gaps=[
+            "errors unavailable: failed: RuntimeError",
+            "standards unavailable: failed: ConnectionError",
+        ],
+    )
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.query = AsyncMock(return_value=rag_response)
+        mock_get.return_value = mock_service
+        response = await optimal_client.post(
+            "/api/optimal/rag/query",
+            json={"query": "nothing"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    body = response.json()
+    assert "All RAG indexes failed or timed out" in body["detail"]
+    assert "failed: RuntimeError" in body["detail"]
 
 
 @pytest.mark.asyncio

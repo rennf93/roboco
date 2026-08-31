@@ -244,3 +244,81 @@ async def test_rag_query_caveats_live_write_citations(
         monkeypatch,
     )
     assert result["citations"][0]["content"].endswith(_LIVE_WRITE_CAVEAT)
+
+
+# ---------------------------------------------------------------------------
+# Gaps surfacing: the MCP tool must pass through the `gaps` list from the
+# API response so the agent sees which indexes timed out.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kb_search_surfaces_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """roboco_kb_search includes gaps in its response when the API returns them."""
+    result = await _call_tool(
+        "developer",
+        "roboco_kb_search",
+        {"query": "partial results"},
+        {
+            "results": [_LIVE_WRITE_ITEM],
+            "total": 1,
+            "gaps": ["errors", "standards"],
+        },
+        monkeypatch,
+    )
+    assert result["gaps"] == ["errors", "standards"]
+    assert "gaps" in result["hint"] or "timed out" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_kb_search_no_gaps_no_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """roboco_kb_search does not add a gaps hint when there are no gaps."""
+    result = await _call_tool(
+        "developer",
+        "roboco_kb_search",
+        {"query": "all good"},
+        {
+            "results": [_LIVE_WRITE_ITEM],
+            "total": 1,
+            "gaps": [],
+        },
+        monkeypatch,
+    )
+    assert "gaps" not in result
+
+
+@pytest.mark.asyncio
+async def test_rag_query_surfaces_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """roboco_rag_query includes gaps in its response when the API returns them."""
+    result = await _call_tool(
+        "developer",
+        "roboco_rag_query",
+        {"query": "partial results"},
+        {
+            "answer": "partial answer",
+            "citations": [_LIVE_WRITE_ITEM],
+            "context_used": 1,
+            "gaps": ["errors", "standards"],
+        },
+        monkeypatch,
+    )
+    assert result["gaps"] == ["errors", "standards"]
+    assert "gaps" in result["hint"] or "timed out" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_rag_query_no_gaps_no_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """roboco_rag_query does not add a gaps hint when there are no gaps."""
+    result = await _call_tool(
+        "developer",
+        "roboco_rag_query",
+        {"query": "all good"},
+        {
+            "answer": "full answer",
+            "citations": [_LIVE_WRITE_ITEM],
+            "context_used": 1,
+            "gaps": [],
+        },
+        monkeypatch,
+    )
+    assert "gaps" not in result
