@@ -10,8 +10,10 @@ owns every DB read.
 Release membership has no schema link — the release proposal task
 (``source=release_manager``) is the only durable release record, so the task
 set is the delivery tasks ``COMPLETED`` inside the window between the previous
-published release's ``completed_at`` and this one's (journaled dev decision;
-first release takes everything before its own completion). Engine-held
+published release of the SAME project and this one (journaled dev decision;
+first release takes everything before its own completion) — the readiness
+report assesses one project's changes, so a foreign project's task sitting
+inside the window must not leak into another project's certificate. Engine-held
 artifacts (the proposal itself, X posts, video drafts, …) are excluded — they
 are coordination artifacts, not delivered work.
 """
@@ -123,6 +125,37 @@ def _counts_by_severity(
     return SeverityCounts(**counts)
 
 
+def _target_for(proposals: list[TaskTable], version: str) -> TaskTable | None:
+    """The first completed proposal whose stored report proposes *version*."""
+    for task in proposals:
+        report_dict = markers.get_release_report(task)
+        if (
+            report_dict is not None
+            and report_from_dict(report_dict).proposed_version == version
+        ):
+            return task
+    return None
+
+
+def _same_project_previous(
+    proposals: list[TaskTable], target: TaskTable
+) -> datetime | None:
+    """The latest same-project publication strictly before *target*'s."""
+    publish_at = target.completed_at
+    if publish_at is None:  # the caller only calls this on a completed target
+        return None
+    project_id = target.project_id
+    previous: datetime | None = None
+    for task in proposals:
+        if task.id == target.id or task.completed_at is None:
+            continue
+        if project_id is not None and task.project_id != project_id:
+            continue
+        if task.completed_at < publish_at:
+            previous = task.completed_at
+    return previous
+
+
 class ReleaseCertificateService(BaseService):
     """Assembles the release certificate for one published version."""
 
@@ -144,6 +177,9 @@ class ReleaseCertificateService(BaseService):
             version=version,
             generated_at=datetime.now(UTC),
             ci_verdict=report.gate_state,
+            # Classification gaps only — 'gate' gaps report CI red, which the
+            # certificate already carries as ci_verdict; counting them here
+            # would double-report one signal as two failures.
             conventions_clean=not any(
                 gap.category == "classification" for gap in report.gaps
             ),
@@ -156,35 +192,31 @@ class ReleaseCertificateService(BaseService):
     async def _published_proposal(
         self, version: str
     ) -> tuple[TaskTable | None, datetime | None]:
-        """The COMPLETED proposal for *version* and the previous publication's
-        ``completed_at`` (None for the first release). Proposals are ordered by
-        completion, so the last non-matching one before the target is the
-        previous publication.
+        """The COMPLETED proposal for *version* and the previous SAME-PROJECT
+        publication's ``completed_at`` (None for the first release of that
+        project). Proposals are ordered by completion, so the last same-project
+        non-matching one before the target is the previous publication.
         """
         proposals = await get_task_service(
             self.session
         ).list_completed_release_proposals()
-        target: TaskTable | None = None
-        previous_completed_at: datetime | None = None
-        for task in proposals:
-            report_dict = markers.get_release_report(task)
-            if report_dict is None:
-                continue
-            if report_from_dict(report_dict).proposed_version == version:
-                target = task
-                break
-            previous_completed_at = task.completed_at
-        return target, previous_completed_at
+        target = _target_for(proposals, version)
+        if target is None or target.completed_at is None:
+            return target, None
+        return target, _same_project_previous(proposals, target)
 
     async def _release_task_set(
         self, proposal: TaskTable, after: datetime | None
     ) -> list[TaskTable]:
         """The release's delivery tasks: COMPLETED inside the window between
         the previous publication and this proposal's own completion, ordered
-        chronologically. ``source`` restricted to the human-authored delivery
-        sources keeps engine-held artifacts (the proposal itself, X posts,
-        video drafts) out — engine-originated tasks carry their engine
-        constants, delivery work is "manual"/"prompter".
+        chronologically. Scoped to the proposal's own project — the readiness
+        report assesses that project's changes, so another project's task
+        completed inside the window must not leak into this certificate.
+        ``source`` restricted to the human-authored delivery sources keeps
+        engine-held artifacts (the proposal itself, X posts, video drafts)
+        out — engine-originated tasks carry their engine constants, delivery
+        work is "manual"/"prompter".
         """
         publish_at = proposal.completed_at
         if publish_at is None:  # pragma: no cover - caller guards on this
@@ -198,6 +230,10 @@ class ReleaseCertificateService(BaseService):
             )
             .order_by(TaskTable.completed_at, TaskTable.created_at)
         )
+        if proposal.project_id is not None:
+            # ponytail: None-project proposals aren't producible today; if one
+            # ever appears, fall back to unfiltered rather than guess a scope.
+            stmt = stmt.where(TaskTable.project_id == proposal.project_id)
         if after is not None:
             stmt = stmt.where(TaskTable.completed_at > after)
         result = await self.session.execute(stmt)

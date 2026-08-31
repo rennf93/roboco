@@ -110,6 +110,9 @@ class ReleaseCertificateResponse(BaseModel):
     version: str
     generated_at: datetime
     ci_verdict: str
+    # Classification-category gaps only; 'gate' gaps are excluded — CI red is
+    # already carried by ci_verdict, and double-reporting it here would read
+    # as two failures from one signal.
     conventions_clean: bool
     ceo_approved_at: datetime | None
     changelog_excerpt: str

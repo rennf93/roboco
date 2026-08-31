@@ -627,6 +627,47 @@ async def test_certificate_packages_release_gate_chain(
 
 
 @pytest.mark.asyncio
+async def test_certificate_excludes_other_projects_tasks(
+    db_session: AsyncSession, cert_ceo_client: AsyncClient
+) -> None:
+    project, _proposal = await _seed_published_proposal(db_session)
+    # A sibling project's delivery task completed inside this release's window:
+    # the certificate is scoped to the proposal's project, so neither its task
+    # state nor its ledger rows may appear.
+    other_project = ProjectTable(
+        id=uuid4(),
+        name="Other Repo",
+        slug=f"other-{uuid4().hex[:6]}",
+        git_url="https://example.com/other.git",
+        assigned_cell=Team.BACKEND,
+        created_by=project.created_by,
+    )
+    db_session.add(other_project)
+    await db_session.flush()
+    foreign_task = await _seed_delivery_task(
+        db_session,
+        other_project,
+        _PUBLISHED_AT - timedelta(hours=1),
+        title="Foreign project work",
+        criteria=["one"],
+    )
+    repo = ReviewFindingsRepository(db_session)
+    await repo.insert_many(
+        task_id=UUID(str(foreign_task.id)),
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[Finding(severity=Severity.MAJOR, expected="fixed", actual="broken")],
+    )
+
+    resp = await cert_ceo_client.get(f"/api/releases/{_VERSION}/certificate")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["task_states"] == []
+    assert body["findings_summary"]["open"]["major"] == 0
+
+
+@pytest.mark.asyncio
 async def test_certificate_conventions_dirty_when_classification_gap(
     db_session: AsyncSession, cert_ceo_client: AsyncClient
 ) -> None:
