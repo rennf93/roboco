@@ -187,7 +187,7 @@ ROBOCO_WORKSPACE_AUTO_CLONE=true
 
 # RAG/LLM
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
-ROBOCO_LOCAL_LLM_MODEL=glm-5.2:cloud
+ROBOCO_LOCAL_LLM_MODEL=glm-5.3:cloud
 
 # Feature flags (default-off unless noted; toggle from Settings → Feature Flags)
 ROBOCO_CONVENTIONS_ENABLED=false        # per-project architectural conventions standard
@@ -344,7 +344,7 @@ uv run mypy roboco/
 | Cache/Queue | Redis |
 | RAG Engine | in-house (asyncpg + pgvector, hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (Ollama) |
-| Local LLM | Ollama (glm-5.2:cloud) |
+| Local LLM | Ollama (glm-5.3:cloud) |
 | Cloud LLM | Claude API (Anthropic) + xAI Grok (official `grok` CLI, SuperGrok subscription) + OpenAI (official `codex` CLI, ChatGPT subscription) + Google Gemini (official `gemini` CLI, OAuth login) + Moonshot Kimi K3 (official `kimi` CLI, Kimi subscription) |
 | Package Manager | uv |
 

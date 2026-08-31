@@ -22,7 +22,7 @@
 #     so we grep the orchestrator container's own log for that line.
 #   - Ollama model presence mirrors what the ollama-init one-shot itself
 #     verifies (docker-compose.registry.yml): `ollama list` naming both
-#     qwen3-embedding and glm-5.2.
+#     qwen3-embedding and glm-5.3.
 #
 # ROBOCO_PANEL_AGENT_TOKEN is a standing CEO credential (see .env.example) —
 # minted here whether or not cloud auth is armed, because docker-compose.
@@ -280,7 +280,7 @@ check_migrations() {
 check_ollama_models() {
     local models
     models="$(docker compose -f "$COMPOSE_FILE" exec -T ollama ollama list 2>/dev/null)" || return 1
-    echo "$models" | grep -q "qwen3-embedding" && echo "$models" | grep -q "glm-5.2"
+    echo "$models" | grep -q "qwen3-embedding" && echo "$models" | grep -q "glm-5.3"
 }
 
 log "Waiting for the stack to become ready (timeout ${TIMEOUT_SECONDS}s)..."
@@ -312,9 +312,9 @@ else
 fi
 
 if retry_until "$DEADLINE" check_ollama_models; then
-    DOCTOR_LINES+=("[ok] Ollama models present: qwen3-embedding, glm-5.2")
+    DOCTOR_LINES+=("[ok] Ollama models present: qwen3-embedding, glm-5.3")
 else
-    fail "Timed out waiting for Ollama to report both qwen3-embedding and glm-5.2 (docker compose exec ollama ollama list). Run 'docker compose -f ${COMPOSE_FILE} logs ollama-init' — a fresh pull can take a couple of minutes."
+    fail "Timed out waiting for Ollama to report both qwen3-embedding and glm-5.3 (docker compose exec ollama ollama list). Run 'docker compose -f ${COMPOSE_FILE} logs ollama-init' — a fresh pull can take a couple of minutes."
 fi
 
 echo ""

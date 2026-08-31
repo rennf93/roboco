@@ -36,7 +36,7 @@ def _unpriced_model_for_type(provider_type: ModelProvider) -> str:
     real per-token rate for — tests below want "an unpriced, free-tier
     downgrade-safe model" specifically to exercise provider-readiness gating,
     not pricing itself, so grounding a real rate for one catalog entry (e.g.
-    GLM-5.2) must not silently break them by picking that one."""
+    GLM-5.3) must not silently break them by picking that one."""
     for entry in MODEL_CATALOG:
         if (
             entry.provider_type == provider_type

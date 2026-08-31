@@ -406,7 +406,7 @@ async def test_stopped_container_parks_on_session_limit(
 
 
 # ---------------------------------------------------------------------------
-# Ollama Cloud (glm-5.2:cloud) weekly limit — surfaces as a 429 in docker logs
+# Ollama Cloud (glm-5.3:cloud) weekly limit — surfaces as a 429 in docker logs
 # ---------------------------------------------------------------------------
 
 _OLLAMA_RATE_LIMIT_LOG = (

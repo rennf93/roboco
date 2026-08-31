@@ -319,7 +319,7 @@ _ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "hit your session limit",
     "five_hour",
 )
-# ollama.com HTTP 429 body (the weekly glm-5.2:cloud limit surfaces here).
+# ollama.com HTTP 429 body (the weekly glm-5.3:cloud limit surfaces here).
 # Specific to the API error formatter so an agent writing about limits can't
 # false-match and park the whole ollama fleet.
 _OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = ("rate limit exceeded",)
@@ -11230,7 +11230,7 @@ Start by:
 
         Mirrors ``_provider_overload_park_target`` but matches the Claude
         session ("5-hour") limit AND the ollama.com weekly limit
-        (``glm-5.2:cloud``), both of which surface as a 429 the SDK does not
+        (``glm-5.3:cloud``), both of which surface as a 429 the SDK does not
         retry. Data-driven by ``_RATE_LIMIT_MARKERS_BY_PROVIDER``; returns the
         matched provider value or None. Gated so a misfire can be turned off
         without a redeploy.

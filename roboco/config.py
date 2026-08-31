@@ -250,7 +250,7 @@ class Settings(BaseSettings):
 
     # Local LLM for RAG answer synthesis
     local_llm_model: str = Field(
-        default="glm-5.2:cloud",
+        default="glm-5.3:cloud",
         description="Local LLM for RAG answer synthesis "
         "(non-thinking models are faster)",
     )

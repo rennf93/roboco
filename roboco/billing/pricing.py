@@ -20,7 +20,7 @@ Pricing is provider-aware. A model name resolves to one of five cases:
   tag) is, like Grok/Codex/Gemini, really billed via flat subscription /
   GPU-time rather than per token — but that does not make it free the way
   local inference is, so it is priced from the table at its API-equivalent
-  rate the same way grok-build is (see the GLM-5.2 entry below) whenever a
+  rate the same way grok-build is (see the GLM-5.3 entry below) whenever a
   citable published rate exists. An Ollama Cloud model with NO table entry
   (a rate we could not ground) still returns ``0.0``; ``is_ollama_cloud_model``
   identifies this case for a caller that wants to render "subscription
@@ -109,7 +109,7 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     ("kimi-code/k3", 3.00, 15.00, 0.30, 3.00),
     ("kimi-code/kimi-for-coding-highspeed", 1.90, 8.00, 0.38, 1.90),
     ("kimi-code/kimi-for-coding", 0.95, 4.00, 0.19, 0.95),
-    # Z.ai GLM-5.2 — priced non-Anthropic. Ollama Cloud's `glm-5.2:cloud` tag
+    # Z.ai GLM-5.3 — priced non-Anthropic. Ollama Cloud's `glm-5.3:cloud` tag
     # (roboco's own ROBOCO_LOCAL_LLM_MODEL default) is billed via flat
     # subscription/GPU-time, not per token, but the same "attribute at the
     # underlying API-equivalent rate" convention as grok-build/gpt-5.3-codex
@@ -119,12 +119,12 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     # 2026-07-23): $1.40/1M input, $4.40/1M output, $0.26/1M cached input. No
     # cache-write discount is published, so cache_write falls back to the
     # input rate (same convention as grok-build/gpt-5.3-codex above).
-    # Side effect: input_price_per_million("glm-5.2:cloud") is now $1.40 (was
+    # Side effect: input_price_per_million("glm-5.3:cloud") is now $1.40 (was
     # $0.0) — pricier than haiku's $1.00 — so the cost-tiered
     # complexity-override's downgrade-only comparator now REJECTS a new
-    # qa/documenter pin to glm-5.2:cloud that was previously allowed when it
+    # qa/documenter pin to glm-5.3:cloud that was previously allowed when it
     # priced as free-tier. Intended: it really is costlier per input token.
-    ("glm-5.2", 1.40, 4.40, 0.26, 1.40),
+    ("glm-5.3", 1.40, 4.40, 0.26, 1.40),
     # Short aliases used in ROLE_MODEL_MAP / MODEL_MAP
     ("opus", 5.00, 25.00, 0.50, 6.25),
     ("sonnet", 3.00, 15.00, 0.30, 0.75),
@@ -154,7 +154,7 @@ def _is_anthropic_model(lower: str) -> bool:
 
 def is_ollama_cloud_model(model: str) -> bool:
     """True for an Ollama Cloud model (the ``:cloud`` tag convention, e.g.
-    ``glm-5.2:cloud``) — distinguishes a subscription-billed cloud model from
+    ``glm-5.3:cloud``) — distinguishes a subscription-billed cloud model from
     a genuinely-free self-hosted Ollama model (``ollama/`` prefix or a bare
     local tag with no ``:cloud`` suffix). Consumed by the TG cockpit
     (``tg_cockpit.py``) to label an ungrounded cloud model's ``$0`` spend as
@@ -252,7 +252,7 @@ def calculate_cost_result(
     Matches the model name against the known pricing table using substring
     search (longest match wins). Provider-aware (see module docstring): a
     priced non-Anthropic model (Grok, Codex, Gemini, or a grounded Ollama
-    Cloud model like GLM-5.2) gets a real per-token cost; an ungrounded
+    Cloud model like GLM-5.3) gets a real per-token cost; an ungrounded
     non-Anthropic model (local Ollama, or an unpriced Ollama Cloud tag) has
     no per-token cost and returns ``cost_usd=0.0, unpriced=False``; an
     unpriced Anthropic model returns ``cost_usd=0.0, unpriced=True`` and logs

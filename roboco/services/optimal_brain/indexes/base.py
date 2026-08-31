@@ -82,7 +82,7 @@ class IndexConfig:
     chunk_size: int = 512
     chunk_overlap: int = 50
     embedding_model: str = "qwen3-embedding:0.6b"
-    llm_model: str = "glm-5.2:cloud"
+    llm_model: str = "glm-5.3:cloud"
     llm_base_url: str = "http://roboco-ollama:11434/v1"
     min_chunk_length: int = _MIN_CHUNK_LENGTH
 

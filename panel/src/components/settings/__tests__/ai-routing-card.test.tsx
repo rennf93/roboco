@@ -631,12 +631,12 @@ describe("AIRoutingCard", () => {
         {
           scope: "agent_slug",
           scope_value: "be-dev-1",
-          model_name: "glm-5.2:cloud",
+          model_name: "glm-5.3:cloud",
         },
         {
           scope: "agent_slug",
           scope_value: "auditor",
-          model_name: "glm-5.2:cloud",
+          model_name: "glm-5.3:cloud",
         },
       ],
     } as Awaited<ReturnType<typeof getMode>>;
