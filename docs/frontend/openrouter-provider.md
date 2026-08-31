@@ -92,12 +92,14 @@ const { mutate, isPending } = useSetOpenRouterKey();
 mutate(apiKey); // empty string clears
 ```
 
-### `useSearchOpenRouterModels(query)`
+### `useSearchOpenRouterModels(query, enabled)`
 
-Searches OpenRouter's tools-supporting models. **The query is guarded**: `enabled` is `query.trim().length > 0`, so an empty query makes no request — debounce the input in the UI so a user pause fires the search rather than every keystroke. 60-second `staleTime`.
+Searches OpenRouter's tools-supporting models. The hook takes two arguments: the debounced query, plus a caller-composed `enabled` boolean that ANDs the key-set flag (from `useOpenRouterKey`'s `key_set`) with a non-empty query. **The query is guarded inside the hook**: `enabled && query.length > 0`, so an idle picker and an unset key both make zero requests. Debounce the input in the UI so a user pause fires the search rather than every keystroke. 60-second `staleTime`.
 
 ```ts
-const { data: models, isLoading } = useSearchOpenRouterModels(query);
+const { data: keyStatus } = useOpenRouterKey();
+const hasKey = keyStatus?.key_set ?? false;
+const { data: models, isLoading } = useSearchOpenRouterModels(query, hasKey && query.length > 0);
 // models: OpenRouterModel[] | undefined
 ```
 
