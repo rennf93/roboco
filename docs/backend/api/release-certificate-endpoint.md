@@ -1,7 +1,6 @@
 # Release Certificate Endpoint
 
-**Date:** 2026-08-31 **Task:** 63375b3c **PR:** #969
-**Files:** `roboco/api/routes/releases.py`, `roboco/services/release_certificate.py`, `roboco/api/schemas/release.py`, `roboco/api/app.py`
+**Date:** 2026-08-31 **Task:** 63375b3c **PR:** #969 **Files:** `roboco/api/routes/releases.py`, `roboco/services/release_certificate.py`, `roboco/api/schemas/release.py`, `roboco/api/app.py`
 
 ## What
 
