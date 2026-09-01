@@ -1048,6 +1048,40 @@ class QAMixin(_Base):
         self._store_qa_note(t, summary, None, passed=False, findings=validated)
         return summary
 
+    async def _fail_review_developer_notify(
+        self, qa_agent_id: UUID, task_id: UUID, t: Any, summary: str
+    ) -> str | None:
+        """Best-effort a2a-notify the original developer of the bounce.
+
+        Returns a warning string when the notification failed (the
+        needs_revision transition is already committed at this point), else
+        None. Mirrors ``_pass_review_documenter_handoff`` — a raise here
+        would surface as an opaque verb error, skip the sandbox teardown,
+        and poison the shared session before root commit, silently rolling
+        back the committed transition and the inserted findings rows.
+        """
+        try:
+            await self.a2a.send(
+                from_agent=qa_agent_id,
+                to_agent=t.assigned_to,
+                skill="code_review",
+                task_id=task_id,
+                body=f"QA needs changes.\n{summary}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "fail_review side-effect failed - transition committed, "
+                "developer notification did not fire",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return (
+                f"QA needs-changes transition committed but the developer "
+                f"notification failed ({type(exc).__name__}: {exc}). "
+                "Re-issue the notification via dm."
+            )
+        return None
+
     async def fail_review(
         self,
         qa_agent_id: UUID,
@@ -1141,21 +1175,45 @@ class QAMixin(_Base):
                 verb="fail_review",
             )
 
+        notify_warning: str | None = None
         if t.assigned_to is not None:
-            await self.a2a.send(
-                from_agent=qa_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"QA needs changes.\n{summary}",
+            notify_warning = await self._fail_review_developer_notify(
+                qa_agent_id, task_id, t, summary
             )
         await self._teardown_sandbox_best_effort(qa_agent_id)
+        return self._fail_review_success_env(
+            t,
+            task_id,
+            briefing,
+            role_str,
+            notify_warning=notify_warning,
+            validated=validated,
+        )
+
+    @staticmethod
+    def _fail_review_success_env(
+        t: Any,
+        task_id: UUID,
+        briefing: dict[str, Any],
+        role_str: str,
+        *,
+        notify_warning: str | None,
+        validated: list[Any],
+    ) -> Envelope:
+        """Compose fail_review's success envelope, folding the notify-failure
+        warning and the soft above-nudge findings-count hint into one
+        warning channel (both are optional, never blocking)."""
         env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["fail_review"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
-        if hint := findings_lib.findings_count_hint(validated):
-            env.warning = hint
+        warnings = [
+            w
+            for w in (notify_warning, findings_lib.findings_count_hint(validated))
+            if w
+        ]
+        if warnings:
+            env.warning = " ".join(warnings)
         return env

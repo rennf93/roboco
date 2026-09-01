@@ -603,3 +603,105 @@ async def test_pass_review_survives_a2a_send_failure() -> None:
     assert body.get("error") is None, body
     assert body.get("warning") is not None
     assert "a2a" in body["warning"].lower()
+
+
+# ---------------------------------------------------------------------------
+# 0664b042: fail_review survives a2a.send failure
+# ---------------------------------------------------------------------------
+
+
+def _fail_review_fixture(
+    qa_id: Any,
+    task_id: Any,
+    dev_id: Any,
+    a2a_side_effect: Exception | None = None,
+) -> tuple[Choreographer, AsyncMock, AsyncMock]:
+    """Shared fixture shape as test_fail_review_succeeds, parameterized on
+    whether a2a.send raises."""
+    t = _qa_owned_task(task_id, qa_id)
+    after = MagicMock(
+        id=task_id,
+        status="needs_revision",
+        assigned_to=dev_id,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
+    task_svc.qa_fail.return_value = after
+    task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock()
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    a2a_svc = AsyncMock()
+    if a2a_side_effect is not None:
+        a2a_svc.send = AsyncMock(side_effect=a2a_side_effect)
+    deps = _make_deps(task=task_svc, journal=journal_svc, a2a=a2a_svc)
+    return Choreographer(deps), task_svc, a2a_svc
+
+
+_FAIL_REVIEW_ISSUES = [
+    "Missing unit test coverage for /healthz endpoint — add at least one assertion",
+    "Lint errors in /api/foo.py: unused import and missing return type annotation",
+]
+
+
+@pytest.mark.asyncio
+async def test_fail_review_survives_a2a_send_failure() -> None:
+    """a2a.send throws after the runner commits the needs_revision
+    transition. The verb must NOT raise — the transition, findings rows,
+    and structured qa note stay committed; the failure degrades to a
+    warning carrying the exception identity."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, task_svc, a2a_svc = _fail_review_fixture(
+        qa_id, task_id, dev_id, a2a_side_effect=RuntimeError("a2a down")
+    )
+
+    env = await c.fail_review(qa_id, task_id, _FAIL_REVIEW_ISSUES)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "needs_revision"
+    task_svc.qa_fail.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+    assert body.get("warning") is not None
+    assert "notification failed" in body["warning"]
+    assert "RuntimeError" in body["warning"]
+
+
+@pytest.mark.asyncio
+async def test_fail_review_success_carries_no_warning() -> None:
+    """a2a.send succeeding leaves the warning channel empty."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, _task_svc, a2a_svc = _fail_review_fixture(qa_id, task_id, dev_id)
+
+    env = await c.fail_review(qa_id, task_id, _FAIL_REVIEW_ISSUES)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body.get("warning") is None
+    a2a_svc.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fail_review_warning_combines_with_findings_hint() -> None:
+    """Both warnings in one envelope: the notify-failure warning and the
+    soft above-nudge findings count hint survive into the same string."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, _task_svc, a2a_svc = _fail_review_fixture(
+        qa_id, task_id, dev_id, a2a_side_effect=RuntimeError("a2a down")
+    )
+    issues = [f"Finding number {n}: needs a concrete fix suggestion" for n in range(7)]
+
+    env = await c.fail_review(qa_id, task_id, issues)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    warning = body.get("warning") or ""
+    assert "notification failed" in warning
+    assert "findings in one call" in warning
+    a2a_svc.send.assert_awaited_once()
