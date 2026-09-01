@@ -267,8 +267,9 @@ async def test_conventions_verdict_counts_block_and_warn(
         status=TaskStatus.NEEDS_REVISION,
     )
     # Need a project for the convention finding FK.
+    project_id = uuid4()
     project = ProjectTable(
-        id=uuid4(),
+        id=project_id,
         name="gov test project",
         slug=f"gov-test-{uuid4().hex[:8]}",
         git_url="https://github.com/test/repo",
@@ -279,9 +280,9 @@ async def test_conventions_verdict_counts_block_and_warn(
     db_session.add(project)
     await db_session.flush()
 
-    await _add_convention_finding(db_session, task_id, project.id, level="block")
-    await _add_convention_finding(db_session, task_id, project.id, level="warn")
-    await _add_convention_finding(db_session, task_id, project.id, level="warn")
+    await _add_convention_finding(db_session, task_id, project_id, level="block")
+    await _add_convention_finding(db_session, task_id, project_id, level="warn")
+    await _add_convention_finding(db_session, task_id, project_id, level="warn")
 
     service = GovernanceService(db_session)
     report = await service.get_report(task_id)
