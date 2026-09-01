@@ -101,6 +101,12 @@ async def app_client(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    # The routes' db.commit() calls persisted rows in the shared scratch DB;
+    # clear them so later test modules start from empty tables (FK order).
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
+    await db_session.commit()
     app.dependency_overrides.clear()
 
 
@@ -146,6 +152,12 @@ async def app_client_with_ollama(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    # The routes' db.commit() calls persisted rows in the shared scratch DB;
+    # clear them so later test modules start from empty tables (FK order).
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
+    await db_session.commit()
     app.dependency_overrides.clear()
 
 
@@ -377,6 +389,12 @@ async def app_client_with_codex_and_gemini(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    # The routes' db.commit() calls persisted rows in the shared scratch DB;
+    # clear them so later test modules start from empty tables (FK order).
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
+    await db_session.commit()
     app.dependency_overrides.clear()
 
 
@@ -500,6 +518,12 @@ async def app_client_with_local(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    # The routes' db.commit() calls persisted rows in the shared scratch DB;
+    # clear them so later test modules start from empty tables (FK order).
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
+    await db_session.commit()
     app.dependency_overrides.clear()
 
 
@@ -1198,6 +1222,12 @@ async def app_client_with_openrouter(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    # The routes' db.commit() calls persisted rows in the shared scratch DB;
+    # clear them so later test modules start from empty tables (FK order).
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
+    await db_session.commit()
     app.dependency_overrides.clear()
 
 

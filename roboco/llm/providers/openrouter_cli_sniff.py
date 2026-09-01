@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 _RATE_LIMIT_PATTERN = re.compile(
-    r"(\b429\b|rate limit|too many requests|overloaded|quota)",
+    r"(\b429\b|rate ?limit|too many requests|overloaded|quota)",
     re.IGNORECASE,
 )
 _AUTH_FAILURE_PATTERN = re.compile(
@@ -90,7 +90,7 @@ def _error_text_from_event(event: dict[str, Any]) -> str | None:
     tolerated (parity with kimi_cli_sniff). Never reads ``text`` off a
     ``type: "text"`` / ``type: "tool_call"`` event.
     """
-    if event.get("type") != "error":
+    if event.get("type") not in (None, "error"):
         return None
     error = event.get("error")
     if isinstance(error, dict):

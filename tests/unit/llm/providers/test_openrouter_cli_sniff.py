@@ -27,10 +27,10 @@ def _write_jsonl(path: Path, lines: list[str]) -> None:
 
 
 def _error_event(message: str, name: str | None = None) -> str:
-    error: dict[str, object] = {"message": message}
+    error: dict[str, object] = {"data": {"message": message}}
     if name:
         error["name"] = name
-    return json.dumps({"type": "error", "error": {"data": error}})
+    return json.dumps({"type": "error", "error": error})
 
 
 # ---------------------------------------------------------------------------
