@@ -6,10 +6,10 @@ Mirrors migration 090 (kimi): adds ``'openrouter'`` to the PostgreSQL
 must run in its own autocommit transaction — Postgres forbids using a
 newly added enum value in the same transaction — so we wrap it in
 ``autocommit_block()`` and keep this migration scoped to the enum alone.
-The companion row-seed lives in migration 095.
+The companion row-seed lives in migration 096.
 
-Revision ID: 094_modelprovider_openrouter
-Revises: 093_playbook_source_program
+Revision ID: 095_modelprovider_openrouter
+Revises: 094_verb_latency_samples
 Create Date: 2026-08-24
 """
 
@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "094_modelprovider_openrouter"
-down_revision = "093_playbook_source_program"
+revision = "095_modelprovider_openrouter"
+down_revision = "094_verb_latency_samples"
 branch_labels = None
 depends_on = None
 
