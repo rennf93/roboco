@@ -64,6 +64,7 @@ _INCIDENT_KIND_LABELS: dict[str, str] = {
     "bounced": "bounced into needs_revision 3+ times",
     "cancelled": "cancelled after work had started",
     "budget": "blocked on a budget breach",
+    "stranded": "blocked beyond the stranded threshold",
 }
 
 
@@ -73,10 +74,20 @@ class CoronerEngine(BaseService):
     service_name = "coroner_engine"
 
     async def open_for_incident(
-        self, incident_task_id: UUID, *, kind: str
+        self,
+        incident_task_id: UUID,
+        *,
+        kind: str,
+        extra_context: dict[str, Any] | None = None,
     ) -> TaskTable | None:
-        """Autopsy ``incident_task_id`` (``kind`` in bounced|cancelled|budget),
-        or no-op — the EVENT-triggered entry point every hook calls directly.
+        """Autopsy ``incident_task_id`` (``kind`` in bounced|cancelled|budget|
+        stranded), or no-op — the EVENT-triggered entry point every hook calls
+        directly.
+
+        ``extra_context`` is merged into the coroner incident marker payload —
+        used by the stranded trigger to carry ``block_reason``,
+        ``time_blocked``, and ``escalation_history``. Existing callers
+        (bounce/cancel/budget) pass nothing and get the same behavior.
 
         No-ops when the program isn't armed, a ``board_programs`` maintenance
         pause is active, an autopsy is already open, or the incident task is
@@ -100,12 +111,16 @@ class CoronerEngine(BaseService):
         incident = await task_svc.get(incident_task_id)
         if incident is None:
             return None
-        task = await self._originate(task_svc, incident, kind)
+        task = await self._originate(task_svc, incident, kind, extra_context)
         await self._record_cycle(task)
         return task
 
     async def _originate(
-        self, task_svc: TaskService, incident: TaskTable, kind: str
+        self,
+        task_svc: TaskService,
+        incident: TaskTable,
+        kind: str,
+        extra_context: dict[str, Any] | None = None,
     ) -> TaskTable:
         """Open ONE PENDING, HELD postmortem-exploration task assigned to the
         Auditor, naming the incident + kind. Project is the incident's own
@@ -141,15 +156,15 @@ class CoronerEngine(BaseService):
                 confirmed_by_human=False,  # HELD; board-dispatched, not delivery
             )
         )
-        markers.set_coroner_incident(
-            task,
-            {
-                "incident_task_id": str(incident.id),
-                "kind": kind,
-                "revision_count": incident.revision_count or 0,
-                "title": incident.title,
-            },
-        )
+        marker_payload: dict[str, Any] = {
+            "incident_task_id": str(incident.id),
+            "kind": kind,
+            "revision_count": incident.revision_count or 0,
+            "title": incident.title,
+        }
+        if extra_context:
+            marker_payload.update(extra_context)
+        markers.set_coroner_incident(task, marker_payload)
         await self.session.flush()
         self.log.info(
             "coroner postmortem cycle opened (Auditor)",
