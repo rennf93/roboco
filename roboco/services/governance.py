@@ -91,6 +91,27 @@ class GovernanceService:
             conventions_warn_count=warn_count,
         )
 
+    @staticmethod
+    def _gate_events_from_audit(
+        events: list[AuditLogTable],
+    ) -> dict[str, tuple[str, datetime | None]]:
+        """Map each gate to its latest audit event.
+
+        Bounce events (qa_fail, pr_fail, request_changes, ceo_reject) mark the
+        gate as failed; advancement events mark it as passed.
+        """
+        gate_events: dict[str, tuple[str, datetime | None]] = {}
+        for ev in events:
+            gate = _GATE_EVENTS.get(ev.event_type)
+            if gate is None:
+                continue
+            bounced = ev.event_type.endswith("_fail") or ev.event_type in (
+                "task.request_changes",
+                "task.ceo_reject",
+            )
+            gate_events[gate] = ("failed" if bounced else "passed", ev.timestamp)
+        return gate_events
+
     async def _build_gate_chain(
         self, task_id: UUID, task: TaskTable
     ) -> list[GateStageResponse]:
@@ -104,21 +125,7 @@ class GovernanceService:
         result = await self._session.execute(stmt)
         events = list(result.scalars().all())
 
-        # Map each gate to its latest event (if any).
-        gate_events: dict[str, tuple[str, datetime | None]] = {}
-        for ev in events:
-            gate = _GATE_EVENTS.get(ev.event_type)
-            if gate is None:
-                continue
-            # Bounce events (qa_fail, pr_fail, request_changes, ceo_reject) mark
-            # the gate as failed; advancement events mark it as passed.
-            if ev.event_type.endswith("_fail") or ev.event_type in (
-                "task.request_changes",
-                "task.ceo_reject",
-            ):
-                gate_events[gate] = ("failed", ev.timestamp)
-            else:
-                gate_events[gate] = ("passed", ev.timestamp)
+        gate_events = self._gate_events_from_audit(events)
 
         # Conventions gate: no audit event — derive from convention findings.
         block_count, warn_count = await self._conventions_verdict(task_id)
