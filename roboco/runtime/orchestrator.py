@@ -589,6 +589,24 @@ KIMI_USAGE_DATA_DIR = os.environ.get("ROBOCO_KIMI_USAGE_DIR", "/data/kimi-usage"
 _KIMI_RATE_LIMIT_EXIT_CODE = 75
 _KIMI_AUTH_EXIT_CODE = 78
 
+# In-orchestrator path where each OPENROUTER agent's usage capture is visible
+# — the openrouter analogue of KIMI_USAGE_DATA_DIR (see there for the mount
+# shape). OpenRouter usage is captured from the opencode --format json stream
+# (see roboco.llm.providers.openrouter_cli_usage).
+OPENROUTER_USAGE_DATA_DIR = os.environ.get(
+    "ROBOCO_OPENROUTER_USAGE_DIR", "/data/openrouter-usage"
+)
+
+# A one-shot OpenRouter container exits with these SAME codes for the SAME
+# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention —
+# see docker/scripts/openrouter-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected OpenRouter rate-limit/quota error, 78 (EX_CONFIG) when the
+# openrouter_cli_config --check auth preflight finds OPENROUTER_API_KEY
+# missing (the Ollama shape — a static key, no expiry read). Scoped by
+# provider_type (ModelProvider.OPENROUTER), never by exit code alone.
+_OPENROUTER_RATE_LIMIT_EXIT_CODE = 75
+_OPENROUTER_AUTH_EXIT_CODE = 78
+
 
 # =============================================================================
 # ORCHESTRATOR
@@ -1978,6 +1996,47 @@ class AgentOrchestrator:
                 error=str(exc),
             )
 
+    @staticmethod
+    def _openrouter_usage_root() -> Path:
+        """The base dir all per-agent openrouter usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(OPENROUTER_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-openrouter-usage"
+
+    @staticmethod
+    def _openrouter_usage_dir(agent_id: str) -> Path:
+        """Per-agent openrouter usage dir under :meth:`_openrouter_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_openrouter_usage_dir``) and the finalize read side
+        (``_openrouter_usage_json``), mirroring ``_kimi_usage_dir``.
+        """
+        return AgentOrchestrator._openrouter_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_openrouter_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's openrouter usage dir before the mount.
+
+        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._openrouter_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create openrouter usage dir; agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
     async def _ensure_image_present(
         self, bare_image: str, dockerfile_path: str, build_context: str
     ) -> None:
@@ -3291,6 +3350,10 @@ class AgentOrchestrator:
                 "gemini_usage": f"{DATA_HOST_PATH}/gemini-usage/{config.agent_id}",
                 # Per-agent kimi usage dir (KIMI only); same shape.
                 "kimi_usage": f"{DATA_HOST_PATH}/kimi-usage/{config.agent_id}",
+                # Per-agent openrouter usage dir (OPENROUTER only); same shape.
+                "openrouter_usage": (
+                    f"{DATA_HOST_PATH}/openrouter-usage/{config.agent_id}"
+                ),
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -3321,6 +3384,11 @@ class AgentOrchestrator:
             ),
             "kimi_usage": str(
                 Path(tempfile.gettempdir()) / "roboco-kimi-usage" / config.agent_id
+            ),
+            "openrouter_usage": str(
+                Path(tempfile.gettempdir())
+                / "roboco-openrouter-usage"
+                / config.agent_id
             ),
             "prompt": str(
                 Path(tempfile.gettempdir())
@@ -3703,7 +3771,10 @@ class AgentOrchestrator:
         official CLI, one-shot delivery roles only — see
         roboco.llm.providers.gemini for the V1 scope), and KIMI (Moonshot,
         official CLI, one-shot delivery roles only — see
-        roboco.llm.providers.kimi for the V1 scope).
+        roboco.llm.providers.kimi for the V1 scope), and OPENROUTER (any
+        OpenRouter model via the opencode CLI, the Ollama shape — static key
+        via env, no auth mount; one-shot delivery roles only — see
+        roboco.llm.providers.openrouter for the V1 scope).
         """
         if self._provider_registry is None:
             from roboco.llm.providers import (
@@ -3711,6 +3782,7 @@ class AgentOrchestrator:
                 GeminiCliProvider,
                 GrokCliProvider,
                 KimiCliProvider,
+                OpenRouterProvider,
                 ProviderRegistry,
             )
             from roboco.models.base import ModelProvider
@@ -3738,6 +3810,12 @@ class AgentOrchestrator:
             registry.register(
                 ModelProvider.KIMI,
                 KimiCliProvider(self, image=_qualify_agent_image("roboco-agent-kimi")),
+            )
+            registry.register(
+                ModelProvider.OPENROUTER,
+                OpenRouterProvider(
+                    self, image=_qualify_agent_image("roboco-agent-openrouter")
+                ),
             )
             self._provider_registry = registry
         return self._provider_registry
