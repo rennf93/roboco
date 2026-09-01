@@ -183,6 +183,10 @@ select = [
 # the supersede branch-cut path's skip of the 60s origin refresh-fetch;
 # bundling would just relocate the same named fields behind one hop.
 "roboco/services/workspace.py" = ["PLR0913"]
+# _bounded_index_search and _search_single_index carry the per-index search
+# contract (index entry, embedding, query text, top_k, buffer/gaps, timeout)
+# — bundling would just relocate the same named fields behind one hop.
+"roboco/services/optimal.py" = ["PLR0913", "PLR0917"]
 # Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
 # verb contract (task title, description, acceptance criteria, assignee, etc.). Bundling
 # into a dataclass hides the field-by-field schema the LLM needs at the
