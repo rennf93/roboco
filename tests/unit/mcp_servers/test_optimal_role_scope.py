@@ -322,6 +322,9 @@ async def test_rag_query_no_gaps_no_hint(monkeypatch: pytest.MonkeyPatch) -> Non
         monkeypatch,
     )
     assert "gaps" not in result
+
+
+# ---------------------------------------------------------------------------
 # Post-flip contract: the provenance flip (live_write -> repo_tree when the
 # writing task's root chain reaches terminal completed) must make the caveat
 # disappear at every entry point, because the append is gated purely on
