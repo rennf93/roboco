@@ -162,6 +162,8 @@ def capture_run_usage(
     :func:`roboco.billing.pricing.calculate_cost` — OpenRouter has no
     ``_PRICING`` row by design.
     """
+    if not run_log.is_file():
+        return 0, 0, 0, 0
     try:
         agg = aggregate_usage(run_log)
         tin = agg["input"]

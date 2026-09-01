@@ -193,7 +193,7 @@ def _tools_for_role(role: str) -> dict[str, bool]:
     return tools
 
 
-def _load_system_prompt(path: Path = SYSTEM_PROMPT_PATH) -> str:
+def _load_system_prompt(path: Path) -> str:
     """Load the mounted role blueprint; empty string if absent/unreadable.
 
     Best-effort: a missing prompt never fails the render (opencode falls back
@@ -209,7 +209,7 @@ def _load_system_prompt(path: Path = SYSTEM_PROMPT_PATH) -> str:
 def render_agent_block(role: str, model: str) -> dict[str, Any]:
     """The ``agent.roboco`` block: prompt + mode + model + permission + tools."""
     return {
-        "prompt": _load_system_prompt(),
+        "prompt": _load_system_prompt(SYSTEM_PROMPT_PATH),
         "description": "RoboCo agent — follows the mounted role blueprint.",
         "mode": "primary",
         "model": model,
