@@ -213,29 +213,31 @@ class TestSonnetTier:
         assert abs(cost - _SONNET_INPUT) < _TOL
 
 
-class TestSonnet5PromoTier:
-    """claude-sonnet-5 promotional pricing — 33% off Sonnet 4.6 (through
-    2026-08-31). A dedicated table entry wins over the bare 'sonnet' fragment."""
+class TestSonnet5Tier:
+    """claude-sonnet-5 pricing — the promo (33% off Sonnet 4.6) ended
+    2026-08-31, so rates are date-gated: promo rates on/ before that date,
+    Sonnet-4.6 list rates after. Tests assert against ``p._sonnet5_prices()``
+    so they hold on either side of the boundary."""
 
     def test_input_only(self) -> None:
         cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
-        assert abs(cost - _SONNET5_INPUT) < _TOL
+        assert abs(cost - p._sonnet5_prices()[0]) < _TOL
 
     def test_output_only(self) -> None:
         cost = calculate_cost("claude-sonnet-5", tokens_input=0, tokens_output=_M)
-        assert abs(cost - _SONNET5_OUTPUT) < _TOL
+        assert abs(cost - p._sonnet5_prices()[1]) < _TOL
 
     def test_cache_read_only(self) -> None:
         cost = calculate_cost(
             "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_read=_M
         )
-        assert abs(cost - _SONNET5_CACHE_READ) < _TOL
+        assert abs(cost - p._sonnet5_prices()[2]) < _TOL
 
     def test_cache_write_only(self) -> None:
         cost = calculate_cost(
             "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_write=_M
         )
-        assert abs(cost - _SONNET5_CACHE_WRITE) < _TOL
+        assert abs(cost - p._sonnet5_prices()[3]) < _TOL
 
     def test_all_token_types(self) -> None:
         cost = calculate_cost(
@@ -245,26 +247,22 @@ class TestSonnet5PromoTier:
             tokens_cache_read=_M,
             tokens_cache_write=_M,
         )
-        expected = (
-            _SONNET5_INPUT
-            + _SONNET5_OUTPUT
-            + _SONNET5_CACHE_READ
-            + _SONNET5_CACHE_WRITE
-        )
+        expected = sum(p._sonnet5_prices())
         assert abs(cost - expected) < _TOL
 
-    def test_cheaper_than_sonnet4(self) -> None:
-        """The promo must actually be cheaper than full Sonnet 4.6."""
+    def test_never_pricier_than_sonnet4(self) -> None:
+        """Sonnet 5 is never priced above Sonnet 4.6 (below it during the
+        promo, equal at list)."""
         five = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=_M)
         four = calculate_cost("claude-sonnet-4-6", tokens_input=_M, tokens_output=_M)
-        assert five < four
+        assert five <= four
 
-    def test_dated_variant_matches_promo(self) -> None:
-        """A dated 'claude-sonnet-5-*' id still resolves to the promo entry."""
+    def test_dated_variant_matches_tier(self) -> None:
+        """A dated 'claude-sonnet-5-*' id still resolves to the tier entry."""
         cost = calculate_cost(
             "claude-sonnet-5-20260930", tokens_input=_M, tokens_output=0
         )
-        assert abs(cost - _SONNET5_INPUT) < _TOL
+        assert abs(cost - p._sonnet5_prices()[0]) < _TOL
 
 
 # ---------------------------------------------------------------------------
@@ -749,6 +747,20 @@ def test_sonnet5_promo_active_on_or_before_2026_08_31(
         _SONNET5_CACHE_READ,
         _SONNET5_CACHE_WRITE,
     )
+
+
+def test_sonnet5_list_rate_after_promo_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The day after the promo, rates revert to the Sonnet-4.6 list."""
+
+    class _D:
+        @staticmethod
+        def today() -> date:
+            return date(2026, 9, 1)
+
+    monkeypatch.setattr(p, "date", _D)
+    assert p._lookup_prices("claude-sonnet-5") == p._SONNET5_LIST
 
 
 class TestIsOllamaCloudModel:

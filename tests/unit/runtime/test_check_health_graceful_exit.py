@@ -25,6 +25,10 @@ def _make_orchestrator() -> AgentOrchestrator:
         orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._instances = {}
     orch._lock = MagicMock()
+    # NOTE: the crash path consults the dispatch maintenance-pause gate and
+    # the bare __new__ double has no session factory, so the real lookup
+    # fails closed ("treating scope as paused") and no respawn fires. Each
+    # respawn-expecting test patches _is_paused to not-paused.
     return orch
 
 
@@ -82,6 +86,7 @@ async def test_crash_exit_triggers_restart() -> None:
 
     with (
         patch.object(orch, "spawn_agent", new=spawn),
+        patch.object(orch, "_is_paused", AsyncMock(return_value=False)),
         patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
     ):
         await orch._check_health()
@@ -134,6 +139,7 @@ async def test_crash_max_retries_does_not_restart() -> None:
     with (
         patch.object(orch, "spawn_agent", new=spawn),
         patch.object(orch, "_notify_agent_stranded", new=notify_stranded),
+        patch.object(orch, "_is_paused", AsyncMock(return_value=False)),
         patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
     ):
         await orch._check_health()
@@ -156,6 +162,7 @@ async def test_malformed_inspect_treated_as_crash() -> None:
 
     with (
         patch.object(orch, "spawn_agent", new=spawn),
+        patch.object(orch, "_is_paused", AsyncMock(return_value=False)),
         patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
     ):
         await orch._check_health()
@@ -163,3 +170,26 @@ async def test_malformed_inspect_treated_as_crash() -> None:
     # exit_code is None → not graceful → counts as crash.
     spawn.assert_awaited_once()
     assert inst.error_count == 1
+
+
+@pytest.mark.asyncio
+async def test_crash_no_respawn_while_dispatch_paused() -> None:
+    """Dispatch pause armed: a crash leaves the agent offline with its
+    error_count untouched, so the post-resume crash gets a full budget."""
+    orch = _make_orchestrator()
+    inst = _instance(task_id=str(uuid4()))
+    orch._instances["be-dev-1"] = inst
+
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"false 137\n", b""))
+    spawn = AsyncMock()
+
+    with (
+        patch.object(orch, "spawn_agent", new=spawn),
+        patch.object(orch, "_is_paused", AsyncMock(return_value=True)),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+    ):
+        await orch._check_health()
+
+    spawn.assert_not_awaited()
+    assert inst.error_count == 0

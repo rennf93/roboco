@@ -7095,11 +7095,11 @@ class Choreographer:
                 verb="submit_up",
             )
         t = outcome
-        # Do NOT hand the cell task to Main PM. The cell PM owns cell
-        # completion — it stays assigned to the cell PM, which is respawned to
-        # `complete` the task (merging the cell→root PR). Main PM only
-        # completes the ROOT (root→master + escalate-to-CEO).
-        # `_maybe_advance_parent_to_pm_review` already keeps it on the cell PM.
+        # Do NOT hand the cell task to Main PM. `submit_for_review` clears
+        # PM ownership at gate entry, so the task sits unassigned in the
+        # reviewer queue; the cell PM is re-resolved by role when the
+        # reviewer passes or fails the gate. Main PM only completes the
+        # ROOT (root→master + escalate-to-CEO).
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
