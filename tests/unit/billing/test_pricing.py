@@ -43,7 +43,7 @@ _SONNET_OUTPUT = 15.00
 _SONNET_CACHE_READ = 0.30
 _SONNET_CACHE_WRITE = 0.75
 
-# Sonnet 5 — promotional pricing (33% off Sonnet 4.6, pay 67%) through 2026-08-31
+# Sonnet 5 — promotional pricing (33% off Sonnet 4.6, pay 67%) through 2026-09-13
 _SONNET5_INPUT = 2.01
 _SONNET5_OUTPUT = 10.05
 _SONNET5_CACHE_READ = 0.201
@@ -214,8 +214,8 @@ class TestSonnetTier:
 
 
 class TestSonnet5Tier:
-    """claude-sonnet-5 pricing — the promo (33% off Sonnet 4.6) ended
-    2026-08-31, so rates are date-gated: promo rates on/ before that date,
+    """claude-sonnet-5 pricing — the promo (33% off Sonnet 4.6) ends
+    2026-09-13, so rates are date-gated: promo rates on/ before that date,
     Sonnet-4.6 list rates after. Tests assert against ``p._sonnet5_prices()``
     so they hold on either side of the boundary."""
 
@@ -728,17 +728,17 @@ class TestCostResult:
 
 
 # ---------------------------------------------------------------------------
-# Sonnet-5 promo date gate — promo on/ before 2026-08-31, list rate after.
+# Sonnet-5 promo date gate — promo on/ before 2026-09-13, list rate after.
 # ---------------------------------------------------------------------------
 
 
-def test_sonnet5_promo_active_on_or_before_2026_08_31(
+def test_sonnet5_promo_active_on_or_before_2026_09_13(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _D:
         @staticmethod
         def today() -> date:
-            return date(2026, 8, 31)
+            return date(2026, 9, 13)
 
     monkeypatch.setattr(p, "date", _D)
     assert p._lookup_prices("claude-sonnet-5") == (
@@ -757,7 +757,7 @@ def test_sonnet5_list_rate_after_promo_ends(
     class _D:
         @staticmethod
         def today() -> date:
-            return date(2026, 9, 1)
+            return date(2026, 9, 14)
 
     monkeypatch.setattr(p, "date", _D)
     assert p._lookup_prices("claude-sonnet-5") == p._SONNET5_LIST
@@ -782,13 +782,13 @@ class TestIsOllamaCloudModel:
         assert is_ollama_cloud_model("") is False
 
 
-def test_sonnet5_reverts_to_list_rate_after_2026_08_31(
+def test_sonnet5_reverts_to_list_rate_after_2026_09_13(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _D:
         @staticmethod
         def today() -> date:
-            return date(2026, 9, 1)
+            return date(2026, 9, 14)
 
     monkeypatch.setattr(p, "date", _D)
     assert p._lookup_prices("claude-sonnet-5") == (

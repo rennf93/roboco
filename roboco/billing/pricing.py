@@ -131,12 +131,12 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     ("haiku", 1.00, 5.00, 0.10, 1.25),
 ]
 
-# Sonnet 5 — promotional pricing through 2026-08-31 (33% off Sonnet 4.6).
+# Sonnet 5 — promotional pricing through 2026-09-13 (33% off Sonnet 4.6).
 # Date-gated so the revert to list is automatic, not a manual edit forgotten
 # past the deadline. ``_lookup_prices`` consults this instead of the table.
 _SONNET5_PROMO = (2.01, 10.05, 0.201, 0.5025)
 _SONNET5_LIST = (3.00, 15.00, 0.30, 0.75)
-_SONNET5_PROMO_END = date(2026, 8, 31)
+_SONNET5_PROMO_END = date(2026, 9, 13)
 
 
 def _sonnet5_prices() -> tuple[float, float, float, float]:
@@ -167,7 +167,7 @@ def _lookup_prices(lower: str) -> tuple[float, float, float, float] | None:
 
     Matches ``lower`` (a lowercased model name) against the pricing table by
     substring, longest fragment wins. ``claude-sonnet-5`` is date-gated
-    (promo through 2026-08-31, list after). Returns None when no fragment
+    (promo through 2026-09-13, list after). Returns None when no fragment
     matches.
     """
     if "claude-sonnet-5" in lower:
