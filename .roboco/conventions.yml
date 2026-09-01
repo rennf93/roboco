@@ -119,6 +119,12 @@ rules:
 
 custom: []
 waivers:
+  # Waiver entries must describe a suppression that exists in the named file at
+  # the current branch HEAD. When the suppressed code is gone — removed
+  # upstream, by a fix, or by a rebase revert — its waiver becomes an orphan
+  # and must be deleted in the same change that removes the suppression; a
+  # waiver that describes nothing is worse than no waiver, because it keeps
+  # silenced debt plausible that no longer exists.
   - path: panel/src/hooks/__tests__/use-tasks-null-guards.test.tsx
     rule: no_components_in_hooks
     reason: >-
