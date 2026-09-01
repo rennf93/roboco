@@ -978,7 +978,7 @@ async def test_doc_flips_to_repo_tree_when_root_chain_completes(
         patch.object(svc, "_extract_completion_learnings", AsyncMock()),
     ):
         await svc._trigger_completion_hooks(task, None)
-    await asyncio.gather(*(TaskService._background_tasks - before))
+        await asyncio.gather(*(TaskService._background_tasks - before))
 
     mock_optimal.flip_docs_task_provenance.assert_awaited_once_with([str(task_id)])
 

@@ -16,13 +16,47 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-from roboco.db.tables import ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.models import Team
-from roboco.models.base import TaskNature, TaskStatus, TaskType
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    TaskNature,
+    TaskStatus,
+    TaskType,
+)
 from roboco.services.task import TaskService
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+async def _seed_project(db_session: AsyncSession) -> ProjectTable:
+    """Seed an agent and the project it created (projects.created_by is an FK)."""
+    agent = AgentTable(
+        id=uuid4(),
+        name="Dev",
+        slug=f"be-dev-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    project = ProjectTable(
+        id=uuid4(),
+        name=f"flip-proj-{uuid4().hex[:8]}",
+        slug=f"flip-proj-{uuid4().hex[:8]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add_all([agent, project])
+    await db_session.flush()
+    return project
 
 
 async def _seed_chain(
@@ -32,16 +66,7 @@ async def _seed_chain(
     child_status: TaskStatus,
 ) -> tuple[TaskTable, TaskTable]:
     """Seed a two-task chain (root ← child) with the given statuses."""
-    project = ProjectTable(
-        id=uuid4(),
-        name=f"flip-proj-{uuid4().hex[:8]}",
-        slug=f"flip-proj-{uuid4().hex[:8]}",
-        git_url="https://example.com/r.git",
-        assigned_cell=Team.BACKEND,
-        created_by=uuid4(),
-    )
-    db_session.add(project)
-    await db_session.flush()
+    project = await _seed_project(db_session)
 
     root = TaskTable(
         id=uuid4(),
@@ -112,7 +137,7 @@ async def test_flip_fires_when_root_chain_terminal_completed(
         patch.object(svc, "_extract_completion_learnings", AsyncMock()),
     ):
         await svc._trigger_completion_hooks(child, None)
-    await _drain_added_background_tasks(before)
+        await _drain_added_background_tasks(before)
 
     mock_optimal.flip_docs_task_provenance.assert_awaited_once_with(
         sorted([str(root.id), str(child.id)])
@@ -145,7 +170,7 @@ async def test_no_flip_while_root_chain_non_terminal(
         patch.object(svc, "_extract_completion_learnings", AsyncMock()),
     ):
         await svc._trigger_completion_hooks(child, None)
-    await _drain_added_background_tasks(before)
+        await _drain_added_background_tasks(before)
 
     mock_optimal.flip_docs_task_provenance.assert_not_awaited()
     assert await svc._completed_root_subtree_ids(child) is None
@@ -156,16 +181,7 @@ async def test_parentless_task_flips_itself_on_completion(
     db_session: AsyncSession,
 ) -> None:
     """A parentless task IS its own root: completing it completes the chain."""
-    project = ProjectTable(
-        id=uuid4(),
-        name=f"flip-proj-{uuid4().hex[:8]}",
-        slug=f"flip-proj-{uuid4().hex[:8]}",
-        git_url="https://example.com/r.git",
-        assigned_cell=Team.BACKEND,
-        created_by=uuid4(),
-    )
-    db_session.add(project)
-    await db_session.flush()
+    project = await _seed_project(db_session)
     task = TaskTable(
         id=uuid4(),
         title="solo",
