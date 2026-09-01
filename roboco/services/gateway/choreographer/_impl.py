@@ -9330,7 +9330,38 @@ class Choreographer:
             )
         # Close the signal loop — the reject reason must reach whoever owns
         # the revision (mirrors fail_review / the pr_fail loop-closer).
-        if t.assigned_to is not None and t.assigned_to != pm_agent_id:
+        warning = await self._notify_request_changes_owner(
+            pm_agent_id, task_id, t, summary
+        )
+        env = Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+        hint = findings_lib.findings_count_hint(validated)
+        if warning:
+            env.warning = f"{warning} {hint}" if hint else warning
+        elif hint:
+            env.warning = hint
+        return env
+
+    async def _notify_request_changes_owner(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, summary: str
+    ) -> str | None:
+        """Best-effort a2a the reject rendering to the revision owner.
+
+        Returns a warning string when the notification failed (the
+        needs_revision transition plus the ledger rows and the pm_notes note
+        are already committed at this point), else None. Pulled out of
+        ``request_changes`` to keep it under the cyclomatic bound. A2AService
+        .send raises on policy denial, unknown recipients, and transient DB
+        errors — a failure here must degrade to a warning in the unchanged
+        success envelope, never reject the verb or roll the bounce back.
+        """
+        if t.assigned_to is None or t.assigned_to == pm_agent_id:
+            return None
+        try:
             await self.a2a.send(
                 from_agent=pm_agent_id,
                 to_agent=t.assigned_to,
@@ -9338,15 +9369,21 @@ class Choreographer:
                 task_id=task_id,
                 body=f"PM merge review needs changes.\n{summary}",
             )
-        env = Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
-            context_briefing=briefing,
-        ).with_introspection(task=t, role=role_str)
-        if hint := findings_lib.findings_count_hint(validated):
-            env.warning = hint
-        return env
+        except Exception as exc:
+            logger.warning(
+                "request_changes a2a to revision owner failed — "
+                "transition committed, notification did not fire",
+                task_id=str(task_id),
+                recipient=str(t.assigned_to),
+                error=repr(exc),
+            )
+            return (
+                f"request_changes transition committed but the a2a "
+                f"notification to the revision owner ({t.assigned_to}) "
+                f"failed ({exc!r}). The reject reason is on the task's "
+                f"findings ledger — re-issue it via dm."
+            )
+        return None
 
     async def _request_changes_spec_gate(
         self,
