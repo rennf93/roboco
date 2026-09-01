@@ -278,6 +278,8 @@ export const a2aApi = {
     }
     const { data } = await api.post<{ status: string; task_id: string }>(
       `/a2a/tasks/${taskId}/cancel`,
+      // bodyless POST sends no Content-Type and trips the guard's content_type_filter (415)
+      {},
     );
     return data;
   },

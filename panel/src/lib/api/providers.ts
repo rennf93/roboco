@@ -246,6 +246,8 @@ export const providersApi = {
   applyPreset: async (id: string): Promise<RoutingPresetApplyResult> => {
     const { data } = await api.post<RoutingPresetApplyResult>(
       `/providers/presets/${id}/apply`,
+      // bodyless POST sends no Content-Type and trips the guard's content_type_filter (415)
+      {},
     );
     return data;
   },
