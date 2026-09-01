@@ -129,6 +129,38 @@ def sequence_held_guard(target_task: Any, blocked_by: str | None) -> Envelope | 
     return Envelope.sequence_held(blocked_by=blocked_by, task_id=str(target_task.id))
 
 
+def agent_access_denied_guard(
+    target_task: Any,
+    project_id: UUID,
+    agent_id: UUID,
+    has_access: bool,
+) -> Envelope | None:
+    """Refuse claim when the services-layer access rule denies the agent.
+
+    ``has_access`` is the caller-resolved verdict of
+    ``ProjectService.check_agent_access`` (project exists, assigned cell
+    matches, optional allowed_agents list) — the single source of the
+    allow/deny decision, so this predicate only shapes the refusal:
+    no DB IO, no rule logic, mirroring ``unmet_dependency_guard``.
+    """
+    if has_access:
+        return None
+    return Envelope.not_authorized(
+        message=(
+            f"agent {agent_id} is not permitted to work on project "
+            f"{project_id} (task {target_task.id}): the project's access "
+            "rule refuses this agent (assigned-cell mismatch, or the "
+            "project restricts work to an allowed-agents list the agent "
+            "is not on)."
+        ),
+        remediate=(
+            f"have the project's PM add the agent via POST "
+            f"/projects/{project_id}/access/{agent_id}, or reassign task "
+            f"{target_task.id} to an agent permitted on this project"
+        ),
+    )
+
+
 def unmet_dependency_guard(
     target_task: Any, unmet_dependency_ids: list[UUID]
 ) -> Envelope | None:
