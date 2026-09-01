@@ -259,3 +259,96 @@ async def test_pm_give_me_work_idle_when_no_pre_assigned_and_no_assigned() -> No
 
     assert body["status"] == "idle"
     assert body["task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_give_me_work_skips_blocked_task_when_work_exists() -> None:
+    """A blocked assigned task yields its slot to workable queued work.
+
+    The dev has no legal move from a blocked task (PM unblock owns it), so
+    give_me_work surfacing it first wedged the queue: the older assigned
+    work never got offered. Mirrors the 2026-09-01 CEO report (tasks
+    bouncing on be-dev-1/be-dev-2 while nothing progressed).
+    """
+    dev_id = uuid4()
+    blocked_id = uuid4()
+    workable_id = uuid4()
+
+    blocked_task = MagicMock(
+        id=blocked_id,
+        status="blocked",
+        assigned_to=dev_id,
+        task_type="code",
+        title="Blocked — not actionable",
+        parent_task_id=None,
+        sequence=0,
+        priority=1,
+    )
+    workable_task = MagicMock(
+        id=workable_id,
+        status="needs_revision",
+        assigned_to=dev_id,
+        task_type="code",
+        title="Older revision round — workable",
+        parent_task_id=None,
+        sequence=0,
+        priority=2,
+    )
+
+    task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = []
+    task_svc.list_assigned_for_agent.return_value = [blocked_task, workable_task]
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.is_pending_claim_blocked.return_value = False
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.give_me_work(dev_id)
+    body = env.as_dict()
+
+    assert body["task_id"] == str(workable_id), (
+        f"Expected workable task {workable_id} over blocked {blocked_id}; "
+        f"got {body.get('task_id')}"
+    )
+    assert body["status"] == "needs_revision"
+
+
+@pytest.mark.asyncio
+async def test_give_me_work_surfaces_blocked_when_nothing_else() -> None:
+    """When the blocked task is the agent's ONLY assigned task, it is still
+    surfaced — with an explicit no-action hint instead of a claim verb."""
+    dev_id = uuid4()
+    blocked_id = uuid4()
+
+    blocked_task = MagicMock(
+        id=blocked_id,
+        status="blocked",
+        assigned_to=dev_id,
+        task_type="code",
+        title="Blocked — only task",
+        parent_task_id=None,
+        sequence=0,
+        priority=1,
+    )
+
+    task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = []
+    task_svc.list_assigned_for_agent.return_value = [blocked_task]
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.is_pending_claim_blocked.return_value = False
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.give_me_work(dev_id)
+    body = env.as_dict()
+
+    assert body["error"] is None
+    assert body["task_id"] == str(blocked_id)
+    assert body["status"] == "blocked"
+    assert "no action" in body["next"], (
+        f"Expected a blocked no-action hint, got: {body.get('next')}"
+    )

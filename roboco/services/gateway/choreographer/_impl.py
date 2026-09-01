@@ -881,6 +881,11 @@ class Choreographer:
         """
         tid = str(getattr(task, "id", ""))
         status = str(getattr(task, "status", ""))
+        if status == "blocked":
+            return (
+                f"task {tid} is blocked awaiting your PM's unblock - no action"
+                " available on it now"
+            )
         if status == "awaiting_documentation":
             return f"call claim_doc_task(task_id='{tid}') to start"
         if status == "awaiting_qa":
@@ -957,8 +962,13 @@ class Choreographer:
         assigned = await self._drop_dependency_held(
             await self._deps.task.list_assigned_for_agent(agent_id)
         )
-        if assigned:
-            t = assigned[0]
+        # A blocked task leads nowhere: the dev has no legal move from
+        # blocked (PM unblock / i_am_blocked escalation owns it), so it
+        # yields its slot to any workable queued task before surfacing.
+        workable = [t for t in assigned if str(t.status) != "blocked"]
+        offered = workable or assigned
+        if offered:
+            t = offered[0]
             return Envelope.ok(
                 status=str(t.status),
                 task_id=str(t.id),

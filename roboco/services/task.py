@@ -10650,14 +10650,20 @@ class TaskService(BaseService):
         return await self.list_awaiting_pm_review(team=team)
 
     async def list_assigned_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """Active (non-terminal) tasks currently assigned to an agent."""
+        """Active (non-terminal) tasks currently assigned to an agent.
+
+        Priority first, then oldest-created first: give_me_work walks this
+        list top-down, so agents work their queue oldest-first within a
+        priority (the updated_at-desc ordering it replaced surfaced the
+        most-recently-touched task first, burying older assigned work).
+        """
         query = (
             select(TaskTable)
             .where(
                 TaskTable.assigned_to == agent_id,
                 TaskTable.status.in_(self._AGENT_NON_TERMINAL_STATUSES),
             )
-            .order_by(TaskTable.priority, TaskTable.updated_at.desc())
+            .order_by(TaskTable.priority, TaskTable.created_at)
         )
         result = await self.session.execute(query)
         return list(result.scalars().all())
@@ -10837,14 +10843,14 @@ class TaskService(BaseService):
         return available
 
     async def list_paused_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """Paused tasks assigned to the agent."""
+        """Paused tasks assigned to the agent (priority, then oldest first)."""
         query = (
             select(TaskTable)
             .where(
                 TaskTable.assigned_to == agent_id,
                 TaskTable.status == TaskStatus.PAUSED,
             )
-            .order_by(TaskTable.priority, TaskTable.updated_at.desc())
+            .order_by(TaskTable.priority, TaskTable.created_at)
         )
         result = await self.session.execute(query)
         return list(result.scalars().all())
@@ -11887,12 +11893,12 @@ class TaskService(BaseService):
         first reviewer's subsequent pr_pass / pr_fail would actor-mismatch
         against the new owner — wasting a review cycle. The guard refuses a
         second reviewer when the task is already actively claimed by a
-        DIFFERENT PR-reviewer. The gate task is owned by the PM at entry
-        (``submit_for_review`` does not clear ownership, unlike
-        ``submit_for_qa``), so the guard must distinguish a PM/dev owner —
-        which the first reviewer legitimately overclaims — from a competing
-        reviewer claim. It does this by checking the existing claimant's
-        ROLE: only a PR-reviewer active claimant is a competing review claim.
+        DIFFERENT PR-reviewer. ``submit_for_review`` clears the submitting
+        PM's ownership at gate entry (mirroring ``submit_for_qa``), so a
+        PM/dev claimant never blocks this claim and the guard must
+        distinguish only a competing reviewer claim. It does this by
+        checking the existing claimant's ROLE: only a PR-reviewer active
+        claimant is a competing review claim.
         The row is locked ``FOR UPDATE`` so concurrent claim attempts serialize
         at the DB level (the second claim sees the first's committed claim),
         mirroring the dev ``claim`` path. A re-claim by the SAME reviewer is
@@ -11938,6 +11944,15 @@ class TaskService(BaseService):
         submit_root (root→master PR); the assembled PR is already open by the
         time this runs. Mirrors submit_pm_review but targets the gate so a
         reviewer signs off before the PM merge.
+
+        Clears the PM's ownership like submit_for_qa does: the task is
+        handing off to the PR-reviewer queue, so it must not display as the
+        submitting PM's active work. The gate dispatcher spawns a reviewer
+        by status+team and ``pr_gate_claim`` sets the reviewer as owner; a
+        stale PM assignee here made the panel show the PM still owning a
+        task it was done with (the CEO manually reassigned 2026-09-01). On
+        pr_pass / pr_fail the owning PM is re-resolved by role, so nothing
+        downstream depends on the entry assignee.
         """
         if notes:
             await self.add_progress(task_id, agent_id, notes)
@@ -11946,7 +11961,18 @@ class TaskService(BaseService):
             return None
         agent = await self.agent_for(agent_id)
         agent_role = agent.role if agent else "cell_pm"
-        self._validate_and_set_status(task, TaskStatus.AWAITING_PR_REVIEW, agent_role)
+        # Attributed BEFORE clearing claimed_by per Audit I30: the audit
+        # writer reads task.claimed_by unless handed an explicit agent id.
+        pm_id = to_python_uuid(task.claimed_by) or agent_id
+        task.assigned_to = None
+        task.claimed_by = None
+        task.active_claimant_id = cast("Any", None)
+        self._validate_and_set_status(
+            task,
+            TaskStatus.AWAITING_PR_REVIEW,
+            agent_role,
+            audit_agent_id=pm_id,
+        )
         await self.session.flush()
         return task
 
