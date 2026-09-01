@@ -592,7 +592,7 @@ class DocMixin(_Base):
             # shared session on a mid-flush failure — the response commit
             # (DbCommitMiddleware) reuses it right after this returns.
             async with self.task.session.begin_nested():
-                await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
+                warning = await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
         except Exception as exc:
             # The savepoint rollback on ANY exception here — not just a DB
             # error, e.g. a2a.send failing — fully expires every attribute
@@ -611,11 +611,11 @@ class DocMixin(_Base):
                 "i_documented side-effect failed - transition committed, "
                 "PM handoff did not fire",
                 task_id=str(task_id),
-                error=str(exc),
+                error=repr(exc),
             )
             warning = (
                 f"Docs-complete transition committed but the PM handoff "
-                f"failed ({exc}). Re-issue the notification via dm."
+                f"failed ({exc!r}). Re-issue the notification via dm."
             )
         await self._teardown_sandbox_best_effort(doc_agent_id)
         env = Envelope.ok(
@@ -657,20 +657,37 @@ class DocMixin(_Base):
 
     async def _handoff_to_cell_pm(
         self, doc_agent_id: UUID, task_id: UUID, task: Any
-    ) -> None:
-        """Reassign + a2a-notify the cell PM after docs_complete dispatch.
+    ) -> str | None:
+        """Best-effort reassign + a2a-notify the cell PM after docs_complete.
 
-        Side effect outside the spec; lives here so ``i_documented``'s
-        body stays under the cyclomatic-complexity ceiling.
+        Returns a warning string when the side-effect failed (the documented
+        transition is already committed at this point), else None. Mirrors
+        ``_pass_review_documenter_handoff`` (qa.py); lives here so
+        ``i_documented``'s body stays under the cyclomatic-complexity ceiling.
         """
         pm_agent = await self.task.cell_pm_for_team(task.team)
         if pm_agent is None:
-            return
-        await self.task.reassign(task_id, pm_agent.id)
-        await self.a2a.send(
-            from_agent=doc_agent_id,
-            to_agent=pm_agent.id,
-            skill="task_management",
-            task_id=task_id,
-            body=f"Docs complete for {task.id}. Ready for PM review + merge.",
-        )
+            return None
+        try:
+            await self.task.reassign(task_id, pm_agent.id)
+            await self.a2a.send(
+                from_agent=doc_agent_id,
+                to_agent=pm_agent.id,
+                skill="task_management",
+                task_id=task_id,
+                body=f"Docs complete for {task.id}. Ready for PM review + merge.",
+            )
+        except Exception as exc:
+            logger.warning(
+                "i_documented side-effect failed - transition committed, "
+                "PM handoff did not fire",
+                task_id=str(task_id),
+                recipient=str(pm_agent.id),
+                error=repr(exc),
+            )
+            return (
+                f"Docs-complete transition committed but the PM handoff to "
+                f"{pm_agent.id} failed ({exc!r}). Re-issue the notification "
+                f"via dm."
+            )
+        return None
