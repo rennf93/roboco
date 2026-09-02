@@ -836,6 +836,9 @@ def build_security_config() -> SecurityConfig:
         # Feed 429s into the same ban engine as the WAF (bar set by
         # _THREAT_BAN_CONFIG["rate_limit"]); otherwise a scraper is re-429'd
         # forever and only usage_monitor(action="ban") routes ever escalate.
+        # No legit third-party server reaches the limiter: Telegram is
+        # long-polled outbound (getUpdates), never a webhook, and every
+        # operator client arrives whitelisted (mesh, tailnet).
         enable_rate_limit_auto_ban=True,
         endpoint_rate_limits=_endpoint_rate_limits(),
         # Always off: nginx is the single entry point, so the app only ever

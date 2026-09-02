@@ -606,6 +606,21 @@ def _guarded_ws_app(*, ip: str, resolver: bool = False) -> _InjectClientIP:
     return _InjectClientIP(app, ip)
 
 
+def _bare_ws_app() -> FastAPI:
+    """One guard_ws-gated websocket route, NO SecurityMiddleware mounted."""
+    app = FastAPI()
+
+    @app.websocket("/ws/echo")
+    async def _echo(
+        websocket: WebSocket, _guard: Annotated[None, Depends(guard_ws)]
+    ) -> None:
+        await websocket.accept()
+        await websocket.send_text("open")
+        await websocket.close()
+
+    return app
+
+
 class TestWebSocketGate:
     """SecurityMiddleware (BaseHTTPMiddleware) never sees websocket scopes, so
     /ws/* is gated at the handshake by guard_ws: IP ban + allowlist, refused
@@ -688,18 +703,18 @@ class TestWebSocketGate:
 
     def test_noop_while_disarmed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(security.settings, "guard_enabled", False)
-        app = FastAPI()
-
-        @app.websocket("/ws/echo")
-        async def _echo(
-            websocket: WebSocket, _guard: Annotated[None, Depends(guard_ws)]
-        ) -> None:
-            await websocket.accept()
-            await websocket.send_text("open")
-            await websocket.close()
-
         with (
-            TestClient(_InjectClientIP(app, _EXTERNAL_IP)) as client,
+            TestClient(_InjectClientIP(_bare_ws_app(), _EXTERNAL_IP)) as client,
+            client.websocket_connect("/ws/echo") as ws,
+        ):
+            assert ws.receive_text() == "open"
+
+    def test_fails_open_when_middleware_not_mounted(self) -> None:
+        """apply_guard is best-effort: if SecurityMiddleware never mounted, HTTP
+        is unguarded, so /ws matches it (with an error log) instead of turning
+        every handshake into a RuntimeError."""
+        with (
+            TestClient(_InjectClientIP(_bare_ws_app(), _EXTERNAL_IP)) as client,
             client.websocket_connect("/ws/echo") as ws,
         ):
             assert ws.receive_text() == "open"

@@ -45,7 +45,15 @@ async def guard_ws(websocket: WebSocket) -> None:
     """
     if not settings.guard_enabled:
         return
-    await guard_websocket(websocket)
+    try:
+        await guard_websocket(websocket)
+    except RuntimeError as exc:
+        # SecurityMiddleware never mounted: apply_guard is best-effort and logs
+        # a mount failure instead of crashing boot, which leaves HTTP unguarded
+        # too. Match that (loudly) rather than refuse every stream.
+        log.error(
+            "guard_ws: SecurityMiddleware not mounted, failing open", error=str(exc)
+        )
 
 
 router = APIRouter(dependencies=[Depends(guard_ws)])
