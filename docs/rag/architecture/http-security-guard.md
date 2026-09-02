@@ -93,3 +93,9 @@ guard-core 3.12.0 freezes ten `SecurityConfig` collection fields after construct
 ## Telemetry: Sensitive Headers
 
 When `ROBOCO_GUARD_TELEMETRY_ENABLED` is armed, `_agent_kwargs()` sets `agent_sensitive_headers` to `x-agent-token`, `authorization`, `cookie`, and `x-api-key`, so HMAC/session material never leaves the box in a telemetry payload. Inert while telemetry is off (the whole `_agent_kwargs()` dict is empty).
+
+## Telemetry: Last-Known Dynamic Rules (guard-core 3.17.0)
+
+With telemetry armed, `_agent_kwargs()` also sets `enable_dynamic_rules=True` and passes `ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH` through as `dynamic_rules_cache_path`. guard-core 3.17.0 persists every successfully applied dynamic-rules payload to redis (primary, under the `roboco:guard:` prefix) and, when the path is set, to an atomically written JSON file (fallback). At startup it hydrates once, redis first then the file, so a restart while the SaaS or redis is unreachable restores the last applied rules instead of base config. An empty path means redis only. The build compose points it at `/data/logs/guard-dynamic-rules.json`, the persisted logs mount.
+
+`guard-agent` is a declared dependency for the same reason: without it, `to_agent_config()` raises `AgentPackageNotInstalledError`, fastapi-guard's middleware catches it and continues agent-less (roboco sets `agent_strict=False`), and armed telemetry plus dynamic rules silently no-op. With no API key, `_agent_kwargs()` stays empty (guard-core rejects `enable_agent=True` without `agent_api_key` at construction, and this config is built at import), so the agent is never configured and nothing leaves the box. `test_agent_kwargs_empty_when_armed_without_key` pins that. `tests/unit/test_security.py::test_security_config_builds_agent_config_when_telemetry_armed` pins both.

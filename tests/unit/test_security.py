@@ -390,10 +390,23 @@ def test_agent_kwargs_empty_when_telemetry_off() -> None:
     assert security._agent_kwargs() == {}
 
 
+def test_agent_kwargs_empty_when_armed_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The NAS compose ships telemetry armed with an empty key: guard-core
+    rejects enable_agent without agent_api_key at construction, so the kwargs
+    must stay empty and the import-time config must still build."""
+    monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    monkeypatch.setattr(settings, "guard_agent_api_key", "")
+    assert security._agent_kwargs() == {}
+    assert security.build_security_config().enable_agent is False
+
+
 def test_agent_sensitive_headers_present_when_telemetry_armed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    monkeypatch.setattr(settings, "guard_agent_api_key", "k")
     kwargs = security._agent_kwargs()
     assert kwargs["agent_sensitive_headers"] == [
         "x-agent-token",
@@ -401,6 +414,41 @@ def test_agent_sensitive_headers_present_when_telemetry_armed(
         "cookie",
         "x-api-key",
     ]
+
+
+def test_agent_kwargs_dynamic_rules_cache_path_follows_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """guard-core 3.17.0 file snapshot: unset = redis only (None), set = path."""
+    monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    monkeypatch.setattr(settings, "guard_agent_api_key", "k")
+    assert security._agent_kwargs()["dynamic_rules_cache_path"] is None
+    monkeypatch.setattr(
+        settings, "guard_dynamic_rules_cache_path", "/data/logs/guard-rules.json"
+    )
+    assert (
+        security._agent_kwargs()["dynamic_rules_cache_path"]
+        == "/data/logs/guard-rules.json"
+    )
+
+
+def test_security_config_builds_agent_config_when_telemetry_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Armed telemetry must reach guard-agent: without the package
+    to_agent_config() raises AgentPackageNotInstalledError and the middleware
+    degrades to agent-less (agent_strict=False), so telemetry silently no-ops.
+    Pins the dependency."""
+    monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    monkeypatch.setattr(settings, "guard_agent_api_key", "k")
+    monkeypatch.setattr(settings, "guard_project_id", "p")
+    monkeypatch.setattr(
+        settings, "guard_dynamic_rules_cache_path", "/data/logs/guard-rules.json"
+    )
+    cfg = security.build_security_config()
+    assert cfg.enable_dynamic_rules
+    assert str(cfg.dynamic_rules_cache_path) == "/data/logs/guard-rules.json"
+    assert cfg.to_agent_config() is not None
 
 
 # --- guard_scan_response_body: default-off response-body inspection -------

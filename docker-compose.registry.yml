@@ -486,6 +486,15 @@ services:
       # Log level for guard-core's suspicious-path lines - same
       # carried-but-inert-until-armed rule as the two guard vars above.
       ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL: ${ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL:-WARNING}
+      # guard-agent telemetry to the guard-core SaaS - carried at OFF (the
+      # published default: nothing leaves the box). Key, project id and cache
+      # path carried inert so an operator can arm it via .env. The cache path
+      # (guard-core 3.17.0) keeps the last-known dynamic rules across a
+      # restart during a SaaS outage; /data/logs is the persisted logs mount.
+      ROBOCO_GUARD_TELEMETRY_ENABLED: ${ROBOCO_GUARD_TELEMETRY_ENABLED:-false}
+      ROBOCO_GUARD_AGENT_API_KEY: ${ROBOCO_GUARD_AGENT_API_KEY:-}
+      ROBOCO_GUARD_PROJECT_ID: ${ROBOCO_GUARD_PROJECT_ID:-}
+      ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH: ${ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH:-/data/logs/guard-dynamic-rules.json}
       ROBOCO_AGENT_TOOL_CALL_HALT: ${ROBOCO_AGENT_TOOL_CALL_HALT:-600}
       ROBOCO_AGENT_TOOL_CALL_WARN: ${ROBOCO_AGENT_TOOL_CALL_WARN:-200}
       # Per-task/project cost budgets (default-off; conservative registry

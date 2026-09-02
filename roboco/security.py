@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer (fastapi-guard 7.6.0 / guard-core 3.12.0).
+"""RoboCo HTTP security layer (fastapi-guard 7.8.2 / guard-core 3.17.0).
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:
@@ -8,10 +8,10 @@ the middleware is mounted and enforcement happens ONLY when the flag is on
 effect once the middleware is mounted, so decorating is a harmless no-op while
 the flag is off (the guard-core-api pattern).
 
-Cloud-host-ready but env-driven: ``enforce_https`` follows
-``ROBOCO_ENVIRONMENT`` (dev on the NAS -> not enforced, TLS terminates at
-nginx regardless). ``ROBOCO_GUARD_FAIL_SECURE`` ships ``true`` (fail-secure
-ON) everywhere, including the personal NAS deploy.
+``enforce_https`` is always off: nginx is the single entry point and
+terminates TLS, so the app only ever sees proxy-HTTP (see
+:func:`build_security_config`). ``ROBOCO_GUARD_FAIL_SECURE`` ships ``true``
+(fail-secure ON) everywhere, including the personal NAS deploy.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ logger = get_logger(__name__)
 # track_return_pattern call redis unguarded and raise GuardRedisError (not an
 # HTTPException) on a redis blip, so they fall through to roboco's generic
 # exception handler as a 500 instead of failing open like every pipeline check
-# does. Verified still required at guard-core 3.12.0 (redis_fail_open is
+# does. Verified still required at guard-core 3.17.0 (redis_fail_open is
 # still not consulted on either seam). Wrap all three seams here rather than
 # fork/vendor guard-core; the durable fix belongs upstream (route these calls
 # through the pipeline's own GuardRedisError / redis_fail_open handling).
@@ -753,18 +753,26 @@ def _emergency_whitelist() -> list[str]:
 
 
 def _agent_kwargs() -> dict[str, Any]:
-    """guard-agent telemetry kwargs — empty unless telemetry is armed."""
-    if not settings.guard_telemetry_enabled:
+    """guard-agent telemetry kwargs: empty unless telemetry is armed AND keyed.
+
+    guard-core refuses ``enable_agent=True`` without ``agent_api_key`` at
+    construction, and this config is built at import, so an armed flag with
+    no key must leave the agent unconfigured rather than crash boot.
+    """
+    if not (settings.guard_telemetry_enabled and settings.guard_agent_api_key):
         return {}
     return {
         "enable_agent": True,
-        "agent_api_key": settings.guard_agent_api_key or None,
+        "agent_api_key": settings.guard_agent_api_key,
         "agent_project_id": settings.guard_project_id or None,
         "agent_endpoint": "https://api.guard-core.com",
         "agent_enable_events": True,
         "agent_enable_metrics": True,
         "agent_strict": False,
         "enable_dynamic_rules": True,
+        # Last-known rules snapshot (guard-core 3.17.0): redis first, this file
+        # only when redis has nothing usable. Unset = redis only.
+        "dynamic_rules_cache_path": settings.guard_dynamic_rules_cache_path or None,
         # HMAC/session material must never leave in a telemetry payload.
         "agent_sensitive_headers": [
             "x-agent-token",

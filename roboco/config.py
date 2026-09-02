@@ -842,6 +842,16 @@ class Settings(BaseSettings):
         default="",
         description="guard-core project id for guard-agent telemetry (telemetry only).",
     )
+    guard_dynamic_rules_cache_path: str = Field(
+        default="",
+        description=(
+            "Local JSON snapshot of the last-known dynamic rules (guard-core "
+            "3.17.0): a restart during a SaaS or redis outage restores the last "
+            "applied rules instead of base config. Redis is the primary store; "
+            "this file is the fallback. Empty disables the file layer. "
+            "Telemetry only."
+        ),
+    )
     guard_emergency: bool = Field(
         default=False,
         description=(
