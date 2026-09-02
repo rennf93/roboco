@@ -328,6 +328,13 @@ _THREAT_BAN_CONFIG: MappingProxyType[str, ThreatBanConfig] = MappingProxyType(
         "recon": ThreatBanConfig(threshold=5, duration=86400),
         "sensitive_file": ThreatBanConfig(threshold=3, duration=86400),
         "cms_probing": ThreatBanConfig(threshold=3, duration=86400),
+        # Rate-limit auto-ban (enable_rate_limit_auto_ban): a client still
+        # hammering after 20 rejected requests is a bot, not a retry.
+        # Whitelisted peers (mesh, tailnet) never reach the rate limiter and
+        # passive mode suppresses the count, so only external repeat
+        # offenders are banned. 1h, not 24h: a NAT-shared or webhook IP must
+        # not be locked out for a day over one burst.
+        "rate_limit": ThreatBanConfig(threshold=20, duration=3600),
     }
 )
 
@@ -695,13 +702,16 @@ class ClientIpResolutionMiddleware:
     the operator-scoped hop-peel set the XFF entries are matched against) —
     a directly-connected client's forged XFF is never consulted here (the
     guard's own depth-1 logic keeps handling that class unchanged).
+    Websocket handshakes are stamped too: the /ws router's ``guard_ws``
+    dependency (roboco.api.websocket) reads the same cache, so /ws/* gets the
+    identical client attribution as HTTP.
     """
 
     def __init__(self, app: Any) -> None:
         self.app = app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http":
+        if scope["type"] in ("http", "websocket"):
             client = scope.get("client")
             connecting_ip = client[0] if client else None
             if connecting_ip and _is_trusted_connecting_peer(connecting_ip):
@@ -823,6 +833,10 @@ def build_security_config() -> SecurityConfig:
         rate_limit=120,
         rate_limit_window=60,
         auto_ban_duration=300,
+        # Feed 429s into the same ban engine as the WAF (bar set by
+        # _THREAT_BAN_CONFIG["rate_limit"]); otherwise a scraper is re-429'd
+        # forever and only usage_monitor(action="ban") routes ever escalate.
+        enable_rate_limit_auto_ban=True,
         endpoint_rate_limits=_endpoint_rate_limits(),
         # Always off: nginx is the single entry point, so the app only ever
         # sees proxy-HTTP — TLS (and any http->https redirect) is nginx's

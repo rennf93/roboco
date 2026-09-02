@@ -22,11 +22,11 @@ import asyncio
 import contextlib
 import logging
 from http import HTTPStatus
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Annotated, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.testclient import TestClient
 from guard import SecurityMiddleware
 from guard.adapters import StarletteGuardRequest, StarletteGuardResponse
@@ -40,6 +40,8 @@ from guard_core.handlers.behavior_handler import BehaviorRule
 from guard_core.handlers.ipban_handler import ip_ban_manager
 from guard_core.utils import extract_client_ip, is_ip_allowed
 from roboco import security
+from roboco.api.app import create_app
+from roboco.api.websocket import guard_ws
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -66,7 +68,7 @@ class _InjectClientIP:
         self.ip = ip
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
+        if scope["type"] in ("http", "websocket"):
             scope = dict(scope)
             scope["client"] = (self.ip, 12345)
         await self.app(scope, receive, send)
@@ -572,3 +574,132 @@ async def test_is_ip_allowed_rejects_lan_ranges() -> None:
 
     assert await is_ip_allowed("192.168.1.50", _Cfg()) is False
     assert await is_ip_allowed("10.0.0.5", _Cfg()) is False
+
+
+# --- /ws handshake gate ---------------------------------------------------
+
+
+def _guarded_ws_app(*, ip: str, resolver: bool = False) -> _InjectClientIP:
+    """A guarded app with one websocket route behind Depends(guard_ws); the
+    route echoes the client IP the gate resolved."""
+    cfg = security.build_security_config()
+    cfg.enable_redis = False
+
+    @contextlib.asynccontextmanager
+    async def _life(_app: FastAPI) -> AsyncIterator[None]:
+        yield
+
+    app = FastAPI(lifespan=make_lifespan(existing_lifespan=_life))
+
+    @app.websocket("/ws/echo")
+    async def _echo(
+        websocket: WebSocket, _guard: Annotated[None, Depends(guard_ws)]
+    ) -> None:
+        await websocket.accept()
+        await websocket.send_text(getattr(websocket.state, "client_ip", ""))
+        await websocket.close()
+
+    app.state.guard_decorator = security.guard_deco
+    app.add_middleware(SecurityMiddleware, config=cfg)
+    if resolver:
+        app.add_middleware(security.ClientIpResolutionMiddleware)
+    return _InjectClientIP(app, ip)
+
+
+class TestWebSocketGate:
+    """SecurityMiddleware (BaseHTTPMiddleware) never sees websocket scopes, so
+    /ws/* is gated at the handshake by guard_ws: IP ban + allowlist, refused
+    with 1008 before accept()."""
+
+    @pytest.fixture(autouse=True)
+    def _armed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(security.settings, "guard_enabled", True)
+
+    def test_whitelisted_peer_connects(self) -> None:
+        with (
+            _client(_guarded_ws_app(ip="127.0.0.1")) as client,
+            client.websocket_connect("/ws/echo") as ws,
+        ):
+            assert ws.receive_text() == "127.0.0.1"
+
+    def test_external_peer_refused_at_handshake(self) -> None:
+        with (
+            _client(_guarded_ws_app(ip=_EXTERNAL_IP)) as client,
+            pytest.raises(WebSocketDisconnect) as exc,
+            client.websocket_connect("/ws/echo"),
+        ):
+            pass
+        assert exc.value.code == status.WS_1008_POLICY_VIOLATION
+
+    def test_banned_peer_refused_even_when_whitelisted(self) -> None:
+        # Whitelisted (tailnet) but outside trusted_proxies: guard-core refuses
+        # to ban a proxy-space address (self-DoS guard).
+        banned_ip = "100.64.7.7"
+        asyncio.run(ip_ban_manager.ban_ip(banned_ip, 30))
+        try:
+            with (
+                _client(_guarded_ws_app(ip=banned_ip)) as client,
+                pytest.raises(WebSocketDisconnect) as exc,
+                client.websocket_connect("/ws/echo"),
+            ):
+                pass
+            assert exc.value.code == status.WS_1008_POLICY_VIOLATION
+        finally:
+            asyncio.run(ip_ban_manager.unban_ip(banned_ip))
+
+    def test_external_client_behind_proxy_hop_refused(self) -> None:
+        """The connecting peer is the whitelisted proxy hop; the forwarded real
+        client is external and is the identity the gate must judge."""
+        with (
+            _client(_guarded_ws_app(ip="127.0.0.1", resolver=True)) as client,
+            pytest.raises(WebSocketDisconnect) as exc,
+            client.websocket_connect(
+                "/ws/echo", headers={"X-Forwarded-For": _EXTERNAL_IP}
+            ),
+        ):
+            pass
+        assert exc.value.code == status.WS_1008_POLICY_VIOLATION
+
+    def test_tailnet_client_resolved_over_websocket(self) -> None:
+        """ClientIpResolutionMiddleware stamps websocket scopes too, so the
+        host-proxied tailnet client is judged by its real 100.64/10 address."""
+        with (
+            _client(_guarded_ws_app(ip="127.0.0.1", resolver=True)) as client,
+            client.websocket_connect(
+                "/ws/echo", headers={"X-Forwarded-For": "100.64.0.9, 127.0.0.1"}
+            ) as ws,
+        ):
+            assert ws.receive_text() == "100.64.0.9"
+
+    def test_real_ws_router_refuses_external_client(self) -> None:
+        """Pins the router-level wiring on the REAL app: /ws/system refuses an
+        external client at the handshake with guard's own reason, before the
+        panel-token check ever runs."""
+        client = TestClient(_InjectClientIP(create_app(), _EXTERNAL_IP))
+        with (
+            pytest.raises(WebSocketDisconnect) as exc,
+            client.websocket_connect("/ws/system"),
+        ):
+            pass
+        assert (exc.value.code, exc.value.reason) == (
+            status.WS_1008_POLICY_VIOLATION,
+            "IP not allowed",
+        )
+
+    def test_noop_while_disarmed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(security.settings, "guard_enabled", False)
+        app = FastAPI()
+
+        @app.websocket("/ws/echo")
+        async def _echo(
+            websocket: WebSocket, _guard: Annotated[None, Depends(guard_ws)]
+        ) -> None:
+            await websocket.accept()
+            await websocket.send_text("open")
+            await websocket.close()
+
+        with (
+            TestClient(_InjectClientIP(app, _EXTERNAL_IP)) as client,
+            client.websocket_connect("/ws/echo") as ws,
+        ):
+            assert ws.receive_text() == "open"

@@ -432,13 +432,11 @@ def test_agent_kwargs_dynamic_rules_cache_path_follows_setting(
     )
 
 
-def test_security_config_builds_agent_config_when_telemetry_armed(
+def test_security_config_builds_when_telemetry_armed_with_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Armed telemetry must reach guard-agent: without the package
-    to_agent_config() raises AgentPackageNotInstalledError and the middleware
-    degrades to agent-less (agent_strict=False), so telemetry silently no-ops.
-    Pins the dependency."""
+    """Armed + keyed telemetry builds at import (guard-core's validators
+    accept the kwargs) and the 3.17.0 cache path is coerced to a Path."""
     monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
     monkeypatch.setattr(settings, "guard_agent_api_key", "k")
     monkeypatch.setattr(settings, "guard_project_id", "p")
@@ -448,7 +446,15 @@ def test_security_config_builds_agent_config_when_telemetry_armed(
     cfg = security.build_security_config()
     assert cfg.enable_dynamic_rules
     assert str(cfg.dynamic_rules_cache_path) == "/data/logs/guard-rules.json"
-    assert cfg.to_agent_config() is not None
+
+
+def test_rate_limit_auto_ban_armed() -> None:
+    """429s feed the ban engine; the rate_limit pseudo-category sets the bar."""
+    cfg = security.security_config
+    assert cfg.enable_rate_limit_auto_ban is True
+    assert (
+        cfg.threat_ban_config["rate_limit"] is security._THREAT_BAN_CONFIG["rate_limit"]
+    )
 
 
 # --- guard_scan_response_body: default-off response-body inspection -------

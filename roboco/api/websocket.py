@@ -19,7 +19,8 @@ from typing import Any
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
+from guard.websocket import guard_websocket
 
 from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
 from roboco.api.auth.backend import SESSION_COOKIE_NAME
@@ -29,7 +30,25 @@ from roboco.config import settings
 from roboco.db.base import get_db
 from roboco.services.repositories import resolve_agent_uuid
 
-router = APIRouter()
+
+async def guard_ws(websocket: WebSocket) -> None:
+    """Handshake gate for /ws/*: IP ban + allowlist before ``accept()``.
+
+    SecurityMiddleware is a BaseHTTPMiddleware and never sees websocket
+    scopes, so without this a banned or non-whitelisted IP could still open a
+    stream (the ``/ws`` exclude_paths entry is moot for the same reason).
+    Router-level dependency so a new stream cannot forget it; a refusal
+    raises WebSocketException (1008) and the socket is never accepted. No-op
+    while guard is disarmed (the middleware is not mounted then). With a
+    non-empty whitelist guard skips its per-IP websocket rate limit: only
+    whitelisted peers ever get this far.
+    """
+    if not settings.guard_enabled:
+        return
+    await guard_websocket(websocket)
+
+
+router = APIRouter(dependencies=[Depends(guard_ws)])
 log = structlog.get_logger()
 
 # Server-side idle timeout for WS receive loops. A half-open socket (dead

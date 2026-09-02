@@ -1087,21 +1087,6 @@ wheels = [
 ]
 
 [[package]]
-name = "guard-agent"
-version = "2.10.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cryptography" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/be/9b/18e78630e6627fb5842a58c296d59e3a3cbd51bc369e6200840a7bd39575/guard_agent-2.10.0.tar.gz", hash = "sha256:e76f70087ceddd508a079741e1128466912fcf0dbed10a80a516e80509a9a526", size = 60665, upload-time = "2026-09-01T20:54:28.343Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/fd/e6d48c50bd364b7c3b7f2fb2d8bf814f856cdc91095efb4aecdf33636884/guard_agent-2.10.0-py3-none-any.whl", hash = "sha256:3f66d6a3864e94c9a376d22ba2dd7a5d11695e85344491dff19e11c8b0b0e737", size = 49041, upload-time = "2026-09-01T20:54:27.337Z" },
-]
-
-[[package]]
 name = "guard-core"
 version = "3.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2644,7 +2629,6 @@ dependencies = [
     { name = "fastapi-guard" },
     { name = "fastapi-users", extra = ["sqlalchemy"] },
     { name = "fastapi-users-db-sqlalchemy" },
-    { name = "guard-agent" },
     { name = "guard-core", extra = ["redis"] },
     { name = "hiredis" },
     { name = "httpx" },
@@ -2719,7 +2703,6 @@ requires-dist = [
     { name = "fastapi-guard", specifier = ">=7.8.2" },
     { name = "fastapi-users", extras = ["sqlalchemy"] },
     { name = "fastapi-users-db-sqlalchemy" },
-    { name = "guard-agent", specifier = ">=2.10.0" },
     { name = "guard-core", extras = ["redis"], specifier = ">=3.17.0" },
     { name = "hiredis" },
     { name = "httpx" },

@@ -772,13 +772,13 @@ services:
       # Log level for guard-core's suspicious-path lines (IP bans, blocked
       # countries, BehaviorTracker). Same "must be listed here" rule as above.
       ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL: ${ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL:-WARNING}
-      # guard-agent telemetry to the guard-core SaaS (api.guard-core.com).
-      # Armed, but inert until the API key + project id are set in .env: with
-      # no key roboco leaves the agent unconfigured (guard-core refuses
-      # enable_agent without a key) and nothing leaves the box. The cache path keeps the
+      # guard-agent telemetry to the guard-core SaaS. OFF: CEO opt-out
+      # 2026-09-02 (guard-agent is not used and not a dependency). Carried so
+      # it stays armable via .env; with no key roboco leaves the agent
+      # unconfigured and nothing leaves the box. The cache path keeps the
       # last-known dynamic rules across a restart during a SaaS outage
       # (guard-core 3.17.0); /data/logs is the persisted logs mount.
-      ROBOCO_GUARD_TELEMETRY_ENABLED: ${ROBOCO_GUARD_TELEMETRY_ENABLED:-true}
+      ROBOCO_GUARD_TELEMETRY_ENABLED: ${ROBOCO_GUARD_TELEMETRY_ENABLED:-false}
       ROBOCO_GUARD_AGENT_API_KEY: ${ROBOCO_GUARD_AGENT_API_KEY:-}
       ROBOCO_GUARD_PROJECT_ID: ${ROBOCO_GUARD_PROJECT_ID:-}
       ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH: ${ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH:-/data/logs/guard-dynamic-rules.json}
