@@ -18,6 +18,8 @@ After the claim write (and `mark_evidence_inspected` where applicable), the verb
 
 The canonical pattern. After `qa_claim` + `mark_evidence_inspected`, commits, then builds evidence via `_build_qa_claim_evidence`. The `mark_evidence_inspected` stamp rides in the same commit as the claim so it also survives a cancellation.
 
+**Extracted into `_claim_for_review` (2026-09-01, task `92a48cc0`).** The block below — same-agent-vs-different-agent branch, the pre-assembly commit, the same-agent retry skip, the not-authorized rejection — now lives in a private helper, `QAMixin._claim_for_review(qa_agent_id, task_id, t, briefing, role_str) -> tuple[task, rejection | None]`, called from `claim_review` before evidence assembly. This was a pure xenon-complexity extraction (CI run 32795739530 flagged `claim_review` at rank C against the project's rank-B ceiling) with the durability rationale comment moved verbatim into the helper's docstring — the semantics documented here (commit-before-assembly, same-agent retry skip, different-agent refusal) are unchanged, only the method boundary moved.
+
 ### claim_gate_review — `roboco/services/gateway/choreographer/pr_gate.py`
 
 Same boundary, no `mark_evidence_inspected` call (the gate path has no evidence-inspected stamp). After `pr_gate_claim`, commits, then builds evidence via `_build_gate_review_evidence`.
@@ -54,6 +56,8 @@ if to_python_uuid(t.active_claimant_id) != agent_id:
 ```
 
 A separate `claimed` variable holds the claim result so the preflight task `t` is not clobbered to `None` before the rejection envelope's `with_introspection(task=t)` — `pr_gate.py` already used this shape; `qa.py` and `doc.py` were aligned to it in the round-2 QA fix.
+
+In `qa.py` this shape now lives inside `_claim_for_review` rather than directly in `claim_review`'s body (see the extraction note above) — `pr_gate.py` and `doc.py` still carry it inline in their respective verb bodies as of this writing.
 
 ## Advisory evidence legs are unchanged
 
