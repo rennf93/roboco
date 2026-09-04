@@ -1848,6 +1848,18 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)
     # ==========================================================================
+    agent_mcp_startup_timeout_ms: int = Field(
+        default=120000,
+        ge=1000,
+        description=(
+            "MCP_TIMEOUT (ms) injected into the Claude agent container env, "
+            "Claude Code's own MCP server connect-timeout budget, default "
+            "30000. Under a fleet-wide spawn burst, several stdio MCP "
+            "servers starting per container routinely exceed 30s, so every "
+            "verb tool goes 'failed' at init. Claude runtime only; the "
+            "grok/gemini/codex/kimi CLIs don't read this env var."
+        ),
+    )
     agent_tool_call_warn: int = Field(
         default=50,
         ge=1,

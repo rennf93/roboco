@@ -100,6 +100,7 @@ def _minimal_hosts() -> dict[str, str | None]:
 def _mock_settings() -> dict[str, object]:
     """Attribute dict for patched settings object."""
     return {
+        "agent_mcp_startup_timeout_ms": 120000,
         "agent_tool_call_warn": 80,
         "agent_tool_call_halt": 100,
         "agent_loop_threshold": 5,
@@ -345,4 +346,17 @@ class TestHeadMarketingSpawnCwdWorkspace:
         assert workdir == edit_prefix, (
             f"_build_mount_args -w value '{workdir}' != "
             f"_get_role_permissions Edit prefix '{edit_prefix}'."
+        )
+
+
+class TestMcpStartupTimeoutEnv:
+    """MCP_TIMEOUT accompanies every container spawn. Claude Code's own MCP
+    server connect-timeout defaults to 30s, too tight once a fleet-wide
+    spawn burst slows every stdio MCP server's startup past it."""
+
+    def test_cmd_contains_mcp_timeout_env(self) -> None:
+        config = _make_dev_config()
+        cmd = _build_cmd("roboco-agent-be-dev-1", config)
+        assert "MCP_TIMEOUT=120000" in cmd, (
+            f"MCP_TIMEOUT missing from docker run env. Full cmd: {cmd}"
         )

@@ -3419,6 +3419,12 @@ class AgentOrchestrator:
             "-e",
             "ROBOCO_SDK_URL=http://localhost:9000",
             "-e",
+            # Claude Code's own MCP client connect-timeout (ms); its 30s
+            # default is too tight once a fleet-wide spawn burst slows every
+            # stdio MCP server's startup past it. No-op for the grok/gemini/
+            # codex/kimi CLIs, which don't read this var.
+            f"MCP_TIMEOUT={settings.agent_mcp_startup_timeout_ms}",
+            "-e",
             f"ROBOCO_AGENT_TOOL_CALL_WARN={settings.agent_tool_call_warn}",
             "-e",
             f"ROBOCO_AGENT_TOOL_CALL_HALT={settings.agent_tool_call_halt}",
@@ -4136,6 +4142,12 @@ class AgentOrchestrator:
             # verbs. Each server is therefore launched with `uv run --no-sync`
             # (below) to use /app/.venv as-is and start instantly.
             "UV_PROJECT_ENVIRONMENT": "/app/.venv",
+            # cwd is the agent's workspace (often a RoboCo clone). Without
+            # this, cwd lands on sys.path[0] and a stale/foreign clone's
+            # `roboco` package shadows the image's installed one in
+            # /app/.venv, crashing the server on import (e.g. an old clone
+            # still importing a since-removed mcp.server.fastmcp symbol).
+            "PYTHONSAFEPATH": "1",
         }
 
         # Add git context if available

@@ -28,6 +28,15 @@ from pydantic import BeforeValidator
 from roboco.agents_config import get_agent_team
 from roboco.foundation.policy.content.validators import coerce_str_list
 from roboco.foundation.policy.flow_timeouts import CLIENT_HEADROOM_SECONDS, SLOW_VERBS
+from roboco.mcp.utils import configure_stdio_logging
+
+# __name__ is already "__main__" here when launched as `python -m
+# roboco.mcp.flow_server` (the real stdio server), so this runs early enough
+# to protect _register_tools()'s own logging below. A plain import (test
+# code importing this module in-process) leaves the ambient structlog config
+# alone instead of clobbering it for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 # A ``list[str]`` field that tolerates the Claude SDK's XML-ish tool-input
 # parsing: an LLM emitting a bullet list as ``<item>…</item>`` elements arrives

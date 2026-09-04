@@ -9,9 +9,11 @@ deleted in Phase 4 T9; their helpers (agent UUID resolution + cache,
 """
 
 import os
+import sys
 from typing import Any
 
 import httpx
+import structlog
 
 from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
@@ -22,6 +24,23 @@ _HTTP_SUCCESS_MAX = 300
 
 # Default timeout for API calls (seconds).
 DEFAULT_TIMEOUT = 30.0
+
+
+def configure_stdio_logging() -> None:
+    """Route structlog output to stderr.
+
+    Without this, structlog falls back to its un-configured default, a
+    PrintLogger on stdout. The stdio transport requires stdout to carry
+    only JSON-RPC frames, so any log line emitted during a server's
+    lifetime would corrupt the protocol stream.
+
+    Call this only from a stdio MCP server's own process. A module that
+    another process also imports must guard the call (e.g. under
+    ``if __name__ == "__main__":``, before ``mcp.run()``), never call it
+    at plain module scope - the reconfiguration is global structlog
+    state and would otherwise leak into the importer too.
+    """
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
 
 
 def _get_agent_headers(agent_id: str) -> dict[str, str]:
