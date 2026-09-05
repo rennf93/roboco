@@ -104,4 +104,4 @@ If you touch either side of this contract (the tasks page's project filter, or w
 
 - `docs/backend/api/dashboard-portfolio.md` — the endpoint this consumes (aggregations, gate semantics, field meanings).
 - `panel/src/hooks/use-portfolio.ts` / `panel/src/types/index.ts` — the data-layer leaf (task `56d41b9c`).
-- `panel/src/components/dashboard/command-center.tsx` — the Overview wiring and section ordering.
+- `panel/src/components/dashboard/command-center.tsx`: the Overview wiring and section ordering.

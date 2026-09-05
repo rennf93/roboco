@@ -311,7 +311,9 @@ class DashboardService(BaseService):
                     monthly_budget_burn_usd=m.get("monthly_budget_burn_usd", 0.0),
                 )
             )
-        entries.sort(key=lambda e: e.active_task_count, reverse=True)
+        entries.sort(
+            key=lambda e: (-e.active_task_count, e.project_name.lower(), e.project_id)
+        )
         return entries
 
     async def get_roadmap_progress(self) -> dict[str, Any]:

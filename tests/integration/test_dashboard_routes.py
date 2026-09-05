@@ -794,7 +794,9 @@ async def _seed_portfolio_projects(
             completed_at=completed_at,
         )
 
-    hours_ago = lambda n: now - timedelta(hours=n)  # noqa: E731
+    def hours_ago(n: int) -> datetime:
+        return now - timedelta(hours=n)
+
     alpha_1 = _task(alpha, "a active 1", TaskStatus.IN_PROGRESS, hours_ago(2))
     alpha_2 = _task(alpha, "a active 2", TaskStatus.AWAITING_QA, hours_ago(2))
     alpha_done_1 = _task(
@@ -929,3 +931,77 @@ async def test_portfolio_is_ceo_only(non_ceo_client: AsyncClient) -> None:
     resp = await non_ceo_client.get("/api/dashboard/portfolio", headers=_HDR)
     assert resp.status_code == HTTPStatus.FORBIDDEN
     assert "CEO" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_portfolio_tiebreak_orders_by_name_case_insensitive(
+    db_session: AsyncSession, dashboard_client: AsyncClient
+) -> None:
+    """Two projects tied on active_task_count sort by name, case-insensitively.
+
+    "apple" and "Zebra" are chosen so a case-sensitive sort would rank
+    "Zebra" first (capital Z sorts before lowercase a in ASCII) while
+    lowercasing correctly ranks "apple" first.
+    """
+    creator = (await db_session.execute(select(AgentTable).limit(1))).scalar_one()
+    now = datetime.now(UTC)
+    zebra = ProjectTable(
+        id=uuid4(),
+        name="Zebra",
+        slug=f"zebra-{uuid4().hex[:6]}",
+        git_url="https://example.com/zebra.git",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
+    )
+    apple = ProjectTable(
+        id=uuid4(),
+        name="apple",
+        slug=f"apple-{uuid4().hex[:6]}",
+        git_url="https://example.com/apple.git",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
+    )
+    db_session.add_all([zebra, apple])
+    await db_session.flush()
+
+    def _active_task(project: ProjectTable) -> TaskTable:
+        return TaskTable(
+            id=uuid4(),
+            title="t",
+            description="d",
+            acceptance_criteria=["ac"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            status=TaskStatus.IN_PROGRESS,
+            team=Team.BACKEND,
+            project_id=project.id,
+            created_by=creator.id,
+            estimated_complexity=Complexity.MEDIUM,
+            created_at=now,
+        )
+
+    db_session.add_all([_active_task(zebra), _active_task(apple)])
+    await db_session.flush()
+
+    resp = await dashboard_client.get("/api/dashboard/portfolio?days=30", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    ids = {str(zebra.id), str(apple.id)}
+    names = [row["project_name"] for row in resp.json() if row["project_id"] in ids]
+    assert names == ["apple", "Zebra"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("days", [0, 91])
+async def test_portfolio_days_out_of_bounds_rejected(
+    dashboard_client: AsyncClient, days: int
+) -> None:
+    resp = await dashboard_client.get(
+        f"/api/dashboard/portfolio?days={days}", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_portfolio_days_in_bounds_accepted(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get("/api/dashboard/portfolio?days=45", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK

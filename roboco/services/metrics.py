@@ -93,6 +93,8 @@ def _as_hours(value: Any) -> float | None:
 # Active task statuses for get_team_metrics and related queries.
 # Note: BLOCKED is intentionally excluded here; get_health_status() uses its
 # own local list that includes BLOCKED to compute the blocked-task ratio.
+# Narrower than _PORTFOLIO_IN_FLIGHT_STATUSES below: a fixed allowlist, not
+# "everything except backlog/terminal".
 ACTIVE_STATUSES = frozenset(
     {
         TaskStatus.CLAIMED,
@@ -111,7 +113,9 @@ STALE_TASK_THRESHOLD = 5
 # the two terminal states. Backlog is parked, not active; cancelled never was.
 # Tasks with a null project_id (board/product tasks) never appear here —
 # the dashboard is grouped BY project.
-_PORTFOLIO_HELD_STATUSES = frozenset(
+# Broader than ACTIVE_STATUSES above: an exclusion list, not the same
+# population as that fixed allowlist.
+_PORTFOLIO_IN_FLIGHT_STATUSES = frozenset(
     {TaskStatus.BACKLOG, TaskStatus.COMPLETED, TaskStatus.CANCELLED}
 )
 
@@ -1467,7 +1471,7 @@ class MetricsService(BaseService):
         All numbers are computed server-side, grouped by ``tasks.project_id``:
 
         - ``active_task_count`` — non-backlog, non-terminal tasks (see
-          ``_PORTFOLIO_HELD_STATUSES``).
+          ``_PORTFOLIO_IN_FLIGHT_STATUSES``).
         - ``median_lead_time_hours`` / ``rework_rate`` — over completed tasks
           in the `days` window, from the SAME population (mean is the wrong
           summary for the heavy-tailed lead times a fleet of agent runs
@@ -1487,7 +1491,7 @@ class MetricsService(BaseService):
         active_rows = await self.session.execute(
             select(TaskTable.project_id, func.count(TaskTable.id))
             .where(
-                TaskTable.status.notin_(_PORTFOLIO_HELD_STATUSES),
+                TaskTable.status.notin_(_PORTFOLIO_IN_FLIGHT_STATUSES),
                 TaskTable.project_id.is_not(None),
             )
             .group_by(TaskTable.project_id)
