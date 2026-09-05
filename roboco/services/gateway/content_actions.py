@@ -42,6 +42,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+from roboco.services.uptime import UptimeLedger
 from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
@@ -83,6 +84,36 @@ def _merge_resumption_fields(
     if where_to_look and "where_to_look" not in merged:
         merged["where_to_look"] = where_to_look
     return merged or None
+
+
+def _task_time_seconds(
+    timestamps: dict[str, datetime | None],
+    *,
+    now: datetime,
+    ledger: UptimeLedger,
+) -> tuple[dict[str, float | None], dict[str, float | None]]:
+    """Wall-clock vs uptime-adjusted elapsed seconds for named timestamps.
+
+    Pure given an already-loaded ``ledger`` (no DB access), so it is
+    unit-testable without a session. A ``None`` timestamp maps to ``None``
+    in both returned dicts.
+    """
+    wall: dict[str, float | None] = {}
+    active: dict[str, float | None] = {}
+    for key, ts in timestamps.items():
+        if ts is None:
+            wall[key] = None
+            active[key] = None
+            continue
+        ts_utc = ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+        wall[key] = (now - ts_utc).total_seconds()
+        active[key] = ledger.active_seconds(ts_utc, now)
+    return wall, active
+
+
+def _iso(ts: datetime | None) -> str | None:
+    """ISO-8601 string, or ``None`` for an unset timestamp."""
+    return ts.isoformat() if ts is not None else None
 
 
 # Scope catalog is canonical in foundation.policy.journaling.
@@ -6672,6 +6703,85 @@ class ContentActions:
             task_id=None,
             next="act on the messages, then retry i_am_idle()",
             evidence={"messages": messages},
+            context_briefing={},
+        )
+
+    async def _task_time_root(self, task: Any, task_id: UUID) -> tuple[UUID, datetime]:
+        """Walk ``parent_task_id`` up to the root, bounded so a bad chain
+        (cycle, orphaned parent) can't hang the call."""
+        root_id, root = task_id, task
+        for _ in range(10):
+            if root.parent_task_id is None:
+                break
+            parent = await self.task.get(root.parent_task_id)
+            if parent is None:
+                break
+            root_id, root = root.parent_task_id, parent
+        return root_id, root.created_at
+
+    async def task_time(self, *, agent_id: UUID, task_id: UUID) -> Envelope:
+        """Real, uptime-adjusted elapsed times for a task.
+
+        Read-only telemetry, no ownership check, any allowed role may call
+        it for any task. Every "stale / stuck / blocked too long /
+        unattended" judgement in the fleet defaults to naive wall-clock
+        elapsed time, which counts the hours the CEO had the stack shut
+        down or dispatch paused as neglect. This returns both: ``wall_seconds``
+        (naive) and ``active_seconds`` (fleet-uptime-adjusted, via
+        ``UptimeLedger``), plus the downtime windows that explain the gap.
+        """
+        del agent_id  # read-only telemetry, no ownership check
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+
+        root_task_id, root_created_at = await self._task_time_root(t, task_id)
+        now = datetime.now(UTC)
+        ledger = await UptimeLedger.load(
+            self.task.session, since=min(t.created_at, root_created_at)
+        )
+
+        timestamps = {
+            "age": t.created_at,
+            "root_age": root_created_at,
+            "in_state": t.updated_at,
+            "since_claim": t.claimed_at,
+            "since_heartbeat": t.last_heartbeat_at,
+            "stalled": t.stalled_since,
+        }
+        wall_seconds, active_seconds = _task_time_seconds(
+            timestamps, now=now, ledger=ledger
+        )
+        windows = ledger.downtime_windows(t.created_at, now)
+
+        evidence = {
+            "task_id": str(task_id),
+            "status": str(t.status),
+            "root_task_id": str(root_task_id),
+            "root_created_at": _iso(root_created_at),
+            "created_at": _iso(t.created_at),
+            "claimed_at": _iso(t.claimed_at),
+            "updated_at": _iso(t.updated_at),
+            "last_heartbeat_at": _iso(t.last_heartbeat_at),
+            "stalled_since": _iso(t.stalled_since),
+            "wall_seconds": wall_seconds,
+            "active_seconds": active_seconds,
+            "fleet_downtime_seconds": ledger.downtime(
+                t.created_at, now
+            ).total_seconds(),
+            "downtime_windows": [
+                {"start": _iso(w.start), "end": _iso(w.end), "kind": w.kind}
+                for w in windows
+            ],
+        }
+        return Envelope.ok(
+            status="measured",
+            task_id=str(task_id),
+            next=(
+                "cite active_seconds, not wall_seconds, when you call a "
+                "task stale or unattended"
+            ),
+            evidence=evidence,
             context_briefing={},
         )
 

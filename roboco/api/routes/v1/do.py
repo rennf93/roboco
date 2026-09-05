@@ -47,6 +47,7 @@ from roboco.api.schemas.v1.do import (
     RejectPlaybookRequest,
     RequestRenderRequest,
     RequestSandboxRequest,
+    TaskTimeRequest,
 )
 from roboco.security import (
     guard_deco,
@@ -690,6 +691,18 @@ async def do_read_a2a(
     actions: _ContentActionsDep,
 ) -> dict:
     env = await actions.read_a2a(agent_id=x_agent_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/task_time")
+@mesh_scanned
+async def do_task_time(
+    request: Request,
+    body: TaskTimeRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.task_time(agent_id=x_agent_id, task_id=body.task_id)
     return envelope_to_response(env, request)
 
 

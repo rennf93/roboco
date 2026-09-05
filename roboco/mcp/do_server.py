@@ -1333,6 +1333,17 @@ def read_a2a() -> dict[str, Any]:
     return _post("/api/v1/do/read_a2a", {})
 
 
+def task_time(task_id: str) -> dict[str, Any]:
+    """Real, uptime-adjusted elapsed times for a task.
+
+    `active_seconds` excludes the hours the fleet was shut down or dispatch
+    was paused; `wall_seconds` is the naive clock. Use active_seconds
+    whenever you judge a task stale, stuck, blocked too long, or
+    unattended, and quote the downtime windows if they explain the gap.
+    """
+    return _post("/api/v1/do/task_time", {"task_id": task_id})
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -1370,6 +1381,7 @@ _TOOLS: dict[str, Any] = {
     "pr_update": pr_update,
     "read_messages": read_messages,
     "read_a2a": read_a2a,
+    "task_time": task_time,
     "draft_playbook": draft_playbook,
     "approve_playbook": approve_playbook,
     "reject_playbook": reject_playbook,
