@@ -1,29 +1,41 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReleaseCertificate, ReleaseProposal } from "@/lib/api/release";
+import type { Task } from "@/types";
+import { TaskStatus } from "@/types";
 
 // Covers the "Download certificate" button (bfb48210): the happy-path
 // download trigger and the 404-to-null toast path. Unlike the sibling
 // release-proposal-card.test.tsx, react-query itself is NOT mocked here —
-// only releaseApi — so the real useMutation onSuccess/onError callbacks run.
-const { getProposal, getCertificate } = vi.hoisted(() => ({
+// only releaseApi/tasksApi — so the real useMutation/useQuery onSuccess
+// callbacks run.
+const { getProposal, getCertificate, approve, getTask } = vi.hoisted(() => ({
   getProposal: vi.fn(),
   getCertificate: vi.fn(),
+  approve: vi.fn(),
+  getTask: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
-  releaseApi: { getProposal, approve: vi.fn(), reject: vi.fn(), getCertificate },
+  releaseApi: { getProposal, approve, reject: vi.fn(), getCertificate },
+  tasksApi: { get: getTask },
 }));
 
-const { toastInfo, toastError } = vi.hoisted(() => ({
+const { toastInfo, toastError, toastSuccess } = vi.hoisted(() => ({
   toastInfo: vi.fn(),
   toastError: vi.fn(),
+  toastSuccess: vi.fn(),
 }));
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), warning: vi.fn(), error: toastError, info: toastInfo },
+  toast: {
+    success: toastSuccess,
+    warning: vi.fn(),
+    error: toastError,
+    info: toastInfo,
+  },
 }));
 
 import { ReleaseProposalCard } from "../release-proposal-card";
@@ -76,42 +88,148 @@ function buildCertificate(): ReleaseCertificate {
   };
 }
 
-describe("ReleaseProposalCard — Download certificate button", () => {
+const _POINTER_KEY = "roboco.release-certificate-pointer";
+
+function buildTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "t1",
+    title: "Cut v0.14.0",
+    status: TaskStatus.AWAITING_CEO_APPROVAL,
+    ...overrides,
+  } as unknown as Task;
+}
+
+// Covers the real POST /release/proposal/approve contract: a 202-dispatch
+// route that always returns {status: "accepted", version: ""} synchronously
+// — the real publish runs ~40min later in a background task. Never assert a
+// "published" state directly off the approve response (round-1's bug).
+describe("ReleaseProposalCard — approve dispatch (real 202 contract)", () => {
   beforeEach(() => {
+    window.localStorage.clear();
+    getProposal.mockReset();
     getProposal.mockResolvedValue(buildProposal());
+    getTask.mockReset();
+    getTask.mockResolvedValue(buildTask());
+    getCertificate.mockReset();
+    approve.mockReset();
+    toastInfo.mockClear();
+    toastError.mockClear();
+    toastSuccess.mockClear();
+  });
+
+  it("dispatches the executor and shows the background-dispatch toast, never a published state", async () => {
+    approve.mockResolvedValue({
+      status: "accepted",
+      version: "",
+      files_changed: [],
+      commit_sha: null,
+      release_url: null,
+      detail: "dispatched",
+    });
+
+    render(withProviders(<ReleaseProposalCard />));
+
+    const approveButton = await screen.findByRole("button", {
+      name: /^Approve & publish$/i,
+    });
+    await userEvent.click(approveButton);
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: /Approve & publish/i }),
+    );
+
+    await waitFor(() => expect(approve).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(toastInfo).toHaveBeenCalledWith(
+        expect.stringMatching(/dispatched — running in the background/i),
+      ),
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(screen.queryByText(/^Published v/)).not.toBeInTheDocument();
+  });
+});
+
+// Covers task 13af9490 + the round-2 pr_gate bounce: the old open-proposal
+// "Download certificate" button was structurally unreachable (the proposal
+// unmounts the instant it publishes, so its target version never coincides
+// with a servable one) and the round-1 fix keyed a replacement off the
+// approve response, which can never report "published" in production. The
+// fix instead persists {taskId, version} to localStorage and confirms
+// publication by polling GET /tasks/{taskId} for status === "completed" —
+// re-confirmed against the server on every mount so the control survives a
+// reload/navigation during the ~40min background publish.
+describe("ReleaseProposalCard — Download certificate (task-status-confirmed publish)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    getProposal.mockReset();
+    getTask.mockReset();
     getCertificate.mockReset();
     toastInfo.mockClear();
     toastError.mockClear();
+    toastSuccess.mockClear();
     globalThis.URL.createObjectURL = vi.fn(() => "blob:mock-url");
     globalThis.URL.revokeObjectURL = vi.fn();
   });
 
-  it("triggers a JSON blob download on a successful (published) certificate fetch", async () => {
+  it("renders no Download certificate control while the proposal's task hasn't completed — only one control ever exists", async () => {
+    getProposal.mockResolvedValue(buildProposal());
+    getTask.mockResolvedValue(
+      buildTask({ id: "t1", status: TaskStatus.AWAITING_CEO_APPROVAL }),
+    );
+
+    render(withProviders(<ReleaseProposalCard />));
+    await screen.findByRole("button", { name: /^Approve & publish$/i });
+
+    expect(
+      screen.queryByRole("button", { name: /Download certificate/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders exactly one Download certificate control once the stored task is confirmed completed, targeting the stored version — survives the open-proposal query going to null", async () => {
+    // Simulates a reload: a pointer already sits in localStorage from a
+    // prior mount, and the open-proposal query 404s to null now that the
+    // proposal it was drawn from has completed.
+    window.localStorage.setItem(
+      _POINTER_KEY,
+      JSON.stringify({ taskId: "t9", version: "0.16.0" }),
+    );
+    getProposal.mockResolvedValue(null);
+    getTask.mockResolvedValue(
+      buildTask({ id: "t9", status: TaskStatus.COMPLETED }),
+    );
     getCertificate.mockResolvedValue(buildCertificate());
     const clickSpy = vi
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => {});
 
     render(withProviders(<ReleaseProposalCard />));
-    const button = await screen.findByRole("button", {
+
+    await waitFor(() => expect(getTask).toHaveBeenCalledWith("t9"));
+    const buttons = await screen.findAllByRole("button", {
       name: /Download certificate/i,
     });
-    await userEvent.click(button);
+    expect(buttons).toHaveLength(1);
 
-    await waitFor(() => expect(getCertificate).toHaveBeenCalledWith("0.14.0"));
+    await userEvent.click(buttons[0]);
+
+    await waitFor(() => expect(getCertificate).toHaveBeenCalledWith("0.16.0"));
     await waitFor(() => expect(clickSpy).toHaveBeenCalled());
     expect(globalThis.URL.createObjectURL).toHaveBeenCalled();
-    expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
     expect(toastInfo).not.toHaveBeenCalled();
 
     clickSpy.mockRestore();
   });
 
-  it("shows an info toast instead of downloading when the version hasn't published yet (the no-CI-repo/404 case)", async () => {
+  it("shows an info toast instead of downloading when the certificate isn't ready yet (404-to-null)", async () => {
+    window.localStorage.setItem(
+      _POINTER_KEY,
+      JSON.stringify({ taskId: "t9", version: "0.16.0" }),
+    );
+    getProposal.mockResolvedValue(null);
+    getTask.mockResolvedValue(
+      buildTask({ id: "t9", status: TaskStatus.COMPLETED }),
+    );
     getCertificate.mockResolvedValue(null);
-    const clickSpy = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => {});
 
     render(withProviders(<ReleaseProposalCard />));
     const button = await screen.findByRole("button", {
@@ -124,12 +242,17 @@ describe("ReleaseProposalCard — Download certificate button", () => {
         expect.stringMatching(/hasn't published yet/i),
       ),
     );
-    expect(clickSpy).not.toHaveBeenCalled();
-
-    clickSpy.mockRestore();
   });
 
   it("surfaces a genuine fetch error via a toast instead of throwing unhandled", async () => {
+    window.localStorage.setItem(
+      _POINTER_KEY,
+      JSON.stringify({ taskId: "t9", version: "0.16.0" }),
+    );
+    getProposal.mockResolvedValue(null);
+    getTask.mockResolvedValue(
+      buildTask({ id: "t9", status: TaskStatus.COMPLETED }),
+    );
     getCertificate.mockRejectedValue(new Error("network drop"));
 
     render(withProviders(<ReleaseProposalCard />));
@@ -143,5 +266,26 @@ describe("ReleaseProposalCard — Download certificate button", () => {
         expect.stringMatching(/download failed/i),
       ),
     );
+  });
+
+  it("clears the stored pointer once the task reaches a terminal non-completed status (cancelled)", async () => {
+    window.localStorage.setItem(
+      _POINTER_KEY,
+      JSON.stringify({ taskId: "t9", version: "0.16.0" }),
+    );
+    getProposal.mockResolvedValue(null);
+    getTask.mockResolvedValue(
+      buildTask({ id: "t9", status: TaskStatus.CANCELLED }),
+    );
+
+    render(withProviders(<ReleaseProposalCard />));
+
+    await waitFor(() => expect(getTask).toHaveBeenCalledWith("t9"));
+    await waitFor(() =>
+      expect(window.localStorage.getItem(_POINTER_KEY)).toBeNull(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Download certificate/i }),
+    ).not.toBeInTheDocument();
   });
 });

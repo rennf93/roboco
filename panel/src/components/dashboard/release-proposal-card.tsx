@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { releaseApi } from "@/lib/api";
-import type { ReleaseCertificate, ReleaseExecuteResult } from "@/lib/api/release";
+import { releaseApi, tasksApi } from "@/lib/api";
+import { TaskStatus } from "@/types";
+import type {
+  ReleaseCertificate,
+  ReleaseExecuteResult,
+} from "@/lib/api/release";
 import {
   Card,
   CardContent,
@@ -73,6 +77,54 @@ function downloadCertificate(certificate: ReleaseCertificate): void {
   URL.revokeObjectURL(url);
 }
 
+// The open-proposal query excludes COMPLETED proposals, so the instant a
+// publish succeeds this card's own getProposal() 404s → null and would
+// unmount — but the certificate endpoint only serves that exact published
+// version. POST /release/proposal/approve is a 202-dispatch route that always
+// returns {status: "accepted"} synchronously (the real publish runs ~40min
+// later in a background task), so the published state can never be derived
+// from the approve response. Instead we persist the proposal's own task_id +
+// target version the moment the proposal loads, and confirm publication by
+// polling GET /tasks/{taskId} (the same task the release-manager engine
+// carries end to end) for status === "completed" — a signal that survives a
+// reload/navigation, unlike component state.
+const _CERTIFICATE_POINTER_KEY = "roboco.release-certificate-pointer";
+
+interface CertificatePointer {
+  taskId: string;
+  version: string;
+}
+
+function readStoredPointer(): CertificatePointer | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(_CERTIFICATE_POINTER_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as CertificatePointer).taskId === "string" &&
+      typeof (parsed as CertificatePointer).version === "string"
+    ) {
+      return parsed as CertificatePointer;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPointer(pointer: CertificatePointer): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(_CERTIFICATE_POINTER_KEY, JSON.stringify(pointer));
+}
+
+function clearStoredPointer(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(_CERTIFICATE_POINTER_KEY);
+}
+
 // A red gate / open gaps make publishing risky — the CEO should resolve them
 // first. Approval still runs the fail-closed executor, so it can't ship a bad
 // release; this only steers the CEO.
@@ -80,6 +132,11 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [action, setAction] = useState<"approve" | "reject" | null>(null);
   const [requiredChanges, setRequiredChanges] = useState("");
+  // Re-confirmed against the server on every mount (see the poll query below)
+  // rather than trusted as-is — this is what survives a reload/navigation
+  // during the ~40min background publish.
+  const [storedPointer, setStoredPointer] =
+    useState<CertificatePointer | null>(() => readStoredPointer());
 
   const {
     data: proposal,
@@ -103,20 +160,72 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
     return () => unregister(cb);
   }, [register, unregister, refetch]);
 
+  // Persist {taskId, version} the moment a proposal with a report loads — the
+  // panel already knows the target version before the CEO even clicks
+  // Approve, so this doesn't need to wait for the approve response. This
+  // effect only writes through to localStorage (an external system); the
+  // open proposal itself is always the freshest source for `pointer` below,
+  // so there is no local state to re-derive here.
+  useEffect(() => {
+    if (proposal?.task_id && proposal.report) {
+      writeStoredPointer({
+        taskId: proposal.task_id,
+        version: proposal.report.proposed_version,
+      });
+    }
+  }, [proposal?.task_id, proposal?.report]);
+
+  // The open proposal (while present) is the freshest source for the target
+  // version; the stored pointer is what survives once it disappears —
+  // post-publish, or a reload/navigation mid-execute.
+  const pointer: CertificatePointer | null =
+    proposal?.task_id && proposal.report
+      ? { taskId: proposal.task_id, version: proposal.report.proposed_version }
+      : storedPointer;
+
+  // Re-confirm the stored pointer against the server: the ONLY source of
+  // truth for "published" is the release-manager's own task reaching
+  // COMPLETED. Polls every 30s (mirroring the proposal query above) until
+  // the task lands on a terminal status.
+  const taskStatusQuery = useQuery({
+    queryKey: ["release", "certificate-task", pointer?.taskId],
+    queryFn: () => tasksApi.get(pointer!.taskId),
+    enabled: !!pointer,
+    refetchInterval: (query) => {
+      const taskStatus = query.state.data?.status;
+      const terminal =
+        taskStatus === TaskStatus.COMPLETED ||
+        taskStatus === TaskStatus.CANCELLED;
+      return terminal ? false : 30000;
+    },
+  });
+
+  const pointerTaskStatus = taskStatusQuery.data?.status;
+
+  // A terminal status that isn't a publish (e.g. cancelled) means this
+  // pointer will never resolve to a certificate — clear it instead of
+  // polling forever. Adjusted during render (guarded against re-firing for
+  // an unchanged status) rather than in an effect, per
+  // https://react.dev/learn/you-might-not-need-an-effect — mutating a ref
+  // during render is safe and doesn't itself trigger a re-render.
+  const lastSeenStatusRef = useRef(pointerTaskStatus);
+  if (lastSeenStatusRef.current !== pointerTaskStatus) {
+    lastSeenStatusRef.current = pointerTaskStatus;
+    if (pointerTaskStatus === TaskStatus.CANCELLED) {
+      clearStoredPointer();
+      setStoredPointer(null);
+    }
+  }
+
   const approveMutation = useMutation({
     mutationFn: () => releaseApi.approve(),
     onSuccess: (result: ReleaseExecuteResult) => {
       queryClient.invalidateQueries({ queryKey: ["release", "proposal"] });
-      if (result.status === "published") {
-        toast.success(
-          `Published v${result.version}` +
-            (result.release_url ? "" : " (no release URL returned)"),
-        );
-      } else if (result.status === "accepted") {
+      if (result.status === "accepted") {
         // The execute runs in the background (a synchronous request would 504
         // at nginx before the ~40min fail-closed gate/CI/publish finished).
-        // This card polls GET /proposal every 30s and reflects the final
-        // outcome (COMPLETED on a publish, else the proposal stays open).
+        // The stored pointer + taskStatusQuery above reflect the final
+        // outcome (COMPLETED on a publish) once it lands.
         toast.info(
           "Release execute dispatched — running in the background. This card updates as it progresses.",
         );
@@ -152,7 +261,9 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
       if (certificate) {
         downloadCertificate(certificate);
       } else {
-        toast.info("This version hasn't published yet — no certificate available.");
+        toast.info(
+          "This version hasn't published yet — no certificate available.",
+        );
       }
     },
     onError: (error) => {
@@ -203,239 +314,272 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
       </Card>
     );
   }
-  // No open proposal (404 → null) — the normal empty state, hidden (mirrors
-  // PrReviewQueue).
-  if (!proposal) return null;
+  // A confirmed-published pointer keeps a "Download certificate" card
+  // mounted even once the open-proposal query goes to null (post-publish).
+  const showCertificateCard =
+    !!pointer && pointerTaskStatus === TaskStatus.COMPLETED;
 
-  const { report } = proposal;
+  // No open proposal (404 → null) AND nothing confirmed published — the
+  // normal empty state, hidden (mirrors PrReviewQueue).
+  if (!proposal && !showCertificateCard) return null;
+
+  const report = proposal?.report;
   const pending = approveMutation.isPending || rejectMutation.isPending;
   // The ~40min execute runs in the background; the Redis mutex already refuses
   // a double-click server-side — execute_in_flight is the UX (disable approve,
   // show a running badge). A persisted execute_status on a still-open proposal
   // is a failure (a publish would have completed + hidden the card).
-  const executeInFlight = !!proposal.execute_in_flight;
-  const executeFailed = !!proposal.execute_status && !executeInFlight;
+  const executeInFlight = !!proposal?.execute_in_flight;
+  const executeFailed = !!proposal?.execute_status && !executeInFlight;
 
   return (
     <>
-      <Card className={className}>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Rocket className="h-5 w-5" />
-            Release Proposal
-            <HelpTip label="Next version number, computed from the commit classification below">
-              <Badge variant="outline">v{report.proposed_version}</Badge>
-            </HelpTip>
-            <HelpTip label="Semver bump type — how the version number increases (major, minor, or patch)">
-              <Badge variant="secondary">{report.bump_kind}</Badge>
-            </HelpTip>
-            <HelpTip label="Quality gate status — green means all checks pass, red means failures must be fixed before release">
-              <Badge variant={gateBadgeVariant(report.gate_state)}>
-                gate: {report.gate_state}
-              </Badge>
-            </HelpTip>
-          </CardTitle>
-          <CardDescription>
-            {report.change_summary.length} change(s) since the last tag · review
-            and approve to cut the release (nothing publishes until you do).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {report.gaps.length > 0 && (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
-              <p className="flex items-center gap-1.5 text-sm font-medium text-amber-600">
-                <AlertTriangle className="h-4 w-4" />
-                {report.gaps.length} gap(s) to resolve before publishing
-              </p>
-              <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-                {report.gaps.map((gap, i) => (
-                  <li key={`${gap.category}-${i}`}>
-                    <span className="font-mono text-xs uppercase">
-                      [{gap.category}]
-                    </span>{" "}
-                    {gap.detail}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <div>
-            <HelpTip label="Written by the release manager from conventional-commit messages since the last tag">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Drafted CHANGELOG
-              </p>
-            </HelpTip>
-            <pre className="max-h-60 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
-              {report.drafted_changelog}
-            </pre>
-          </div>
-
-          <div>
-            <HelpTip label="Files the executor will rewrite with the new version number on approve">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Version bump plan ({report.version_bump_plan.length} files)
-              </p>
-            </HelpTip>
-            <p className="text-sm text-muted-foreground">
-              {report.version_bump_plan.join(", ")}
-            </p>
-          </div>
-
-          {report.migration_notes.length > 0 && (
-            <div>
-              <HelpTip label="Alembic migrations included in this release — check for a single head">
-                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Migrations
-                </p>
-              </HelpTip>
-              <ul className="space-y-1 text-sm text-muted-foreground">
-                {report.migration_notes.map((note, i) => (
-                  <li key={i}>{note}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {proposal.required_changes && (
-            <p className="text-sm text-amber-600">
-              Awaiting revision — you requested: {proposal.required_changes}
-            </p>
-          )}
-
-          {executeInFlight && (
-            <div className="flex items-center gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 p-3">
-              <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-              <span className="text-sm text-blue-600 dark:text-blue-400">
-                Release execute running in the background (~40 min) — this card
-                updates when it finishes.
-              </span>
-            </div>
-          )}
-
-          {executeFailed && (
-            <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
-              <p className="flex items-center gap-1.5 text-sm font-medium text-red-600">
-                <XCircle className="h-4 w-4" />
-                Last execute failed ({proposal.execute_status})
-              </p>
-              {proposal.execute_detail && (
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {proposal.execute_detail}
-                </p>
-              )}
-              <p className="mt-1 text-xs text-muted-foreground">
-                Fix the cause and approve again to retry.
-              </p>
-            </div>
-          )}
-
-          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
+      {showCertificateCard && pointer && (
+        <Card className={className}>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-green-600" />
+              Published v{pointer.version}
+            </CardTitle>
+            <CardDescription>
+              Release published — the governance certificate for this version
+              is ready below.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
             <HelpTip label="Download the release certificate — the full gate-chain artifact (CI verdict, conventions, per-AC QA states, findings summary) as JSON">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => certificateMutation.mutate(report.proposed_version)}
+                onClick={() => certificateMutation.mutate(pointer.version)}
                 disabled={certificateMutation.isPending}
               >
                 <Download className="mr-1 h-4 w-4" />
                 Download certificate
               </Button>
             </HelpTip>
-            <HelpTip
-              label={
-                executeInFlight
-                  ? "Disabled while the execute is running"
-                  : "Cancels the proposal — a fresh assessment runs next cycle"
-              }
-            >
-              <span>
+          </CardContent>
+        </Card>
+      )}
+
+      {proposal && report && (
+        <>
+          <Card className={className}>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Rocket className="h-5 w-5" />
+                Release Proposal
+                <HelpTip label="Next version number, computed from the commit classification below">
+                  <Badge variant="outline">v{report.proposed_version}</Badge>
+                </HelpTip>
+                <HelpTip label="Semver bump type — how the version number increases (major, minor, or patch)">
+                  <Badge variant="secondary">{report.bump_kind}</Badge>
+                </HelpTip>
+                <HelpTip label="Quality gate status — green means all checks pass, red means failures must be fixed before release">
+                  <Badge variant={gateBadgeVariant(report.gate_state)}>
+                    gate: {report.gate_state}
+                  </Badge>
+                </HelpTip>
+              </CardTitle>
+              <CardDescription>
+                {report.change_summary.length} change(s) since the last tag ·
+                review and approve to cut the release (nothing publishes until
+                you do).
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {report.gaps.length > 0 && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+                  <p className="flex items-center gap-1.5 text-sm font-medium text-amber-600">
+                    <AlertTriangle className="h-4 w-4" />
+                    {report.gaps.length} gap(s) to resolve before publishing
+                  </p>
+                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                    {report.gaps.map((gap, i) => (
+                      <li key={`${gap.category}-${i}`}>
+                        <span className="font-mono text-xs uppercase">
+                          [{gap.category}]
+                        </span>{" "}
+                        {gap.detail}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div>
+                <HelpTip label="Written by the release manager from conventional-commit messages since the last tag">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Drafted CHANGELOG
+                  </p>
+                </HelpTip>
+                <pre className="max-h-60 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+                  {report.drafted_changelog}
+                </pre>
+              </div>
+
+              <div>
+                <HelpTip label="Files the executor will rewrite with the new version number on approve">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Version bump plan ({report.version_bump_plan.length} files)
+                  </p>
+                </HelpTip>
+                <p className="text-sm text-muted-foreground">
+                  {report.version_bump_plan.join(", ")}
+                </p>
+              </div>
+
+              {report.migration_notes.length > 0 && (
+                <div>
+                  <HelpTip label="Alembic migrations included in this release — check for a single head">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Migrations
+                    </p>
+                  </HelpTip>
+                  <ul className="space-y-1 text-sm text-muted-foreground">
+                    {report.migration_notes.map((note, i) => (
+                      <li key={i}>{note}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {proposal.required_changes && (
+                <p className="text-sm text-amber-600">
+                  Awaiting revision — you requested: {proposal.required_changes}
+                </p>
+              )}
+
+              {executeInFlight && (
+                <div className="flex items-center gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 p-3">
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                  <span className="text-sm text-blue-600 dark:text-blue-400">
+                    Release execute running in the background (~40 min) — this
+                    card updates when it finishes.
+                  </span>
+                </div>
+              )}
+
+              {executeFailed && (
+                <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
+                  <p className="flex items-center gap-1.5 text-sm font-medium text-red-600">
+                    <XCircle className="h-4 w-4" />
+                    Last execute failed ({proposal.execute_status})
+                  </p>
+                  {proposal.execute_detail && (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {proposal.execute_detail}
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Fix the cause and approve again to retry.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
+                <HelpTip
+                  label={
+                    executeInFlight
+                      ? "Disabled while the execute is running"
+                      : "Cancels the proposal — a fresh assessment runs next cycle"
+                  }
+                >
+                  <span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setAction("reject")}
+                      disabled={executeInFlight}
+                    >
+                      <XCircle className="mr-1 h-4 w-4" />
+                      Reject with changes
+                    </Button>
+                  </span>
+                </HelpTip>
+                <HelpTip
+                  label={
+                    executeInFlight
+                      ? "Disabled while the execute is running"
+                      : "Runs the fail-closed executor: bump + CHANGELOG + gate + CI + publish"
+                  }
+                >
+                  <span>
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700"
+                      onClick={() => setAction("approve")}
+                      disabled={executeInFlight}
+                    >
+                      <CheckCircle2 className="mr-1 h-4 w-4" />
+                      {executeFailed
+                        ? "Retry approve & publish"
+                        : "Approve & publish"}
+                    </Button>
+                  </span>
+                </HelpTip>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Dialog open={!!action} onOpenChange={() => closeDialog()}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>
+                  {action === "approve"
+                    ? `Approve release v${report.proposed_version}?`
+                    : "Reject with required changes"}
+                </DialogTitle>
+                <DialogDescription>
+                  {action === "approve"
+                    ? "This runs the fail-closed executor: write the bumps + CHANGELOG, run make quality, commit, wait for green CI, then publish. It aborts on a red gate or red CI."
+                    : "Record what must change. The proposal is cancelled and the release manager re-assesses next cycle; nothing is published."}
+                </DialogDescription>
+              </DialogHeader>
+
+              {action === "reject" && (
+                <div className="space-y-2">
+                  <Label htmlFor="required-changes">Required changes</Label>
+                  <Textarea
+                    id="required-changes"
+                    placeholder="e.g. tighten the CHANGELOG wording for the API change; hold for the migration fix..."
+                    value={requiredChanges}
+                    onChange={(e) => setRequiredChanges(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+              )}
+
+              <DialogFooter>
                 <Button
                   variant="outline"
-                  size="sm"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => setAction("reject")}
-                  disabled={executeInFlight}
+                  onClick={closeDialog}
+                  disabled={pending}
                 >
-                  <XCircle className="mr-1 h-4 w-4" />
-                  Reject with changes
+                  Cancel
                 </Button>
-              </span>
-            </HelpTip>
-            <HelpTip
-              label={
-                executeInFlight
-                  ? "Disabled while the execute is running"
-                  : "Runs the fail-closed executor: bump + CHANGELOG + gate + CI + publish"
-              }
-            >
-              <span>
                 <Button
-                  size="sm"
-                  className="bg-green-600 hover:bg-green-700"
-                  onClick={() => setAction("approve")}
-                  disabled={executeInFlight}
+                  onClick={handleConfirm}
+                  disabled={pending}
+                  variant={action === "reject" ? "destructive" : "default"}
+                  className={
+                    action === "approve"
+                      ? "bg-green-600 hover:bg-green-700"
+                      : ""
+                  }
                 >
-                  <CheckCircle2 className="mr-1 h-4 w-4" />
-                  {executeFailed
-                    ? "Retry approve & publish"
-                    : "Approve & publish"}
+                  {pending
+                    ? "Processing..."
+                    : action === "approve"
+                      ? "Approve & publish"
+                      : "Send back for revision"}
                 </Button>
-              </span>
-            </HelpTip>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Dialog open={!!action} onOpenChange={() => closeDialog()}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {action === "approve"
-                ? `Approve release v${report.proposed_version}?`
-                : "Reject with required changes"}
-            </DialogTitle>
-            <DialogDescription>
-              {action === "approve"
-                ? "This runs the fail-closed executor: write the bumps + CHANGELOG, run make quality, commit, wait for green CI, then publish. It aborts on a red gate or red CI."
-                : "Record what must change. The proposal is cancelled and the release manager re-assesses next cycle; nothing is published."}
-            </DialogDescription>
-          </DialogHeader>
-
-          {action === "reject" && (
-            <div className="space-y-2">
-              <Label htmlFor="required-changes">Required changes</Label>
-              <Textarea
-                id="required-changes"
-                placeholder="e.g. tighten the CHANGELOG wording for the API change; hold for the migration fix..."
-                value={requiredChanges}
-                onChange={(e) => setRequiredChanges(e.target.value)}
-                rows={3}
-              />
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button variant="outline" onClick={closeDialog} disabled={pending}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirm}
-              disabled={pending}
-              variant={action === "reject" ? "destructive" : "default"}
-              className={
-                action === "approve" ? "bg-green-600 hover:bg-green-700" : ""
-              }
-            >
-              {pending
-                ? "Processing..."
-                : action === "approve"
-                  ? "Approve & publish"
-                  : "Send back for revision"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
     </>
   );
 }
