@@ -711,3 +711,101 @@ async def test_remove_agent_access_by_uuid_success(
         f"/api/projects/{pid}/access/{other_agent.id}", headers=_HDR
     )
     assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_get_project_defaults_to_cell_default_access(
+    project_client: AsyncClient,
+) -> None:
+    """A freshly created project has no restriction: access_restricted is
+    False and allowed_agents is null (today's whole-cell behavior)."""
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
+    pid = create.json()["id"]
+
+    response = await project_client.get(f"/api/projects/{pid}", headers=_HDR)
+
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["access_restricted"] is False
+    assert body["allowed_agents"] is None
+
+
+@pytest.mark.asyncio
+async def test_add_agent_access_exposes_restricted_state_with_resolved_agent(
+    project_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Restricting a project resolves the allowed_agents ids to slug/name
+    both on the write route's own response and on a subsequent GET."""
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
+    pid = create.json()["id"]
+    other_agent = AgentTable(
+        id=uuid4(),
+        name="RestrictedAgent",
+        slug=f"restricted-{uuid4().hex[:6]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(other_agent)
+    await db_session.flush()
+
+    add_response = await project_client.post(
+        f"/api/projects/{pid}/access/{other_agent.id}", headers=_HDR
+    )
+    assert add_response.status_code == HTTPStatus.OK
+    add_body = add_response.json()
+    assert add_body["access_restricted"] is True
+    assert add_body["allowed_agents"] == [
+        {"id": str(other_agent.id), "slug": other_agent.slug, "name": other_agent.name}
+    ]
+
+    get_response = await project_client.get(f"/api/projects/{pid}", headers=_HDR)
+    assert get_response.status_code == HTTPStatus.OK
+    get_body = get_response.json()
+    assert get_body["access_restricted"] is True
+    assert get_body["allowed_agents"] == [
+        {"id": str(other_agent.id), "slug": other_agent.slug, "name": other_agent.name}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remove_agent_access_reverts_to_cell_default(
+    project_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Removing the last restricted agent reverts allowed_agents to []
+    (still restricted, everyone removed) — not back to the None default;
+    only the write routes ever clear the restriction entirely."""
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
+    pid = create.json()["id"]
+    other_agent = AgentTable(
+        id=uuid4(),
+        name="RemovedAgent",
+        slug=f"removed-{uuid4().hex[:6]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(other_agent)
+    await db_session.flush()
+
+    await project_client.post(
+        f"/api/projects/{pid}/access/{other_agent.id}", headers=_HDR
+    )
+    remove_response = await project_client.delete(
+        f"/api/projects/{pid}/access/{other_agent.id}", headers=_HDR
+    )
+
+    assert remove_response.status_code == HTTPStatus.OK
+    body = remove_response.json()
+    assert body["access_restricted"] is True
+    assert body["allowed_agents"] == []

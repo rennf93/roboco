@@ -39,6 +39,15 @@ class AgentService(BaseService):
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
+    async def list_by_ids(self, agent_ids: list[UUID]) -> list[AgentTable]:
+        """Fetch agents by primary key, skipping ids that no longer exist."""
+        if not agent_ids:
+            return []
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id.in_(agent_ids))
+        )
+        return list(result.scalars().all())
+
     async def get_by_uuid(self, agent_id: UUID) -> AgentTable | None:
         """Fetch an agent by primary key."""
         result = await self.session.execute(
