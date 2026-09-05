@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer (fastapi-guard 8.0.0 / guard-core 4.0.0).
+"""RoboCo HTTP security layer (fastapi-guard 8.0.0 / guard-core 4.0.1).
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:
@@ -56,7 +56,7 @@ logger = get_logger(__name__)
 # track_return_pattern call redis unguarded and raise GuardRedisError (not an
 # HTTPException) on a redis blip, so they fall through to roboco's generic
 # exception handler as a 500 instead of failing open like every pipeline check
-# does. Verified still required at guard-core 4.0.0 (redis_fail_open is
+# does. Verified still required at guard-core 4.0.1 (redis_fail_open is
 # still not consulted on either seam). Wrap all three seams here rather than
 # fork/vendor guard-core; the durable fix belongs upstream (route these calls
 # through the pipeline's own GuardRedisError / redis_fail_open handling).
@@ -1052,6 +1052,14 @@ def mesh_scanned(func: Callable[..., Any]) -> Callable[..., Any]:
 # guarantee explicit and intent-scoped rather than an incidental side effect
 # of `trusted_proxies`, a knob about XFF proxy-hop depth, not ban policy, that
 # could change for unrelated reasons.
+#
+# guard-core 4.0.1 made `ban_ip` return a bool that every ban call site reads
+# (`_resolve_and_apply_threshold_ban`, `escalate_identity_violation`,
+# `_execute_ban_action`): falsy = refused, so the WAF answers 400 instead of
+# 403 "IP has been banned", the ban log line is skipped, and the event says
+# "tracked" instead of "banned". In RoboCo's topology the event/log effect is
+# the live one (identity escalation, usage_monitor bans); the wrapper below
+# must propagate the bool.
 _orig_ban_ip = IPBanManager.ban_ip
 
 
@@ -1074,7 +1082,7 @@ def _ip_overlaps_mesh(ip: str) -> bool:
 
 async def _ban_ip_mesh_safe(
     self: IPBanManager, ip: str, duration: int, reason: str = "threshold_exceeded"
-) -> None:
+) -> bool:
     # ponytail: mesh containers are blocked per request by the route policy
     # above, never banned fleet-wide -- that is the ceiling this buys.
     if _ip_overlaps_mesh(ip):
@@ -1084,8 +1092,8 @@ async def _ban_ip_mesh_safe(
             ip,
             reason,
         )
-        return
-    await _orig_ban_ip(self, ip, duration, reason)
+        return False
+    return await _orig_ban_ip(self, ip, duration, reason)
 
 
 setattr(IPBanManager, "ban_ip", _ban_ip_mesh_safe)

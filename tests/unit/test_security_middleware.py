@@ -256,11 +256,16 @@ _FREETEXT_ATTACK_BODY = {
 }
 
 
-def _guarded_gateway_app(*, ip: str, rate_limit: int | None = None) -> _InjectClientIP:
+def _guarded_gateway_app(
+    *, ip: str, rate_limit: int | None = None, open_whitelist: bool = False
+) -> _InjectClientIP:
     """A guarded app mirroring the do.py/flow_*.py split: one @mesh_scanned
     agent-gateway route, one ordinary (panel-shaped) route, and /health."""
     cfg = security.build_security_config()
     cfg.enable_redis = False
+    if open_whitelist:
+        # An empty whitelist drops exclusivity so an external client reaches the WAF.
+        cfg.whitelist = ()
     if rate_limit is not None:
         cfg.rate_limit = rate_limit
         cfg.rate_limit_window = 60
@@ -338,7 +343,8 @@ class TestMeshBanSafety:
                 attack = client.post(
                     "/api/v1/do/gateway_probe", json=_CMD_INJECTION_BODY
                 )
-                assert attack.status_code != HTTPStatus.OK
+                # blocked per request, ban refused
+                assert attack.status_code == HTTPStatus.BAD_REQUEST
 
                 benign = client.post("/api/v1/do/gateway_probe", json=_BENIGN_BODY)
             assert benign.status_code == HTTPStatus.OK
@@ -372,7 +378,27 @@ class TestMeshBanSafety:
         try:
             with _client(_guarded_gateway_app(ip=_EXTERNAL_PEER)) as client:
                 resp = client.post("/api/optimal/panel_probe", json=_CMD_INJECTION_BODY)
-            assert resp.status_code != HTTPStatus.OK
+            # 403 "Forbidden" comes from the exclusive whitelist block; the ban
+            # is recorded through guard-core's identity-violation escalation,
+            # so the status here does not depend on the wrapper's bool.
+            assert resp.status_code == HTTPStatus.FORBIDDEN
+            assert asyncio.run(ip_ban_manager.is_ip_banned(_EXTERNAL_PEER)) is True
+        finally:
+            asyncio.run(ip_ban_manager.unban_ip(_EXTERNAL_PEER))
+
+    def test_waf_threshold_ban_reports_applied_when_external_reaches_waf(self) -> None:
+        """The discriminating case for guard-core 4.0.1's bool: with the global
+        whitelist emptied, an external attacker reaches the WAF, and the
+        single-hit cmd_injection ban must be answered 403 "IP has been banned".
+        A wrapper that swallowed `ban_ip`'s bool would answer 400 "Suspicious
+        activity detected" while the IP was in fact banned."""
+        try:
+            with _client(
+                _guarded_gateway_app(ip=_EXTERNAL_PEER, open_whitelist=True)
+            ) as client:
+                resp = client.post("/api/optimal/panel_probe", json=_CMD_INJECTION_BODY)
+            assert resp.status_code == HTTPStatus.FORBIDDEN
+            assert "IP has been banned" in resp.text
             assert asyncio.run(ip_ban_manager.is_ip_banned(_EXTERNAL_PEER)) is True
         finally:
             asyncio.run(ip_ban_manager.unban_ip(_EXTERNAL_PEER))
@@ -383,7 +409,7 @@ class TestMeshBanSafety:
         `"/" not in ip` skip let a range like this straight through."""
         overlapping = "172.20.0.0/16"
         try:
-            asyncio.run(ip_ban_manager.ban_ip(overlapping, 60))
+            assert asyncio.run(ip_ban_manager.ban_ip(overlapping, 60)) is False
             assert asyncio.run(ip_ban_manager.is_ip_banned("172.20.5.5")) is False
         finally:
             ip_ban_manager.banned_networks = [
@@ -397,7 +423,7 @@ class TestMeshBanSafety:
         mesh-safety patch only refuses ranges that actually reach the mesh."""
         clean = "203.0.113.0/24"
         try:
-            asyncio.run(ip_ban_manager.ban_ip(clean, 60))
+            assert asyncio.run(ip_ban_manager.ban_ip(clean, 60)) is True
             assert asyncio.run(ip_ban_manager.is_ip_banned("203.0.113.5")) is True
         finally:
             ip_ban_manager.banned_networks = [
