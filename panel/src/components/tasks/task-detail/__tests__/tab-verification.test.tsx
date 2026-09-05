@@ -51,7 +51,11 @@ function setup(overrides: {
     isLoading: false,
   });
   usePrCiVerdict.mockReturnValue({
-    data: overrides.ci ?? { available: false, reason: "no route" },
+    data: overrides.ci ?? {
+      available: false,
+      reason: "no route",
+      technicalDetail: "no route",
+    },
     isLoading: false,
   });
   useTaskConventionFindings.mockReturnValue({
@@ -68,8 +72,20 @@ describe("TabVerification", () => {
   it("renders every criterion as verified with its evidence line (all-verified state)", () => {
     setup({
       ac: [
-        { criterion: "Criterion A", verified: true, evidence: "file.ts:12" },
-        { criterion: "Criterion B", verified: true, evidence: "commit abc" },
+        {
+          criterion: "Criterion A",
+          matched: true,
+          verified: true,
+          unresolved: false,
+          evidence: "file.ts:12",
+        },
+        {
+          criterion: "Criterion B",
+          matched: true,
+          verified: true,
+          unresolved: false,
+          evidence: "commit abc",
+        },
       ],
     });
 
@@ -120,7 +136,13 @@ describe("TabVerification", () => {
   });
 
   it("renders the PR CI verdict as unavailable (the no-CI-repo case)", () => {
-    setup({ ci: { available: false, reason: "no REST route exists" } });
+    setup({
+      ci: {
+        available: false,
+        reason: "Per-task PR CI verification isn't available yet.",
+        technicalDetail: "no REST route exists",
+      },
+    });
 
     render(<TabVerification task={task} />);
 

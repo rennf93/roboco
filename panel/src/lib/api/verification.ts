@@ -10,7 +10,16 @@ import type { TaskFinding } from "./tasks";
 // (roboco/services/gateway/choreographer/qa.py `_render_criteria_verified`).
 export interface AcVerificationStamp {
   criterion: string;
+  // True only when a qa_notes stamp's label exactly matched this criterion's
+  // text — the one thing this function can actually determine client-side.
+  matched: boolean;
   verified: boolean;
+  // True when `matched` is false AND qa_notes carries at least one [AC]
+  // stamp line whose label matched no criterion's text at all — a strong
+  // signal QA stamped that line by the criterion's stable id instead (see
+  // the note below). Lets the UI show "can't confirm" instead of a
+  // confident "not verified" for that case.
+  unresolved: boolean;
   evidence: string | null;
 }
 
@@ -19,21 +28,38 @@ const AC_STAMP_RE = /^\[AC\]\s+(.+?)\s+—\s+verified:\s+(.+)$/;
 // ponytail: matches by exact acceptance-criteria TEXT only. `criteria_verified`
 // accepts a criterion by its stable id (`acceptance_criteria_ids`) too, but
 // that column isn't on TaskResponse/GET /tasks/{id} — an id-stamped
-// criterion reads as unverified here even when QA verified it. Widening this
-// needs `acceptance_criteria_ids` added to the wire response, a real
-// backend change out of this task's scope.
+// criterion's [AC] line carries the raw id as its label, which matches no
+// criterion text here. Rather than misreport that as a confident "not
+// verified" (see `unresolved` above), this scopes the false-negative down to
+// "can't confirm" whenever an orphan stamp exists. Real id matching needs
+// `acceptance_criteria_ids` added to the wire response, a backend change out
+// of this task's scope.
 export function parseAcVerificationStamps(
   acceptanceCriteria: string[],
   qaNotes: string | null,
 ): AcVerificationStamp[] {
   const evidenceByCriterion = new Map<string, string>();
+  let hasOrphanStamp = false;
   for (const line of (qaNotes ?? "").split("\n")) {
     const match = AC_STAMP_RE.exec(line.trim());
-    if (match) evidenceByCriterion.set(match[1].trim(), match[2].trim());
+    if (!match) continue;
+    const label = match[1].trim();
+    if (acceptanceCriteria.includes(label)) {
+      evidenceByCriterion.set(label, match[2].trim());
+    } else {
+      hasOrphanStamp = true;
+    }
   }
   return acceptanceCriteria.map((criterion) => {
     const evidence = evidenceByCriterion.get(criterion) ?? null;
-    return { criterion, verified: evidence !== null, evidence };
+    const matched = evidence !== null;
+    return {
+      criterion,
+      matched,
+      verified: matched,
+      unresolved: !matched && hasOrphanStamp,
+      evidence,
+    };
   });
 }
 
@@ -107,12 +133,20 @@ export function buildReviewerChain(
 // unavailable until a real route (e.g. GET /tasks/{id}/pr-ci-status) ships.
 export interface PrCiVerdict {
   available: false;
+  /** Short sentence safe to render directly to the approver. */
   reason: string;
+  /**
+   * The backend-facing escalation detail (which endpoint is missing, why) —
+   * for a HelpTip, code comment, or the docs. Never render this as the
+   * primary visible sentence; it names internals the approver has no use for.
+   */
+  technicalDetail: string;
 }
 
 export const PR_CI_VERDICT_UNAVAILABLE: PrCiVerdict = {
   available: false,
-  reason:
+  reason: "Per-task PR CI verification isn't available yet.",
+  technicalDetail:
     "No backend endpoint exposes PR CI status for a task " +
     "(GitService.get_pr_ci_status has no REST route) — needs a new " +
     "endpoint; escalate rather than invent.",
@@ -129,13 +163,21 @@ export const PR_CI_VERDICT_UNAVAILABLE: PrCiVerdict = {
 // aggregation the day a real endpoint exposes the member set.
 export interface ReleaseMemberTaskIdsUnavailable {
   available: false;
+  /** Short sentence safe to render directly to the approver. */
   reason: string;
+  /**
+   * The backend-facing escalation detail (which endpoint is missing, why) —
+   * for a HelpTip, code comment, or the docs. Never render this as the
+   * primary visible sentence; it names internals the approver has no use for.
+   */
+  technicalDetail: string;
 }
 
 export const RELEASE_MEMBER_TASK_IDS_UNAVAILABLE: ReleaseMemberTaskIdsUnavailable =
   {
     available: false,
-    reason:
+    reason: "Per-task verification isn't available for this release yet.",
+    technicalDetail:
       "No backend endpoint exposes this release's member task set " +
       "(ReleaseReport.change_summary is free-text commit strings only, no " +
       "task_id/pr_number) — needs a new endpoint; escalate rather than " +

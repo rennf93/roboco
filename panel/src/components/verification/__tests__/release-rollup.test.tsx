@@ -37,10 +37,30 @@ import { ReleaseVerificationRollup } from "../release-rollup";
 // an unavailable ("no-CI-repo") CI verdict — exercising the mixed
 // verified/open aggregation across member tasks in one render.
 const AC_BY_TASK: Record<string, AcVerificationStamp[]> = {
-  t1: [{ criterion: "Criterion A", verified: true, evidence: "file.ts:12" }],
+  t1: [
+    {
+      criterion: "Criterion A",
+      matched: true,
+      verified: true,
+      unresolved: false,
+      evidence: "file.ts:12",
+    },
+  ],
   t2: [
-    { criterion: "Criterion B", verified: true, evidence: "commit abc" },
-    { criterion: "Criterion C", verified: false, evidence: null },
+    {
+      criterion: "Criterion B",
+      matched: true,
+      verified: true,
+      unresolved: false,
+      evidence: "commit abc",
+    },
+    {
+      criterion: "Criterion C",
+      matched: false,
+      verified: false,
+      unresolved: false,
+      evidence: null,
+    },
   ],
 };
 
@@ -77,9 +97,13 @@ const FINDINGS_BY_TASK: Record<string, ReviewRoundFindings[]> = {
 };
 
 const CI_BY_TASK: Record<string, PrCiVerdict> = {
-  t1: { available: false, reason: "no route" },
+  t1: { available: false, reason: "no route", technicalDetail: "no route" },
   // t2 is the deliberate no-CI-repo case with its own distinct reason.
-  t2: { available: false, reason: "no REST route exists for this repo" },
+  t2: {
+    available: false,
+    reason: "no REST route exists for this repo",
+    technicalDetail: "no REST route exists for this repo",
+  },
 };
 
 const CONVENTIONS_BY_TASK: Record<string, ConventionFinding[]> = {
@@ -102,7 +126,11 @@ function setup() {
     isLoading: false,
   }));
   usePrCiVerdict.mockImplementation((taskId: string) => ({
-    data: CI_BY_TASK[taskId] ?? { available: false, reason: "unknown" },
+    data: CI_BY_TASK[taskId] ?? {
+      available: false,
+      reason: "unknown",
+      technicalDetail: "unknown",
+    },
     isLoading: false,
   }));
   useTaskConventionFindings.mockImplementation((taskId: string) => ({
@@ -116,11 +144,14 @@ function setup() {
 }
 
 describe("ReleaseVerificationRollup", () => {
-  it("reports the member-task set as unavailable when no ids are given", () => {
+  it("reports the member-task set as unavailable with a reader-facing sentence when no ids are given", () => {
     render(<ReleaseVerificationRollup taskIds={[]} />);
     expect(
-      screen.getByText(/does not expose|member task set/i),
+      screen.getByText("Per-task verification isn't available for this release yet."),
     ).toBeInTheDocument();
+    // The internal escalation detail (which endpoint is missing, why) must
+    // never render verbatim as the visible sentence.
+    expect(screen.queryByText(/endpoint|escalate/i)).not.toBeInTheDocument();
     expect(useAcVerificationStamps).not.toHaveBeenCalled();
   });
 

@@ -88,8 +88,20 @@ describe("useAcVerificationStamps", () => {
 
     await waitFor(() => expect(result.current.data).toBeDefined());
     expect(result.current.data).toEqual([
-      { criterion: "Criterion A", verified: true, evidence: "file.ts:10" },
-      { criterion: "Criterion B", verified: false, evidence: null },
+      {
+        criterion: "Criterion A",
+        matched: true,
+        verified: true,
+        unresolved: false,
+        evidence: "file.ts:10",
+      },
+      {
+        criterion: "Criterion B",
+        matched: false,
+        verified: false,
+        unresolved: false,
+        evidence: null,
+      },
     ]);
   });
 });
@@ -226,6 +238,9 @@ describe("usePrCiVerdict", () => {
     const { result } = renderHook(() => usePrCiVerdict("t1"), { wrapper });
     expect(result.current.isLoading).toBe(false);
     expect(result.current.data.available).toBe(false);
-    expect(result.current.data.reason).toContain("no REST route");
+    // reason is the short, reader-facing sentence; the endpoint-level
+    // escalation detail lives in technicalDetail, never in the visible copy.
+    expect(result.current.data.reason).not.toContain("REST route");
+    expect(result.current.data.technicalDetail).toContain("REST route");
   });
 });
