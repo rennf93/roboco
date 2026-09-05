@@ -43,11 +43,61 @@ export interface ReleaseExecuteResult {
   detail: string;
 }
 
+export interface ReleaseCertificateSeverityCounts {
+  blocker: number;
+  major: number;
+  minor: number;
+  nit: number;
+}
+
+export interface ReleaseCertificateFindingsSummary {
+  open: ReleaseCertificateSeverityCounts;
+  closed: ReleaseCertificateSeverityCounts;
+  waived: ReleaseCertificateSeverityCounts;
+}
+
+export interface ReleaseCertificateTaskState {
+  task_id: string;
+  title: string;
+  status: string;
+  criteria_total: number;
+  criteria_verified: number;
+  qa_passed: boolean;
+}
+
+export interface ReleaseCertificate {
+  version: string;
+  generated_at: string;
+  ci_verdict: string;
+  conventions_clean: boolean;
+  ceo_approved_at: string | null;
+  changelog_excerpt: string;
+  task_states: ReleaseCertificateTaskState[];
+  findings_summary: ReleaseCertificateFindingsSummary;
+}
+
 export const releaseApi = {
   // 404 means "no open proposal" — a normal empty state, returned as null.
   getProposal: async (): Promise<ReleaseProposal | null> => {
     try {
       const { data } = await api.get<ReleaseProposal>("/release/proposal");
+      return data;
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) {
+        return null;
+      }
+      throw err;
+    }
+  },
+  // 404 means the version hasn't published yet — a normal not-ready state,
+  // returned as null (mirrors getProposal).
+  getCertificate: async (
+    version: string,
+  ): Promise<ReleaseCertificate | null> => {
+    try {
+      const { data } = await api.get<ReleaseCertificate>(
+        `/releases/${version}/certificate`,
+      );
       return data;
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.status === 404) {
