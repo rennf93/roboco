@@ -243,18 +243,29 @@ function SpeedSection({ medianLeadTimeHours }: SpeedSectionProps) {
 // metric against its target.
 //
 // ponytail: The charter `objectives` field is free text
-// (Record<string, unknown>[]) while the three metrics are hardcoded
-// (first_pass_yield, median_lead_time_hours, escaped_defects). The mapping
-// is positional-by-convention, not derived — one card per charter objective
-// only holds until you edit the Goals tab. Stated assumption, not
-// discovered later.
+// (Record<string, unknown>[]) with no id/slug the backend guarantees, so the
+// only stable key available is the objective's own `metric` wording. Each
+// canonical metric below is paired to its owning objective by matching a
+// distinct keyword against every `objectives[].metric` string — order-
+// independent and unaffected by an extra objective — rather than by array
+// index.
 // ---------------------------------------------------------------------------
 
-const OBJECTIVE_FALLBACK_LABELS = [
-  "Tasks shipped to merge with no human code edits",
-  "Median lead time, intake → merged",
-  "Critical escaped defects per release",
-] as const;
+type CanonicalMetricKey = "first_pass_yield" | "median_lead_time" | "escaped_defects";
+
+// Keywords chosen to be distinct against the other two canonical texts, so
+// one canonical metric can never match another's objective by mistake.
+const CANONICAL_METRIC_PATTERNS: Record<CanonicalMetricKey, RegExp> = {
+  first_pass_yield: /shipped to merge|no human code edit/i,
+  median_lead_time: /lead time/i,
+  escaped_defects: /defect/i,
+};
+
+const OBJECTIVE_FALLBACK_LABELS: Record<CanonicalMetricKey, string> = {
+  first_pass_yield: "Tasks shipped to merge with no human code edits",
+  median_lead_time: "Median lead time, intake → merged",
+  escaped_defects: "Critical escaped defects per release",
+};
 
 interface ObjectivesSectionProps {
   objectives: Record<string, unknown>[];
@@ -265,12 +276,17 @@ interface ObjectivesSectionProps {
 
 function objectiveLabel(
   objectives: Record<string, unknown>[],
-  index: number,
+  key: CanonicalMetricKey,
 ): string {
-  const raw = objectives[index]?.metric;
+  const pattern = CANONICAL_METRIC_PATTERNS[key];
+  const match = objectives.find((objective) => {
+    const raw = objective?.metric;
+    return typeof raw === "string" && raw.length > 0 && pattern.test(raw);
+  });
+  const raw = match?.metric;
   return typeof raw === "string" && raw.length > 0
     ? raw
-    : OBJECTIVE_FALLBACK_LABELS[index];
+    : OBJECTIVE_FALLBACK_LABELS[key];
 }
 
 interface ObjectiveCardProps {
@@ -320,7 +336,7 @@ function ObjectivesSection({
       <SectionLabel>Objectives</SectionLabel>
       <div className="space-y-2">
         <ObjectiveCard
-          label={objectiveLabel(objectives, 0)}
+          label={objectiveLabel(objectives, "first_pass_yield")}
           hasData={fpyHasData}
           formattedValue={
             fpyHasData
@@ -330,7 +346,7 @@ function ObjectivesSection({
           targetText="90%"
         />
         <ObjectiveCard
-          label={objectiveLabel(objectives, 1)}
+          label={objectiveLabel(objectives, "median_lead_time")}
           hasData={ltHasData}
           formattedValue={
             ltHasData
@@ -340,7 +356,7 @@ function ObjectivesSection({
           targetText="< 24h"
         />
         <ObjectiveCard
-          label={objectiveLabel(objectives, 2)}
+          label={objectiveLabel(objectives, "escaped_defects")}
           hasData={edHasData}
           formattedValue={edHasData ? `${escapedDefects as number}` : ""}
           targetText="0"
