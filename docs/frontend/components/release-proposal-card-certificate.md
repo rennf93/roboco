@@ -1,6 +1,6 @@
 # Download Certificate Action (Release Proposal Card)
 
-**Date:** 2026-09-05 **Task:** bfb48210, 13af9490 **PR:** #1015 **Files:** `panel/src/lib/api/release.ts`, `panel/src/components/dashboard/release-proposal-card.tsx`
+**Date:** 2026-09-05 **Task:** bfb48210, 13af9490 **PR:** #1015; post-publish reachability fix in PR #1028 (task `13af9490`) **Files:** `panel/src/lib/api/release.ts`, `panel/src/components/dashboard/release-proposal-card.tsx`
 
 ## What
 
@@ -22,8 +22,6 @@ const [publishedRelease, setPublishedRelease] = useState<{
 `approveMutation`'s `onSuccess` sets it from the `ReleaseExecuteResult` the moment `result.status === "published"` — the same payload the success toast already reads `version`/`release_url` from. This is data the approve response carries regardless of what the open-proposal query does next, so it survives the query going to `null`.
 
 The card's empty-state guard changes from `if (!proposal) return null;` to `if (!proposal && !publishedRelease) return null;` — the normal empty state (no proposal, nothing just published) still hides the card exactly as before. When `publishedRelease` is set, a small persistent "Published vX.Y.Z" confirmation `Card` renders above the (now-optional) open-proposal card, hosting its own "Download certificate" button wired to `certificateMutation.mutate(publishedRelease.version)` instead of `report.proposed_version` — a version the endpoint actually serves, since it just published. This block keeps rendering independently of whatever the open-proposal query returns next (a fresh proposal for the following release cycle, or nothing at all), and is unaffected by the pre-existing open-proposal button/card, which is untouched and still renders normally whenever a new proposal is open.
-
-## The API client method
 
 ## The API client method
 
