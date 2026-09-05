@@ -757,3 +757,58 @@ async def test_fail_review_warning_combines_with_findings_hint() -> None:
     assert "notification failed" in warning
     assert "findings in one call" in warning
     a2a_svc.send.assert_awaited_once()
+
+
+def _begin_nested_flushes_on_clean_exit(session: AsyncMock) -> MagicMock:
+    """Return a ``begin_nested()`` stub whose savepoint RELEASE calls
+    ``session.flush()`` on a clean exit — the real SQLAlchemy behavior a
+    real savepoint relies on when the wrapped block raised nothing. Lets a
+    test drive a flush failure that happens at savepoint-release time even
+    though the wrapped ``a2a.send`` call itself returned normally, proving
+    the guard must sit at the call site (wrapping the whole
+    ``async with``), not just inside the notify helper's own send-only
+    try/except."""
+
+    class _FakeNestedTxn:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            if exc_type is None:
+                await session.flush()
+            return False
+
+    return MagicMock(return_value=_FakeNestedTxn())
+
+
+@pytest.mark.asyncio
+async def test_fail_review_survives_savepoint_flush_failure() -> None:
+    """A mid-flush failure inside the begin_nested() savepoint — not just
+    a2a.send() itself raising — must still degrade to the identical
+    warning instead of leaving the shared session rollback-only, which
+    would otherwise poison the request's own later commit and silently
+    lose the needs_revision transition the reviewer just committed."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, task_svc, a2a_svc = _fail_review_fixture(qa_id, task_id, dev_id)
+    # Three flush() calls precede the notify savepoint's own release: the
+    # findings-ledger insert, then VerbRunner's own begin_nested() around
+    # the composed qa_fail transition (both must succeed so we actually
+    # reach the notify step) — only the notify savepoint's release fails.
+    task_svc.session.flush = AsyncMock(
+        side_effect=[None, None, RuntimeError("flush failed")]
+    )
+    task_svc.session.begin_nested = _begin_nested_flushes_on_clean_exit(
+        task_svc.session
+    )
+    task_svc.session.refresh = AsyncMock()
+
+    env = await c.fail_review(qa_id, task_id, _FAIL_REVIEW_ISSUES)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "needs_revision"
+    task_svc.qa_fail.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+    task_svc.session.refresh.assert_awaited_once()
+    warning = body.get("warning") or ""
+    assert "notification failed" in warning
+    assert "RuntimeError" in warning

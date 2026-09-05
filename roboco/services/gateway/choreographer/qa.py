@@ -1048,6 +1048,18 @@ class QAMixin(_Base):
         self._store_qa_note(t, summary, None, passed=False, findings=validated)
         return summary
 
+    @staticmethod
+    def _fail_review_notify_failure_warning(exc: Exception) -> str:
+        """The warning string for a failed developer notification, shared
+        between the send-level catch inside ``_fail_review_developer_notify``
+        and the savepoint-level catch in ``fail_review`` so both failure
+        classes surface the identical message."""
+        return (
+            f"QA needs-changes transition committed but the developer "
+            f"notification failed ({type(exc).__name__}: {exc}). "
+            "Re-issue the notification via dm."
+        )
+
     async def _fail_review_developer_notify(
         self, qa_agent_id: UUID, task_id: UUID, t: Any, summary: str
     ) -> str | None:
@@ -1058,7 +1070,12 @@ class QAMixin(_Base):
         None. Mirrors ``_pass_review_documenter_handoff`` — a raise here
         would surface as an opaque verb error, skip the sandbox teardown,
         and poison the shared session before root commit, silently rolling
-        back the committed transition and the inserted findings rows.
+        back the committed transition and the inserted findings rows. The
+        caller additionally wraps this call in a savepoint (see
+        ``fail_review``) because a raise caught here does not by itself
+        undo a mid-flush failure inside ``a2a.send`` — the session still
+        needs an explicit rollback-to-savepoint to become usable again for
+        the request's own commit.
         """
         try:
             await self.a2a.send(
@@ -1075,11 +1092,7 @@ class QAMixin(_Base):
                 task_id=str(task_id),
                 error=str(exc),
             )
-            return (
-                f"QA needs-changes transition committed but the developer "
-                f"notification failed ({type(exc).__name__}: {exc}). "
-                "Re-issue the notification via dm."
-            )
+            return self._fail_review_notify_failure_warning(exc)
         return None
 
     async def fail_review(
@@ -1177,9 +1190,32 @@ class QAMixin(_Base):
 
         notify_warning: str | None = None
         if t.assigned_to is not None:
-            notify_warning = await self._fail_review_developer_notify(
-                qa_agent_id, task_id, t, summary
-            )
+            try:
+                # Savepoint: a mid-flush failure inside a2a.send (not just
+                # send() raising) would otherwise leave the shared session
+                # rollback-only — the response commit (DbCommitMiddleware)
+                # reuses it right after this returns. Mirrors doc.py's
+                # _handoff_to_cell_pm savepoint shape.
+                async with self.task.session.begin_nested():
+                    notify_warning = await self._fail_review_developer_notify(
+                        qa_agent_id, task_id, t, summary
+                    )
+            except Exception as exc:
+                # The savepoint rollback on ANY exception here — not just a
+                # DB error, e.g. a2a.send failing — fully expires every
+                # attribute of `t`. Reading t.status / with_introspection(t)
+                # below without refreshing first raises MissingGreenlet,
+                # which propagates uncaught past this except and rolls back
+                # the WHOLE request — discarding the needs_revision
+                # transition this very warning claims survived.
+                await self.task.session.refresh(t)
+                logger.warning(
+                    "fail_review side-effect failed - transition committed, "
+                    "developer notification did not fire",
+                    task_id=str(task_id),
+                    error=repr(exc),
+                )
+                notify_warning = self._fail_review_notify_failure_warning(exc)
         await self._teardown_sandbox_best_effort(qa_agent_id)
         return self._fail_review_success_env(
             t,
