@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { releaseApi } from "@/lib/api";
+import { releaseApi, tasksApi } from "@/lib/api";
+import { TaskStatus } from "@/types";
 import type {
   ReleaseCertificate,
   ReleaseExecuteResult,
@@ -76,6 +77,54 @@ function downloadCertificate(certificate: ReleaseCertificate): void {
   URL.revokeObjectURL(url);
 }
 
+// The open-proposal query excludes COMPLETED proposals, so the instant a
+// publish succeeds this card's own getProposal() 404s → null and would
+// unmount — but the certificate endpoint only serves that exact published
+// version. POST /release/proposal/approve is a 202-dispatch route that always
+// returns {status: "accepted"} synchronously (the real publish runs ~40min
+// later in a background task), so the published state can never be derived
+// from the approve response. Instead we persist the proposal's own task_id +
+// target version the moment the proposal loads, and confirm publication by
+// polling GET /tasks/{taskId} (the same task the release-manager engine
+// carries end to end) for status === "completed" — a signal that survives a
+// reload/navigation, unlike component state.
+const _CERTIFICATE_POINTER_KEY = "roboco.release-certificate-pointer";
+
+interface CertificatePointer {
+  taskId: string;
+  version: string;
+}
+
+function readStoredPointer(): CertificatePointer | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(_CERTIFICATE_POINTER_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as CertificatePointer).taskId === "string" &&
+      typeof (parsed as CertificatePointer).version === "string"
+    ) {
+      return parsed as CertificatePointer;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPointer(pointer: CertificatePointer): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(_CERTIFICATE_POINTER_KEY, JSON.stringify(pointer));
+}
+
+function clearStoredPointer(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(_CERTIFICATE_POINTER_KEY);
+}
+
 // A red gate / open gaps make publishing risky — the CEO should resolve them
 // first. Approval still runs the fail-closed executor, so it can't ship a bad
 // release; this only steers the CEO.
@@ -83,15 +132,11 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [action, setAction] = useState<"approve" | "reject" | null>(null);
   const [requiredChanges, setRequiredChanges] = useState("");
-  // The open-proposal query excludes COMPLETED proposals, so the instant a
-  // publish succeeds this card's own getProposal() 404s → null and the card
-  // would unmount — but the certificate endpoint only serves that exact
-  // just-published version. Stash it locally from the approve outcome so a
-  // "Download certificate" affordance stays reachable after the publish.
-  const [publishedRelease, setPublishedRelease] = useState<{
-    version: string;
-    releaseUrl: string | null;
-  } | null>(null);
+  // Re-confirmed against the server on every mount (see the poll query below)
+  // rather than trusted as-is — this is what survives a reload/navigation
+  // during the ~40min background publish.
+  const [storedPointer, setStoredPointer] =
+    useState<CertificatePointer | null>(() => readStoredPointer());
 
   const {
     data: proposal,
@@ -115,24 +160,72 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
     return () => unregister(cb);
   }, [register, unregister, refetch]);
 
+  // Persist {taskId, version} the moment a proposal with a report loads — the
+  // panel already knows the target version before the CEO even clicks
+  // Approve, so this doesn't need to wait for the approve response. This
+  // effect only writes through to localStorage (an external system); the
+  // open proposal itself is always the freshest source for `pointer` below,
+  // so there is no local state to re-derive here.
+  useEffect(() => {
+    if (proposal?.task_id && proposal.report) {
+      writeStoredPointer({
+        taskId: proposal.task_id,
+        version: proposal.report.proposed_version,
+      });
+    }
+  }, [proposal?.task_id, proposal?.report]);
+
+  // The open proposal (while present) is the freshest source for the target
+  // version; the stored pointer is what survives once it disappears —
+  // post-publish, or a reload/navigation mid-execute.
+  const pointer: CertificatePointer | null =
+    proposal?.task_id && proposal.report
+      ? { taskId: proposal.task_id, version: proposal.report.proposed_version }
+      : storedPointer;
+
+  // Re-confirm the stored pointer against the server: the ONLY source of
+  // truth for "published" is the release-manager's own task reaching
+  // COMPLETED. Polls every 30s (mirroring the proposal query above) until
+  // the task lands on a terminal status.
+  const taskStatusQuery = useQuery({
+    queryKey: ["release", "certificate-task", pointer?.taskId],
+    queryFn: () => tasksApi.get(pointer!.taskId),
+    enabled: !!pointer,
+    refetchInterval: (query) => {
+      const taskStatus = query.state.data?.status;
+      const terminal =
+        taskStatus === TaskStatus.COMPLETED ||
+        taskStatus === TaskStatus.CANCELLED;
+      return terminal ? false : 30000;
+    },
+  });
+
+  const pointerTaskStatus = taskStatusQuery.data?.status;
+
+  // A terminal status that isn't a publish (e.g. cancelled) means this
+  // pointer will never resolve to a certificate — clear it instead of
+  // polling forever. Adjusted during render (guarded against re-firing for
+  // an unchanged status) rather than in an effect, per
+  // https://react.dev/learn/you-might-not-need-an-effect — mutating a ref
+  // during render is safe and doesn't itself trigger a re-render.
+  const lastSeenStatusRef = useRef(pointerTaskStatus);
+  if (lastSeenStatusRef.current !== pointerTaskStatus) {
+    lastSeenStatusRef.current = pointerTaskStatus;
+    if (pointerTaskStatus === TaskStatus.CANCELLED) {
+      clearStoredPointer();
+      setStoredPointer(null);
+    }
+  }
+
   const approveMutation = useMutation({
     mutationFn: () => releaseApi.approve(),
     onSuccess: (result: ReleaseExecuteResult) => {
       queryClient.invalidateQueries({ queryKey: ["release", "proposal"] });
-      if (result.status === "published") {
-        setPublishedRelease({
-          version: result.version,
-          releaseUrl: result.release_url ?? null,
-        });
-        toast.success(
-          `Published v${result.version}` +
-            (result.release_url ? "" : " (no release URL returned)"),
-        );
-      } else if (result.status === "accepted") {
+      if (result.status === "accepted") {
         // The execute runs in the background (a synchronous request would 504
         // at nginx before the ~40min fail-closed gate/CI/publish finished).
-        // This card polls GET /proposal every 30s and reflects the final
-        // outcome (COMPLETED on a publish, else the proposal stays open).
+        // The stored pointer + taskStatusQuery above reflect the final
+        // outcome (COMPLETED on a publish) once it lands.
         toast.info(
           "Release execute dispatched — running in the background. This card updates as it progresses.",
         );
@@ -221,10 +314,14 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
       </Card>
     );
   }
-  // No open proposal (404 → null) AND nothing just published — the normal
-  // empty state, hidden (mirrors PrReviewQueue). A stored publishedRelease
-  // keeps the card mounted even once the open-proposal query goes to null.
-  if (!proposal && !publishedRelease) return null;
+  // A confirmed-published pointer keeps a "Download certificate" card
+  // mounted even once the open-proposal query goes to null (post-publish).
+  const showCertificateCard =
+    !!pointer && pointerTaskStatus === TaskStatus.COMPLETED;
+
+  // No open proposal (404 → null) AND nothing confirmed published — the
+  // normal empty state, hidden (mirrors PrReviewQueue).
+  if (!proposal && !showCertificateCard) return null;
 
   const report = proposal?.report;
   const pending = approveMutation.isPending || rejectMutation.isPending;
@@ -237,17 +334,16 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
 
   return (
     <>
-      {publishedRelease && (
+      {showCertificateCard && pointer && (
         <Card className={className}>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-green-600" />
-              Published v{publishedRelease.version}
+              Published v{pointer.version}
             </CardTitle>
             <CardDescription>
-              {publishedRelease.releaseUrl
-                ? "Release published — the governance certificate for this version is ready below."
-                : "Release published (no release URL returned) — the governance certificate for this version is ready below."}
+              Release published — the governance certificate for this version
+              is ready below.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -255,9 +351,7 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() =>
-                  certificateMutation.mutate(publishedRelease.version)
-                }
+                onClick={() => certificateMutation.mutate(pointer.version)}
                 disabled={certificateMutation.isPending}
               >
                 <Download className="mr-1 h-4 w-4" />
@@ -384,19 +478,6 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
               )}
 
               <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
-                <HelpTip label="Download the release certificate — the full gate-chain artifact (CI verdict, conventions, per-AC QA states, findings summary) as JSON">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      certificateMutation.mutate(report.proposed_version)
-                    }
-                    disabled={certificateMutation.isPending}
-                  >
-                    <Download className="mr-1 h-4 w-4" />
-                    Download certificate
-                  </Button>
-                </HelpTip>
                 <HelpTip
                   label={
                     executeInFlight
