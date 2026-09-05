@@ -677,6 +677,22 @@ export interface CEOOverview {
 }
 
 // =============================================================================
+// PORTFOLIO (matching backend schemas/dashboard.py PortfolioProjectMetrics)
+// =============================================================================
+
+/** One per-project row of the CEO portfolio view - GET /dashboard/portfolio, most active first */
+export interface PortfolioCard {
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+  active_task_count: number;
+  median_lead_time_hours: number | null;
+  rework_rate: number;
+  open_findings_count: number;
+  monthly_budget_burn_usd: number;
+}
+
+// =============================================================================
 // STALLED TASKS (matching backend schemas/dashboard.py StalledTaskResponse)
 // =============================================================================
 
