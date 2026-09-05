@@ -22,6 +22,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "evidence_repo": AsyncMock(),
     }
     base.update(overrides)
+    base["task"].session.commit = AsyncMock()
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -56,6 +57,7 @@ async def test_claim_review_returns_evidence_inline() -> None:
         id=task_id,
         status="awaiting_qa",
         assigned_to=None,
+        active_claimant_id=None,
         pr_number=_EXPECTED_PR_NUMBER,
         pr_url=_EXPECTED_PR_URL,
         commits=[{"sha": "abc123", "message": "feat: x"}],
@@ -133,6 +135,7 @@ async def test_claim_review_marks_evidence_inspected() -> None:
         commits=[],
         team="backend",
         branch_name="feature/backend/abc",
+        active_claimant_id=None,
         work_session_id=None,
         documents=[],
         dev_notes="",
@@ -212,6 +215,7 @@ def _stub_empty_ledger(session: MagicMock) -> None:
     """Configure a mock session's ``execute`` so ``ReviewFindingsRepository``
     finds no rows — covers pass_review's verified-stamp read (list_for_task),
     which a bare ``session.add``/``flush`` stub doesn't reach."""
+    session.commit = AsyncMock()
     session.execute = AsyncMock(
         return_value=MagicMock(
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
