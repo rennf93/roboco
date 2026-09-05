@@ -272,6 +272,10 @@ select = [
 # startup; _rebuild()'s full service graph (Task/Journal/A2A/Agent services)
 # stays deferred so that startup path never pays for it.
 "roboco/vault.py" = ["PLC0415"]
+# ROBOCO_ROLE=indexer/=all import indexer_worker.run_indexer at call time so
+# the api and dispatcher roles never pay for the KB worker's import graph at
+# process start.
+"roboco/bootstrap.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior.
 # ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
 # for mypy's override check, so unused override-stub args can't be renamed.

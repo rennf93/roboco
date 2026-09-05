@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import runpy
+import sys
+import types
 from http import HTTPStatus
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,9 +21,25 @@ import pytest
 from roboco.bootstrap import (
     _BootstrapHolder,
     _run_api_server,
+    _run_indexer_role,
+    _start_indexer_task_if_available,
     _wait_for_api_ready,
     main,
 )
+from roboco.config import settings
+
+_INDEXER_MODULE = "roboco.services.optimal_brain.indexer_worker"
+
+
+def _inject_fake_indexer_module(
+    monkeypatch: pytest.MonkeyPatch, run_indexer: Any
+) -> None:
+    """Simulate the parallel leg's module landing: a real import of
+    ``_INDEXER_MODULE`` would otherwise ImportError in this checkout."""
+    fake_module = types.ModuleType(_INDEXER_MODULE)
+    fake_module.run_indexer = run_indexer  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _INDEXER_MODULE, fake_module)
+
 
 # ---------------------------------------------------------------------------
 # _run_api_server
@@ -266,3 +284,149 @@ async def test_main_handles_api_task_cancellation() -> None:
     # Cleanup ran despite cancellation.
     orch.stop.assert_awaited_once()
     bus.disconnect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# ROBOCO_ROLE=indexer / =all: the indexer_worker seam
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_indexer_role_calls_run_indexer_when_module_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_indexer_mock = AsyncMock()
+    _inject_fake_indexer_module(monkeypatch, run_indexer_mock)
+
+    await _run_indexer_role()
+
+    run_indexer_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_indexer_role_passes_dedicated_embedder_when_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dedicated indexer role seeds its own embedder: run_indexer is
+    called with dedicated_embedder=True."""
+    calls: list[dict[str, bool]] = []
+
+    async def run_indexer(*, dedicated_embedder: bool = False) -> None:
+        calls.append({"dedicated_embedder": dedicated_embedder})
+
+    _inject_fake_indexer_module(monkeypatch, run_indexer)
+
+    await _run_indexer_role()
+
+    assert calls == [{"dedicated_embedder": True}]
+
+
+@pytest.mark.asyncio
+async def test_start_indexer_task_if_available_schedules_task_when_module_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_indexer_mock = AsyncMock()
+    _inject_fake_indexer_module(monkeypatch, run_indexer_mock)
+
+    task = _start_indexer_task_if_available()
+
+    assert task is not None
+    await task
+    run_indexer_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_main_indexer_role_runs_only_the_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROBOCO_ROLE=indexer: no event bus, no orchestrator, no API server,
+    just the worker entry point."""
+    monkeypatch.setattr(settings, "role", "indexer")
+    run_indexer_role_mock = AsyncMock()
+
+    with (
+        patch("roboco.bootstrap.bootstrap_database", AsyncMock()),
+        patch("roboco.bootstrap._run_indexer_role", run_indexer_role_mock),
+        patch("roboco.bootstrap.init_event_bus") as bus,
+        patch("roboco.bootstrap.AgentOrchestrator") as orch_cls,
+    ):
+        await main()
+
+    run_indexer_role_mock.assert_awaited_once()
+    bus.assert_not_called()
+    orch_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_main_all_role_starts_indexer_task_alongside_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROBOCO_ROLE=all (the default): the indexer worker also runs
+    in-process, alongside the orchestrator's own loops, and the WebSocket
+    bridge starts (it owns the real /ws/ connections in this role)."""
+    monkeypatch.setattr(settings, "role", "all")
+    orch, bus, _ = _make_main_patches()
+    start_indexer_mock = MagicMock(return_value=None)
+
+    with (
+        patch("roboco.bootstrap.bootstrap_database", AsyncMock()),
+        patch("roboco.bootstrap.init_event_bus", AsyncMock(return_value=bus)) as bus_fn,
+        patch("roboco.bootstrap.register_default_handlers"),
+        patch("roboco.bootstrap.start_websocket_bridge", AsyncMock()) as bridge,
+        patch("roboco.bootstrap.AgentOrchestrator", return_value=orch),
+        patch("roboco.bootstrap.set_orchestrator"),
+        patch("roboco.bootstrap.NotificationService"),
+        patch("roboco.bootstrap.set_event_context"),
+        patch("roboco.bootstrap.set_reasoning_stream_callback"),
+        patch("roboco.bootstrap._wait_for_api_ready", AsyncMock()),
+        patch("roboco.bootstrap._run_api_server", AsyncMock(return_value=None)),
+        patch("roboco.bootstrap._start_indexer_task_if_available", start_indexer_mock),
+    ):
+        await main()
+
+    start_indexer_mock.assert_called_once()
+    bridge.assert_awaited_once()
+    assert bus_fn.await_args is not None
+    consumer_name = bus_fn.await_args.kwargs["consumer_name"]
+    assert consumer_name.startswith("orchestrator-all-")
+
+
+@pytest.mark.asyncio
+async def test_main_dispatcher_role_skips_websocket_bridge_and_indexer_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROBOCO_ROLE=dispatcher takes the same bootstrap.main() shape as 'all'
+    (event bus + orchestrator + its own /health-serving API server; the
+    fleet-loop split itself lives inside Orchestrator.start()'s role gate),
+    but two things differ here in bootstrap.py: the WebSocket bridge is
+    skipped (dispatcher owns no real /ws/ connections to forward to, and a
+    second subscriber would just steal deliveries from the consumer group),
+    and only 'all' fires the in-process indexer task."""
+    monkeypatch.setattr(settings, "role", "dispatcher")
+    orch, bus, _ = _make_main_patches()
+    start_indexer_mock = MagicMock(return_value=None)
+
+    with (
+        patch("roboco.bootstrap.bootstrap_database", AsyncMock()),
+        patch("roboco.bootstrap.init_event_bus", AsyncMock(return_value=bus)) as bus_fn,
+        patch("roboco.bootstrap.register_default_handlers"),
+        patch("roboco.bootstrap.start_websocket_bridge", AsyncMock()) as bridge,
+        patch("roboco.bootstrap.AgentOrchestrator", return_value=orch) as orch_cls,
+        patch("roboco.bootstrap.set_orchestrator"),
+        patch("roboco.bootstrap.NotificationService"),
+        patch("roboco.bootstrap.set_event_context"),
+        patch("roboco.bootstrap.set_reasoning_stream_callback"),
+        patch("roboco.bootstrap._wait_for_api_ready", AsyncMock()),
+        patch("roboco.bootstrap._run_api_server", AsyncMock(return_value=None)),
+        patch("roboco.bootstrap._start_indexer_task_if_available", start_indexer_mock),
+    ):
+        await main()
+
+    bus_fn.assert_awaited_once()
+    orch_cls.assert_called_once()
+    orch.start.assert_awaited_once()
+    start_indexer_mock.assert_not_called()  # only 'all' runs it in-process
+    bridge.assert_not_awaited()  # dispatcher has no /ws/ connections to bridge
+    assert bus_fn.await_args is not None
+    consumer_name = bus_fn.await_args.kwargs["consumer_name"]
+    assert consumer_name.startswith("orchestrator-dispatcher-")

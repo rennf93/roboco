@@ -237,6 +237,40 @@ The session cookie is `secure`-only (`cookie_secure=True` in `roboco/api/auth/ba
 |----------|---------|-------------|
 | `ROBOCO_DB_NETWORK_ISOLATED` | `false` | Set `true` by the compose files that put postgres/redis on the data-only `roboco_data` network agents never join. Suppresses the legacy `_append_gate_env` prod-creds injection (unreachable creds are worse than none) — DB-needing projects use the sandbox opt-in instead. |
 
+## Process Roles
+
+**Not a panel feature flag**: `ROBOCO_ROLE` is env-only, set per compose service, like `ROBOCO_DB_NETWORK_ISOLATED` above. It splits the single `python -m roboco.cli` process (FastAPI plus the Orchestrator's roughly twenty background loops plus the RAG/embedding pipeline) into up to three, so the fleet stops pinning one core under the GIL. `all` (the default) is today's single-process behavior, byte-for-byte, so `make quickstart` and the test suite run this way.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROBOCO_ROLE` | `all` | `all`: single process, everything runs (default, unchanged behavior). `api`: serves stateless FastAPI request/response routes; never runs the startup reconciliation or launches a background loop. Keeps its own Orchestrator instance only for isolated on-demand actions with no fleet-state dependency (`POST /api/tasks/{id}/supersede-external-pr`'s branch cut) - NOT the secretary/intake live chats, which nginx routes to the dispatcher instead. `dispatcher`: the fleet owner - runs the startup reconciliation plus every loop, and (via nginx) every route that touches the live fleet; also serves its own `/health` off the same FastAPI app for its container healthcheck. Its own task/notification queries go over HTTP to its OWN uvicorn (`internal_api_url` resolves to 127.0.0.1, pinned explicitly via `ROBOCO_API_URL` in the compose files), never the orchestrator (api-role) service. `indexer`: runs only the KB/embedding worker (`roboco/services/optimal_brain/indexer_worker.py`), no docker socket, no HTTP server. |
+
+### nginx routing table (`docker/nginx.conf`)
+
+`AgentOrchestrator._instances`/`_waiting_records` (the live fleet's spawn/waiting-agent registries) are per-process dicts. In split-role mode the dispatcher is the only process with a populated copy - the orchestrator (api role) runs the same route code against an always-empty copy - so nginx routes every fleet-touching path to the dispatcher upstream instead.
+
+| Path prefix | Upstream | Why |
+|---|---|---|
+| `/api/orchestrator/` | `dispatcher` | Fleet status/spawn/stop/waiting-agent routes (`roboco/api/routes/orchestrator.py`) read/write the live fleet registries directly. |
+| `/api/secretary/live/` | `dispatcher` | Secretary on-demand chat spawn + SSE relay (`roboco/api/routes/secretary_live.py`) - spawning needs the same process as the reconciliation/reaper loops that must see the container. The sibling `/api/secretary/directives` routes stay on the generic `/api/` location. |
+| `/api/prompter/live/` | `dispatcher` | Intake on-demand chat spawn + SSE relay (`roboco/api/routes/prompter_live.py`), same reasoning. |
+| `/api/`, `/ws/`, `/health`, `/ready` | `orchestrator` | Everything else: request/response CRUD, the agent gateway, and the panel's WebSocket connections (which only ever terminate on the orchestrator/api-role process). |
+
+The three dispatcher locations use `proxy_buffering off` and an 86400s read timeout (mirroring `/ws/`) so the `/live/{id}/stream` SSE endpoints in those prefixes aren't held in nginx's proxy buffer or cut mid-stream.
+
+### Role-gated startup work
+
+| Component | `all` | `api` | `dispatcher` | `indexer` |
+|---|---|---|---|---|
+| Startup reconciliation + every `AgentOrchestrator` background loop | yes | no | yes | n/a (no Orchestrator instance at all) |
+| `OptimalService` auto-index-on-startup + periodic RAG update | yes | no | no | yes (once `indexer_worker.py` lands; the role gate is already in `OptimalService.initialize()`) |
+| FastAPI lifespan's RAG-index reconcile pass (`_schedule_rag_reconcile`) | yes | no | no | n/a (indexer never runs the FastAPI app) |
+| `register_default_handlers`'s fleet-side-effect handlers (QA/blocker/question wait-resolution, auditor spawn) | yes | no | yes | n/a (indexer never starts the event bus) |
+| WebSocket bridge (`start_websocket_bridge`) | yes | yes | no | n/a |
+| Event-bus consumer name | `orchestrator-all-{hostname}` | `orchestrator-api-{hostname}` | `orchestrator-dispatcher-{hostname}` | n/a |
+
+Pure DB/notification event handlers (task-status and handoff notifications) register in every role that runs the event bus (`all`/`api`/`dispatcher`) - a Redis consumer group delivers each event to exactly one subscriber, so skipping one there would silently drop it fleet-wide whenever delivery happened to land on the api process.
+
 ## Security
 
 | Variable | Default | Description |

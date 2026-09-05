@@ -221,3 +221,28 @@ def test_display_timezone_accepts_valid_iana_name() -> None:
 def test_display_timezone_rejects_unknown_name() -> None:
     with pytest.raises(ValidationError):
         Settings(display_timezone="Not/AZone")
+
+
+# ---------------------------------------------------------------------------
+# role - ROBOCO_ROLE process split (api / dispatcher / indexer / all)
+# ---------------------------------------------------------------------------
+
+
+def test_role_defaults_to_all() -> None:
+    """Default is byte-for-byte today's single-process behavior."""
+    assert Settings().role == "all"
+
+
+def test_role_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_ROLE", "dispatcher")
+    assert Settings().role == "dispatcher"
+
+
+def test_role_accepts_every_declared_value() -> None:
+    for value in ("all", "api", "dispatcher", "indexer"):
+        assert Settings(role=value).role == value
+
+
+def test_role_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"role": "worker"})

@@ -50,6 +50,239 @@
 #   - The video-renders bind mount is commented out here (video engine ships
 #     OFF); uncomment alongside ROBOCO_VIDEO_ENGINE_ENABLED=true.
 # ============================================================================
+x-orchestrator-env: &orchestrator-env
+  # DB network isolation is LIVE in this file (postgres/redis on the
+  # data-only network): suppress the legacy prod-creds gate-env
+  # injection — agents can't reach roboco-postgres anyway. This flag
+  # must always travel with the networks: topology.
+  ROBOCO_DB_NETWORK_ISOLATED: ${ROBOCO_DB_NETWORK_ISOLATED:-true}
+  ROBOCO_DATABASE_HOST: roboco-postgres
+  ROBOCO_DATABASE_PORT: 5432
+  ROBOCO_DATABASE_USER: roboco
+  ROBOCO_DATABASE_PASSWORD: roboco
+  ROBOCO_DATABASE_NAME: roboco
+  ROBOCO_REDIS_HOST: roboco-redis
+  ROBOCO_REDIS_PORT: 6379
+  ROBOCO_HOST: 0.0.0.0
+  ROBOCO_PORT: 8000
+  ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
+  ROBOCO_AGENT_AUTH_SECRET: ${ROBOCO_AGENT_AUTH_SECRET:?ROBOCO_AGENT_AUTH_SECRET is required}
+  # Fail closed by default (GHSA-4f7g-w95g-5q2c): this deploy is
+  # ROBOCO_ENVIRONMENT=production, and header-trust off a network-reachable
+  # port lets any client claim X-Agent-Role: ceo. nginx injects the CEO
+  # token below so the panel keeps working. Set false only on a trusted
+  # private network with no untrusted reach to nginx.
+  ROBOCO_AGENT_AUTH_REQUIRED: ${ROBOCO_AGENT_AUTH_REQUIRED:-true}
+  ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
+  ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud
+  ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
+  ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
+  # Video renderer sidecar (use container name). The video engine
+  # itself is default-off (video_engine_enabled); this just points the
+  # client at the sidecar for when it's armed.
+  ROBOCO_VIDEO_RENDERER_BASE_URL: http://roboco-video-renderer:3001
+  # Spawn the PRE-BUILT agent images from the same registry instead of
+  # building them from source (the orchestrator pulls any it lacks).
+  ROBOCO_AGENT_IMAGE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
+  ROBOCO_AGENT_IMAGE_TAG: ${ROBOCO_VERSION:-latest}
+  # Host paths for spawning agent containers (Docker-in-Docker). MUST be
+  # absolute paths on the host. Default to this compose project's ./data.
+  ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}
+  ROBOCO_HOST_CLAUDE_DIR: ${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}
+  # SuperGrok auth (host ~/.grok) for Grok-CLI agents — the orchestrator
+  # mounts <dir>/auth.json into each Grok agent. Run `grok login` on the host.
+  ROBOCO_HOST_GROK_DIR: ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
+  # ChatGPT-subscription auth (host ~/.codex) for Codex-CLI agents — same
+  # shape as ROBOCO_HOST_GROK_DIR. Run `codex login` on the host.
+  ROBOCO_HOST_CODEX_DIR: ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}
+  # OAuth login (host ~/.gemini) for Gemini-CLI agents — the orchestrator
+  # mounts <dir>/oauth_creds.json (read-only) into each Gemini agent. Run
+  # `gemini` interactively once on the host to produce it.
+  ROBOCO_HOST_GEMINI_DIR: ${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}
+  # Kimi subscription auth (host ~/.kimi-code) for Kimi-CLI agents — the
+  # orchestrator mounts <dir>/credentials/kimi-code.json into each Kimi
+  # agent. Run `kimi login` on the host. Read-WRITE (see the volumes
+  # mount below): unlike gemini's reusable refresh token, Kimi's refresh
+  # is rotation-with-short-reuse-grace, so every container shares this
+  # ONE host chain via a symlinked-in credentials/+oauth/ mount rather
+  # than a per-container copy (kimi follows codex's RW mount mode here).
+  ROBOCO_HOST_KIMI_DIR: ${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}
+  ROBOCO_KIMI_CLI_MODEL: ${ROBOCO_KIMI_CLI_MODEL:-kimi-code/k3}
+  ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS: ${ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS:-60}
+  ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS: ${ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS:-60}
+  ROBOCO_KIMI_MAX_CONCURRENT: ${ROBOCO_KIMI_MAX_CONCURRENT:-1}
+  ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}
+  # Reachable base URL for commit-trailer links — set to your host's LAN
+  # address or domain so the links in commit bodies resolve.
+  ROBOCO_PUBLIC_BASE_URL: ${ROBOCO_PUBLIC_BASE_URL:-http://localhost:8000}
+  ROBOCO_ENVIRONMENT: production
+  ROBOCO_CLAIM_STALE_SECONDS: "1800"
+  ROBOCO_STALE_CLAIM_REAP_SECONDS: "1800"
+  # Every optional feature ships OFF in this user-facing compose (the build
+  # compose arms them for the personal deploy). External-PR review included —
+  # arm it (and any other subsystem) via .env or Settings → Feature Flags.
+  ROBOCO_EXTERNAL_PR_ENABLED: ${ROBOCO_EXTERNAL_PR_ENABLED:-false}
+  ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM: ${ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM:-true}
+  # ROBOCO_EXTERNAL_PR_POLL_INTERVAL_SECONDS: "300"
+  # ROBOCO_EXTERNAL_PR_AUTHOR_ALLOWLIST: '["corey"]'   # empty = every external PR
+  # Production self-healing ("engine 4"). RoboCo watches its OWN repo CI and,
+  # when red, notifies the CEO and (with originate on) opens a PENDING fix
+  # task that STOPS for the CEO's Approve-&-Start — it never self-deploys.
+  # Both toggles default OFF (arm from Settings -> Feature Flags). Set
+  # PROJECT_SLUG to the registered project that IS RoboCo; CI_WORKFLOW scopes
+  # the signal to the real CI workflow (RoboCo has several workflows, so the
+  # unscoped "latest run" would be unreliable).
+  ROBOCO_SELF_HEAL_ENABLED: ${ROBOCO_SELF_HEAL_ENABLED:-false}
+  ROBOCO_OBSIDIAN_VAULT_ENABLED: ${ROBOCO_OBSIDIAN_VAULT_ENABLED:-true}
+  ROBOCO_VAULT_PATH: ${ROBOCO_VAULT_PATH:-/app/vault}
+  ROBOCO_VAULT_INTAKE_ENABLED: ${ROBOCO_VAULT_INTAKE_ENABLED:-true}
+  ROBOCO_VAULT_ARCHIVE_DAYS: ${ROBOCO_VAULT_ARCHIVE_DAYS:-30}
+  ROBOCO_VAULT_REPORT_ENABLED: ${ROBOCO_VAULT_REPORT_ENABLED:-true}
+  ROBOCO_VAULT_KB_ENABLED: ${ROBOCO_VAULT_KB_ENABLED:-false}
+  ROBOCO_VAULT_KB_DIRS: ${ROBOCO_VAULT_KB_DIRS:-RoboCo/Notes}
+  ROBOCO_VAULT_KB_INTERVAL_SECONDS: ${ROBOCO_VAULT_KB_INTERVAL_SECONDS:-900}
+  ROBOCO_SELF_HEAL_ORIGINATE_ENABLED: ${ROBOCO_SELF_HEAL_ORIGINATE_ENABLED:-false}
+  ROBOCO_SELF_HEAL_PROJECT_SLUG: ${ROBOCO_SELF_HEAL_PROJECT_SLUG:-roboco-api}
+  ROBOCO_SELF_HEAL_CI_WORKFLOW: ${ROBOCO_SELF_HEAL_CI_WORKFLOW:-ci.yml}
+  # Docs-divergence sync (release -> docs-update task): default OFF in the
+  # registry compose; arm via .env once the engine is verified.
+  ROBOCO_DOCS_SYNC_ENABLED: ${ROBOCO_DOCS_SYNC_ENABLED:-false}
+  # Video engine (HyperFrames): NAS-default-on, OFF in public registry —
+  # heavier optional feature. Arm via .env + uncomment the video-renders
+  # bind mount above so renders persist.
+  ROBOCO_VIDEO_ENGINE_ENABLED: ${ROBOCO_VIDEO_ENGINE_ENABLED:-false}
+  ROBOCO_VIDEO_ON_RELEASE: ${ROBOCO_VIDEO_ON_RELEASE:-false}
+  ROBOCO_VIDEO_ON_SPOTLIGHT: ${ROBOCO_VIDEO_ON_SPOTLIGHT:-false}
+  # Toolchain matching + architectural conventions standard: default OFF
+  # in config; carried here at OFF (armed in the build compose) so a
+  # registry deploy can opt in via .env without hand-editing this file.
+  ROBOCO_TOOLCHAIN_MATCH_ENABLED: ${ROBOCO_TOOLCHAIN_MATCH_ENABLED:-false}
+  ROBOCO_CONVENTIONS_ENABLED: ${ROBOCO_CONVENTIONS_ENABLED:-false}
+  # Autonomy engines (CI-watch, dep-update bot, release manager, org-memory
+  # loop, X account, board roadmap engine) — default OFF, carried at OFF
+  # so the published default stays conservative; arm any via .env.
+  ROBOCO_CI_WATCH_ENABLED: ${ROBOCO_CI_WATCH_ENABLED:-false}
+  ROBOCO_DEP_UPDATE_ENABLED: ${ROBOCO_DEP_UPDATE_ENABLED:-false}
+  ROBOCO_RELEASE_MANAGER_ENABLED: ${ROBOCO_RELEASE_MANAGER_ENABLED:-false}
+  ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-false}
+  ROBOCO_X_ENGINE_ENABLED: ${ROBOCO_X_ENGINE_ENABLED:-false}
+  ROBOCO_ROADMAP_ENGINE_ENABLED: ${ROBOCO_ROADMAP_ENGINE_ENABLED:-false}
+  # Telegram notifications bridge V1/V2/V3 — default OFF; inert without
+  # stored bot-token + chat-id credentials regardless of these flags.
+  ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-false}
+  ROBOCO_TELEGRAM_INBOUND_ENABLED: ${ROBOCO_TELEGRAM_INBOUND_ENABLED:-false}
+  ROBOCO_TELEGRAM_MINIAPP_ENABLED: ${ROBOCO_TELEGRAM_MINIAPP_ENABLED:-false}
+  # Fable-mode (behavioral doctrine + turn-discipline hooks) and the
+  # sandboxed per-agent dev DB/Redis — both default OFF, conservative here.
+  ROBOCO_FABLE_MODE_ENABLED: ${ROBOCO_FABLE_MODE_ENABLED:-false}
+  ROBOCO_SANDBOX_DB_ENABLED: ${ROBOCO_SANDBOX_DB_ENABLED:-false}
+  # Strategy engine + internal PR review — both default OFF.
+  ROBOCO_STRATEGY_ENGINE_ENABLED: ${ROBOCO_STRATEGY_ENGINE_ENABLED:-false}
+  ROBOCO_INTERNAL_PR_ENABLED: ${ROBOCO_INTERNAL_PR_ENABLED:-false}
+  # Web research + pitch auto-provisioning: both master switches default
+  # ON in config (unset here, so they inherit that default); these are
+  # the key/token passthrough — without them a real value set in .env
+  # never reaches the container and both stay inert regardless.
+  ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
+  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
+  ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
+  ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
+  # Spawn preflight — inert in practice (every real delivery role is
+  # gateway-enabled); carried at OFF for parity with the build compose.
+  ROBOCO_SPAWN_PREFLIGHT_ENABLED: ${ROBOCO_SPAWN_PREFLIGHT_ENABLED:-false}
+  # fastapi-guard's emergency-lockdown whitelist escape hatch. Carried
+  # here even though the guard trio itself (ENABLED/PASSIVE_MODE/
+  # FAIL_SECURE, see the declared-contract note above) is intentionally
+  # omitted — inert while guard stays off by default, but reaches the
+  # container the moment an operator arms guard by hand-editing this file.
+  ROBOCO_GUARD_EMERGENCY_WHITELIST: ${ROBOCO_GUARD_EMERGENCY_WHITELIST:-}
+  # Trusted local-proxy hop IPs (docker bridge gateway) for the XFF
+  # real-client resolver — carried here (inert until guard is armed) so a
+  # gateway-fronted Tailscale Serve deploy can set it via .env rather than
+  # hand-editing this file. Same reach-the-container rule as above.
+  ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
+  # Log level for guard-core's suspicious-path lines - same
+  # carried-but-inert-until-armed rule as the two guard vars above.
+  ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL: ${ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL:-WARNING}
+  # guard-agent telemetry to the guard-core SaaS - carried at OFF (the
+  # published default: nothing leaves the box). Key, project id and cache
+  # path carried inert so an operator can arm it via .env. The cache path
+  # (guard-core 3.17.0) keeps the last-known dynamic rules across a
+  # restart during a SaaS outage; /data/logs is the persisted logs mount.
+  ROBOCO_GUARD_TELEMETRY_ENABLED: ${ROBOCO_GUARD_TELEMETRY_ENABLED:-false}
+  ROBOCO_GUARD_AGENT_API_KEY: ${ROBOCO_GUARD_AGENT_API_KEY:-}
+  ROBOCO_GUARD_PROJECT_ID: ${ROBOCO_GUARD_PROJECT_ID:-}
+  ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH: ${ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH:-/data/logs/guard-dynamic-rules.json}
+  ROBOCO_AGENT_TOOL_CALL_HALT: ${ROBOCO_AGENT_TOOL_CALL_HALT:-600}
+  ROBOCO_AGENT_TOOL_CALL_WARN: ${ROBOCO_AGENT_TOOL_CALL_WARN:-200}
+  # Per-task/project cost budgets (default-off; conservative registry
+  # posture, unlike the build compose which arms it).
+  ROBOCO_TASK_BUDGETS_ENABLED: ${ROBOCO_TASK_BUDGETS_ENABLED:-false}
+  # Cloud auth (FastAPI Users): login-gates the panel/API when exposed
+  # beyond localhost. OFF by default (matches config default, unlike the
+  # build compose which arms it for the personal deploy). Set
+  # ROBOCO_CLOUD_AUTH_EMAIL/_PASSWORD/_SECRET in .env and terminate TLS
+  # before arming — startup fails loud if enabled without a secret.
+  ROBOCO_CLOUD_AUTH_ENABLED: ${ROBOCO_CLOUD_AUTH_ENABLED:-false}
+  ROBOCO_CLOUD_AUTH_EMAIL: ${ROBOCO_CLOUD_AUTH_EMAIL:-}
+  ROBOCO_CLOUD_AUTH_PASSWORD: ${ROBOCO_CLOUD_AUTH_PASSWORD:-}
+  ROBOCO_CLOUD_AUTH_SECRET: ${ROBOCO_CLOUD_AUTH_SECRET:-}
+  ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE: ${ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE:-2592000}
+  # MinIO object storage for rendered videos is intentionally omitted from
+  # this registry compose (NAS default-on, registry default-off — the
+  # established pattern). The minio/minio-init services are absent here and
+  # ROBOCO_MINIO_* is left unset, so minio_endpoint defaults to empty and the
+  # media route falls back to FileResponse. Arm via a custom override file.
+
+x-orchestrator-volumes: &orchestrator-volumes
+  - /var/run/docker.sock:/var/run/docker.sock
+  - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude
+  # SuperGrok auth — mount host ~/.grok at the SAME host path the orchestrator
+  # hands each Grok agent's `-v`, so its auth.json exists() check passes here
+  # AND the agent bind resolves on the host. Read-WRITE: the orchestrator
+  # auto-refreshes the ~6h token in place (grok_auth.refresh_if_stale) so
+  # agents never mount a dead credential; the agent's own mount stays RO.
+  - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
+  # Codex CLI auth — same shape as the SuperGrok mount above.
+  - ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}
+  # OAuth login for Gemini-CLI agents — mount host ~/.gemini at the SAME
+  # host path the orchestrator hands each Gemini agent's `-v`, so its
+  # oauth_creds.json exists() check passes here AND the agent bind
+  # resolves on the host. Read-ONLY: Google's OAuth refresh token is
+  # reusable and refreshed IN-PROCESS by each agent container's own CLI —
+  # never by the orchestrator — unlike grok's read-write mount above.
+  - ${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:ro
+  # Kimi subscription auth — mount the host ~/.kimi-code at the SAME host
+  # path the orchestrator passes to each Kimi agent's `-v`, so the
+  # credentials/kimi-code.json exists() check passes here AND the agent
+  # bind resolves on the host. Read-WRITE (unlike gemini's RO mount
+  # above): Moonshot's refresh token is rotation-with-short-reuse-grace,
+  # not truly reusable, so every container symlinks credentials/+oauth/
+  # from this ONE shared chain instead of refreshing a private copy —
+  # the CLI's own cross-process lock (oauth/kimi-code.lock) serializes
+  # redemptions. No orchestrator refresh daemon (the CLI refreshes
+  # itself); this mount just needs to be writable so the CLI can.
+  - ${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}:${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}
+  - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
+  - ${ROBOCO_DATA_DIR:-./data}/vault:/app/vault
+  - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
+  - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
+  - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+  # Per-agent GROK usage capture (usage.json -> finalizer).
+  - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
+  # Per-agent CODEX usage capture — same shape as grok-usage above.
+  - ${ROBOCO_DATA_DIR:-./data}/codex-usage:/data/codex-usage
+  # Per-agent GEMINI usage capture (usage.json -> finalizer).
+  - ${ROBOCO_DATA_DIR:-./data}/gemini-usage:/data/gemini-usage
+  # Per-agent KIMI usage capture — same shape as grok/codex/gemini-usage.
+  - ${ROBOCO_DATA_DIR:-./data}/kimi-usage:/data/kimi-usage
+  - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
+  # video engine: NAS-only bind mount, off by default in public registry.
+  # Uncomment + set ROBOCO_VIDEO_ENGINE_ENABLED=true in .env to arm.
+  # - ${ROBOCO_DATA_DIR:-./data}/video-renders:/data/video-renders
+  - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
+  - ${ROBOCO_DATA_DIR:-./data}/manifests:/app/manifests
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -345,236 +578,24 @@ services:
       # credential to anyone who could reach the host (GHSA-4f7g-w95g-5q2c).
       - "127.0.0.1:8000:8000"
     environment:
-      # DB network isolation is LIVE in this file (postgres/redis on the
-      # data-only network): suppress the legacy prod-creds gate-env
-      # injection — agents can't reach roboco-postgres anyway. This flag
-      # must always travel with the networks: topology.
-      ROBOCO_DB_NETWORK_ISOLATED: ${ROBOCO_DB_NETWORK_ISOLATED:-true}
-      ROBOCO_DATABASE_HOST: roboco-postgres
-      ROBOCO_DATABASE_PORT: 5432
-      ROBOCO_DATABASE_USER: roboco
-      ROBOCO_DATABASE_PASSWORD: roboco
-      ROBOCO_DATABASE_NAME: roboco
-      ROBOCO_REDIS_HOST: roboco-redis
-      ROBOCO_REDIS_PORT: 6379
-      ROBOCO_HOST: 0.0.0.0
-      ROBOCO_PORT: 8000
-      ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
-      ROBOCO_AGENT_AUTH_SECRET: ${ROBOCO_AGENT_AUTH_SECRET:?ROBOCO_AGENT_AUTH_SECRET is required}
-      # Fail closed by default (GHSA-4f7g-w95g-5q2c): this deploy is
-      # ROBOCO_ENVIRONMENT=production, and header-trust off a network-reachable
-      # port lets any client claim X-Agent-Role: ceo. nginx injects the CEO
-      # token below so the panel keeps working. Set false only on a trusted
-      # private network with no untrusted reach to nginx.
-      ROBOCO_AGENT_AUTH_REQUIRED: ${ROBOCO_AGENT_AUTH_REQUIRED:-true}
-      ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
-      ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud
-      ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
-      ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
-      # Video renderer sidecar (use container name). The video engine
-      # itself is default-off (video_engine_enabled); this just points the
-      # client at the sidecar for when it's armed.
-      ROBOCO_VIDEO_RENDERER_BASE_URL: http://roboco-video-renderer:3001
-      # Spawn the PRE-BUILT agent images from the same registry instead of
-      # building them from source (the orchestrator pulls any it lacks).
-      ROBOCO_AGENT_IMAGE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
-      ROBOCO_AGENT_IMAGE_TAG: ${ROBOCO_VERSION:-latest}
-      # Host paths for spawning agent containers (Docker-in-Docker). MUST be
-      # absolute paths on the host. Default to this compose project's ./data.
-      ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}
-      ROBOCO_HOST_CLAUDE_DIR: ${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}
-      # SuperGrok auth (host ~/.grok) for Grok-CLI agents — the orchestrator
-      # mounts <dir>/auth.json into each Grok agent. Run `grok login` on the host.
-      ROBOCO_HOST_GROK_DIR: ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
-      # ChatGPT-subscription auth (host ~/.codex) for Codex-CLI agents — same
-      # shape as ROBOCO_HOST_GROK_DIR. Run `codex login` on the host.
-      ROBOCO_HOST_CODEX_DIR: ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}
-      # OAuth login (host ~/.gemini) for Gemini-CLI agents — the orchestrator
-      # mounts <dir>/oauth_creds.json (read-only) into each Gemini agent. Run
-      # `gemini` interactively once on the host to produce it.
-      ROBOCO_HOST_GEMINI_DIR: ${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}
-      # Kimi subscription auth (host ~/.kimi-code) for Kimi-CLI agents — the
-      # orchestrator mounts <dir>/credentials/kimi-code.json into each Kimi
-      # agent. Run `kimi login` on the host. Read-WRITE (see the volumes
-      # mount below): unlike gemini's reusable refresh token, Kimi's refresh
-      # is rotation-with-short-reuse-grace, so every container shares this
-      # ONE host chain via a symlinked-in credentials/+oauth/ mount rather
-      # than a per-container copy (kimi follows codex's RW mount mode here).
-      ROBOCO_HOST_KIMI_DIR: ${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}
-      ROBOCO_KIMI_CLI_MODEL: ${ROBOCO_KIMI_CLI_MODEL:-kimi-code/k3}
-      ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS: ${ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS:-60}
-      ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS: ${ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS:-60}
-      ROBOCO_KIMI_MAX_CONCURRENT: ${ROBOCO_KIMI_MAX_CONCURRENT:-1}
-      ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}
-      # Reachable base URL for commit-trailer links — set to your host's LAN
-      # address or domain so the links in commit bodies resolve.
-      ROBOCO_PUBLIC_BASE_URL: ${ROBOCO_PUBLIC_BASE_URL:-http://localhost:8000}
-      ROBOCO_ENVIRONMENT: production
-      ROBOCO_CLAIM_STALE_SECONDS: "1800"
-      ROBOCO_STALE_CLAIM_REAP_SECONDS: "1800"
-      # Every optional feature ships OFF in this user-facing compose (the build
-      # compose arms them for the personal deploy). External-PR review included —
-      # arm it (and any other subsystem) via .env or Settings → Feature Flags.
-      ROBOCO_EXTERNAL_PR_ENABLED: ${ROBOCO_EXTERNAL_PR_ENABLED:-false}
-      ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM: ${ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM:-true}
-      # ROBOCO_EXTERNAL_PR_POLL_INTERVAL_SECONDS: "300"
-      # ROBOCO_EXTERNAL_PR_AUTHOR_ALLOWLIST: '["corey"]'   # empty = every external PR
-      # Production self-healing ("engine 4"). RoboCo watches its OWN repo CI and,
-      # when red, notifies the CEO and (with originate on) opens a PENDING fix
-      # task that STOPS for the CEO's Approve-&-Start — it never self-deploys.
-      # Both toggles default OFF (arm from Settings -> Feature Flags). Set
-      # PROJECT_SLUG to the registered project that IS RoboCo; CI_WORKFLOW scopes
-      # the signal to the real CI workflow (RoboCo has several workflows, so the
-      # unscoped "latest run" would be unreliable).
-      ROBOCO_SELF_HEAL_ENABLED: ${ROBOCO_SELF_HEAL_ENABLED:-false}
-      ROBOCO_OBSIDIAN_VAULT_ENABLED: ${ROBOCO_OBSIDIAN_VAULT_ENABLED:-true}
-      ROBOCO_VAULT_PATH: ${ROBOCO_VAULT_PATH:-/app/vault}
-      ROBOCO_VAULT_INTAKE_ENABLED: ${ROBOCO_VAULT_INTAKE_ENABLED:-true}
-      ROBOCO_VAULT_ARCHIVE_DAYS: ${ROBOCO_VAULT_ARCHIVE_DAYS:-30}
-      ROBOCO_VAULT_REPORT_ENABLED: ${ROBOCO_VAULT_REPORT_ENABLED:-true}
-      ROBOCO_VAULT_KB_ENABLED: ${ROBOCO_VAULT_KB_ENABLED:-false}
-      ROBOCO_VAULT_KB_DIRS: ${ROBOCO_VAULT_KB_DIRS:-RoboCo/Notes}
-      ROBOCO_VAULT_KB_INTERVAL_SECONDS: ${ROBOCO_VAULT_KB_INTERVAL_SECONDS:-900}
-      ROBOCO_SELF_HEAL_ORIGINATE_ENABLED: ${ROBOCO_SELF_HEAL_ORIGINATE_ENABLED:-false}
-      ROBOCO_SELF_HEAL_PROJECT_SLUG: ${ROBOCO_SELF_HEAL_PROJECT_SLUG:-roboco-api}
-      ROBOCO_SELF_HEAL_CI_WORKFLOW: ${ROBOCO_SELF_HEAL_CI_WORKFLOW:-ci.yml}
-      # Docs-divergence sync (release -> docs-update task): default OFF in the
-      # registry compose; arm via .env once the engine is verified.
-      ROBOCO_DOCS_SYNC_ENABLED: ${ROBOCO_DOCS_SYNC_ENABLED:-false}
-      # Video engine (HyperFrames): NAS-default-on, OFF in public registry —
-      # heavier optional feature. Arm via .env + uncomment the video-renders
-      # bind mount above so renders persist.
-      ROBOCO_VIDEO_ENGINE_ENABLED: ${ROBOCO_VIDEO_ENGINE_ENABLED:-false}
-      ROBOCO_VIDEO_ON_RELEASE: ${ROBOCO_VIDEO_ON_RELEASE:-false}
-      ROBOCO_VIDEO_ON_SPOTLIGHT: ${ROBOCO_VIDEO_ON_SPOTLIGHT:-false}
-      # Toolchain matching + architectural conventions standard: default OFF
-      # in config; carried here at OFF (armed in the build compose) so a
-      # registry deploy can opt in via .env without hand-editing this file.
-      ROBOCO_TOOLCHAIN_MATCH_ENABLED: ${ROBOCO_TOOLCHAIN_MATCH_ENABLED:-false}
-      ROBOCO_CONVENTIONS_ENABLED: ${ROBOCO_CONVENTIONS_ENABLED:-false}
-      # Autonomy engines (CI-watch, dep-update bot, release manager, org-memory
-      # loop, X account, board roadmap engine) — default OFF, carried at OFF
-      # so the published default stays conservative; arm any via .env.
-      ROBOCO_CI_WATCH_ENABLED: ${ROBOCO_CI_WATCH_ENABLED:-false}
-      ROBOCO_DEP_UPDATE_ENABLED: ${ROBOCO_DEP_UPDATE_ENABLED:-false}
-      ROBOCO_RELEASE_MANAGER_ENABLED: ${ROBOCO_RELEASE_MANAGER_ENABLED:-false}
-      ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-false}
-      ROBOCO_X_ENGINE_ENABLED: ${ROBOCO_X_ENGINE_ENABLED:-false}
-      ROBOCO_ROADMAP_ENGINE_ENABLED: ${ROBOCO_ROADMAP_ENGINE_ENABLED:-false}
-      # Telegram notifications bridge V1/V2/V3 — default OFF; inert without
-      # stored bot-token + chat-id credentials regardless of these flags.
-      ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-false}
-      ROBOCO_TELEGRAM_INBOUND_ENABLED: ${ROBOCO_TELEGRAM_INBOUND_ENABLED:-false}
-      ROBOCO_TELEGRAM_MINIAPP_ENABLED: ${ROBOCO_TELEGRAM_MINIAPP_ENABLED:-false}
-      # Fable-mode (behavioral doctrine + turn-discipline hooks) and the
-      # sandboxed per-agent dev DB/Redis — both default OFF, conservative here.
-      ROBOCO_FABLE_MODE_ENABLED: ${ROBOCO_FABLE_MODE_ENABLED:-false}
-      ROBOCO_SANDBOX_DB_ENABLED: ${ROBOCO_SANDBOX_DB_ENABLED:-false}
-      # Strategy engine + internal PR review — both default OFF.
-      ROBOCO_STRATEGY_ENGINE_ENABLED: ${ROBOCO_STRATEGY_ENGINE_ENABLED:-false}
-      ROBOCO_INTERNAL_PR_ENABLED: ${ROBOCO_INTERNAL_PR_ENABLED:-false}
-      # Web research + pitch auto-provisioning: both master switches default
-      # ON in config (unset here, so they inherit that default); these are
-      # the key/token passthrough — without them a real value set in .env
-      # never reaches the container and both stay inert regardless.
-      ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
-      ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
-      ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
-      ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
-      # Spawn preflight — inert in practice (every real delivery role is
-      # gateway-enabled); carried at OFF for parity with the build compose.
-      ROBOCO_SPAWN_PREFLIGHT_ENABLED: ${ROBOCO_SPAWN_PREFLIGHT_ENABLED:-false}
-      # fastapi-guard's emergency-lockdown whitelist escape hatch. Carried
-      # here even though the guard trio itself (ENABLED/PASSIVE_MODE/
-      # FAIL_SECURE, see the declared-contract note above) is intentionally
-      # omitted — inert while guard stays off by default, but reaches the
-      # container the moment an operator arms guard by hand-editing this file.
-      ROBOCO_GUARD_EMERGENCY_WHITELIST: ${ROBOCO_GUARD_EMERGENCY_WHITELIST:-}
-      # Trusted local-proxy hop IPs (docker bridge gateway) for the XFF
-      # real-client resolver — carried here (inert until guard is armed) so a
-      # gateway-fronted Tailscale Serve deploy can set it via .env rather than
-      # hand-editing this file. Same reach-the-container rule as above.
-      ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
-      # Log level for guard-core's suspicious-path lines - same
-      # carried-but-inert-until-armed rule as the two guard vars above.
-      ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL: ${ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL:-WARNING}
-      # guard-agent telemetry to the guard-core SaaS - carried at OFF (the
-      # published default: nothing leaves the box). Key, project id and cache
-      # path carried inert so an operator can arm it via .env. The cache path
-      # (guard-core 3.17.0) keeps the last-known dynamic rules across a
-      # restart during a SaaS outage; /data/logs is the persisted logs mount.
-      ROBOCO_GUARD_TELEMETRY_ENABLED: ${ROBOCO_GUARD_TELEMETRY_ENABLED:-false}
-      ROBOCO_GUARD_AGENT_API_KEY: ${ROBOCO_GUARD_AGENT_API_KEY:-}
-      ROBOCO_GUARD_PROJECT_ID: ${ROBOCO_GUARD_PROJECT_ID:-}
-      ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH: ${ROBOCO_GUARD_DYNAMIC_RULES_CACHE_PATH:-/data/logs/guard-dynamic-rules.json}
-      ROBOCO_AGENT_TOOL_CALL_HALT: ${ROBOCO_AGENT_TOOL_CALL_HALT:-600}
-      ROBOCO_AGENT_TOOL_CALL_WARN: ${ROBOCO_AGENT_TOOL_CALL_WARN:-200}
-      # Per-task/project cost budgets (default-off; conservative registry
-      # posture, unlike the build compose which arms it).
-      ROBOCO_TASK_BUDGETS_ENABLED: ${ROBOCO_TASK_BUDGETS_ENABLED:-false}
-      # Cloud auth (FastAPI Users): login-gates the panel/API when exposed
-      # beyond localhost. OFF by default (matches config default, unlike the
-      # build compose which arms it for the personal deploy). Set
-      # ROBOCO_CLOUD_AUTH_EMAIL/_PASSWORD/_SECRET in .env and terminate TLS
-      # before arming — startup fails loud if enabled without a secret.
-      ROBOCO_CLOUD_AUTH_ENABLED: ${ROBOCO_CLOUD_AUTH_ENABLED:-false}
-      ROBOCO_CLOUD_AUTH_EMAIL: ${ROBOCO_CLOUD_AUTH_EMAIL:-}
-      ROBOCO_CLOUD_AUTH_PASSWORD: ${ROBOCO_CLOUD_AUTH_PASSWORD:-}
-      ROBOCO_CLOUD_AUTH_SECRET: ${ROBOCO_CLOUD_AUTH_SECRET:-}
-      ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE: ${ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE:-2592000}
-      # MinIO object storage for rendered videos is intentionally omitted from
-      # this registry compose (NAS default-on, registry default-off — the
-      # established pattern). The minio/minio-init services are absent here and
-      # ROBOCO_MINIO_* is left unset, so minio_endpoint defaults to empty and the
-      # media route falls back to FileResponse. Arm via a custom override file.
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude
-      # SuperGrok auth — mount host ~/.grok at the SAME host path the orchestrator
-      # hands each Grok agent's `-v`, so its auth.json exists() check passes here
-      # AND the agent bind resolves on the host. Read-WRITE: the orchestrator
-      # auto-refreshes the ~6h token in place (grok_auth.refresh_if_stale) so
-      # agents never mount a dead credential; the agent's own mount stays RO.
-      - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
-      # Codex CLI auth — same shape as the SuperGrok mount above.
-      - ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}
-      # OAuth login for Gemini-CLI agents — mount host ~/.gemini at the SAME
-      # host path the orchestrator hands each Gemini agent's `-v`, so its
-      # oauth_creds.json exists() check passes here AND the agent bind
-      # resolves on the host. Read-ONLY: Google's OAuth refresh token is
-      # reusable and refreshed IN-PROCESS by each agent container's own CLI —
-      # never by the orchestrator — unlike grok's read-write mount above.
-      - ${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:ro
-      # Kimi subscription auth — mount the host ~/.kimi-code at the SAME host
-      # path the orchestrator passes to each Kimi agent's `-v`, so the
-      # credentials/kimi-code.json exists() check passes here AND the agent
-      # bind resolves on the host. Read-WRITE (unlike gemini's RO mount
-      # above): Moonshot's refresh token is rotation-with-short-reuse-grace,
-      # not truly reusable, so every container symlinks credentials/+oauth/
-      # from this ONE shared chain instead of refreshing a private copy —
-      # the CLI's own cross-process lock (oauth/kimi-code.lock) serializes
-      # redemptions. No orchestrator refresh daemon (the CLI refreshes
-      # itself); this mount just needs to be writable so the CLI can.
-      - ${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}:${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}
-      - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
-      - ${ROBOCO_DATA_DIR:-./data}/vault:/app/vault
-      - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
-      - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
-      - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
-      # Per-agent GROK usage capture (usage.json -> finalizer).
-      - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
-      # Per-agent CODEX usage capture — same shape as grok-usage above.
-      - ${ROBOCO_DATA_DIR:-./data}/codex-usage:/data/codex-usage
-      # Per-agent GEMINI usage capture (usage.json -> finalizer).
-      - ${ROBOCO_DATA_DIR:-./data}/gemini-usage:/data/gemini-usage
-      # Per-agent KIMI usage capture — same shape as grok/codex/gemini-usage.
-      - ${ROBOCO_DATA_DIR:-./data}/kimi-usage:/data/kimi-usage
-      - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
-      # video engine: NAS-only bind mount, off by default in public registry.
-      # Uncomment + set ROBOCO_VIDEO_ENGINE_ENABLED=true in .env to arm.
-      # - ${ROBOCO_DATA_DIR:-./data}/video-renders:/data/video-renders
-      - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
-      - ${ROBOCO_DATA_DIR:-./data}/manifests:/app/manifests
+      <<: *orchestrator-env
+      # api role: serves stateless FastAPI request/response routes; the
+      # fleet-wide background loops AND the secretary/intake live-chat
+      # spawns (nginx routes those to the dispatcher, see docker/nginx.conf)
+      # run on the dispatcher service instead;
+      # see roboco/runtime/orchestrator.py's AgentOrchestrator.start().
+      ROBOCO_ROLE: api
+    volumes: *orchestrator-volumes
+    healthcheck:
+      # curl is purged from the runtime image after the docker-cli install
+      # step (see docker/orchestrator.Dockerfile); urllib is stdlib, no
+      # extra tooling needed. Generous start_period: OptimalService (RAG)
+      # init typically takes 30-90s (see api/app.py's lifespan).
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
     depends_on:
       postgres:
         condition: service_healthy
@@ -586,6 +607,81 @@ services:
         condition: service_completed_successfully
       agent-base-image:
         condition: service_completed_successfully
+
+  # --------------------------------------------------------------------------
+  # Dispatcher - runs every Orchestrator background loop (dispatch, reaper,
+  # rate-limit probe, self-heal, CI-watch, dep-update, release manager, board
+  # programs, vault, telegram, ...) plus the once-per-fleet startup
+  # reconciliation. Split from the orchestrator (ROBOCO_ROLE=api) so the two
+  # don't share one GIL-pinned process. Its own task/notification queries go
+  # over HTTP to its OWN uvicorn (internal_api_url resolves to 127.0.0.1,
+  # explicit via ROBOCO_API_URL below, not the orchestrator/api-role container),
+  # rather than in-process; it needs the SAME docker socket + host volumes as
+  # the orchestrator to spawn/manage agent containers.
+  # --------------------------------------------------------------------------
+  dispatcher:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-orchestrator:${ROBOCO_VERSION:-latest}
+    container_name: roboco-dispatcher
+    restart: unless-stopped
+    networks:
+      - default
+      - data
+      - render
+    environment:
+      <<: *orchestrator-env
+      ROBOCO_ROLE: dispatcher
+      # Explicit, not accidental: ROBOCO_HOST=0.0.0.0 in orchestrator-env
+      # already makes internal_api_url fall back to 127.0.0.1 (see
+      # roboco/config.py), so this is a no-op today - pinned so a future
+      # change to that fallback can't silently repoint the dispatcher's
+      # own content-tool/RAG-query calls at the orchestrator (api role)
+      # service instead of its own uvicorn.
+      ROBOCO_API_URL: http://127.0.0.1:8000
+    volumes: *orchestrator-volumes
+    healthcheck:
+      # curl is purged from the runtime image after the docker-cli install
+      # step (see docker/orchestrator.Dockerfile); urllib is stdlib, no
+      # extra tooling needed. Generous start_period: OptimalService (RAG)
+      # init typically takes 30-90s (see api/app.py's lifespan).
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # Indexer - runs ONLY the KB/embedding worker (consumes the RAG index
+  # request stream and the periodic RAG update). No docker socket: it never
+  # spawns agent containers, just needs DB + redis + ollama.
+  # --------------------------------------------------------------------------
+  indexer:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-orchestrator:${ROBOCO_VERSION:-latest}
+    container_name: roboco-indexer
+    restart: unless-stopped
+    networks:
+      - default
+      - data
+    environment:
+      ROBOCO_ROLE: indexer
+      ROBOCO_DATABASE_HOST: roboco-postgres
+      ROBOCO_DATABASE_PORT: 5432
+      ROBOCO_DATABASE_USER: roboco
+      ROBOCO_DATABASE_PASSWORD: roboco
+      ROBOCO_DATABASE_NAME: roboco
+      ROBOCO_REDIS_HOST: roboco-redis
+      ROBOCO_REDIS_PORT: 6379
+      ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
+      ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
+      ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud
+      ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
+      ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
+      ROBOCO_ENVIRONMENT: production
+    depends_on:
+      orchestrator:
+        condition: service_healthy
 
   # --------------------------------------------------------------------------
   # Next.js control panel (fronted by nginx; not exposed directly)

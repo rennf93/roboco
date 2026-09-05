@@ -43,6 +43,35 @@ class Settings(BaseSettings):
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
     )
+    role: Literal["all", "api", "dispatcher", "indexer"] = Field(
+        default="all",
+        description=(
+            "Which slice of the single roboco.cli entry point this process "
+            "runs (env ROBOCO_ROLE). 'all': today's behavior, byte-for-byte "
+            "(FastAPI + every Orchestrator background loop + the in-process "
+            "indexer, one process) - used by tests and `make quickstart`. "
+            "'api': serves stateless FastAPI request/response routes; its "
+            "background loops and startup reconciliation are skipped. It "
+            "keeps its own Orchestrator instance only for isolated "
+            "on-demand actions with no fleet-state dependency (the CEO's "
+            "external-PR-supersede branch cut, /api/tasks/{id}/"
+            "supersede-external-pr) - NOT the secretary/intake live chats, "
+            "which nginx routes to the dispatcher instead (see "
+            "docker/nginx.conf) because spawning them needs the SAME "
+            "process as the reconciliation/reaper loops that must see them. "
+            "'dispatcher': the fleet owner - runs the startup reconciliation "
+            "+ every Orchestrator loop, AND (via nginx) the /api/orchestrator/*, "
+            "/api/secretary/live/* and /api/prompter/live/* routes, so the "
+            "fleet's in-memory state (spawn/waiting-agent registries) is "
+            "never split across two processes. Its own task/notification "
+            "queries go over HTTP to its OWN uvicorn (internal_api_url "
+            "resolves to 127.0.0.1 - see ROBOCO_API_URL in the compose "
+            "files - never the orchestrator/api-role service). 'indexer': "
+            "runs only the KB/embedding worker. The split exists because "
+            "the single 'all' process pins one core under load (measured "
+            "113% CPU on a 12-core box) and every gateway verb starves."
+        ),
+    )
     display_timezone: str = Field(
         default="UTC",
         description=(
