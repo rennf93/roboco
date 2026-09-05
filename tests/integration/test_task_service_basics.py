@@ -158,6 +158,29 @@ async def test_list_by_team(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_by_team_still_orders_by_priority_not_fifo(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Panel/API listing, not work selection (the FIFO fix must not
+    touch it): priority still outranks creation order."""
+    svc = task_setup["svc"]
+    low_pri_older = await svc.create(
+        _req(task_setup, team=Team.BACKEND, title="low-pri-older", priority=3)
+    )
+    high_pri_newer = await svc.create(
+        _req(task_setup, team=Team.BACKEND, title="high-pri-newer", priority=0)
+    )
+    now = datetime.now(UTC)
+    low_pri_older.created_at = now - timedelta(days=2)
+    high_pri_newer.created_at = now - timedelta(days=1)
+    await db_session.flush()
+
+    rows = await svc.list_by_team(Team.BACKEND)
+    ids = [t.id for t in rows]
+    assert ids.index(high_pri_newer.id) < ids.index(low_pri_older.id)
+
+
+@pytest.mark.asyncio
 async def test_list_by_assignee(task_setup: dict) -> None:
     svc = task_setup["svc"]
     aid = task_setup["agent_id"]
@@ -167,11 +190,56 @@ async def test_list_by_assignee(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_by_assignee_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Feeds _own_review_hint's ready[0] pick: FIFO, not priority, decides
+    which of the agent's own tasks surfaces first."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    newer_high_pri = await svc.create(
+        _req(task_setup, assigned_to=aid, title="newer-high-pri", priority=0)
+    )
+    older_low_pri = await svc.create(
+        _req(task_setup, assigned_to=aid, title="older-low-pri", priority=3)
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_by_assignee(aid)
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
+
+
+@pytest.mark.asyncio
 async def test_list_by_status(task_setup: dict) -> None:
     svc = task_setup["svc"]
     pending = await svc.create(_req(task_setup))
     rows = await svc.list_by_status(TaskStatus.PENDING)
     assert pending.id in {t.id for t in rows}
+
+
+@pytest.mark.asyncio
+async def test_list_by_status_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Backs list_pending and every orchestrator dispatch scan: oldest
+    eligible task wins, priority no longer overrides it."""
+    svc = task_setup["svc"]
+    newest = await svc.create(_req(task_setup, title="newest", priority=0))
+    middle = await svc.create(_req(task_setup, title="middle", priority=2))
+    oldest = await svc.create(_req(task_setup, title="oldest", priority=3))
+    now = datetime.now(UTC)
+    newest.created_at = now - timedelta(minutes=1)
+    middle.created_at = now - timedelta(hours=1)
+    oldest.created_at = now - timedelta(days=1)
+    await db_session.flush()
+
+    rows = await svc.list_by_status(TaskStatus.PENDING)
+    ids = [t.id for t in rows]
+    assert ids.index(oldest.id) < ids.index(middle.id) < ids.index(newest.id)
 
 
 @pytest.mark.asyncio
@@ -419,12 +487,84 @@ async def test_list_paused_for_agent_empty(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_paused_for_agent_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """give_me_work's paused fallback offers the longest-paused task
+    first, not the highest-priority one."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    newer_high_pri = await svc.create(
+        _req(
+            task_setup,
+            assigned_to=aid,
+            status=TaskStatus.PAUSED,
+            title="newer-high-pri",
+            priority=0,
+        )
+    )
+    older_low_pri = await svc.create(
+        _req(
+            task_setup,
+            assigned_to=aid,
+            status=TaskStatus.PAUSED,
+            title="older-low-pri",
+            priority=3,
+        )
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_paused_for_agent(aid)
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
+
+
+@pytest.mark.asyncio
 async def test_list_assigned_for_agent(task_setup: dict) -> None:
     svc = task_setup["svc"]
     aid = task_setup["agent_id"]
     task = await svc.create(_req(task_setup, assigned_to=aid))
     rows = await svc.list_assigned_for_agent(aid)
     assert task.id in {t.id for t in rows}
+
+
+@pytest.mark.asyncio
+async def test_list_assigned_for_agent_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """give_me_work's assigned fallback walks this list top-down:
+    oldest-created wins, priority no longer overrides it."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    newer_high_pri = await svc.create(
+        _req(
+            task_setup,
+            assigned_to=aid,
+            status=TaskStatus.IN_PROGRESS,
+            title="newer-high-pri",
+            priority=0,
+        )
+    )
+    older_low_pri = await svc.create(
+        _req(
+            task_setup,
+            assigned_to=aid,
+            status=TaskStatus.IN_PROGRESS,
+            title="older-low-pri",
+            priority=3,
+        )
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_assigned_for_agent(aid)
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
 
 
 @pytest.mark.asyncio
@@ -442,6 +582,42 @@ async def test_list_strategic_for_board(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_strategic_for_board_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """board_triage picks strategic[0]: oldest strategic root wins."""
+    svc = task_setup["svc"]
+    newer_high_pri = await svc.create(
+        _req(
+            task_setup,
+            title="newer-high-pri-strategic",
+            parent_task_id=None,
+            status=TaskStatus.AWAITING_PM_REVIEW,
+            nature=TaskNature.NON_TECHNICAL,
+            priority=0,
+        )
+    )
+    older_low_pri = await svc.create(
+        _req(
+            task_setup,
+            title="older-low-pri-strategic",
+            parent_task_id=None,
+            status=TaskStatus.AWAITING_PM_REVIEW,
+            nature=TaskNature.NON_TECHNICAL,
+            priority=3,
+        )
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_strategic_for_board()
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
+
+
+@pytest.mark.asyncio
 async def test_list_long_running_blocked(task_setup: dict) -> None:
     svc = task_setup["svc"]
     rows = await svc.list_long_running_blocked()
@@ -449,10 +625,82 @@ async def test_list_long_running_blocked(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_long_running_blocked_staleness_still_wins_priority_dropped(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Most-stale-first is a deliberate anomaly signal, left as-is, but
+    priority must no longer tiebreak equally-stale blockers; created_at does."""
+    svc = task_setup["svc"]
+    now = datetime.now(UTC)
+    same_staleness = now - timedelta(hours=2)
+    high_pri_newer = await svc.create(
+        _req(
+            task_setup,
+            title="high-pri-newer-blocked",
+            status=TaskStatus.BLOCKED,
+            priority=0,
+        )
+    )
+    low_pri_older = await svc.create(
+        _req(
+            task_setup,
+            title="low-pri-older-blocked",
+            status=TaskStatus.BLOCKED,
+            priority=3,
+        )
+    )
+    high_pri_newer.updated_at = same_staleness
+    high_pri_newer.created_at = now - timedelta(days=1)
+    low_pri_older.updated_at = same_staleness
+    low_pri_older.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_long_running_blocked()
+    ids = [t.id for t in rows]
+    assert ids.index(low_pri_older.id) < ids.index(high_pri_newer.id), (
+        "equal staleness must tiebreak by created_at, not priority"
+    )
+
+
+@pytest.mark.asyncio
 async def test_list_awaiting_main_pm_all(task_setup: dict) -> None:
     svc = task_setup["svc"]
     rows = await svc.list_awaiting_main_pm_all()
     assert isinstance(rows, list)
+
+
+@pytest.mark.asyncio
+async def test_list_awaiting_main_pm_all_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Main PM triage_all() picks awaiting[0]: oldest escalated root wins."""
+    svc = task_setup["svc"]
+    newer_high_pri = await svc.create(
+        _req(
+            task_setup,
+            title="newer-high-pri-root",
+            parent_task_id=None,
+            status=TaskStatus.AWAITING_PM_REVIEW,
+            priority=0,
+        )
+    )
+    older_low_pri = await svc.create(
+        _req(
+            task_setup,
+            title="older-low-pri-root",
+            parent_task_id=None,
+            status=TaskStatus.AWAITING_PM_REVIEW,
+            priority=3,
+        )
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_awaiting_main_pm_all()
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
 
 
 @pytest.mark.asyncio
@@ -1717,6 +1965,77 @@ async def test_claim_blocked_by_sequence_names_distinct_reason(
     reason = await svc._claim_blocked_by_sequence(seq1)
     assert reason is not None
     assert "seq-0 blocker" in reason
+
+
+# ---------------------------------------------------------------------------
+# list_pending_for_agent: FIFO order among eligible tasks; the sequence
+# bar still excludes an ineligible sibling even if it is the oldest.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_pending_for_agent_oldest_eligible_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Three pre-assigned pending tasks created out of order: give_me_work's
+    pre_assigned[0] must land on the oldest, not the highest-priority one."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    newest = await svc.create(
+        _req(task_setup, assigned_to=aid, title="newest", priority=0)
+    )
+    middle = await svc.create(
+        _req(task_setup, assigned_to=aid, title="middle", priority=2)
+    )
+    oldest = await svc.create(
+        _req(task_setup, assigned_to=aid, title="oldest", priority=3)
+    )
+    now = datetime.now(UTC)
+    newest.created_at = now - timedelta(minutes=1)
+    middle.created_at = now - timedelta(hours=1)
+    oldest.created_at = now - timedelta(days=1)
+    await db_session.flush()
+
+    available = await svc.list_pending_for_agent(aid)
+    ids = [t.id for t in available]
+    assert ids.index(oldest.id) < ids.index(middle.id) < ids.index(newest.id)
+
+
+@pytest.mark.asyncio
+async def test_list_pending_for_agent_sequence_bar_still_excludes_oldest(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The oldest pre-assigned task is sequence-held behind a non-terminal
+    lower-sequence sibling: it must NOT be offered, even though it is
+    oldest. The eligibility filter still wins over FIFO ordering."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    blocker = await svc.create(
+        _req(task_setup, title="seq-0 blocker", parent_task_id=parent.id, sequence=0)
+    )
+    blocked = await svc.create(
+        _req(
+            task_setup,
+            title="seq-2 blocked",
+            parent_task_id=parent.id,
+            sequence=2,
+            assigned_to=aid,
+        )
+    )
+    eligible = await svc.create(
+        _req(task_setup, title="unrelated eligible", assigned_to=aid)
+    )
+    blocker.status = TaskStatus.IN_PROGRESS
+    now = datetime.now(UTC)
+    blocked.created_at = now - timedelta(days=2)  # oldest, but sequence-held
+    eligible.created_at = now - timedelta(days=1)
+    await db_session.flush()
+
+    available = await svc.list_pending_for_agent(aid)
+    ids = [t.id for t in available]
+    assert blocked.id not in ids, "sequence-held sibling must not be offered"
+    assert ids == [eligible.id]
 
 
 # ---------------------------------------------------------------------------

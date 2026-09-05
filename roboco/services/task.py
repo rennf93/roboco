@@ -9214,6 +9214,21 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    def fifo_order(self, query: Any) -> Any:
+        """Oldest-eligible-first: created_at asc, sequence asc, id asc.
+
+        Shared by every work-selection query (give_me_work, board/auditor
+        triage, PM triage) so agents take the oldest eligible task first.
+        Priority is deliberately excluded: eligibility filters (sequence
+        bar, dependencies, claim guards) already decided WHICH tasks are
+        eligible; this only orders among them.
+        """
+        return query.order_by(
+            TaskTable.created_at.asc(),
+            TaskTable.sequence.asc(),
+            TaskTable.id.asc(),
+        )
+
     async def list_by_team(
         self,
         team: Team,
@@ -9241,13 +9256,13 @@ class TaskService(BaseService):
         agent_id: UUID,
         status: TaskStatus | None = None,
     ) -> list[TaskTable]:
-        """List tasks assigned to an agent."""
+        """List tasks assigned to an agent, oldest eligible first."""
         query = select(TaskTable).where(TaskTable.assigned_to == agent_id)
 
         if status:
             query = query.where(TaskTable.status == status)
 
-        query = query.order_by(TaskTable.priority, TaskTable.created_at.desc())
+        query = self.fifo_order(query)
 
         result = await self.session.execute(query)
         return list(result.scalars().all())
@@ -9291,18 +9306,13 @@ class TaskService(BaseService):
         status: TaskStatus,
         team: Team | None = None,
     ) -> list[TaskTable]:
-        """List tasks by status, ordered by priority, sequence, created_at."""
+        """List tasks by status, oldest eligible first."""
         query = select(TaskTable).where(TaskTable.status == status)
 
         if team:
             query = query.where(TaskTable.team == team)
 
-        # Order by priority first, then sequence (for sibling order), then created_at
-        query = query.order_by(
-            TaskTable.priority,
-            TaskTable.sequence,
-            TaskTable.created_at,
-        )
+        query = self.fifo_order(query)
 
         result = await self.session.execute(query)
         return list(result.scalars().all())
@@ -9320,7 +9330,7 @@ class TaskService(BaseService):
             filter_by_dependencies: If True, exclude tasks with incomplete dependencies
 
         Returns:
-            List of pending tasks, ordered by priority, sequence, then created_at
+            List of pending tasks, oldest eligible first (see fifo_order)
         """
         tasks = await self.list_by_status(TaskStatus.PENDING, team)
 
@@ -9378,19 +9388,12 @@ class TaskService(BaseService):
         TECHNICAL/NON_TECHNICAL split, so non_technical is the strategic-board
         bucket.
         """
-        query = (
-            select(TaskTable)
-            .where(
-                TaskTable.parent_task_id.is_(None),
-                TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
-                TaskTable.nature == TaskNature.NON_TECHNICAL,
-            )
-            .order_by(
-                TaskTable.priority,
-                TaskTable.sequence,
-                TaskTable.created_at,
-            )
+        query = select(TaskTable).where(
+            TaskTable.parent_task_id.is_(None),
+            TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
+            TaskTable.nature == TaskNature.NON_TECHNICAL,
         )
+        query = self.fifo_order(query)
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
@@ -9401,6 +9404,8 @@ class TaskService(BaseService):
 
         Surfaces anomalies for the Auditor to observe. Most-stale first, ordered by
         updated_at ascending so the oldest blocker is at the head of the list.
+        This is deliberately NOT fifo_order: staleness, not creation time, is
+        the anomaly signal. Priority is still dropped from the tiebreak.
         """
         cutoff = datetime.now(UTC) - timedelta(minutes=threshold_minutes)
         query = (
@@ -9411,9 +9416,9 @@ class TaskService(BaseService):
                 TaskTable.updated_at < cutoff,
             )
             .order_by(
-                TaskTable.updated_at,
-                TaskTable.priority,
-                TaskTable.created_at,
+                TaskTable.updated_at.asc(),
+                TaskTable.created_at.asc(),
+                TaskTable.id.asc(),
             )
         )
         result = await self.session.execute(query)
@@ -10652,19 +10657,16 @@ class TaskService(BaseService):
     async def list_assigned_for_agent(self, agent_id: UUID) -> list[TaskTable]:
         """Active (non-terminal) tasks currently assigned to an agent.
 
-        Priority first, then oldest-created first: give_me_work walks this
-        list top-down, so agents work their queue oldest-first within a
-        priority (the updated_at-desc ordering it replaced surfaced the
-        most-recently-touched task first, burying older assigned work).
+        Oldest-created first: give_me_work walks this list top-down, so
+        agents work their queue FIFO (the updated_at-desc ordering it
+        replaced surfaced the most-recently-touched task first, burying
+        older assigned work).
         """
-        query = (
-            select(TaskTable)
-            .where(
-                TaskTable.assigned_to == agent_id,
-                TaskTable.status.in_(self._AGENT_NON_TERMINAL_STATUSES),
-            )
-            .order_by(TaskTable.priority, TaskTable.created_at)
+        query = select(TaskTable).where(
+            TaskTable.assigned_to == agent_id,
+            TaskTable.status.in_(self._AGENT_NON_TERMINAL_STATUSES),
         )
+        query = self.fifo_order(query)
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
@@ -10840,27 +10842,20 @@ class TaskService(BaseService):
         prompter board draft, its board assignment IS the gate (board roles have
         no ``give_me_work``), so no source exclusion is needed.
 
-        Ordered by sequence asc, then priority asc, then created_at asc so
-        earlier-sequence tasks win.
+        Oldest eligible first (see fifo_order); the loop below still
+        applies the dependency and sequence claim-gates as filters.
         """
-        query = (
-            select(TaskTable)
-            .where(
-                TaskTable.assigned_to == agent_id,
-                TaskTable.status == TaskStatus.PENDING,
-                or_(
-                    TaskTable.source.notin_(
-                        (SELF_HEAL_SOURCE, *X_SOURCES, *VIDEO_HELD_SOURCES)
-                    ),
-                    TaskTable.confirmed_by_human.is_(True),
+        query = select(TaskTable).where(
+            TaskTable.assigned_to == agent_id,
+            TaskTable.status == TaskStatus.PENDING,
+            or_(
+                TaskTable.source.notin_(
+                    (SELF_HEAL_SOURCE, *X_SOURCES, *VIDEO_HELD_SOURCES)
                 ),
-            )
-            .order_by(
-                TaskTable.sequence,
-                TaskTable.priority,
-                TaskTable.created_at,
-            )
+                TaskTable.confirmed_by_human.is_(True),
+            ),
         )
+        query = self.fifo_order(query)
         result = await self.session.execute(query)
         tasks = list(result.scalars().all())
         available: list[TaskTable] = []
@@ -10873,15 +10868,12 @@ class TaskService(BaseService):
         return available
 
     async def list_paused_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """Paused tasks assigned to the agent (priority, then oldest first)."""
-        query = (
-            select(TaskTable)
-            .where(
-                TaskTable.assigned_to == agent_id,
-                TaskTable.status == TaskStatus.PAUSED,
-            )
-            .order_by(TaskTable.priority, TaskTable.created_at)
+        """Paused tasks assigned to the agent, oldest eligible first."""
+        query = select(TaskTable).where(
+            TaskTable.assigned_to == agent_id,
+            TaskTable.status == TaskStatus.PAUSED,
         )
+        query = self.fifo_order(query)
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
@@ -10889,20 +10881,14 @@ class TaskService(BaseService):
         """Root tasks (no parent) awaiting PM review across all teams.
 
         Used by Main PM triage — root tasks have escalated past their
-        cell PMs and need final approval/escalation to CEO.
+        cell PMs and need final approval/escalation to CEO. Oldest
+        eligible first (see fifo_order).
         """
-        query = (
-            select(TaskTable)
-            .where(
-                TaskTable.parent_task_id.is_(None),
-                TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
-            )
-            .order_by(
-                TaskTable.priority,
-                TaskTable.sequence,
-                TaskTable.created_at,
-            )
+        query = select(TaskTable).where(
+            TaskTable.parent_task_id.is_(None),
+            TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
         )
+        query = self.fifo_order(query)
         result = await self.session.execute(query)
         return list(result.scalars().all())
 

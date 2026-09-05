@@ -185,16 +185,17 @@ _EXPECTED_STOP_MAX_ENTRIES = 200
 # the task pending-unassigned forever. Generous enough to cover the PM's next
 # tool call; short enough that a genuinely abandoned task recovers fast.
 _CREATOR_ROUTE_GRACE_SECONDS = 600
-# _dispatch_pm_work's fetch is the one dispatcher NOT team-scoped (it triages
-# every fresh pending task org-wide, board/main_pm/marketing-assigned or not),
-# unlike every other dispatcher, whose fetch is narrowed by team/source/status
-# and never competes for the same window. GET /tasks's default limit (100),
-# ordered by priority/sequence/created_at (not recency), silently truncates
-# once org-wide pending tasks exceed it: a materialized board-program root
-# (team=main_pm, default priority) can fall outside the fetched window and
-# never be seen, i.e. "assigned but nothing routes it". Raised to the route's
-# own declared max (Query(..., le=500) on GET /tasks) so this dispatcher sees
-# the whole queue any realistically-sized backlog can produce.
+# None of the status-bucket dispatchers pass `team=` to GET /tasks; team,
+# source, and routing filters all run per-task after the fetch. GET /tasks's
+# default limit (100), ordered oldest-eligible-first (see
+# TaskService.fifo_order), silently truncates once a status bucket exceeds
+# it org-wide: a materialized but not-yet-eligible task can fill the window
+# and bury an eligible younger one, i.e. "assigned but nothing routes it".
+# Raised to the route's own declared max (Query(..., le=500) on GET /tasks)
+# so a fetching dispatcher sees the whole queue any realistically-sized
+# backlog can produce. Shared by every dispatcher whose fetch is not
+# team-scoped: _dispatch_pm_work, _dispatch_dev_work, _dispatch_qa_work,
+# _dispatch_pr_review_work, _dispatch_pr_gate_work, _dispatch_doc_work.
 _PM_DISPATCH_FETCH_LIMIT = 500
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
@@ -15236,9 +15237,9 @@ Start now: evidence(task_id="{task_id}")
         share this one dispatcher.
 
         Fetches with ``_PM_DISPATCH_FETCH_LIMIT`` (not the API's 100
-        default): this is the one dispatcher whose fetch is NOT team-scoped
-        (see that constant's comment for the silent-truncation class of bug
-        a plain default fetch would reintroduce here).
+        default): this dispatcher's fetch is NOT team-scoped (see that
+        constant's comment for the silent-truncation class of bug a plain
+        default fetch would reintroduce here).
         """
         from roboco.services.maintenance_pause import PauseScope
 
@@ -15927,9 +15928,14 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # - `claimed` — PM-delegated claims where the assignee was never spawned
         # - `blocked` — but only when another agent can resolve (see below)
         # `pending`, `needs_revision`, `in_progress` are the classic cases.
+        # Not team-scoped (filtered per-task below, after fetch), so it needs
+        # the same raised limit as `_dispatch_pm_work` (see that constant's
+        # comment): FIFO ordering means a status bucket over 100 org-wide
+        # could fill the fetch window with old ineligible tasks.
         tasks = await self._fetch_tasks(
             client,
             ["pending", "claimed", "needs_revision", "in_progress", "blocked"],
+            limit=_PM_DISPATCH_FETCH_LIMIT,
         )
 
         for task in tasks:
@@ -16155,8 +16161,13 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 
         Monitors: awaiting_qa tasks
         Spawns: be-qa, fe-qa, ux-qa
+
+        Not team-scoped at fetch time (team is filtered per-task below), so
+        it takes the same raised limit as `_dispatch_pm_work`.
         """
-        tasks = await self._fetch_tasks(client, "awaiting_qa")
+        tasks = await self._fetch_tasks(
+            client, "awaiting_qa", limit=_PM_DISPATCH_FETCH_LIMIT
+        )
 
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
@@ -16206,11 +16217,16 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         time). No pre-claim — the task stays PENDING until the reviewer claims
         it itself via ``claim_pr_review``; the prompt carries the task id. The
         ``is_agent_active`` guard prevents a double-spawn across ticks.
+
+        Not team-scoped at fetch time (source is filtered per-task below),
+        so it takes the same raised limit as ``_dispatch_pm_work``.
         """
         reviewer = "pr-reviewer-1"
         if self._is_agent_active(reviewer):
             return
-        tasks = await self._fetch_tasks(client, "pending")
+        tasks = await self._fetch_tasks(
+            client, "pending", limit=_PM_DISPATCH_FETCH_LIMIT
+        )
         for task in tasks:
             if task.get("source") not in PR_REVIEW_SOURCES:
                 continue
@@ -16314,6 +16330,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         still pending is skipped entirely (see ``_gate_task_ci_pending``) so
         the reviewer isn't spawned only to be immediately CI-blocked.
 
+        Not team-scoped at fetch time (routed per-task below), so it takes
+        the same raised limit as ``_dispatch_pm_work``.
+
         When a cell's dedicated reviewer is active on another gate task,
         ``_select_agent_for_cell`` falls back to the shared
         ``cell-pr-reviewer-2`` (board-team, image-identical), so a same-cell
@@ -16326,7 +16345,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         SAME reviewer, never re-routed to the overflow just because it
         happens to be free.
         """
-        tasks = await self._fetch_tasks(client, "awaiting_pr_review")
+        tasks = await self._fetch_tasks(
+            client, "awaiting_pr_review", limit=_PM_DISPATCH_FETCH_LIMIT
+        )
         spawned: set[str] = set()
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
@@ -16454,7 +16475,13 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # pushed/created PR yet). The `original_developer:` marker in
         # quick_context identifies tasks that are actually in the parallel
         # phase vs unrelated claimed tasks.
-        tasks = await self._fetch_tasks(client, ["awaiting_documentation", "claimed"])
+        # Not team-scoped at fetch time, so it takes the same raised limit
+        # as `_dispatch_pm_work`.
+        tasks = await self._fetch_tasks(
+            client,
+            ["awaiting_documentation", "claimed"],
+            limit=_PM_DISPATCH_FETCH_LIMIT,
+        )
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
                 continue
