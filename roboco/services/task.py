@@ -2259,6 +2259,24 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_completed_release_proposals(self) -> list[TaskTable]:
+        """Published (COMPLETED) release proposals, oldest completion first.
+
+        The release certificate's release boundary: each COMPLETED proposal's
+        ``completed_at`` is the CEO-approval/publication timestamp, and a
+        proposal's stored readiness report carries its ``proposed_version``,
+        so a caller can locate a version and the previous publication before it.
+        """
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == RELEASE_MANAGER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.completed_at, TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
     async def list_open_x_posts(self) -> list[TaskTable]:
         """Non-terminal X post/reply proposals (both sources) — the open-cap +
         panel-queue basis. Ordered oldest-first so the queue reads chronologically."""
