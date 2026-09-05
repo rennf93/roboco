@@ -4763,6 +4763,248 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=updated or child, role=role_str)
 
+    async def _cancel_leaf_guard(
+        self, agent_id: UUID, t: Any, agent: Any, briefing: dict[str, Any]
+    ) -> tuple[Envelope | None, Any]:
+        """Leaf and ownership guard for ``cancel_leaf`` (verb body owns it).
+
+        Returns ``(rejection, parent)`` - ``parent`` is non-``None`` only
+        when ``rejection`` is ``None``. ``t`` must actually be a leaf: it
+        has no children of its own, checked first because ``TaskService.cancel``
+        force-cascades onto every descendant (2026-09-06 finding - a PM could
+        close out a whole live subtree, PR and all, through the one verb meant
+        for a childless zero-diff task). ``t`` must also be a delegated child
+        (a root/coordination task with no parent is cancelled via the plain
+        ``cancel`` action, not this). A cell PM must be the parent's
+        assigned PM; a main PM may act on any root's descendant - it
+        coordinates across every cell, so ownership of one immediate
+        parent is not the bar for it.
+        """
+        children = await self.task.children_count(t.id)
+        if children:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        f"cancel_leaf only closes a leaf: task {t.id} has"
+                        f" {children} children"
+                    ),
+                    remediate=(
+                        "cancel or complete the children first, then retry;"
+                        " to discard the whole subtree at once use cancel"
+                        " via the CEO route"
+                    ),
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        if not t.parent_task_id:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        "task has no parent; cancel_leaf only closes a delegated child"
+                    ),
+                    remediate=(
+                        "a root/coordination task without a parent is"
+                        " cancelled via the ordinary cancel path, not"
+                        " cancel_leaf"
+                    ),
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        parent = await self.task.get(t.parent_task_id)
+        if parent is None:
+            return (
+                Envelope.invalid_state(
+                    message="parent task not found",
+                    remediate="the parent task may have been deleted; escalate",
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        role_str = str(agent.role) if agent is not None else ""
+        if role_str != "main_pm" and parent.assigned_to != agent_id:
+            return (
+                Envelope.not_authorized(
+                    message="not the assigned PM of this task's parent",
+                    remediate=(
+                        "cancel_leaf only closes children of your own"
+                        " coordination task; main_pm may act on any root's"
+                        " descendant"
+                    ),
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        return None, parent
+
+    async def _cancel_leaf_zero_diff_error(
+        self, t: Any, agent_id: UUID, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Fail-CLOSED zero-diff gate for ``cancel_leaf``.
+
+        Mirrors the ahead-count check ``VerbRunner._maybe_waive_pr_creation``
+        uses, but the opposite way on error: that check only ever skips a
+        PR-creation side effect and fails OPEN so a flaky fetch can't strand
+        a real submit. This one authorizes discarding a task outright, so an
+        unanswerable git check must never read as "safe to cancel" - refuse
+        instead and let the PM retry once git is healthy.
+        """
+        if getattr(t, "pr_number", None) is not None:
+            return Envelope.invalid_state(
+                message=f"task {t.id} has an open PR (#{t.pr_number})",
+                remediate=(
+                    "an open PR is reviewed/merged through the normal PR"
+                    " flow, not cancel_leaf"
+                ),
+                context_briefing=briefing,
+            )
+        if not getattr(t, "branch_name", None):
+            return None  # never claimed/started - trivially zero-diff
+        try:
+            base_branch = await resolve_parent_branch(t, self.task)
+            _behind, ahead = await self.git.is_behind_base(
+                t, base_branch=base_branch, actor_agent_id=agent_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "cancel_leaf_zero_diff_check_failed",
+                task_id=str(t.id),
+                error=str(exc),
+            )
+            return Envelope.invalid_state(
+                message=(
+                    f"could not verify task {t.id} has zero commits ahead"
+                    f" of its base (git check failed: {exc})"
+                ),
+                remediate=(
+                    "retry once git/workspace access is healthy - cancel_leaf"
+                    " refuses rather than guess when it can't confirm there"
+                    " is no diff to lose"
+                ),
+                context_briefing=briefing,
+            )
+        if ahead > 0:
+            return Envelope.invalid_state(
+                message=(
+                    f"task {t.id}'s branch '{t.branch_name}' is {ahead}"
+                    " commit(s) ahead of its base - not a zero-diff leaf"
+                ),
+                remediate=(
+                    "cancel_leaf only closes a leaf with no real diff; a"
+                    " leaf with commits must go through i_am_done/QA or a"
+                    " plain cancel by a PM/CEO with authority to discard work"
+                ),
+                context_briefing=briefing,
+            )
+        return None
+
+    async def _cancel_leaf_preflight(
+        self, agent_id: UUID, t: Any, briefing: dict[str, Any]
+    ) -> tuple[Envelope | None, str]:
+        """Role, spec-gate, ownership, and zero-diff checks for ``cancel_leaf``.
+
+        Collapsed into one early-return path so ``cancel_leaf`` itself stays
+        under the return-statement budget. Returns ``(rejection, role_str)``;
+        ``rejection`` is ``None`` only when every check passed.
+        """
+        agent = await self.task.agent_for(agent_id)
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return (
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ),
+                role_str,
+            )
+        decision = spec_module.can_invoke_intent(
+            role, "cancel_leaf", t, spec_module.Context(actor_id=agent_id)
+        )
+        if not decision.allowed:
+            return (
+                Envelope.from_decision(decision, briefing=briefing),
+                role_str,
+            )
+        guard, _ = await self._cancel_leaf_guard(agent_id, t, agent, briefing)
+        if guard is not None:
+            return guard, role_str
+        diff_guard = await self._cancel_leaf_zero_diff_error(t, agent_id, briefing)
+        if diff_guard is not None:
+            return diff_guard, role_str
+        return None, role_str
+
+    async def cancel_leaf(self, agent_id: UUID, task_id: UUID, reason: str) -> Envelope:
+        """PM closes a zero-diff leaf a merged sibling already fixed.
+
+        The mechanical path `i_am_done` (NO_COMMITS gate) and `complete`
+        (needs an open PR) can never take: zero commits, no PR, nothing
+        left to verify - the 2026-09-05 de9379cc incident, where 8
+        from-scratch verifications agreed no legitimate diff remained but
+        the PM had no way to close the leaf short of a CEO cancelling it by
+        hand. Reuses `TaskService.cancel`; `_cancel_leaf_guard` enforces
+        that `t` has no children before that cascade ever runs, so it never
+        has a real descendant to touch. Records `reason` as both the
+        journal:decision the tracing gate requires and the task's
+        cancellation note.
+        """
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="cancel_leaf",
+            )
+        rejection, role_str = await self._cancel_leaf_preflight(agent_id, t, briefing)
+        if rejection is not None:
+            return await self._emit_rejection(
+                rejection.with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="cancel_leaf",
+            )
+        pm_decision_outcome = await self._ensure_pm_decision(agent_id, task_id, reason)
+        if env := await self._check_pm_decision_required(
+            "cancel_leaf",
+            agent_id,
+            task_id,
+            t,
+            pm_decision_outcome=pm_decision_outcome,
+        ):
+            return await self._emit_rejection(
+                env.with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="cancel_leaf",
+            )
+        cancelled = await self.task.cancel(
+            task_id,
+            agent_role=role_str,
+            cancellation_note=f"[CANCELLED by {role_str}] {reason}",
+        )
+        if cancelled is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"cancel failed for task {task_id}",
+                    remediate="re-fetch with evidence(task_id) and retry",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="cancel_leaf",
+            )
+        return Envelope.ok(
+            status=str(cancelled.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["cancel_leaf"].next_hint(cancelled),
+            context_briefing=briefing,
+        ).with_introspection(task=cancelled, role=role_str)
+
     async def resume(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Resume a paused task this agent owns; transitions paused → in_progress.
 
@@ -7587,8 +7829,12 @@ class Choreographer:
             ),
             remediate=(
                 "this needs a human to resolve — reassign the task, fix the "
-                "underlying blocker, or cancel it; unblock() will keep "
-                "refusing until an admin moves the task out of blocked"
+                "underlying blocker, or cancel it; if it is a zero-diff leaf "
+                "(no commits, no PR, nothing left to verify - e.g. a fix "
+                "sibling merged first), the owning PM closes it with "
+                "cancel_leaf(task_id, reason) instead of looping; unblock() "
+                "will keep refusing until an admin moves the task out of "
+                "blocked"
             ),
         )
 
@@ -7651,7 +7897,9 @@ class Choreographer:
             next=(
                 "this task's escalate/unblock cycle repeated with no progress "
                 "and was force-blocked for a human to resolve — do not call "
-                "unblock again; wait for the CEO"
+                "unblock again; wait for the CEO, or if this is a zero-diff "
+                "leaf (no commits, no PR - e.g. a fix sibling merged first) "
+                "the owning PM can call cancel_leaf(task_id, reason)"
             ),
         )
 

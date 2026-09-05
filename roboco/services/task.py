@@ -10991,6 +10991,19 @@ class TaskService(BaseService):
         )
         return result.first() is not None
 
+    async def children_count(self, task_id: UUID) -> int:
+        """Count of direct subtasks, any status - the cancel_leaf leaf check.
+
+        A terminal child still counts: cancel_leaf's "leaf" means no
+        descendants at all, not "no active descendants".
+        """
+        result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                TaskTable.parent_task_id == task_id,
+            )
+        )
+        return result.scalar_one()
+
     async def terminal_children_count(self, task_id: UUID) -> int:
         """Count of direct subtasks in a terminal status (COMPLETED/CANCELLED).
 

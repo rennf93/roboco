@@ -849,6 +849,20 @@ def unblock(task_id: str, reason: str, restore: bool = True) -> dict[str, Any]:
     )
 
 
+def cancel_leaf(task_id: str, reason: str) -> dict[str, Any]:
+    """PM: close a zero-diff leaf a merged sibling already fixed.
+
+    Use this ONLY when the leaf has zero commits ahead of its base and no
+    open PR - a fix task whose findings a sibling resolved on the parent
+    branch first, so no legitimate diff remains and i_am_done/complete can
+    never accept it. `reason` is recorded as your decision. A cell PM
+    closes only its own coordination task's children; a main PM may act
+    on any root's descendant. A leaf with real commits or an open PR is
+    refused - route those through the normal review path instead.
+    """
+    return _post(_role_path("cancel_leaf"), {"task_id": task_id, "reason": reason})
+
+
 def declare_coverage(task_id: str, criteria: StrList) -> dict[str, Any]:
     """PM: stamp parent acceptance criteria onto an existing child (task_id).
 
@@ -1156,6 +1170,7 @@ _TOOLS: dict[str, Any] = {
     "submit_up": submit_up,
     "submit_root": submit_root,
     "declare_coverage": declare_coverage,
+    "cancel_leaf": cancel_leaf,
     # board / main pm
     "escalate_to_ceo": escalate_to_ceo,
     # auditor

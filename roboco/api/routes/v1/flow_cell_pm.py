@@ -9,6 +9,7 @@ from guard_core.handlers.behavior_handler import BehaviorRule
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_cell_pm
 from roboco.api.schemas.v1.flow import (
+    CancelLeafRequest,
     CompleteRequest,
     DeclareCoverageRequest,
     DelegateRequest,
@@ -285,4 +286,19 @@ async def i_am_idle(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_am_idle(x_agent_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/cancel_leaf")
+@mesh_scanned
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def cancel_leaf(
+    request: Request,
+    body: CancelLeafRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.cancel_leaf(x_agent_id, body.task_id, body.reason)
     return envelope_to_response(env, request)

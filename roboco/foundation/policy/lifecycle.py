@@ -897,6 +897,15 @@ def _next_hint_pm_idle(_t: Any) -> str:
     return "idle until subtasks finish"
 
 
+def _next_hint_cancel_leaf(t: Any) -> str:
+    parent_id = getattr(t, "parent_task_id", None)
+    parent_ref = f" ({parent_id})" if parent_id else ""
+    return (
+        f"leaf cancelled - submit_up (or submit_root) on its parent{parent_ref},"
+        " naming any already-fixed findings in resolved_findings, to roll up"
+    )
+
+
 def _next_hint_submit_up(t: Any) -> str:
     if markers.is_pr_waived(t):
         return (
@@ -1607,6 +1616,25 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         extra_preconditions=(),
         side_effects=(),
         next_hint=lambda _t: "task restored; original assignee will resume",
+    ),
+    "cancel_leaf": IntentSpec(
+        name="cancel_leaf",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "Close a zero-diff leaf: a delegated child whose findings a"
+            " merged sibling already fixed, so no legitimate diff remains"
+            " and i_am_done/complete can never accept it. Refuses a target"
+            " with any children of its own (not a leaf), any commit ahead"
+            " of its base, or an open PR - those go through the normal"
+            " review path, not this. `reason` is recorded as your"
+            " journal:decision and on the task's audit trail. Cell PM:"
+            " only your own coordination task's children. Main PM: any"
+            " root's descendant."
+        ),
+        composes=(),  # special - the verb body owns ownership + zero-diff checks
+        extra_preconditions=(PRECONDITION_NON_TERMINAL,),
+        side_effects=(),
+        next_hint=_next_hint_cancel_leaf,
     ),
     "triage": IntentSpec(
         name="triage",

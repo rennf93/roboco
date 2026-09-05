@@ -26,6 +26,7 @@ from roboco.models.base import (
 )
 from roboco.models.task import TaskCreateRequest
 from roboco.services.base import ConflictError
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import select, text
 
@@ -2164,6 +2165,109 @@ async def test_claim_blocked_by_sequence_names_distinct_reason(
     reason = await svc._claim_blocked_by_sequence(seq1)
     assert reason is not None
     assert "seq-0 blocker" in reason
+
+
+@pytest.mark.asyncio
+async def test_cancel_leaf_zero_diff_sibling_never_blocks_sequence(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """`cancel_leaf`'s mechanical path (`TaskService.cancel`) must not leave
+    a lower-sequence sibling stranded: the sequence bar's candidate query
+    already excludes CANCELLED/COMPLETED siblings (2026-09-05 de9379cc
+    incident - a zero-diff fix leaf with no mechanical close path forced a
+    manual CEO cancel; `cancel_leaf` gives the PM the same `TaskService.cancel`
+    call, so this asserts the cancel actually clears the hold)."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    zero_diff_leaf = await svc.create(
+        _req(task_setup, title="zero-diff leaf", parent_task_id=parent.id, sequence=0)
+    )
+    sibling = await svc.create(
+        _req(task_setup, title="sibling", parent_task_id=parent.id, sequence=1)
+    )
+    zero_diff_leaf.status = TaskStatus.IN_PROGRESS
+    await db_session.flush()
+
+    assert await svc._claim_blocked_by_sequence(sibling) is not None
+
+    await svc.cancel(
+        zero_diff_leaf.id,
+        agent_role="cell_pm",
+        cancellation_note="[CANCELLED by cell_pm] sibling PR already fixed this",
+    )
+
+    assert await svc._claim_blocked_by_sequence(sibling) is None
+
+
+def _evidence_repo_stub() -> AsyncMock:
+    repo = AsyncMock()
+    for method in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
+        getattr(repo, method).return_value = []
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_cancel_leaf_refuses_target_with_children(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """2026-09-06 finding: `cancel_leaf` checked only the target's own
+    PR/branch/ahead-count, never whether it had children of its own, so
+    `TaskService.cancel`'s force-cascade could close out a whole live
+    subtree through the one verb meant for a childless zero-diff task.
+    Repro: a PM-owned parent -> a branch-less `mid` task -> a `child`
+    task carrying an open PR in `awaiting_qa`. `cancel_leaf(mid)` must
+    refuse before it ever reaches `TaskService.cancel`, and the child
+    must stay exactly where it was."""
+    svc = task_setup["svc"]
+    pm = _pm("Cancel-Leaf PM")
+    db_session.add(pm)
+    await db_session.flush()
+
+    parent = await svc.create(_req(task_setup, title="parent"))
+    parent.assigned_to = pm.id
+    mid = await svc.create(_req(task_setup, title="mid", parent_task_id=parent.id))
+    mid.status = TaskStatus.IN_PROGRESS
+    mid.branch_name = None
+    child = await svc.create(_req(task_setup, title="child", parent_task_id=mid.id))
+    child.status = TaskStatus.AWAITING_QA
+    child.pr_number = 999
+    child.branch_name = "feature/backend/mid--child"
+    await db_session.flush()
+
+    deps = ChoreographerDeps(
+        task=svc,
+        work_session=AsyncMock(),
+        git=AsyncMock(),
+        a2a=AsyncMock(),
+        journal=AsyncMock(),
+        audit=AsyncMock(),
+        evidence_repo=_evidence_repo_stub(),
+    )
+    c = Choreographer(deps)
+
+    env = await c.cancel_leaf(
+        cast("UUID", pm.id),
+        cast("UUID", mid.id),
+        "attempting to close a leaf with children",
+    )
+
+    assert env.error == "invalid_state"
+    assert "has 1 children" in (env.message or "")
+    deps.git.is_behind_base.assert_not_awaited()
+    refreshed_child = await svc.get(child.id)
+    assert refreshed_child is not None
+    assert refreshed_child.status == TaskStatus.AWAITING_QA
+    refreshed_mid = await svc.get(mid.id)
+    assert refreshed_mid is not None
+    assert refreshed_mid.status == TaskStatus.IN_PROGRESS
 
 
 # ---------------------------------------------------------------------------
