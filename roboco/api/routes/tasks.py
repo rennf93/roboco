@@ -4,10 +4,11 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
+from fastapi.responses import PlainTextResponse
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -15,6 +16,10 @@ from roboco.api.deps import (
     PermissionServiceDep,
     get_permission_service,
     require_pm_or_above,
+)
+from roboco.api.schemas.attestation import (
+    TaskAttestationResponse,
+    attestation_to_response,
 )
 from roboco.api.schemas.tasks import (
     BoardReviewEntry,
@@ -69,6 +74,10 @@ from roboco.security import (
     guard_deco,
     prompt_injection_validator,
     secret_exfil_validator,
+)
+from roboco.services.attestation import (
+    assemble_task_attestation,
+    render_attestation_markdown,
 )
 from roboco.services.audit import get_audit_service
 from roboco.services.base import ServiceError
@@ -989,6 +998,51 @@ async def get_task_collision_map(
             for s in (ctx or [])
         ],
     )
+
+
+@router.get("/{task_id}/attestation")
+async def get_task_attestation(
+    task_id: UUID,
+    db: DbSession,
+    _agent: CurrentAgentContext,
+    format: Literal["json", "markdown"] = Query("json"),
+) -> TaskAttestationResponse | PlainTextResponse:
+    """The full per-task verification attestation: every acceptance
+    criterion with its verified stamp, the findings ledger by round, the
+    CI verdict, conventions findings, and the reviewer/custody chain,
+    bound to commit and PR refs. ``format=markdown`` renders the SAME
+    assembled object as a human-readable receipt — never a second
+    computation — so JSON and Markdown can never diverge. Delegates
+    entirely to ``assemble_task_attestation``/``render_attestation_markdown``
+    (roboco.services.attestation); no assembly logic lives here.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    project_slug: str | None = None
+    git_service: Any = None
+    if task.project_id is not None:
+        from roboco.services.git import get_git_service
+        from roboco.services.project import get_project_service
+
+        project = await get_project_service(db).get(UUID(str(task.project_id)))
+        if project is not None:
+            project_slug = project.slug
+            git_service = get_git_service(db)
+
+    attestation = await assemble_task_attestation(
+        db, task, project_slug=project_slug, git_service=git_service
+    )
+
+    if format == "markdown":
+        return PlainTextResponse(
+            render_attestation_markdown(attestation), media_type="text/markdown"
+        )
+    return attestation_to_response(attestation)
 
 
 # =============================================================================

@@ -9,9 +9,12 @@ contract rather than something the route re-derives.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from roboco.services.attestation import TaskAttestation
 
 
 class AttestationCriterionResponse(BaseModel):
@@ -133,3 +136,94 @@ class TaskAttestationQuery(BaseModel):
 
     task_id: str
     format: Literal["json", "markdown"] = "json"
+
+
+def attestation_to_response(attestation: TaskAttestation) -> TaskAttestationResponse:
+    """Convert the assembler's frozen-dataclass ``TaskAttestation`` into its
+    Pydantic response twin, field-for-field. Kept here (not in the route, not
+    in ``roboco.services.attestation``) per the layering rule services must
+    never import schemas — see ``docs/map/attestation.md``'s Gotchas."""
+    return TaskAttestationResponse(
+        task_id=attestation.task_id,
+        title=attestation.title,
+        status=attestation.status,
+        team=attestation.team,
+        project_slug=attestation.project_slug,
+        branch_name=attestation.branch_name,
+        pr_number=attestation.pr_number,
+        pr_url=attestation.pr_url,
+        revision_count=attestation.revision_count,
+        commits=list(attestation.commits),
+        work_sessions=[
+            AttestationWorkSessionResponse(
+                agent_slug=ws.agent_slug,
+                branch_name=ws.branch_name,
+                base_branch=ws.base_branch,
+                target_branch=ws.target_branch,
+                status=ws.status,
+                commits=list(ws.commits),
+                pr_number=ws.pr_number,
+                pr_url=ws.pr_url,
+                pr_status=ws.pr_status,
+                started_at=ws.started_at,
+                ended_at=ws.ended_at,
+            )
+            for ws in attestation.work_sessions
+        ],
+        acceptance_criteria=[
+            AttestationCriterionResponse(
+                id=ac.id, text=ac.text, verified=ac.verified, evidence=ac.evidence
+            )
+            for ac in attestation.acceptance_criteria
+        ],
+        findings_by_round=[
+            AttestationFindingsRoundResponse(
+                round=fr.round,
+                findings=[
+                    AttestationFindingResponse(
+                        id=f.id,
+                        round=f.round,
+                        origin=f.origin,
+                        severity=f.severity,
+                        status=f.status,
+                        file=f.file,
+                        line=f.line,
+                        criterion=f.criterion,
+                        expected=f.expected,
+                        actual=f.actual,
+                        fix=f.fix,
+                        resolution_note=f.resolution_note,
+                        created_at=f.created_at,
+                    )
+                    for f in fr.findings
+                ],
+            )
+            for fr in attestation.findings_by_round
+        ],
+        ci=AttestationCiVerdictResponse(
+            state=attestation.ci.state,
+            head_sha=attestation.ci.head_sha,
+            failing_checks=list(attestation.ci.failing_checks),
+        ),
+        conventions_findings=[
+            AttestationConventionFindingResponse(
+                file=cf.file,
+                line=cf.line,
+                rule=cf.rule,
+                level=cf.level,
+                kind=cf.kind,
+                message=cf.message,
+            )
+            for cf in attestation.conventions_findings
+        ],
+        reviewer_chain=[
+            AttestationReviewerChainEntryResponse(
+                to_status=rc.to_status,
+                agent_slug=rc.agent_slug,
+                agent_role=rc.agent_role,
+                timestamp=rc.timestamp,
+            )
+            for rc in attestation.reviewer_chain
+        ],
+        generated_at=attestation.generated_at,
+    )
