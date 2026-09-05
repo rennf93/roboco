@@ -6,7 +6,6 @@ cancels the proposal (freeing the one-open dedup for a fresh re-assessment).
 Nothing here publishes without the CEO's explicit POST.
 """
 
-from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
@@ -20,7 +19,6 @@ from roboco.api.schemas.release import (
     ReleaseRejectRequest,
 )
 from roboco.api.utils.release import _require_ceo, _to_response
-from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services.release_proposal import (
     dispatch_approve,
@@ -73,11 +71,10 @@ async def approve_release_proposal(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
         )
-    # Stamp the CEO's actual approval-dispatch moment — distinct from the
-    # proposal's `completed_at`, which the ~40min background executor sets
-    # only once publish finishes (release_certificate.py reads this marker
-    # for its `ceo_approved_at` field rather than the completion time).
-    markers.set_release_approved_at(task, datetime.now(UTC).isoformat())
+    # ceo_approved_at is now stamped inside ReleaseProposalService.approve()
+    # itself — the shared chokepoint both this route and the Telegram approve
+    # path dispatch through — rather than here, so every CEO-approve surface
+    # gets it, not just this one (see release_proposal.py).
     # Materialize the proposal for the background session (a no-op in prod,
     # where the release-manager engine already committed it; tests seed it only
     # flushed into the request session).

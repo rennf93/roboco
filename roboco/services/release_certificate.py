@@ -18,7 +18,10 @@ artifacts (the proposal itself, X posts, video drafts, …) are excluded by
 source/task_type, not by an allow-list of human sources — see
 ``_release_task_set`` — so a dispatched engine-originated delivery root
 (self_heal/ci_watch/dep_update/docs_sync/roadmap/pest_control) is still
-counted as real delivered work.
+counted as real delivered work. External/internal PR-review tasks
+(``PR_REVIEW_SOURCES``) are excluded too — they are ``TaskType.CODE`` like any
+delivery task, but a review merges no code into the release, so counting one
+as release-window delivered work would be wrong.
 """
 
 from __future__ import annotations
@@ -35,7 +38,11 @@ from roboco.models.base import TaskStatus, TaskType
 from roboco.services.base import BaseService
 from roboco.services.release_readiness import report_from_dict
 from roboco.services.repositories.review_findings import ReviewFindingsRepository
-from roboco.services.task import LEAD_TIME_EXCLUDED_SOURCES, get_task_service
+from roboco.services.task import (
+    LEAD_TIME_EXCLUDED_SOURCES,
+    PR_REVIEW_SOURCES,
+    get_task_service,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -51,6 +58,16 @@ _AC_MARK = "[AC] "
 _CLOSED_FINDING_STATUSES = ("addressed", "verified")
 
 _SEVERITIES = ("blocker", "major", "minor", "nit")
+
+# LEAD_TIME_EXCLUDED_SOURCES (held CEO-approval drafts/reports) plus
+# PR_REVIEW_SOURCES (external_pr/internal_pr) — a fork/internal-PR review task
+# is TaskType.CODE like any delivery task, but it merges no code into the
+# release, so it must not appear as release-window delivered work either.
+# Scoped to this module — LEAD_TIME_EXCLUDED_SOURCES on its own still backs
+# TaskService.get_delivery_stats_30d unchanged.
+_RELEASE_TASK_SET_EXCLUDED_SOURCES: frozenset[str] = LEAD_TIME_EXCLUDED_SOURCES | (
+    frozenset(PR_REVIEW_SOURCES)
+)
 
 
 @dataclass(frozen=True)
@@ -266,6 +283,12 @@ class ReleaseCertificateService(BaseService):
         carries the engine constant, a delegated subtask's ``source`` is
         always "manual" regardless (``create_subtask`` never inherits it),
         so the allow-list let subtasks through while dropping their root.
+
+        External/internal PR-review tasks (``PR_REVIEW_SOURCES``) are
+        excluded on top of that: they are ``TaskType.CODE`` with a source
+        outside ``LEAD_TIME_EXCLUDED_SOURCES``, so without this they'd pass
+        the deny-list and appear as release-window delivered work even
+        though a fork/internal-PR review merges no code into the release.
         """
         publish_at = proposal.completed_at
         if publish_at is None:  # pragma: no cover - caller guards on this
@@ -276,7 +299,7 @@ class ReleaseCertificateService(BaseService):
                 TaskTable.status == TaskStatus.COMPLETED,
                 TaskTable.completed_at <= publish_at,
                 TaskTable.task_type != TaskType.ADMINISTRATIVE,
-                TaskTable.source.notin_(LEAD_TIME_EXCLUDED_SOURCES),
+                TaskTable.source.notin_(_RELEASE_TASK_SET_EXCLUDED_SOURCES),
             )
             .order_by(TaskTable.completed_at, TaskTable.created_at)
         )

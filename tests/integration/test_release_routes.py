@@ -227,8 +227,10 @@ async def test_approve_dispatches_async_and_completes(
     fake_executor.execute.assert_awaited_once()
     await db_session.refresh(task)
     assert task.status == TaskStatus.COMPLETED
-    # The approve route stamps the dispatch moment itself, not the
-    # background executor's much-later completed_at.
+    # ReleaseProposalService.approve() stamps the dispatch moment itself
+    # (the shared chokepoint both this route and the Telegram approve path
+    # dispatch through), not the background executor's much-later
+    # completed_at.
     assert markers.get_release_approved_at(task) is not None
 
 
@@ -604,6 +606,16 @@ async def test_certificate_packages_release_gate_chain(
         _PUBLISHED_AT - timedelta(hours=3),
         source=RELEASE_MANAGER_SOURCE,
         title="Release proposal draft",
+    )
+    # Round-2 pr_gate finding F-b0dc8c0b: a fork/internal PR review task is
+    # TaskType.CODE like any delivery task, but it merges no code into the
+    # release — must not appear as release-window delivered work either.
+    await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=3, minutes=5),
+        source="external_pr",
+        title="Review external PR #99: a thing",
     )
     # Board-program exploration cycle: pins the task_type != ADMINISTRATIVE
     # predicate in isolation, since its own source ("manual") is not in
