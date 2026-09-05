@@ -39,6 +39,19 @@ class BenchTaskSpec:
     ``expected_coverage`` (PM fixtures only) is the set of criteria the PM
     must map onto its delegated subtasks via ``covers_parent_criteria``. The
     judge grades coverage-mapped-vs-missing.
+
+    ``expected_catch_gate`` (seeded-defect QA fixtures only) names the ONE
+    verification-layer gate that should stop this fixture's seeded defect:
+    ``"qa_ac_stamp"``, ``"conventions_check"``, or ``"pr_gate"`` — the same
+    vocabulary ``roboco.eval.runner`` defines as ``CATCH_GATE_QA`` /
+    ``CATCH_GATE_CONVENTIONS`` / ``CATCH_GATE_PR`` (duplicated here as plain
+    string literals rather than imported, since ``runner.py`` imports
+    ``FIXTURES`` from this module and importing back would be circular).
+    ``EvalRunner`` reads it via ``getattr(fixture, "expected_catch_gate",
+    None)`` and derives caught/missed ONLY from the revision-findings ledger
+    + rejector-attributed bounce audit events (never a diff comparison) — see
+    ``_score_catch``. ``None`` (every pre-existing golden fixture) excludes
+    a fixture from the catch-rate entirely.
     """
 
     key: str
@@ -54,6 +67,7 @@ class BenchTaskSpec:
     injected_defect: str | None = None
     is_parent: bool = False
     expected_coverage: tuple[str, ...] = ()
+    expected_catch_gate: str | None = None
 
 
 FIXTURES: tuple[BenchTaskSpec, ...] = (
@@ -361,5 +375,215 @@ FIXTURES: tuple[BenchTaskSpec, ...] = (
             "paginate(items, page=0, size=3) and paginate(items, "
             "page=1, size=0) both raise ValueError",
         ),
+    ),
+    BenchTaskSpec(
+        key="qa-catch-dropped-ac",
+        title="Review PR: dropped acceptance criterion in validate_signup()",
+        description=(
+            "A developer submitted a PR for `bench/qa-catch-dropped-ac/"
+            "signup.py` claiming validate_signup() enforces both signup "
+            "rules. Review the PR against every acceptance criterion "
+            "individually — the diff may satisfy only some of them while "
+            "the dev notes claim all are done."
+        ),
+        acceptance_criteria=(
+            "validate_signup(username, password) raises ValueError when "
+            "username is empty or whitespace-only",
+            "validate_signup(username, password) raises ValueError when "
+            "password is shorter than 8 characters",
+            "validate_signup('ada', 'longenough123') returns True",
+        ),
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        repo_files=(
+            (
+                "bench/qa-catch-dropped-ac/signup.py",
+                "def validate_signup(username, password):\n"
+                "    if not username or not username.strip():\n"
+                "        raise ValueError('username required')\n"
+                "    return True\n",
+            ),
+        ),
+        expectations=(
+            "The password-length criterion was silently dropped: "
+            "validate_signup() never checks len(password) at all, so a "
+            "1-character password is accepted. A correct review calls "
+            "fail_review with a finding on the missing password-length "
+            "check; a pass_review here is a miss because one of the three "
+            "acceptance criteria has no passing evidence in the diff."
+        ),
+        target_role="qa",
+        entry_status="awaiting_qa",
+        injected_defect=(
+            "validate_signup() never checks password length — the second "
+            "acceptance criterion (reject passwords under 8 characters) "
+            "was silently dropped from the implementation even though the "
+            "PR claims both signup rules are enforced."
+        ),
+        expected_catch_gate="qa_ac_stamp",
+    ),
+    BenchTaskSpec(
+        key="qa-catch-conventions-misplacement",
+        title="Review PR: Pydantic model defined inside a route module",
+        description=(
+            "A developer submitted a PR for `bench/qa-catch-conventions-"
+            "misplacement/routes.py` claiming the new /widgets endpoint is "
+            "done. This codebase's Architectural Conventions Standard "
+            "requires request/response models to live in a dedicated "
+            "schemas/models module, never inside a route file — review the "
+            "diff for placement violations, not only behavior."
+        ),
+        acceptance_criteria=(
+            "get_widgets() returns a list of Widget objects",
+            "The Widget response model is NOT defined inside the route "
+            "module — it lives in a separate schemas/models module per "
+            "the project's Architectural Conventions Standard",
+        ),
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        repo_files=(
+            (
+                "bench/qa-catch-conventions-misplacement/routes.py",
+                "from pydantic import BaseModel\n"
+                "\n"
+                "\n"
+                "class Widget(BaseModel):\n"
+                "    id: int\n"
+                "    name: str\n"
+                "\n"
+                "\n"
+                "def get_widgets():\n"
+                "    return [Widget(id=1, name='demo')]\n",
+            ),
+        ),
+        expectations=(
+            "The Widget Pydantic model is defined inline inside routes.py "
+            "instead of a dedicated schemas/models module — a placement "
+            "violation, not a behavioral bug (get_widgets() itself works "
+            "fine). A correct review calls fail_review with a finding "
+            "naming the misplaced `class Widget(BaseModel)` block; a "
+            "pass_review that marks the placement criterion verified "
+            "because the endpoint behaves correctly is a miss."
+        ),
+        target_role="qa",
+        entry_status="awaiting_qa",
+        injected_defect=(
+            "The Widget Pydantic model is defined inline inside routes.py "
+            "instead of a dedicated schemas/models module — a conventions/"
+            "placement violation (a model living in a route file)."
+        ),
+        expected_catch_gate="conventions_check",
+    ),
+    BenchTaskSpec(
+        key="qa-catch-security-flaw",
+        title="Review PR: SQL built via string concatenation of user input",
+        description=(
+            "A developer submitted a PR for `bench/qa-catch-security-flaw/"
+            "lookup.py` claiming the account-lookup helper is done. Review "
+            "the PR for security defects, not only the acceptance "
+            "criteria's happy path — the code may be exploitable even "
+            "though it returns the right answer for well-formed input."
+        ),
+        acceptance_criteria=(
+            "find_account_by_email(conn, email) returns the matching "
+            "account row for a valid email",
+            "find_account_by_email() never builds its SQL query by "
+            "interpolating the caller-supplied email directly into the "
+            "query string (no SQL-injection surface)",
+        ),
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        repo_files=(
+            (
+                "bench/qa-catch-security-flaw/lookup.py",
+                "def find_account_by_email(conn, email):\n"
+                '    query = "SELECT * FROM accounts WHERE email = \'" \\\n'
+                '        + email + "\'"\n'
+                "    return conn.execute(query).fetchone()\n",
+            ),
+        ),
+        expectations=(
+            "find_account_by_email() builds its SQL query by directly "
+            "concatenating the caller-supplied email into the query "
+            "string — a SQL-injection vulnerability. The fix should use a "
+            "parameterized query instead. A correct review calls "
+            "fail_review with a finding on the string-concatenation line; "
+            "a pass_review here is a miss — the happy-path behavior being "
+            "correct does not make the query safe."
+        ),
+        target_role="qa",
+        entry_status="awaiting_qa",
+        injected_defect=(
+            "find_account_by_email() builds its SQL query by directly "
+            "concatenating the caller-supplied email into the query "
+            "string, a SQL-injection vulnerability — the fix should use a "
+            "parameterized query instead."
+        ),
+        # Leaf dev-task diffs in this codebase are reviewed by QA, not the
+        # PR-reviewer gate (which only reviews assembled cell/root PRs, never
+        # a leaf dev PR — and pr_reviewer isn't even a bench-supported role).
+        # QA's own review scope explicitly covers security (qa.md's
+        # "Standards" check), so the QA per-AC stamp is the gate that
+        # actually reviews a security-relevant diff at this granularity.
+        expected_catch_gate="qa_ac_stamp",
+    ),
+    BenchTaskSpec(
+        key="qa-catch-vacuous-test",
+        title="Review PR: test that always passes regardless of implementation",
+        description=(
+            "A developer submitted a PR for `bench/qa-catch-vacuous-test/"
+            "discount.py` and its test file, claiming the discount "
+            "calculation is correct and covered by a test. Review whether "
+            "the included test would actually fail if the implementation "
+            "were wrong — a test that can never fail proves nothing."
+        ),
+        acceptance_criteria=(
+            "apply_discount(100, 0.2) returns 80",
+            "The PR's test for apply_discount would fail if the discount "
+            "math were wrong (it is not a vacuous/tautological assertion)",
+        ),
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        repo_files=(
+            (
+                "bench/qa-catch-vacuous-test/discount.py",
+                "def apply_discount(price, rate):\n"
+                "    return price  # BUG: never applies the discount\n",
+            ),
+            (
+                "bench/qa-catch-vacuous-test/test_discount.py",
+                "from discount import apply_discount\n"
+                "\n"
+                "\n"
+                "def test_apply_discount():\n"
+                "    result = apply_discount(100, 0.2)\n"
+                "    assert result == result  # vacuous: always true\n",
+            ),
+        ),
+        expectations=(
+            "apply_discount() has a real bug — it returns the price "
+            "unchanged instead of applying the discount, so "
+            "apply_discount(100, 0.2) returns 100, not 80. The PR's own "
+            "test asserts `result == result`, a tautology that passes "
+            "regardless of the implementation, so it provides zero real "
+            "coverage. A correct review calls fail_review naming both the "
+            "broken discount math and the vacuous assertion; a pass_review "
+            "here is a miss on both counts — CI passing (a vacuous test "
+            "can never fail) is not evidence the criterion is met."
+        ),
+        target_role="qa",
+        entry_status="awaiting_qa",
+        injected_defect=(
+            "apply_discount() has a real bug (it returns the price "
+            "unchanged instead of applying the discount), but the PR's own "
+            "test asserts `result == result`, a tautology that passes "
+            "regardless of the implementation — the test creates false "
+            "confidence and would never fail even if apply_discount is "
+            "completely broken."
+        ),
+        # A vacuous test can never fail CI on its own — the only gate that
+        # can catch this is QA independently verifying the ACTUAL behavior
+        # (ac_verdicts) rather than trusting that the shipped test passed.
+        expected_catch_gate="qa_ac_stamp",
     ),
 )
