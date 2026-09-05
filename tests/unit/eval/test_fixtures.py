@@ -16,7 +16,7 @@ import pytest
 from roboco.eval.fixtures import FIXTURES, BenchTaskSpec
 
 _MIN_FIXTURES = 5
-_MAX_FIXTURES = 8
+_MAX_FIXTURES = 12
 
 
 def test_fixture_keys_are_unique() -> None:
@@ -77,13 +77,14 @@ def test_bench_task_spec_is_frozen() -> None:
 def test_developer_fixtures_have_default_new_fields() -> None:
     """The 6 original developer fixtures are backward-compatible: the new
     optional fields carry their defaults (entry_status=pending, no injected
-    defect, not a parent, no expected coverage)."""
+    defect, not a parent, no expected coverage, no expected catch gate)."""
     for f in FIXTURES:
         if f.target_role == "developer":
             assert f.entry_status == "pending", f.key
             assert f.injected_defect is None, f.key
             assert f.is_parent is False, f.key
             assert f.expected_coverage == (), f.key
+            assert f.expected_catch_gate is None, f.key
 
 
 def test_qa_fixture_has_injected_defect_and_awaiting_qa_entry() -> None:
@@ -106,3 +107,38 @@ def test_pm_fixture_is_parent_with_expected_coverage() -> None:
         assert f.is_parent is True, f"{f.key} is not a parent"
         assert f.expected_coverage, f"{f.key} has no expected_coverage"
         assert f.injected_defect is None, f.key
+        assert f.expected_catch_gate is None, f.key
+
+
+_VALID_CATCH_GATES = {"qa_ac_stamp", "conventions_check", "pr_gate"}
+_MIN_SEEDED_DEFECT_FIXTURES = 4
+
+
+def test_seeded_defect_fixtures_name_a_valid_catch_gate() -> None:
+    """Every seeded-defect fixture (expected_catch_gate set) is a QA-entry
+    fixture and names one of roboco.eval.runner's three recognized gate
+    vocabulary values, so a miss during scoring can name the layer that
+    missed rather than just 'something failed'."""
+    seeded = [f for f in FIXTURES if f.expected_catch_gate is not None]
+    assert len(seeded) >= _MIN_SEEDED_DEFECT_FIXTURES, (
+        f"expected at least {_MIN_SEEDED_DEFECT_FIXTURES} seeded-defect "
+        f"fixtures, found {len(seeded)}"
+    )
+    for f in seeded:
+        assert f.expected_catch_gate in _VALID_CATCH_GATES, (
+            f"{f.key}: unrecognized catch gate {f.expected_catch_gate!r}"
+        )
+        assert f.target_role == "qa", f"{f.key}: seeded-defect fixture must target qa"
+        assert f.entry_status == "awaiting_qa", f.key
+        assert f.injected_defect is not None, f"{f.key} has no injected_defect"
+
+
+def test_seeded_defect_fixtures_cover_the_required_defect_classes() -> None:
+    """The four required defect classes are each represented: a dropped
+    acceptance criterion, a conventions/placement violation, a security
+    flaw, and a vacuously-passing test."""
+    gates_by_key = {f.key: f.expected_catch_gate for f in FIXTURES}
+    assert gates_by_key.get("qa-catch-dropped-ac") == "qa_ac_stamp"
+    assert gates_by_key.get("qa-catch-conventions-misplacement") == "conventions_check"
+    assert gates_by_key.get("qa-catch-security-flaw") == "qa_ac_stamp"
+    assert gates_by_key.get("qa-catch-vacuous-test") == "qa_ac_stamp"
