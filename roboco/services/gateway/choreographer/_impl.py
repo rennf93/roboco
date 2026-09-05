@@ -3063,7 +3063,7 @@ class Choreographer:
                     context_briefing=ctx.briefing,
                 ),
             )
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
         # Server-side milestone progress so the panel always
         # records the QA handoff regardless of agent's progress() habits.
@@ -3073,7 +3073,10 @@ class Choreographer:
             "submitted for QA review",
             percentage=90,
         )
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _i_am_done_resume_from_verifying(self, ctx: _IAmDoneContext) -> Envelope:
         """Recovery path: task is already in `verifying` owned by caller.
@@ -3098,9 +3101,12 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _i_am_done_pre_gate_dispatch(
         self, ctx: _IAmDoneContext, t: Any, agent_id: UUID
@@ -3228,12 +3234,15 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
         await self._record_milestone_progress(
             ctx.task_id, ctx.agent_id, "submitted for QA review", percentage=90
         )
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _open_finding_ids(self, task_id: UUID) -> tuple[str, ...]:
         """8-char ids of the task's still-OPEN revision-ledger findings.
@@ -3961,15 +3970,26 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id, task=task),
         )
 
-    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
+    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> str | None:
         """Reassign + A2A-notify the QA agent for this task's team.
 
         ``submit_qa`` clears ``assigned_to`` to None. We then explicitly
         reassign to the QA agent so the orchestrator's per-agent task
         polling spawns QA (not the dev again) for the next stage.
+
+        The submit-qa transition is already committed by the time this
+        runs, so a raise here (``A2AService.send`` is NOT best-effort —
+        it raises on policy denial, missing-agent lookup, participant
+        validation, and transient DB errors) must not escape and blow up
+        the verb path. Degrades to a warning string instead, mirroring
+        ``_pass_review_documenter_handoff`` (qa.py) and the ``pr_fail``
+        loop-closer (pr_gate.py) — the two existing precedents for this
+        exact shape.
         """
         qa_agent = await self.task.qa_agent_for_team(t.team)
-        if qa_agent is not None:
+        if qa_agent is None:
+            return None
+        try:
             await self.task.reassign(task_id, qa_agent.id)
             skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
             await self.a2a.send(
@@ -3979,6 +3999,21 @@ class Choreographer:
                 task_id=task_id,
                 body=f"Ready for review. PR: {t.pr_url}",
             )
+        except Exception as exc:
+            logger.warning(
+                "notify_qa side-effect failed - transition committed, "
+                "handoff did not fire",
+                task_id=str(task_id),
+                recipient=str(qa_agent.id),
+                error_type=type(exc).__name__,
+                error=repr(exc),
+            )
+            return (
+                f"submit-qa transition committed but the QA handoff to "
+                f"{qa_agent.id} failed ({type(exc).__name__}: {exc!r}). "
+                f"Re-issue the notification via dm."
+            )
+        return None
 
     def _resolve_skill(self, target_agent: Any, preference: list[str]) -> str:
         """Pick first skill in preference list that target_agent has.
