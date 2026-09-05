@@ -123,6 +123,25 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
       screen.getByRole("button", { name: /Approve & publish/i }),
     ).toBeInTheDocument();
   });
+
+  it("renders the verification rollup, unavailable when no member_task_ids are given", () => {
+    // No existing endpoint populates member_task_ids yet (see
+    // RELEASE_MEMBER_TASK_IDS_UNAVAILABLE) — the card must still render the
+    // rollup section wired to that state instead of omitting it.
+    mockUseQuery.mockReturnValue({
+      data: buildProposal(),
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    render(withPageRefresh(<ReleaseProposalCard />));
+    expect(screen.getByText("Verification rollup")).toBeInTheDocument();
+    expect(
+      screen.getByText(/exposes this release's member task set/i),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("ReleaseProposalCard — execute outcome surfacing (W8b)", () => {
