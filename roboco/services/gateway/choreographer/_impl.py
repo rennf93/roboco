@@ -931,10 +931,33 @@ class Choreographer:
             offerable.append(task)
         return offerable
 
+    async def _work_envelope(self, agent_id: UUID, t: Any, role: str) -> Envelope:
+        """Shared 'claim this task' envelope for the bounced/pre-assigned/
+        assigned give_me_work branches (identical shape, different source
+        list)."""
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(t.id),
+            next=self._claim_verb_hint(role, t),
+            context_briefing=await self._briefing_for(
+                agent_id, t.id, task=t, full=True
+            ),
+        ).with_introspection(task=t, role=role)
+
     async def give_me_work(self, agent_id: UUID) -> Envelope:
         """Return the agent's most-actionable task or signal idle."""
         agent = await self._deps.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
+        # Bounced work first: a needs_revision task carries open findings a
+        # reviewer is waiting on, so newly seeded pending work must not
+        # starve it (2026-08-24: be-dev-1 held 3 bounced tasks all day
+        # behind a stream of freshly pre-assigned pending ones).
+        assigned_rows = await self._deps.task.list_assigned_for_agent(agent_id)
+        bounced = await self._drop_dependency_held(
+            [t for t in assigned_rows if str(t.status) == "needs_revision"]
+        )
+        if bounced:
+            return await self._work_envelope(agent_id, bounced[0], role)
         # Pre-assigned pending tasks take priority. Smoke run 3 (2026-05-12)
         # showed agents missing tasks that were seeded with assigned_to=<them>
         # and status=pending because the earlier code only walked
@@ -945,28 +968,10 @@ class Choreographer:
             await self._deps.task.list_pending_for_agent(agent_id)
         )
         if pre_assigned:
-            t = pre_assigned[0]
-            return Envelope.ok(
-                status=str(t.status),
-                task_id=str(t.id),
-                next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(
-                    agent_id, t.id, task=t, full=True
-                ),
-            ).with_introspection(task=t, role=role)
-        assigned = await self._drop_dependency_held(
-            await self._deps.task.list_assigned_for_agent(agent_id)
-        )
+            return await self._work_envelope(agent_id, pre_assigned[0], role)
+        assigned = await self._drop_dependency_held(assigned_rows)
         if assigned:
-            t = assigned[0]
-            return Envelope.ok(
-                status=str(t.status),
-                task_id=str(t.id),
-                next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(
-                    agent_id, t.id, task=t, full=True
-                ),
-            ).with_introspection(task=t, role=role)
+            return await self._work_envelope(agent_id, assigned[0], role)
         paused = await self._deps.task.list_paused_for_agent(agent_id)
         if paused:
             t = paused[0]
