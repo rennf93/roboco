@@ -345,6 +345,123 @@ async def _ci_verdict(
     )
 
 
+def _render_header(attestation: TaskAttestation) -> list[str]:
+    pr_line = f"- **PR:** {attestation.pr_url or 'n/a'}"
+    if attestation.pr_number:
+        pr_line += f" (#{attestation.pr_number})"
+    return [
+        f"# Verification attestation — {attestation.title}",
+        "",
+        f"- **Task ID:** `{attestation.task_id}`",
+        f"- **Status:** {attestation.status}",
+        f"- **Team:** {attestation.team}",
+        f"- **Branch:** `{attestation.branch_name or 'n/a'}`",
+        pr_line,
+        f"- **Revision count:** {attestation.revision_count}",
+        f"- **Generated at:** {attestation.generated_at.isoformat()}",
+    ]
+
+
+def _render_acceptance_criteria(attestation: TaskAttestation) -> list[str]:
+    if not attestation.acceptance_criteria:
+        return ["_None recorded._"]
+    lines: list[str] = []
+    for ac in attestation.acceptance_criteria:
+        mark = "x" if ac.verified else " "
+        lines.append(f"- [{mark}] {ac.text}")
+        if ac.evidence:
+            lines.append(f"  - Evidence: {ac.evidence}")
+    return lines
+
+
+def _render_findings(attestation: TaskAttestation) -> list[str]:
+    if not attestation.findings_by_round:
+        return ["_No findings raised._"]
+    lines: list[str] = []
+    for fr in attestation.findings_by_round:
+        lines.append(f"### Round {fr.round}")
+        for f in fr.findings:
+            loc = f"{f.file}:{f.line}" if f.file else "n/a"
+            entry = (
+                f"- **[{f.severity}] {f.origin}** ({f.status}) — {loc}: "
+                f"expected {f.expected!r}, actual {f.actual!r}"
+            )
+            if f.fix:
+                entry += f" — fix: {f.fix}"
+            lines.append(entry)
+            if f.resolution_note:
+                lines.append(f"  - Resolution: {f.resolution_note}")
+        lines.append("")
+    return lines
+
+
+def _render_ci_verdict(attestation: TaskAttestation) -> list[str]:
+    state_line = f"- **State:** {attestation.ci.state}"
+    if attestation.ci.head_sha:
+        state_line += f" (head `{attestation.ci.head_sha}`)"
+    lines = [state_line]
+    lines += [f"  - Failing: {check}" for check in attestation.ci.failing_checks]
+    return lines
+
+
+def _render_conventions_findings(attestation: TaskAttestation) -> list[str]:
+    if not attestation.conventions_findings:
+        return ["_None recorded._"]
+    return [
+        f"- **[{cf.level}] {cf.rule}** — {cf.file}:{cf.line}: {cf.message}"
+        for cf in attestation.conventions_findings
+    ]
+
+
+def _render_reviewer_chain(attestation: TaskAttestation) -> list[str]:
+    if not attestation.reviewer_chain:
+        return ["_None recorded._"]
+    lines = []
+    for rc in attestation.reviewer_chain:
+        who = rc.agent_slug or "unknown"
+        lines.append(
+            f"- {rc.timestamp.isoformat()} — {who} ({rc.agent_role or 'n/a'}) "
+            f"→ {rc.to_status}"
+        )
+    return lines
+
+
+def _render_work_sessions(attestation: TaskAttestation) -> list[str]:
+    if not attestation.work_sessions:
+        return ["_None recorded._"]
+    lines = []
+    for ws in attestation.work_sessions:
+        pr = f"#{ws.pr_number} ({ws.pr_status})" if ws.pr_number else "no PR"
+        lines.append(
+            f"- `{ws.branch_name}` ({ws.base_branch} → {ws.target_branch}), "
+            f"{ws.status}, {len(ws.commits)} commit(s), {pr}"
+        )
+    return lines
+
+
+def render_attestation_markdown(attestation: TaskAttestation) -> str:
+    """Render a human-readable Markdown receipt from an already-assembled
+    ``TaskAttestation`` — never a second computation over raw tables, so the
+    Markdown can never drift from the JSON shape the route also returns.
+    Each section is a small pure helper above, kept under the branch budget."""
+    sections: list[tuple[str | None, list[str]]] = [
+        (None, _render_header(attestation)),
+        ("## Acceptance criteria", _render_acceptance_criteria(attestation)),
+        ("## Findings ledger", _render_findings(attestation)),
+        ("## CI verdict", _render_ci_verdict(attestation)),
+        ("## Conventions findings", _render_conventions_findings(attestation)),
+        ("## Reviewer chain", _render_reviewer_chain(attestation)),
+        ("## Work sessions", _render_work_sessions(attestation)),
+    ]
+    lines: list[str] = []
+    for heading, body in sections:
+        if heading is not None:
+            lines += [heading, ""]
+        lines += body
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 async def assemble_task_attestation(
     session: AsyncSession,
     task: TaskTable,
