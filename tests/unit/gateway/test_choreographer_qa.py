@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.enforcement import A2AAccessDeniedError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
@@ -610,6 +611,15 @@ async def test_pass_review_survives_a2a_send_failure() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _add_assigns_id(obj: Any) -> None:
+    """Mimic a real flush populating a column ``default=uuid4`` primary key —
+    a bare mocked ``session.add`` leaves ``obj.id`` at ``None``, which would
+    silently strip the ``[F-xxxxxxxx]`` prefix from the findings rendering
+    that ``render_finding_line`` builds off ``row.id``."""
+    if getattr(obj, "id", None) is None:
+        obj.id = uuid4()
+
+
 def _fail_review_fixture(
     qa_id: Any,
     task_id: Any,
@@ -630,7 +640,7 @@ def _fail_review_fixture(
     task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     task_svc.qa_fail.return_value = after
     task_svc.session = MagicMock()
-    task_svc.session.add = MagicMock()
+    task_svc.session.add = MagicMock(side_effect=_add_assigns_id)
     task_svc.session.flush = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(
@@ -686,6 +696,48 @@ async def test_fail_review_success_carries_no_warning() -> None:
     assert body.get("error") is None, body
     assert body.get("warning") is None
     a2a_svc.send.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "a2a_exc",
+    [
+        RuntimeError("a2a down"),
+        A2AAccessDeniedError(
+            from_agent="be-qa", to_agent="be-dev-1", reason="not in same cell"
+        ),
+    ],
+    ids=["generic_runtime_error", "a2a_access_denied_policy"],
+)
+@pytest.mark.asyncio
+async def test_fail_review_bounce_survives_a2a_raise_broadly(
+    a2a_exc: Exception,
+) -> None:
+    """The guard must catch broadly — a transient RuntimeError AND a typed
+    policy denial (A2AAccessDeniedError, the actual exception A2AService.send
+    raises on a disallowed route) both degrade to a warning, never an error
+    envelope. The needs_revision transition, the task_review_findings ledger
+    rows, and the id-prefixed rendering in the qa_notes mirror all survive —
+    proving the bounce that just happened is still fully recorded even though
+    the developer notification itself failed."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, task_svc, a2a_svc = _fail_review_fixture(
+        qa_id, task_id, dev_id, a2a_side_effect=a2a_exc
+    )
+
+    env = await c.fail_review(qa_id, task_id, _FAIL_REVIEW_ISSUES)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "needs_revision"
+    assert body.get("warning") is not None
+    # Both findings' ledger rows were inserted (persisted) before the a2a
+    # step ran, regardless of what a2a.send does afterwards.
+    assert task_svc.session.add.call_count == len(_FAIL_REVIEW_ISSUES)
+    task_svc.qa_fail.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+    # The structured qa_notes mirror still carries the deterministic
+    # id-prefixed rendering (render_finding_line's "[F-<id8>] ..." lines).
+    t = task_svc.get.return_value
+    assert "[F-" in t.qa_notes
 
 
 @pytest.mark.asyncio
