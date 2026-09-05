@@ -11,12 +11,17 @@ import pytest
 from roboco.eval.fixtures import FIXTURES
 from roboco.eval.runner import (
     _JUDGE_SCORE_RE,
+    CATCH_GATE_CONVENTIONS,
+    CATCH_GATE_PR,
+    CATCH_GATE_QA,
+    CatchVerdict,
     CohortResult,
     DeterministicMetrics,
     FixtureResult,
     JudgeVerdict,
     OrchestratorStageSpawner,
     _build_judge_prompt,
+    _score_catch,
 )
 from roboco.runtime.orchestrator import AgentOrchestrator
 
@@ -213,6 +218,130 @@ def test_build_judge_prompt_handles_empty_diff_and_notes() -> None:
     prompt = _build_judge_prompt(fixture, diff="", notes="")
     assert "(empty diff)" in prompt
     assert "(no notes)" in prompt
+
+
+def test_score_catch_returns_none_for_a_fixture_with_no_expected_gate() -> None:
+    """A pre-existing golden fixture (no expected_catch_gate) never enters
+    the catch-rate — the fixture-level verdict must be None, not a miss."""
+    assert _score_catch(None, frozenset(), frozenset()) is None
+    assert _score_catch("", frozenset({"qa"}), frozenset()) is None
+
+
+def test_score_catch_qa_gate_matches_only_a_qa_origin_finding() -> None:
+    caught = _score_catch(CATCH_GATE_QA, frozenset({"qa"}), frozenset())
+    assert caught is not None
+    assert caught.caught is True
+    assert caught.evidence == ["finding_origin:qa"]
+
+    missed = _score_catch(CATCH_GATE_QA, frozenset({"pr_gate"}), frozenset())
+    assert missed is not None
+    assert missed.caught is False
+    assert missed.evidence == []
+
+
+def test_score_catch_qa_gate_matches_a_qa_fail_bounce_event_too() -> None:
+    verdict = _score_catch(CATCH_GATE_QA, frozenset(), frozenset({"task.qa_fail"}))
+    assert verdict is not None
+    assert verdict.caught is True
+    assert verdict.evidence == ["audit_event:task.qa_fail"]
+
+
+def test_score_catch_pr_gate_is_not_satisfied_by_a_bare_qa_finding() -> None:
+    """Unlike conventions_check, the pr_gate expected-catch-gate requires a
+    pr_gate-origin signal — a QA finding alone is not the PR gate firing."""
+    verdict = _score_catch(CATCH_GATE_PR, frozenset({"qa"}), frozenset())
+    assert verdict is not None
+    assert verdict.caught is False
+
+
+def test_score_catch_conventions_check_accepts_either_qa_or_pr_gate_origin() -> None:
+    via_qa = _score_catch(CATCH_GATE_CONVENTIONS, frozenset({"qa"}), frozenset())
+    via_pr_gate = _score_catch(
+        CATCH_GATE_CONVENTIONS, frozenset({"pr_gate"}), frozenset()
+    )
+    assert via_qa is not None and via_qa.caught is True
+    assert via_pr_gate is not None and via_pr_gate.caught is True
+
+
+def test_score_catch_unrecognized_gate_falls_back_to_any_signal() -> None:
+    """A gate name the sibling fixture leaf coined that this module's
+    vocabulary doesn't (yet) recognize must not silently mis-score every
+    such fixture a miss — it degrades to "did anything fire"."""
+    verdict = _score_catch("some-future-gate-name", frozenset({"pm"}), frozenset())
+    assert verdict is not None
+    assert verdict.caught is True
+    assert verdict.evidence == ["finding_origin:pm"]
+
+
+def _fixture_result_with_catch(catch: CatchVerdict | None) -> FixtureResult:
+    return FixtureResult(
+        fixture_key="seeded",
+        metrics=_metrics(),
+        judge=JudgeVerdict(score=None, rationale=None),
+        catch=catch,
+    )
+
+
+def test_cohort_catch_rate_excludes_fixtures_with_no_catch_verdict() -> None:
+    fixtures = [
+        _fixture_result_with_catch(None),  # a pre-existing golden fixture
+        _fixture_result_with_catch(
+            CatchVerdict(expected_gate=CATCH_GATE_QA, caught=True, evidence=["x"])
+        ),
+        _fixture_result_with_catch(
+            CatchVerdict(expected_gate=CATCH_GATE_PR, caught=False, evidence=[])
+        ),
+    ]
+    cohort = CohortResult(role_slug="be-qa", cohort_name="x", fixtures=fixtures)
+
+    caught, seeded = cohort.catch_rate_stats
+    assert (caught, seeded) == (1, 2)
+    assert cohort.catch_rate == pytest.approx(0.5)
+
+
+def test_cohort_catch_rate_is_none_when_no_fixture_was_seeded() -> None:
+    cohort = CohortResult(
+        role_slug="be-dev-1",
+        cohort_name="x",
+        fixtures=[_fixture_result_with_catch(None)],
+    )
+    assert cohort.catch_rate_stats == (0, 0)
+    assert cohort.catch_rate is None
+
+
+def test_cohort_as_dict_carries_catch_rate_as_a_sibling_of_judge_unchanged() -> None:
+    """catch_rate is a NEW sibling field — the pre-existing judge object's
+    shape must stay byte-for-byte identical, and catch_rate must never be
+    nested inside it."""
+    fixtures = [
+        _fixture_result_with_catch(
+            CatchVerdict(
+                expected_gate=CATCH_GATE_QA, caught=True, evidence=["finding_origin:qa"]
+            )
+        ),
+    ]
+    cohort = CohortResult(role_slug="be-qa", cohort_name="x", fixtures=fixtures)
+    payload = cohort.as_dict()
+
+    assert payload["judge"] == {"mean_score": None, "non_deterministic": True}
+    assert payload["catch_rate"] == {"caught": 1, "seeded": 1, "rate": 1.0}
+    assert "catch_rate" not in payload["judge"]
+    assert payload["fixtures"][0]["catch"] == {
+        "expected_gate": CATCH_GATE_QA,
+        "caught": True,
+        "evidence": ["finding_origin:qa"],
+    }
+
+
+def test_cohort_as_dict_reports_null_catch_for_a_fixture_with_no_verdict() -> None:
+    cohort = CohortResult(
+        role_slug="be-dev-1",
+        cohort_name="x",
+        fixtures=[_fixture_result_with_catch(None)],
+    )
+    payload = cohort.as_dict()
+    assert payload["catch_rate"] == {"caught": 0, "seeded": 0, "rate": None}
+    assert payload["fixtures"][0]["catch"] is None
 
 
 def test_orchestrator_stage_spawner_constructs_real_orchestrator() -> None:
