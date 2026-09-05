@@ -47,18 +47,33 @@ import { CompanyScorecardCard } from "../company-scorecard-card";
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Fixture mirrors the backend wire shape exactly: the delivery metrics
+// (median_lead_time_hours, first_pass_yield, escaped_defects) are nested
+// under the delivery sub-object (roboco/api/schemas/cockpit.py), not
+// top-level on CockpitSummary. Fields are optional/nullable on the wire,
+// so null is the backend's own "no data" value.
+type Delivery = CockpitSummary["delivery"];
+
+function buildDelivery(overrides: Partial<Delivery> = {}): Delivery {
+  return {
+    task_counts: {},
+    in_flight: 5,
+    blocked: 2,
+    awaiting_ceo: 1,
+    completed_30d: 12,
+    median_lead_time_hours: null,
+    first_pass_yield: null,
+    escaped_defects: null,
+    ...overrides,
+  };
+}
+
 function buildSummary(overrides: Partial<CockpitSummary> = {}): CockpitSummary {
   return {
     basis: "test",
     north_star: "Test north star",
     objectives: [],
-    delivery: {
-      task_counts: {},
-      in_flight: 5,
-      blocked: 2,
-      awaiting_ceo: 1,
-      completed_30d: 12,
-    },
+    delivery: buildDelivery(),
     spend: {
       spend_30d_usd: 42.5,
       projected_monthly_usd: null,
@@ -67,9 +82,6 @@ function buildSummary(overrides: Partial<CockpitSummary> = {}): CockpitSummary {
     },
     pending_pitches: 0,
     signals: [],
-    median_lead_time_hours: null,
-    first_pass_yield: null,
-    escaped_defects: null,
     ...overrides,
   };
 }
@@ -234,13 +246,15 @@ describe("CompanyScorecardCard", () => {
   // -------------------------------------------------------------------------
   it("shows 'No data yet' when median_lead_time_hours is null", () => {
     setQueryState({
-      data: buildSummary({ median_lead_time_hours: null }),
+      data: buildSummary({
+        delivery: buildDelivery({ median_lead_time_hours: null }),
+      }),
     });
 
     render(<CompanyScorecardCard />);
 
     // Speed section renders 'No data yet' (and so do the objective cards
-    // for the still-absent first_pass_yield / escaped_defects metrics).
+    // for the null first_pass_yield / escaped_defects metrics).
     expect(screen.getAllByText("No data yet").length).toBeGreaterThan(0);
   });
 
@@ -250,9 +264,11 @@ describe("CompanyScorecardCard", () => {
   it("shows formatted lead time when median_lead_time_hours is present", () => {
     setQueryState({
       data: buildSummary({
-        median_lead_time_hours: 18.7,
-        first_pass_yield: 0.9,
-        escaped_defects: 0,
+        delivery: buildDelivery({
+          median_lead_time_hours: 18.7,
+          first_pass_yield: 0.9,
+          escaped_defects: 0,
+        }),
       }),
     });
 
@@ -266,19 +282,80 @@ describe("CompanyScorecardCard", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Regression: the metrics live under data.delivery, not CockpitSummary's
+  // top level. A real backend response (roboco/api/schemas/cockpit.py nests
+  // them in DeliverySummary) must render live values, never 'No data yet'.
+  // -------------------------------------------------------------------------
+  it("renders live values from a backend-shaped delivery response, not 'No data yet'", () => {
+    setQueryState({
+      data: buildSummary({
+        delivery: buildDelivery({
+          median_lead_time_hours: 18.7,
+          first_pass_yield: 0.92,
+          escaped_defects: 0,
+        }),
+      }),
+    });
+
+    render(<CompanyScorecardCard />);
+
+    expect(screen.getAllByText("18.7h").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("92%").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("0").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("No data yet")).not.toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: fields are optional on the wire — a delivery payload with the
+  // metrics entirely absent (not just null) keeps the 'No data yet' fallback.
+  // -------------------------------------------------------------------------
+  it("shows 'No data yet' when the delivery metrics are absent from the response", () => {
+    setQueryState({
+      data: buildSummary({
+        delivery: {
+          task_counts: {},
+          in_flight: 5,
+          blocked: 2,
+          awaiting_ceo: 1,
+          completed_30d: 12,
+        },
+      }),
+    });
+
+    render(<CompanyScorecardCard />);
+
+    // Speed card + all three Objectives cards fall back.
+    expect(screen.getAllByText("No data yet").length).toBe(4);
+  });
+
+  // -------------------------------------------------------------------------
   // Objectives section: three charter objective cards against live metrics
   // -------------------------------------------------------------------------
 
   it("renders three objective cards with target values when all metrics are present", () => {
     setQueryState({
       data: buildSummary({
-        first_pass_yield: 0.92,
-        median_lead_time_hours: 18.7,
-        escaped_defects: 0,
+        delivery: buildDelivery({
+          first_pass_yield: 0.92,
+          median_lead_time_hours: 18.7,
+          escaped_defects: 0,
+        }),
         objectives: [
-          { metric: "Tasks shipped to merge with no human code edits", target: "90%", status: "Active" },
-          { metric: "Median lead time, intake → merged", target: "< 24h", status: "Active" },
-          { metric: "Critical escaped defects per release", target: "0", status: "Active" },
+          {
+            metric: "Tasks shipped to merge with no human code edits",
+            target: "90%",
+            status: "Active",
+          },
+          {
+            metric: "Median lead time, intake → merged",
+            target: "< 24h",
+            status: "Active",
+          },
+          {
+            metric: "Critical escaped defects per release",
+            target: "0",
+            status: "Active",
+          },
         ],
       }),
     });
@@ -305,20 +382,36 @@ describe("CompanyScorecardCard", () => {
     // All three target values render. The '< 24h' target appears in both the
     // Speed section and the Objectives section, so use getAllByText there.
     expect(screen.getByText(/target: 90%/)).toBeInTheDocument();
-    expect(screen.getAllByText(/target: < 24h/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/target: < 24h/).length).toBeGreaterThanOrEqual(
+      1,
+    );
     expect(screen.getByText(/target: 0/)).toBeInTheDocument();
   });
 
   it("renders 'No data yet' for missing first_pass_yield and escaped_defects, not fabricated labels", () => {
     setQueryState({
       data: buildSummary({
-        first_pass_yield: null,
-        median_lead_time_hours: 18.7,
-        escaped_defects: undefined,
+        delivery: buildDelivery({
+          first_pass_yield: null,
+          median_lead_time_hours: 18.7,
+          escaped_defects: undefined,
+        }),
         objectives: [
-          { metric: "Tasks shipped to merge with no human code edits", target: "90%", status: "Active" },
-          { metric: "Median lead time, intake → merged", target: "< 24h", status: "Active" },
-          { metric: "Critical escaped defects per release", target: "0", status: "Active" },
+          {
+            metric: "Tasks shipped to merge with no human code edits",
+            target: "90%",
+            status: "Active",
+          },
+          {
+            metric: "Median lead time, intake → merged",
+            target: "< 24h",
+            status: "Active",
+          },
+          {
+            metric: "Critical escaped defects per release",
+            target: "0",
+            status: "Active",
+          },
         ],
       }),
     });
@@ -338,9 +431,11 @@ describe("CompanyScorecardCard", () => {
   it("does not render the fake 'Revenue growth' or 'Customer retention' stub labels", () => {
     setQueryState({
       data: buildSummary({
-        first_pass_yield: 0.9,
-        median_lead_time_hours: 12,
-        escaped_defects: 0,
+        delivery: buildDelivery({
+          first_pass_yield: 0.9,
+          median_lead_time_hours: 12,
+          escaped_defects: 0,
+        }),
       }),
     });
 

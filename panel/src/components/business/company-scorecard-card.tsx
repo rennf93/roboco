@@ -355,9 +355,7 @@ function ObjectivesSection({
           label={objectiveLabel(objectives, "median_lead_time")}
           hasData={ltHasData}
           formattedValue={
-            ltHasData
-              ? `${(medianLeadTimeHours as number).toFixed(1)}h`
-              : ""
+            ltHasData ? `${(medianLeadTimeHours as number).toFixed(1)}h` : ""
           }
           targetText="< 24h"
         />
@@ -400,12 +398,14 @@ function ScorecardBody({
           spendTrend={spendTrend}
           spendTrendLoading={spendTrendLoading}
         />
-        <SpeedSection medianLeadTimeHours={data.median_lead_time_hours} />
+        <SpeedSection
+          medianLeadTimeHours={data.delivery.median_lead_time_hours}
+        />
         <ObjectivesSection
           objectives={data.objectives}
-          firstPassYield={data.first_pass_yield}
-          medianLeadTimeHours={data.median_lead_time_hours}
-          escapedDefects={data.escaped_defects}
+          firstPassYield={data.delivery.first_pass_yield}
+          medianLeadTimeHours={data.delivery.median_lead_time_hours}
+          escapedDefects={data.delivery.escaped_defects}
         />
       </CardContent>
     </Card>

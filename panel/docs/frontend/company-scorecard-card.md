@@ -25,7 +25,7 @@ Each card shows the objective label, the live metric value (or "No data yet"), a
 | `median_lead_time` | Median lead time, intake → merged | `< 24h` | `median_lead_time_hours` | `{value.toFixed(1)}h` |
 | `escaped_defects` | Critical escaped defects per release | `0` | `escaped_defects` | count, `${value}` |
 
-The lead-time metric is the same value `SpeedSection` renders in the Speed section above — `ObjectivesSection` reads `data.median_lead_time_hours` a second time and presents it as an objective card alongside the other two. `SpeedSection` is intentionally kept as-is.
+The lead-time metric is the same value `SpeedSection` renders in the Speed section above — `ObjectivesSection` reads `data.delivery.median_lead_time_hours` a second time and presents it as an objective card alongside the other two. `SpeedSection` is intentionally kept as-is.
 
 ### Derived-contract mapping
 
@@ -35,29 +35,30 @@ The charter `objectives` field on `CockpitSummary` is `Record<string, unknown>[]
 
 ### "No data yet" fallback
 
-Each card guards its metric with a `hasData` check (`value != null`, covering both `null` and `undefined`). When the metric is absent the card renders "No data yet" in italic muted text instead of a value — mirroring the `SpeedSection` pattern. The card never fabricates a value or a label.
-
-**Runtime reality (2026-08-31): all three objective cards currently render "No data yet" every time.** The backend populates the three metrics under the `delivery` sub-object (`roboco/services/cockpit.py:75-77`, `roboco/api/schemas/cockpit.py` `DeliverySummary`), but `ScorecardBody` passes them to `ObjectivesSection` from the TOP level of the response (`data.first_pass_yield` etc.), which `CockpitSummary` never sends. The `hasData` guard therefore always sees `undefined`. The panel-side fix (read `data.delivery.*`) is tracked by the approved pest-control item "Scorecard shows 'No data yet' forever ...".
+Each card guards its metric with a `hasData` check (`value != null`, covering both `null` and `undefined`). When the metric is absent the card renders "No data yet" in italic muted text instead of a value — mirroring the `SpeedSection` pattern. `first_pass_yield` and `escaped_defects` are optional and nullable on the wire, so the cards degrade cleanly to "No data yet" when the backend has no value. The card never fabricates a value or a label.
 
 ## CockpitSummary type changes
 
-`panel/src/lib/api/cockpit.ts` gained two optional fields on `CockpitSummary`:
+The three delivery metrics — `median_lead_time_hours`, `first_pass_yield`, and `escaped_defects` — **ship backend-side**, nested under the `delivery` sub-object of `CockpitSummary` (the backend's `DeliverySummary` in `roboco/api/schemas/cockpit.py`, assembled in `roboco/services/cockpit.py`). `panel/src/lib/api/cockpit.ts` declares them on its `delivery` sub-type, matching the wire exactly:
 
 ```typescript
-// Fraction of tasks shipped to merge with no human code edits (0–1).
-// Populated by the cockpit service (scorecard.first_pass_yield); the
-// UI renders 'No data yet' only on a genuine null. Formatted as a
-// percentage, matching the phone's pctOrDash convention in tg-metrics-tab.tsx.
-first_pass_yield?: number | null;
-
-// Count of critical escaped defects per release, populated by the cockpit
-// service (ReviewFindingsRepository.escaped_defects_since).
-escaped_defects?: number | null;
+delivery: {
+  task_counts: Record<string, number>;
+  in_flight: number;
+  blocked: number;
+  awaiting_ceo: number;
+  completed_30d?: number;
+  median_lead_time_hours?: number | null;
+  // Fraction of tasks shipped to merge with no human code edits (0–1).
+  // Formatted as a percentage, matching the phone's pctOrDash convention
+  // in tg-metrics-tab.tsx.
+  first_pass_yield?: number | null;
+  // Count of critical escaped defects per release.
+  escaped_defects?: number | null;
+};
 ```
 
-Both are optional and nullable so the UI degrades cleanly when the backend returns a genuine null/empty result. `first_pass_yield` is a 0–1 fraction formatted as a percentage, matching the phone's `pctOrDash(scorecard.first_pass_yield)` convention in `tg-metrics-tab.tsx`. `median_lead_time_hours` is declared top-level in the panel type and `SpeedSection` reads it from there, but the backend only sends it under `delivery`, so `SpeedSection` is in the same "No data yet" always state as the objective cards until the panel fix above lands.
-
-The cockpit service has shipped both fields: `first_pass_yield` is populated from the scorecard and `escaped_defects` from `ReviewFindingsRepository.escaped_defects_since` (`cockpit.py:75-77`), under the `delivery` sub-object, not the top level the card reads. Until the panel fix above lands the objective cards do NOT display live values; see "Runtime reality" above.
+None of the three appears top-level on `CockpitSummary` — the earlier top-level (and always-`undefined`) copies are gone. `first_pass_yield` is a 0–1 fraction formatted as a percentage, matching the phone's `pctOrDash(scorecard.first_pass_yield)` convention in `tg-metrics-tab.tsx`. `SpeedSection` and `ObjectivesSection` both read `data.delivery.*`.
 
 ## Card structure
 
@@ -66,9 +67,10 @@ CompanyScorecardCard
 └── ScorecardBody (data, spendTrend, spendTrendLoading)
     ├── DeliverySection   (data.delivery)
     ├── SpendSection      (data.spend, spendTrend, spendTrendLoading)
-    ├── SpeedSection      (data.median_lead_time_hours)
-    └── ObjectivesSection (data.objectives, first_pass_yield,
-                           median_lead_time_hours, escaped_defects)
+    ├── SpeedSection      (data.delivery.median_lead_time_hours)
+    └── ObjectivesSection (data.objectives, data.delivery.first_pass_yield,
+                           data.delivery.median_lead_time_hours,
+                           data.delivery.escaped_defects)
         └── ObjectiveCard × 3  (label, hasData, formattedValue, targetText)
 ```
 
@@ -85,7 +87,7 @@ CompanyScorecardCard
 - A fourth objective whose wording shares a keyword with a canonical pattern (e.g. "Defect triage response time" alongside "Critical escaped defects per release") does not steal that card's label — the regression test for the collision case above.
 - An empty `objectives` array still renders the three canonical fallback labels, never a fabricated one.
 
-The `buildSummary` test helper carries `first_pass_yield: null` and `escaped_defects: null` by default, exercising the fallback path for a genuine null/empty result rather than mirroring a not-yet-shipped production state.
+The `buildSummary` test helper mirrors the backend wire shape (`roboco/api/schemas/cockpit.py`): the three metrics live inside its `delivery` object, `null` by default via `buildDelivery`.
 
 ## Related
 

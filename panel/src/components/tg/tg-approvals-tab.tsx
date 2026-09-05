@@ -9,6 +9,10 @@ import { ReleaseDetail } from "@/components/tg/approvals/release-detail";
 import { XPostDetail } from "@/components/tg/approvals/x-post-detail";
 import { VideoPostDetail } from "@/components/tg/approvals/video-post-detail";
 import { RoadmapItemDetail } from "@/components/tg/approvals/roadmap-item-detail";
+import {
+  BoardProgramItemDetail,
+  ScalesItemDetail,
+} from "@/components/tg/approvals/board-program-detail";
 import { useBackButton, useTgWebApp } from "@/lib/telegram/hooks";
 import { haptics } from "@/lib/telegram/webapp";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -17,11 +21,15 @@ import { TgRow, TgRowIcon, TG_CARD } from "@/components/tg/ui";
 import { cn } from "@/lib/utils";
 import { ArrowLeft } from "@phosphor-icons/react";
 import {
+  Bug,
   ChatCircle,
   CheckCircle,
+  Dog,
   FilmSlate,
   MapTrifold,
   RocketLaunch,
+  Scales,
+  Wrench,
   Warning,
 } from "@phosphor-icons/react";
 
@@ -33,6 +41,10 @@ const KIND_META: Record<
   x_post: { label: "X post", icon: ChatCircle, tone: "sky" },
   video_post: { label: "Video", icon: FilmSlate, tone: "violet" },
   roadmap: { label: "Roadmap", icon: MapTrifold, tone: "emerald" },
+  pest_control: { label: "Pest Control", icon: Bug, tone: "rose" },
+  spackle: { label: "Spackle", icon: Wrench, tone: "amber" },
+  dogfood: { label: "Dogfood", icon: Dog, tone: "sky" },
+  scales: { label: "Scales", icon: Scales, tone: "emerald" },
 };
 
 function itemTitle(item: ApprovalItem): string {
@@ -45,18 +57,45 @@ function itemTitle(item: ApprovalItem): string {
       return item.post.title;
     case "roadmap":
       return item.item.title;
+    case "scales":
+      return item.item.target_task_title;
+    case "pest_control":
+    case "spackle":
+    case "dogfood":
+      return item.item.title;
   }
+}
+
+/** Short evidence line for the board-program rows — the desktop cards lead
+ * with the same evidence summary. */
+function itemSubtitle(item: ApprovalItem): string | undefined {
+  switch (item.kind) {
+    case "pest_control":
+    case "spackle":
+    case "dogfood":
+      return item.item.evidence;
+    case "scales":
+      return item.item.rationale;
+    case "release":
+    case "x_post":
+    case "video_post":
+    case "roadmap":
+      return undefined;
+  }
+  const _exhaustive: never = item;
+  return _exhaustive;
 }
 
 function ItemRow({ item, onOpen }: { item: ApprovalItem; onOpen: () => void }) {
   const meta = KIND_META[item.kind];
+  const subtitle = itemSubtitle(item);
   return (
     <div className={cn(TG_CARD, "px-2 py-1 text-card-foreground")}>
       <TgRow
         leading={<TgRowIcon icon={meta.icon} tone={meta.tone} />}
         title={itemTitle(item)}
         lines={2}
-        meta={meta.label}
+        meta={subtitle ? `${meta.label} · ${subtitle}` : meta.label}
         onPress={onOpen}
       />
     </div>
@@ -79,16 +118,38 @@ function Detail({ item, onDone }: { item: ApprovalItem; onDone: () => void }) {
           onDone={onDone}
         />
       );
+    case "scales":
+      return (
+        <ScalesItemDetail
+          cycleId={item.cycleId}
+          item={item.item}
+          onDone={onDone}
+        />
+      );
+    case "pest_control":
+    case "spackle":
+    case "dogfood":
+      return (
+        <BoardProgramItemDetail
+          kind={item.kind}
+          cycleId={item.cycleId}
+          item={item.item}
+          onDone={onDone}
+        />
+      );
   }
+  const _exhaustive: never = item;
+  return _exhaustive;
 }
 
 /**
- * The approvals card stack: every held draft across the four queues as one
- * list; tapping focuses a full-context detail whose primary action rides
- * Telegram's MainButton and whose back navigation rides the native
- * BackButton (with visible fallbacks outside Telegram). An acted-on item
- * vanishes from the refetched queue, which pops the view back to the list
- * by construction.
+ * The approvals card stack: one list across the eight queues it sources
+ * (release, X post, video, roadmap, and the four board-program queues);
+ * tapping focuses a full-context detail whose primary
+ * action rides Telegram's MainButton and whose back navigation rides the
+ * native BackButton (with visible fallbacks outside Telegram). An acted-on
+ * item vanishes from the refetched queue, which pops the view back to the
+ * list by construction.
  */
 export function TgApprovalsTab({
   initialFocus,
