@@ -522,4 +522,4 @@ A third, narrower gap: `parseAcVerificationStamps` matches by criterion text onl
 - **WebSocket connection implementation**: `panel/src/lib/websocket/connection.ts`
 - **API client**: `panel/src/lib/api/`
 - **Notification types & components**: `panel/src/app/(dashboard)/notifications/`
-- **Verification-receipt UI leaves (consumers of the hooks above)**: task-detail Verification tab and release-proposal rollup (separate, dependent tasks — see the parent "one-screen verification receipt" task).
+- **Verification-receipt UI leaves (consumers of the hooks above)**: the task-detail Verification tab and its composable receipt components are documented in `verification-tab.md`; the release-proposal rollup leaf (task `c348bb11`, reuses the same receipt exports) is still pending.

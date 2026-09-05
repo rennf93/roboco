@@ -21,6 +21,7 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/hooks/use-tasks", () => ({
   useTaskFindings: () => ({ data: undefined }),
+  useTask: () => ({ data: undefined, isLoading: false }),
 }));
 
 // The tab panes aren't under test here — stub them so the strip's highlight
@@ -49,6 +50,9 @@ vi.mock("../tab-findings", () => ({
 }));
 vi.mock("../tab-collision", () => ({
   TabCollision: () => <div data-testid="pane-collision" />,
+}));
+vi.mock("../tab-verification", () => ({
+  TabVerification: () => <div data-testid="pane-verification" />,
 }));
 
 import { TaskTabs } from "../task-tabs";
@@ -91,7 +95,7 @@ describe("TaskTabs active-tab highlight", () => {
     const others = screen
       .getAllByRole("tab")
       .filter((t) => t !== overviewTrigger);
-    expect(others).toHaveLength(7);
+    expect(others).toHaveLength(8);
     for (const trigger of others) {
       expect(trigger).toHaveAttribute("data-state", "inactive");
     }
