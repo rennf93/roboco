@@ -1219,6 +1219,12 @@ class AgentOrchestrator:
     # Expected-stop breadcrumbs (agent_id -> (reason, monotonic ts)); lazily
     # allocated by _record_expected_stop, same statement-budget rationale.
     _expected_stops: dict[str, tuple[str, float]]
+    # Agent slug -> (task_id, monotonic deadline) for a claim/spawn in flight.
+    # Declared here (same statement-budget rationale) - __new__ below is the
+    # single init site covering both the real constructor and every bare
+    # __new__() test double; _is_claim_in_flight's getattr guard covers the
+    # rarer bare object.__new__() bypass.
+    _claims_in_flight: dict[str, tuple[str, float]]
     # Declared here (not inline in __init__, same statement-budget rationale)
     # so the two auth-notification sets can init in a single __init__
     # statement below.
@@ -1252,6 +1258,7 @@ class AgentOrchestrator:
         instance._last_audit_spawn_at = None
         instance._notification_spawn_at = {}
         instance._notification_spawn_count = {}
+        instance._claims_in_flight = {}
         return instance
 
     def __init__(
@@ -1362,6 +1369,12 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
+        # _claims_in_flight is (re)initialized by __new__ above, not here,
+        # see its class-level declaration for the statement-budget rationale;
+        # _select_agent_for_cell treats an unexpired entry like an active
+        # agent so a second pending task never stacks a claim onto the same
+        # not-yet-active agent while its claim/branch-creation is still in
+        # flight (the 2026-09-05 triple-claim lock-convoy amplifier).
         # In-path PR-gate CI-status cache: (project_slug, pr_number) ->
         # (monotonic fetch time, state). Bounds get_pr_ci_status calls to
         # roughly one per _GATE_CI_STATUS_CACHE_TTL_SECONDS per PR instead
@@ -12333,6 +12346,73 @@ Start by:
                 error=str(e),
             )
 
+    def _is_claim_in_flight(self, agent_id: str) -> bool:
+        """True if `agent_id` has an unexpired claim/spawn in flight.
+
+        Expires lazily on read - a past-deadline entry is dropped here, no
+        background sweep needed. ``getattr`` guards unit tests that build an
+        orchestrator via ``__new__`` and skip ``__init__``.
+        """
+        claims: dict[str, tuple[str, float]] | None = getattr(
+            self, "_claims_in_flight", None
+        )
+        if not claims:
+            return False
+        entry = claims.get(agent_id)
+        if entry is None:
+            return False
+        _, deadline = entry
+        if time.monotonic() >= deadline:
+            del claims[agent_id]
+            return False
+        return True
+
+    def _mark_claim_in_flight(self, agent_id: str, task_id: str) -> None:
+        """Park `agent_id` as claim-in-flight until the TTL setting elapses."""
+        if not hasattr(self, "_claims_in_flight"):
+            self._claims_in_flight = {}
+        deadline = time.monotonic() + settings.dispatch_claim_inflight_ttl_seconds
+        self._claims_in_flight[agent_id] = (task_id, deadline)
+
+    def _clear_claim_in_flight(self, agent_id: str) -> None:
+        """Free `agent_id` once its claim has a definite outcome."""
+        claims: dict[str, tuple[str, float]] | None = getattr(
+            self, "_claims_in_flight", None
+        )
+        if claims:
+            claims.pop(agent_id, None)
+
+    async def _claim_and_spawn_guarded(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+        agent_id: str,
+        spawn: "Callable[[], Awaitable[None]]",
+    ) -> bool | None:
+        """Park, claim, and spawn `agent_id` for `task`.
+
+        Clears the park on every outcome but None.
+
+        `spawn` runs only on a successful claim. If it raises - including
+        `spawn_agent`'s ordinary `AgentReadinessError` for a not-yet-ready
+        task - the park still clears via `finally` before the exception
+        propagates, so a callable's leak can't wedge `agent_id` out of
+        `_select_agent_for_cell` for the full TTL. Returns the claim
+        outcome so callers can log/handle a False (rejected) claim their
+        own way; a None outcome (the claim call's own timeout/exception,
+        per `_claim_task_for_agent`'s contract) leaves the agent parked
+        until TTL, unchanged.
+        """
+        self._mark_claim_in_flight(agent_id, task["id"])
+        claimed = await self._claim_task_for_agent(client, task["id"], agent_id)
+        try:
+            if claimed:
+                await spawn()
+            return claimed
+        finally:
+            if claimed is not None:
+                self._clear_claim_in_flight(agent_id)
+
     def _select_agent_for_cell(self, cell: str, role: str) -> str | None:
         """
         Select the best available agent for a cell and role.
@@ -12359,21 +12439,31 @@ Start by:
         else:
             return None
 
-        # Prefer non-active agents
+        # Prefer an agent that is neither active nor mid-claim/spawn.
         for agent_id in candidates:
-            if not self._is_agent_active(agent_id):
+            if not self._is_agent_active(agent_id) and not self._is_claim_in_flight(
+                agent_id
+            ):
                 return agent_id
 
-        # All active - return first (task will queue for them via scan)
-        return candidates[0]
+        # Every candidate is active or already has a claim/spawn in flight -
+        # wait for the next scan instead of stacking a second claim onto one
+        # of them (the 2026-09-05 triple-claim lock-convoy amplifier).
+        return None
 
     async def _claim_task_for_agent(
         self,
         client: httpx.AsyncClient,
         task_id: str,
         agent_id: str,
-    ) -> bool:
-        """Claim a task on behalf of an agent before spawning."""
+    ) -> bool | None:
+        """Claim a task on behalf of an agent before spawning.
+
+        Returns True on a successful claim, False on a definite server
+        rejection (the agent is free to try again), and None on a client-side
+        exception/timeout - the server may still be finishing the claim, so
+        the caller must not treat this the same as a clean failure.
+        """
         try:
             resp = await client.post(
                 f"{self._api_url}/tasks/{task_id}/claim",
@@ -12392,9 +12482,10 @@ Start by:
                 agent_id=agent_id,
                 status=resp.status_code,
             )
+            return False
         except Exception as e:
             logger.error("Claim task error", task_id=task_id, error=str(e))
-        return False
+            return None
 
     async def _ensure_review_pm_assigned(
         self, client: httpx.AsyncClient, task: dict[str, Any]
@@ -12706,20 +12797,32 @@ Start by:
 
         # Dev routing - select a cell agent.
         if routing == "dev":
-            agent = self._select_agent_for_cell(team, "dev") if team else None
+            if team not in self._TEAM_PM_MAP:
+                # No cell agent: team is missing or a non-cell team (fullstack
+                # / system). Fall back to main-pm to triage rather than
+                # leaving the task ownerless-and-dormant: the dispatcher never
+                # re-spawns an unrouted pending task, so a None here strands
+                # it. Mirrors the cell_pm / escalation `... or "main-pm"`
+                # default.
+                logger.warning(
+                    "dev routing found no cell agent; falling back to main-pm",
+                    task_id=task.get("id"),
+                    team=team,
+                )
+                return "main-pm"
+            agent = self._select_agent_for_cell(team, "dev")
             if agent:
                 return agent
-            # No cell agent — team is missing or a non-cell team (fullstack /
-            # system). Fall back to main-pm to triage rather than leaving the
-            # task ownerless-and-dormant: the dispatcher never re-spawns an
-            # unrouted pending task, so a None here strands it. Mirrors the
-            # cell_pm / escalation `... or "main-pm"` default.
-            logger.warning(
-                "dev routing found no cell agent; falling back to main-pm",
+            # Both cell devs are active or mid-claim/spawn this tick. Return
+            # None (never main-pm, MAIN_PM_NO_CODE refuses it forever) so
+            # the task stays pending for the next scan instead of stacking a
+            # second claim onto a dev that hasn't finished its first one.
+            logger.debug(
+                "dev routing: both cell devs busy this tick, deferring",
                 task_id=task.get("id"),
                 team=team,
             )
-            return "main-pm"
+            return None
 
         # Unrecognized routing classification — never strand the task; main-pm
         # triages it instead of it going dormant.
@@ -13884,11 +13987,13 @@ Start now: evidence(task_id="{task_id}")
         bad row doesn't abort the dispatch tick. See
         ``_reap_one_stale_claim`` for the pause-ordering guarantee: the
         liveness/kill checks always run; only the final DB unclaim is gated
-        on ``dispatch_paused``.
+        on ``dispatch_paused``. ``candidates`` is threaded through so the
+        parked-claim check can look at an agent's OTHER claimed/in_progress
+        rows without a second query.
         """
         candidates = await svc.list_in_progress_or_claimed()
         for t in candidates:
-            await self._reap_one_stale_claim(svc, t, dispatch_paused)
+            await self._reap_one_stale_claim(svc, t, dispatch_paused, candidates)
 
     def _heartbeat_is_stale(self, ts: Any, ttl_seconds: int) -> bool:
         """True when a claim's heartbeat is missing, or its active-time age
@@ -13897,11 +14002,97 @@ Start now: evidence(task_id="{task_id}")
             return True
         return self._active_age(ts) >= timedelta(seconds=ttl_seconds)
 
+    def _is_fresher_activity(self, agent_slug: str, this_task: Any, other: Any) -> bool:
+        """True if `other` is a different row for the same agent that proves
+        it is alive and working elsewhere: in_progress, or a heartbeat
+        fresher than `this_task`'s own."""
+        from roboco.models.base import TaskStatus
+
+        if other is this_task or getattr(other, "id", None) == getattr(
+            this_task, "id", None
+        ):
+            return False
+        owner = getattr(other, "assigned_to", None) or getattr(
+            other, "claimed_by", None
+        )
+        if not owner or self._resolve_agent_slug(str(owner)) != agent_slug:
+            return False
+        status = getattr(other, "status", None)
+        if getattr(status, "value", status) == TaskStatus.IN_PROGRESS.value:
+            return True
+        other_ts = getattr(other, "last_heartbeat_at", None)
+        this_ts = getattr(this_task, "last_heartbeat_at", None)
+        return other_ts is not None and (this_ts is None or other_ts > this_ts)
+
+    def _agent_busy_elsewhere(
+        self, agent_slug: str, this_task: Any, candidates: list[Any]
+    ) -> bool:
+        """True if `agent_slug` holds another claimed/in_progress row - proof
+        it is alive and working elsewhere, so `this_task`'s claim is parked
+        rather than genuinely in flight."""
+        return any(
+            self._is_fresher_activity(agent_slug, this_task, other)
+            for other in candidates
+        )
+
+    async def _maybe_release_parked_claim(
+        self, svc: "TaskService", t: Any, candidates: list[Any]
+    ) -> bool:
+        """Release a `claimed` row whose heartbeat never advanced past its own
+        claim, when the claiming agent is provably alive and busy on another
+        task - the 2026-09-05 incident where be-dev-1 piled up four such
+        claims (up to an hour parked) while its container worked a different
+        task and be-dev-2 idled. The live-container skip in
+        ``_should_skip_live_reap`` would otherwise spare this row forever,
+        since it only checks whether the agent has ANY live container, not
+        whether that container is working THIS task.
+
+        Never fires when the row's own heartbeat has advanced past its claim
+        (genuinely working, not parked), when the claim is still being
+        finalized (``_is_claim_in_flight``), or when this is the agent's only
+        claim (nothing fresher to prove it's alive elsewhere - left to the
+        existing dead-run logic below). Returns True once it releases.
+        """
+        from roboco.models.base import TaskStatus
+
+        status = getattr(t, "status", None)
+        claimed_at = getattr(t, "claimed_at", None)
+        ts = getattr(t, "last_heartbeat_at", None)
+        owner = getattr(t, "assigned_to", None) or getattr(t, "claimed_by", None)
+        # "Never advanced past claim" implies claimed_at is not None, so the
+        # later _heartbeat_is_stale(claimed_at, ...) call is only reached
+        # once that is already guaranteed - short-circuit evaluation order
+        # matters here, not just the boolean result.
+        never_advanced = claimed_at is not None and (ts is None or ts <= claimed_at)
+        eligible = (
+            getattr(status, "value", status) == TaskStatus.CLAIMED.value
+            and never_advanced
+            and owner is not None
+            and self._heartbeat_is_stale(claimed_at, self._claim_heartbeat_ttl)
+        )
+        if not eligible:
+            return False
+        agent_slug = self._resolve_agent_slug(str(owner))
+        if self._is_claim_in_flight(agent_slug) or not self._agent_busy_elsewhere(
+            agent_slug, t, candidates
+        ):
+            return False
+        parked_seconds = round(self._active_age(claimed_at).total_seconds())
+        logger.warning(
+            "parked claim released; agent busy elsewhere",
+            task_id=str(getattr(t, "id", "")),
+            agent=agent_slug,
+            parked_seconds=parked_seconds,
+        )
+        await self._unclaim_stale_claim(svc, t, ts)
+        return True
+
     async def _reap_one_stale_claim(
         self,
         svc: "TaskService",
         t: Any,
         dispatch_paused: bool,
+        candidates: list[Any] | None = None,
     ) -> None:
         """Decide skip-vs-reap for one candidate claim.
 
@@ -13914,8 +14105,15 @@ Start now: evidence(task_id="{task_id}")
         follow, which a paused fleet won't do this tick, so that step alone
         is deferred until the pause lifts. A claim whose assignee still has a
         live container is otherwise skipped entirely: the heartbeat is a
-        stale proxy there, and reaping a working agent only churns the task.
+        stale proxy there, and reaping a working agent only churns the task
+        -- UNLESS ``_maybe_release_parked_claim`` proves the claim is merely
+        parked (see that method), which runs first and pause-gated the same
+        way.
         """
+        if not dispatch_paused and await self._maybe_release_parked_claim(
+            svc, t, candidates or []
+        ):
+            return
         ts = t.last_heartbeat_at
         if not self._heartbeat_is_stale(ts, self._claim_heartbeat_ttl):
             return
@@ -15490,12 +15688,28 @@ Start now: evidence(task_id="{task_id}")
             routing=routing,
             agent_id=agent_id,
         )
+        await self._claim_and_spawn_routed_agent(client, task, routing, agent_id)
 
+    async def _claim_and_spawn_routed_agent(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+        routing: str,
+        agent_id: str,
+    ) -> None:
+        """Claim `task` for `agent_id` and spawn it if not already active.
+
+        Extracted from ``_route_unassigned_pm_task`` to keep that classifier
+        under the return-statement gate. Parks the agent as claim-in-flight
+        for the duration of the claim + spawn so a second pending task this
+        tick (or the next) can't pick it again while the branch-creation
+        lock is still held server-side.
+        """
         if self._is_agent_active(agent_id):
             await self._claim_task_for_agent(client, task["id"], agent_id)
             return
 
-        if await self._claim_task_for_agent(client, task["id"], agent_id):
+        async def _spawn() -> None:
             prompt = await self._pm_spawn_prompt(routing, agent_id, task)
             await self.spawn_agent(
                 agent_id=agent_id,
@@ -15504,6 +15718,8 @@ Start now: evidence(task_id="{task_id}")
                 git_context=self._task_git_context(task),
                 spawned_by="_route_unassigned_pm_task",
             )
+
+        await self._claim_and_spawn_guarded(client, task, agent_id, _spawn)
 
     async def _dispatch_pm_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -16789,21 +17005,22 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         if await self._pm_respawn_should_gate(agent_id, task):
             return
 
-        if not await self._claim_task_for_agent(client, task["id"], agent_id):
+        async def _spawn() -> None:
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=task["id"],
+                initial_prompt=self._build_doc_prompt(task),
+                git_context=self._task_git_context(task),
+                spawned_by="_auto_assign_doc",
+            )
+
+        claimed = await self._claim_and_spawn_guarded(client, task, agent_id, _spawn)
+        if claimed is False:
             logger.warning(
                 "Failed to claim awaiting_documentation task for doc",
                 task_id=task["id"],
                 agent_id=agent_id,
             )
-            return
-
-        await self.spawn_agent(
-            agent_id=agent_id,
-            task_id=task["id"],
-            initial_prompt=self._build_doc_prompt(task),
-            git_context=self._task_git_context(task),
-            spawned_by="_auto_assign_doc",
-        )
 
     async def _doc_dispatch_one(
         self,

@@ -423,6 +423,18 @@ class Settings(BaseSettings):
             "recovers it — tolerates a transient probe miss (the gateway mid-call)."
         ),
     )
+    dispatch_claim_inflight_ttl_seconds: int = Field(
+        default=600,
+        ge=0,
+        description=(
+            "How long the dispatcher keeps an agent marked claim-in-flight after "
+            "a client-side timeout/exception on the claim POST, before treating "
+            "it as free again. The server may still be finishing the claim "
+            "(branch creation can outlast the client's own request timeout), so "
+            "a second pending task must not stack a claim onto the same agent "
+            "while the first is still uncertain."
+        ),
+    )
 
     # ==========================================================================
     # Architectural Conventions (per-project placement + house-style standard)
