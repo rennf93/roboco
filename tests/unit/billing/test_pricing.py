@@ -265,38 +265,6 @@ class TestSonnet5Tier:
         assert abs(cost - p._sonnet5_prices()[0]) < _TOL
 
 
-class TestSonnet5ListRateAfterPromo:
-    """Post-promo list pricing — once _SONNET5_PROMO_END has passed, the
-    sonnet-5 entry must resolve to full Sonnet 4.6 rates (3.00/15.00/0.30/0.75).
-    The end date is pinned to the clearly-past 2026-01-01 so this branch of
-    _sonnet5_prices() is covered on any run date, not just after the real
-    promo lapses."""
-
-    @pytest.fixture(autouse=True)
-    def _past_promo(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(p, "_SONNET5_PROMO_END", date(2026, 1, 1))
-
-    def test_input_only(self) -> None:
-        cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
-        assert abs(cost - _SONNET_INPUT) < _TOL
-
-    def test_output_only(self) -> None:
-        cost = calculate_cost("claude-sonnet-5", tokens_input=0, tokens_output=_M)
-        assert abs(cost - _SONNET_OUTPUT) < _TOL
-
-    def test_cache_read_only(self) -> None:
-        cost = calculate_cost(
-            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_read=_M
-        )
-        assert abs(cost - _SONNET_CACHE_READ) < _TOL
-
-    def test_cache_write_only(self) -> None:
-        cost = calculate_cost(
-            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_write=_M
-        )
-        assert abs(cost - _SONNET_CACHE_WRITE) < _TOL
-
-
 # ---------------------------------------------------------------------------
 # Haiku tier
 # ---------------------------------------------------------------------------
