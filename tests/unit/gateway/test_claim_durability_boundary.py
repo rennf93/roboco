@@ -209,10 +209,10 @@ async def test_claim_review_commits_before_evidence_assembly() -> None:
     deps = _make_deps(task=task_svc, git=git_svc)
 
     call_order: list[str] = []
-    task_svc.mark_evidence_inspected.side_effect = lambda *a, **k: call_order.append(
+    task_svc.mark_evidence_inspected.side_effect = lambda *_a, **_k: call_order.append(
         "mark_evidence_inspected"
     )
-    task_svc.session.commit.side_effect = lambda *a, **k: call_order.append("commit")
+    task_svc.session.commit.side_effect = lambda *_a, **_k: call_order.append("commit")
 
     c = Choreographer(deps)
     cc: Any = c
