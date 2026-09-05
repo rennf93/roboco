@@ -379,7 +379,7 @@ def test_whitelist_is_immutable_after_construction() -> None:
     mutation on a config field."""
     cfg = security.build_security_config()
     assert isinstance(cfg.whitelist, tuple)
-    with pytest.raises(AttributeError):  # type: ignore[unreachable]
+    with pytest.raises(AttributeError):
         _append(cfg.whitelist, "1.2.3.4")
 
 
@@ -494,14 +494,14 @@ def test_rate_limit_auto_ban_armed() -> None:
 
 
 def test_guard_scan_response_body_defaults_false() -> None:
-    assert security.build_security_config().behavior_scan_response_body is False  # type: ignore[attr-defined]
+    assert security.build_security_config().behavior_scan_response_body is False
 
 
 def test_guard_scan_response_body_threads_through_when_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "guard_scan_response_body", True)
-    assert security.build_security_config().behavior_scan_response_body is True  # type: ignore[attr-defined]
+    assert security.build_security_config().behavior_scan_response_body is True
 
 
 # --- add_status_route: internal readiness probe ----------------------------
