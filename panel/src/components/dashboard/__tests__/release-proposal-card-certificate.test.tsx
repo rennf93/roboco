@@ -1,29 +1,40 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReleaseCertificate, ReleaseProposal } from "@/lib/api/release";
+import type {
+  ReleaseCertificate,
+  ReleaseExecuteResult,
+  ReleaseProposal,
+} from "@/lib/api/release";
 
 // Covers the "Download certificate" button (bfb48210): the happy-path
 // download trigger and the 404-to-null toast path. Unlike the sibling
 // release-proposal-card.test.tsx, react-query itself is NOT mocked here —
 // only releaseApi — so the real useMutation onSuccess/onError callbacks run.
-const { getProposal, getCertificate } = vi.hoisted(() => ({
+const { getProposal, getCertificate, approve } = vi.hoisted(() => ({
   getProposal: vi.fn(),
   getCertificate: vi.fn(),
+  approve: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
-  releaseApi: { getProposal, approve: vi.fn(), reject: vi.fn(), getCertificate },
+  releaseApi: { getProposal, approve, reject: vi.fn(), getCertificate },
 }));
 
-const { toastInfo, toastError } = vi.hoisted(() => ({
+const { toastInfo, toastError, toastSuccess } = vi.hoisted(() => ({
   toastInfo: vi.fn(),
   toastError: vi.fn(),
+  toastSuccess: vi.fn(),
 }));
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), warning: vi.fn(), error: toastError, info: toastInfo },
+  toast: {
+    success: toastSuccess,
+    warning: vi.fn(),
+    error: toastError,
+    info: toastInfo,
+  },
 }));
 
 import { ReleaseProposalCard } from "../release-proposal-card";
@@ -80,8 +91,10 @@ describe("ReleaseProposalCard — Download certificate button", () => {
   beforeEach(() => {
     getProposal.mockResolvedValue(buildProposal());
     getCertificate.mockReset();
+    approve.mockReset();
     toastInfo.mockClear();
     toastError.mockClear();
+    toastSuccess.mockClear();
     globalThis.URL.createObjectURL = vi.fn(() => "blob:mock-url");
     globalThis.URL.revokeObjectURL = vi.fn();
   });
@@ -101,7 +114,9 @@ describe("ReleaseProposalCard — Download certificate button", () => {
     await waitFor(() => expect(getCertificate).toHaveBeenCalledWith("0.14.0"));
     await waitFor(() => expect(clickSpy).toHaveBeenCalled());
     expect(globalThis.URL.createObjectURL).toHaveBeenCalled();
-    expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
+    expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith(
+      "blob:mock-url",
+    );
     expect(toastInfo).not.toHaveBeenCalled();
 
     clickSpy.mockRestore();
@@ -143,5 +158,85 @@ describe("ReleaseProposalCard — Download certificate button", () => {
         expect.stringMatching(/download failed/i),
       ),
     );
+  });
+});
+
+// Covers task 13af9490: the pr_gate bounce on PR #1022 found the button
+// structurally unreachable — it lived only inside the open-proposal card
+// (targeting report.proposed_version), but the certificate endpoint only
+// ever serves a COMPLETED version, and getProposal() 404s to null the
+// instant one publishes. The fix stashes {version, release_url} from the
+// approve outcome so a "Download certificate" affordance survives the
+// open-proposal query going to null.
+describe("ReleaseProposalCard — post-publish reachability (13af9490)", () => {
+  beforeEach(() => {
+    getCertificate.mockReset();
+    approve.mockReset();
+    toastInfo.mockClear();
+    toastError.mockClear();
+    toastSuccess.mockClear();
+    globalThis.URL.createObjectURL = vi.fn(() => "blob:mock-url");
+    globalThis.URL.revokeObjectURL = vi.fn();
+  });
+
+  function buildPublishedResult(version: string): ReleaseExecuteResult {
+    return {
+      status: "published",
+      version,
+      files_changed: ["pyproject.toml"],
+      commit_sha: "abc123",
+      release_url: `https://github.com/example/repo/releases/tag/v${version}`,
+      detail: "published",
+    };
+  }
+
+  it("keeps Download certificate reachable after a publish, wired to the just-published version — not report.proposed_version from a stale open-proposal object", async () => {
+    // Distinct from buildProposal()'s report.proposed_version ("0.14.0") so a
+    // pass here can only mean the stored published version was used.
+    const publishedVersion = "0.15.0";
+    getProposal.mockReset();
+    getProposal.mockResolvedValueOnce(buildProposal());
+    // Mirrors the real /release/proposal 404-to-null once the proposal that
+    // was open completes — the open-proposal card unmounts on this refetch.
+    getProposal.mockResolvedValue(null);
+    approve.mockResolvedValue(buildPublishedResult(publishedVersion));
+    getCertificate.mockResolvedValue(buildCertificate());
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    render(withProviders(<ReleaseProposalCard />));
+
+    const approveButton = await screen.findByRole("button", {
+      name: /^Approve & publish$/i,
+    });
+    await userEvent.click(approveButton);
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: /Approve & publish/i }),
+    );
+    await waitFor(() => expect(approve).toHaveBeenCalled());
+
+    // The open-proposal card is gone (getProposal now resolves null), but a
+    // persistent confirmation block stays mounted off the stored version.
+    await waitFor(() =>
+      expect(
+        screen.getByText(new RegExp(`Published v${publishedVersion}`)),
+      ).toBeInTheDocument(),
+    );
+
+    const downloadButton = await screen.findByRole("button", {
+      name: /Download certificate/i,
+    });
+    await userEvent.click(downloadButton);
+
+    await waitFor(() =>
+      expect(getCertificate).toHaveBeenCalledWith(publishedVersion),
+    );
+    expect(getCertificate).not.toHaveBeenCalledWith(
+      buildProposal().report.proposed_version,
+    );
+
+    clickSpy.mockRestore();
   });
 });

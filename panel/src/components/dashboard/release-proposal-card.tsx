@@ -3,7 +3,10 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { releaseApi } from "@/lib/api";
-import type { ReleaseCertificate, ReleaseExecuteResult } from "@/lib/api/release";
+import type {
+  ReleaseCertificate,
+  ReleaseExecuteResult,
+} from "@/lib/api/release";
 import {
   Card,
   CardContent,
@@ -80,6 +83,15 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [action, setAction] = useState<"approve" | "reject" | null>(null);
   const [requiredChanges, setRequiredChanges] = useState("");
+  // The open-proposal query excludes COMPLETED proposals, so the instant a
+  // publish succeeds this card's own getProposal() 404s → null and the card
+  // would unmount — but the certificate endpoint only serves that exact
+  // just-published version. Stash it locally from the approve outcome so a
+  // "Download certificate" affordance stays reachable after the publish.
+  const [publishedRelease, setPublishedRelease] = useState<{
+    version: string;
+    releaseUrl: string | null;
+  } | null>(null);
 
   const {
     data: proposal,
@@ -108,6 +120,10 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
     onSuccess: (result: ReleaseExecuteResult) => {
       queryClient.invalidateQueries({ queryKey: ["release", "proposal"] });
       if (result.status === "published") {
+        setPublishedRelease({
+          version: result.version,
+          releaseUrl: result.release_url ?? null,
+        });
         toast.success(
           `Published v${result.version}` +
             (result.release_url ? "" : " (no release URL returned)"),
@@ -152,7 +168,9 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
       if (certificate) {
         downloadCertificate(certificate);
       } else {
-        toast.info("This version hasn't published yet — no certificate available.");
+        toast.info(
+          "This version hasn't published yet — no certificate available.",
+        );
       }
     },
     onError: (error) => {
@@ -203,239 +221,284 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
       </Card>
     );
   }
-  // No open proposal (404 → null) — the normal empty state, hidden (mirrors
-  // PrReviewQueue).
-  if (!proposal) return null;
+  // No open proposal (404 → null) AND nothing just published — the normal
+  // empty state, hidden (mirrors PrReviewQueue). A stored publishedRelease
+  // keeps the card mounted even once the open-proposal query goes to null.
+  if (!proposal && !publishedRelease) return null;
 
-  const { report } = proposal;
+  const report = proposal?.report;
   const pending = approveMutation.isPending || rejectMutation.isPending;
   // The ~40min execute runs in the background; the Redis mutex already refuses
   // a double-click server-side — execute_in_flight is the UX (disable approve,
   // show a running badge). A persisted execute_status on a still-open proposal
   // is a failure (a publish would have completed + hidden the card).
-  const executeInFlight = !!proposal.execute_in_flight;
-  const executeFailed = !!proposal.execute_status && !executeInFlight;
+  const executeInFlight = !!proposal?.execute_in_flight;
+  const executeFailed = !!proposal?.execute_status && !executeInFlight;
 
   return (
     <>
-      <Card className={className}>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Rocket className="h-5 w-5" />
-            Release Proposal
-            <HelpTip label="Next version number, computed from the commit classification below">
-              <Badge variant="outline">v{report.proposed_version}</Badge>
-            </HelpTip>
-            <HelpTip label="Semver bump type — how the version number increases (major, minor, or patch)">
-              <Badge variant="secondary">{report.bump_kind}</Badge>
-            </HelpTip>
-            <HelpTip label="Quality gate status — green means all checks pass, red means failures must be fixed before release">
-              <Badge variant={gateBadgeVariant(report.gate_state)}>
-                gate: {report.gate_state}
-              </Badge>
-            </HelpTip>
-          </CardTitle>
-          <CardDescription>
-            {report.change_summary.length} change(s) since the last tag · review
-            and approve to cut the release (nothing publishes until you do).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {report.gaps.length > 0 && (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
-              <p className="flex items-center gap-1.5 text-sm font-medium text-amber-600">
-                <AlertTriangle className="h-4 w-4" />
-                {report.gaps.length} gap(s) to resolve before publishing
-              </p>
-              <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-                {report.gaps.map((gap, i) => (
-                  <li key={`${gap.category}-${i}`}>
-                    <span className="font-mono text-xs uppercase">
-                      [{gap.category}]
-                    </span>{" "}
-                    {gap.detail}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <div>
-            <HelpTip label="Written by the release manager from conventional-commit messages since the last tag">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Drafted CHANGELOG
-              </p>
-            </HelpTip>
-            <pre className="max-h-60 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
-              {report.drafted_changelog}
-            </pre>
-          </div>
-
-          <div>
-            <HelpTip label="Files the executor will rewrite with the new version number on approve">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Version bump plan ({report.version_bump_plan.length} files)
-              </p>
-            </HelpTip>
-            <p className="text-sm text-muted-foreground">
-              {report.version_bump_plan.join(", ")}
-            </p>
-          </div>
-
-          {report.migration_notes.length > 0 && (
-            <div>
-              <HelpTip label="Alembic migrations included in this release — check for a single head">
-                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Migrations
-                </p>
-              </HelpTip>
-              <ul className="space-y-1 text-sm text-muted-foreground">
-                {report.migration_notes.map((note, i) => (
-                  <li key={i}>{note}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {proposal.required_changes && (
-            <p className="text-sm text-amber-600">
-              Awaiting revision — you requested: {proposal.required_changes}
-            </p>
-          )}
-
-          {executeInFlight && (
-            <div className="flex items-center gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 p-3">
-              <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-              <span className="text-sm text-blue-600 dark:text-blue-400">
-                Release execute running in the background (~40 min) — this card
-                updates when it finishes.
-              </span>
-            </div>
-          )}
-
-          {executeFailed && (
-            <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
-              <p className="flex items-center gap-1.5 text-sm font-medium text-red-600">
-                <XCircle className="h-4 w-4" />
-                Last execute failed ({proposal.execute_status})
-              </p>
-              {proposal.execute_detail && (
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {proposal.execute_detail}
-                </p>
-              )}
-              <p className="mt-1 text-xs text-muted-foreground">
-                Fix the cause and approve again to retry.
-              </p>
-            </div>
-          )}
-
-          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
+      {publishedRelease && (
+        <Card className={className}>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-green-600" />
+              Published v{publishedRelease.version}
+            </CardTitle>
+            <CardDescription>
+              {publishedRelease.releaseUrl
+                ? "Release published — the governance certificate for this version is ready below."
+                : "Release published (no release URL returned) — the governance certificate for this version is ready below."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
             <HelpTip label="Download the release certificate — the full gate-chain artifact (CI verdict, conventions, per-AC QA states, findings summary) as JSON">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => certificateMutation.mutate(report.proposed_version)}
+                onClick={() =>
+                  certificateMutation.mutate(publishedRelease.version)
+                }
                 disabled={certificateMutation.isPending}
               >
                 <Download className="mr-1 h-4 w-4" />
                 Download certificate
               </Button>
             </HelpTip>
-            <HelpTip
-              label={
-                executeInFlight
-                  ? "Disabled while the execute is running"
-                  : "Cancels the proposal — a fresh assessment runs next cycle"
-              }
-            >
-              <span>
+          </CardContent>
+        </Card>
+      )}
+
+      {proposal && report && (
+        <>
+          <Card className={className}>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Rocket className="h-5 w-5" />
+                Release Proposal
+                <HelpTip label="Next version number, computed from the commit classification below">
+                  <Badge variant="outline">v{report.proposed_version}</Badge>
+                </HelpTip>
+                <HelpTip label="Semver bump type — how the version number increases (major, minor, or patch)">
+                  <Badge variant="secondary">{report.bump_kind}</Badge>
+                </HelpTip>
+                <HelpTip label="Quality gate status — green means all checks pass, red means failures must be fixed before release">
+                  <Badge variant={gateBadgeVariant(report.gate_state)}>
+                    gate: {report.gate_state}
+                  </Badge>
+                </HelpTip>
+              </CardTitle>
+              <CardDescription>
+                {report.change_summary.length} change(s) since the last tag ·
+                review and approve to cut the release (nothing publishes until
+                you do).
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {report.gaps.length > 0 && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+                  <p className="flex items-center gap-1.5 text-sm font-medium text-amber-600">
+                    <AlertTriangle className="h-4 w-4" />
+                    {report.gaps.length} gap(s) to resolve before publishing
+                  </p>
+                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                    {report.gaps.map((gap, i) => (
+                      <li key={`${gap.category}-${i}`}>
+                        <span className="font-mono text-xs uppercase">
+                          [{gap.category}]
+                        </span>{" "}
+                        {gap.detail}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div>
+                <HelpTip label="Written by the release manager from conventional-commit messages since the last tag">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Drafted CHANGELOG
+                  </p>
+                </HelpTip>
+                <pre className="max-h-60 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+                  {report.drafted_changelog}
+                </pre>
+              </div>
+
+              <div>
+                <HelpTip label="Files the executor will rewrite with the new version number on approve">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Version bump plan ({report.version_bump_plan.length} files)
+                  </p>
+                </HelpTip>
+                <p className="text-sm text-muted-foreground">
+                  {report.version_bump_plan.join(", ")}
+                </p>
+              </div>
+
+              {report.migration_notes.length > 0 && (
+                <div>
+                  <HelpTip label="Alembic migrations included in this release — check for a single head">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Migrations
+                    </p>
+                  </HelpTip>
+                  <ul className="space-y-1 text-sm text-muted-foreground">
+                    {report.migration_notes.map((note, i) => (
+                      <li key={i}>{note}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {proposal.required_changes && (
+                <p className="text-sm text-amber-600">
+                  Awaiting revision — you requested: {proposal.required_changes}
+                </p>
+              )}
+
+              {executeInFlight && (
+                <div className="flex items-center gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 p-3">
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                  <span className="text-sm text-blue-600 dark:text-blue-400">
+                    Release execute running in the background (~40 min) — this
+                    card updates when it finishes.
+                  </span>
+                </div>
+              )}
+
+              {executeFailed && (
+                <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
+                  <p className="flex items-center gap-1.5 text-sm font-medium text-red-600">
+                    <XCircle className="h-4 w-4" />
+                    Last execute failed ({proposal.execute_status})
+                  </p>
+                  {proposal.execute_detail && (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {proposal.execute_detail}
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Fix the cause and approve again to retry.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
+                <HelpTip label="Download the release certificate — the full gate-chain artifact (CI verdict, conventions, per-AC QA states, findings summary) as JSON">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      certificateMutation.mutate(report.proposed_version)
+                    }
+                    disabled={certificateMutation.isPending}
+                  >
+                    <Download className="mr-1 h-4 w-4" />
+                    Download certificate
+                  </Button>
+                </HelpTip>
+                <HelpTip
+                  label={
+                    executeInFlight
+                      ? "Disabled while the execute is running"
+                      : "Cancels the proposal — a fresh assessment runs next cycle"
+                  }
+                >
+                  <span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setAction("reject")}
+                      disabled={executeInFlight}
+                    >
+                      <XCircle className="mr-1 h-4 w-4" />
+                      Reject with changes
+                    </Button>
+                  </span>
+                </HelpTip>
+                <HelpTip
+                  label={
+                    executeInFlight
+                      ? "Disabled while the execute is running"
+                      : "Runs the fail-closed executor: bump + CHANGELOG + gate + CI + publish"
+                  }
+                >
+                  <span>
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700"
+                      onClick={() => setAction("approve")}
+                      disabled={executeInFlight}
+                    >
+                      <CheckCircle2 className="mr-1 h-4 w-4" />
+                      {executeFailed
+                        ? "Retry approve & publish"
+                        : "Approve & publish"}
+                    </Button>
+                  </span>
+                </HelpTip>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Dialog open={!!action} onOpenChange={() => closeDialog()}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>
+                  {action === "approve"
+                    ? `Approve release v${report.proposed_version}?`
+                    : "Reject with required changes"}
+                </DialogTitle>
+                <DialogDescription>
+                  {action === "approve"
+                    ? "This runs the fail-closed executor: write the bumps + CHANGELOG, run make quality, commit, wait for green CI, then publish. It aborts on a red gate or red CI."
+                    : "Record what must change. The proposal is cancelled and the release manager re-assesses next cycle; nothing is published."}
+                </DialogDescription>
+              </DialogHeader>
+
+              {action === "reject" && (
+                <div className="space-y-2">
+                  <Label htmlFor="required-changes">Required changes</Label>
+                  <Textarea
+                    id="required-changes"
+                    placeholder="e.g. tighten the CHANGELOG wording for the API change; hold for the migration fix..."
+                    value={requiredChanges}
+                    onChange={(e) => setRequiredChanges(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+              )}
+
+              <DialogFooter>
                 <Button
                   variant="outline"
-                  size="sm"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => setAction("reject")}
-                  disabled={executeInFlight}
+                  onClick={closeDialog}
+                  disabled={pending}
                 >
-                  <XCircle className="mr-1 h-4 w-4" />
-                  Reject with changes
+                  Cancel
                 </Button>
-              </span>
-            </HelpTip>
-            <HelpTip
-              label={
-                executeInFlight
-                  ? "Disabled while the execute is running"
-                  : "Runs the fail-closed executor: bump + CHANGELOG + gate + CI + publish"
-              }
-            >
-              <span>
                 <Button
-                  size="sm"
-                  className="bg-green-600 hover:bg-green-700"
-                  onClick={() => setAction("approve")}
-                  disabled={executeInFlight}
+                  onClick={handleConfirm}
+                  disabled={pending}
+                  variant={action === "reject" ? "destructive" : "default"}
+                  className={
+                    action === "approve"
+                      ? "bg-green-600 hover:bg-green-700"
+                      : ""
+                  }
                 >
-                  <CheckCircle2 className="mr-1 h-4 w-4" />
-                  {executeFailed
-                    ? "Retry approve & publish"
-                    : "Approve & publish"}
+                  {pending
+                    ? "Processing..."
+                    : action === "approve"
+                      ? "Approve & publish"
+                      : "Send back for revision"}
                 </Button>
-              </span>
-            </HelpTip>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Dialog open={!!action} onOpenChange={() => closeDialog()}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {action === "approve"
-                ? `Approve release v${report.proposed_version}?`
-                : "Reject with required changes"}
-            </DialogTitle>
-            <DialogDescription>
-              {action === "approve"
-                ? "This runs the fail-closed executor: write the bumps + CHANGELOG, run make quality, commit, wait for green CI, then publish. It aborts on a red gate or red CI."
-                : "Record what must change. The proposal is cancelled and the release manager re-assesses next cycle; nothing is published."}
-            </DialogDescription>
-          </DialogHeader>
-
-          {action === "reject" && (
-            <div className="space-y-2">
-              <Label htmlFor="required-changes">Required changes</Label>
-              <Textarea
-                id="required-changes"
-                placeholder="e.g. tighten the CHANGELOG wording for the API change; hold for the migration fix..."
-                value={requiredChanges}
-                onChange={(e) => setRequiredChanges(e.target.value)}
-                rows={3}
-              />
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button variant="outline" onClick={closeDialog} disabled={pending}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirm}
-              disabled={pending}
-              variant={action === "reject" ? "destructive" : "default"}
-              className={
-                action === "approve" ? "bg-green-600 hover:bg-green-700" : ""
-              }
-            >
-              {pending
-                ? "Processing..."
-                : action === "approve"
-                  ? "Approve & publish"
-                  : "Send back for revision"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
     </>
   );
 }
