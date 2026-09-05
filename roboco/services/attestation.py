@@ -186,17 +186,29 @@ def _parse_ac_stamps(qa_notes: str | None) -> dict[str, str]:
 
 
 def _attested_criteria(task: TaskTable) -> tuple[AttestedCriterion, ...]:
+    """Match each AC against the ``qa_notes`` stamps by id OR text — mirrors
+    ``findings_lib.unmatched_criteria``/``uncovered_acceptance_criteria``,
+    since ``criteria_verified``'s ``criterion`` (and therefore the stamp key
+    rendered into ``qa_notes``) may be either the AC's stable id or its exact
+    text. Matching text alone misses every id-keyed stamp and misreports a
+    verified criterion as unverified."""
     stamps = _parse_ac_stamps(task.qa_notes)
     ac_ids = list(task.acceptance_criteria_ids or [])
-    return tuple(
-        AttestedCriterion(
-            id=ac_ids[idx] if idx < len(ac_ids) else None,
-            text=text,
-            verified=text in stamps,
-            evidence=stamps.get(text),
+    criteria: list[AttestedCriterion] = []
+    for idx, text in enumerate(task.acceptance_criteria or []):
+        ac_id = ac_ids[idx] if idx < len(ac_ids) else None
+        evidence = stamps.get(text)
+        if evidence is None and ac_id is not None:
+            evidence = stamps.get(ac_id)
+        criteria.append(
+            AttestedCriterion(
+                id=ac_id,
+                text=text,
+                verified=evidence is not None,
+                evidence=evidence,
+            )
         )
-        for idx, text in enumerate(task.acceptance_criteria or [])
-    )
+    return tuple(criteria)
 
 
 async def _findings_by_round(
