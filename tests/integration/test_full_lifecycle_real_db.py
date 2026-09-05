@@ -22,6 +22,7 @@ When extended to all roles, this test catches:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
@@ -29,7 +30,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -38,7 +39,10 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.models.work_session import WorkSessionStatus
+from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.task import TaskService
 
 # #172: a developer fresh claim must carry a substantive step checklist.
@@ -143,15 +147,25 @@ class _StubGit:
         return {"pr_number": _PR_NUMBER, "pr_url": _PR_URL, "is_root_pr": is_root_pr}
 
     async def diff(
-        self, *, branch_name: str, base: Any = None, actor_agent_id: Any = None
+        self,
+        *,
+        branch_name: str,
+        base: Any = None,
+        actor_agent_id: Any = None,
+        preferred_parent: Any = None,
     ) -> str:
-        del branch_name, base, actor_agent_id
+        del branch_name, base, actor_agent_id, preferred_parent
         return "stub diff"
 
     async def list_changed_files(
-        self, *, branch_name: str, base: Any = None, actor_agent_id: Any = None
+        self,
+        *,
+        branch_name: str,
+        base: Any = None,
+        actor_agent_id: Any = None,
+        preferred_parent: Any = None,
     ) -> list[str]:
-        del branch_name, base, actor_agent_id
+        del branch_name, base, actor_agent_id, preferred_parent
         return []
 
     async def diff_and_files(
@@ -162,13 +176,18 @@ class _StubGit:
         actor_agent_id: Any = None,
         preferred_parent: Any = None,
     ) -> tuple[str, list[str]]:
-        del preferred_parent
         return (
             await self.diff(
-                branch_name=branch_name, base=base, actor_agent_id=actor_agent_id
+                branch_name=branch_name,
+                base=base,
+                actor_agent_id=actor_agent_id,
+                preferred_parent=preferred_parent,
             ),
             await self.list_changed_files(
-                branch_name=branch_name, base=base, actor_agent_id=actor_agent_id
+                branch_name=branch_name,
+                base=base,
+                actor_agent_id=actor_agent_id,
+                preferred_parent=preferred_parent,
             ),
         )
 
@@ -183,6 +202,198 @@ class _StubGit:
     async def is_pr_merged_for_task(self, task_id: UUID) -> bool:
         del task_id
         return False
+
+    async def is_behind_base(
+        self, task: Any, *, base_branch: str, actor_agent_id: Any = None
+    ) -> tuple[int, int]:
+        del task, base_branch, actor_agent_id
+        # (behind, ahead) — never behind, always one commit ahead so the
+        # PR-waiver check (zero-diff) never fires and the freshen guard
+        # never attempts a rebase.
+        return (0, 1)
+
+    async def unmerged_child_commits(
+        self, task: Any, *, actor_agent_id: Any = None
+    ) -> list[dict[str, Any]]:
+        del task, actor_agent_id
+        return []
+
+
+class _MultiTaskStubGit:
+    """Deterministic GitService stub spanning MULTIPLE tasks (cell + root).
+
+    ``_StubGit`` above binds to exactly one ``TaskTable`` row, which is fine
+    for the file's single-task dev/QA/doc chain. Driving the cell->root and
+    root->master PR/merge stages needs two independently-tracked PRs (one
+    per assembled task), so this variant resolves the task to mutate from
+    the ``branch_name`` / ``task_id`` every call already carries, keyed off
+    a ``{branch_name: task}`` map built by the caller. Mirrors ``_StubGit``'s
+    per-call mutation contract otherwise; also stubs the assembly-integrity
+    (``unmerged_child_commits``) and behind-base freshen (``is_behind_base``)
+    checks ``submit_up`` / ``submit_root`` run before opening a PR.
+    """
+
+    def __init__(self, session: Any, tasks_by_branch: dict[str, TaskTable]) -> None:
+        self._session = session
+        self._by_branch = tasks_by_branch
+        self._next_pr_number = 100
+
+    async def commit(
+        self,
+        *,
+        branch_name: str,
+        message: str,
+        task_id: UUID,
+        files: list[str] | None = None,
+        actor_agent_id: Any = None,
+    ) -> dict[str, Any]:
+        del files, actor_agent_id
+        task = self._by_branch[branch_name]
+        sha = uuid4().hex[:40]
+        commits = list(task.commits or [])
+        commits.append({"sha": sha, "message": message, "task_id": str(task_id)})
+        task.commits = commits
+        await self._session.flush()
+        return {
+            "sha": sha,
+            "message": message,
+            "files_changed": 1,
+            "insertions": 1,
+            "deletions": 0,
+        }
+
+    async def push_branch(
+        self, branch_name: str, *, actor_agent_id: Any = None
+    ) -> tuple[str, int]:
+        del branch_name, actor_agent_id
+        return ("ok", 0)
+
+    async def push_task_branch(self, agent_id: UUID, task_id: UUID) -> int:
+        del agent_id, task_id
+        return 0
+
+    async def create_pr(
+        self,
+        branch_name: str,
+        *,
+        parent: str,
+        is_root_pr: bool,
+        actor_agent_id: Any = None,
+    ) -> dict[str, Any]:
+        del parent, actor_agent_id
+        task = self._by_branch[branch_name]
+        pr_number = self._next_pr_number
+        self._next_pr_number += 1
+        pr_url = f"https://github.com/example/life/pull/{pr_number}"
+        task.pr_number = pr_number
+        task.pr_url = pr_url
+        task.pr_created = True
+        await self._session.flush()
+        return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
+
+    async def diff(
+        self,
+        *,
+        branch_name: str,
+        base: Any = None,
+        actor_agent_id: Any = None,
+        preferred_parent: Any = None,
+    ) -> str:
+        del branch_name, base, actor_agent_id, preferred_parent
+        return "stub diff"
+
+    async def list_changed_files(
+        self,
+        *,
+        branch_name: str,
+        base: Any = None,
+        actor_agent_id: Any = None,
+        preferred_parent: Any = None,
+    ) -> list[str]:
+        del branch_name, base, actor_agent_id, preferred_parent
+        return []
+
+    async def diff_and_files(
+        self,
+        *,
+        branch_name: str,
+        base: Any = None,
+        actor_agent_id: Any = None,
+        preferred_parent: Any = None,
+    ) -> tuple[str, list[str]]:
+        return (
+            await self.diff(
+                branch_name=branch_name,
+                base=base,
+                actor_agent_id=actor_agent_id,
+                preferred_parent=preferred_parent,
+            ),
+            await self.list_changed_files(
+                branch_name=branch_name,
+                base=base,
+                actor_agent_id=actor_agent_id,
+                preferred_parent=preferred_parent,
+            ),
+        )
+
+    async def pr_target(self, pr_number: int, *, actor_agent_id: Any = None) -> str:
+        del pr_number, actor_agent_id
+        return "main"
+
+    async def pr_merge(
+        self,
+        pr_number: int,
+        *,
+        target: Any = None,
+        project_id: Any = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del target, project_id, kwargs
+        # Mirrors the real `GitService.pr_merge`: when the merged task carries
+        # a work session (a PM's claim creates one — see `TaskService.
+        # _finalize_claim`), mark it merged too, so a later
+        # `_assert_pr_merged_for_complete` / `ceo_approve` check against that
+        # SAME session sees consistent state instead of a stale "open" row a
+        # bare pr_number/task mutation would leave behind.
+        task = next(
+            (t for t in self._by_branch.values() if t.pr_number == pr_number), None
+        )
+        if task is not None and task.work_session_id:
+            ws = await self._session.get(WorkSessionTable, task.work_session_id)
+            if ws is not None:
+                ws.pr_status = "merged"
+                ws.status = WorkSessionStatus.COMPLETED
+                await self._session.flush()
+        return {
+            "merged": True,
+            "sha": uuid4().hex[:40],
+            "merge_commit_sha": uuid4().hex[:40],
+        }
+
+    async def is_pr_merged_for_task(self, task_id: UUID) -> bool:
+        del task_id
+        return False
+
+    async def is_behind_base(
+        self, task: Any, *, base_branch: str, actor_agent_id: Any = None
+    ) -> tuple[int, int]:
+        del task, base_branch, actor_agent_id
+        return (0, 1)
+
+    async def unmerged_child_commits(
+        self, task: Any, *, actor_agent_id: Any = None
+    ) -> list[dict[str, Any]]:
+        del task, actor_agent_id
+        return []
+
+    async def get_pr_head_sha(self, project_slug: str, pr_number: int) -> str | None:
+        del project_slug, pr_number
+        return None
+
+    async def post_pr_review(
+        self, project_slug: str, pr_number: int, body: str, *, event: str
+    ) -> None:
+        del project_slug, pr_number, body, event
 
 
 def _mock_evidence_repo() -> Any:
@@ -571,8 +782,453 @@ async def test_full_chain_through_doc_handoff(
     )
 
 
-# TODO: follow-up — final stages (cell_pm complete + main_pm complete +
-# CEO approval) require additional setup: a parent task hierarchy for
-# the merge chain, plus a real `git.pr_merge` simulation that updates
-# the underlying repo. The _StubGit class covers the API surface; what's
-# missing is the seeded parent task + main_pm agent.
+def _uid(value: Any) -> UUID:
+    """Cast an ORM row's id column to a real ``UUID`` for static typing.
+
+    Mirrors this file's sibling (``test_lifecycle_real_db.py``)'s own
+    ``UUID(str(x.id))`` cast at reviewer/task id call sites — a concretely
+    typed ``TaskTable``/``AgentTable`` row's ``.id`` resolves to the mapped
+    column type rather than ``uuid.UUID`` under mypy.
+    """
+    return UUID(str(value))
+
+
+async def _seed_pr_reviewer(db_session: AsyncSession) -> AgentTable:
+    """Add + flush a backend in-path PR-review-gate reviewer.
+
+    Flushed here (mirrors ``test_lifecycle_real_db.py``'s identical helper)
+    so a later ``task.assigned_to = reviewer.id`` update can't race the
+    reviewer INSERT in the same unit-of-work and trip the FK constraint.
+    """
+    reviewer = AgentTable(
+        id=uuid4(),
+        name="BE PR Reviewer",
+        slug=f"be-pr-reviewer-{uuid4().hex[:8]}",
+        role=AgentRole.PR_REVIEWER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="reviewer",
+        capabilities=["review"],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(reviewer)
+    await db_session.flush()
+    return reviewer
+
+
+async def _seed_main_pm(db_session: AsyncSession) -> UUID:
+    """Return the fixed ``main-pm`` agent id, seeding it if not already present.
+
+    Keyed on the fixed foundation UUID (mirrors ``test_lifecycle_real_db.py``'s
+    identical pattern): the cross-test shared DB already has other tests
+    seeding this exact slug, and an unconditional insert with a fresh random
+    id would collide on the slug's unique index.
+    """
+    main_pm_id = UUID(AGENT_UUIDS["main-pm"])
+    if await db_session.get(AgentTable, main_pm_id) is None:
+        db_session.add(
+            AgentTable(
+                id=main_pm_id,
+                name="Main PM",
+                slug="main-pm",
+                role=AgentRole.MAIN_PM,
+                team=None,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="main_pm",
+                capabilities=["coord"],
+                permissions={},
+                metrics={},
+            )
+        )
+        await db_session.flush()
+    return main_pm_id
+
+
+async def _seed_root_task(
+    db_session: AsyncSession,
+    *,
+    project_id: UUID,
+    creator_id: UUID,
+    main_pm_id: UUID,
+) -> TaskTable:
+    """Seed a Main-PM coordination root: no parent, its own branch/PR."""
+    root = TaskTable(
+        id=uuid4(),
+        title="Ship the backend healthz cell",
+        description="Coordination root assembling the backend cell's work",
+        status=TaskStatus.IN_PROGRESS,
+        priority=1,
+        task_type=TaskType.PLANNING,
+        nature=TaskNature.TECHNICAL,
+        team=Team.MAIN_PM,
+        project_id=project_id,
+        created_by=creator_id,
+        assigned_to=main_pm_id,
+        parent_task_id=None,
+        branch_name=f"feature/main_pm/root-{uuid4().hex[:8]}",
+        acceptance_criteria=["Ship the /healthz endpoint end to end"],
+    )
+    db_session.add(root)
+    await db_session.flush()
+    return root
+
+
+@dataclass
+class _RootCellHarness:
+    """A seeded root + cell hierarchy wired to a real Choreographer/TaskService.
+
+    Shared setup for the happy-path and reject-path final-stage tests below —
+    factored out to keep each test's own statement count within the xenon/
+    ruff complexity budget.
+    """
+
+    cell: TaskTable
+    root: TaskTable
+    reviewer: AgentTable
+    main_pm_id: UUID
+    c: Choreographer
+    task_service: TaskService
+
+    async def submit_up_and_pass(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        *,
+        submit_notes: str,
+        pass_notes: str,
+        resolved_findings: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Drive submit_up -> claim_gate_review -> pr_pass to awaiting_pm_review."""
+        env = await self.c.submit_up(
+            pm_agent_id,
+            task_id,
+            notes=submit_notes,
+            resolved_findings=resolved_findings,
+        )
+        assert env.error is None, f"submit_up failed: {env.message}"
+        assert env.status == "awaiting_pr_review"
+
+        env = await self.c.claim_gate_review(_uid(self.reviewer.id), task_id)
+        assert env.error is None, f"claim_gate_review failed: {env.message}"
+
+        env = await self.c.pr_pass(_uid(self.reviewer.id), task_id, notes=pass_notes)
+        assert env.error is None, f"pr_pass failed: {env.message}"
+        assert env.status == "awaiting_pm_review"
+
+    async def submit_up_and_pass_root(self) -> None:
+        """Drive the root's own submit_root -> claim_gate_review -> pr_pass."""
+        root_id = _uid(self.root.id)
+        env = await self.c.submit_root(
+            self.main_pm_id,
+            root_id,
+            notes="Root scope assembled: the backend cell's /healthz slice is"
+            " merged; opening the root->master PR for review.",
+        )
+        assert env.error is None, f"submit_root failed: {env.message}"
+        assert env.status == "awaiting_pr_review"
+
+        root_after_submit = await self.task_service.get(root_id)
+        assert root_after_submit is not None
+        assert root_after_submit.pr_number is not None, "root->master PR recorded"
+
+        env = await self.c.claim_gate_review(_uid(self.reviewer.id), root_id)
+        assert env.error is None, f"claim_gate_review (root) failed: {env.message}"
+
+        env = await self.c.pr_pass(
+            _uid(self.reviewer.id),
+            root_id,
+            notes="Reviewed the root->master diff: the backend cell's work is"
+            " complete, correct, and ready to ship. Approving.",
+        )
+        assert env.error is None, f"pr_pass (root) failed: {env.message}"
+        assert env.status == "awaiting_pm_review"
+
+    async def cell_merge_complete(self, notes: str) -> AgentTable:
+        """Resolve the owning cell PM and merge-complete the cell task."""
+        resolved_cell_pm = await self.task_service.cell_pm_for_team(Team.BACKEND)
+        assert resolved_cell_pm is not None
+        env = await self.c.complete(
+            _uid(resolved_cell_pm.id), _uid(self.cell.id), notes=notes
+        )
+        assert env.error is None, f"complete (cell) failed: {env.message}"
+        assert env.status == "completed"
+        return resolved_cell_pm
+
+
+async def _seed_root_cell_harness(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> _RootCellHarness:
+    """Seed main_pm + reviewer + root, parent the fixture's cell task under
+    it, and wire a real Choreographer over ``_MultiTaskStubGit``."""
+    cell = lifecycle_setup["task"]
+    cell_pm_agent = lifecycle_setup["cell_pm_agent"]
+    project = lifecycle_setup["project"]
+
+    main_pm_id = await _seed_main_pm(db_session)
+    reviewer = await _seed_pr_reviewer(db_session)
+    root = await _seed_root_task(
+        db_session,
+        project_id=project.id,
+        creator_id=project.created_by,
+        main_pm_id=main_pm_id,
+    )
+
+    # The cell task represents the backend cell's assembled work: parented
+    # under the root, ready for the cell PM to bubble it up.
+    cell.parent_task_id = root.id
+    cell.status = TaskStatus.IN_PROGRESS
+    cell.assigned_to = cell_pm_agent.id
+    cell.commits = [
+        {"sha": uuid4().hex[:40], "message": "feat: /healthz", "task_id": str(cell.id)}
+    ]
+    await db_session.flush()
+
+    task_service = TaskService(db_session)
+    git = _MultiTaskStubGit(
+        db_session, {str(cell.branch_name): cell, str(root.branch_name): root}
+    )
+    deps = ChoreographerDeps(
+        task=task_service,
+        work_session=_mock_work_session(),
+        git=git,
+        a2a=AsyncMock(),
+        journal=_mock_journal_with_reflect(),
+        audit=AsyncMock(),
+        evidence_repo=_mock_evidence_repo(),
+    )
+    return _RootCellHarness(
+        cell=cell,
+        root=root,
+        reviewer=reviewer,
+        main_pm_id=main_pm_id,
+        c=Choreographer(deps),
+        task_service=task_service,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cell_and_root_reach_completed_via_gate_and_ceo_approval(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """Extends the dev/QA/doc chain through the stages the file's own TODO
+    named as missing: cell_pm submit_up -> in-path PR-review gate -> cell_pm
+    merge-complete -> main_pm submit_root -> gate -> main_pm complete ->
+    CEO approval, reaching ``completed`` with the merged/PR state asserted.
+
+    Seeds a real root (main_pm) + cell (cell_pm) task hierarchy and drives
+    every stage through the real Choreographer + TaskService + DB. Git stays
+    a deterministic stub (``_MultiTaskStubGit``, this file's established
+    pattern generalized to two tasks) — the merge itself is simulated the
+    same way ``_StubGit.pr_merge`` always has, and the final CEO-approve leg
+    is driven against a REAL ``WorkSessionTable`` row with ``pr_status``
+    stamped ``"merged"`` so the real merged-PR guard in
+    ``TaskService.ceo_approve`` actually runs (not skipped).
+    """
+    h = await _seed_root_cell_harness(db_session, lifecycle_setup)
+    project = lifecycle_setup["project"]
+    cell_pm_agent = lifecycle_setup["cell_pm_agent"]
+    cell_id = _uid(h.cell.id)
+    root_id = _uid(h.root.id)
+
+    # 1-3. Cell PM bubbles the assembled cell scope up, the reviewer passes
+    #      the cell->root PR, and the cell PM merges + completes the cell.
+    await h.submit_up_and_pass(
+        cell_pm_agent.id,
+        cell_id,
+        submit_notes="Cell scope assembled: /healthz implemented and tested;"
+        " opening the cell->root PR for review.",
+        pass_notes="Reviewed the cell->root diff: the /healthz endpoint is"
+        " correctly implemented and covered by tests. Approving.",
+    )
+    cell_after_pass = await h.task_service.get(cell_id)
+    assert cell_after_pass is not None
+    assert cell_after_pass.pr_number is not None, "cell->root PR recorded"
+
+    await h.cell_merge_complete(
+        "Cell scope reviewed and approved; merging the cell->root PR."
+    )
+    cell_final = await h.task_service.get(cell_id)
+    assert cell_final is not None
+    assert str(cell_final.status) == "completed"
+    assert any(entry.get("kind") == "merge" for entry in (cell_final.commits or [])), (
+        "the merge commit must be recorded on the completed cell task"
+    )
+    # The root's only subtask (the cell) is now terminal.
+    assert await h.task_service.all_subtasks_terminal(root_id)
+
+    # 4-5. Main PM submits the root, the reviewer passes the root->master PR.
+    await h.submit_up_and_pass_root()
+
+    # 6. Main PM completes the root — escalates to the CEO for final sign-off.
+    env = await h.c.main_pm_complete(
+        h.main_pm_id,
+        root_id,
+        notes="Root scope reviewed and approved; escalating to the CEO for"
+        " final sign-off before merging to master.",
+    )
+    assert env.error is None, f"main_pm_complete failed: {env.message}"
+    assert env.status == "awaiting_ceo_approval"
+
+    root_awaiting_ceo = await h.task_service.get(root_id)
+    assert root_awaiting_ceo is not None
+    assert str(root_awaiting_ceo.status) == "awaiting_ceo_approval"
+    assert root_awaiting_ceo.assigned_to is None, (
+        "main_pm_complete clears assigned_to so no agent is respawned while"
+        " the CEO decides"
+    )
+
+    # 7. The CEO merges the root->master PR (simulated: a real WorkSessionTable
+    #    row recording pr_status="merged") and approves — the real merged-PR
+    #    guard in ceo_approve runs against it, not skipped.
+    work_session = WorkSessionTable(
+        id=uuid4(),
+        project_id=project.id,
+        task_id=root_id,
+        agent_id=h.main_pm_id,
+        branch_name=root_awaiting_ceo.branch_name,
+        base_branch="master",
+        target_branch="master",
+        status=WorkSessionStatus.COMPLETED,
+        pr_number=root_awaiting_ceo.pr_number,
+        pr_url=root_awaiting_ceo.pr_url,
+        pr_status="merged",
+    )
+    db_session.add(work_session)
+    await db_session.flush()
+    root_awaiting_ceo.work_session_id = work_session.id
+    await db_session.flush()
+
+    approved = await h.task_service.ceo_approve(
+        root_id,
+        "Approved: the backend cell's /healthz slice is complete, reviewed,"
+        " and merged to master. Shipping to production.",
+    )
+    assert approved is not None, (
+        "ceo_approve refused — the merged-PR guard likely rejected the"
+        " simulated work session"
+    )
+    assert str(approved.status) == "completed"
+
+    final_root = await h.task_service.get(root_id)
+    assert final_root is not None
+    assert str(final_root.status) == "completed"
+
+
+@pytest.mark.asyncio
+async def test_pr_fail_on_submit_up_then_resubmit_reaches_completed(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """Reject path: submit_up -> pr_fail -> needs_revision -> cell PM
+    re-claims (``i_will_plan``) -> resubmits -> pr_pass -> complete, reaching
+    the terminal ``completed`` outcome.
+
+    Covers the in-path PR-review gate's reject leg end-to-end against the
+    real DB — the exact stage the three rounds of pr_gate hardening (the
+    PR-waiver latch, the next-hint fix, and the revision-findings ledger)
+    touched with no real-DB coverage before this.
+    """
+    h = await _seed_root_cell_harness(db_session, lifecycle_setup)
+    cell_pm_agent = lifecycle_setup["cell_pm_agent"]
+    cell_id = _uid(h.cell.id)
+
+    # 1. Cell PM submits; the reviewer requests changes.
+    env = await h.c.submit_up(
+        cell_pm_agent.id,
+        cell_id,
+        notes="Cell scope assembled: /healthz implemented; opening the"
+        " cell->root PR for review.",
+    )
+    assert env.error is None, f"submit_up failed: {env.message}"
+    assert env.status == "awaiting_pr_review"
+
+    env = await h.c.claim_gate_review(_uid(h.reviewer.id), cell_id)
+    assert env.error is None, f"claim_gate_review failed: {env.message}"
+
+    env = await h.c.pr_fail(
+        _uid(h.reviewer.id),
+        cell_id,
+        issues=[
+            "The /healthz handler does not return a timestamp field as the"
+            " acceptance criteria require."
+        ],
+    )
+    assert env.error is None, f"pr_fail failed: {env.message}"
+    assert env.status == "needs_revision"
+
+    revision_owner = await h.task_service.cell_pm_for_team(Team.BACKEND)
+    assert revision_owner is not None
+    revision_owner_id = _uid(revision_owner.id)
+    failed = await h.task_service.get(cell_id)
+    assert failed is not None
+    assert failed.assigned_to == revision_owner.id, (
+        "pr_fail hands the assembled task back to its owning cell PM"
+    )
+    assert "timestamp field" in (failed.pr_reviewer_notes or "")
+    open_findings = await findings_lib.open_findings_for_task(db_session, cell_id)
+    assert len(open_findings) == 1, "pr_fail must ledger exactly the one finding raised"
+    finding_id = str(open_findings[0].id)[:8]
+
+    # 2. The cell PM re-claims the rejected task and re-delegates the fix
+    #    (simulated here by simply resubmitting — the DB-level contract under
+    #    test is the needs_revision -> in_progress re-claim + resubmit path,
+    #    not the fix content itself).
+    env = await h.c.i_will_plan(
+        revision_owner_id,
+        cell_id,
+        plan="Re-claim the rejected cell scope and resubmit after fixing the"
+        " missing timestamp field.",
+        rich_plan={
+            "approach": (
+                "Address the reviewer's finding: the /healthz handler must"
+                " return a timestamp field. Re-verify both acceptance"
+                " criteria locally, then resubmit the cell->root PR for"
+                " another review pass."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Fix missing timestamp field",
+                    "description": (
+                        "Update the /healthz handler to include a timestamp"
+                        " field in its response body, matching the second"
+                        " acceptance criterion the reviewer flagged."
+                    ),
+                },
+            ],
+        },
+    )
+    assert env.error is None, f"i_will_plan (re-claim) failed: {env.message}"
+    assert env.status == "in_progress"
+
+    reclaimed = await h.task_service.get(cell_id)
+    assert reclaimed is not None
+    assert str(reclaimed.status) == "in_progress"
+    assert reclaimed.assigned_to == revision_owner.id
+
+    # 3. Resubmit, naming the resolved finding (FINDINGS_ADDRESSED requires
+    #    every open ledger finding to be named before a re-submit is allowed);
+    #    this time the reviewer passes it.
+    await h.submit_up_and_pass(
+        revision_owner_id,
+        cell_id,
+        submit_notes="Fixed the missing timestamp field per the reviewer's"
+        " finding; resubmitting the cell->root PR.",
+        pass_notes="Reviewed the updated diff: the timestamp field is now"
+        " present and both acceptance criteria are covered. Approving.",
+        resolved_findings=[
+            {
+                "finding_id": finding_id,
+                "note": "Added the timestamp field to the /healthz response.",
+            }
+        ],
+    )
+
+    # 4. Cell PM merges and completes — the terminal outcome for this leg.
+    await h.cell_merge_complete(
+        "Cell scope reviewed and approved after revision; merging the cell->root PR."
+    )
+    final_cell = await h.task_service.get(cell_id)
+    assert final_cell is not None
+    assert str(final_cell.status) == "completed"
