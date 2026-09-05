@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from roboco.services.llm import AgentRoute
     from roboco.services.maintenance_pause import PauseScope
     from roboco.services.task import TaskService
+    from roboco.services.uptime import UptimeLedger
 import structlog
 from fastapi import status as http_status
 
@@ -1226,6 +1227,13 @@ class AgentOrchestrator:
     # Last time the auditor was spawned, by reactive alert or scheduled sweep.
     # Drives the ROBOCO_AUDIT_INTERVAL_SECONDS throttle. Per-instance override.
     _last_audit_spawn_at: datetime | None = None
+    # Fleet active-time clock (roboco/services/uptime.py), refreshed by
+    # _refresh_uptime at most every UPTIME_REFRESH_SECONDS. None until the
+    # first load (or a bare __new__ test double) - _active_age then falls
+    # back to plain wall-clock elapsed, so every path degrades to
+    # pre-ledger behaviour.
+    _uptime: "UptimeLedger | None" = None
+    _uptime_loaded_at: datetime | None = None
 
     def __new__(cls, *_args: Any, **_kwargs: Any) -> "AgentOrchestrator":
         """Allocate the instance and pre-initialize lazy dispatcher state.
@@ -1508,6 +1516,7 @@ class AgentOrchestrator:
     async def start(self) -> None:
         """Start the orchestrator."""
         self._running = True
+        await self._mark_running_and_beat()
 
         # Ensure agent image is built
         await self._ensure_agent_image()
@@ -5274,7 +5283,10 @@ class AgentOrchestrator:
         force-blocked it; the task-status dispatchers already skip these via
         ``_is_hitl_blocked``, but this notification-driven path carries no
         task-status gate of its own). Fail-open: an unparseable field or a
-        failed task fetch never suppresses a spawn.
+        failed task fetch never suppresses a spawn. The stale-past-spawn-age
+        check reads active time (`_active_age`), so a notification minted
+        right before a CEO pause isn't already "wedged" the moment the fleet
+        wakes up.
         """
         now = datetime.now(UTC)
         expires = self._parse_iso_dt(notif.get("expires_at"))
@@ -5282,7 +5294,11 @@ class AgentOrchestrator:
             return False
         max_age = settings.notification_spawn_max_age_seconds
         ts = self._parse_iso_dt(notif.get("timestamp"))
-        if max_age and ts is not None and (now - ts).total_seconds() > max_age:
+        if (
+            max_age
+            and ts is not None
+            and self._active_age(ts, now).total_seconds() > max_age
+        ):
             return False
         task_id = notif.get("related_task_id")
         if task_id:
@@ -8401,6 +8417,10 @@ Start by:
 
         session_factory = get_session_factory()
         async with session_factory() as db:
+            # This loop doesn't run through _dispatch_all_work, so it keeps
+            # the ledger warm on its own tick too (_refresh_uptime no-ops
+            # past its own throttle either way).
+            await self._refresh_uptime(db)
             deliv_svc = get_notification_delivery_service(db)
             try:
                 # Resolve terminal-task escalations FIRST: sweep_expired_
@@ -13026,6 +13046,76 @@ Start now: evidence(task_id="{task_id}")
             },
         )
 
+    async def _mark_running_and_beat(self) -> None:
+        """Boot-time seam, called from `start()` before the loops launch.
+
+        Marks this process as running so `_refresh_uptime` never reads its
+        own broken audit writes as downtime, then fires a boot heartbeat
+        that closes any pre-boot outage window at the boot instant. `_is_paused`
+        opens its own session lazily, so this is safe to call before the
+        rest of `start()`'s DB-dependent setup runs.
+        """
+        from roboco.services.uptime import mark_process_running
+
+        mark_process_running()
+        await self._emit_dispatcher_heartbeat()
+
+    # How often _refresh_uptime actually re-queries audit_log, and how far
+    # back it looks. Both loops (dispatcher + sweeper) call it every tick;
+    # the throttle keeps that to one query per minute regardless.
+    UPTIME_REFRESH_SECONDS = 60
+    UPTIME_LOOKBACK_DAYS = 7
+
+    async def _refresh_uptime(self, db: "AsyncSession") -> "UptimeLedger":
+        """Reload the fleet uptime ledger, throttled to UPTIME_REFRESH_SECONDS.
+
+        Fails open: a load error keeps the previous ledger (or an empty one,
+        no recorded downtime, on the very first load), so every
+        ``_active_age`` caller degrades to plain wall-clock elapsed instead
+        of raising. ``UptimeLedger.load`` picks up the marker `start()` set
+        via `_mark_running_and_beat`, so a heartbeat gap after this process
+        booted is never read as downtime, only a broken audit write - this
+        process knows it is alive.
+        """
+        from roboco.services.uptime import UptimeLedger
+
+        now = datetime.now(UTC)
+        loaded_at = self._uptime_loaded_at
+        if (
+            self._uptime is not None
+            and loaded_at is not None
+            and (now - loaded_at).total_seconds() < self.UPTIME_REFRESH_SECONDS
+        ):
+            return self._uptime
+        try:
+            self._uptime = await UptimeLedger.load(
+                db, since=now - timedelta(days=self.UPTIME_LOOKBACK_DAYS)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Uptime ledger refresh failed; keeping previous", error=str(exc)
+            )
+            if self._uptime is None:
+                self._uptime = UptimeLedger([], now)
+        self._uptime_loaded_at = now
+        return self._uptime
+
+    def _active_age(
+        self, ts: datetime | None, now: datetime | None = None
+    ) -> timedelta:
+        """Elapsed time since ``ts``, discounting recorded fleet downtime.
+
+        Falls back to plain wall-clock elapsed when no ledger has loaded yet
+        (today's behaviour). A missing ``ts`` is "no age" - every caller here
+        already returns/skips on an unparseable timestamp before reaching
+        this, so it only ever sees a real one in practice.
+        """
+        if ts is None:
+            return timedelta(0)
+        if self._uptime is not None:
+            return self._uptime.active_elapsed(ts, now)
+        return (now or datetime.now(UTC)) - ts
+
     async def _dispatcher_loop(self) -> None:
         """
         Main dispatcher loop - periodically checks for work and spawns agents.
@@ -13583,10 +13673,8 @@ Start now: evidence(task_id="{task_id}")
         """
         from roboco.models.base import ModelProvider
 
-        cutoff = datetime.now(UTC) - timedelta(
-            seconds=getattr(self, "_grok_idle_kill_ttl", 900)
-        )
-        if last_heartbeat is not None and last_heartbeat >= cutoff:
+        ttl = timedelta(seconds=getattr(self, "_grok_idle_kill_ttl", 900))
+        if last_heartbeat is not None and self._active_age(last_heartbeat) < ttl:
             return None
         owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
         if not owner:
@@ -13653,10 +13741,8 @@ Start now: evidence(task_id="{task_id}")
         """
         from roboco.models.base import ModelProvider
 
-        cutoff = datetime.now(UTC) - timedelta(
-            seconds=getattr(self, "_claude_stuck_kill_ttl", 3600)
-        )
-        if last_heartbeat is not None and last_heartbeat >= cutoff:
+        ttl = timedelta(seconds=getattr(self, "_claude_stuck_kill_ttl", 3600))
+        if last_heartbeat is not None and self._active_age(last_heartbeat) < ttl:
             return None
         owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
         if not owner:
@@ -13800,20 +13886,21 @@ Start now: evidence(task_id="{task_id}")
         liveness/kill checks always run; only the final DB unclaim is gated
         on ``dispatch_paused``.
         """
-        cutoff = datetime.now(UTC) - timedelta(seconds=self._claim_heartbeat_ttl)
         candidates = await svc.list_in_progress_or_claimed()
         for t in candidates:
-            await self._reap_one_stale_claim(svc, t, cutoff, dispatch_paused)
+            await self._reap_one_stale_claim(svc, t, dispatch_paused)
 
-    def _heartbeat_is_stale(self, ts: Any, cutoff: datetime) -> bool:
-        """True when a claim's heartbeat is missing or past ``cutoff``."""
-        return ts is None or ts < cutoff
+    def _heartbeat_is_stale(self, ts: Any, ttl_seconds: int) -> bool:
+        """True when a claim's heartbeat is missing, or its active-time age
+        (fleet downtime discounted) has reached ``ttl_seconds``."""
+        if ts is None:
+            return True
+        return self._active_age(ts) >= timedelta(seconds=ttl_seconds)
 
     async def _reap_one_stale_claim(
         self,
         svc: "TaskService",
         t: Any,
-        cutoff: datetime,
         dispatch_paused: bool,
     ) -> None:
         """Decide skip-vs-reap for one candidate claim.
@@ -13830,7 +13917,7 @@ Start now: evidence(task_id="{task_id}")
         stale proxy there, and reaping a working agent only churns the task.
         """
         ts = t.last_heartbeat_at
-        if not self._heartbeat_is_stale(ts, cutoff):
+        if not self._heartbeat_is_stale(ts, self._claim_heartbeat_ttl):
             return
         # A live container is spared unless it is wedged (grok) or its
         # gateway is broken-but-alive past the grace window - see
@@ -13955,6 +14042,20 @@ Start now: evidence(task_id="{task_id}")
         ``_dispatch_pm_work``).
         """
         self._tick_handled_tasks = set()
+
+        # Refresh the fleet uptime ledger first: the reaper and stuck-task
+        # checks below read _active_age, which needs a fresh ledger to
+        # discount a CEO-ordered pause instead of reading it as neglect.
+        # _refresh_uptime fails open internally; this only guards session
+        # acquisition itself.
+        try:
+            from roboco.db.base import get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as db:
+                await self._refresh_uptime(db)
+        except Exception as e:
+            logger.error("Uptime ledger refresh failed; continuing tick", error=str(e))
 
         # Free any tasks whose claim went stale before the spawn pass runs.
         # Wrapped because a reaper failure must not block dispatch — the
@@ -17569,12 +17670,14 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 await self._check_sla_for_task(client, task, status)
 
     def _time_in_state(self, task: dict[str, Any]) -> timedelta | None:
-        """Approximate time in current state via task.updated_at.
+        """Approximate active time in current state via task.updated_at.
 
         Not perfect — any field update bumps `updated_at`, not just status
         changes — but it's the coarse signal we have, and it under-counts
         (biased toward "agent is working") rather than over-counts, which
-        matches the soft-SLA intent.
+        matches the soft-SLA intent. Fleet downtime (a CEO pause/outage) is
+        discounted via `_active_age`, so a SLA measured across a pause does
+        not fire the instant the fleet wakes up.
         """
         updated_at = task.get("updated_at") or task.get("created_at")
         if not updated_at:
@@ -17585,7 +17688,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             parsed = datetime.fromisoformat(updated_at)
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=UTC)
-            return datetime.now(UTC) - parsed
+            return self._active_age(parsed)
         except (ValueError, TypeError):
             return None
 
@@ -17628,7 +17731,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             )
 
     def _get_task_age(self, task: dict[str, Any]) -> timedelta | None:
-        """Parse task created_at and return age, or None if unparseable."""
+        """Parse task created_at and return its active-time age (fleet
+        downtime discounted via `_active_age`), or None if unparseable."""
         created_at_str = task.get("created_at")
         if not created_at_str:
             return None
@@ -17638,7 +17742,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             created_at = datetime.fromisoformat(created_at_str)
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=UTC)
-            return datetime.now(UTC) - created_at
+            return self._active_age(created_at)
         except (ValueError, TypeError):
             return None
 

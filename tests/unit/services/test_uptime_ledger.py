@@ -16,12 +16,31 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from roboco.services.uptime import DowntimeWindow, UptimeLedger, windows_from_heartbeats
+from roboco.services import uptime as uptime_module
+from roboco.services.uptime import (
+    DowntimeWindow,
+    UptimeLedger,
+    clip_running,
+    mark_process_running,
+    windows_from_heartbeats,
+)
 
 _INTERVAL = 300  # seconds, mirrors AgentOrchestrator._DISPATCH_HEARTBEAT_SECONDS
 _T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
 _TWO_WINDOWS = 2
 _ONE_HOUR_SECONDS = 3600.0
+
+
+@pytest.fixture(autouse=True)
+def _reset_running_marker() -> Any:
+    """Isolate the running-since marker and the clip-warning throttle between
+    tests - both live on `uptime._state` and are mutated by
+    `mark_process_running` / `clip_running`."""
+    uptime_module._reset_process_marker()
+    uptime_module._state.last_clip_warning_at = None
+    yield
+    uptime_module._reset_process_marker()
+    uptime_module._state.last_clip_warning_at = None
 
 
 def _rows(*offsets_and_paused: tuple[int, bool]) -> list[tuple[datetime, bool]]:
@@ -199,15 +218,16 @@ def test_no_rows_short_range_yields_no_windows() -> None:
     assert windows == []
 
 
-def test_no_rows_long_range_yields_whole_range_down() -> None:
+def test_no_rows_yields_no_windows_even_over_a_long_range() -> None:
+    """No heartbeat history is no evidence of downtime: wall clock applies."""
     since = _T0
-    until = _T0 + timedelta(hours=1)
+    until = _T0 + timedelta(days=7)
 
     windows = windows_from_heartbeats(
         [], since=since, until=until, interval_seconds=_INTERVAL
     )
 
-    assert windows == [DowntimeWindow(since, until, "down")]
+    assert windows == []
 
 
 def test_naive_datetimes_are_accepted_as_utc() -> None:
@@ -308,3 +328,165 @@ async def test_load_reads_dispatch_paused_flag_from_details() -> None:
     ledger = await UptimeLedger.load(session, since=since, until=until)
 
     assert ledger.downtime(since, until) == timedelta(seconds=_INTERVAL)
+
+
+# ---------------------------------------------------------------------------
+# clip_running: this process knows it is alive, so a heartbeat gap AFTER it
+# started running is a broken audit write, never real downtime.
+# ---------------------------------------------------------------------------
+
+
+def test_clip_running_none_running_since_is_a_no_op() -> None:
+    window = DowntimeWindow(_T0, _T0 + timedelta(hours=1), "down")
+
+    assert clip_running([window], None) == [window]
+
+
+def test_clip_running_drops_a_trailing_down_window_after_running_since() -> None:
+    running_since = _T0 + timedelta(hours=1)
+    window = DowntimeWindow(
+        running_since + timedelta(minutes=5),
+        running_since + timedelta(minutes=20),
+        "down",
+    )
+
+    assert clip_running([window], running_since) == []
+
+
+def test_clip_running_clips_a_window_straddling_running_since() -> None:
+    running_since = _T0 + timedelta(hours=1)
+    window = DowntimeWindow(
+        running_since - timedelta(minutes=10),
+        running_since + timedelta(minutes=10),
+        "down",
+    )
+
+    assert clip_running([window], running_since) == [
+        DowntimeWindow(window.start, running_since, "down")
+    ]
+
+
+def test_clip_running_boot_seam_clip_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The running mark lands a moment before the boot heartbeat row, so the
+    pre-boot outage window overshoots the mark by seconds: clipped, no
+    warning (that is the normal boot seam, not a broken audit write)."""
+    running_since = _T0 + timedelta(hours=1)
+    window = DowntimeWindow(
+        running_since - timedelta(minutes=10),
+        running_since + timedelta(seconds=5),
+        "down",
+    )
+    logged: list[Any] = []
+    monkeypatch.setattr(
+        uptime_module.logger, "warning", lambda *a, **k: logged.append((a, k))
+    )
+
+    assert clip_running([window], running_since) == [
+        DowntimeWindow(window.start, running_since, "down")
+    ]
+    assert logged == []
+
+
+def test_clip_running_leaves_paused_and_pre_boot_down_windows_alone() -> None:
+    running_since = _T0 + timedelta(hours=1)
+    paused = DowntimeWindow(
+        running_since + timedelta(minutes=5),
+        running_since + timedelta(minutes=20),
+        "paused",
+    )
+    pre_boot_down = DowntimeWindow(_T0, running_since - timedelta(minutes=30), "down")
+
+    assert clip_running([paused, pre_boot_down], running_since) == [
+        paused,
+        pre_boot_down,
+    ]
+
+
+def test_clip_running_warning_throttled_within_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    running_since = _T0 + timedelta(hours=1)
+    window = DowntimeWindow(
+        running_since - timedelta(minutes=10),
+        running_since + timedelta(minutes=10),
+        "down",
+    )
+    logged: list[Any] = []
+    monkeypatch.setattr(
+        uptime_module.logger, "warning", lambda *a, **k: logged.append((a, k))
+    )
+
+    clip_running([window], running_since)
+    clip_running([window], running_since)
+
+    assert len(logged) == 1
+
+
+def test_clip_running_warning_fires_again_after_throttle_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    running_since = _T0 + timedelta(hours=1)
+    window = DowntimeWindow(
+        running_since - timedelta(minutes=10),
+        running_since + timedelta(minutes=10),
+        "down",
+    )
+    logged: list[Any] = []
+    monkeypatch.setattr(
+        uptime_module.logger, "warning", lambda *a, **k: logged.append((a, k))
+    )
+
+    clip_running([window], running_since)
+    monkeypatch.setattr(
+        uptime_module._state,
+        "last_clip_warning_at",
+        datetime.now(UTC)
+        - timedelta(seconds=uptime_module._CLIP_WARNING_THROTTLE_SECONDS + 1),
+    )
+    clip_running([window], running_since)
+
+    assert len(logged) == _TWO_WINDOWS
+
+
+# ---------------------------------------------------------------------------
+# UptimeLedger.load + running_since: a broken audit write while this process
+# is known to be running must never collapse active_elapsed to ~0.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_load_heartbeats_stop_with_running_since_clips_the_post_boot_gap() -> (
+    None
+):
+    """One heartbeat at the start, then silence, but the process marked
+    itself running partway through the range: the post-boot part is a
+    broken audit write (no windows), the pre-boot gap is still downtime."""
+    since = _T0
+    running_since = _T0 + timedelta(hours=5)
+    until = running_since + timedelta(hours=1)
+    session, _recorder = _fake_session([(since, {})])
+
+    ledger = await UptimeLedger.load(
+        session, since=since, until=until, running_since=running_since
+    )
+
+    assert ledger.downtime_windows(since, running_since) == [
+        DowntimeWindow(since + timedelta(seconds=_INTERVAL), running_since, "down")
+    ]
+    assert ledger.downtime_windows(running_since, until) == []
+    assert ledger.active_elapsed(running_since, until) == timedelta(hours=1)
+
+
+@pytest.mark.asyncio
+async def test_load_picks_up_process_running_since_by_default() -> None:
+    since = _T0
+    running_since = _T0 + timedelta(hours=5)
+    until = running_since + timedelta(hours=1)
+    mark_process_running(running_since)
+    session, _recorder = _fake_session([(since, {})])
+
+    ledger = await UptimeLedger.load(session, since=since, until=until)
+
+    assert ledger.downtime_windows(running_since, until) == []

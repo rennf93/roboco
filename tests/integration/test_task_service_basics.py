@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,6 +19,7 @@ from roboco.db.tables import AgentTable, AuditLogTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     Complexity,
+    StalledReason,
     TaskNature,
     TaskStatus,
     TaskType,
@@ -782,6 +784,14 @@ async def test_list_long_running_blocked_staleness_still_wins_priority_dropped(
     high_pri_newer.created_at = now - timedelta(days=1)
     low_pri_older.updated_at = same_staleness
     low_pri_older.created_at = now - timedelta(days=2)
+    # list_long_running_blocked self-loads an uptime ledger when it has a
+    # candidate to score; a fresh heartbeat here says the fleet is currently
+    # up, so active time reduces to the wall-clock staleness this test is
+    # actually about (an empty audit_log over the lookback would otherwise
+    # read as one long outage and zero out active_elapsed for every row).
+    db_session.add(
+        AuditLogTable(event_type="dispatcher.alive", details={"dispatch_paused": False})
+    )
     await db_session.flush()
 
     rows = await svc.list_long_running_blocked()
@@ -789,6 +799,66 @@ async def test_list_long_running_blocked_staleness_still_wins_priority_dropped(
     assert ids.index(low_pri_older.id) < ids.index(high_pri_newer.id), (
         "equal staleness must tiebreak by created_at, not priority"
     )
+
+
+class _FakeLedger:
+    """Reports a fixed `active_elapsed`/`active_seconds` for any start/end -
+    a stand-in for a real `UptimeLedger` carrying a known downtime window."""
+
+    def __init__(self, active: timedelta) -> None:
+        self._active = active
+
+    def active_elapsed(self, start: datetime, end: datetime | None = None) -> timedelta:
+        del start, end
+        return self._active
+
+    def active_seconds(self, start: datetime, end: datetime | None = None) -> float:
+        return self.active_elapsed(start, end).total_seconds()
+
+
+@pytest.mark.asyncio
+async def test_list_long_running_blocked_excludes_row_young_by_active_time(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A row blocked 2h ago by wall clock (past the default 30-minute
+    threshold) but only 5 minutes old in active time per an explicit ledger
+    (a long CEO pause in between) must be excluded."""
+    svc = task_setup["svc"]
+    blocked = await svc.create(
+        _req(task_setup, title="blocked-young-active", status=TaskStatus.BLOCKED)
+    )
+    blocked.updated_at = datetime.now(UTC) - timedelta(hours=2)
+    await db_session.flush()
+
+    rows = await svc.list_long_running_blocked(
+        ledger=cast("Any", _FakeLedger(timedelta(minutes=5)))
+    )
+
+    assert blocked.id not in {t.id for t in rows}
+
+
+@pytest.mark.asyncio
+async def test_list_stalled_tasks_stalled_seconds_honours_ledger(
+    task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stalled_seconds` reports the ledger's active time, not raw wall-clock
+    elapsed, when a self-loaded ledger is available."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup, title="stalled-task"))
+    await svc.mark_stalled(task.id, reason=StalledReason.BREAKER_TRIPPED.value)
+    task.stalled_since = datetime.now(UTC) - timedelta(hours=3)
+    await db_session.flush()
+
+    monkeypatch.setattr(
+        svc,
+        "_load_uptime_ledger",
+        AsyncMock(return_value=_FakeLedger(timedelta(minutes=20))),
+    )
+
+    entries = await svc.list_stalled_tasks()
+
+    ours = next(e for e in entries if e.task_id == task.id)
+    assert ours.stalled_seconds == timedelta(minutes=20).total_seconds()
 
 
 @pytest.mark.asyncio

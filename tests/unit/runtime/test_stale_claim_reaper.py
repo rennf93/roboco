@@ -14,6 +14,7 @@ even though it would silently work against an in-memory mock.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -21,6 +22,46 @@ import pytest
 from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import AgentOrchestrator, AgentState
 from roboco.seeds.initial_data import AGENT_UUIDS
+
+
+class _FakeLedger:
+    """Reports a fixed `active_elapsed` for any start/end - a stand-in for a
+    real `UptimeLedger` carrying a known downtime window."""
+
+    def __init__(self, active_elapsed: timedelta) -> None:
+        self._active_elapsed = active_elapsed
+
+    def active_elapsed(self, start: datetime, end: datetime | None = None) -> timedelta:
+        del start, end
+        return self._active_elapsed
+
+
+@pytest.mark.asyncio
+async def test_reap_spares_claim_stale_by_wall_clock_but_active_time_under_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A heartbeat 600s old by wall clock reads as only 60s old in active
+    time (a long CEO pause in between) - under the 300s TTL, so the claim
+    must survive even though the wall-clock age would trip the reaper."""
+    now = datetime.now(UTC)
+    task_id = uuid4()
+    task = type(
+        "T", (), {"id": task_id, "last_heartbeat_at": now - timedelta(seconds=600)}
+    )()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(
+        orch, "_maybe_recover_broken_gateway", AsyncMock(return_value=False)
+    )
+    orch._claim_heartbeat_ttl = 300
+    orch._uptime = cast("Any", _FakeLedger(timedelta(seconds=60)))
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [task]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    svc.unclaim_for_reaper.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -214,6 +255,48 @@ async def test_reaper_kills_and_releases_wedged_grok_container(
 
 
 @pytest.mark.asyncio
+async def test_reaper_spares_wedged_grok_young_by_active_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same 1200s-old heartbeat as above reads as only 500s old in
+    active time (a CEO pause) - under the 900s grok kill TTL (but still past
+    the 300s claim TTL, so the reap check still considers it a candidate),
+    so the wedged-grok kill must NOT fire."""
+    now = datetime.now(UTC)
+    task_id = uuid4()
+    wedged = type(
+        "T",
+        (),
+        {
+            "id": task_id,
+            "last_heartbeat_at": now - timedelta(seconds=1200),
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(
+        orch, "_maybe_recover_broken_gateway", AsyncMock(return_value=False)
+    )
+    orch._claim_heartbeat_ttl = 300
+    orch._grok_idle_kill_ttl = 900
+    orch._uptime = cast("Any", _FakeLedger(timedelta(seconds=500)))
+    orch._instances = {"be-dev-1": _grok_instance()}
+    remove_mock = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove_mock)
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [wedged]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    remove_mock.assert_not_awaited()
+    assert "be-dev-1" in orch._instances
+    svc.unclaim_for_reaper.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reaper_spares_grok_container_within_kill_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -345,6 +428,53 @@ async def test_reaper_kills_stuck_claude_past_stuck_ttl(
     )
     assert "be-dev-1" not in orch._instances  # evicted
     svc.unclaim_for_reaper.assert_awaited_once_with(stuck.id)  # released
+
+
+@pytest.mark.asyncio
+async def test_reaper_spares_stuck_claude_young_by_active_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same 4000s-old heartbeat as above reads as only 500s old in
+    active time (a CEO pause) - under the 3600s claude-stuck TTL (but still
+    past the 300s claim TTL, so the reap check still considers it a
+    candidate), so the stuck-claude kill must NOT fire."""
+    now = datetime.now(UTC)
+    stuck = type(
+        "T",
+        (),
+        {
+            "id": uuid4(),
+            "last_heartbeat_at": now - timedelta(seconds=4000),
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+    claude_cfg = type("C", (), {"provider_type": "anthropic"})()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(
+        orch, "_maybe_recover_broken_gateway", AsyncMock(return_value=False)
+    )
+    orch._claim_heartbeat_ttl = 300
+    orch._grok_idle_kill_ttl = 900
+    orch._claude_stuck_kill_ttl = 3600
+    orch._uptime = cast("Any", _FakeLedger(timedelta(seconds=500)))
+    orch._instances = {
+        "be-dev-1": AgentInstance(
+            agent_id="be-dev-1", state=AgentState.ACTIVE, config=claude_cfg
+        )
+    }
+    remove_mock = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove_mock)
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [stuck]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    remove_mock.assert_not_awaited()
+    assert "be-dev-1" in orch._instances
+    svc.unclaim_for_reaper.assert_not_awaited()
 
 
 def test_stuck_claude_slug_excludes_grok_and_non_active() -> None:

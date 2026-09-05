@@ -78,6 +78,7 @@ from roboco.services.base import (
 )
 from roboco.services.content_notes import apply_structured_note
 from roboco.services.repositories.review_findings import ReviewFindingsRepository
+from roboco.services.uptime import UptimeLedger
 from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
 
@@ -3767,6 +3768,21 @@ class TaskService(BaseService):
             .values(stalled_reason=None, stalled_since=None)
         )
 
+    async def _load_uptime_ledger(self, now: datetime) -> UptimeLedger | None:
+        """Best-effort ledger load for a caller that didn't already have one.
+
+        ``None`` (fail open to wall clock) on any failure, since a broken or
+        missing audit trail must never turn a normal list/read call into an
+        error.
+        """
+        try:
+            return await UptimeLedger.load(self.session, since=now - timedelta(days=7))
+        except Exception as exc:
+            self.log.warning(
+                "Uptime ledger load failed; using wall clock", error=str(exc)
+            )
+            return None
+
     async def list_stalled_tasks(self) -> list[StalledTaskEntry]:
         """The current stalled set: every task with a durable stalled marker.
 
@@ -3781,6 +3797,13 @@ class TaskService(BaseService):
         filter keeps a terminal task out of the list even if some future path
         sets terminal status without going through that chokepoint. Mirrors
         the terminal-status pair ``_is_terminal_task`` checks.
+
+        ``stalled_seconds`` is active time (fleet downtime discounted) via a
+        self-loaded uptime ledger, since a task stalled right before a long
+        CEO pause hasn't actually sat stalled that whole wall-clock stretch. The
+        ledger is only loaded when there's at least one row to score, and a
+        load failure falls back to plain wall-clock elapsed (today's
+        behaviour).
         """
         result = await self.session.execute(
             select(
@@ -3799,15 +3822,23 @@ class TaskService(BaseService):
             )
             .order_by(TaskTable.stalled_since.asc())
         )
+        rows = result.all()
         now = datetime.now(UTC)
+        ledger = await self._load_uptime_ledger(now) if rows else None
         entries = []
-        for row in result.all():
+        for row in rows:
             stalled_since = row.stalled_since
             since_aware = (
                 stalled_since
                 if stalled_since is None or stalled_since.tzinfo is not None
                 else stalled_since.replace(tzinfo=UTC)
             )
+            if since_aware is None:
+                stalled_seconds = 0.0
+            elif ledger is not None:
+                stalled_seconds = ledger.active_seconds(since_aware, now)
+            else:
+                stalled_seconds = (now - since_aware).total_seconds()
             entries.append(
                 StalledTaskEntry(
                     task_id=row.id,
@@ -3819,9 +3850,7 @@ class TaskService(BaseService):
                     else row.status,
                     reason=row.stalled_reason,
                     stalled_since=since_aware,
-                    stalled_seconds=(now - since_aware).total_seconds()
-                    if since_aware
-                    else 0.0,
+                    stalled_seconds=stalled_seconds,
                 )
             )
         return entries
@@ -9423,7 +9452,7 @@ class TaskService(BaseService):
         return list(result.scalars().all())
 
     async def list_long_running_blocked(
-        self, *, threshold_minutes: int = 30
+        self, *, threshold_minutes: int = 30, ledger: UptimeLedger | None = None
     ) -> list[TaskTable]:
         """Tasks in 'blocked' state whose updated_at is older than threshold_minutes.
 
@@ -9431,8 +9460,17 @@ class TaskService(BaseService):
         updated_at ascending so the oldest blocker is at the head of the list.
         This is deliberately NOT fifo_order: staleness, not creation time, is
         the anomaly signal. Priority is still dropped from the tiebreak.
+
+        The SQL cutoff is a wall-clock superset; a task blocked right before
+        a long fleet pause hasn't actually sat blocked for
+        ``threshold_minutes`` of active time yet, so a ledger (the caller's
+        own ``ledger``, or one self-loaded here when there's a candidate to
+        score) drops those in Python afterward. No ledger available (self-
+        load failure, or none passed and none loadable) falls back to the
+        SQL result as-is (today's behaviour).
         """
-        cutoff = datetime.now(UTC) - timedelta(minutes=threshold_minutes)
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(minutes=threshold_minutes)
         query = (
             select(TaskTable)
             .where(
@@ -9447,7 +9485,20 @@ class TaskService(BaseService):
             )
         )
         result = await self.session.execute(query)
-        return list(result.scalars().all())
+        rows = list(result.scalars().all())
+        if not rows:
+            return rows
+        if ledger is None:
+            ledger = await self._load_uptime_ledger(now)
+        if ledger is None:
+            return rows
+        threshold = timedelta(minutes=threshold_minutes)
+        return [
+            t
+            for t in rows
+            if t.updated_at is not None
+            and ledger.active_elapsed(t.updated_at, now) >= threshold
+        ]
 
     async def add_dependency(self, task_id: UUID, depends_on_id: UUID) -> bool:
         """Append a dependency to a task WITHOUT changing its status.

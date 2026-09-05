@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 
+import structlog
 from sqlalchemy import select
 
 from roboco.db.tables import AuditLogTable
@@ -24,11 +25,55 @@ from roboco.db.tables import AuditLogTable
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+logger = structlog.get_logger()
+
 # Mirrors AgentOrchestrator._DISPATCH_HEARTBEAT_SECONDS. Not imported from
 # there: roboco.runtime.orchestrator is a ~19k-line module pulling in
 # docker/fastapi at import time, too heavy to load just for one int. Keep in
 # sync by hand; a shared constants module is the upgrade if they ever drift.
 _HEARTBEAT_SECONDS = 300
+
+
+# Mutable module state lives on one instance (attribute writes, not `global`
+# reassignment) - see mark_process_running / clip_running below.
+class _State:
+    """`running_since`: set once by the running process; a `dispatcher.alive`
+    gap AFTER this point is a broken audit write, not real downtime - only
+    this process's own heartbeat can go missing here, and it knows it is
+    alive. `last_clip_warning_at`: throttle for the warning `clip_running`
+    logs when it clips a window - a broken write path fails on every
+    `_refresh_uptime` tick (60s), so this keeps the warning to once per
+    outage instead of once a minute.
+    """
+
+    running_since: datetime | None = None
+    last_clip_warning_at: datetime | None = None
+
+
+_state = _State()
+_CLIP_WARNING_THROTTLE_SECONDS = 600
+
+
+def mark_process_running(at: datetime | None = None) -> None:
+    """Record that this process is running as of `at` (default: now).
+
+    Idempotent and monotonic backward: repeat calls only move the marker
+    earlier, never later, so the process's real start wins even if a later
+    caller passes an earlier `at`.
+    """
+    at = _as_utc(at) if at is not None else datetime.now(UTC)
+    if _state.running_since is None or at < _state.running_since:
+        _state.running_since = at
+
+
+def process_running_since() -> datetime | None:
+    """When this process marked itself running, or None if it never has."""
+    return _state.running_since
+
+
+def _reset_process_marker() -> None:
+    """Test-only: clear the running-since marker between test cases."""
+    _state.running_since = None
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -128,9 +173,9 @@ def windows_from_heartbeats(
     `since` is still visible) through `until`, ascending by timestamp. A gap
     over `2*interval` between consecutive rows is a "down" window; a row
     reporting `dispatch_paused=True` marks the interval since its previous
-    row as a "paused" window. No rows at all means either a fresh install
-    (short range: no windows, never assume downtime with nothing to compare
-    against) or a fully dead range (long range: the whole thing is "down").
+    row as a "paused" window. No rows at all is no evidence, never downtime:
+    a fresh install, a test database, or a process with no audit history
+    keeps plain wall-clock elapsed instead of muting every staleness check.
     """
     since = _as_utc(since)
     until = _as_utc(until)
@@ -138,14 +183,67 @@ def windows_from_heartbeats(
     normalized = [(_as_utc(ts), paused) for ts, paused in rows]
 
     if not normalized:
-        return (
-            [DowntimeWindow(since, until, "down")]
-            if until - since > 2 * interval
-            else []
-        )
+        return []
 
     windows = _raw_windows(normalized, until, interval)
     return _merge_same_kind(_clip_to_range(windows, since, until))
+
+
+def clip_running(
+    windows: list[DowntimeWindow], running_since: datetime | None
+) -> list[DowntimeWindow]:
+    """Clip `"down"` windows to end at `running_since`; drop ones entirely after it.
+
+    This process knows it is running: a `dispatcher.alive` gap AFTER
+    `running_since` is a broken audit write (the fire-and-forget insert
+    failed), never a real outage - only a gap that predates `running_since`
+    can be genuine downtime. `"paused"` windows are explicit flags off a
+    real heartbeat row and are never touched.
+    """
+    if running_since is None:
+        return windows
+    running_since = _as_utc(running_since)
+
+    # A clip shorter than one heartbeat interval is the normal boot seam
+    # (the running mark lands a moment before the boot heartbeat row), not
+    # a broken audit write, so it never warns.
+    tolerance = timedelta(seconds=_HEARTBEAT_SECONDS)
+    clipped: list[DowntimeWindow] = []
+    changed: list[DowntimeWindow] = []
+    for window in windows:
+        if window.kind != "down":
+            clipped.append(window)
+            continue
+        end = min(window.end, running_since)
+        if window.end - end > tolerance:
+            changed.append(window)
+        if end > window.start:
+            clipped.append(DowntimeWindow(window.start, end, window.kind))
+
+    if changed:
+        _warn_heartbeats_missing_while_running(changed, running_since)
+    return clipped
+
+
+def _warn_heartbeats_missing_while_running(
+    changed: list[DowntimeWindow], running_since: datetime
+) -> None:
+    """Throttled warning: a real outage never triggers this, only a broken
+    heartbeat write while the process is known to be alive."""
+    now = datetime.now(UTC)
+    last = _state.last_clip_warning_at
+    if (
+        last is not None
+        and (now - last).total_seconds() < _CLIP_WARNING_THROTTLE_SECONDS
+    ):
+        return
+    _state.last_clip_warning_at = now
+    logger.warning(
+        "dispatcher heartbeats missing while running; audit trail broken, not downtime",
+        running_since=running_since.isoformat(),
+        clipped_span_start=min(w.start for w in changed).isoformat(),
+        clipped_span_end=max(w.end for w in changed).isoformat(),
+    )
 
 
 class UptimeLedger:
@@ -164,10 +262,19 @@ class UptimeLedger:
         *,
         since: datetime,
         until: datetime | None = None,
+        running_since: datetime | None = None,
     ) -> UptimeLedger:
-        """Fetch `dispatcher.alive` rows and build the ledger's downtime windows."""
+        """Fetch `dispatcher.alive` rows and build the ledger's downtime windows.
+
+        `running_since` defaults to `process_running_since()`: this process
+        knows it is alive, so a heartbeat gap after that point is a broken
+        audit write, never downtime (see `clip_running`).
+        """
         since = _as_utc(since)
         until = _as_utc(until) if until is not None else datetime.now(UTC)
+        running_since = (
+            running_since if running_since is not None else process_running_since()
+        )
         interval = timedelta(seconds=cls.heartbeat_seconds)
 
         result = await session.execute(
@@ -184,6 +291,7 @@ class UptimeLedger:
         windows = windows_from_heartbeats(
             rows, since=since, until=until, interval_seconds=cls.heartbeat_seconds
         )
+        windows = clip_running(windows, running_since)
         return cls(windows, until)
 
     def downtime_windows(
