@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer (fastapi-guard 7.8.2 / guard-core 3.17.0).
+"""RoboCo HTTP security layer (fastapi-guard 8.0.0 / guard-core 4.0.0).
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:
@@ -53,7 +53,7 @@ logger = get_logger(__name__)
 # track_return_pattern call redis unguarded and raise GuardRedisError (not an
 # HTTPException) on a redis blip, so they fall through to roboco's generic
 # exception handler as a 500 instead of failing open like every pipeline check
-# does. Verified still required at guard-core 3.17.0 (redis_fail_open is
+# does. Verified still required at guard-core 4.0.0 (redis_fail_open is
 # still not consulted on either seam). Wrap all three seams here rather than
 # fork/vendor guard-core; the durable fix belongs upstream (route these calls
 # through the pipeline's own GuardRedisError / redis_fail_open handling).
@@ -272,7 +272,10 @@ async def internal_ssrf_validator(request: GuardRequest) -> GuardResponse | None
 # SecurityConfig
 # --------------------------------------------------------------------------
 
-# Tracing/observability headers that must never trip the signature WAF.
+# Tracing/observability headers passed to excluded_detection_headers. guard-core
+# 4.0 only skips the ssrf category, and only for its hardcoded address-header
+# names or an IP-shaped value - neither applies here, so this no longer exempts
+# these headers from the signature WAF at all.
 _TRACING_HEADERS = {
     "x-correlation-id",
     "x-request-id",
@@ -282,6 +285,30 @@ _TRACING_HEADERS = {
     "baggage",
     "sentry-trace",
 }
+
+# HMAC agent-mesh credential (see roboco.mcp.utils._get_agent_headers). Not in
+# guard-core's default log_sensitive_headers (authorization, proxy-
+# authorization, cookie, x-api-key), so a raw guard log/threat-event line
+# would otherwise carry it unredacted.
+_LOG_SENSITIVE_HEADERS: frozenset[str] = frozenset({"x-agent-token"})
+
+# Request-body field names that carry a secret but aren't in guard-core's
+# default log_sensitive_body_fields (access_token, refresh_token, api_key,
+# apikey, token, password, secret, client_secret, signature), matched by
+# exact lowercase key: X OAuth1 (api_secret, access_token_secret), TikTok
+# (client_key), Telegram (bot_token), GitHub App (private_key), self-hosted
+# Ollama (auth_token), project git auth (git_token).
+_LOG_SENSITIVE_BODY_FIELDS: frozenset[str] = frozenset(
+    {
+        "api_secret",
+        "access_token_secret",
+        "client_key",
+        "bot_token",
+        "private_key",
+        "auth_token",
+        "git_token",
+    }
+)
 
 # Paths the middleware must never touch: WS upgrades, health, API docs, the
 # A2A well-known discovery, and static.
@@ -461,7 +488,7 @@ _WAF_FREETEXT_BODY_FIELDS: set[str] = {
 }
 
 # Log-only 404-scan sweep detection (calibration signal, never bans).
-# pattern is "status:" (not a bare substring): guard-core 3.12.0 rejects a
+# pattern is "status:" (not a bare substring): guard-core 4.0.0 rejects a
 # body-based return_pattern rule at construction unless
 # behavior_scan_response_body=True. status: is validation-exempt and is the
 # form that actually matches a response's status code.
@@ -780,7 +807,7 @@ def _agent_kwargs() -> dict[str, Any]:
         "agent_enable_metrics": True,
         "agent_strict": False,
         "enable_dynamic_rules": True,
-        # Last-known rules snapshot (guard-core 3.17.0): redis first, this file
+        # Last-known rules snapshot (guard-core 4.0.0): redis first, this file
         # only when redis has nothing usable. Unset = redis only.
         "dynamic_rules_cache_path": settings.guard_dynamic_rules_cache_path or None,
         # HMAC/session material must never leave in a telemetry payload.
@@ -875,6 +902,9 @@ def build_security_config() -> SecurityConfig:
         enable_penetration_detection=True,
         excluded_detection_headers=_TRACING_HEADERS,
         excluded_detection_body_fields=_WAF_FREETEXT_BODY_FIELDS,
+        # Extends (not replaces) guard-core's default redaction set.
+        log_sensitive_headers=_LOG_SENSITIVE_HEADERS,
+        log_sensitive_body_fields=_LOG_SENSITIVE_BODY_FIELDS,
         # roboco keeps its own CORSMiddleware (single origin via nginx).
         enable_cors=False,
         **_agent_kwargs(),

@@ -792,7 +792,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 7.6.0 / guard-core 3.12.0), DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 8.0.0 / guard-core 4.0.0), DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
@@ -846,7 +846,7 @@ class Settings(BaseSettings):
         default="",
         description=(
             "Local JSON snapshot of the last-known dynamic rules (guard-core "
-            "3.17.0): a restart during a SaaS or redis outage restores the last "
+            "4.0.0): a restart during a SaaS or redis outage restores the last "
             "applied rules instead of base config. Redis is the primary store; "
             "this file is the fallback. Empty disables the file layer. "
             "Telemetry only."

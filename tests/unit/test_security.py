@@ -383,6 +383,39 @@ def test_whitelist_is_immutable_after_construction() -> None:
         _append(cfg.whitelist, "1.2.3.4")
 
 
+# --- log_sensitive_headers: guard log lines never carry the mesh HMAC token -
+
+
+def test_build_security_config_redacts_agent_token_in_guard_logs() -> None:
+    """guard-core 4.0's default redaction set (authorization, proxy-
+    authorization, cookie, x-api-key) does not cover roboco's own
+    X-Agent-Token, so it must be added rather than relied on by default."""
+    cfg = security.build_security_config()
+    assert "x-agent-token" in cfg.log_sensitive_headers
+
+
+# --- log_sensitive_body_fields: request-body secrets guard-core's default -
+# --- set misses never carry into guard logs -------------------------------
+
+
+def test_build_security_config_redacts_secret_body_fields_in_guard_logs() -> None:
+    """guard-core 4.0's default log_sensitive_body_fields (access_token,
+    refresh_token, api_key, apikey, token, password, secret, client_secret,
+    signature) misses several roboco request-body fields that carry real
+    credentials, so each must be added rather than relied on by default."""
+    cfg = security.build_security_config()
+    for field in (
+        "api_secret",
+        "access_token_secret",
+        "client_key",
+        "bot_token",
+        "private_key",
+        "auth_token",
+        "git_token",
+    ):
+        assert field in cfg.log_sensitive_body_fields
+
+
 # --- agent_sensitive_headers: telemetry payloads never carry auth material -
 
 
