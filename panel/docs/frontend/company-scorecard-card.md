@@ -19,19 +19,19 @@ Loading, error, and empty states are handled at the card level: `ScorecardSkelet
 
 Each card shows the objective label, the live metric value (or "No data yet"), and the target:
 
-| Position | Charter objective (`objectives[i].metric`)      | Target  | Metric field             | Format                              |
-| -------- | ----------------------------------------------- | ------- | ------------------------ | ----------------------------------- |
-| 0        | Tasks shipped to merge with no human code edits | `90%`   | `first_pass_yield`       | percentage, `(v * 100).toFixed(0)%` |
-| 1        | Median lead time, intake → merged               | `< 24h` | `median_lead_time_hours` | `{value.toFixed(1)}h`               |
-| 2        | Critical escaped defects per release            | `0`     | `escaped_defects`        | count, `${value}`                   |
+| Canonical key | Charter objective (matched by keyword against `objectives[].metric`) | Target | Metric field | Format |
+|---|---|---|---|---|
+| `first_pass_yield` | Tasks shipped to merge with no human code edits | `90%` | `first_pass_yield` | percentage, `(v * 100).toFixed(0)%` |
+| `median_lead_time` | Median lead time, intake → merged | `< 24h` | `median_lead_time_hours` | `{value.toFixed(1)}h` |
+| `escaped_defects` | Critical escaped defects per release | `0` | `escaped_defects` | count, `${value}` |
 
 The lead-time metric is the same value `SpeedSection` renders in the Speed section above — `ObjectivesSection` reads `data.delivery.median_lead_time_hours` a second time and presents it as an objective card alongside the other two. `SpeedSection` is intentionally kept as-is.
 
-### Positional-by-convention mapping
+### Derived-contract mapping
 
-The charter `objectives` field on `CockpitSummary` is `Record<string, unknown>[]` — free-form text from the Goals tab, each entry carrying `{metric, target, status}`. The three metrics above are hardcoded by contrast. The mapping is **positional by convention, not derived**: `objectives[i].metric` supplies the label for card `i`, and card `i` reads the `i`-th hardcoded metric. This holds only while the charter has exactly three objectives in the canonical order; editing the Goals tab can desync labels from metrics. The assumption is documented in a `ponytail:` code comment at the top of the `ObjectivesSection` block in `company-scorecard-card.tsx` — a stated assumption, not something discovered later.
+The charter `objectives` field on `CockpitSummary` is `Record<string, unknown>[]` — free-form text from the Goals tab, each entry carrying `{metric, target, status}`, with no id/slug the backend guarantees. The three metrics above are hardcoded by contrast. The mapping is **derived by content, not position**: each canonical metric key (`first_pass_yield` / `median_lead_time` / `escaped_defects`) is paired with the objective whose `metric` string matches a distinguishing keyword phrase (`CANONICAL_METRIC_PATTERNS` in `company-scorecard-card.tsx` — e.g. `/median lead time/i` for the lead-time card), so reordering objectives in the Goals tab or adding a fourth objective no longer desyncs a label by array position. This is a best-effort content match, not a guaranteed-unique key: an objective whose free-text wording happens to contain another canonical card's full matching phrase can still claim that card (this is what the earlier `/defect/i`-style single-word patterns hit — a "defect triage" objective and the "escaped defects" objective both matched, and `find()` returned whichever sorted first; the patterns were tightened to full phrases and a regression test covers this case, but the residual collision risk for an unanticipated future wording is not eliminated in principle).
 
-`objectiveLabel(objectives, index)` returns `objectives[index].metric` when it is a non-empty string, falling back to `OBJECTIVE_FALLBACK_LABELS[index]` (the three canonical labels above) when the array is empty or shorter than three. A fabricated label is never rendered.
+`objectiveLabel(objectives, key)` scans `objectives` for the first entry whose `metric` matches that key's pattern and returns its text, falling back to `OBJECTIVE_FALLBACK_LABELS[key]` (the three canonical labels above) when no objective matches or the array is empty. A fabricated label is never rendered.
 
 ### "No data yet" fallback
 
@@ -80,10 +80,12 @@ CompanyScorecardCard
 
 `panel/src/components/business/__tests__/company-scorecard-card.test.tsx` covers the Objectives section:
 
-- Three objective cards render with their target values when all metrics are present (labels from `objectives[i].metric`, values formatted as `92%` / `18.7h` / `0`, targets `90%` / `< 24h` / `0`).
-- A backend-shaped delivery fixture (metrics nested under `delivery`) renders live values (`18.7h`, `92%`, `0`) and no "No data yet".
-- A missing `first_pass_yield` (null) and `escaped_defects` (undefined) each render "No data yet" — two fallbacks — while a present `median_lead_time_hours` still shows its value; with all three metrics absent from `delivery` entirely, all four metric cards fall back.
+- Three objective cards render with their target values when all metrics are present (labels matched by keyword from `objectives[].metric`, values formatted as `92%` / `18.7h` / `0`, targets `90%` / `< 24h` / `0`).
+- A missing `first_pass_yield` (null) and `escaped_defects` (undefined) each render "No data yet" — two fallbacks — while a present `median_lead_time_hours` still shows its value.
 - The fake "Revenue growth" / "Customer retention" / "Not tracked yet" stub labels do not appear in any render path.
+- Reversing the order of the three `objectives` entries still pairs each metric with its correct label (content match, not array position).
+- A fourth objective whose wording shares a keyword with a canonical pattern (e.g. "Defect triage response time" alongside "Critical escaped defects per release") does not steal that card's label — the regression test for the collision case above.
+- An empty `objectives` array still renders the three canonical fallback labels, never a fabricated one.
 
 The `buildSummary` test helper mirrors the backend wire shape (`roboco/api/schemas/cockpit.py`): the three metrics live inside its `delivery` object, `null` by default via `buildDelivery`.
 

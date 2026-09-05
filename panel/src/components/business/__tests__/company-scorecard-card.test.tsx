@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import type { CockpitSummary } from "@/lib/api/cockpit";
 
 // ---------------------------------------------------------------------------
@@ -444,5 +444,142 @@ describe("CompanyScorecardCard", () => {
     expect(screen.queryByText("Revenue growth")).not.toBeInTheDocument();
     expect(screen.queryByText("Customer retention")).not.toBeInTheDocument();
     expect(screen.queryByText("Not tracked yet")).not.toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Derived-contract pairing: content match, not array position
+  // -------------------------------------------------------------------------
+
+  it("pairs each metric with its correct label regardless of objectives order", () => {
+    setQueryState({
+      data: buildSummary({
+        delivery: buildDelivery({
+          first_pass_yield: 0.92,
+          median_lead_time_hours: 18.7,
+          escaped_defects: 3,
+        }),
+        // Reversed relative to the canonical [yield, lead-time, defects] order.
+        objectives: [
+          {
+            metric: "Critical escaped defects per release",
+            target: "0",
+            status: "Active",
+          },
+          {
+            metric: "Median lead time, intake → merged",
+            target: "< 24h",
+            status: "Active",
+          },
+          {
+            metric: "Tasks shipped to merge with no human code edits",
+            target: "90%",
+            status: "Active",
+          },
+        ],
+      }),
+    });
+
+    render(<CompanyScorecardCard />);
+
+    const yieldCard = screen
+      .getByText("Tasks shipped to merge with no human code edits")
+      .closest('[data-testid="objective-card"]') as HTMLElement;
+    expect(within(yieldCard).getByText("92%")).toBeInTheDocument();
+
+    const leadTimeCard = screen
+      .getByText("Median lead time, intake → merged")
+      .closest('[data-testid="objective-card"]') as HTMLElement;
+    expect(within(leadTimeCard).getByText("18.7h")).toBeInTheDocument();
+
+    const defectsCard = screen
+      .getByText("Critical escaped defects per release")
+      .closest('[data-testid="objective-card"]') as HTMLElement;
+    expect(within(defectsCard).getByText("3")).toBeInTheDocument();
+  });
+
+  it("does not let a keyword-colliding fourth objective steal another card's label", () => {
+    setQueryState({
+      data: buildSummary({
+        delivery: buildDelivery({
+          first_pass_yield: 0.92,
+          median_lead_time_hours: 18.7,
+          escaped_defects: 3,
+        }),
+        objectives: [
+          {
+            metric: "Tasks shipped to merge with no human code edits",
+            target: "90%",
+            status: "Active",
+          },
+          // Shares the word "defect" with the escaped-defects canonical
+          // text and sorts before it — the exact keyword-collision case
+          // that used to make find() return this entry for the
+          // escaped-defects card instead of its own.
+          {
+            metric: "Defect triage response time",
+            target: "< 4h",
+            status: "Active",
+          },
+          {
+            metric: "Median lead time, intake → merged",
+            target: "< 24h",
+            status: "Active",
+          },
+          {
+            metric: "Critical escaped defects per release",
+            target: "0",
+            status: "Active",
+          },
+        ],
+      }),
+    });
+
+    render(<CompanyScorecardCard />);
+
+    // All three canonical metrics still render exactly once, correctly paired.
+    const yieldCard = screen
+      .getByText("Tasks shipped to merge with no human code edits")
+      .closest('[data-testid="objective-card"]') as HTMLElement;
+    expect(within(yieldCard).getByText("92%")).toBeInTheDocument();
+
+    const leadTimeCard = screen
+      .getByText("Median lead time, intake → merged")
+      .closest('[data-testid="objective-card"]') as HTMLElement;
+    expect(within(leadTimeCard).getByText("18.7h")).toBeInTheDocument();
+
+    const defectsCard = screen
+      .getByText("Critical escaped defects per release")
+      .closest('[data-testid="objective-card"]') as HTMLElement;
+    expect(within(defectsCard).getByText("3")).toBeInTheDocument();
+
+    // The keyword-colliding fourth objective is never surfaced as a card label.
+    expect(
+      screen.queryByText("Defect triage response time"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the three canonical fallback labels, never fabricated ones, when objectives is empty", () => {
+    setQueryState({
+      data: buildSummary({
+        delivery: buildDelivery({
+          first_pass_yield: 0.5,
+          median_lead_time_hours: 10,
+          escaped_defects: 1,
+        }),
+        objectives: [],
+      }),
+    });
+
+    render(<CompanyScorecardCard />);
+
+    expect(
+      screen.getByText("Tasks shipped to merge with no human code edits"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Median lead time, intake → merged"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Critical escaped defects per release"),
+    ).toBeInTheDocument();
   });
 });
