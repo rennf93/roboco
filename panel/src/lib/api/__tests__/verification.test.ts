@@ -51,23 +51,33 @@ describe("parseAcVerificationStamps", () => {
     expect(stamps).toEqual([
       {
         criterion: "Hooks live in panel/src/hooks",
+        matched: true,
         verified: true,
+        unresolved: false,
         evidence: "use-verification.ts:12",
       },
       {
         criterion: "No JSX in hook files",
+        matched: true,
         verified: true,
+        unresolved: false,
         evidence: "grepped, zero JSX found",
       },
-      { criterion: "Unrelated criterion", verified: false, evidence: null },
+      {
+        criterion: "Unrelated criterion",
+        matched: false,
+        verified: false,
+        unresolved: false,
+        evidence: null,
+      },
     ]);
   });
 
   it("marks every criterion unverified when qa_notes is null", () => {
     const stamps = parseAcVerificationStamps(["A", "B"], null);
     expect(stamps).toEqual([
-      { criterion: "A", verified: false, evidence: null },
-      { criterion: "B", verified: false, evidence: null },
+      { criterion: "A", matched: false, verified: false, unresolved: false, evidence: null },
+      { criterion: "B", matched: false, verified: false, unresolved: false, evidence: null },
     ]);
   });
 
@@ -77,7 +87,28 @@ describe("parseAcVerificationStamps", () => {
       "[AC] A — verified: yep";
     const stamps = parseAcVerificationStamps(["A"], qaNotes);
     expect(stamps).toEqual([
-      { criterion: "A", verified: true, evidence: "yep" },
+      { criterion: "A", matched: true, verified: true, unresolved: false, evidence: "yep" },
+    ]);
+  });
+
+  it("marks an unmatched criterion unresolved (not confidently unverified) when qa_notes carries an id-stamped [AC] line that matches no criterion text", () => {
+    // Simulates QA passing a stable id as `criterion` to pass_review instead
+    // of the exact text — the id renders verbatim as the stamp's label,
+    // which cannot match any of this task's criterion strings.
+    const qaNotes =
+      "[AC] 3f9c2b7a-8e1d-4a5f-9c0b-1a2b3c4d5e6f — verified: matched by id";
+    const stamps = parseAcVerificationStamps(
+      ["The only criterion on this task"],
+      qaNotes,
+    );
+    expect(stamps).toEqual([
+      {
+        criterion: "The only criterion on this task",
+        matched: false,
+        verified: false,
+        unresolved: true,
+        evidence: null,
+      },
     ]);
   });
 });
@@ -158,17 +189,27 @@ describe("buildReviewerChain", () => {
 });
 
 describe("PR_CI_VERDICT_UNAVAILABLE", () => {
-  it("always reports unavailable with an escalation reason (no-CI-repo case)", () => {
+  it("reports unavailable with a short reader-facing reason distinct from the technical escalation detail", () => {
     expect(PR_CI_VERDICT_UNAVAILABLE.available).toBe(false);
     expect(PR_CI_VERDICT_UNAVAILABLE.reason.length).toBeGreaterThan(0);
+    expect(PR_CI_VERDICT_UNAVAILABLE.reason).not.toMatch(/endpoint|escalate/i);
+    expect(PR_CI_VERDICT_UNAVAILABLE.technicalDetail).toMatch(
+      /endpoint|escalate/i,
+    );
   });
 });
 
 describe("RELEASE_MEMBER_TASK_IDS_UNAVAILABLE", () => {
-  it("always reports unavailable with an escalation reason (no member-task endpoint)", () => {
+  it("reports unavailable with a short reader-facing reason distinct from the technical escalation detail", () => {
     expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.available).toBe(false);
     expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason.length).toBeGreaterThan(
       0,
+    );
+    expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason).not.toMatch(
+      /endpoint|escalate/i,
+    );
+    expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.technicalDetail).toMatch(
+      /endpoint|escalate/i,
     );
   });
 });

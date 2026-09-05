@@ -139,7 +139,7 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
     render(withPageRefresh(<ReleaseProposalCard />));
     expect(screen.getByText("Verification rollup")).toBeInTheDocument();
     expect(
-      screen.getByText(/exposes this release's member task set/i),
+      screen.getByText(/verification isn't available for this release/i),
     ).toBeInTheDocument();
   });
 });

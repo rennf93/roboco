@@ -8,7 +8,7 @@
 import { Badge } from "@/components/ui/badge";
 import { HelpTip } from "@/components/ui/help-tip";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle2, HelpCircle, XCircle } from "lucide-react";
 import type {
   AcVerificationStamp,
   PrCiVerdict,
@@ -66,6 +66,14 @@ export function AcVerificationList({
         <li key={i} className="flex items-start gap-2 py-2">
           {stamp.verified ? (
             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
+          ) : stamp.unresolved ? (
+            <HelpTip label="qa_notes has a verification stamp this panel can't match to a criterion by exact text — QA may have verified this one by its stable id (acceptance_criteria_ids isn't on the wire response yet)">
+              <HelpCircle
+                role="img"
+                aria-label="Possibly verified by id — unresolved"
+                className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400"
+              />
+            </HelpTip>
           ) : (
             <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           )}
@@ -191,28 +199,38 @@ export function ReviewerChainList({
   if (!data || data.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        No review rounds recorded yet.
+        No review rounds recorded yet. Only rounds that recorded findings
+        appear here — a round that passed clean has no entry.
       </p>
     );
   }
   return (
-    <ul className="divide-y divide-border text-sm tabular-nums">
-      {data.map((entry) => (
-        <li key={entry.round} className="flex flex-wrap items-center gap-2 py-1.5">
-          <span className="text-xs text-muted-foreground">
-            Round {entry.round}
-          </span>
-          <Badge variant="outline">
-            {ORIGIN_LABEL[entry.origin] ?? entry.origin}
-          </Badge>
-          {entry.author_slug && <span>{entry.author_slug}</span>}
-          <HelpTip label="No endpoint exposes which model an agent ran on for a given review round">
+    <div className="space-y-1.5">
+      <p className="text-xs text-muted-foreground">
+        Only rounds that recorded findings appear here — a round that passed
+        clean has no entry.
+      </p>
+      <ul className="divide-y divide-border text-sm tabular-nums">
+        {data.map((entry) => (
+          <li
+            key={entry.round}
+            className="flex flex-wrap items-center gap-2 py-1.5"
+          >
             <span className="text-xs text-muted-foreground">
-              model: {entry.model ?? "unknown"}
+              Round {entry.round}
             </span>
-          </HelpTip>
-        </li>
-      ))}
-    </ul>
+            <Badge variant="outline">
+              {ORIGIN_LABEL[entry.origin] ?? entry.origin}
+            </Badge>
+            {entry.author_slug && <span>{entry.author_slug}</span>}
+            <HelpTip label="No endpoint exposes which model an agent ran on for a given review round">
+              <span className="text-xs text-muted-foreground">
+                model: {entry.model ?? "unknown"}
+              </span>
+            </HelpTip>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
