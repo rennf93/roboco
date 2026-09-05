@@ -1,6 +1,6 @@
 # Frontend Hooks Reference
 
-This document covers the reusable React hooks exported from `@/hooks` (principally `panel/src/hooks/use-websocket.ts`), with emphasis on the WebSocket message stream patterns and reconnect handling.
+This document covers the reusable React hooks exported from `@/hooks` (principally `panel/src/hooks/use-websocket.ts`), with emphasis on the WebSocket message stream patterns and reconnect handling. It also covers the verification-receipt data layer (`panel/src/hooks/use-verification.ts`) — see the dedicated section below.
 
 ## Overview
 
@@ -424,9 +424,103 @@ On a reconnect transition (`reconnecting` → `connected`), hooks like `useNotif
 
 ---
 
+## Verification receipt data layer
+
+Shared client + hooks powering the task-detail Verification tab and the release-proposal rollup — the one-screen trust story an approver reads before merging (per-AC QA verification, findings by round, PR CI verdict, conventions findings, reviewer chain). This is a **data layer only**: no components live here, and every hook rides an endpoint the panel already calls elsewhere. No new backend endpoint was introduced building it.
+
+- Typed helpers: `panel/src/lib/api/verification.ts` (pure functions + types, no fetching).
+- Hooks: `panel/src/hooks/use-verification.ts` (data fetching, exported from `@/hooks`; zero JSX).
+
+### `useAcVerificationStamps(taskId)`
+
+Per-acceptance-criterion verification state, parsed client-side from `qa_notes`. Rides the same `useTask(taskId)` cache entry the rest of task-detail already fetches — no dedicated endpoint or extra request.
+
+```typescript
+{
+  data: AcVerificationStamp[] | undefined;  // { criterion, verified, evidence } per AC
+  isLoading: boolean;
+}
+```
+
+`pass_review` stamps a deterministic `"[AC] <criterion> — verified: <evidence>"` line into `qa_notes` per criterion (`roboco/services/gateway/choreographer/qa.py`, `_render_criteria_verified`). `parseAcVerificationStamps` (the pure function backing this hook, in `verification.ts`) parses those lines back out and matches them against `task.acceptance_criteria` **by exact criterion text only** — `criteria_verified` also accepts a criterion by its stable id (`acceptance_criteria_ids`), but that column isn't present on `TaskResponse` / `GET /tasks/{id}`, so an id-stamped criterion reads as unverified here even when QA did verify it. Widening this needs `acceptance_criteria_ids` added to the wire response — a real backend change, out of this task's scope, and flagged in the dev's PR risk notes to fe-pm as a possible follow-up.
+
+### `useFindingsByRound(taskId)`
+
+Findings grouped by review round, each retaining its own severity and `open`/`addressed`/`verified`/`waived` status. **Reuses the exact same `useTaskFindings(taskId)` query** the panel's existing Findings tab (`tab-findings.tsx`) already runs — this hook does not introduce a new query path, it just re-shapes the same response for the two verification-receipt consumers.
+
+```typescript
+{
+  data: ReviewRoundFindings[] | undefined;  // [{ round, origin, findings: TaskFinding[] }, ...]
+  isLoading: boolean;
+}
+```
+
+Grouping assumes findings arrive newest-round-first with same-round rows contiguous (the ledger's natural order) — `groupFindingsByRound` buckets consecutive same-round findings without re-sorting.
+
+### `useReviewerChain(taskId)`
+
+The round-by-round reviewer chain (which role reviewed, on which model), derived from the same findings ledger `useFindingsByRound` reads (`useTaskFindings`) — again, no new query.
+
+```typescript
+{
+  data: ReviewerChainEntry[] | undefined;  // { round, origin, author_slug, model: null }
+  isLoading: boolean;
+}
+```
+
+Two structural limits, both intentional and both escalated rather than papered over:
+
+1. **Only rounds that produced a finding appear.** A round that passed clean leaves no ledger row, so it has no chain entry — there is no "review record" endpoint independent of the findings ledger to fall back on.
+2. **`model` always reads `null`.** No existing endpoint exposes which model an agent ran on for a given round: `AgentResponse` carries no model field, and `agent_spawn_sessions` has no REST route at all. Per the intake's explicit instruction ("if a source is genuinely not reachable from an existing endpoint, stop and report it for escalation rather than inventing capture"), this reads as a documented `null` instead of a guess.
+
+### `useTaskConventionFindings(taskId)`
+
+Conventions-validator findings for this task's diff. Reuses the **same project-scoped query key** (`["conventions-findings", projectId]`) the project's Conventions tab already runs (`conventionsApi.findings`), then filters the result down to this task's `task_id` client-side — not a new query path.
+
+```typescript
+{
+  data: ConventionFinding[];
+  isLoading: boolean;
+}
+```
+
+Known ceiling: the backing endpoint caps its response to the project's most recent rows, so an old task's convention findings can fall off that cap over time — a consequence of reusing a project-scoped feed for a task-scoped view, not a bug in this hook. A task with no `project_id` never fires the conventions request (`enabled: !!projectId`) and returns an empty array.
+
+### `usePrCiVerdict(taskId)`
+
+The PR CI verdict bound to the task's PR head commit. **Always reads unavailable** — this is the one source in the receipt with no reachable existing endpoint:
+
+```typescript
+{
+  data: { available: false; reason: string };  // PR_CI_VERDICT_UNAVAILABLE
+  isLoading: false;
+}
+```
+
+`GitService.get_pr_ci_status` exists server-side but is only called internally (the in-path PR gate, the self-heal loop) — no REST route wraps it, so the panel has no way to fetch it without a new backend endpoint. Per the same escalate-don't-invent instruction as the reviewer-chain model gap above, this is surfaced as a documented `PR_CI_VERDICT_UNAVAILABLE` constant (with a `reason` string naming the missing route) rather than a guessed or fabricated verdict. It's shaped as a hook — not a bare constant import — purely so both UI leaves (task-detail Verification tab, release-proposal rollup) consume one uniform `{data, isLoading}` shape across every verification data source; the day a real `GET /tasks/{id}/pr-ci-status`-style endpoint ships, only this hook's body needs to change.
+
+### Escalated gaps (for whoever picks up a follow-up backend task)
+
+Three sources in this data layer are permanently unavailable until a backend endpoint ships:
+
+| Gap | Needed to unblock | Where flagged |
+|-----|--------------------|----------------|
+| PR CI verdict | A REST route wrapping `GitService.get_pr_ci_status` | `PR_CI_VERDICT_UNAVAILABLE.reason` |
+| Reviewer-per-round model | `AgentResponse`/a dedicated endpoint exposing the model an `agent_spawn_sessions` row ran on | `ReviewerChainEntry.model` doc comment |
+| Release proposal's member task set | An endpoint exposing `task_id`/`pr_number` per release (today `ReleaseReport.change_summary` is free-text commit strings only) | `RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason` — see `release-rollup.md` |
+
+A fourth, narrower gap: `parseAcVerificationStamps` matches by criterion text only, because `acceptance_criteria_ids` isn't on `TaskResponse`. An acceptance criterion edited in text after QA verified it will read as unverified in the receipt.
+
+### Testing
+
+`panel/src/lib/api/__tests__/verification.test.ts` covers the pure helpers (stamp parsing including the qa_notes-mixed-with-finding-renderings case, round grouping including non-contiguous same-round input, reviewer-chain ordering, the always-unavailable CI constant). `panel/src/hooks/__tests__/use-verification.test.tsx` covers every hook against mocked `tasksApi`/`conventionsApi` client responses, including the no-CI-repo case and the project-less-task case for conventions findings.
+
+---
+
 ## Further Reading
 
 - **Control panel README**: `panel/README.md`
 - **WebSocket connection implementation**: `panel/src/lib/websocket/connection.ts`
 - **API client**: `panel/src/lib/api/`
 - **Notification types & components**: `panel/src/app/(dashboard)/notifications/`
+- **Verification-receipt UI leaves (consumers of the hooks above)**: the task-detail Verification tab and its composable receipt components are documented in `verification-tab.md`; the release-proposal rollup leaf (task `c348bb11`, reuses the same receipt exports) is documented in `release-rollup.md`.
