@@ -9446,7 +9446,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.25.0) is the s
 | Metrics — Usage | `app/(dashboard)/metrics/page.tsx` + `components/metrics/*` | Summary, time-series, agent/team/model donut, sessions table, projection, cache efficiency; live via `/ws/system` USAGE_SNAPSHOT |
 | Metrics — Delivery | `components/metrics/delivery-tab.tsx` | Cycle-time, bottlenecks, rework (now incl. "PM rejects"/"CEO rejects" columns alongside QA/PR-fail counts — see `docs/map/review-findings.md`), scorecards (read-only `/dashboard/metrics/*`) |
 | Findings tab | `components/tasks/task-detail/tab-findings.tsx` | Per-round revision-findings ledger view: origin/status summary badges, severity/status badges, file:line, collapsible evidence, truncation footer; backed by `GET /api/tasks/{id}/findings` via `useTaskFindings`. A `bounced xN` chip (`task.revision_count`) surfaces on the task header alongside it. |
-| Release Proposal | `components/dashboard/release-proposal-card.tsx` | CEO approve/reject-with-changes on held `release_manager` proposal; fail-closed executor; hidden on 404, retry on real error |
+| Release Proposal | `components/dashboard/release-proposal-card.tsx` | CEO approve/reject-with-changes on held `release_manager` proposal; fail-closed executor; hidden on 404, retry on real error; a "Download certificate" button in the actions row fetches `GET /api/releases/{version}/certificate` and triggers a JSON blob download, or a sonner info toast on an unpublished (404→null) version |
 | Playbook Review Queue | `components/dashboard/playbook-review-queue.tsx` | Auditor/CEO approve/reject drafted playbooks; hidden when no drafts |
 | CEO Approval Queue | `components/dashboard/ceo-approval-queue.tsx` | Tasks in `awaiting_ceo_approval` awaiting CEO verdict |
 | PR Review Queue | `components/dashboard/pr-review-queue.tsx` | Inbound external/fork PRs + in-path gate PRs for the reviewer |
@@ -9474,7 +9474,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.25.0) is the s
 | `useWebSocket<T>` | hook | `hooks/use-websocket.ts` | Single shared WS per path; auto-reconnect, heartbeat, message dispatch |
 | `WebSocketConnection` | class | `lib/websocket/connection.ts` | Low-level WS lifecycle; `getWebSocketUrl` builds `/ws/<path>` |
 | `api` (axios instance) | const | `lib/api/client.ts` | Shared client; baseURL `API_URL`, DEFAULTS (not forces, since wave 3) `X-Agent-ID/Role=CEO` via `has()`/`set()` — a caller-set header (e.g. the CEO-DM composer's literal `"ceo"` slug, needed verbatim by its route) wins; rate-limit retry (3) |
-| `releaseApi` | module | `lib/api/release.ts` | `getProposal/approve/reject`; 404→null, non-404 rethrow |
+| `releaseApi` | module | `lib/api/release.ts` | `getProposal/approve/reject/getCertificate`; 404→null, non-404 rethrow (`getCertificate` mirrors `getProposal`'s pattern against `GET /releases/{version}/certificate`) |
 | `authApi` | module | `lib/api/auth.ts` | `status/login/logout`; `status` always available (public probe), `login` posts an OAuth2 form body (FastAPI Users cookie route, not JSON) |
 | `useLogin`/`useAuthStatus`/`useLogout` | hooks | `hooks/use-auth.ts` | TanStack Query wrappers over `authApi`; login page + `proxy.ts`-gated flows |
 | `xApi` | module | `lib/api/x.ts` | `listPosts/approve/reject/getCredentialsStatus/setCredentials`; `XPost`/`XPostHistoryEntry` carry optional source refs (`XCampaignRef`, `XEditorialRef` with `angle`/`rationale`, `XMentionRef`, `XFeatureRef`, `XBarflyRef`); credentials are write-only (never returned) |
@@ -9497,7 +9497,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.25.0) is the s
 | `useUsageStore` | store | `store/usage-store.ts` | zustand: live usage snapshot, wsState, polling fallback |
 | `skippedPreconditions` | fn | `components/kanban/core/bypass-preconditions.ts` | Lists material lifecycle preconditions a drag would skip (PR/docs/subtasks-terminal) |
 | `KanbanBoard` | comp | `components/kanban/core/kanban-board.tsx` | dnd-kit board; routes drag→`useUpdateTask` (admin override) or in-band lifecycle verb; notes dialog for pass-qa/fail-qa/complete |
-| `ReleaseProposalCard` | comp | `components/dashboard/release-proposal-card.tsx` | Approve/reject-with-changes dialog; ≥10 char reject reason |
+| `ReleaseProposalCard` | comp | `components/dashboard/release-proposal-card.tsx` | Approve/reject-with-changes dialog; ≥10 char reject reason; "Download certificate" button (`certificateMutation`) triggers a `release-certificate-{version}.json` Blob download on success, a sonner info toast on the unpublished-null case, an error toast on a genuine fetch failure |
 | `PlaybookReviewQueue` | comp | `components/dashboard/playbook-review-queue.tsx` | Approve/reject-with-reason (≥4 char) drafts |
 | `XPostQueue` | comp | `components/dashboard/x-post-queue.tsx` | Editable draft body + 280-char counter; approve (posts), reject-with-reason (≥4 char); renders `campaignGuidance` + `editorialGuidance` (Megaphone angle/rationale) as HelpTip-wrapped context lines above the textarea; hidden when empty |
 | `RoadmapReviewQueue` | comp | `components/dashboard/roadmap-review-queue.tsx` | Per-item approve/reject within a held cycle card; reject requires ≥4 char reason |

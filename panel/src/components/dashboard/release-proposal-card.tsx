@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { releaseApi } from "@/lib/api";
-import type { ReleaseExecuteResult } from "@/lib/api/release";
+import type { ReleaseCertificate, ReleaseExecuteResult } from "@/lib/api/release";
 import {
   Card,
   CardContent,
@@ -23,7 +23,14 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { CheckCircle2, XCircle, Rocket, AlertTriangle, Loader2 } from "lucide-react";
+import {
+  CheckCircle2,
+  XCircle,
+  Rocket,
+  AlertTriangle,
+  Loader2,
+  Download,
+} from "lucide-react";
 import { toast } from "sonner";
 import { usePageRefresh } from "@/hooks";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -50,6 +57,20 @@ function describeHaltedStatus(result: ReleaseExecuteResult): string {
   if (result.status === "lock_lost")
     return "The release lock was lost mid-execute — retry the approve.";
   return `Release halted (${result.status}): ${result.detail}`;
+}
+
+// Triggers a browser download of the certificate JSON — no server-side file,
+// just a client-side Blob + temporary anchor.
+function downloadCertificate(certificate: ReleaseCertificate): void {
+  const blob = new Blob([JSON.stringify(certificate, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `release-certificate-${certificate.version}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 // A red gate / open gaps make publishing risky — the CEO should resolve them
@@ -121,6 +142,22 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
     onError: (error) => {
       toast.error(
         `Reject failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    },
+  });
+
+  const certificateMutation = useMutation({
+    mutationFn: (version: string) => releaseApi.getCertificate(version),
+    onSuccess: (certificate) => {
+      if (certificate) {
+        downloadCertificate(certificate);
+      } else {
+        toast.info("This version hasn't published yet — no certificate available.");
+      }
+    },
+    onError: (error) => {
+      toast.error(
+        `Download failed: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     },
   });
@@ -294,6 +331,17 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
           )}
 
           <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
+            <HelpTip label="Download the release certificate — the full gate-chain artifact (CI verdict, conventions, per-AC QA states, findings summary) as JSON">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => certificateMutation.mutate(report.proposed_version)}
+                disabled={certificateMutation.isPending}
+              >
+                <Download className="mr-1 h-4 w-4" />
+                Download certificate
+              </Button>
+            </HelpTip>
             <HelpTip
               label={
                 executeInFlight
