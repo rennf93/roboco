@@ -13003,7 +13003,9 @@ Start now: evidence(task_id="{task_id}")
 
         The dispatch loop can die silently (task cancelled, unhandled exit) and
         its stdout dies with the container; audit_log survives both. Absence of
-        a fresh heartbeat row = loop dead, distinguishable from "no work".
+        a fresh heartbeat row = loop dead, distinguishable from "no work". The
+        `dispatch_paused` flag lets the uptime ledger treat a deliberate
+        maintenance pause as downtime instead of counting it as an outage.
         """
         now = datetime.now(UTC)
         last = getattr(self, "_last_dispatch_heartbeat", None)
@@ -13012,10 +13014,16 @@ Start now: evidence(task_id="{task_id}")
         ):
             return
         self._last_dispatch_heartbeat = now
+        from roboco.services.maintenance_pause import PauseScope
+
+        paused = await self._is_paused(PauseScope.DISPATCH)
         self._fire_audit(
             event_type="dispatcher.alive",
             agent_slug="orchestrator",
-            details={"interval_seconds": self._DISPATCH_HEARTBEAT_SECONDS},
+            details={
+                "interval_seconds": self._DISPATCH_HEARTBEAT_SECONDS,
+                "dispatch_paused": paused,
+            },
         )
 
     async def _dispatcher_loop(self) -> None:
