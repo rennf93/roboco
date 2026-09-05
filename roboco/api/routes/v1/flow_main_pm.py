@@ -24,7 +24,7 @@ from roboco.api.schemas.v1.flow import (
     UnblockRequest,
     UnclaimRequest,
 )
-from roboco.security import guard_deco
+from roboco.security import guard_deco, mesh_scanned
 from roboco.services.gateway.choreographer import Choreographer, DelegateInputs
 
 _RUNAWAY_RULES = [
@@ -43,6 +43,7 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 
 @router.post("/give_me_work")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -57,6 +58,7 @@ async def give_me_work(
 
 
 @router.post("/i_will_plan")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -86,6 +88,7 @@ async def i_will_plan(
 
 
 @router.post("/delegate")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -116,6 +119,7 @@ async def delegate(
 
 
 @router.post("/triage_all")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -130,6 +134,7 @@ async def triage_all(
 
 
 @router.post("/triage")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -153,6 +158,7 @@ async def triage(
 
 
 @router.post("/submit_root")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -172,6 +178,7 @@ async def submit_root(
 
 
 @router.post("/complete")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -186,6 +193,7 @@ async def complete(
 
 
 @router.post("/request_changes")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -202,6 +210,7 @@ async def request_changes(
 
 
 @router.post("/escalate_up")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -216,6 +225,7 @@ async def escalate_up(
 
 
 @router.post("/escalate_to_ceo")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -230,6 +240,7 @@ async def escalate_to_ceo(
 
 
 @router.post("/unblock")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -246,6 +257,7 @@ async def unblock(
 
 
 @router.post("/unclaim")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -260,6 +272,7 @@ async def unclaim(
 
 
 @router.post("/resume")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -274,6 +287,7 @@ async def resume(
 
 
 @router.post("/i_am_idle")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -288,6 +302,7 @@ async def i_am_idle(
 
 
 @router.post("/declare_coverage")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)

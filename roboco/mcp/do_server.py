@@ -24,7 +24,7 @@ import structlog
 from mcp.server.mcpserver import MCPServer
 
 from roboco.agents_config import get_agent_team
-from roboco.mcp.utils import configure_stdio_logging
+from roboco.mcp.utils import configure_stdio_logging, guard_blocked_envelope
 
 # See flow_server.py: __name__ is already "__main__" at this point when run
 # as the real stdio server, so this guards a plain in-process test import
@@ -273,6 +273,30 @@ def _build_headers() -> dict[str, str]:
     return headers
 
 
+def _transport_error_or_guard_block(
+    response: httpx.Response, path: str
+) -> dict[str, Any]:
+    """Mirrors flow_server._transport_error_or_guard_block: no JSON body is
+    either roboco.security's guard blocking with plain text, or a genuine
+    transport failure. Split out of _post to keep its own complexity in
+    check."""
+    blocked = guard_blocked_envelope(response.status_code, response.text, path)
+    if blocked is not None:
+        return blocked
+    return {
+        "error": "transport_error",
+        "message": (
+            f"orchestrator returned HTTP {response.status_code}"
+            f" with no JSON body for {path}"
+        ),
+        "remediate": (
+            "check that the orchestrator is up and the route exists;"
+            " contact the human operator if this persists"
+        ),
+        "missing": [],
+    }
+
+
 def _post(
     path: str, body: dict[str, Any], *, timeout: float = _TIMEOUT
 ) -> dict[str, Any]:
@@ -355,18 +379,7 @@ def _post(
         try:
             payload: dict[str, Any] = response.json()
         except (ValueError, json.JSONDecodeError):
-            return {
-                "error": "transport_error",
-                "message": (
-                    f"orchestrator returned HTTP {response.status_code}"
-                    f" with no JSON body for {path}"
-                ),
-                "remediate": (
-                    "check that the orchestrator is up and the route exists;"
-                    " contact the human operator if this persists"
-                ),
-                "missing": [],
-            }
+            return _transport_error_or_guard_block(response, path)
     # Outside the orchestrator client so the SDK call is its own connection.
     # A non-404 JSON body that is NOT a real Envelope (dict `error` from an
     # exception handler, or a 422 `detail` list) is normalized to the Envelope

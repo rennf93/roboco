@@ -25,6 +25,42 @@ _HTTP_SUCCESS_MAX = 300
 # Default timeout for API calls (seconds).
 DEFAULT_TIMEOUT = 30.0
 
+# roboco.security's guard middleware blocks with plain text, not JSON: 400
+# "Suspicious activity detected" (WAF), 403 "Forbidden" / "IP has been
+# banned" (IP list / ban), 429 (rate limit), verified live, no
+# content-type header at all, response.json() raises JSONDecodeError.
+_GUARD_BLOCK_STATUS_CODES = frozenset({400, 403, 429})
+
+
+def guard_blocked_envelope(
+    status_code: int, text: str, path: str
+) -> dict[str, Any] | None:
+    """A ``gateway_blocked`` Envelope for a guard-blocked request, else None.
+
+    Both flow_server._post and do_server._post call this from the same spot
+    their generic "no JSON body" transport_error branch used to catch alone:
+    a guard block IS a "no JSON body" response, and without this check the
+    agent was told the orchestrator looked down when the request never even
+    reached the route handler.
+    """
+    if status_code not in _GUARD_BLOCK_STATUS_CODES:
+        return None
+    return {
+        "error": "gateway_blocked",
+        "message": (
+            f"security gateway rejected the request to {path} with HTTP"
+            f" {status_code}: {text[:200]}"
+        ),
+        "remediate": (
+            "the security gateway rejected this request's content (it reads"
+            " as shell/SQL/HTML-like, or you are rate-limited/banned)."
+            " Move any shell/SQL/HTML-looking text into a free-text verb"
+            " field (evidence, notes, findings) and retry once; escalate to"
+            " the human operator if it repeats."
+        ),
+        "missing": [],
+    }
+
 
 def configure_stdio_logging() -> None:
     """Route structlog output to stderr.

