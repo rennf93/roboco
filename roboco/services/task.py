@@ -3895,12 +3895,14 @@ class TaskService(BaseService):
                 new_criteria=new_criteria,
             )
 
+        old_parent_id = getattr(task, "parent_task_id", None)
         for key, value in updates.items():
             if hasattr(task, key) and value is not None:
                 setattr(task, key, value)
 
         self.assert_batch_shape_intact(task)
         await self.session.flush()
+        await self._maybe_recheck_topology(task, updates, old_parent_id)
 
         self.log.info(
             "Task updated",
@@ -3908,6 +3910,50 @@ class TaskService(BaseService):
             updates=list(updates.keys()),
         )
         return task
+
+    async def _maybe_recheck_topology(
+        self, task: TaskTable, updates: dict[str, Any], old_parent_id: object
+    ) -> None:
+        """Re-run the topology check iff this update actually re-parented."""
+        if "parent_task_id" not in updates:
+            return
+        if getattr(task, "parent_task_id", None) == old_parent_id:
+            return
+        await self.recheck_topology_after_reparent(task)
+
+    async def recheck_topology_after_reparent(self, task: TaskTable) -> None:
+        """Re-run the PR-base/parent-topology check after a re-parent PATCH.
+
+        Records (never blocks) a detected mismatch — the ``parent_task_id``
+        PATCH is often exactly the admin action fixing a mis-restructured
+        tree, so refusing it outright would prevent the fix. This makes the
+        stranded-base condition visible immediately (via the
+        ``topology_issue`` marker) instead of only surfacing at
+        complete()/submit_root, days into review (the 5612b225/PR #856
+        incident class). A re-parent that resolves a prior mismatch clears
+        the marker.
+
+        Public: also called directly by the PATCH route (``roboco.api.utils.
+        tasks``) for the null-clear/detach direction of a re-parent, which
+        bypasses ``update()``'s field-update loop entirely (see
+        ``_apply_null_clears``).
+        """
+        from roboco.services.gateway.merge_chain import find_topology_issue
+
+        issue = await find_topology_issue(task, self)
+        if issue is None:
+            markers.clear_topology_issue(task)
+            return
+        markers.set_topology_issue(
+            task,
+            {
+                "shape": issue.shape,
+                "expected_base": issue.expected_base,
+                "actual_base": issue.actual_base,
+                "message": issue.message,
+                "repair": issue.repair,
+            },
+        )
 
     async def admin_set_status(
         self,
@@ -7361,6 +7407,30 @@ class TaskService(BaseService):
         if ws is not None and ws.pr_status == "open":
             return ws
         return None
+
+    async def recorded_pr_base(self, task: TaskTable) -> str | None:
+        """The branch this task's work is actually anchored to, or None.
+
+        Backs the gateway's topology-comparison helper
+        (:func:`roboco.services.gateway.merge_chain.find_topology_issue`):
+        prefers the still-open PR's recorded ``target_branch`` (set when
+        ``create_pr`` ran); falls back to the branch's ``base_branch`` (set
+        once at claim/branch-creation time) when no PR is open yet — the
+        "actual" side of the comparison against a freshly recomputed
+        expected base. None when the task has never had a work session
+        (not yet claimed), so there is nothing to compare.
+        """
+        if not task.work_session_id:
+            return None
+        result = await self.session.execute(
+            select(WorkSessionTable).where(WorkSessionTable.id == task.work_session_id)
+        )
+        ws = result.scalar_one_or_none()
+        if ws is None:
+            return None
+        if ws.pr_status == "open" and ws.target_branch:
+            return str(ws.target_branch)
+        return str(ws.base_branch) if ws.base_branch else None
 
     async def _assert_pr_merged_for_complete(self, task: TaskTable) -> bool:
         """True if the task's PR is merged (or no PR gate applies).

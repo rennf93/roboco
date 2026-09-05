@@ -27,6 +27,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `_claim_plan_start_run` | async helper | `_impl.py:1251` | `runner.run_intent(verb)` + ensure_work_session + `_touch`. |
 | `i_will_work_on` | async verb | `_impl.py:1326` | Dev claim+plan+start path; routes re-entry vs fresh claim. |
 | `open_pr` | async verb | `_impl.py:1571` | Pre-flight + `run_intent("open_pr")` (push_branch + create_pr side effects). |
+| `_open_pr_topology_rejection` | async helper | `_impl.py` (in `_open_pr_preflight_rejection`, ~2123-2169) | Calls `merge_chain.find_topology_issue` BEFORE `create_pr` runs; on a bad shape (parented task stranded on the integration branch, or a parentless root nested inside a coordination tree) refuses with an `Envelope.invalid_state` naming the expected base + repair instead of letting `create_pr` fail later. |
 | `i_am_done` | async verb | `_impl.py:1771` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
 | `_i_am_done_gate` | async helper | `_impl.py:1885` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
 | `_behind_base_gate` | async helper | `_impl.py:2154` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
