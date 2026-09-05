@@ -246,19 +246,25 @@ function SpeedSection({ medianLeadTimeHours }: SpeedSectionProps) {
 // (Record<string, unknown>[]) with no id/slug the backend guarantees, so the
 // only stable key available is the objective's own `metric` wording. Each
 // canonical metric below is paired to its owning objective by matching a
-// distinct keyword against every `objectives[].metric` string — order-
+// keyword phrase against every `objectives[].metric` string — order-
 // independent and unaffected by an extra objective — rather than by array
-// index.
+// index. The patterns use the full distinguishing phrase (not a single
+// common word) so two objectives sharing a word, e.g. both mentioning
+// "defect", don't collide via find() returning whichever comes first; an
+// objective whose free-text wording happens to contain another canonical
+// card's full phrase can still claim that card — this is a best-effort
+// content match, not a guaranteed-unique key.
 // ---------------------------------------------------------------------------
 
 type CanonicalMetricKey = "first_pass_yield" | "median_lead_time" | "escaped_defects";
 
-// Keywords chosen to be distinct against the other two canonical texts, so
-// one canonical metric can never match another's objective by mistake.
+// Full distinguishing phrases, not single common words, to avoid the
+// keyword-collision case above (e.g. /defect/i alone matches both a
+// "defect triage" objective and the "escaped defects" objective).
 const CANONICAL_METRIC_PATTERNS: Record<CanonicalMetricKey, RegExp> = {
   first_pass_yield: /shipped to merge|no human code edit/i,
-  median_lead_time: /lead time/i,
-  escaped_defects: /defect/i,
+  median_lead_time: /median lead time/i,
+  escaped_defects: /escaped defect/i,
 };
 
 const OBJECTIVE_FALLBACK_LABELS: Record<CanonicalMetricKey, string> = {
@@ -303,7 +309,7 @@ function ObjectiveCard({
   targetText,
 }: ObjectiveCardProps) {
   return (
-    <div className="rounded-lg border bg-card p-3 space-y-1">
+    <div data-testid="objective-card" className="rounded-lg border bg-card p-3 space-y-1">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="flex items-center justify-between text-sm">
         {hasData ? (

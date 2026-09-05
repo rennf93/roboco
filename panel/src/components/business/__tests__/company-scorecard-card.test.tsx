@@ -374,21 +374,21 @@ describe("CompanyScorecardCard", () => {
 
     const yieldCard = screen
       .getByText("Tasks shipped to merge with no human code edits")
-      .closest(".rounded-lg") as HTMLElement;
+      .closest('[data-testid="objective-card"]') as HTMLElement;
     expect(within(yieldCard).getByText("92%")).toBeInTheDocument();
 
     const leadTimeCard = screen
       .getByText("Median lead time, intake → merged")
-      .closest(".rounded-lg") as HTMLElement;
+      .closest('[data-testid="objective-card"]') as HTMLElement;
     expect(within(leadTimeCard).getByText("18.7h")).toBeInTheDocument();
 
     const defectsCard = screen
       .getByText("Critical escaped defects per release")
-      .closest(".rounded-lg") as HTMLElement;
+      .closest('[data-testid="objective-card"]') as HTMLElement;
     expect(within(defectsCard).getByText("3")).toBeInTheDocument();
   });
 
-  it("does not mispair or drop a canonical metric when a fourth objective is present", () => {
+  it("does not let a keyword-colliding fourth objective steal another card's label", () => {
     setQueryState({
       data: buildSummary({
         first_pass_yield: 0.92,
@@ -396,7 +396,11 @@ describe("CompanyScorecardCard", () => {
         escaped_defects: 3,
         objectives: [
           { metric: "Tasks shipped to merge with no human code edits", target: "90%", status: "Active" },
-          { metric: "Customer NPS score", target: "8", status: "Active" },
+          // Shares the word "defect" with the escaped-defects canonical
+          // text and sorts before it — the exact keyword-collision case
+          // that used to make find() return this entry for the
+          // escaped-defects card instead of its own.
+          { metric: "Defect triage response time", target: "< 4h", status: "Active" },
           { metric: "Median lead time, intake → merged", target: "< 24h", status: "Active" },
           { metric: "Critical escaped defects per release", target: "0", status: "Active" },
         ],
@@ -408,21 +412,21 @@ describe("CompanyScorecardCard", () => {
     // All three canonical metrics still render exactly once, correctly paired.
     const yieldCard = screen
       .getByText("Tasks shipped to merge with no human code edits")
-      .closest(".rounded-lg") as HTMLElement;
+      .closest('[data-testid="objective-card"]') as HTMLElement;
     expect(within(yieldCard).getByText("92%")).toBeInTheDocument();
 
     const leadTimeCard = screen
       .getByText("Median lead time, intake → merged")
-      .closest(".rounded-lg") as HTMLElement;
+      .closest('[data-testid="objective-card"]') as HTMLElement;
     expect(within(leadTimeCard).getByText("18.7h")).toBeInTheDocument();
 
     const defectsCard = screen
       .getByText("Critical escaped defects per release")
-      .closest(".rounded-lg") as HTMLElement;
+      .closest('[data-testid="objective-card"]') as HTMLElement;
     expect(within(defectsCard).getByText("3")).toBeInTheDocument();
 
-    // The fourth, unrelated objective is never surfaced as a card label.
-    expect(screen.queryByText("Customer NPS score")).not.toBeInTheDocument();
+    // The keyword-colliding fourth objective is never surfaced as a card label.
+    expect(screen.queryByText("Defect triage response time")).not.toBeInTheDocument();
   });
 
   it("renders the three canonical fallback labels, never fabricated ones, when objectives is empty", () => {
