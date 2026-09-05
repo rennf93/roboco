@@ -510,6 +510,16 @@ class OptimalService:
     # PERIODIC UPDATE (File Change Detection)
     # =========================================================================
 
+    async def ensure_periodic_update_running(self) -> None:
+        """Start the periodic RAG update loop if it isn't already running.
+
+        Called by the indexer worker (``ROBOCO_ROLE=indexer``) so that role
+        owns the periodic re-index sweep; idempotent against the auto-start
+        already inside ``initialize()``; never a second competing loop.
+        """
+        if self._periodic_update_task is None:
+            await self._start_periodic_update()
+
     async def _start_periodic_update(self) -> None:
         """Start periodic update task if enabled in config."""
         from roboco.config import get_settings

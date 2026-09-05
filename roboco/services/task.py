@@ -5361,16 +5361,14 @@ class TaskService(BaseService):
         documents: list[dict[str, Any]],
         actor_agent_id: UUID | None = None,
     ) -> None:
-        """Index documentation from completed doc task (fire-and-forget)."""
-        from roboco.services.optimal import get_optimal_service
+        """Enqueue documentation from a completed doc task (fire-and-forget)."""
+        from roboco.services.optimal_brain.indexer_worker import enqueue_index_request
 
         try:
             # Land any workspace-authored docs server-side first, so the
             # indexer (which reads /app/docs) can see docs the agent wrote with
             # Edit/Write in its own clone rather than through roboco_docs_write.
             await self._capture_workspace_docs(task_id, documents, actor_agent_id)
-
-            optimal = await get_optimal_service()
 
             # Extract doc paths from documents array and resolve to absolute paths
             doc_paths: list[str] = []
@@ -5385,16 +5383,19 @@ class TaskService(BaseService):
                 # (including ones authored via Edit/Write and captured by
                 # _capture_workspace_docs above, which bypass roboco_docs_write
                 # entirely), so it must be marked live_write too.
-                count = await optimal.index_documentation(
-                    doc_paths,
-                    project="roboco",
-                    provenance="live_write",
-                    task_id=str(task_id),
+                await enqueue_index_request(
+                    "documentation",
+                    {
+                        "sources": doc_paths,
+                        "project": "roboco",
+                        "provenance": "live_write",
+                        "task_id": str(task_id),
+                    },
                 )
                 self.log.debug(
-                    "Indexed docs",
+                    "Enqueued docs for indexing",
                     task_id=str(task_id),
-                    docs_count=count,
+                    docs_count=len(doc_paths),
                 )
         except Exception as e:
             self.log.warning(
@@ -5625,11 +5626,9 @@ class TaskService(BaseService):
         """
         from uuid import NAMESPACE_URL, uuid5
 
-        from roboco.models.optimal import IndexJournalEntryParams
-        from roboco.services.optimal import get_optimal_service
+        from roboco.services.optimal_brain.indexer_worker import enqueue_index_request
 
         try:
-            optimal = await get_optimal_service()
             details = details or {}
 
             # Build content for indexing
@@ -5648,19 +5647,20 @@ class TaskService(BaseService):
                 f"roboco-lifecycle/{task_id}/{event_type}/{now_iso}",
             )
 
-            # Index to journals for lifecycle tracking
-            await optimal.index_journal_entry(
-                IndexJournalEntryParams(
-                    content=content,
-                    entry_id=synthetic_entry_id,
-                    agent_id=None,  # System event, no specific agent
-                    entry_type=f"lifecycle_{event_type}",
-                    task_id=task_id,
-                    tags=[event_type, task_team.value if task_team else "default"],
-                )
+            # Enqueue to journals for lifecycle tracking
+            await enqueue_index_request(
+                "journal_entry",
+                {
+                    "content": content,
+                    "entry_id": str(synthetic_entry_id),
+                    "agent_id": None,  # System event, no specific agent
+                    "entry_type": f"lifecycle_{event_type}",
+                    "task_id": str(task_id),
+                    "tags": [event_type, task_team.value if task_team else "default"],
+                },
             )
             self.log.debug(
-                "Indexed lifecycle event",
+                "Enqueued lifecycle event for indexing",
                 task_id=str(task_id),
                 event_type=event_type,
             )

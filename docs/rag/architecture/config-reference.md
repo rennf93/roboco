@@ -52,6 +52,10 @@ Environment variables for RoboCo (prefix: `ROBOCO_`).
 | `ROBOCO_RAG_USE_CROSS_ENCODER` | `true` | Neural reranking |
 | `ROBOCO_RAG_AUTO_UPDATE_ENABLED` | `true` | Auto-update indexes |
 | `ROBOCO_RAG_AUTO_UPDATE_INTERVAL` | `300` | Update interval (seconds) |
+| `ROBOCO_INDEXER_STREAM_ENABLED` | `true` | Route embedding/index writes through the `roboco:stream:index` worker rather than running them inline. Off, or Redis unreachable: `enqueue_index_request` falls back to running the index inline (fire-and-forget), so a single-process `ROBOCO_ROLE=all` deployment never loses indexing. |
+| `ROBOCO_INDEXER_MAX_BACKLOG` | `500` | Max unconsumed messages on the index stream before the oldest `journal_entry`/`documentation` requests are dead-lettered (`backlog_shed`); a `journal_unindex` request is never shed. |
+| `ROBOCO_INDEXER_EMBED_CONCURRENCY` | `1` | Max concurrent embed batches for the indexer worker's own embedder. ollama is a single shared server; keeping this below the shared embedder's default of 4 leaves a free slot for concurrent query embeds (KB search, institutional memory). |
+| `ROBOCO_INDEXER_EMBED_BATCH_SIZE` | `8` | Embed batch size for the indexer worker's own embedder, smaller than the shared default of 32 for the same reason. |
 
 ## LLM
 

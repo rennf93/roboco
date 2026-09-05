@@ -187,6 +187,11 @@ select = [
 # contract (index entry, embedding, query text, top_k, buffer/gaps, timeout)
 # — bundling would just relocate the same named fields behind one hop.
 "roboco/services/optimal.py" = ["PLR0913", "PLR0917"]
+# OllamaEmbedder.__init__'s kwargs (model, base_url, timeout, max_concurrent,
+# cache_size, batch_size) are independently overridable tuning knobs, not a
+# single grouped concept; bundling into a dataclass would just relocate them
+# behind one hop, same rationale as roboco/services/optimal.py above.
+"roboco/services/optimal_brain/ollama_embedder.py" = ["PLR0913", "PLR0917"]
 # Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
 # verb contract (task title, description, acceptance criteria, assignee, etc.). Bundling
 # into a dataclass hides the field-by-field schema the LLM needs at the

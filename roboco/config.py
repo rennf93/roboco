@@ -223,6 +223,25 @@ class Settings(BaseSettings):
     rag_auto_update_interval: int = Field(
         default=300, ge=60, description="Seconds between auto-updates"
     )
+    indexer_stream_enabled: bool = Field(
+        default=True,
+        description="Route index/embedding writes through the indexer stream worker",
+    )
+    indexer_max_backlog: int = Field(
+        default=500,
+        ge=1,
+        description="Max backlog on the index stream before oldest are dead-lettered",
+    )
+    indexer_embed_concurrency: int = Field(
+        default=1,
+        ge=1,
+        description="Max concurrent embed batches for the indexer's own embedder",
+    )
+    indexer_embed_batch_size: int = Field(
+        default=8,
+        ge=1,
+        description="Embed batch size for the indexer's own embedder",
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
