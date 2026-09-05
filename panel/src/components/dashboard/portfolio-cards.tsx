@@ -6,7 +6,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import type { PortfolioCard } from "@/types";
-import { AlertTriangle, Clock, Coins, ListChecks, RotateCcw } from "lucide-react";
+import {
+  AlertTriangle,
+  Clock,
+  Coins,
+  ListChecks,
+  RotateCcw,
+} from "lucide-react";
 
 // Formatting follows the existing dashboard-card precedents: ratio → rounded %
 // (key-metrics-panel), hours → `.toFixed(1) + "h"` (scorecard-overview-panel),
@@ -48,7 +54,10 @@ function MetricRow({ icon, label, value, tip }: MetricRowProps) {
 function ProjectCard({ project }: { project: PortfolioCard }) {
   return (
     <Link
-      href={`/tasks?project=${encodeURIComponent(project.project_slug)}`}
+      // The tasks page's project filter matches task.project_id (its own
+      // ProjectSelect options are built from project ids), so the deep link
+      // must carry the id — a slug would match no task and render an empty list.
+      href={`/tasks?project=${encodeURIComponent(project.project_id)}`}
       className="block"
       prefetch={false}
     >

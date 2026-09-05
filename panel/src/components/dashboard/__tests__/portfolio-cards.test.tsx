@@ -67,14 +67,19 @@ describe("PortfolioCards", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
-  it("links each card to the project's task list by slug", () => {
+  it("links each card to the project's task list by project id", () => {
+    // The tasks page's project filter matches task.project_id, so the link
+    // must carry the id — a slug yields an empty list on landing (the
+    // drill-down regression this pins).
     render(<PortfolioCards />);
-    expect(
-      screen.getByRole("link", { name: /RoboCo API/ }),
-    ).toHaveAttribute("href", "/tasks?project=roboco-api");
-    expect(
-      screen.getByRole("link", { name: /Vexa Bridge/ }),
-    ).toHaveAttribute("href", "/tasks?project=discord-vexa-bridge");
+    expect(screen.getByRole("link", { name: /RoboCo API/ })).toHaveAttribute(
+      "href",
+      "/tasks?project=11111111-1111-1111-1111-111111111111",
+    );
+    expect(screen.getByRole("link", { name: /Vexa Bridge/ })).toHaveAttribute(
+      "href",
+      "/tasks?project=22222222-1111-1111-1111-111111111111",
+    );
   });
 
   it("renders cards in the endpoint's most-active-first order without re-sorting", () => {
@@ -84,8 +89,7 @@ describe("PortfolioCards", () => {
     // "RoboCo API" appears BEFORE "Vexa Bridge" in the DOM, exactly as the
     // endpoint delivered them.
     expect(
-      first.compareDocumentPosition(second) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
