@@ -833,7 +833,7 @@ describe("AIRoutingCard", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Cost-Tiered mode button (additive, never wipes routing; seeds nothing —
+  // Cost-Tiered mode button (additive, never wipes routing; seeds nothing,
   // the backend's day-1 seed was retired, so the copy and the toast report
   // what actually happens instead of a developer:low → Haiku seed)
   // -------------------------------------------------------------------------

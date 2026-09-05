@@ -544,7 +544,7 @@ export function AIRoutingCard() {
     }
   };
 
-  // --- Cost-tiered routing (additive — never wipes existing routing) ---
+  // --- Cost-tiered routing (additive, never wipes existing routing) ---
   const flipToCostTiered = async () => {
     if (
       !confirm(
