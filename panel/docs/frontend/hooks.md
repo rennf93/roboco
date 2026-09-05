@@ -501,14 +501,15 @@ The PR CI verdict bound to the task's PR head commit. **Always reads unavailable
 
 ### Escalated gaps (for whoever picks up a follow-up backend task)
 
-Two sources in this data layer are permanently unavailable until a backend endpoint ships:
+Three sources in this data layer are permanently unavailable until a backend endpoint ships:
 
 | Gap | Needed to unblock | Where flagged |
 |-----|--------------------|----------------|
 | PR CI verdict | A REST route wrapping `GitService.get_pr_ci_status` | `PR_CI_VERDICT_UNAVAILABLE.reason` |
 | Reviewer-per-round model | `AgentResponse`/a dedicated endpoint exposing the model an `agent_spawn_sessions` row ran on | `ReviewerChainEntry.model` doc comment |
+| Release proposal's member task set | An endpoint exposing `task_id`/`pr_number` per release (today `ReleaseReport.change_summary` is free-text commit strings only) | `RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason` — see `release-rollup.md` |
 
-A third, narrower gap: `parseAcVerificationStamps` matches by criterion text only, because `acceptance_criteria_ids` isn't on `TaskResponse`. An acceptance criterion edited in text after QA verified it will read as unverified in the receipt.
+A fourth, narrower gap: `parseAcVerificationStamps` matches by criterion text only, because `acceptance_criteria_ids` isn't on `TaskResponse`. An acceptance criterion edited in text after QA verified it will read as unverified in the receipt.
 
 ### Testing
 
@@ -522,4 +523,4 @@ A third, narrower gap: `parseAcVerificationStamps` matches by criterion text onl
 - **WebSocket connection implementation**: `panel/src/lib/websocket/connection.ts`
 - **API client**: `panel/src/lib/api/`
 - **Notification types & components**: `panel/src/app/(dashboard)/notifications/`
-- **Verification-receipt UI leaves (consumers of the hooks above)**: the task-detail Verification tab and its composable receipt components are documented in `verification-tab.md`; the release-proposal rollup leaf (task `c348bb11`, reuses the same receipt exports) is still pending.
+- **Verification-receipt UI leaves (consumers of the hooks above)**: the task-detail Verification tab and its composable receipt components are documented in `verification-tab.md`; the release-proposal rollup leaf (task `c348bb11`, reuses the same receipt exports) is documented in `release-rollup.md`.

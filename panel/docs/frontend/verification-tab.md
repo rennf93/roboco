@@ -59,6 +59,6 @@ Both ceilings are also called out in the shared parent task's dev risk notes as 
 - The Verification tab's trigger reads `unverifiedCount` from `useAcVerificationStamps(task.id)` and shows it as the tab's count badge only when greater than zero (an all-verified task shows no badge, not a `0`).
 - `<TabsContent value="verification">` renders `<TabVerification task={task} />` immediately after the Overview content, matching the tab's position in the trigger list.
 
-## For the next consumer (release-proposal rollup)
+## Consumed by: the release-proposal rollup
 
-The release-proposal rollup leaf (task `c348bb11`) is expected to import directly from `@/components/verification/receipt` — the same five named exports this doc describes — rather than re-implementing rendering logic. If that leaf needs a layout different from the task-detail tab's stacked `<section>`s, it should still reuse these exports and only change the surrounding composition, keeping the presentational pieces single-sourced.
+The release-proposal rollup leaf (task `c348bb11`, documented in `release-rollup.md`) imports directly from `@/components/verification/receipt` — the same five named exports this doc describes — rather than re-implementing rendering logic. It needed a layout different from this tab's stacked `<section>`s (one collapsible section per member task, aggregating across the release rather than a single task), so it reuses these exports and the shared hooks unchanged, only varying the surrounding composition. The presentational pieces stay single-sourced between the two leaves.
