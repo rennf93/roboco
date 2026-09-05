@@ -90,7 +90,8 @@ Changing this heuristic changes what `task_states`/`findings_summary` cover; tre
 
 - Release membership stays heuristic (completion window + same-project scoping) — a future `release_id` column on tasks would make membership schema-linked.
 - The response schema is consumed by the frontend cell starting from this PR; extend only additively (new optional fields), never by reshaping existing fields.
-- `qa_passed` widened from `bool` to `bool | None` in this bounce fix (PR #1022) — additive on the wire, but any existing frontend consumer treating it as a non-nullable boolean should be checked by the frontend cell before relying on the `None` ("no QA required") case.
+- `conventions_clean` is True on zero recorded `project_convention_findings` rows for the release-window tasks — that means "no recorded block-level violation", not "assessed clean". A task never checked (conventions enforcement is a default-off feature flag) reads the same as a task checked and found clean; there is no separate "unassessed" state on the wire today.
+- `qa_passed` widened from `bool` to `bool | None` in this bounce fix (PR #1022) — this is a **nullability widening, not an additive change**, despite the doc's own additive-only rule above: an existing frontend consumer that reads `qa_passed` as a non-nullable boolean now receives `null` for the zero-AC case and must be updated in this same PR (`panel/src/lib/api/release.ts`) rather than treated as safe-by-default.
 
 ## Related
 

@@ -512,7 +512,7 @@ async def _seed_delivery_task(
     **spec: Any,
 ) -> TaskTable:
     """A COMPLETED delivery task; optional spec keys ``title`` / ``source`` /
-    ``criteria`` / ``qa_notes`` override the defaults."""
+    ``criteria`` / ``qa_notes`` / ``task_type`` override the defaults."""
     task = TaskTable(
         id=uuid4(),
         title=spec.get("title", "Delivery work"),
@@ -521,7 +521,7 @@ async def _seed_delivery_task(
         status=TaskStatus.COMPLETED,
         completed_at=completed_at,
         priority=2,
-        task_type=TaskType.CODE,
+        task_type=spec.get("task_type", TaskType.CODE),
         nature=TaskNature.TECHNICAL,
         project_id=project.id,
         created_by=project.created_by,
@@ -595,13 +595,26 @@ async def test_certificate_packages_release_gate_chain(
         source="self_heal",
         title="Self-heal: fix red CI",
     )
-    # Engine-held artifact: not delivered work, must stay out of task_states.
+    # Engine-held artifact: a release proposal draft, not delivered work —
+    # pins the source predicate (source NOT IN LEAD_TIME_EXCLUDED_SOURCES) in
+    # isolation, since its own task_type is CODE (not ADMINISTRATIVE).
     await _seed_delivery_task(
         db_session,
         project,
         _PUBLISHED_AT - timedelta(hours=3),
         source=RELEASE_MANAGER_SOURCE,
-        title="X post draft",
+        title="Release proposal draft",
+    )
+    # Board-program exploration cycle: pins the task_type != ADMINISTRATIVE
+    # predicate in isolation, since its own source ("manual") is not in
+    # LEAD_TIME_EXCLUDED_SOURCES — see test_delivery_stats_scope_db.py:164
+    # for the same two-predicates-pinned-independently pattern.
+    await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=3, minutes=15),
+        task_type=TaskType.ADMINISTRATIVE,
+        title="Board exploration cycle",
     )
     # Completed after this release's publication: belongs to the next window.
     await _seed_delivery_task(
