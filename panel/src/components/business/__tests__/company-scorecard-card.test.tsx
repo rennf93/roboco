@@ -453,14 +453,28 @@ describe("CompanyScorecardCard", () => {
   it("pairs each metric with its correct label regardless of objectives order", () => {
     setQueryState({
       data: buildSummary({
-        first_pass_yield: 0.92,
-        median_lead_time_hours: 18.7,
-        escaped_defects: 3,
+        delivery: buildDelivery({
+          first_pass_yield: 0.92,
+          median_lead_time_hours: 18.7,
+          escaped_defects: 3,
+        }),
         // Reversed relative to the canonical [yield, lead-time, defects] order.
         objectives: [
-          { metric: "Critical escaped defects per release", target: "0", status: "Active" },
-          { metric: "Median lead time, intake → merged", target: "< 24h", status: "Active" },
-          { metric: "Tasks shipped to merge with no human code edits", target: "90%", status: "Active" },
+          {
+            metric: "Critical escaped defects per release",
+            target: "0",
+            status: "Active",
+          },
+          {
+            metric: "Median lead time, intake → merged",
+            target: "< 24h",
+            status: "Active",
+          },
+          {
+            metric: "Tasks shipped to merge with no human code edits",
+            target: "90%",
+            status: "Active",
+          },
         ],
       }),
     });
@@ -486,18 +500,36 @@ describe("CompanyScorecardCard", () => {
   it("does not let a keyword-colliding fourth objective steal another card's label", () => {
     setQueryState({
       data: buildSummary({
-        first_pass_yield: 0.92,
-        median_lead_time_hours: 18.7,
-        escaped_defects: 3,
+        delivery: buildDelivery({
+          first_pass_yield: 0.92,
+          median_lead_time_hours: 18.7,
+          escaped_defects: 3,
+        }),
         objectives: [
-          { metric: "Tasks shipped to merge with no human code edits", target: "90%", status: "Active" },
+          {
+            metric: "Tasks shipped to merge with no human code edits",
+            target: "90%",
+            status: "Active",
+          },
           // Shares the word "defect" with the escaped-defects canonical
           // text and sorts before it — the exact keyword-collision case
           // that used to make find() return this entry for the
           // escaped-defects card instead of its own.
-          { metric: "Defect triage response time", target: "< 4h", status: "Active" },
-          { metric: "Median lead time, intake → merged", target: "< 24h", status: "Active" },
-          { metric: "Critical escaped defects per release", target: "0", status: "Active" },
+          {
+            metric: "Defect triage response time",
+            target: "< 4h",
+            status: "Active",
+          },
+          {
+            metric: "Median lead time, intake → merged",
+            target: "< 24h",
+            status: "Active",
+          },
+          {
+            metric: "Critical escaped defects per release",
+            target: "0",
+            status: "Active",
+          },
         ],
       }),
     });
@@ -521,15 +553,19 @@ describe("CompanyScorecardCard", () => {
     expect(within(defectsCard).getByText("3")).toBeInTheDocument();
 
     // The keyword-colliding fourth objective is never surfaced as a card label.
-    expect(screen.queryByText("Defect triage response time")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Defect triage response time"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders the three canonical fallback labels, never fabricated ones, when objectives is empty", () => {
     setQueryState({
       data: buildSummary({
-        first_pass_yield: 0.5,
-        median_lead_time_hours: 10,
-        escaped_defects: 1,
+        delivery: buildDelivery({
+          first_pass_yield: 0.5,
+          median_lead_time_hours: 10,
+          escaped_defects: 1,
+        }),
         objectives: [],
       }),
     });
