@@ -21,7 +21,7 @@ except Exception as exc:
     return ""
 ```
 
-This restores the observability `megaphone_engine.py`'s original implementation had — a swallowed exception with no log is a silent failure that's hard to diagnose. The warning uses structlog's structured `error=` field, matching the `roboco/utils/crypto.py` logger pattern. The test `test_changelog_exception_emits_warning_log` (in `tests/unit/test_shipped_work_digest.py`) pins this behavior using structlog's `capture_logs` fixture — if the warning stops firing, the test fails.
+This restores the observability `megaphone_engine.py`'s original implementation had — a swallowed exception with no log is a silent failure that's hard to diagnose. The warning uses structlog's structured `error=` field, matching the `roboco/utils/crypto.py` logger pattern. The test `test_changelog_exception_emits_warning_log` (in `tests/unit/test_shipped_work_digest.py`) pins this behavior by monkeypatching the module-level `logger` with a `MagicMock` and asserting `fake_logger.warning` was called — deterministic regardless of structlog's processor-chain state, unlike `capture_logs`/`caplog` — if the warning stops firing, the test fails.
 
 ## Degradation behavior
 
