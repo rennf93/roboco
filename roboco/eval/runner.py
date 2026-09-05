@@ -10,6 +10,19 @@ checked-in ``expectations`` note — see ``CohortResult.as_dict()``'s nested
 ``"judge"`` object, marked ``"non_deterministic": true`` so a naive cohort
 diff never mistakes judge noise for a real regression.
 
+Catch-rate: a seeded-defect fixture (``roboco/eval/fixtures.py``) carries an
+optional ``expected_catch_gate`` naming which verification layer (QA's
+per-AC stamp, the architectural-conventions check, or the in-path PR gate)
+is supposed to stop its seeded defect. ``CohortResult.as_dict()``'s
+``"catch_rate"`` object — a sibling of "aggregate" and "judge", never nested
+inside either — reports ``caught / seeded`` for this (role, model/provider,
+doctrine) cohort's seeded-defect fixtures. The verdict is derived ONLY from
+the revision-findings ledger (``task_review_findings``) and rejector-
+attributed bounce audit events (``task.qa_fail`` / ``task.pr_fail`` / ...) —
+see ``_score_catch`` / ``_catch_gate_evidence`` — NEVER from a diff
+comparison. A fixture with no ``expected_catch_gate`` (every pre-existing
+golden fixture) is excluded from both the numerator and denominator.
+
 Environment reuse: the disposable project + real local git origin +
 fake-GitHub REST + in-process API all come straight from
 ``tests.e2e_smoke.harness`` (the same machinery ``make e2e-smoke`` uses) — an
@@ -119,6 +132,49 @@ _TEAM_PREFIX = {"backend": "be", "frontend": "fe", "ux_ui": "ux"}
 # Roles run_cohort accepts. main_pm has no cell team — handled via a
 # skip-cell guard in _bench_environment, not the _TEAM_PREFIX map.
 _BENCH_ROLES = {"developer", "qa", "cell_pm", "main_pm"}
+
+# ---------------------------------------------------------------------------
+# Catch-rate scoring vocabulary — seeded-defect fixtures (roboco/eval/
+# fixtures.py) name, via an OPTIONAL ``expected_catch_gate`` attribute (read
+# with ``getattr``, default None — mirrors how ``injected_defect`` /
+# ``expected_coverage`` started life before landing as real BenchTaskSpec
+# fields), which verification layer is supposed to stop their seeded defect.
+# A fixture with no ``expected_catch_gate`` (every pre-existing golden
+# fixture) is not part of the catch-rate — see ``CohortResult.catch_rate_stats``.
+# ---------------------------------------------------------------------------
+CATCH_GATE_QA = "qa_ac_stamp"
+CATCH_GATE_CONVENTIONS = "conventions_check"
+CATCH_GATE_PR = "pr_gate"
+
+# Rejector-attributed bounce events emitted at the SAME needs_revision
+# transition that bumps revision_count (TaskService._audit_events_for).
+_REWORK_AUDIT_EVENTS = (
+    "task.qa_fail",
+    "task.pr_fail",
+    "task.request_changes",
+    "task.ceo_reject",
+)
+_ALL_FINDING_ORIGINS = frozenset({"qa", "pr_gate", "pm", "ceo"})
+_ALL_AUDIT_EVENTS = frozenset(_REWORK_AUDIT_EVENTS)
+
+# Each expected-catch-gate name maps to the task_review_findings ``origin``
+# values and the audit event types that count as "this gate fired". Both
+# "conventions_check" and "pr_gate" accept a "qa" origin too: today the bench
+# harness only drives QA-entry fixtures to a real terminal turn (see
+# _prepare_qa_entry) — a conventions/security defect surfaces as a QA finding
+# citing the violation (QA's claim_review evidence already carries
+# convention_findings) until/unless a future leaf wires a real
+# awaiting_pr_review driving stage.
+_CATCH_GATE_FINDING_ORIGINS: dict[str, frozenset[str]] = {
+    CATCH_GATE_QA: frozenset({"qa"}),
+    CATCH_GATE_CONVENTIONS: frozenset({"qa", "pr_gate"}),
+    CATCH_GATE_PR: frozenset({"pr_gate"}),
+}
+_CATCH_GATE_AUDIT_EVENTS: dict[str, frozenset[str]] = {
+    CATCH_GATE_QA: frozenset({"task.qa_fail"}),
+    CATCH_GATE_CONVENTIONS: frozenset({"task.qa_fail", "task.pr_fail"}),
+    CATCH_GATE_PR: frozenset({"task.pr_fail"}),
+}
 
 # ---------------------------------------------------------------------------
 # Scratch Postgres — mirrors tests/conftest.py's `_test_database_url` fixture
@@ -959,10 +1015,24 @@ class DeterministicMetrics:
 
 
 @dataclass
+class CatchVerdict:
+    """Whether a seeded-defect fixture's expected verification gate fired,
+    derived ONLY from findings-ledger rows + bounce audit events (see
+    ``_score_catch`` / ``_catch_gate_evidence``) — never from a diff."""
+
+    expected_gate: str
+    caught: bool
+    evidence: list[str]
+
+
+@dataclass
 class FixtureResult:
     fixture_key: str
     metrics: DeterministicMetrics
     judge: JudgeVerdict
+    # None for every pre-existing golden fixture (no expected_catch_gate);
+    # set only for a seeded-defect fixture — see CatchVerdict.
+    catch: CatchVerdict | None = None
 
     @property
     def passed(self) -> bool:
@@ -1000,12 +1070,33 @@ class CohortResult:
         scores = [f.judge.score for f in self.fixtures if f.judge.score is not None]
         return statistics.fmean(scores) if scores else None
 
+    @property
+    def catch_rate_stats(self) -> tuple[int, int]:
+        """``(caught, seeded)`` — "seeded" counts only fixtures carrying a
+        catch verdict (i.e. a seeded-defect fixture with an
+        ``expected_catch_gate``); the pre-existing golden fixtures have
+        ``catch=None`` and are excluded, exactly like ``mean_judge_score``
+        excludes an unscored fixture rather than counting it as a 0."""
+        scored = [f.catch for f in self.fixtures if f.catch is not None]
+        caught = sum(1 for c in scored if c.caught)
+        return caught, len(scored)
+
+    @property
+    def catch_rate(self) -> float | None:
+        caught, seeded = self.catch_rate_stats
+        return (caught / seeded) if seeded else None
+
     def as_dict(self) -> dict[str, Any]:
         # Judge fields are nested under their own "judge" object (both here
         # and per-fixture below) and stamped non_deterministic=True — a local-
         # model score is not a repeatable metric like the sibling deterministic
         # ones, and a naive diff between two cohort JSONs must not mistake
-        # judge noise for a real regression.
+        # judge noise for a real regression. catch_rate is a NEW sibling of
+        # both "aggregate" and "judge" (never nested inside either) — it is
+        # deterministic (findings-ledger + audit rows, never a diff) but is
+        # its own metric family, computed for this (role, model/provider,
+        # doctrine) cohort's seeded-defect fixtures only.
+        caught, seeded = self.catch_rate_stats
         return {
             "role_slug": self.role_slug,
             "cohort_name": self.cohort_name,
@@ -1019,6 +1110,11 @@ class CohortResult:
             "judge": {
                 "mean_score": self.mean_judge_score,
                 "non_deterministic": True,
+            },
+            "catch_rate": {
+                "caught": caught,
+                "seeded": seeded,
+                "rate": self.catch_rate,
             },
             "fixtures": [
                 {
@@ -1038,6 +1134,15 @@ class CohortResult:
                         "rationale": f.judge.rationale,
                         "non_deterministic": True,
                     },
+                    "catch": (
+                        {
+                            "expected_gate": f.catch.expected_gate,
+                            "caught": f.catch.caught,
+                            "evidence": f.catch.evidence,
+                        }
+                        if f.catch is not None
+                        else None
+                    ),
                 }
                 for f in self.fixtures
             ],
@@ -1103,6 +1208,59 @@ def _deterministic_metrics(
         tokens_cache_write=row["tokens_cache_write"],
         estimated_cost_usd=row["estimated_cost_usd"],
     )
+
+
+def _catch_gate_evidence(
+    stack: E2EStack, task_id: UUID
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Read the two NEVER-diff-comparison signals a catch verdict is derived
+    from: the revision-findings ledger's per-finding ``origin``
+    (task_review_findings — CLAUDE.md's "Revision findings ledger") and the
+    rejector-attributed bounce audit events on this task (task.qa_fail /
+    task.pr_fail / task.request_changes / task.ceo_reject)."""
+    from sqlalchemy import select
+
+    from roboco.db.tables import AuditLogTable
+    from roboco.services.repositories.review_findings import ReviewFindingsRepository
+
+    async def _run(session: Any) -> tuple[frozenset[str], frozenset[str]]:
+        findings = await ReviewFindingsRepository(session).list_for_task(task_id)
+        origins = frozenset(f.origin for f in findings)
+        result = await session.execute(
+            select(AuditLogTable.event_type).where(
+                AuditLogTable.target_type == "task",
+                AuditLogTable.target_id == task_id,
+                AuditLogTable.event_type.in_(_REWORK_AUDIT_EVENTS),
+            )
+        )
+        events = frozenset(row[0] for row in result.all())
+        return origins, events
+
+    return cast("tuple[frozenset[str], frozenset[str]]", stack.run_db(_run))
+
+
+def _score_catch(
+    expected_gate: str | None,
+    finding_origins: frozenset[str],
+    audit_events: frozenset[str],
+) -> CatchVerdict | None:
+    """Pure catch/miss derivation — no DB, no diff. ``None`` means "not a
+    seeded-defect fixture" (no expected_catch_gate), so it never enters the
+    catch-rate denominator. An unrecognized gate name (the sibling fixture
+    leaf drifted from this module's vocabulary) degrades to "did ANY
+    verification signal fire at all" rather than silently mis-scoring every
+    such fixture a miss."""
+    if not expected_gate:
+        return None
+    origins = _CATCH_GATE_FINDING_ORIGINS.get(expected_gate, _ALL_FINDING_ORIGINS)
+    events = _CATCH_GATE_AUDIT_EVENTS.get(expected_gate, _ALL_AUDIT_EVENTS)
+    matched_origins = sorted(finding_origins & origins)
+    matched_events = sorted(audit_events & events)
+    caught = bool(matched_origins or matched_events)
+    evidence = [f"finding_origin:{o}" for o in matched_origins] + [
+        f"audit_event:{e}" for e in matched_events
+    ]
+    return CatchVerdict(expected_gate=expected_gate, caught=caught, evidence=evidence)
 
 
 def _task_diff(stack: E2EStack, base_branch: str, branch_name: str | None) -> str:
@@ -1171,6 +1329,13 @@ def _print_table(cohort: CohortResult) -> None:
         f"mean_judge*={mean_judge if mean_judge is not None else '-'}"
     )
     print("*judge score/mean_judge* are local-model, non-deterministic — not a metric")
+    caught, seeded = cohort.catch_rate_stats
+    if seeded:
+        print(
+            f"catch_rate={caught}/{seeded} ({cohort.catch_rate:.2f}) — "
+            "seeded-defect fixtures only, derived from findings-ledger rows "
+            "+ bounce events, never a diff"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1306,4 +1471,13 @@ class EvalRunner:
         diff = _task_diff(env.stack, base_branch, final_task.get("branch_name"))
         notes = _collected_notes(env.stack, task_id)
         judge = asyncio.run(self._judge.score(fixture=fixture, diff=diff, notes=notes))
-        return FixtureResult(fixture_key=fixture.key, metrics=metrics, judge=judge)
+
+        catch: CatchVerdict | None = None
+        expected_gate = getattr(fixture, "expected_catch_gate", None)
+        if expected_gate:
+            finding_origins, audit_events = _catch_gate_evidence(env.stack, task_id)
+            catch = _score_catch(expected_gate, finding_origins, audit_events)
+
+        return FixtureResult(
+            fixture_key=fixture.key, metrics=metrics, judge=judge, catch=catch
+        )
