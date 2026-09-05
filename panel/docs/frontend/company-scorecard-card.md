@@ -90,3 +90,4 @@ The `buildSummary` test helper carries `first_pass_yield: null` and `escaped_def
 - `panel/src/lib/api/cockpit.ts` — `CockpitSummary` type and `cockpitApi.summary()` client.
 - `panel/src/components/business/spend-trend-chart.tsx` — the 30-day spend chart embedded in `SpendSection`.
 - `tg-metrics-tab.tsx` — the phone cockpit's metrics tab, whose `pctOrDash(scorecard.first_pass_yield)` convention the `first_pass_yield` percentage format matches.
+- `docs/frontend/components/release-proposal-card-certificate.md` — an unrelated dashboard-page component (the release-proposal card's "Download certificate" action and its task-status-polling mechanism); no connection to `CompanyScorecardCard` or the Business page.
