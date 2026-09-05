@@ -132,6 +132,12 @@ waivers:
       not a production component — the same pattern already used by the
       pre-existing use-agents.test.tsx / use-observability.test.tsx hook
       tests colocated under hooks/__tests__/.
+  - path: panel/src/hooks/__tests__/use-verification.test.tsx
+    rule: no_components_in_hooks
+    reason: >-
+      Same root cause as the use-tasks-null-guards.test.tsx waiver directly
+      above: `wrapper` is a QueryClientProvider test fixture local to this
+      test file, not a production component.
   - path: roboco/api/routes/prompter_live.py
     rule: no_lint_suppressions
     reason: >-
