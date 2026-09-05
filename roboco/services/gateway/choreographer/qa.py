@@ -58,6 +58,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
 )
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+from roboco.utils.converters import to_python_uuid
 
 logger = structlog.get_logger()
 
@@ -181,8 +182,13 @@ class QAMixin(_Base):
         # "start") but qa_claim is the runtime-correct specialized form
         # that keeps status at AWAITING_QA so qa_pass / qa_fail's source-
         # status requirement matches downstream. See module docstring.
-        t = await self.task.qa_claim(qa_agent_id, task_id)
-        await self.task.mark_evidence_inspected(task_id)
+        # Durability semantics (commit-before-assembly, same-agent retry
+        # skip, not-authorized rejection) live in ``_claim_for_review``.
+        t, claim_rejection = await self._claim_for_review(
+            qa_agent_id, task_id, t, briefing, role_str
+        )
+        if claim_rejection is not None:
+            return claim_rejection
 
         ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
         return Envelope.ok(
@@ -192,6 +198,87 @@ class QAMixin(_Base):
             evidence=ev.as_dict(),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+
+    async def _claim_for_review(
+        self,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        briefing: Any,
+        role_str: str,
+    ) -> tuple[Any, Envelope | None]:
+        """Durability-boundary claim for ``claim_review``.
+
+        Returns ``(task, rejection)`` — the (possibly re-fetched) task plus
+        the first rejection, or ``None`` when the claim stands.
+
+        Durability boundary: commit the claim BEFORE the advisory evidence
+        assembly begins. The evidence legs can take the whole 120s verb
+        budget; if the request is cancelled mid-assembly, get_db catches
+        the CancelledError and invalidates the session. Without an explicit
+        commit the flushed-but-uncommitted claim would be discarded, and
+        the retry would re-race for the task — burning a review round +
+        a respawn (be-qa reported this on 2026-07-29). With the commit,
+        a cancelled request leaves the claim standing and the retry
+        resumes into an already-claimed task.
+
+        Same-agent retry: if the task is already claimed by THIS agent
+        (a prior attempt committed the claim but the evidence assembly
+        timed out), skip the re-claim and go straight to evidence rebuild.
+        """
+        if to_python_uuid(t.active_claimant_id) != qa_agent_id:
+            claimed = await self.task.qa_claim(qa_agent_id, task_id)
+            if claimed is None:
+                return t, await self._emit_rejection(
+                    Envelope.not_authorized(
+                        message="this review task is already claimed by another agent",
+                        remediate="give_me_work for the next available task",
+                        context_briefing=briefing,
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=qa_agent_id,
+                    task_id=task_id,
+                    verb="claim_review",
+                )
+            t = claimed
+            await self.task.mark_evidence_inspected(task_id)
+            await self.task.session.commit()
+        return t, None
+
+    async def _qa_claim_durable(
+        self,
+        t: Any,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> Any:
+        """Claim ``t`` for QA and COMMIT before the evidence legs run.
+
+        The legs can take the whole verb budget; a request cancelled
+        mid-assembly would discard a flushed-but-uncommitted claim and the
+        retry would re-race the task (be-qa, 2026-07-29). A task already
+        claimed by THIS agent (prior attempt committed, evidence assembly
+        timed out) is returned as-is so the retry goes straight to the
+        evidence rebuild. Returns the rejection Envelope when another agent
+        holds the claim.
+        """
+        if to_python_uuid(t.active_claimant_id) == qa_agent_id:
+            return t
+        claimed = await self.task.qa_claim(qa_agent_id, task_id)
+        if claimed is None:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="this review task is already claimed by another agent",
+                    remediate="give_me_work for the next available task",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="claim_review",
+            )
+        await self.task.mark_evidence_inspected(task_id)
+        await self.task.session.commit()
+        return claimed
 
     async def _qa_convention_findings(
         self,

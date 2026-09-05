@@ -1283,6 +1283,7 @@ async def test_claim_review_matches_spec(role: str, status: str) -> None:
         team="backend",
         title="t",
         quick_context=None,
+        active_claimant_id=agent_id,
         work_session_id=None,
     )
     after = MagicMock(
@@ -1587,6 +1588,7 @@ async def test_claim_doc_task_matches_spec(role: str, status: str) -> None:
         team="backend",
         title="t",
         quick_context=None,
+        active_claimant_id=agent_id,
         work_session_id=None,
     )
     after = MagicMock(

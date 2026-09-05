@@ -22,6 +22,7 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 
 
 def _make_deps(task: AsyncMock) -> ChoreographerDeps:
+    task.session.commit = AsyncMock()
     return ChoreographerDeps(
         task=task,
         work_session=AsyncMock(),
@@ -38,6 +39,7 @@ def _gate_task(*, dependency_ids: list[Any] | None = None) -> Any:
         id=uuid4(),
         status="awaiting_pr_review",
         assigned_to=uuid4(),
+        active_claimant_id=None,
         parent_task_id=uuid4(),
         task_type="planning",
         dependency_ids=dependency_ids or [],
