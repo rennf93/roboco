@@ -138,8 +138,10 @@ def test_task_state_fails_when_criteria_unverified() -> None:
     assert state.qa_passed is False
 
 
-def test_task_state_no_criteria_counts_as_passed() -> None:
+def test_task_state_no_criteria_is_neither_pass_nor_fail() -> None:
+    """Zero acceptance criteria means the task never went through QA at all —
+    distinct from QA having actually passed it, so `qa_passed` is None."""
     task = TaskTable(title="Docs sweep", status=TaskStatus.COMPLETED)
     state = ReleaseCertificateService._task_state(task)
     assert state.criteria_total == 0
-    assert state.qa_passed is True
+    assert state.qa_passed is None

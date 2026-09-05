@@ -14,8 +14,11 @@ published release of the SAME project and this one (journaled dev decision;
 first release takes everything before its own completion) — the readiness
 report assesses one project's changes, so a foreign project's task sitting
 inside the window must not leak into another project's certificate. Engine-held
-artifacts (the proposal itself, X posts, video drafts, …) are excluded — they
-are coordination artifacts, not delivered work.
+artifacts (the proposal itself, X posts, video drafts, …) are excluded by
+source/task_type, not by an allow-list of human sources — see
+``_release_task_set`` — so a dispatched engine-originated delivery root
+(self_heal/ci_watch/dep_update/docs_sync/roadmap/pest_control) is still
+counted as real delivered work.
 """
 
 from __future__ import annotations
@@ -26,13 +29,13 @@ from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import select
 
-from roboco.db.tables import TaskTable
+from roboco.db.tables import ProjectConventionFindingTable, TaskTable
 from roboco.foundation.policy.content import markers
-from roboco.models.base import TaskStatus
+from roboco.models.base import TaskStatus, TaskType
 from roboco.services.base import BaseService
 from roboco.services.release_readiness import report_from_dict
 from roboco.services.repositories.review_findings import ReviewFindingsRepository
-from roboco.services.task import HUMAN_AUTHORED_SOURCES, get_task_service
+from roboco.services.task import LEAD_TIME_EXCLUDED_SOURCES, get_task_service
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -52,14 +55,19 @@ _SEVERITIES = ("blocker", "major", "minor", "nit")
 
 @dataclass(frozen=True)
 class CertificateTaskState:
-    """One release task's per-AC QA pass state (see the response schema)."""
+    """One release task's per-AC QA pass state (see the response schema).
+
+    ``qa_passed`` is None for a task with zero acceptance criteria — it never
+    went through QA at all, which is a different claim than QA having passed
+    it.
+    """
 
     task_id: str
     title: str
     status: str
     criteria_total: int
     criteria_verified: int
-    qa_passed: bool
+    qa_passed: bool | None
 
 
 @dataclass(frozen=True)
@@ -173,21 +181,47 @@ class ReleaseCertificateService(BaseService):
         tasks = await self._release_task_set(
             proposal=target, after=previous_completed_at
         )
+        approved_at_iso = markers.get_release_approved_at(target)
         return ReleaseCertificate(
             version=version,
             generated_at=datetime.now(UTC),
             ci_verdict=report.gate_state,
-            # Classification gaps only — 'gate' gaps report CI red, which the
-            # certificate already carries as ci_verdict; counting them here
-            # would double-report one signal as two failures.
-            conventions_clean=not any(
-                gap.category == "classification" for gap in report.gaps
+            conventions_clean=await self._conventions_clean(tasks),
+            ceo_approved_at=(
+                datetime.fromisoformat(approved_at_iso)
+                if approved_at_iso is not None
+                else None
             ),
-            ceo_approved_at=target.completed_at,
             changelog_excerpt=report.drafted_changelog,
             task_states=[self._task_state(t) for t in tasks],
             findings_summary=await self._findings_summary(tasks),
         )
+
+    async def _conventions_clean(self, tasks: list[TaskTable]) -> bool:
+        """True unless a release-window task carries an unresolved
+        block-level architectural-convention finding.
+
+        Reads the durable ``project_convention_findings`` table — the actual
+        conventions validator's own output (``GitService.
+        conventions_check_for_task``, git.py:6416), persisted per task at
+        ``i_am_done`` time (``ConventionsService.record_findings``) — rather
+        than re-running the validator live: a merged task's branch is deleted
+        post-merge (``GitService._delete_remote_branch_best_effort``), so a
+        live re-check against a since-published release's tasks would
+        fail-closed on every one of them for having no branch left to diff.
+        """
+        if not tasks:
+            return True
+        stmt = (
+            select(ProjectConventionFindingTable.id)
+            .where(
+                ProjectConventionFindingTable.task_id.in_([t.id for t in tasks]),
+                ProjectConventionFindingTable.level == "block",
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none() is None
 
     async def _published_proposal(
         self, version: str
@@ -213,10 +247,19 @@ class ReleaseCertificateService(BaseService):
         chronologically. Scoped to the proposal's own project — the readiness
         report assesses that project's changes, so another project's task
         completed inside the window must not leak into this certificate.
-        ``source`` restricted to the human-authored delivery sources keeps
-        engine-held artifacts (the proposal itself, X posts, video drafts)
-        out — engine-originated tasks carry their engine constants, delivery
-        work is "manual"/"prompter".
+
+        Held/coordination artifacts (the proposal itself, X posts, video
+        drafts, board-program exploration cycles) are excluded by
+        ``task_type``/``source`` rather than by allow-listing the two
+        human-authored sources — mirrors ``TaskService.
+        get_delivery_stats_30d``'s real-delivery-work filter. An allow-list
+        of "manual"/"prompter" would silently drop every engine-originated
+        delivery root (self_heal/ci_watch/dep_update/docs_sync/roadmap/
+        pest_control, task.py:666-788) even though those ARE dispatched,
+        shipped delivery work — only their own root task's ``source`` column
+        carries the engine constant, a delegated subtask's ``source`` is
+        always "manual" regardless (``create_subtask`` never inherits it),
+        so the allow-list let subtasks through while dropping their root.
         """
         publish_at = proposal.completed_at
         if publish_at is None:  # pragma: no cover - caller guards on this
@@ -226,7 +269,8 @@ class ReleaseCertificateService(BaseService):
             .where(
                 TaskTable.status == TaskStatus.COMPLETED,
                 TaskTable.completed_at <= publish_at,
-                TaskTable.source.in_(HUMAN_AUTHORED_SOURCES),
+                TaskTable.task_type != TaskType.ADMINISTRATIVE,
+                TaskTable.source.notin_(LEAD_TIME_EXCLUDED_SOURCES),
             )
             .order_by(TaskTable.completed_at, TaskTable.created_at)
         )
@@ -243,13 +287,17 @@ class ReleaseCertificateService(BaseService):
     def _task_state(task: TaskTable) -> CertificateTaskState:
         total = len(task.acceptance_criteria or [])
         verified = _verified_criteria_count(task.qa_notes)
+        # A zero-criteria task never went through QA — that's "no QA
+        # required", not "QA passed"; only a real verified>=total comparison
+        # asserts an actual pass.
+        qa_passed = None if total == 0 else verified >= total
         return CertificateTaskState(
             task_id=str(task.id),
             title=task.title,
             status=str(getattr(task.status, "value", task.status)),
             criteria_total=total,
             criteria_verified=verified,
-            qa_passed=verified >= total,
+            qa_passed=qa_passed,
         )
 
     async def _findings_summary(self, tasks: list[TaskTable]) -> FindingsSummary:
