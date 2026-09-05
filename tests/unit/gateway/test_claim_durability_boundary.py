@@ -157,6 +157,84 @@ async def test_claim_review_different_agent_refused() -> None:
     cc._build_qa_claim_evidence.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_claim_review_commits_before_evidence_assembly() -> None:
+    """The durability-boundary ordering itself, not just its two behavioral
+    consequences: on a genuine (not-yet-claimed) claim, ``mark_evidence_
+    inspected`` + ``session.commit`` must both happen BEFORE the evidence
+    builder is invoked — a cancelled evidence assembly must never be able to
+    discard an uncommitted claim."""
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        assigned_to=qa_id,
+        active_claimant_id=None,  # not yet claimed -> the real claim path runs
+        pr_number=_QA_PR,
+        pr_url="https://x/pr/8",
+        commits=[],
+        team="backend",
+        branch_name="feature/backend/abc",
+        work_session_id=None,
+        documents=[],
+        dev_notes="",
+        acceptance_criteria=[],
+        acceptance_criteria_status=[],
+    )
+    claimed_t = MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        assigned_to=qa_id,
+        active_claimant_id=qa_id,
+        pr_number=_QA_PR,
+        pr_url="https://x/pr/8",
+        commits=[],
+        team="backend",
+        branch_name="feature/backend/abc",
+        work_session_id=None,
+        documents=[],
+        dev_notes="",
+        acceptance_criteria=[],
+        acceptance_criteria_status=[],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="qa", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.qa_claim = AsyncMock(return_value=claimed_t)
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.return_value = ("", [])
+    deps = _make_deps(task=task_svc, git=git_svc)
+
+    call_order: list[str] = []
+    task_svc.mark_evidence_inspected.side_effect = lambda *a, **k: call_order.append(
+        "mark_evidence_inspected"
+    )
+    task_svc.session.commit.side_effect = lambda *a, **k: call_order.append("commit")
+
+    c = Choreographer(deps)
+    cc: Any = c
+    ev_mock = MagicMock()
+    ev_mock.as_dict.return_value = {"pr_number": _QA_PR, "files_changed": []}
+
+    async def _build_evidence(*_a: Any, **_k: Any) -> Any:
+        call_order.append("build_evidence")
+        return ev_mock
+
+    cc._build_qa_claim_evidence = _build_evidence
+
+    env = await c.claim_review(qa_id, task_id)
+    body = env.as_dict()
+
+    assert body["error"] is None, body
+    task_svc.qa_claim.assert_awaited_once()
+    # qa_evidence_inspected rides the SAME commit as the claim, and both
+    # happen strictly before the evidence builder runs.
+    assert call_order == ["mark_evidence_inspected", "commit", "build_evidence"]
+
+
 # ---------------------------------------------------------------------------
 # claim_gate_review — same-agent retry returns evidence, different-agent refused
 # ---------------------------------------------------------------------------

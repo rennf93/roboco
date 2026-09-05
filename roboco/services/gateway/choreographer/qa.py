@@ -244,42 +244,6 @@ class QAMixin(_Base):
             await self.task.session.commit()
         return t, None
 
-    async def _qa_claim_durable(
-        self,
-        t: Any,
-        qa_agent_id: UUID,
-        task_id: UUID,
-        role_str: str,
-        briefing: dict[str, Any],
-    ) -> Any:
-        """Claim ``t`` for QA and COMMIT before the evidence legs run.
-
-        The legs can take the whole verb budget; a request cancelled
-        mid-assembly would discard a flushed-but-uncommitted claim and the
-        retry would re-race the task (be-qa, 2026-07-29). A task already
-        claimed by THIS agent (prior attempt committed, evidence assembly
-        timed out) is returned as-is so the retry goes straight to the
-        evidence rebuild. Returns the rejection Envelope when another agent
-        holds the claim.
-        """
-        if to_python_uuid(t.active_claimant_id) == qa_agent_id:
-            return t
-        claimed = await self.task.qa_claim(qa_agent_id, task_id)
-        if claimed is None:
-            return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message="this review task is already claimed by another agent",
-                    remediate="give_me_work for the next available task",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="claim_review",
-            )
-        await self.task.mark_evidence_inspected(task_id)
-        await self.task.session.commit()
-        return claimed
-
     async def _qa_convention_findings(
         self,
         qa_agent_id: UUID,

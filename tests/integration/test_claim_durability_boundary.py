@@ -15,8 +15,10 @@ still in the DB.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,6 +31,7 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -52,10 +55,48 @@ async def _dispose(session: AsyncSession, engine: AsyncEngine) -> None:
     await engine.dispose()
 
 
+def _mock_evidence_repo() -> Any:
+    """No-op evidence_repo — these tests only assert the claim + evidence-
+    builder ordering, not the briefing content itself."""
+    repo = AsyncMock()
+    for method in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
+        getattr(repo, method).return_value = []
+    return repo
+
+
+def _real_choreographer(session: AsyncSession) -> Choreographer:
+    """A real Choreographer wired to a real TaskService over ``session``,
+    every side-channel dependency stubbed to a no-op — used to drive the
+    REAL verb (not the TaskService claim method directly) so these tests
+    exercise the actual durability-boundary ordering."""
+    deps = ChoreographerDeps(
+        task=TaskService(session),
+        work_session=AsyncMock(),
+        git=AsyncMock(),
+        a2a=AsyncMock(),
+        journal=AsyncMock(),
+        audit=AsyncMock(),
+        evidence_repo=_mock_evidence_repo(),
+    )
+    return Choreographer(deps)
+
+
 async def _seed(
-    session: AsyncSession, *, status: TaskStatus, assignee_id: UUID | None = None
+    session: AsyncSession,
+    *,
+    status: TaskStatus,
+    assignee_id: UUID | None = None,
+    claimant_role: AgentRole = AgentRole.QA,
 ) -> dict[str, Any]:
-    """Seed a system agent, project, a QA agent, and a task in ``status``."""
+    """Seed a system agent, project, a claimant agent, and a task in ``status``."""
     system = AgentTable(
         id=uuid4(),
         name="System",
@@ -90,7 +131,7 @@ async def _seed(
         id=uuid4(),
         name="BE QA",
         slug=f"be-qa-{uuid4().hex[:8]}",
-        role=AgentRole.QA,
+        role=claimant_role,
         team=Team.BACKEND,
         status=AgentStatus.ACTIVE,
         model_config={},
@@ -137,9 +178,12 @@ async def _seed(
 async def test_qa_claim_survives_post_commit_cancellation(
     _test_database_url: str,
 ) -> None:
-    """claim_review commits the claim + mark_evidence_inspected, then the
-    evidence assembly is cancelled (simulating a 120s timeout). The claim
-    must persist — a fresh session reads active_claimant_id + qa_evidence_inspected."""
+    """Drives the REAL ``claim_review`` verb (not ``TaskService.qa_claim``
+    directly) with its evidence builder raising ``CancelledError`` — mirroring
+    a genuine 120s gateway timeout mid-assembly. The claim + mark_evidence_
+    inspected, committed inside the verb's durability boundary BEFORE the
+    evidence builder runs, must persist even though the verb call itself
+    never returns."""
     url = _test_database_url
     claim_session, claim_engine = await _fresh_session(url)
     try:
@@ -148,18 +192,17 @@ async def test_qa_claim_survives_post_commit_cancellation(
         task_id = seeded["task"].id
         await claim_session.commit()
 
-        # Commit the claim + mark evidence inspected (the durability boundary).
-        ts = TaskService(claim_session)
-        t = await ts.qa_claim(qa_id, task_id)
-        assert t is not None, "qa_claim should succeed on an unclaimed task"
-        await ts.mark_evidence_inspected(task_id)
-        await claim_session.commit()
+        c = _real_choreographer(claim_session)
+        cc: Any = c
+        cc._build_qa_claim_evidence = AsyncMock(side_effect=asyncio.CancelledError)
 
-        # Simulate the cancellation: the evidence assembly is interrupted.
-        # get_db catches CancelledError and calls session.invalidate(),
-        # discarding any uncommitted state. Since the claim was already
-        # committed, it survives. We simulate this by just discarding the
-        # session — no rollback needed since the commit already landed.
+        with pytest.raises(asyncio.CancelledError):
+            await c.claim_review(qa_id, task_id)
+        # Simulate the cancellation: get_db catches CancelledError and calls
+        # session.invalidate(), discarding any uncommitted state. Since the
+        # claim was already committed before the evidence builder ran, it
+        # survives. We simulate this by just discarding the session — no
+        # rollback needed since the commit already landed.
     finally:
         await _dispose(claim_session, claim_engine)
 
@@ -191,21 +234,28 @@ async def test_qa_claim_survives_post_commit_cancellation(
 async def test_pr_gate_claim_survives_post_commit_cancellation(
     _test_database_url: str,
 ) -> None:
-    """claim_gate_review commits the pr_gate_claim, then the evidence assembly
-    is cancelled. The claim must persist — a fresh session reads
-    active_claimant_id."""
+    """Drives the REAL ``claim_gate_review`` verb with its evidence builder
+    raising ``CancelledError``. The pr_gate_claim, committed inside the
+    verb's durability boundary BEFORE the evidence builder runs, must
+    persist even though the verb call itself never returns."""
     url = _test_database_url
     claim_session, claim_engine = await _fresh_session(url)
     try:
-        seeded = await _seed(claim_session, status=TaskStatus.AWAITING_PR_REVIEW)
+        seeded = await _seed(
+            claim_session,
+            status=TaskStatus.AWAITING_PR_REVIEW,
+            claimant_role=AgentRole.PR_REVIEWER,
+        )
         reviewer_id = seeded["qa_agent"].id
         task_id = seeded["task"].id
         await claim_session.commit()
 
-        ts = TaskService(claim_session)
-        t = await ts.pr_gate_claim(reviewer_id, task_id)
-        assert t is not None, "pr_gate_claim should succeed on an unclaimed task"
-        await claim_session.commit()
+        c = _real_choreographer(claim_session)
+        cc: Any = c
+        cc._build_gate_review_evidence = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with pytest.raises(asyncio.CancelledError):
+            await c.claim_gate_review(reviewer_id, task_id)
     finally:
         await _dispose(claim_session, claim_engine)
 
@@ -231,21 +281,28 @@ async def test_pr_gate_claim_survives_post_commit_cancellation(
 async def test_doc_claim_survives_post_commit_cancellation(
     _test_database_url: str,
 ) -> None:
-    """claim_doc_task commits the doc_claim, then the evidence assembly is
-    cancelled. The claim must persist — a fresh session reads
-    active_claimant_id."""
+    """Drives the REAL ``claim_doc_task`` verb with its evidence builder
+    raising ``CancelledError``. The doc_claim, committed inside the verb's
+    durability boundary BEFORE the workspace checkout + evidence builder
+    run, must persist even though the verb call itself never returns."""
     url = _test_database_url
     claim_session, claim_engine = await _fresh_session(url)
     try:
-        seeded = await _seed(claim_session, status=TaskStatus.AWAITING_DOCUMENTATION)
+        seeded = await _seed(
+            claim_session,
+            status=TaskStatus.AWAITING_DOCUMENTATION,
+            claimant_role=AgentRole.DOCUMENTER,
+        )
         doc_id = seeded["qa_agent"].id
         task_id = seeded["task"].id
         await claim_session.commit()
 
-        ts = TaskService(claim_session)
-        t = await ts.doc_claim(doc_id, task_id)
-        assert t is not None, "doc_claim should succeed on an unclaimed task"
-        await claim_session.commit()
+        c = _real_choreographer(claim_session)
+        cc: Any = c
+        cc._claim_doc_evidence = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with pytest.raises(asyncio.CancelledError):
+            await c.claim_doc_task(doc_id, task_id)
     finally:
         await _dispose(claim_session, claim_engine)
 
