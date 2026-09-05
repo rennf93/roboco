@@ -4,6 +4,8 @@
 
 The revision-findings ledger: the structured replacement for prose-only QA/PR-gate/PM/CEO bounce feedback. Before this slice, a rejection was an `issues: list[str]` flattened into free text (or, for `request_changes`/`ceo_reject`, not even that — a raw `dev_notes` append the next developer handoff note silently overwrote). Now all four failure producers (`fail_review`, `pr_fail`, `request_changes`, `ceo_reject`) validate structured `Finding`s, persist one append-only row per finding to `task_review_findings` (migration 071), render a deterministic per-finding summary into the existing note-mirror columns (`qa_notes`/`pr_reviewer_notes`/the new `pm_notes`), and deliver the open ledger to every downstream consumer — the bounced dev's `evidence()`, a round-2+ reviewer's `claim_review`/`claim_gate_review`, the orchestrator's respawn prompts, the panel's Findings tab, metrics, and vault task notes. Always-on — no feature flag, this is core delivery lifecycle.
 
+**A fifth, advisory producer (2026-09-05): `origin="second_review"`.** Unlike the four bounce producers above, the flag-gated cross-vendor second-review pass (`roboco/services/gateway/choreographer/second_review_gate.py`, wired into `pr_pass` — see `docs/map/pr-gate-review.md`) inserts findings WITHOUT transitioning the task to `needs_revision` and without any of the bounce machinery (no `revision_count` bump, no `task.*` rejection audit event, no structured verdict note) — it fires at `pr_pass` time, i.e. on a task the gate is already passing forward. It reuses the same `findings_lib.insert_and_render` chokepoint every other producer shares, so a `second_review`-origin row has the identical per-finding shape and renders in the same panel Findings tab. But `_open_finding_ids` (the `FINDINGS_ADDRESSED` gate's source) reads OPEN findings for the task origin-agnostically — a still-open `second_review` finding DOES count if the task is later bounced to `needs_revision` for an unrelated reason (e.g. a PM `request_changes`) and resubmitted via `i_am_done`/`submit_up`/`submit_root`, so it must be named in `resolved_findings` like any other origin's finding. There is, however, no `origin="second_review"` call site for `stamp_addressed_verified` anywhere in the tree (unlike `qa`/`pr_gate`/`pm`/`ceo`, each verified by its own next-round pass verb) — once a `second_review` finding is marked `addressed`, nothing ever promotes it to `verified`; it is structurally stuck at `addressed` for good. This is a real, if minor, asymmetry worth knowing before assuming every origin's lifecycle is symmetric.
+
 ## Files
 
 | Path | Role | LOC |
@@ -16,7 +18,8 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `roboco/services/content_notes.py` | `_MIRROR_COLUMN["pm_review"] = "pm_notes"` | (1-line addition within a shared file) |
 | `roboco/services/gateway/choreographer/findings.py` | Shared producer helpers: shim, count guard, criterion check, ledger insert/render, verify-stamp | 256 |
 | `roboco/services/gateway/choreographer/qa.py` | `fail_review` — QA-origin producer | (slice within a shared file) |
-| `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer; `pr_pass` — verify-stamp | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer; `pr_pass` — verify-stamp; `_run_second_review_pass` — advisory second_review-origin producer (no verify-stamp) | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/second_review_gate.py` | `SECOND_REVIEW_ORIGIN="second_review"`; `insert_second_review_findings` — thin wrapper over `findings_lib.insert_and_render` for this origin | 164 |
 | `roboco/services/gateway/choreographer/_impl.py` | `request_changes` — pm-origin producer; `i_am_done`/`submit_up`/`submit_root` — `resolved_findings` resolution; `complete` — verify-stamp | (slice within a shared file) |
 | `roboco/services/task.py` | `ceo_reject` — ceo-origin producer + reason validation; `ceo_approve` — best-effort verify-stamp; `_audit_events_for` — `task.request_changes`/`task.ceo_reject`; `qa_fail`/`request_changes` dev_notes-append removal | (slice within an 8.7k-line file) |
 | `roboco/foundation/policy/tracing.py` | `Requirement.FINDINGS_ADDRESSED`, `GateContext.open_finding_ids`, `_check_findings_addressed` | (slice within a shared file) |
@@ -112,7 +115,8 @@ review-findings slice
 │   ├── fail_review (qa.py, origin=qa)
 │   ├── pr_fail (pr_gate.py, origin=pr_gate)
 │   ├── request_changes (_impl.py, origin=pm) -> pm_notes
-│   └── ceo_reject (task.py, origin=ceo) -> reason validation + coordination-root bump
+│   ├── ceo_reject (task.py, origin=ceo) -> reason validation + coordination-root bump
+│   └── _run_second_review_pass (pr_gate.py + second_review_gate.py, origin=second_review) -> advisory, no transition/bump/verdict-note; no verify-stamp call site (see Gotchas)
 ├── Resolution
 │   ├── i_am_done / submit_up / submit_root (resolved_findings)
 │   ├── Requirement.FINDINGS_ADDRESSED (tracing.py)
@@ -162,15 +166,19 @@ None — always-on, core lifecycle (no `ROBOCO_*` gate). The only tunables are c
 - `ceo_reject` is not a choreographer verb — it has no `roboco-flow` MCP wrapper; it's called directly by the CEO-approval-chain route against `TaskService`. Searching `choreographer/_impl.py` for it will find nothing.
 - `stamp_addressed_verified` is NOT best-effort at three of its four call sites (`pass_review`, `pr_pass`, `complete`) — a repository error there fails the whole verb before the transition runs. Only the `ceo_approve` call site wraps it in try/except (logged, swallowed) since CEO approval shouldn't hinge on a cosmetic ledger-stamp failure.
 - `_open_finding_ids` (the choreographer helper feeding `GateContext.open_finding_ids`) fails open — a DB lookup error returns `()` (nothing open), never blocking the resubmit on an infrastructure hiccup, but also indistinguishable from "no findings were ever filed."
+- `origin="second_review"` has no `stamp_addressed_verified` call site anywhere — a finding of this origin can go `open` → `addressed` (via `resolved_findings` on a later resubmit) but never `addressed` → `verified`. Every other origin gets verified by its own next-round pass verb (`pass_review`/`pr_pass`/`complete`/`ceo_approve`); `second_review` has no equivalent "pass" verb to hook, since it's an advisory ledger insert, not a bounce. Don't expect a `verified` status on this origin in any panel view or metrics query.
 
 ## Drift from CLAUDE.md
 
 None as of this doc's authoring — CLAUDE.md was updated in the same pass to add the "Revision findings ledger" section and correct the `request_changes` role-transition-table row that previously said "concrete issues."
 
+CLAUDE.md documents the `origin="second_review"` fifth producer in a separate paragraph under "In-path PR-review gate" (since it rides `pr_pass` specifically, not the shared "Revision findings ledger" section) rather than folding it into the four-producer list there — this map is the more complete source for the origin's asymmetric lifecycle (no verify-stamp call site).
+
 ## Related
 
 - `docs/map/task-service.md` — `ceo_reject`, `_audit_events_for`
-- `docs/map/pr-gate-review.md` — `pr_fail` findings wiring, gate evidence, verify-stamp
+- `docs/map/pr-gate-review.md` — `pr_fail` findings wiring, gate evidence, verify-stamp, and the `pr_pass`-only second-review pass wiring (`second_review_gate.py`)
+- `docs/map/support-services.md` — the sibling `roboco/services/second_review.py` risk-threshold classifier + provider resolver feeding the `second_review`-origin producer
 - `docs/map/metrics-observability.md` — rework-by-agent event widening, per-task findings counts, `escaped_defects` Company Scorecard metric
 - `docs/map/vault.md` — task note `## Findings` section
 - `docs/map/panel.md` — Findings tab, `bounced xN` chip, findings route
