@@ -46,6 +46,7 @@ from roboco.api.routes.project import router as project_router
 from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.release import router as release_router
+from roboco.api.routes.releases import router as releases_router
 from roboco.api.routes.research import router as research_router
 from roboco.api.routes.roadmap import router as roadmap_router
 from roboco.api.routes.scales import router as scales_router
@@ -390,6 +391,21 @@ def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
     app.include_router(dogfood_router, prefix=f"{api_prefix}/dogfood", tags=["Dogfood"])
 
 
+def _mount_release_routers(app: FastAPI, api_prefix: str) -> None:
+    """The release manager's CEO surface, singular and plural.
+
+    ``/release`` is the held-proposal approve/reject surface; ``/releases``
+    is the read-only per-version certificate export. Grouped into one helper
+    to keep ``create_app``'s own statement count bounded (same rationale as
+    ``_mount_board_program_routers``) — the two are one product surface, not
+    one router, so the plural path stays a distinct prefix.
+    """
+    app.include_router(release_router, prefix=f"{api_prefix}/release", tags=["Release"])
+    app.include_router(
+        releases_router, prefix=f"{api_prefix}/releases", tags=["Release"]
+    )
+
+
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -509,12 +525,11 @@ def create_app() -> FastAPI:
         tags=["Cockpit"],
     )
 
-    # Release manager — the CEO approves/rejects a held release proposal.
-    app.include_router(
-        release_router,
-        prefix=f"{api_prefix}/release",
-        tags=["Release"],
-    )
+    # Release manager — the CEO approves/rejects a held release proposal, and
+    # exports one release's governance certificate. Grouped into one helper
+    # (mirrors ``_mount_board_program_routers`` above). See the helper's own
+    # note for why the certificate router is plural.
+    _mount_release_routers(app, api_prefix)
 
     # Playbooks — the Auditor (or CEO) curates the drafted playbook library.
     app.include_router(
