@@ -994,3 +994,28 @@ def mark_oscillation_tripped(task: HasMarkers) -> None:
             "tripped": True,
         },
     )
+
+
+# --- PR-base / parent-topology drift ----------------------------------------
+# Recorded by the ``parent_task_id`` re-parent write-through
+# (``TaskService.recheck_topology_after_reparent``) when
+# ``merge_chain.find_topology_issue`` flags a task whose branch/PR is now
+# stranded on the wrong base after a re-parent (the 5612b225/PR #856
+# incident class — the terminal verbs used to be the only place this ever
+# surfaced, days into review). Payload: {shape, expected_base, actual_base,
+# message, repair}. A re-parent that resolves a prior mismatch clears it.
+
+TOPOLOGY_ISSUE = "topology_issue"
+
+
+def get_topology_issue(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, TOPOLOGY_ISSUE)
+    return val if isinstance(val, dict) else None
+
+
+def set_topology_issue(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, TOPOLOGY_ISSUE, payload)
+
+
+def clear_topology_issue(task: HasMarkers) -> None:
+    clear_marker(task, TOPOLOGY_ISSUE)
