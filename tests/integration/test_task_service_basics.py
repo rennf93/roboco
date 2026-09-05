@@ -243,6 +243,135 @@ async def test_list_by_status_orders_oldest_created_first(
 
 
 @pytest.mark.asyncio
+async def test_fifo_orders_by_root_age_before_leaf_age(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The root drives: a fresh leaf under an old root is handed out
+    before an older leaf under a young root."""
+    svc = task_setup["svc"]
+    now = datetime.now(UTC)
+
+    root_a = await svc.create(_req(task_setup, title="root-a"))
+    cell_a = await svc.create(
+        _req(task_setup, title="cell-a", parent_task_id=root_a.id)
+    )
+    leaf_a = await svc.create(
+        _req(task_setup, title="leaf-a", parent_task_id=cell_a.id)
+    )
+    root_b = await svc.create(_req(task_setup, title="root-b"))
+    leaf_b = await svc.create(
+        _req(task_setup, title="leaf-b", parent_task_id=root_b.id)
+    )
+
+    root_a.created_at = now - timedelta(days=15)
+    leaf_a.created_at = now - timedelta(hours=1)
+    root_b.created_at = now - timedelta(days=4)
+    leaf_b.created_at = now - timedelta(hours=10)
+    await db_session.flush()
+
+    rows = await svc.list_by_status(TaskStatus.PENDING, Team.BACKEND)
+    ids = [t.id for t in rows]
+    assert ids.index(leaf_a.id) < ids.index(leaf_b.id), (
+        "leaf-a's 15-day-old root must outrank leaf-b's own younger created_at"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fifo_same_root_falls_back_to_created_sequence_id(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Same root: order still falls back to the leaf's own created_at,
+    then sequence, unchanged from before the root fix."""
+    svc = task_setup["svc"]
+    root = await svc.create(_req(task_setup, title="root"))
+    now = datetime.now(UTC)
+
+    older = await svc.create(
+        _req(task_setup, title="older", parent_task_id=root.id, sequence=1)
+    )
+    newer = await svc.create(
+        _req(task_setup, title="newer", parent_task_id=root.id, sequence=0)
+    )
+    tie_seq_low = await svc.create(
+        _req(task_setup, title="tie-seq-low", parent_task_id=root.id, sequence=0)
+    )
+    tie_seq_high = await svc.create(
+        _req(task_setup, title="tie-seq-high", parent_task_id=root.id, sequence=1)
+    )
+
+    older.created_at = now - timedelta(hours=2)
+    newer.created_at = now - timedelta(hours=1)
+    tie_seq_low.created_at = now
+    tie_seq_high.created_at = now
+    await db_session.flush()
+
+    rows = await svc.list_by_status(TaskStatus.PENDING, Team.BACKEND)
+    ids = [t.id for t in rows]
+    assert ids.index(older.id) < ids.index(newer.id)
+    assert ids.index(tie_seq_low.id) < ids.index(tie_seq_high.id)
+
+
+@pytest.mark.asyncio
+async def test_fifo_orphan_still_listed(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A task whose parent_task_id points at a row that does not exist
+    (legacy/corrupt data, past the create()-time depth check) still shows
+    up, sorted by its own created_at (proves the outer join + coalesce).
+    The FK is ON DELETE SET NULL so this can't arise through normal
+    deletes; triggers are disabled for one insert to force the state."""
+    svc = task_setup["svc"]
+    now = datetime.now(UTC)
+
+    sibling = await svc.create(_req(task_setup, title="sibling"))
+    sibling.created_at = now
+    await db_session.flush()
+
+    await db_session.execute(text("ALTER TABLE tasks DISABLE TRIGGER ALL"))
+    try:
+        orphan = TaskTable(
+            id=uuid4(),
+            title="orphan",
+            description="d",
+            acceptance_criteria=["ac"],
+            team=Team.BACKEND,
+            created_by=task_setup["agent_id"],
+            project_id=task_setup["project_id"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            status=TaskStatus.PENDING,
+            parent_task_id=uuid4(),
+            created_at=now - timedelta(hours=1),
+        )
+        db_session.add(orphan)
+        await db_session.flush()
+    finally:
+        await db_session.execute(text("ALTER TABLE tasks ENABLE TRIGGER ALL"))
+
+    rows = await svc.list_by_status(TaskStatus.PENDING, Team.BACKEND)
+    ids = [t.id for t in rows]
+    assert orphan.id in ids
+    assert ids.index(orphan.id) < ids.index(sibling.id)
+
+
+@pytest.mark.asyncio
+async def test_fifo_no_duplicate_rows(task_setup: dict) -> None:
+    """A 3-level tree plus an unrelated root: the root-ages CTE has one
+    row per reachable task id, so the outer join never duplicates a row."""
+    svc = task_setup["svc"]
+    root = await svc.create(_req(task_setup, title="root"))
+    cell = await svc.create(_req(task_setup, title="cell", parent_task_id=root.id))
+    leaf = await svc.create(_req(task_setup, title="leaf", parent_task_id=cell.id))
+    other_root = await svc.create(_req(task_setup, title="other-root"))
+
+    rows = await svc.list_by_status(TaskStatus.PENDING, Team.BACKEND)
+    ids = [t.id for t in rows]
+    for expected in (root.id, cell.id, leaf.id, other_root.id):
+        assert ids.count(expected) == 1
+
+
+@pytest.mark.asyncio
 async def test_list_pending(task_setup: dict) -> None:
     svc = task_setup["svc"]
     pending = await svc.create(_req(task_setup))

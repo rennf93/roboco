@@ -17,7 +17,7 @@ import structlog
 from sqlalchemy import String, and_, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstanceState
+from sqlalchemy.orm import InstanceState, aliased
 
 from roboco.db.tables import (
     AgentSpawnSessionTable,
@@ -9215,19 +9215,44 @@ class TaskService(BaseService):
         return list(result.scalars().all())
 
     def fifo_order(self, query: Any) -> Any:
-        """Oldest-eligible-first: created_at asc, sequence asc, id asc.
+        """Oldest ROOT first, then the task's own created_at, sequence, id.
 
-        Shared by every work-selection query (give_me_work, board/auditor
-        triage, PM triage) so agents take the oldest eligible task first.
-        Priority is deliberately excluded: eligibility filters (sequence
-        bar, dependencies, claim guards) already decided WHICH tasks are
+        A leaf's age says nothing about how long the deliverable it belongs
+        to has waited: a 6-hour-old leaf under a 15-day-old root must be
+        picked before a 5-hour-old leaf under a 4-day-old root. Shared by
+        every work-selection query (give_me_work, board/auditor triage, PM
+        triage) so agents work the oldest root first. Priority is
+        deliberately excluded: eligibility filters (sequence bar,
+        dependencies, claim guards) already decided WHICH tasks are
         eligible; this only orders among them.
         """
-        return query.order_by(
+        roots = self._task_root_ages_cte()
+        return query.outerjoin(roots, roots.c.id == TaskTable.id).order_by(
+            func.coalesce(roots.c.root_created_at, TaskTable.created_at).asc(),
             TaskTable.created_at.asc(),
             TaskTable.sequence.asc(),
             TaskTable.id.asc(),
         )
+
+    def _task_root_ages_cte(self) -> Any:
+        """Recursive CTE: task id -> its root ancestor's created_at.
+
+        Anchor is every root row (parent_task_id IS NULL), carrying its own
+        created_at down to every descendant. One row per reachable task id,
+        so joining it never duplicates or drops rows; outer-joined by the
+        caller so an orphan (parent row deleted) still sorts by its own
+        created_at instead of vanishing.
+        """
+        anchor = select(
+            TaskTable.id.label("id"),
+            TaskTable.created_at.label("root_created_at"),
+        ).where(TaskTable.parent_task_id.is_(None))
+        cte = anchor.cte("task_roots", recursive=True)
+        child = aliased(TaskTable)
+        recursive = select(child.id, cte.c.root_created_at).join(
+            cte, child.parent_task_id == cte.c.id
+        )
+        return cte.union_all(recursive)
 
     async def list_by_team(
         self,
