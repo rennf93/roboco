@@ -320,6 +320,17 @@ _ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "hit your session limit",
     "five_hour",
 )
+
+# Host Claude Code OAuth credential expiry (~/.claude bind-mounted into every
+# agent container). The Claude Code structured auth-failure event key
+# fragment, unreachable from agent prose; a Read of this source file inside a
+# transcript is JSON-escaped (error\":\"authentication_failed) so it cannot
+# false-match.
+_ANTHROPIC_AUTH_MARKERS: tuple[str, ...] = ('error":"authentication_failed',)
+# A dead credential is fixed by a human running `claude login` on the host;
+# probing every 10 minutes bounds the re-park burn to one container start per
+# parked agent per window.
+_ANTHROPIC_AUTH_RETRY_AFTER_S = 600.0
 # ollama.com HTTP 429 body (the weekly glm-5.3:cloud limit surfaces here).
 # Specific to the API error formatter so an agent writing about limits can't
 # false-match and park the whole ollama fleet.
@@ -1207,6 +1218,11 @@ class AgentOrchestrator:
     # Expected-stop breadcrumbs (agent_id -> (reason, monotonic ts)); lazily
     # allocated by _record_expected_stop, same statement-budget rationale.
     _expected_stops: dict[str, tuple[str, float]]
+    # Declared here (not inline in __init__, same statement-budget rationale)
+    # so the two auth-notification sets can init in a single __init__
+    # statement below.
+    _auth_ceo_notified: set[str]
+    _auth_parked_agents: set[str]
     # Last time the auditor was spawned, by reactive alert or scheduled sweep.
     # Drives the ROBOCO_AUDIT_INTERVAL_SECONDS throttle. Per-instance override.
     _last_audit_spawn_at: datetime | None = None
@@ -1284,6 +1300,13 @@ class AgentOrchestrator:
         # during the current rate-limit episode.  Cleared when the probe
         # succeeds and the rate limit is lifted (tracker.clear() path).
         self._rate_limit_ceo_notified: set[str] = set()
+        # Same one-shot-per-episode shape for the host Claude Code OAuth
+        # expiry: _auth_ceo_notified is discarded when an agent that was
+        # itself auth-parked (tracked in _auth_parked_agents) later exits
+        # gracefully - proof the credential is back. An unrelated agent's
+        # graceful exit must NOT clear it. One statement (both class-level
+        # annotated above) to stay under the __init__ statement budget.
+        self._auth_ceo_notified, self._auth_parked_agents = set(), set()
         # Strong refs for fire-and-forget audit writes. Without this, the
         # event loop only weak-refs the Task and may GC it before it
         # commits — audit_log was silently empty because of this.
@@ -2784,11 +2807,27 @@ class AgentOrchestrator:
             provider_auth_token=route.auth_token,
             sandbox_available_services=sandbox_services,
         )
+        # Crash-retry budget is per task, not per agent: a fresh AgentInstance
+        # defaults error_count to 0, which let every respawn reset the cap
+        # and made _crash_retry_or_escalate's threshold unreachable. Carry
+        # the count over only when this spawn resumes the SAME task the
+        # prior instance was on; a new task starts fresh, otherwise a count
+        # stranded on a different task could land on 4 after one crash here
+        # (matching neither the respawn nor the escalate branch, so the
+        # agent dies silently forever). A graceful exit and a provider park
+        # already reset it to 0 explicitly, so inheriting here is safe.
+        prior = self._instances.get(agent_id)
+        carried_error_count = (
+            prior.error_count
+            if prior is not None and prior.current_task_id == task_id
+            else 0
+        )
         instance = AgentInstance(
             agent_id=agent_id,
             state=AgentState.STARTING,
             config=config,
             current_task_id=task_id,
+            error_count=carried_error_count,
         )
         self._instances[agent_id] = instance
         return config, instance, agent_settings_path
@@ -9155,6 +9194,34 @@ Start by:
                 kind="rate_limited",
             )
             return True
+        auth_missing_provider = await self._provider_auth_park_target(
+            agent_id, instance
+        )
+        if auth_missing_provider is not None:
+            logger.warning(
+                "Provider auth failure detected in agent output; parking provider",
+                agent_id=agent_id,
+                provider=auth_missing_provider,
+                task_id=instance.current_task_id,
+            )
+            await self._park_provider_unavailable(
+                agent_id,
+                instance,
+                provider=auth_missing_provider,
+                retry_after=_ANTHROPIC_AUTH_RETRY_AFTER_S,
+                kind="auth_missing",
+            )
+            # Marks this agent as the one to watch for the re-arm: only ITS
+            # own graceful exit later is proof the credential is back.
+            self._auth_parked_agents.add(agent_id)
+            if auth_missing_provider not in self._auth_ceo_notified:
+                self._auth_ceo_notified.add(auth_missing_provider)
+                await self._notify_auth_missing_ceo(
+                    provider=auth_missing_provider,
+                    agent_id=agent_id,
+                    task_id=instance.current_task_id,
+                )
+            return True
         overloaded_provider = await self._provider_overload_park_target(
             agent_id, instance
         )
@@ -9250,6 +9317,19 @@ Start by:
         instance.container_id = None
         if graceful:
             instance.error_count = 0
+            # Re-arm the auth-missing CEO notification only when THIS agent
+            # was itself auth-parked and has now exited gracefully - proof
+            # the credential is back. An unrelated agent of the same
+            # provider finishing normally mid-outage must not clear the
+            # flag, or the next auth crash pages the CEO again for the same
+            # still-dead credential.
+            if agent_id in self._auth_parked_agents:
+                self._auth_parked_agents.discard(agent_id)
+                provider_type = (
+                    instance.config.provider_type if instance.config else None
+                )
+                if provider_type is not None:
+                    self._auth_ceo_notified.discard(provider_type)
             return
         await self._crash_retry_or_escalate(agent_id, instance)
 
@@ -11293,6 +11373,32 @@ Start by:
             return provider_type
         return None
 
+    async def _provider_auth_park_target(
+        self, agent_id: str, instance: Any
+    ) -> str | None:
+        """Provider to park if this dead run hit an expired host auth credential.
+
+        Anthropic only: the Claude Code OAuth session backing the mounted
+        ``~/.claude`` credential store expired and could not be refreshed. With
+        no ``settings.anthropic_api_key`` the recovery probe
+        (``_probe_target``) cannot run and falls back to time-expiry
+        optimism, so a still-dead credential re-parks once per retry window
+        (bounded burn, zero tokens) until the operator logs in.
+        """
+        from roboco.models.base import ModelProvider
+
+        if not settings.overload_break_enabled:
+            return None
+        provider_type = instance.config.provider_type if instance.config else None
+        if provider_type != ModelProvider.ANTHROPIC.value:
+            return None
+        tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
+        transcript_tail = self._transcript_tail_text(agent_id)
+        lowered = (tail + "\n" + transcript_tail).lower()
+        if any(marker in lowered for marker in _ANTHROPIC_AUTH_MARKERS):
+            return ModelProvider.ANTHROPIC.value
+        return None
+
     async def _park_provider_unavailable(
         self,
         agent_id: str,
@@ -11784,6 +11890,78 @@ Start by:
             logger.error(
                 "Failed to send rate-limit CEO notification",
                 provider=provider,
+                error=str(e),
+            )
+
+    async def _notify_auth_missing_ceo(
+        self, provider: str, agent_id: str, task_id: str | None
+    ) -> None:
+        """Send a high-priority notification to the CEO about a dead host credential.
+
+        Fires once per expiry episode (caller gates via ``_auth_ceo_notified``).
+        Same direct DB insert + delivery.deliver() pattern as
+        ``_notify_rate_limit_ceo``, but a distinct type: this is a blocker on
+        the fleet, not a transient rate limit.
+        """
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import NotificationTable
+            from roboco.models.base import (
+                AgentRole,
+                NotificationPriority,
+                NotificationType,
+            )
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+            from roboco.services.repositories.query_helpers import get_agent_by_role
+            from roboco.utils.converters import require_uuid
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                ceo = await get_agent_by_role(db, AgentRole.CEO)
+                if ceo is None:
+                    logger.warning(
+                        "CEO agent not found; skipping auth-missing CEO notification",
+                        provider=provider,
+                    )
+                    return
+                notification = NotificationTable(
+                    type=NotificationType.BLOCKER_ESCALATION,
+                    priority=NotificationPriority.HIGH,
+                    from_agent=ceo.id,
+                    to_agents=[ceo.id],
+                    subject=(
+                        "Claude login expired on the orchestrator host: "
+                        "Anthropic agents parked"
+                    ),
+                    body=(
+                        "The host's Claude Code OAuth session expired and could "
+                        f"not be refreshed (first hit by agent '{agent_id}' on "
+                        f"task {task_id or 'none'}). Every Anthropic agent is "
+                        "parked; no tokens are burned. Fix: an operator runs "
+                        "`claude login` (or `claude setup-token`) on the host as "
+                        "the user whose ~/.claude is mounted into the agent "
+                        "containers. The fleet resumes on its own afterwards."
+                    ),
+                    requires_ack=True,
+                )
+                db.add(notification)
+                await db.flush()
+                delivery = get_notification_delivery_service(db)
+                await delivery.deliver(require_uuid(notification.id))
+                await db.commit()
+            logger.info(
+                "Auth-missing CEO notification sent",
+                provider=provider,
+                agent_id=agent_id,
+                task_id=task_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to send auth-missing CEO notification",
+                provider=provider,
+                agent_id=agent_id,
                 error=str(e),
             )
 
