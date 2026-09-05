@@ -11,12 +11,14 @@ import pytest
 import pytest_asyncio
 from roboco.db.tables import (
     AgentTable,
+    AuditLogTable,
     BoardProgramCycleTable,
     ProjectTable,
     SystemSettingTable,
     TaskTable,
 )
 from roboco.foundation import identity as _foundation
+from roboco.foundation.policy.content import markers
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -415,6 +417,55 @@ async def test_stranded_triggers_coroner_cycle(
     assert "stranded-seed-task" in body
 
 
+_MIN_BLOCKED_MINUTES_FROM_AUDIT = 100
+
+
+@pytest.mark.asyncio
+async def test_stranded_time_blocked_uses_audit_event_not_updated_at(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """time_blocked is derived from the latest task.blocked audit
+    transition, not the task's updated_at — updated_at moves on any later
+    touch while the task sits blocked and would otherwise wildly
+    underestimate how long it's actually been stuck."""
+    project_id = await _seed_coroner_fixture(db_session)
+    task_id = await _seed_blocked_task(db_session, project_id, age_minutes=5)
+    # The real blockage started hours before the last updated_at touch.
+    db_session.add(
+        AuditLogTable(
+            id=uuid4(),
+            event_type="task.blocked",
+            target_type="task",
+            target_id=task_id,
+            severity="info",
+            details={},
+            timestamp=datetime.now(UTC) - timedelta(hours=6),
+        )
+    )
+    monkeypatch.setattr(se_module.settings, "strategy_engine_enabled", True)
+    monkeypatch.setattr(se_module.settings, "strategy_stranded_blocked_minutes", 1)
+    monkeypatch.setattr(se_module.settings, "self_heal_project_slug", SLUG)
+    db_session.add(
+        SystemSettingTable(key="board_program.coroner.enabled", value="true")
+    )
+    await db_session.flush()
+    _mock_stranded_assessment(monkeypatch)
+    notifier = MagicMock()
+    notifier.send_ack_notification = AsyncMock()
+    monkeypatch.setattr(se_module, "NotificationService", lambda: notifier)
+
+    eng = StrategyEngine(db_session)
+    await eng.run_cycle()
+
+    open_cycles = await get_task_service(db_session).list_open_coroner_cycles()
+    assert len(open_cycles) == ONE
+    incident_ref = markers.get_coroner_incident(open_cycles[0])
+    assert incident_ref is not None
+    minutes = int(incident_ref["time_blocked"].split()[0])
+    # ~360 minutes (the audit event, 6h ago), never ~5 (updated_at's age).
+    assert minutes > _MIN_BLOCKED_MINUTES_FROM_AUDIT
+
+
 @pytest.mark.asyncio
 async def test_stranded_second_tick_is_a_dedup_noop(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
@@ -441,6 +492,9 @@ async def test_stranded_second_tick_is_a_dedup_noop(
     assert len(open_cycles) == ONE
     second_body = notifier.send_ack_notification.call_args.kwargs["body"]
     assert "not opened" in second_body
+    # The dedup no-op still names WHICH task is stranded, not just that
+    # something was skipped.
+    assert "stranded-seed-task" in second_body
 
 
 @pytest.mark.asyncio
@@ -465,3 +519,5 @@ async def test_stranded_coroner_disarmed_noop(
     assert len(open_cycles) == 0
     body = notifier.send_ack_notification.call_args.kwargs["body"]
     assert "not opened" in body
+    # The disarmed no-op still names WHICH task is stranded.
+    assert "stranded-seed-task" in body

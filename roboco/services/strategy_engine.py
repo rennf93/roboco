@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from roboco.db.tables import TaskTable
+
 
 @dataclass(frozen=True)
 class StrategyObservation:
@@ -155,6 +157,7 @@ class StrategyEngine(BaseService):
         failure here must never break the stranded notification — degrades
         to a plain "attempted" line rather than raising.
         """
+        incident: TaskTable | None = None
         try:
             from datetime import UTC, datetime
 
@@ -171,28 +174,35 @@ class StrategyEngine(BaseService):
                 return "No stranded tasks found for a Coroner autopsy."
             incident = stranded[0]
 
+            # The real blockage start is the latest `task.blocked` audit
+            # transition, not `updated_at` — that column moves on ANY update
+            # (markers, assignment, comments) while the task sits blocked,
+            # so an updated_at-only delta can wildly underestimate how long
+            # it's actually been stuck. Mirrors metrics.py's
+            # `_blocked_since_map`, falling back to `updated_at` for a task
+            # with no audit row.
+            blocked_stats = await self.session.execute(
+                select(func.count(), func.max(AuditLogTable.timestamp)).where(
+                    AuditLogTable.target_id == incident.id,
+                    AuditLogTable.target_type == "task",
+                    AuditLogTable.event_type == "task.blocked",
+                )
+            )
+            escalation_count, blocked_since = blocked_stats.one()
+            blocked_since = blocked_since or incident.updated_at
             elapsed = (
-                (datetime.now(UTC) - incident.updated_at).total_seconds() / 60
-                if incident.updated_at
+                (datetime.now(UTC) - blocked_since).total_seconds() / 60
+                if blocked_since
                 else 0
             )
-            time_blocked = (
-                f"{elapsed:.0f} minutes" if incident.updated_at else "unknown"
-            )
+            time_blocked = f"{elapsed:.0f} minutes" if blocked_since else "unknown"
             block_reason = (
                 incident.blocker_resolver_type.value
                 if incident.blocker_resolver_type
                 else "unknown"
             )
-            escalations_result = await self.session.execute(
-                select(func.count()).where(
-                    AuditLogTable.target_id == incident.id,
-                    AuditLogTable.event_type == "task.blocked",
-                )
-            )
-            escalation_count = escalations_result.scalar() or 0
             escalation_history = (
-                f"blocked {escalation_count} time(s), "
+                f"blocked {escalation_count or 0} time(s), "
                 f"revision_count={incident.revision_count or 0}"
             )
 
@@ -209,15 +219,20 @@ class StrategyEngine(BaseService):
             self.log.warning(
                 "strategy-engine: coroner-incident trigger failed (best-effort)"
             )
-            return "Attempted to open a Coroner autopsy (failed; see logs)."
-        if task is not None:
-            return (
-                f"A Coroner autopsy was opened for stranded task "
-                f"'{incident.title}' ({str(incident.id)[:8]})."
+            incident_ref = (
+                f" for stranded task '{incident.title}' ({str(incident.id)[:8]})"
+                if incident is not None
+                else ""
             )
+            return (
+                f"Attempted to open a Coroner autopsy{incident_ref} (failed; see logs)."
+            )
+        task_ref = f"'{incident.title}' ({str(incident.id)[:8]})"
+        if task is not None:
+            return f"A Coroner autopsy was opened for stranded task {task_ref}."
         return (
-            "A Coroner autopsy was not opened (already open or the coroner "
-            "program is disabled)."
+            f"A Coroner autopsy was not opened for stranded task {task_ref} "
+            "(already open or the coroner program is disabled)."
         )
 
 
