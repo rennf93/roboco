@@ -118,6 +118,8 @@ A MegaTask is a branchless **umbrella** task over N **root-subtasks** (each a re
 | `All connection attempts failed` | API not ready | Orchestrator starts before FastAPI lifespan completes |
 | Healthcheck failing | Wrong endpoint | Use `ollama list` not `curl` |
 
+If the orchestrator is pegged at high CPU and nobody can say why, profile it live instead of guessing: `docker compose exec orchestrator py-spy dump --pid 1` attaches to the running process and prints every thread's stack, no restart needed. The image ships `py-spy` as a standalone tool (not a roboco dependency) and the `orchestrator` service carries `cap_add: [SYS_PTRACE]` in every compose file so the attach is allowed.
+
 ## Subsystem doctrine (`.claude/rules/`, auto-loaded by path)
 
 - `workspaces-and-git.md`: clone reset on fresh claim, `uv sync --extra dev`, stale-state fixes, forge adapters, protected-branch fail-open vs fail-closed

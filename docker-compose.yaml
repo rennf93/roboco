@@ -6,6 +6,13 @@ services:
     image: pgvector/pgvector:pg16
     container_name: roboco-postgres
     restart: unless-stopped
+    # pg_stat_statements only collects anything once shared_preload_libraries
+    # names it at server start (alembic migration 095 just CREATE EXTENSIONs
+    # it, which is a no-op for stats without this). Standard postgres image
+    # ENTRYPOINT is docker-entrypoint.sh; overriding CMD here still runs the
+    # normal init/initdb path, it just execs postgres with this extra flag, and
+    # the container restarts once on the next bring-up to pick up the GUC.
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     # data-only network: agent containers (on roboco_default) cannot reach
     # the production DB; only the multi-homed orchestrator can. Host port
     # publishing (15432) is unaffected — roboco_data is a normal bridge.
@@ -495,6 +502,11 @@ services:
     image: roboco-orchestrator
     container_name: roboco-orchestrator
     restart: unless-stopped
+    # SYS_PTRACE: py-spy attaches to the running process (PID 1) to dump a
+    # stack trace without a restart (`docker compose exec orchestrator
+    # py-spy dump --pid 1`).
+    cap_add:
+      - SYS_PTRACE
     # Multi-homed: the agent mesh (default) for spawned agents / panel /
     # ollama, the data network for postgres/redis, plus render to reach the
     # isolated video-renderer sidecar.
