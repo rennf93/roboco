@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 from roboco.config import settings
+from roboco.models.base import ModelProvider
 from roboco.services.base import BaseService
 from roboco.services.llm import ModelRoutingService
 from roboco.services.provider import ProviderService
@@ -37,7 +38,6 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.models.base import ModelProvider
     from roboco.models.task import Task
 
 
@@ -111,24 +111,34 @@ def task_is_high_stakes(task: Task) -> bool:
 
 
 def resolve_second_review_provider(
-    authoring_provider: ModelProvider,
+    authoring_provider: ModelProvider | Sequence[ModelProvider],
     enabled_providers: Sequence[ModelProvider],
 ) -> SecondReviewSelection:
-    """Pick an enabled provider that differs from `authoring_provider`.
+    """Pick an enabled provider that differs from every authoring provider.
 
-    Deterministic: picks the first differing candidate in `enabled_providers`
-    order (callers pass a stably-ordered sequence — see
-    `SecondReviewService.enabled_providers`). Never raises: when no differing
-    enabled provider exists (the fleet runs a single vendor — the common
-    default, since Anthropic ships enabled-by-default and every other
-    provider ships disabled until configured), it returns an explicit skip
-    with an evidence note instead.
+    ``authoring_provider`` accepts either a single provider or the full set
+    that contributed to an assembled task — an assembled cell/root task can
+    have more than one authoring dev/QA agent, possibly on different
+    providers, and every one of them must be excluded from the candidate
+    pool, not just the first. Deterministic: picks the first candidate in
+    `enabled_providers` order that isn't in the authoring set (callers pass
+    a stably-ordered sequence — see `SecondReviewService.enabled_providers`).
+    Never raises: when no differing enabled provider exists (the fleet runs
+    a single vendor — the common default, since Anthropic ships
+    enabled-by-default and every other provider ships disabled until
+    configured), it returns an explicit skip with an evidence note instead.
     """
+    authoring_set = (
+        {authoring_provider}
+        if isinstance(authoring_provider, ModelProvider)
+        else set(authoring_provider)
+    )
     for candidate in enabled_providers:
-        if candidate != authoring_provider:
+        if candidate not in authoring_set:
             return SecondReviewSelection.resolved(candidate)
+    names = ", ".join(sorted(p.value for p in authoring_set)) or "none"
     return SecondReviewSelection.skip(
-        f"Only one model provider ({authoring_provider.value}) is enabled "
+        f"Only provider(s) that authored this task ({names}) are enabled "
         "fleet-wide; cross-vendor second review is skipped."
     )
 
@@ -152,9 +162,9 @@ class SecondReviewService(BaseService):
         return seen
 
     async def resolve_second_reviewer(
-        self, authoring_provider: ModelProvider
+        self, authoring_provider: ModelProvider | Sequence[ModelProvider]
     ) -> SecondReviewSelection:
-        """Resolve a second-review provider given the authoring provider."""
+        """Resolve a second-review provider given the authoring provider(s)."""
         enabled = await self.enabled_providers()
         return resolve_second_review_provider(authoring_provider, enabled)
 

@@ -143,6 +143,45 @@ async def test_resolver_skip_never_blocks_and_reports_reason(
 
 
 @pytest.mark.asyncio
+async def test_no_runner_injected_reports_honest_skip_not_a_false_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production default (``runner=None``, no synchronous cross-vendor
+    client wired yet) must never claim ``ran=True, findings_count=0`` --
+    that reads as "the second pass looked and found nothing" when in fact
+    nothing ran at all."""
+    monkeypatch.setattr(settings, "cross_vendor_review_enabled", True)
+
+    class _ResolvedService:
+        async def resolve_second_reviewer(
+            self, _authoring_provider: ModelProvider
+        ) -> SecondReviewSelection:
+            return SecondReviewSelection.resolved(ModelProvider.GROK)
+
+    monkeypatch.setattr(
+        "roboco.services.gateway.choreographer.second_review_gate.get_second_review_service",
+        lambda _session: _ResolvedService(),
+    )
+
+    outcome = await run_second_review_for_gate(
+        object(),
+        _task(priority=0),
+        "diff text",
+        authoring_provider=ModelProvider.ANTHROPIC,
+    )
+
+    assert outcome.applicable is True
+    assert outcome.skipped is True
+    assert outcome.provider is None
+    assert outcome.findings == ()
+    assert outcome.skip_reason is not None
+    assert "grok" in outcome.skip_reason.lower()
+    assert outcome.as_evidence() == {
+        "second_review": {"ran": False, "skip_reason": outcome.skip_reason}
+    }
+
+
+@pytest.mark.asyncio
 async def test_resolved_provider_runs_injected_runner_and_reports_findings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -237,7 +276,9 @@ async def test_insert_second_review_findings_writes_dedicated_origin_row(
     db_session: AsyncSession,
 ) -> None:
     """AC: a second-pass flagged miss produces a task_review_findings row
-    with the dedicated origin, in the existing per-finding shape."""
+    with the dedicated origin, in the existing per-finding shape -- but
+    pre-addressed (not open), since this origin lands on an already-
+    assembled task with no dev to route an open finding's resolution to."""
     agent_id = await _seed_agent(db_session)
     task_id = await _seed_task(db_session, agent_id)
     finding = Finding(
@@ -266,7 +307,7 @@ async def test_insert_second_review_findings_writes_dedicated_origin_row(
     assert row.line == _FINDING_LINE
     assert row.severity == "major"
     assert row.actual == "raises an unhandled KeyError instead"
-    assert row.status == "open"
+    assert row.status == "addressed"
 
 
 @pytest.mark.asyncio
