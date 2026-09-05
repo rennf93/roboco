@@ -3390,8 +3390,17 @@ class TaskService(BaseService):
         )
 
         try:
-            branch_name, _ = await git_service.create_branch(workspace, team, request)
+            branch_name, actual_base = await git_service.create_branch(
+                workspace, team, request
+            )
             task.branch_name = branch_name
+            # git.py falls back to the project default when the requested
+            # parent_branch is real (DB-recorded) but not yet pushed to the
+            # remote. Record that here — merge_chain.find_topology_issue
+            # reads it to exclude this deliberate, already-logged fallback
+            # from the shape-(a) refusal (see markers.BASE_BRANCH_FALLBACK).
+            if actual_base != parent_branch:
+                markers.mark_base_branch_fallback(task)
             await self.session.flush()
         except Exception:
             # create_branch cuts a per-task worktree at
