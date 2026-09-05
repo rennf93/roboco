@@ -59,7 +59,9 @@ function itemTitle(item: ApprovalItem): string {
       return item.item.title;
     case "scales":
       return item.item.target_task_title;
-    default:
+    case "pest_control":
+    case "spackle":
+    case "dogfood":
       return item.item.title;
   }
 }
@@ -74,7 +76,10 @@ function itemSubtitle(item: ApprovalItem): string | undefined {
       return item.item.evidence;
     case "scales":
       return item.item.rationale;
-    default:
+    case "release":
+    case "x_post":
+    case "video_post":
+    case "roadmap":
       return undefined;
   }
 }
@@ -119,7 +124,9 @@ function Detail({ item, onDone }: { item: ApprovalItem; onDone: () => void }) {
           onDone={onDone}
         />
       );
-    default:
+    case "pest_control":
+    case "spackle":
+    case "dogfood":
       return (
         <BoardProgramItemDetail
           kind={item.kind}
@@ -132,9 +139,9 @@ function Detail({ item, onDone }: { item: ApprovalItem; onDone: () => void }) {
 }
 
 /**
- * The approvals card stack: every CEO-decision draft across the eight
- * queues (release, X post, video, roadmap, and the four board-program
- * queues) as one list; tapping focuses a full-context detail whose primary
+ * The approvals card stack: one list across the eight queues it sources
+ * (release, X post, video, roadmap, and the four board-program queues);
+ * tapping focuses a full-context detail whose primary
  * action rides Telegram's MainButton and whose back navigation rides the
  * native BackButton (with visible fallbacks outside Telegram). An acted-on
  * item vanishes from the refetched queue, which pops the view back to the
