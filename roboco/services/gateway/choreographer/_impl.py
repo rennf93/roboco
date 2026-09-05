@@ -3961,6 +3961,30 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id, task=task),
         )
 
+    async def _notify_pr_reviewer(self, task_id: UUID, t: Any) -> None:
+        """Reassign the in-path PR-review-gate reviewer for this task.
+
+        ``submit_for_review`` clears ``assigned_to`` at gate entry (mirrors
+        ``submit_qa``); this explicitly reassigns to the reviewer
+        ``TaskService.pr_reviewer_for`` resolves so the task's ownership
+        names the real reviewer instead of sitting unassigned in the
+        queue. No-op unless the task actually landed in the gate: a
+        zero-diff branch is PR-waived straight to ``awaiting_pm_review``
+        (see ``VerbRunner``), and reassigning to the reviewer there would
+        overwrite the PM ownership that state depends on. The dispatcher
+        spawn is the reviewer's signal, not an A2A ping: root level can't
+        (the a2a matrix denies PM -> the main PM's root->master reviewer
+        outright) and cell level doesn't need one (the gate dispatcher
+        spawns the reviewer by status+team on its own).
+        """
+        from roboco.models.base import TaskStatus
+
+        if str(t.status) != str(TaskStatus.AWAITING_PR_REVIEW):
+            return
+        reviewer = await self.task.pr_reviewer_for(t)
+        if reviewer is not None:
+            await self.task.reassign(task_id, reviewer.id)
+
     async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
         """Reassign + A2A-notify the QA agent for this task's team.
 
@@ -7096,10 +7120,12 @@ class Choreographer:
             )
         t = outcome
         # Do NOT hand the cell task to Main PM. `submit_for_review` clears
-        # PM ownership at gate entry, so the task sits unassigned in the
-        # reviewer queue; the cell PM is re-resolved by role when the
-        # reviewer passes or fails the gate. Main PM only completes the
-        # ROOT (root→master + escalate-to-CEO).
+        # PM ownership at gate entry; `_notify_pr_reviewer` immediately
+        # reassigns to the cell's in-path gate reviewer (be/fe/ux-pr-
+        # reviewer) instead of leaving it unassigned. The cell PM is
+        # re-resolved by role when the reviewer passes or fails the gate.
+        # Main PM only completes the ROOT (root→master + escalate-to-CEO).
+        await self._notify_pr_reviewer(task_id, t)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -8529,6 +8555,10 @@ class Choreographer:
                 task_id=task_id,
                 verb="submit_root",
             )
+        # `submit_for_review` clears Main PM ownership at gate entry;
+        # reassign to the root->master gate reviewer (pr-reviewer-1)
+        # instead of leaving it unassigned.
+        await self._notify_pr_reviewer(task_id, t)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),

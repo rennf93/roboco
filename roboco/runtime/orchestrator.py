@@ -16320,7 +16320,11 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         pile-up no longer serializes 12-14 min on a single reviewer.
         ``cell-pr-reviewer-2`` is never used for the root→master gate or
         inbound external PRs (both hardcode pr-reviewer-1), preserving the
-        run-order starvation guard above.
+        run-order starvation guard above. This fallback selection only runs
+        for a task nobody has claimed yet (see ``_gate_task_reviewer``): a
+        task already claimed by a reviewer is always re-targeted at that
+        SAME reviewer, never re-routed to the overflow just because it
+        happens to be free.
         """
         tasks = await self._fetch_tasks(client, "awaiting_pr_review")
         spawned: set[str] = set()
@@ -16329,17 +16333,14 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             if await self._gate_task_ci_pending(task):
                 continue
-            team = task.get("team")
-            if team in ("backend", "frontend", "ux_ui"):
-                reviewer = self._select_agent_for_cell(team, "pr_reviewer")
-            else:
-                reviewer = "pr-reviewer-1"
+            reviewer = self._gate_task_reviewer(task)
             if not reviewer or reviewer in spawned or self._is_agent_active(reviewer):
                 continue
             # Respawn circuit breaker — a gate task that keeps re-surfacing
             # without advancing must stop respawning the reviewer.
             if await self._pm_respawn_should_gate(reviewer, task):
                 continue
+            await self._sync_gate_reviewer_assignment(task, reviewer)
             spawned.add(reviewer)
             await self.spawn_agent(
                 agent_id=reviewer,
@@ -16347,6 +16348,84 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 initial_prompt=self._build_pr_gate_prompt(task),
                 git_context=self._task_git_context(task),
                 spawned_by="_dispatch_pr_gate_work",
+            )
+
+    def _gate_task_reviewer(self, task: dict[str, Any]) -> str | None:
+        """Pick which reviewer to dispatch for one awaiting_pr_review task.
+
+        A task with a REAL live claim (``active_claimant_id`` set - some
+        reviewer ran ``claim_gate_review`` on it in an earlier tick) is
+        always re-targeted at that SAME reviewer, whether or not it is
+        currently free - never re-routed to a different one (e.g. the
+        overflow ``cell-pr-reviewer-2``) just because that other reviewer
+        happens to be free this tick. Observed live: fe-pr-reviewer claimed a
+        gate task, its container exited between ticks, and the dispatcher
+        kept spawning cell-pr-reviewer-2 onto the SAME task every tick since
+        it recomputed "which cell reviewer is free" from scratch each time -
+        each spawn's ``claim_gate_review`` was rejected outright
+        ("already claimed by another reviewer"), burning spawns until the
+        respawn breaker paged the CEO over a task that had already
+        advanced. Deliberately NOT keyed on ``claimed_by``:
+        ``_notify_pr_reviewer`` already sets ``claimed_by`` (alongside
+        ``assigned_to``) to the PRIMARY reviewer at gate entry via a plain
+        ``reassign``, before any real claim - pinning on that would read the
+        entry assignment as "already claimed" and skip the overflow fallback
+        even while the primary is busy, reinstating the serialization the
+        overflow reviewer exists to prevent. Falls back to the normal
+        team-based selection when there is no live claim yet, or the
+        claimant can't be resolved to a known slug (stale/foreign id).
+        """
+        claimant = task.get("active_claimant_id")
+        if claimant:
+            resolved = self._resolve_agent_slug(str(claimant))
+            if resolved != str(claimant):
+                return resolved
+        team = task.get("team")
+        if team in ("backend", "frontend", "ux_ui"):
+            return self._select_agent_for_cell(team, "pr_reviewer")
+        return "pr-reviewer-1"
+
+    async def _sync_gate_reviewer_assignment(
+        self, task: dict[str, Any], reviewer: str
+    ) -> None:
+        """Keep ``assigned_to`` matching the reviewer actually being spawned.
+
+        ``TaskService.pr_reviewer_for`` (via ``submit_up``/``submit_root``'s
+        ``_notify_pr_reviewer``) already assigns the PRIMARY reviewer at
+        gate entry, so a mismatch here only means that reviewer is busy and
+        ``_select_agent_for_cell`` fell back to the overflow
+        ``cell-pr-reviewer-2``, the one case this dispatcher's own
+        selection can legitimately diverge from the entry assignment. Skips
+        entirely (no DB round trip) when the task is still unassigned or
+        already matches, so the common case costs nothing. Best-effort: a
+        failure leaves the stale assignee, which ``claim_gate_review``'s
+        role-only gate tolerates fine (the reviewer can still claim it).
+        """
+        current = task.get("assigned_to")
+        if not current or self._resolve_agent_slug(str(current)) == reviewer:
+            return
+        reviewer_uuid = AGENT_UUIDS.get(reviewer)
+        if reviewer_uuid is None:
+            return
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
+
+        try:
+            task_id = require_uuid(str(task["id"]))
+        except InvalidIdentifierError:
+            return
+        try:
+            async with get_db_context() as db:
+                await TaskService(db).reassign(task_id, UUID(reviewer_uuid))
+        except Exception as exc:
+            logger.warning(
+                "gate reviewer overflow reassign failed",
+                task_id=task.get("id"),
+                reviewer=reviewer,
+                error=str(exc),
             )
 
     async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:

@@ -902,14 +902,17 @@ async def test_delegate_invalid_team_enum_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
+async def test_submit_up_opens_pr_and_reassigns_to_cell_pr_reviewer() -> None:
     """submit_up opens the cell→root PR and moves the cell task into the
-    in-path PR-review gate (awaiting_pr_review), but does NOT hand it off to
-    Main PM. The cell PM owns cell completion (it is respawned to `complete`
-    after the cell reviewer pr_passes), so the assignment stays put — no
-    reassign."""
+    in-path PR-review gate (awaiting_pr_review). It does NOT hand the task
+    off to Main PM (the cell PM owns cell completion, it is respawned to
+    `complete` after the cell reviewer pr_passes) but it must not leave the
+    task unassigned either: `_notify_pr_reviewer` reassigns it to
+    `pr_reviewer_for`'s pick so the reviewer queue task actually names a
+    reviewer instead of sitting NULL."""
     pm_id = uuid4()
     task_id = uuid4()
+    reviewer_id = uuid4()
     t = MagicMock(
         id=task_id,
         status="in_progress",
@@ -921,7 +924,7 @@ async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
     after = MagicMock(
         id=task_id,
         status="awaiting_pr_review",
-        assigned_to=pm_id,
+        assigned_to=None,
         parent_task_id=None,
         branch_name="feature/backend/abc123",
         team="backend",
@@ -931,6 +934,7 @@ async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     task_svc.all_subtasks_terminal.return_value = True
     task_svc.submit_for_review.return_value = after
+    task_svc.pr_reviewer_for.return_value = MagicMock(id=reviewer_id)
     git_svc = AsyncMock()
     git_svc.create_pr.return_value = {"pr_number": 12, "pr_url": "x"}
     journal_svc = AsyncMock()
@@ -945,7 +949,103 @@ async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
     assert env.error is None
     assert env.status == "awaiting_pr_review"
     git_svc.create_pr.assert_awaited_once()
-    task_svc.reassign.assert_not_called()
+    task_svc.reassign.assert_awaited_once_with(task_id, reviewer_id)
+
+
+@pytest.mark.asyncio
+async def test_submit_up_skips_reassign_when_no_cell_pr_reviewer() -> None:
+    """No reviewer configured for the cell -> no reassign call."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        branch_name="feature/backend/abc123",
+        team="backend",
+    )
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_pr_review",
+        assigned_to=None,
+        parent_task_id=None,
+        branch_name="feature/backend/abc123",
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.submit_for_review.return_value = after
+    task_svc.pr_reviewer_for.return_value = None
+    git_svc = AsyncMock()
+    git_svc.create_pr.return_value = {"pr_number": 12, "pr_url": "x"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.submit_up(
+        pm_id, task_id, notes="cell completed all subtasks; ready for review"
+    )
+    assert env.error is None
+    task_svc.reassign.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_up_waived_skips_reassign_and_keeps_pm_owner() -> None:
+    """A zero-diff CODE-typed cell branch (report-only work, ahead=0) is
+    PR-waived straight to awaiting_pm_review instead of entering the gate
+    (VerbRunner reroutes submit_for_review -> submit_pm_review). The task
+    never actually reached awaiting_pr_review, so `_notify_pr_reviewer`
+    must be a no-op: reassigning to the cell reviewer here would overwrite
+    the cell PM ownership awaiting_pm_review depends on."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        branch_name="feature/backend/abc123",
+        team="backend",
+        task_type="code",
+    )
+    waived = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        branch_name="feature/backend/abc123",
+        team="backend",
+        task_type="code",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.submit_pm_review.return_value = waived
+    git_svc = AsyncMock()
+    git_svc.is_behind_base.return_value = (0, 0)
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.submit_up(
+        pm_id, task_id, notes="report-only, no diff to review; bubbling to PM review"
+    )
+    assert env.error is None
+    assert env.status == "awaiting_pm_review"
+    git_svc.create_pr.assert_not_awaited()
+    task_svc.submit_for_review.assert_not_awaited()
+    task_svc.submit_pm_review.assert_awaited_once()
+    task_svc.pr_reviewer_for.assert_not_awaited()
+    task_svc.reassign.assert_not_awaited()
+    assert waived.assigned_to == pm_id
 
 
 @pytest.mark.asyncio

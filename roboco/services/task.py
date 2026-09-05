@@ -10714,9 +10714,39 @@ class TaskService(BaseService):
         )
         return result.scalars().first()
 
+    async def _agent_by_slug(self, slug: str) -> AgentTable | None:
+        """Find an agent by its exact slug."""
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.slug == slug)
+        )
+        return result.scalar_one_or_none()
+
     async def qa_agent_for_team(self, team: Team) -> AgentTable | None:
         """Find the QA agent for a team."""
         return await self._agent_with_role_and_team(AgentRole.QA, team)
+
+    async def pr_reviewer_for(self, task: TaskTable) -> AgentTable | None:
+        """The in-path PR-review-gate reviewer for an assembled-PR task.
+
+        Mirrors ``qa_agent_for_team``: a cell-team task (backend/frontend/
+        ux_ui) - the cell→root gate - goes to that cell's dedicated
+        reviewer (be/fe/ux-pr-reviewer); anything else (the root→master
+        gate) goes to the shared board-level ``pr-reviewer-1``. ``pr-
+        reviewer-1`` and the overflow ``cell-pr-reviewer-2`` are both
+        board-team PR_REVIEWER rows, so the root case is resolved by slug
+        rather than role+team to avoid picking either one arbitrarily. The
+        orchestrator's ``_dispatch_pr_gate_work`` mirrors this exact
+        selection so the assignee set here and the reviewer it spawns can
+        never disagree (its own overflow fallback reassigns when it
+        legitimately spawns ``cell-pr-reviewer-2`` instead).
+        """
+        try:
+            team = Team(task.team) if task.team else None
+        except ValueError:
+            team = None
+        if team in (Team.BACKEND, Team.FRONTEND, Team.UX_UI):
+            return await self._agent_with_role_and_team(AgentRole.PR_REVIEWER, team)
+        return await self._agent_by_slug("pr-reviewer-1")
 
     async def documenter_for_team(self, team: Team) -> AgentTable | None:
         """Find the Documenter agent for a team."""
@@ -11947,10 +11977,13 @@ class TaskService(BaseService):
 
         Clears the PM's ownership like submit_for_qa does: the task is
         handing off to the PR-reviewer queue, so it must not display as the
-        submitting PM's active work. The gate dispatcher spawns a reviewer
-        by status+team and ``pr_gate_claim`` sets the reviewer as owner; a
+        submitting PM's active work. The choreographer's
+        ``_notify_pr_reviewer`` immediately reassigns to ``pr_reviewer_for``'s
+        pick right after this call returns (mirrors ``_notify_qa``), so the
+        clear here is momentary rather than leaving the task unassigned; a
         stale PM assignee here made the panel show the PM still owning a
-        task it was done with (the CEO manually reassigned 2026-09-01). On
+        task it was done with (the CEO manually reassigned 2026-09-01), and
+        a bare clear with no reassign left the task unowned instead. On
         pr_pass / pr_fail the owning PM is re-resolved by role, so nothing
         downstream depends on the entry assignee.
         """
