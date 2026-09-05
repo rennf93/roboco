@@ -203,21 +203,6 @@ class _StubGit:
         del task_id
         return False
 
-    async def is_behind_base(
-        self, task: Any, *, base_branch: str, actor_agent_id: Any = None
-    ) -> tuple[int, int]:
-        del task, base_branch, actor_agent_id
-        # (behind, ahead) — never behind, always one commit ahead so the
-        # PR-waiver check (zero-diff) never fires and the freshen guard
-        # never attempts a rebase.
-        return (0, 1)
-
-    async def unmerged_child_commits(
-        self, task: Any, *, actor_agent_id: Any = None
-    ) -> list[dict[str, Any]]:
-        del task, actor_agent_id
-        return []
-
 
 class _MultiTaskStubGit:
     """Deterministic GitService stub spanning MULTIPLE tasks (cell + root).
@@ -891,6 +876,7 @@ class _RootCellHarness:
     main_pm_id: UUID
     c: Choreographer
     task_service: TaskService
+    git: Any
 
     async def submit_up_and_pass(
         self,
@@ -986,6 +972,27 @@ async def _seed_root_cell_harness(
     ]
     await db_session.flush()
 
+    # A real, still-open WorkSessionTable row for the cell — without this,
+    # complete()'s _assert_pr_merged_for_complete guard (task.py:7378) sees
+    # a null work_session_id and early-returns True, never actually
+    # exercising the merged-PR check the cell_pm complete -> pr_merge path
+    # is meant to prove.
+    cell_work_session = WorkSessionTable(
+        id=uuid4(),
+        project_id=project.id,
+        task_id=cell.id,
+        agent_id=cell_pm_agent.id,
+        branch_name=str(cell.branch_name),
+        base_branch=str(root.branch_name),
+        target_branch=str(root.branch_name),
+        status=WorkSessionStatus.ACTIVE,
+        pr_status="open",
+    )
+    db_session.add(cell_work_session)
+    await db_session.flush()
+    cell.work_session_id = cell_work_session.id
+    await db_session.flush()
+
     task_service = TaskService(db_session)
     git = _MultiTaskStubGit(
         db_session, {str(cell.branch_name): cell, str(root.branch_name): root}
@@ -1006,6 +1013,7 @@ async def _seed_root_cell_harness(
         main_pm_id=main_pm_id,
         c=Choreographer(deps),
         task_service=task_service,
+        git=git,
     )
 
 
@@ -1021,11 +1029,16 @@ async def test_cell_and_root_reach_completed_via_gate_and_ceo_approval(
     Seeds a real root (main_pm) + cell (cell_pm) task hierarchy and drives
     every stage through the real Choreographer + TaskService + DB. Git stays
     a deterministic stub (``_MultiTaskStubGit``, this file's established
-    pattern generalized to two tasks) — the merge itself is simulated the
-    same way ``_StubGit.pr_merge`` always has, and the final CEO-approve leg
-    is driven against a REAL ``WorkSessionTable`` row with ``pr_status``
-    stamped ``"merged"`` so the real merged-PR guard in
-    ``TaskService.ceo_approve`` actually runs (not skipped).
+    pattern generalized to two tasks). Both the cell and the root carry a
+    REAL ``WorkSessionTable`` row seeded ``pr_status="open"`` — the cell's
+    flips to ``"merged"`` via the real ``pr_merge`` pre-side-effect
+    ``complete()`` runs, and the root's is proven non-circular: ``ceo_
+    approve`` is asserted to refuse while still open, then the flip is
+    driven through ``_MultiTaskStubGit.pr_merge`` (not a literal field
+    write) before a second ``ceo_approve`` call succeeds — so the real
+    merged-PR guards in both ``TaskService.complete`` and ``ceo_approve``
+    actually execute, not skipped by an early-return on a null
+    ``work_session_id``.
     """
     h = await _seed_root_cell_harness(db_session, lifecycle_setup)
     project = lifecycle_setup["project"]
@@ -1056,6 +1069,15 @@ async def test_cell_and_root_reach_completed_via_gate_and_ceo_approval(
     assert any(entry.get("kind") == "merge" for entry in (cell_final.commits or [])), (
         "the merge commit must be recorded on the completed cell task"
     )
+    # The cell's real WorkSessionTable row must now read "merged" — proving
+    # complete()'s pr_merge pre-side-effect + _assert_pr_merged_for_complete
+    # guard actually ran against a live session, not an early-return on a
+    # null work_session_id.
+    cell_work_session = await db_session.get(
+        WorkSessionTable, cell_final.work_session_id
+    )
+    assert cell_work_session is not None
+    assert cell_work_session.pr_status == "merged"
     # The root's only subtask (the cell) is now terminal.
     assert await h.task_service.all_subtasks_terminal(root_id)
 
@@ -1080,9 +1102,14 @@ async def test_cell_and_root_reach_completed_via_gate_and_ceo_approval(
         " the CEO decides"
     )
 
-    # 7. The CEO merges the root->master PR (simulated: a real WorkSessionTable
-    #    row recording pr_status="merged") and approves — the real merged-PR
-    #    guard in ceo_approve runs against it, not skipped.
+    # 7. The CEO merges the root->master PR. Seed a real, still-OPEN
+    #    WorkSessionTable row first and prove ceo_approve's merged-PR guard
+    #    actively refuses while it is open (a non-circular check — the
+    #    assertion would fail if the guard were deleted), then drive the
+    #    flip to "merged" through _MultiTaskStubGit.pr_merge — the same
+    #    stub method the real cell_pm complete path runs through — rather
+    #    than a literal field write, before asserting the approval reaches
+    #    completed.
     work_session = WorkSessionTable(
         id=uuid4(),
         project_id=project.id,
@@ -1091,25 +1118,37 @@ async def test_cell_and_root_reach_completed_via_gate_and_ceo_approval(
         branch_name=root_awaiting_ceo.branch_name,
         base_branch="master",
         target_branch="master",
-        status=WorkSessionStatus.COMPLETED,
+        status=WorkSessionStatus.ACTIVE,
         pr_number=root_awaiting_ceo.pr_number,
         pr_url=root_awaiting_ceo.pr_url,
-        pr_status="merged",
+        pr_status="open",
     )
     db_session.add(work_session)
     await db_session.flush()
     root_awaiting_ceo.work_session_id = work_session.id
     await db_session.flush()
 
+    refused = await h.task_service.ceo_approve(
+        root_id, "Attempting approval before the PR is actually merged."
+    )
+    assert refused is None, (
+        "ceo_approve must refuse while the work session's PR is still open"
+    )
+
+    await h.git.pr_merge(
+        root_awaiting_ceo.pr_number, target="master", project_id=project.id
+    )
+    await db_session.refresh(work_session)
+    assert work_session.pr_status == "merged", (
+        "_MultiTaskStubGit.pr_merge must flip the real work session to merged"
+    )
+
     approved = await h.task_service.ceo_approve(
         root_id,
         "Approved: the backend cell's /healthz slice is complete, reviewed,"
         " and merged to master. Shipping to production.",
     )
-    assert approved is not None, (
-        "ceo_approve refused — the merged-PR guard likely rejected the"
-        " simulated work session"
-    )
+    assert approved is not None, "ceo_approve refused after the PR was actually merged"
     assert str(approved.status) == "completed"
 
     final_root = await h.task_service.get(root_id)
