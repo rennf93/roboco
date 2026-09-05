@@ -51,6 +51,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
 )
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+from roboco.utils.converters import to_python_uuid
 
 logger = structlog.get_logger()
 
@@ -195,7 +196,30 @@ class DocMixin(_Base):
         # Verb body owns dispatch — claim_doc_task's spec composes=("claim",
         # "start") but doc_claim is the runtime-correct specialized form
         # that keeps status at AWAITING_DOCUMENTATION. See module docstring.
-        t = await self.task.doc_claim(doc_agent_id, task_id)
+        #
+        # Durability boundary: commit the claim BEFORE the workspace checkout
+        # and advisory evidence assembly — see claim_review (qa.py) for the
+        # full rationale. Same-agent retry: if the task is already claimed by
+        # THIS documenter, skip the re-claim and go straight to evidence.
+        if to_python_uuid(t.active_claimant_id) != doc_agent_id:
+            claimed = await self.task.doc_claim(doc_agent_id, task_id)
+            if claimed is None:
+                return await self._emit_rejection(
+                    Envelope.not_authorized(
+                        message=(
+                            "this documentation task is already claimed by"
+                            " another agent"
+                        ),
+                        remediate="give_me_work for the next available task",
+                        context_briefing=briefing,
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=doc_agent_id,
+                    task_id=task_id,
+                    verb="claim_doc_task",
+                )
+            t = claimed
+            await self.task.session.commit()
+
         # The documenter's clone is separate from the dev's;
         # the task branch already exists (dev created it) so no checkout
         # ran in the doc's workspace. Put the doc on the task branch now
