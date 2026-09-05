@@ -117,3 +117,27 @@ export const PR_CI_VERDICT_UNAVAILABLE: PrCiVerdict = {
     "(GitService.get_pr_ci_status has no REST route) — needs a new " +
     "endpoint; escalate rather than invent.",
 };
+
+// The release proposal's member-task set — NOT reachable from any existing
+// endpoint. ReleaseReport.change_summary (roboco/services/release_readiness.py)
+// is free-text commit strings only; no task_id/pr_number is exposed anywhere
+// on the release-manager surface (release.py schema, ReleaseReportModel).
+// Per this task's intake facts ("no new backend data capture"), that gap is
+// reported here for escalation instead of invented — the release-proposal
+// verification rollup (@/components/verification/release-rollup) is
+// parametrized over an explicit task-id list instead, so it renders the real
+// aggregation the day a real endpoint exposes the member set.
+export interface ReleaseMemberTaskIdsUnavailable {
+  available: false;
+  reason: string;
+}
+
+export const RELEASE_MEMBER_TASK_IDS_UNAVAILABLE: ReleaseMemberTaskIdsUnavailable =
+  {
+    available: false,
+    reason:
+      "No backend endpoint exposes this release's member task set " +
+      "(ReleaseReport.change_summary is free-text commit strings only, no " +
+      "task_id/pr_number) — needs a new endpoint; escalate rather than " +
+      "invent.",
+  };

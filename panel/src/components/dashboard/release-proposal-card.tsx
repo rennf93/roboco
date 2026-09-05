@@ -27,6 +27,7 @@ import { CheckCircle2, XCircle, Rocket, AlertTriangle, Loader2 } from "lucide-re
 import { toast } from "sonner";
 import { usePageRefresh } from "@/hooks";
 import { HelpTip } from "@/components/ui/help-tip";
+import { ReleaseVerificationRollup } from "@/components/verification/release-rollup";
 
 const _MIN_REJECT_CHARS = 10;
 
@@ -259,6 +260,17 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
               </ul>
             </div>
           )}
+
+          <div>
+            <HelpTip label="Per-member-task acceptance-criteria state, findings by review round, CI verdict, conventions findings, and reviewer chain — the same receipt the task-detail Verification tab shows, aggregated across every task this release carries">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Verification rollup
+              </p>
+            </HelpTip>
+            <ReleaseVerificationRollup
+              taskIds={proposal.member_task_ids ?? []}
+            />
+          </div>
 
           {proposal.required_changes && (
             <p className="text-sm text-amber-600">

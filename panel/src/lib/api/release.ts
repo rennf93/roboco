@@ -31,6 +31,12 @@ export interface ReleaseProposal {
   execute_status?: string | null;
   execute_detail?: string | null;
   execute_in_flight?: boolean;
+  // The release's member task ids, for the verification rollup — no
+  // existing endpoint populates this yet (see
+  // RELEASE_MEMBER_TASK_IDS_UNAVAILABLE in @/lib/api/verification).
+  // Optional and always absent today; kept so the rollup wires up the day a
+  // real endpoint exposes the set.
+  member_task_ids?: string[] | null;
   report: ReleaseReport;
 }
 

@@ -4,6 +4,7 @@ import {
   groupFindingsByRound,
   parseAcVerificationStamps,
   PR_CI_VERDICT_UNAVAILABLE,
+  RELEASE_MEMBER_TASK_IDS_UNAVAILABLE,
 } from "../verification";
 import type { TaskFinding } from "../tasks";
 
@@ -160,5 +161,14 @@ describe("PR_CI_VERDICT_UNAVAILABLE", () => {
   it("always reports unavailable with an escalation reason (no-CI-repo case)", () => {
     expect(PR_CI_VERDICT_UNAVAILABLE.available).toBe(false);
     expect(PR_CI_VERDICT_UNAVAILABLE.reason.length).toBeGreaterThan(0);
+  });
+});
+
+describe("RELEASE_MEMBER_TASK_IDS_UNAVAILABLE", () => {
+  it("always reports unavailable with an escalation reason (no member-task endpoint)", () => {
+    expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.available).toBe(false);
+    expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason.length).toBeGreaterThan(
+      0,
+    );
   });
 });
