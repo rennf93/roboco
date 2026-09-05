@@ -90,6 +90,7 @@ Changing this heuristic changes what `task_states`/`findings_summary` cover; tre
 
 - Release membership stays heuristic (completion window + same-project scoping) — a future `release_id` column on tasks would make membership schema-linked.
 - The response schema is consumed by the frontend cell starting from this PR; extend only additively (new optional fields), never by reshaping existing fields.
+- `qa_passed` widened from `bool` to `bool | None` in this bounce fix (PR #1022) — additive on the wire, but any existing frontend consumer treating it as a non-nullable boolean should be checked by the frontend cell before relying on the `None` ("no QA required") case.
 
 ## Related
 
