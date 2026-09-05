@@ -82,6 +82,8 @@ function itemSubtitle(item: ApprovalItem): string | undefined {
     case "roadmap":
       return undefined;
   }
+  const _exhaustive: never = item;
+  return _exhaustive;
 }
 
 function ItemRow({ item, onOpen }: { item: ApprovalItem; onOpen: () => void }) {
@@ -136,6 +138,8 @@ function Detail({ item, onDone }: { item: ApprovalItem; onDone: () => void }) {
         />
       );
   }
+  const _exhaustive: never = item;
+  return _exhaustive;
 }
 
 /**
