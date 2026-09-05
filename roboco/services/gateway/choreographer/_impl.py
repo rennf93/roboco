@@ -4908,6 +4908,13 @@ class Choreographer:
             return await self._emit_rejection(
                 rejection, agent_id=agent_id, task_id=task_id, verb="sync_branch"
             )
+        # sync_task_branch is git-only (fetch/checkout/reset or rebase) and can
+        # chown-walk the workspace for tens of seconds on a slow volume. Close
+        # out the read-only preflight transaction first so this request's
+        # session sits outside a transaction while the git op runs, instead of
+        # holding it open (and its connection idle-in-transaction) the whole
+        # time.
+        await self.task.session.commit()
         try:
             result = await self.git.sync_task_branch(
                 t, base_branch=base_branch, actor_agent_id=agent_id, stash=stash
