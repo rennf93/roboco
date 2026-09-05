@@ -25,6 +25,14 @@ class ReleaseReportModel(BaseModel):
     gate_state: str
 
 
+class ReleaseMemberTaskModel(BaseModel):
+    """One delivery task that belongs to this release, for the panel's
+    per-member-task verification-receipt rollup."""
+
+    task_id: str
+    pr_number: int | None = None
+
+
 class ReleaseProposalResponse(BaseModel):
     """The held proposal the CEO approves or rejects."""
 
@@ -36,6 +44,7 @@ class ReleaseProposalResponse(BaseModel):
     execute_detail: str | None = None
     execute_in_flight: bool = False
     report: ReleaseReportModel
+    member_task_ids: list[ReleaseMemberTaskModel] = Field(default_factory=list)
 
 
 class ReleaseRejectRequest(BaseModel):
