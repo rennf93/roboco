@@ -2,24 +2,35 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 from roboco.db.tables import (
     AgentTable,
+    AuditLogTable,
     BoardProgramCycleTable,
     ProjectTable,
     SystemSettingTable,
     TaskTable,
 )
 from roboco.foundation import identity as _foundation
-from roboco.models.base import AgentRole, AgentStatus, Team
+from roboco.foundation.policy.content import markers
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    BlockerResolverType,
+    TaskType,
+    Team,
+)
 from roboco.models.base import TaskStatus as TS
 from roboco.services import strategy_engine as se_module
 from roboco.services.strategy_engine import StrategyEngine
 from roboco.services.task import (
+    CORONER_SOURCE,
     ROADMAP_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     get_task_service,
@@ -59,7 +70,9 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
     await db_session.execute(
         update(TaskTable)
         .where(
-            TaskTable.source.in_([ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE]),
+            TaskTable.source.in_(
+                [ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, CORONER_SOURCE]
+            ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
         )
         .values(status=TS.CANCELLED)
@@ -287,3 +300,224 @@ async def test_idle_second_tick_is_a_dedup_noop(
     assert len(open_cycles) == ONE
     second_body = notifier.send_ack_notification.call_args.kwargs["body"]
     assert "already open" in second_body
+
+
+# --------------------------------------------------------------------------- #
+# Task: stranded_blocked -> coroner autopsy trigger (real DB — the Coroner
+# dedup + arming gate are what make the second tick / disarmed case a no-op,
+# so a fully-mocked session can't exercise them).
+# --------------------------------------------------------------------------- #
+
+AUDITOR_UUID = _foundation.AGENTS["auditor"].uuid
+
+
+async def _seed_coroner_fixture(session: AsyncSession) -> UUID:
+    """Seed system + auditor agents + a project for coroner tests.
+
+    Returns the project UUID for seeding blocked tasks against.
+    """
+    for uuid, slug, role, team in (
+        (SYSTEM_UUID, "system", AgentRole.SYSTEM, None),
+        (AUDITOR_UUID, "auditor", AgentRole.AUDITOR, Team.BOARD),
+    ):
+        if await session.get(AgentTable, uuid) is None:
+            session.add(
+                AgentTable(
+                    id=uuid,
+                    name=slug,
+                    slug=slug,
+                    role=role,
+                    team=team,
+                    status=AgentStatus.ACTIVE,
+                    model_config={},
+                    system_prompt="x",
+                    capabilities=[],
+                    permissions={},
+                    metrics={},
+                )
+            )
+    await session.flush()
+    project = ProjectTable(
+        name="RoboCo",
+        slug=SLUG,
+        git_url="https://github.com/x/roboco.git",
+        default_branch="master",
+        protected_branches=["master"],
+        assigned_cell=Team.BACKEND,
+        created_by=SYSTEM_UUID,
+        is_active=True,
+    )
+    session.add(project)
+    await session.flush()
+    return UUID(str(project.id))
+
+
+async def _seed_blocked_task(
+    session: AsyncSession,
+    project_id: UUID,
+    *,
+    title: str = "stranded-seed-task",
+    age_minutes: int = 240,
+) -> UUID:
+    """Seed a BLOCKED task with ``updated_at`` in the past so
+    ``list_long_running_blocked`` finds it past the threshold."""
+    task = TaskTable(
+        id=uuid4(),
+        title=title,
+        description="seeded blocked task for coroner trigger test",
+        acceptance_criteria=["seeded"],
+        status=TS.BLOCKED,
+        priority=2,
+        task_type=TaskType.CODE,
+        team=Team.BACKEND,
+        created_by=SYSTEM_UUID,
+        project_id=project_id,
+        blocker_resolver_type=BlockerResolverType.HUMAN,
+        revision_count=0,
+        updated_at=datetime.now(UTC) - timedelta(minutes=age_minutes),
+    )
+    session.add(task)
+    await session.flush()
+    return UUID(str(task.id))
+
+
+def _mock_stranded_assessment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mock goals to empty (no direction → no idle observation); let the real
+    task service find the seeded blocked task (no mock on get_task_service)."""
+    goals_svc = MagicMock()
+    goals_svc.get = AsyncMock(return_value=_GOALS_EMPTY)
+    monkeypatch.setattr(se_module, "get_company_goals_service", lambda _s: goals_svc)
+
+
+@pytest.mark.asyncio
+async def test_stranded_triggers_coroner_cycle(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = await _seed_coroner_fixture(db_session)
+    await _seed_blocked_task(db_session, project_id)
+    monkeypatch.setattr(se_module.settings, "strategy_engine_enabled", True)
+    monkeypatch.setattr(se_module.settings, "strategy_stranded_blocked_minutes", 1)
+    monkeypatch.setattr(se_module.settings, "self_heal_project_slug", SLUG)
+    db_session.add(
+        SystemSettingTable(key="board_program.coroner.enabled", value="true")
+    )
+    await db_session.flush()
+    _mock_stranded_assessment(monkeypatch)
+    notifier = MagicMock()
+    notifier.send_ack_notification = AsyncMock()
+    monkeypatch.setattr(se_module, "NotificationService", lambda: notifier)
+
+    eng = StrategyEngine(db_session)
+    await eng.run_cycle()
+
+    open_cycles = await get_task_service(db_session).list_open_coroner_cycles()
+    assert len(open_cycles) == ONE
+    body = notifier.send_ack_notification.call_args.kwargs["body"]
+    assert "Coroner autopsy" in body
+    assert "stranded-seed-task" in body
+
+
+_MIN_BLOCKED_MINUTES_FROM_AUDIT = 100
+
+
+@pytest.mark.asyncio
+async def test_stranded_time_blocked_uses_audit_event_not_updated_at(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """time_blocked is derived from the latest task.blocked audit
+    transition, not the task's updated_at — updated_at moves on any later
+    touch while the task sits blocked and would otherwise wildly
+    underestimate how long it's actually been stuck."""
+    project_id = await _seed_coroner_fixture(db_session)
+    task_id = await _seed_blocked_task(db_session, project_id, age_minutes=5)
+    # The real blockage started hours before the last updated_at touch.
+    db_session.add(
+        AuditLogTable(
+            id=uuid4(),
+            event_type="task.blocked",
+            target_type="task",
+            target_id=task_id,
+            severity="info",
+            details={},
+            timestamp=datetime.now(UTC) - timedelta(hours=6),
+        )
+    )
+    monkeypatch.setattr(se_module.settings, "strategy_engine_enabled", True)
+    monkeypatch.setattr(se_module.settings, "strategy_stranded_blocked_minutes", 1)
+    monkeypatch.setattr(se_module.settings, "self_heal_project_slug", SLUG)
+    db_session.add(
+        SystemSettingTable(key="board_program.coroner.enabled", value="true")
+    )
+    await db_session.flush()
+    _mock_stranded_assessment(monkeypatch)
+    notifier = MagicMock()
+    notifier.send_ack_notification = AsyncMock()
+    monkeypatch.setattr(se_module, "NotificationService", lambda: notifier)
+
+    eng = StrategyEngine(db_session)
+    await eng.run_cycle()
+
+    open_cycles = await get_task_service(db_session).list_open_coroner_cycles()
+    assert len(open_cycles) == ONE
+    incident_ref = markers.get_coroner_incident(open_cycles[0])
+    assert incident_ref is not None
+    minutes = int(incident_ref["time_blocked"].split()[0])
+    # ~360 minutes (the audit event, 6h ago), never ~5 (updated_at's age).
+    assert minutes > _MIN_BLOCKED_MINUTES_FROM_AUDIT
+
+
+@pytest.mark.asyncio
+async def test_stranded_second_tick_is_a_dedup_noop(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = await _seed_coroner_fixture(db_session)
+    await _seed_blocked_task(db_session, project_id)
+    monkeypatch.setattr(se_module.settings, "strategy_engine_enabled", True)
+    monkeypatch.setattr(se_module.settings, "strategy_stranded_blocked_minutes", 1)
+    monkeypatch.setattr(se_module.settings, "self_heal_project_slug", SLUG)
+    db_session.add(
+        SystemSettingTable(key="board_program.coroner.enabled", value="true")
+    )
+    await db_session.flush()
+    _mock_stranded_assessment(monkeypatch)
+    notifier = MagicMock()
+    notifier.send_ack_notification = AsyncMock()
+    monkeypatch.setattr(se_module, "NotificationService", lambda: notifier)
+
+    eng = StrategyEngine(db_session)
+    await eng.run_cycle()
+    await eng.run_cycle()
+
+    open_cycles = await get_task_service(db_session).list_open_coroner_cycles()
+    assert len(open_cycles) == ONE
+    second_body = notifier.send_ack_notification.call_args.kwargs["body"]
+    assert "not opened" in second_body
+    # The dedup no-op still names WHICH task is stranded, not just that
+    # something was skipped.
+    assert "stranded-seed-task" in second_body
+
+
+@pytest.mark.asyncio
+async def test_stranded_coroner_disarmed_noop(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = await _seed_coroner_fixture(db_session)
+    await _seed_blocked_task(db_session, project_id)
+    monkeypatch.setattr(se_module.settings, "strategy_engine_enabled", True)
+    monkeypatch.setattr(se_module.settings, "strategy_stranded_blocked_minutes", 1)
+    monkeypatch.setattr(se_module.settings, "self_heal_project_slug", SLUG)
+    # Coroner program NOT armed — no settings-store row, no legacy flag.
+    _mock_stranded_assessment(monkeypatch)
+    notifier = MagicMock()
+    notifier.send_ack_notification = AsyncMock()
+    monkeypatch.setattr(se_module, "NotificationService", lambda: notifier)
+
+    eng = StrategyEngine(db_session)
+    await eng.run_cycle()
+
+    open_cycles = await get_task_service(db_session).list_open_coroner_cycles()
+    assert len(open_cycles) == 0
+    body = notifier.send_ack_notification.call_args.kwargs["body"]
+    assert "not opened" in body
+    # The disarmed no-op still names WHICH task is stranded.
+    assert "stranded-seed-task" in body

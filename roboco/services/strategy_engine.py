@@ -23,7 +23,7 @@ further opt-in, not part of this dormant baseline.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from roboco.config import settings
 from roboco.services.base import BaseService
@@ -32,7 +32,11 @@ from roboco.services.notification import NotificationService
 from roboco.services.task import get_task_service
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from roboco.db.tables import TaskTable
 
 
 @dataclass(frozen=True)
@@ -96,8 +100,10 @@ class StrategyEngine(BaseService):
         cycle (``BoardProgramEngine.open_program_cycle`` — enabled+dedup
         checked there, so a still-open cycle makes this a no-op); the nudge
         text reflects the outcome instead of only describing the drift.
-        ``stranded_blocked`` stays notify-only (Coroner is Phase 2 — its
-        event hook lands then).
+        A ``stranded_blocked`` observation additionally triggers a Coroner
+        autopsy (``CoronerEngine.open_for_incident`` — armed+dedup checked
+        there) for the most-stale stranded task, and the nudge text names
+        both the task and the autopsy outcome.
         """
         if not settings.strategy_engine_enabled:
             return []
@@ -109,6 +115,8 @@ class StrategyEngine(BaseService):
             body = f"[strategy engine] {obs.summary}\n\n{obs.detail}"
             if obs.kind == "idle":
                 body = f"{body}\n\n{await self._trigger_roadmap_cycle()}"
+            elif obs.kind == "stranded_blocked":
+                body = f"{body}\n\n{await self._trigger_coroner_incident()}"
             await notifier.send_ack_notification(
                 from_agent="system",
                 to_agent="ceo",
@@ -138,6 +146,93 @@ class StrategyEngine(BaseService):
         return (
             "A roadmap exploration cycle is already open (or the roadmap "
             "program is disabled)."
+        )
+
+    async def _trigger_coroner_incident(self) -> str:
+        """Best-effort: open a Coroner autopsy for the most-stale stranded task.
+
+        Mirrors ``_trigger_roadmap_cycle``: re-queries the stranded list,
+        calls ``CoronerEngine.open_for_incident`` for the head (most-stale
+        first), and returns a human-readable outcome string. A DB/engine
+        failure here must never break the stranded notification — degrades
+        to a plain "attempted" line rather than raising.
+        """
+        incident: TaskTable | None = None
+        try:
+            from datetime import UTC, datetime
+
+            from sqlalchemy import func, select
+
+            from roboco.db.tables import AuditLogTable
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            task_svc = get_task_service(self.session)
+            stranded = await task_svc.list_long_running_blocked(
+                threshold_minutes=settings.strategy_stranded_blocked_minutes
+            )
+            if not stranded:
+                return "No stranded tasks found for a Coroner autopsy."
+            incident = stranded[0]
+
+            # The real blockage start is the latest `task.blocked` audit
+            # transition, not `updated_at` — that column moves on ANY update
+            # (markers, assignment, comments) while the task sits blocked,
+            # so an updated_at-only delta can wildly underestimate how long
+            # it's actually been stuck. Mirrors metrics.py's
+            # `_blocked_since_map`, falling back to `updated_at` for a task
+            # with no audit row.
+            blocked_stats = await self.session.execute(
+                select(func.count(), func.max(AuditLogTable.timestamp)).where(
+                    AuditLogTable.target_id == incident.id,
+                    AuditLogTable.target_type == "task",
+                    AuditLogTable.event_type == "task.blocked",
+                )
+            )
+            escalation_count, blocked_since = blocked_stats.one()
+            blocked_since = blocked_since or incident.updated_at
+            elapsed = (
+                (datetime.now(UTC) - blocked_since).total_seconds() / 60
+                if blocked_since
+                else 0
+            )
+            time_blocked = f"{elapsed:.0f} minutes" if blocked_since else "unknown"
+            block_reason = (
+                incident.blocker_resolver_type.value
+                if incident.blocker_resolver_type
+                else "unknown"
+            )
+            escalation_history = (
+                f"blocked {escalation_count or 0} time(s), "
+                f"revision_count={incident.revision_count or 0}"
+            )
+
+            task = await get_coroner_engine(self.session).open_for_incident(
+                cast("UUID", incident.id),
+                kind="stranded",
+                extra_context={
+                    "block_reason": block_reason,
+                    "time_blocked": time_blocked,
+                    "escalation_history": escalation_history,
+                },
+            )
+        except Exception:
+            self.log.warning(
+                "strategy-engine: coroner-incident trigger failed (best-effort)"
+            )
+            incident_ref = (
+                f" for stranded task '{incident.title}' ({str(incident.id)[:8]})"
+                if incident is not None
+                else ""
+            )
+            return (
+                f"Attempted to open a Coroner autopsy{incident_ref} (failed; see logs)."
+            )
+        task_ref = f"'{incident.title}' ({str(incident.id)[:8]})"
+        if task is not None:
+            return f"A Coroner autopsy was opened for stranded task {task_ref}."
+        return (
+            f"A Coroner autopsy was not opened for stranded task {task_ref} "
+            "(already open or the coroner program is disabled)."
         )
 
 
