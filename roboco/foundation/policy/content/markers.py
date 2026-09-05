@@ -998,7 +998,7 @@ def mark_oscillation_tripped(task: HasMarkers) -> None:
 
 # --- PR-base / parent-topology drift ----------------------------------------
 # Recorded by the ``parent_task_id`` re-parent write-through
-# (``TaskService._recheck_topology_after_reparent``) when
+# (``TaskService.recheck_topology_after_reparent``) when
 # ``merge_chain.find_topology_issue`` flags a task whose branch/PR is now
 # stranded on the wrong base after a re-parent (the 5612b225/PR #856
 # incident class — the terminal verbs used to be the only place this ever

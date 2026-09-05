@@ -3919,9 +3919,9 @@ class TaskService(BaseService):
             return
         if getattr(task, "parent_task_id", None) == old_parent_id:
             return
-        await self._recheck_topology_after_reparent(task)
+        await self.recheck_topology_after_reparent(task)
 
-    async def _recheck_topology_after_reparent(self, task: TaskTable) -> None:
+    async def recheck_topology_after_reparent(self, task: TaskTable) -> None:
         """Re-run the PR-base/parent-topology check after a re-parent PATCH.
 
         Records (never blocks) a detected mismatch — the ``parent_task_id``
@@ -3932,6 +3932,11 @@ class TaskService(BaseService):
         complete()/submit_root, days into review (the 5612b225/PR #856
         incident class). A re-parent that resolves a prior mismatch clears
         the marker.
+
+        Public: also called directly by the PATCH route (``roboco.api.utils.
+        tasks``) for the null-clear/detach direction of a re-parent, which
+        bypasses ``update()``'s field-update loop entirely (see
+        ``_apply_null_clears``).
         """
         from roboco.services.gateway.merge_chain import find_topology_issue
 
