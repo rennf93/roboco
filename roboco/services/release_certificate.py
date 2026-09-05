@@ -201,6 +201,12 @@ class ReleaseCertificateService(BaseService):
         """True unless a release-window task carries an unresolved
         block-level architectural-convention finding.
 
+        Returns True on zero recorded rows for the release-window tasks —
+        that means "no recorded block-level violation", not "assessed
+        clean": a task with no rows at all was never checked (conventions
+        enforcement is a default-off feature flag), so this verdict reads
+        as unassessed, not as a positive finding, for that case.
+
         Reads the durable ``project_convention_findings`` table — the actual
         conventions validator's own output (``GitService.
         conventions_check_for_task``, git.py:6416), persisted per task at
