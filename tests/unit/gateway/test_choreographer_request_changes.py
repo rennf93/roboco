@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.enforcement import A2AAccessDeniedError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
@@ -63,6 +64,15 @@ def _pm_agent_mock(pm_id: Any, role: str = "cell_pm") -> MagicMock:
     return agent
 
 
+def _add_assigns_id(obj: Any) -> None:
+    """Mimic a real flush populating a column ``default=uuid4`` primary key —
+    a bare mocked ``session.add`` leaves ``obj.id`` at ``None``, which would
+    silently strip the ``[F-xxxxxxxx]`` prefix from the findings rendering
+    that ``render_finding_line`` builds off ``row.id``."""
+    if getattr(obj, "id", None) is None:
+        obj.id = uuid4()
+
+
 @pytest.mark.asyncio
 async def test_request_changes_succeeds_and_notifies_new_owner() -> None:
     pm_id = uuid4()
@@ -102,6 +112,66 @@ async def test_request_changes_succeeds_and_notifies_new_owner() -> None:
     a2a_svc.send.assert_awaited_once()
     # The ledger insert ran (findings=[the shimmed issue]) before the transition.
     task_svc.session.add.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "a2a_exc",
+    [
+        RuntimeError("a2a down"),
+        A2AAccessDeniedError(
+            from_agent="fe-pm", to_agent="fe-dev-1", reason="not in same cell"
+        ),
+    ],
+    ids=["generic_runtime_error", "a2a_access_denied_policy"],
+)
+@pytest.mark.asyncio
+async def test_request_changes_survives_a2a_raise_broadly(a2a_exc: Exception) -> None:
+    """The guard on the revision-owner notify must catch broadly — a
+    transient RuntimeError AND a typed policy denial (A2AAccessDeniedError,
+    the actual exception A2AService.send raises on a disallowed route) both
+    degrade to a warning, never an error envelope. The needs_revision
+    transition, the task_review_findings ledger row, and the id-prefixed
+    rendering in the pm_notes mirror all survive the notify failure."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    dev_id = uuid4()
+    t = _pm_review_task(task_id, pm_id)
+    after = MagicMock(
+        id=task_id,
+        status="needs_revision",
+        assigned_to=dev_id,
+        team="frontend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _pm_agent_mock(pm_id)
+    task_svc.request_changes.return_value = after
+    task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock(side_effect=_add_assigns_id)
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    a2a_svc = AsyncMock()
+    a2a_svc.send = AsyncMock(side_effect=a2a_exc)
+    deps = _make_deps(task=task_svc, a2a=a2a_svc)
+    c = Choreographer(deps)
+
+    issues = ["frontend/CLAUDE.md modified out of scope — revert the doc commit hunk"]
+    env = await c.request_changes(pm_id, task_id, issues)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "needs_revision"
+    assert body.get("warning") is not None
+    task_svc.request_changes.assert_awaited_once()
+    # The ledger row was inserted (persisted) before the a2a step ran.
+    task_svc.session.add.assert_called_once()
+    # The structured pm_notes mirror still carries the deterministic
+    # id-prefixed rendering (render_finding_line's "[F-<id8>] ..." line).
+    assert "[F-" in t.pm_notes
 
 
 @pytest.mark.asyncio
