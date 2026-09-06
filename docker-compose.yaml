@@ -1038,6 +1038,10 @@ services:
     depends_on:
       - panel
       - orchestrator
+      # nginx resolves every upstream at startup; without this it boots
+      # before the dispatcher container exists and crash-loops on
+      # "host not found in upstream roboco-dispatcher:8000".
+      - dispatcher
 
 networks:
   default:
