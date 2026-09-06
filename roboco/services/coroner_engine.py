@@ -135,6 +135,14 @@ class CoronerEngine(BaseService):
             "cause, then propose ONE process change via propose_postmortem(): "
             "a playbook draft, a prompt fix, or a conventions rule."
         )
+        if kind == "stranded" and extra_context:
+            description += (
+                "\n\nStranded-block context: "
+                f"block reason — {extra_context.get('block_reason', 'unknown')}; "
+                f"time blocked — {extra_context.get('time_blocked', 'unknown')}; "
+                "escalation history — "
+                f"{extra_context.get('escalation_history', 'none')}."
+            )
         project_id = incident.project_id or await self._roboco_project_id()
         task = await task_svc.create(
             TaskCreateRequest(
