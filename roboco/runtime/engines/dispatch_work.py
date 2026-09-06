@@ -45,6 +45,14 @@ else:
 class DispatchWorkEngine(_Base):
     """Mixin holding the "dispatch_work" methods moved out of AgentOrchestrator."""
 
+    # Re-declared (not just inherited from _Base above): a fresh mypy run
+    # rooted at orchestrator.py alone infers `datetime` from the assignments
+    # in _dispatch_audit_work below and
+    # rejects the class-level `datetime | None`; the bare re-declaration on
+    # the concrete class pins it, as the sibling mixins do.
+    if TYPE_CHECKING:
+        _last_audit_spawn_at: datetime | None
+
     async def _dispatch_all_work(self) -> None:
         """Run all dispatchers to check for and assign work.
 

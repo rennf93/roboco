@@ -40,9 +40,13 @@ class DispatchBreakerEngine(_Base):
     # Re-declared (not just inherited from _Base above): mypy's Protocol
     # attribute inference cannot determine the type of an inherited member
     # that a method both reads AND assigns within the same method body
-    # (read-then-write in one scope; see _prune_notification_spawn_maps
-    # below) without a bare re-declaration directly on the concrete class.
+    # (read-then-write in one scope; see _prune_notification_spawn_maps and
+    # _emit_dispatcher_heartbeat below) without a bare re-declaration
+    # directly on the concrete class. Without it a fresh run rooted at
+    # orchestrator.py alone infers `datetime` from the heartbeat assignment
+    # and rejects __init__'s `datetime | None`.
     if TYPE_CHECKING:
+        _last_dispatch_heartbeat: datetime | None
         _notification_spawn_at: dict[tuple[str, str], float]
         _notification_spawn_count: dict[tuple[str, str], int]
 
