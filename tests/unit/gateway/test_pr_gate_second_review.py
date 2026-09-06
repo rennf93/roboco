@@ -80,6 +80,10 @@ def _stub_gate_path(
     cc._stamp_gate_findings_verified_or_rejection = AsyncMock(return_value=None)
     cc._record_gate_verdict = MagicMock()
     cc._post_gate_review_to_pr = AsyncMock()
+    # _authoring_providers walks the task's descendants for authoring agents;
+    # no descendants seeded here -> falls back to [ANTHROPIC], matching the
+    # single-authoring-provider assumption these tests already model.
+    c.task.get_all_descendants = AsyncMock(return_value=[])
     runner = MagicMock()
     runner.run_intent = AsyncMock(return_value=t_after)
     cc._verb_runner = MagicMock(return_value=runner)
@@ -221,7 +225,9 @@ async def test_pr_pass_inserts_second_review_finding_under_dedicated_origin(
     assert rows[0].origin == "second_review"
     assert rows[0].file == "roboco/services/second_review.py"
     assert rows[0].actual == "silently returns None instead of raising"
-    assert rows[0].status == "open"
+    # Pre-addressed, not open -- this origin lands on an already-assembled
+    # task with no dev to route an open finding's resolution to.
+    assert rows[0].status == "addressed"
 
 
 @pytest.mark.asyncio

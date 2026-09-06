@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roboco.services.gateway.choreographer import findings as findings_lib
+from roboco.services.repositories.review_findings import STATUS_ADDRESSED
 from roboco.services.second_review import get_second_review_service, task_is_high_stakes
 
 if TYPE_CHECKING:
@@ -38,24 +39,6 @@ if TYPE_CHECKING:
 # task's constraint; the existing per-finding rendering + Findings tab
 # already handle any string origin.
 SECOND_REVIEW_ORIGIN = "second_review"
-
-
-async def _no_op_runner(
-    _task: Task, _diff: str, _provider: ModelProvider
-) -> list[Finding]:
-    """Default runner — raises no findings.
-
-    ponytail: none of grok/gemini/openai/kimi expose a synchronous
-    completion API from this codebase (they run as CLI-subscription agent
-    runtimes mounted per-container, not callable HTTP clients —
-    ``roboco/llm/providers/*``); only Anthropic has a direct API key
-    (``settings.anthropic_api_key``). A genuine cross-vendor synchronous
-    review client is separate, larger work than this gate-wiring task.
-    The wiring below is real and fully exercised — inject a ``runner`` that
-    returns findings (as a real client will, once one exists) to run the
-    second pass for real; production runs this no-op until then.
-    """
-    return []
 
 
 @dataclass(frozen=True)
@@ -111,19 +94,27 @@ async def run_second_review_for_gate(
     task: Task,
     diff: str,
     *,
-    authoring_provider: ModelProvider,
+    authoring_provider: ModelProvider | Sequence[ModelProvider],
     runner: SecondReviewRunner | None = None,
 ) -> SecondReviewOutcome:
     """Resolve + (maybe) run the cross-vendor second-review pass for ``task``.
 
-    Returns ``SecondReviewOutcome.not_applicable()`` when the task doesn't
-    qualify (flag off or below the risk threshold — ``task_is_high_stakes``
-    already folds both checks together). Otherwise resolves a differing
-    enabled provider via the sibling ``SecondReviewService``; an explicit
-    resolver skip (single provider enabled fleet-wide) is returned as-is and
-    never blocks the caller. When a provider resolves, runs ``runner``
-    (defaulting to ``_no_op_runner``) over the diff and carries its findings
-    back for the caller to insert into the ledger.
+    ``authoring_provider`` accepts either a single provider or the full set
+    that contributed to an assembled task — see
+    ``second_review.resolve_second_review_provider`` for why every
+    authoring provider must be excluded, not just one. Returns
+    ``SecondReviewOutcome.not_applicable()`` when the task doesn't qualify
+    (flag off or below the risk threshold — ``task_is_high_stakes`` already
+    folds both checks together). Otherwise resolves a differing enabled
+    provider via the sibling ``SecondReviewService``; an explicit resolver
+    skip (single provider enabled fleet-wide) is returned as-is and never
+    blocks the caller. When a provider resolves and a real ``runner`` is
+    injected, runs it over the diff and carries its findings back for the
+    caller to insert into the ledger. ``runner=None`` (the production
+    default — none of grok/gemini/openai/kimi expose a synchronous
+    completion API from this codebase, only Anthropic has a direct API key)
+    is reported as an honest skip rather than a false ``ran=True`` — see
+    below.
     """
     if not task_is_high_stakes(task):
         return SecondReviewOutcome.not_applicable()
@@ -134,8 +125,17 @@ async def run_second_review_for_gate(
         return SecondReviewOutcome.skip(
             selection.skip_reason or "second review skipped"
         )
-    active_runner = runner or _no_op_runner
-    found = await active_runner(task, diff, selection.provider)
+    if runner is None:
+        # No real cross-vendor synchronous review client is wired yet —
+        # report this honestly as a skip rather than stamping
+        # `ran=True, findings_count=0`, which reads as "the second pass
+        # looked and found nothing" when in fact nothing ever ran.
+        return SecondReviewOutcome.skip(
+            f"cross-vendor second review resolved {selection.provider.value} "
+            "but no synchronous review runner is wired yet for it; no "
+            "review actually ran"
+        )
+    found = await runner(task, diff, selection.provider)
     return SecondReviewOutcome.ran(selection.provider, found)
 
 
@@ -149,7 +149,19 @@ async def insert_second_review_findings(
 ) -> list[Any]:
     """Insert the second pass's findings into the existing ledger under the
     dedicated ``second_review`` origin. A no-op when there is nothing to
-    insert."""
+    insert.
+
+    Stamped ``STATUS_ADDRESSED`` right after insert (same transaction,
+    before the caller's own flush/commit — never observably ``open``)
+    rather than left at the usual ``open`` default: this origin lands on an
+    already-ASSEMBLED cell/root task with no dev to route a resolution to
+    (unlike qa/pr_gate/pm/ceo findings, which a developer resolves via
+    ``resolved_findings`` before its next submit), so an ``open`` row here
+    would sit unresolvable forever and wrongly block every later gate on
+    this task via the origin-agnostic ``FINDINGS_ADDRESSED`` check. It stays
+    fully visible on the Findings tab and in the ledger — just not
+    gate-blocking.
+    """
     if not findings:
         return []
     rows, _summary = await findings_lib.insert_and_render(
@@ -160,4 +172,7 @@ async def insert_second_review_findings(
         author_slug=author_slug,
         findings=list(findings),
     )
+    for row in rows:
+        row.status = STATUS_ADDRESSED
+    await session.flush()
     return rows

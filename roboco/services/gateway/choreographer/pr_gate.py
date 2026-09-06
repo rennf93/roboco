@@ -51,6 +51,7 @@ from roboco.services.gateway.merge_chain import resolve_parent_branch
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from roboco.models.base import ModelProvider
     from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
 
     _Base = ChoreographerHelpers
@@ -773,6 +774,40 @@ class PRGateMixin(_Base):
             return ""
         return str(diff)
 
+    async def _authoring_providers(self, t: Any) -> list[ModelProvider]:
+        """The distinct providers that authored this assembled task's code.
+
+        An assembled cell/root task has no single contributing dev's agent —
+        resolve every CODE-type descendant's assignee via the fleet's
+        provider-routing seam (``ModelRoutingService.resolve_for_agent``, the
+        same seam ``SecondReviewService.resolve_second_reviewer_for_agent``
+        wraps) instead of assuming one provider authored everything. When an
+        assembled task has more than one authoring agent on different
+        providers, every one of them is returned so the caller excludes the
+        full set, not just the first. Falls back to ``[ANTHROPIC]`` (the
+        fleet's always-enabled baseline) only when no assignee is resolvable
+        at all (e.g. every leaf still unclaimed).
+        """
+        from roboco.models.base import ModelProvider, TaskType
+        from roboco.services.llm import ModelRoutingService
+
+        descendants = await self.task.get_all_descendants(t.id)
+        agent_ids = {
+            d.assigned_to
+            for d in descendants
+            if d.task_type == TaskType.CODE and d.assigned_to is not None
+        }
+        routing = ModelRoutingService(self.task.session)
+        providers: set[ModelProvider] = set()
+        for agent_id in agent_ids:
+            agent = await self.task.agent_for(agent_id)
+            slug = getattr(agent, "slug", None)
+            if not slug:
+                continue
+            route = await routing.resolve_for_agent(slug)
+            providers.add(route.provider_type)
+        return list(providers) or [ModelProvider.ANTHROPIC]
+
     async def _run_second_review_pass(
         self,
         t: Any,
@@ -801,22 +836,17 @@ class PRGateMixin(_Base):
         injectable second-pass check (see ``second_review_gate.py``) —
         ``None`` in production, overridable in tests.
         """
-        from roboco.models.base import ModelProvider
         from roboco.services.second_review import task_is_high_stakes
 
         if not task_is_high_stakes(t):
             return None
-        # ponytail: the "authoring provider" for an ASSEMBLED task (cell/root)
-        # can't be pinned to one contributing dev's agent — the fleet's
-        # always-enabled baseline (ANTHROPIC) is the honest default; every
-        # other provider is opt-in, so this still surfaces a real cross-vendor
-        # pick whenever the operator has enabled one.
+        authoring_providers = await self._authoring_providers(t)
         diff = await self._gate_second_review_diff(t)
         outcome = await run_second_review_for_gate(
             self.task.session,
             t,
             diff,
-            authoring_provider=ModelProvider.ANTHROPIC,
+            authoring_provider=authoring_providers,
             runner=runner,
         )
         if outcome.findings:
