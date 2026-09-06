@@ -281,7 +281,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # here — uvicorn binds the socket only after this lifespan completes, and
     # a 200-entry backfill behind a busy Ollama held the API down for 30+
     # minutes when this was a blocking await (2026-07-09 deploy).
-    _schedule_rag_reconcile(app)
+    # Skipped for ROBOCO_ROLE=api and =dispatcher: this CPU-heavy pass is
+    # fleet-wide, one-time KB work, not fleet-dispatch or request-serving
+    # work, so neither of those roles owns it (dispatcher runs this same
+    # lifespan too, for its own /health). Only 'all' (single-process) and
+    # 'indexer' (the dedicated KB worker role) own it, mirroring
+    # OptimalService.initialize()'s own role gate. OptimalService above still
+    # initializes in every role, since routes query the KB regardless.
+    if settings.role in ("all", "indexer"):
+        _schedule_rag_reconcile(app)
 
     logger.info("All services initialized, API ready")
 

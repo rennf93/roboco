@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 
 @pytest.mark.asyncio
 async def test_runner_runs_composed_actions_in_order() -> None:
-    """For i_will_work_on the runner runs claim, then set_plan, then start."""
+    """For i_will_work_on the runner runs claim, then set_plan. start runs
+    in the choreographer after branch provisioning, outside the savepoint."""
     task_svc = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
@@ -51,8 +52,8 @@ async def test_runner_runs_composed_actions_in_order() -> None:
     ctx = spec.Context(plan="my plan")
 
     final_task = await runner.run_intent("i_will_work_on", task, agent, ctx)
-    assert calls == ["claim", "set_plan", "start"]
-    assert final_task.status == "in_progress"
+    assert calls == ["claim", "set_plan"]
+    assert final_task.status == "claimed"
 
 
 @pytest.mark.asyncio

@@ -49,7 +49,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 ## Cell PM
 
-**Flow verbs:** `give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`, `unblock`, `complete`, `escalate_up`, `unclaim`, `resume`, `i_am_idle`
+**Flow verbs:** `give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`, `unblock`, `cancel_leaf`, `complete`, `escalate_up`, `unclaim`, `resume`, `i_am_idle`
 
 **Content verbs:** `note`, `dm`, `notify`, `evidence` (no `commit` — PMs delegate code; merging the leaf PR happens automatically inside `complete`)
 
@@ -61,7 +61,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 ## Main PM
 
-**Flow verbs:** `give_me_work`, `i_will_plan`, `delegate`, `triage_all`, `unblock`, `complete`, `escalate_up`, `escalate_to_ceo`, `unclaim`, `resume`, `i_am_idle`
+**Flow verbs:** `give_me_work`, `i_will_plan`, `delegate`, `triage_all`, `unblock`, `cancel_leaf`, `complete`, `escalate_up`, `escalate_to_ceo`, `unclaim`, `resume`, `i_am_idle`
 
 **Content verbs:** `note`, `dm`, `notify`, `evidence`
 

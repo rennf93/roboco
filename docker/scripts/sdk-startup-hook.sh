@@ -25,6 +25,10 @@ PRECOMPACT_FILE="/tmp/roboco-precompact-${AGENT_ID}.md"
 # (The orchestrator passes the same var + --no-sync to every MCP server in
 # the generated mcp-config.json — keep both in sync.)
 export UV_PROJECT_ENVIRONMENT=/app/.venv
+# Same cwd-shadowing risk as the MCP servers below: cwd is the workspace, so
+# without this a stale/foreign clone's `roboco` package on sys.path[0]
+# shadows the image's installed one in /app/.venv.
+export PYTHONSAFEPATH=1
 
 # --- SDK bring-up ---------------------------------------------------------
 if ! curl -sf "http://localhost:${SDK_PORT}/health" >/dev/null 2>&1; then

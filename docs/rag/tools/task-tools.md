@@ -102,6 +102,8 @@ After `i_will_plan` and each `delegate`, the envelope includes a coverage view o
 
 **Delegation rules** (enforced): `main_pm -> cell_pm`; `cell_pm -> its team's devs`. Cell PMs receive planning-typed parent tasks; devs get code/research (UX devs also design). Always create subtasks via `delegate` with `parent_task_id` set — there is no standalone task-create verb for agents.
 
+Before calling a subtask stale, stuck, or unattended in `request_changes` or a note, call `task_time(task_id)` (a content tool on `roboco-do`) and cite `active_seconds`, not wall-clock time, since it excludes hours the fleet was shut down or dispatch was paused.
+
 ## Main PM flow
 
 The Main PM shares most Cell PM verbs (`i_will_plan`, `delegate`, `complete`, `request_changes`, `unblock`, `triage`, `escalate_up`), **adds** the verbs below, and — unlike a Cell PM — has **no** `submit_up` or `reassign`. Its bubble-up verb is `submit_root` (the root analogue of the Cell PM's `submit_up`):
@@ -119,6 +121,8 @@ give_me_work()  # Main PM may also pull work directly
 ```
 
 For a code root the Main PM **must** `submit_root` first — that opens the root→master PR and enters the in-path gate (`awaiting_pr_review`); only after the main reviewer `pr_pass`es it does `complete` escalate to the CEO. A branchless coordination root (product fan-out, no repo) skips the gate and is completed/escalated directly. The Main PM never merges to `master` — `complete` escalates and only the CEO merges the root→master PR.
+
+Same rule as the Cell PM: call `task_time(task_id)` before flagging cross-cell work as stale or blocked too long, and quote `active_seconds` (fleet-uptime-adjusted) rather than raw elapsed hours.
 
 ## Board flow (Product Owner / Head of Marketing)
 
@@ -140,6 +144,8 @@ i_am_idle()
 ```
 
 The Auditor is a silent observer: read-only `triage`, no `notify`, no claim/complete/cancel. It carries `dm`/`read_a2a` but only to reply in-thread when the CEO opens a DM with it — it never initiates `dm` to a peer.
+
+Before a `note(scope='reflect')` calls a task stale, stuck, blocked too long, or unattended, call `task_time(task_id)` and cite `active_seconds`; wall-clock hours count the hours the CEO had the stack shut down or dispatch paused as neglect.
 
 ## PR Reviewer flow
 

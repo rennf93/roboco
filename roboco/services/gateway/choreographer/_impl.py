@@ -316,7 +316,7 @@ class ChoreographerDeps:
 class _ClaimPlanStartContext:
     """Bundle of fields shared by ``i_will_work_on`` / ``i_will_plan`` helpers.
 
-    Both verbs compose the same (claim, set_plan, start) sequence and
+    Both verbs run the same claim, set_plan, provision, start sequence and
     share gating + recovery branches; they only differ in role gate
     (DEV vs PM) and verb name on rejections / next_hint. Frozen so the
     helper sites can't mutate caller state and to keep PLR0913 (too
@@ -931,10 +931,33 @@ class Choreographer:
             offerable.append(task)
         return offerable
 
+    async def _work_envelope(self, agent_id: UUID, t: Any, role: str) -> Envelope:
+        """Shared 'claim this task' envelope for the bounced/pre-assigned/
+        assigned give_me_work branches (identical shape, different source
+        list)."""
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(t.id),
+            next=self._claim_verb_hint(role, t),
+            context_briefing=await self._briefing_for(
+                agent_id, t.id, task=t, full=True
+            ),
+        ).with_introspection(task=t, role=role)
+
     async def give_me_work(self, agent_id: UUID) -> Envelope:
         """Return the agent's most-actionable task or signal idle."""
         agent = await self._deps.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
+        # Bounced work first: a needs_revision task carries open findings a
+        # reviewer is waiting on, so newly seeded pending work must not
+        # starve it (2026-08-24: be-dev-1 held 3 bounced tasks all day
+        # behind a stream of freshly pre-assigned pending ones).
+        assigned_rows = await self._deps.task.list_assigned_for_agent(agent_id)
+        bounced = await self._drop_dependency_held(
+            [t for t in assigned_rows if str(t.status) == "needs_revision"]
+        )
+        if bounced:
+            return await self._work_envelope(agent_id, bounced[0], role)
         # Pre-assigned pending tasks take priority. Smoke run 3 (2026-05-12)
         # showed agents missing tasks that were seeded with assigned_to=<them>
         # and status=pending because the earlier code only walked
@@ -945,28 +968,10 @@ class Choreographer:
             await self._deps.task.list_pending_for_agent(agent_id)
         )
         if pre_assigned:
-            t = pre_assigned[0]
-            return Envelope.ok(
-                status=str(t.status),
-                task_id=str(t.id),
-                next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(
-                    agent_id, t.id, task=t, full=True
-                ),
-            ).with_introspection(task=t, role=role)
-        assigned = await self._drop_dependency_held(
-            await self._deps.task.list_assigned_for_agent(agent_id)
-        )
+            return await self._work_envelope(agent_id, pre_assigned[0], role)
+        assigned = await self._drop_dependency_held(assigned_rows)
         if assigned:
-            t = assigned[0]
-            return Envelope.ok(
-                status=str(t.status),
-                task_id=str(t.id),
-                next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(
-                    agent_id, t.id, task=t, full=True
-                ),
-            ).with_introspection(task=t, role=role)
+            return await self._work_envelope(agent_id, assigned[0], role)
         paused = await self._deps.task.list_paused_for_agent(agent_id)
         if paused:
             t = paused[0]
@@ -1698,15 +1703,67 @@ class Choreographer:
             )
         return None
 
+    @staticmethod
+    def _runner_failed_envelope(
+        exc: Exception, t: Any, briefing: Any, role_str: str
+    ) -> Envelope:
+        """Shared 'verb runner failed' rejection for a claim/plan/start
+        sequence: the same shape whether the failure came from inside the
+        composed savepoint (``run_intent``) or from ``provision_claim``'s
+        post-savepoint branch creation."""
+        return Envelope.invalid_state(
+            message=f"verb runner failed: {exc}",
+            remediate="check workspace + retry; if persistent, escalate",
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
+    @staticmethod
+    def _step_failed_envelope(
+        step: str, ctx: _ClaimPlanStartContext, briefing: Any, role_str: str
+    ) -> Envelope:
+        """Rejection for a claim/plan/start step that returned ``None``."""
+        return Envelope.invalid_state(
+            message=f"{step} failed for task {ctx.task_id}",
+            remediate=(
+                "task not in a startable state"
+                " (claimed/paused/needs_revision) or no plan recorded"
+            ),
+            context_briefing=briefing,
+        ).with_introspection(task=None, role=role_str)
+
     async def _claim_plan_start_run(
         self, ctx: _ClaimPlanStartContext, agent: Any, spec_ctx: spec_module.Context
     ) -> Envelope:
-        """Execute composed (claim, set_plan, start) via the verb runner.
+        """Execute composed (claim, set_plan) via the verb runner, then
+        provision the claim (branch, upstream-base inherit, work session)
+        outside any savepoint, then start the task.
 
         Caller has already validated all gates. Translates runner
         exceptions and ``None`` returns into invalid_state envelopes
         so the agent gets a remediation instead of a 500. Shared
         between ``i_will_work_on`` and ``i_will_plan``.
+
+        The verb runner's ``_do_claim`` calls ``claim(provision=False)``
+        inside ``_run_composed_actions``'s savepoint: claim/set_plan land
+        or roll back together as one unit, with no branch creation inside
+        that savepoint. ``start`` runs only after ``provision_claim``: the
+        claimed -> in_progress transition carries a branch gate that
+        refuses a branchless task, so it cannot sit inside a savepoint the
+        branch commit has to follow (the E2E smoke caught the opposite
+        order as "Cannot start work: no branch assigned").
+        Once ``run_intent`` returns successfully,
+        ``TaskService.provision_claim`` commits that unit durably
+        (releasing the claim row lock) BEFORE its own network git work,
+        with no savepoint left to undo it on failure; that commit lives
+        inside ``provision_claim`` itself, not here, so this method never
+        touches ``self.task.session`` directly (every gateway unit test
+        mocks ``self.task`` as a whole service and would otherwise need
+        its own raw-session plumbing for a call this method has no other
+        reason to make). A provisioning failure durably reverts the
+        claim/plan fields (``TaskService``'s own revert-and-commit,
+        the same revert a branch-creation failure always triggered) and
+        surfaces the same "verb runner failed" rejection a savepoint
+        failure above already does.
         """
         t, briefing, role_str = ctx.task, ctx.briefing, ctx.role_str
         verb_name = ctx.verb_name
@@ -1715,29 +1772,36 @@ class Choreographer:
             t = await runner.run_intent(verb_name, t, agent, spec_ctx)
         except Exception as exc:
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"verb runner failed: {exc}",
-                    remediate="check workspace + retry; if persistent, escalate",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+                self._runner_failed_envelope(exc, t, briefing, role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
                 verb=verb_name,
             )
         if t is None:
-            # A composed atomic action returned None (e.g. start() rejected
-            # because of an ownership/state mismatch the spec gate could not
-            # see). Surface as invalid_state so the agent gets a remediation
-            # rather than a 500.
+            # A composed atomic action returned None (an ownership/state
+            # mismatch the spec gate could not see). Surface as invalid_state
+            # so the agent gets a remediation rather than a 500.
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"start failed for task {ctx.task_id}",
-                    remediate=(
-                        "task not in a startable state"
-                        " (claimed/paused/needs_revision) or no plan recorded"
-                    ),
-                    context_briefing=briefing,
-                ).with_introspection(task=None, role=role_str),
+                self._step_failed_envelope("claim/set_plan", ctx, briefing, role_str),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb=verb_name,
+            )
+        try:
+            await self.task.provision_claim(ctx.task_id, ctx.agent_id)
+            # claimed -> in_progress needs the branch provision_claim just
+            # committed, so start runs here, never inside the savepoint.
+            t = await self.task.start(ctx.task_id, ctx.agent_id)
+        except Exception as exc:
+            return await self._emit_rejection(
+                self._runner_failed_envelope(exc, t, briefing, role_str),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb=verb_name,
+            )
+        if t is None:
+            return await self._emit_rejection(
+                self._step_failed_envelope("start", ctx, briefing, role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
                 verb=verb_name,
@@ -1787,9 +1851,10 @@ class Choreographer:
         """Claim a task and start work on it.
 
         Atomic: spec.can_invoke_intent runs before any state mutation;
-        the composed (claim, set_plan, start) sequence is wrapped in a
+        the composed (claim, set_plan) sequence is wrapped in a
         savepoint by the runner so a mid-sequence failure rolls back
-        the DB. Idempotent re-entry: a respawned dev re-calling on a
+        the DB; start follows the branch provisioning.
+        Idempotent re-entry: a respawned dev re-calling on a
         task they already own in_progress just refreshes the heartbeat.
 
         ``steps`` is the developer's execution checklist (same
@@ -3063,7 +3128,7 @@ class Choreographer:
                     context_briefing=ctx.briefing,
                 ),
             )
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
         # Server-side milestone progress so the panel always
         # records the QA handoff regardless of agent's progress() habits.
@@ -3073,7 +3138,10 @@ class Choreographer:
             "submitted for QA review",
             percentage=90,
         )
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _i_am_done_resume_from_verifying(self, ctx: _IAmDoneContext) -> Envelope:
         """Recovery path: task is already in `verifying` owned by caller.
@@ -3098,9 +3166,12 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _i_am_done_pre_gate_dispatch(
         self, ctx: _IAmDoneContext, t: Any, agent_id: UUID
@@ -3228,12 +3299,15 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
         await self._record_milestone_progress(
             ctx.task_id, ctx.agent_id, "submitted for QA review", percentage=90
         )
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _open_finding_ids(self, task_id: UUID) -> tuple[str, ...]:
         """8-char ids of the task's still-OPEN revision-ledger findings.
@@ -3374,7 +3448,7 @@ class Choreographer:
     ) -> Envelope:
         """Apply the claim-time journal tracing gate AFTER a successful claim.
 
-        Pre-gateway parity (spec §11 P1, P3): the (claim, set_plan, start)
+        Pre-gateway parity (spec §11 P1, P3): the claim, set_plan, start
         sequence is allowed to commit so the agent owns the task, then we
         verify the matching journal entry exists. If absent, the agent
         gets a tracing_gap with a remediation hint — they journal and
@@ -3400,7 +3474,7 @@ class Choreographer:
 
         Pre-gateway parity (spec §11 P1, P3): developers wrote a
         journal:note on every claim; PMs wrote a journal:decision on
-        plan. The check runs AFTER the composed (claim, set_plan, start)
+        plan. The check runs AFTER the claim, set_plan, start
         sequence has succeeded — the claim itself stays. If the journal
         entry is missing, the agent receives a tracing_gap envelope and
         must journal then retry the verb (similar to how i_am_done's
@@ -3961,15 +4035,50 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id, task=task),
         )
 
-    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
+    async def _notify_pr_reviewer(self, task_id: UUID, t: Any) -> None:
+        """Reassign the in-path PR-review-gate reviewer for this task.
+
+        ``submit_for_review`` clears ``assigned_to`` at gate entry (mirrors
+        ``submit_qa``); this explicitly reassigns to the reviewer
+        ``TaskService.pr_reviewer_for`` resolves so the task's ownership
+        names the real reviewer instead of sitting unassigned in the
+        queue. No-op unless the task actually landed in the gate: a
+        zero-diff branch is PR-waived straight to ``awaiting_pm_review``
+        (see ``VerbRunner``), and reassigning to the reviewer there would
+        overwrite the PM ownership that state depends on. The dispatcher
+        spawn is the reviewer's signal, not an A2A ping: root level can't
+        (the a2a matrix denies PM -> the main PM's root->master reviewer
+        outright) and cell level doesn't need one (the gate dispatcher
+        spawns the reviewer by status+team on its own).
+        """
+        from roboco.models.base import TaskStatus
+
+        if str(t.status) != str(TaskStatus.AWAITING_PR_REVIEW):
+            return
+        reviewer = await self.task.pr_reviewer_for(t)
+        if reviewer is not None:
+            await self.task.reassign(task_id, reviewer.id)
+
+    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> str | None:
         """Reassign + A2A-notify the QA agent for this task's team.
 
         ``submit_qa`` clears ``assigned_to`` to None. We then explicitly
         reassign to the QA agent so the orchestrator's per-agent task
         polling spawns QA (not the dev again) for the next stage.
+
+        The submit-qa transition is already committed by the time this
+        runs, so a raise here (``A2AService.send`` is NOT best-effort —
+        it raises on policy denial, missing-agent lookup, participant
+        validation, and transient DB errors) must not escape and blow up
+        the verb path. Degrades to a warning string instead, mirroring
+        ``_pass_review_documenter_handoff`` (qa.py) and the ``pr_fail``
+        loop-closer (pr_gate.py) — the two existing precedents for this
+        exact shape.
         """
         qa_agent = await self.task.qa_agent_for_team(t.team)
-        if qa_agent is not None:
+        if qa_agent is None:
+            return None
+        try:
             await self.task.reassign(task_id, qa_agent.id)
             skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
             await self.a2a.send(
@@ -3979,6 +4088,21 @@ class Choreographer:
                 task_id=task_id,
                 body=f"Ready for review. PR: {t.pr_url}",
             )
+        except Exception as exc:
+            logger.warning(
+                "notify_qa side-effect failed - transition committed, "
+                "handoff did not fire",
+                task_id=str(task_id),
+                recipient=str(qa_agent.id),
+                error_type=type(exc).__name__,
+                error=repr(exc),
+            )
+            return (
+                f"submit-qa transition committed but the QA handoff to "
+                f"{qa_agent.id} failed ({type(exc).__name__}: {exc!r}). "
+                f"Re-issue the notification via dm."
+            )
+        return None
 
     def _resolve_skill(self, target_agent: Any, preference: list[str]) -> str:
         """Pick first skill in preference list that target_agent has.
@@ -4734,6 +4858,248 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=updated or child, role=role_str)
 
+    async def _cancel_leaf_guard(
+        self, agent_id: UUID, t: Any, agent: Any, briefing: dict[str, Any]
+    ) -> tuple[Envelope | None, Any]:
+        """Leaf and ownership guard for ``cancel_leaf`` (verb body owns it).
+
+        Returns ``(rejection, parent)`` - ``parent`` is non-``None`` only
+        when ``rejection`` is ``None``. ``t`` must actually be a leaf: it
+        has no children of its own, checked first because ``TaskService.cancel``
+        force-cascades onto every descendant (2026-09-06 finding - a PM could
+        close out a whole live subtree, PR and all, through the one verb meant
+        for a childless zero-diff task). ``t`` must also be a delegated child
+        (a root/coordination task with no parent is cancelled via the plain
+        ``cancel`` action, not this). A cell PM must be the parent's
+        assigned PM; a main PM may act on any root's descendant - it
+        coordinates across every cell, so ownership of one immediate
+        parent is not the bar for it.
+        """
+        children = await self.task.children_count(t.id)
+        if children:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        f"cancel_leaf only closes a leaf: task {t.id} has"
+                        f" {children} children"
+                    ),
+                    remediate=(
+                        "cancel or complete the children first, then retry;"
+                        " to discard the whole subtree at once use cancel"
+                        " via the CEO route"
+                    ),
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        if not t.parent_task_id:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        "task has no parent; cancel_leaf only closes a delegated child"
+                    ),
+                    remediate=(
+                        "a root/coordination task without a parent is"
+                        " cancelled via the ordinary cancel path, not"
+                        " cancel_leaf"
+                    ),
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        parent = await self.task.get(t.parent_task_id)
+        if parent is None:
+            return (
+                Envelope.invalid_state(
+                    message="parent task not found",
+                    remediate="the parent task may have been deleted; escalate",
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        role_str = str(agent.role) if agent is not None else ""
+        if role_str != "main_pm" and parent.assigned_to != agent_id:
+            return (
+                Envelope.not_authorized(
+                    message="not the assigned PM of this task's parent",
+                    remediate=(
+                        "cancel_leaf only closes children of your own"
+                        " coordination task; main_pm may act on any root's"
+                        " descendant"
+                    ),
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        return None, parent
+
+    async def _cancel_leaf_zero_diff_error(
+        self, t: Any, agent_id: UUID, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Fail-CLOSED zero-diff gate for ``cancel_leaf``.
+
+        Mirrors the ahead-count check ``VerbRunner._maybe_waive_pr_creation``
+        uses, but the opposite way on error: that check only ever skips a
+        PR-creation side effect and fails OPEN so a flaky fetch can't strand
+        a real submit. This one authorizes discarding a task outright, so an
+        unanswerable git check must never read as "safe to cancel" - refuse
+        instead and let the PM retry once git is healthy.
+        """
+        if getattr(t, "pr_number", None) is not None:
+            return Envelope.invalid_state(
+                message=f"task {t.id} has an open PR (#{t.pr_number})",
+                remediate=(
+                    "an open PR is reviewed/merged through the normal PR"
+                    " flow, not cancel_leaf"
+                ),
+                context_briefing=briefing,
+            )
+        if not getattr(t, "branch_name", None):
+            return None  # never claimed/started - trivially zero-diff
+        try:
+            base_branch = await resolve_parent_branch(t, self.task)
+            _behind, ahead = await self.git.is_behind_base(
+                t, base_branch=base_branch, actor_agent_id=agent_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "cancel_leaf_zero_diff_check_failed",
+                task_id=str(t.id),
+                error=str(exc),
+            )
+            return Envelope.invalid_state(
+                message=(
+                    f"could not verify task {t.id} has zero commits ahead"
+                    f" of its base (git check failed: {exc})"
+                ),
+                remediate=(
+                    "retry once git/workspace access is healthy - cancel_leaf"
+                    " refuses rather than guess when it can't confirm there"
+                    " is no diff to lose"
+                ),
+                context_briefing=briefing,
+            )
+        if ahead > 0:
+            return Envelope.invalid_state(
+                message=(
+                    f"task {t.id}'s branch '{t.branch_name}' is {ahead}"
+                    " commit(s) ahead of its base - not a zero-diff leaf"
+                ),
+                remediate=(
+                    "cancel_leaf only closes a leaf with no real diff; a"
+                    " leaf with commits must go through i_am_done/QA or a"
+                    " plain cancel by a PM/CEO with authority to discard work"
+                ),
+                context_briefing=briefing,
+            )
+        return None
+
+    async def _cancel_leaf_preflight(
+        self, agent_id: UUID, t: Any, briefing: dict[str, Any]
+    ) -> tuple[Envelope | None, str]:
+        """Role, spec-gate, ownership, and zero-diff checks for ``cancel_leaf``.
+
+        Collapsed into one early-return path so ``cancel_leaf`` itself stays
+        under the return-statement budget. Returns ``(rejection, role_str)``;
+        ``rejection`` is ``None`` only when every check passed.
+        """
+        agent = await self.task.agent_for(agent_id)
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return (
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ),
+                role_str,
+            )
+        decision = spec_module.can_invoke_intent(
+            role, "cancel_leaf", t, spec_module.Context(actor_id=agent_id)
+        )
+        if not decision.allowed:
+            return (
+                Envelope.from_decision(decision, briefing=briefing),
+                role_str,
+            )
+        guard, _ = await self._cancel_leaf_guard(agent_id, t, agent, briefing)
+        if guard is not None:
+            return guard, role_str
+        diff_guard = await self._cancel_leaf_zero_diff_error(t, agent_id, briefing)
+        if diff_guard is not None:
+            return diff_guard, role_str
+        return None, role_str
+
+    async def cancel_leaf(self, agent_id: UUID, task_id: UUID, reason: str) -> Envelope:
+        """PM closes a zero-diff leaf a merged sibling already fixed.
+
+        The mechanical path `i_am_done` (NO_COMMITS gate) and `complete`
+        (needs an open PR) can never take: zero commits, no PR, nothing
+        left to verify - the 2026-09-05 de9379cc incident, where 8
+        from-scratch verifications agreed no legitimate diff remained but
+        the PM had no way to close the leaf short of a CEO cancelling it by
+        hand. Reuses `TaskService.cancel`; `_cancel_leaf_guard` enforces
+        that `t` has no children before that cascade ever runs, so it never
+        has a real descendant to touch. Records `reason` as both the
+        journal:decision the tracing gate requires and the task's
+        cancellation note.
+        """
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="cancel_leaf",
+            )
+        rejection, role_str = await self._cancel_leaf_preflight(agent_id, t, briefing)
+        if rejection is not None:
+            return await self._emit_rejection(
+                rejection.with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="cancel_leaf",
+            )
+        pm_decision_outcome = await self._ensure_pm_decision(agent_id, task_id, reason)
+        if env := await self._check_pm_decision_required(
+            "cancel_leaf",
+            agent_id,
+            task_id,
+            t,
+            pm_decision_outcome=pm_decision_outcome,
+        ):
+            return await self._emit_rejection(
+                env.with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="cancel_leaf",
+            )
+        cancelled = await self.task.cancel(
+            task_id,
+            agent_role=role_str,
+            cancellation_note=f"[CANCELLED by {role_str}] {reason}",
+        )
+        if cancelled is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"cancel failed for task {task_id}",
+                    remediate="re-fetch with evidence(task_id) and retry",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="cancel_leaf",
+            )
+        return Envelope.ok(
+            status=str(cancelled.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["cancel_leaf"].next_hint(cancelled),
+            context_briefing=briefing,
+        ).with_introspection(task=cancelled, role=role_str)
+
     async def resume(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Resume a paused task this agent owns; transitions paused → in_progress.
 
@@ -4884,6 +5250,13 @@ class Choreographer:
             return await self._emit_rejection(
                 rejection, agent_id=agent_id, task_id=task_id, verb="sync_branch"
             )
+        # sync_task_branch is git-only (fetch/checkout/reset or rebase) and can
+        # chown-walk the workspace for tens of seconds on a slow volume. Close
+        # out the read-only preflight transaction first so this request's
+        # session sits outside a transaction while the git op runs, instead of
+        # holding it open (and its connection idle-in-transaction) the whole
+        # time.
+        await self.task.session.commit()
         try:
             result = await self.git.sync_task_branch(
                 t, base_branch=base_branch, actor_agent_id=agent_id, stash=stash
@@ -5523,9 +5896,9 @@ class Choreographer:
         """PM mirror of i_will_work_on for parent tasks.
 
         Atomic: spec.can_invoke_intent runs before any state mutation;
-        the composed (claim, set_plan, start) sequence is wrapped in a
+        the composed (claim, set_plan) sequence is wrapped in a
         savepoint by the runner so a mid-sequence failure rolls back
-        the DB.
+        the DB; start follows the branch provisioning.
 
         PM callers must supply ``approach`` (>= 20 chars) and a non-empty
         ``sub_tasks`` list inside ``rich_plan`` — these are enforced in
@@ -7096,10 +7469,12 @@ class Choreographer:
             )
         t = outcome
         # Do NOT hand the cell task to Main PM. `submit_for_review` clears
-        # PM ownership at gate entry, so the task sits unassigned in the
-        # reviewer queue; the cell PM is re-resolved by role when the
-        # reviewer passes or fails the gate. Main PM only completes the
-        # ROOT (root→master + escalate-to-CEO).
+        # PM ownership at gate entry; `_notify_pr_reviewer` immediately
+        # reassigns to the cell's in-path gate reviewer (be/fe/ux-pr-
+        # reviewer) instead of leaving it unassigned. The cell PM is
+        # re-resolved by role when the reviewer passes or fails the gate.
+        # Main PM only completes the ROOT (root→master + escalate-to-CEO).
+        await self._notify_pr_reviewer(task_id, t)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -7549,8 +7924,12 @@ class Choreographer:
             ),
             remediate=(
                 "this needs a human to resolve — reassign the task, fix the "
-                "underlying blocker, or cancel it; unblock() will keep "
-                "refusing until an admin moves the task out of blocked"
+                "underlying blocker, or cancel it; if it is a zero-diff leaf "
+                "(no commits, no PR, nothing left to verify - e.g. a fix "
+                "sibling merged first), the owning PM closes it with "
+                "cancel_leaf(task_id, reason) instead of looping; unblock() "
+                "will keep refusing until an admin moves the task out of "
+                "blocked"
             ),
         )
 
@@ -7613,7 +7992,9 @@ class Choreographer:
             next=(
                 "this task's escalate/unblock cycle repeated with no progress "
                 "and was force-blocked for a human to resolve — do not call "
-                "unblock again; wait for the CEO"
+                "unblock again; wait for the CEO, or if this is a zero-diff "
+                "leaf (no commits, no PR - e.g. a fix sibling merged first) "
+                "the owning PM can call cancel_leaf(task_id, reason)"
             ),
         )
 
@@ -8529,6 +8910,10 @@ class Choreographer:
                 task_id=task_id,
                 verb="submit_root",
             )
+        # `submit_for_review` clears Main PM ownership at gate entry;
+        # reassign to the root->master gate reviewer (pr-reviewer-1)
+        # instead of leaving it unassigned.
+        await self._notify_pr_reviewer(task_id, t)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -8980,7 +9365,38 @@ class Choreographer:
             )
         # Close the signal loop — the reject reason must reach whoever owns
         # the revision (mirrors fail_review / the pr_fail loop-closer).
-        if t.assigned_to is not None and t.assigned_to != pm_agent_id:
+        warning = await self._notify_request_changes_owner(
+            pm_agent_id, task_id, t, summary
+        )
+        env = Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+        hint = findings_lib.findings_count_hint(validated)
+        if warning:
+            env.warning = f"{warning} {hint}" if hint else warning
+        elif hint:
+            env.warning = hint
+        return env
+
+    async def _notify_request_changes_owner(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, summary: str
+    ) -> str | None:
+        """Best-effort a2a the reject rendering to the revision owner.
+
+        Returns a warning string when the notification failed (the
+        needs_revision transition plus the ledger rows and the pm_notes note
+        are already committed at this point), else None. Pulled out of
+        ``request_changes`` to keep it under the cyclomatic bound. A2AService
+        .send raises on policy denial, unknown recipients, and transient DB
+        errors — a failure here must degrade to a warning in the unchanged
+        success envelope, never reject the verb or roll the bounce back.
+        """
+        if t.assigned_to is None or t.assigned_to == pm_agent_id:
+            return None
+        try:
             await self.a2a.send(
                 from_agent=pm_agent_id,
                 to_agent=t.assigned_to,
@@ -8988,15 +9404,21 @@ class Choreographer:
                 task_id=task_id,
                 body=f"PM merge review needs changes.\n{summary}",
             )
-        env = Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
-            context_briefing=briefing,
-        ).with_introspection(task=t, role=role_str)
-        if hint := findings_lib.findings_count_hint(validated):
-            env.warning = hint
-        return env
+        except Exception as exc:
+            logger.warning(
+                "request_changes a2a to revision owner failed — "
+                "transition committed, notification did not fire",
+                task_id=str(task_id),
+                recipient=str(t.assigned_to),
+                error=repr(exc),
+            )
+            return (
+                f"request_changes transition committed but the a2a "
+                f"notification to the revision owner ({t.assigned_to}) "
+                f"failed ({exc!r}). The reject reason is on the task's "
+                f"findings ledger — re-issue it via dm."
+            )
+        return None
 
     async def _request_changes_spec_gate(
         self,

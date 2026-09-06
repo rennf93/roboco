@@ -298,7 +298,7 @@ async def test_dispatch_pm_work_still_dispatches_board_program_when_paused(
     monkeypatch.setattr(orch, "_handle_pm_assigned_task", handle_pm)
     board_dispatch = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "roboco.runtime.orchestrator._dispatch_board_program_exploration",
+        "roboco.runtime.engines.dispatch_work._dispatch_board_program_exploration",
         board_dispatch,
     )
 

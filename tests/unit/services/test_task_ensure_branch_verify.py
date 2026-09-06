@@ -25,6 +25,9 @@ def _service() -> TaskService:
     svc = TaskService.__new__(TaskService)
     svc.log = MagicMock()
     svc.session = MagicMock()
+    # __new__ skips __init__, so the claim durability boundary's snapshot
+    # bridge needs its own manual init here, same as log/session above.
+    svc._pending_claim_snapshots = {}
     return svc
 
 
@@ -214,16 +217,16 @@ async def test_branch_exists_on_remote_probe_error_fails_soft() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _finalize_claim rollback restores branch_name
+# _provision_claim rollback restores branch_name
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_finalize_claim_rollback_restores_branch_name() -> None:
+async def test_provision_claim_rollback_restores_branch_name() -> None:
     """A failed _ensure_branch_for_task that set branch_name restores it.
 
     Simulates create_branch setting task.branch_name (the in-memory assignment
-    in _create_branch_in_project) before a later step throws — the rollback
+    in _create_branch_in_project) before a later step throws; the rollback
     must restore branch_name so a retried claim re-runs the create instead of
     short-circuiting on a half-set field.
     """
@@ -261,9 +264,116 @@ async def test_finalize_claim_rollback_restores_branch_name() -> None:
     session = MagicMock()
     session.flush = AsyncMock()
     session.refresh = AsyncMock()
+    session.in_nested_transaction = MagicMock(return_value=True)
     svc.session = session
 
+    snapshot = await svc._apply_claim_fields(task, agent, agent_id)
     with pytest.raises(RuntimeError, match="push failed"):
-        await svc._finalize_claim(task, agent, agent_id)
+        await svc._provision_claim(task, agent, agent_id, snapshot)
 
     assert task.branch_name is None, "rollback must restore branch_name to None"
+
+
+# ---------------------------------------------------------------------------
+# _apply_claim_fields / _provision_claim durability boundary
+# (mirrors PR #951's review-claim fix)
+# ---------------------------------------------------------------------------
+
+
+def _claim_fields_harness() -> tuple[TaskService, MagicMock, MagicMock]:
+    """Shared setup for the durability-boundary tests below.
+
+    Fresh cut (``branch_name=None``) so ``_should_inherit_base`` is False
+    and ``_inherit_upstream_base`` never needs mocking.
+    """
+    svc = _service()
+    task = MagicMock(
+        id=uuid4(),
+        project_id=uuid4(),
+        branch_name=None,
+        status=TaskStatus.PENDING,
+        assigned_to=None,
+        claimed_by=None,
+        claimed_at=None,
+        last_heartbeat_at=None,
+        active_claimant_id=None,
+    )
+    agent = MagicMock()
+    agent.role.value = "developer"
+
+    object.__setattr__(svc, "_set_original_developer_context", MagicMock())
+    object.__setattr__(svc, "_validate_and_set_status", MagicMock())
+    object.__setattr__(svc, "_create_work_session_if_needed", AsyncMock())
+    object.__setattr__(svc, "_inject_proactive_context", AsyncMock())
+    object.__setattr__(svc, "_CLAIMABLE_STATUSES", {TaskStatus.PENDING})
+    object.__setattr__(svc, "_background_tasks", set())
+    return svc, task, agent
+
+
+@pytest.mark.asyncio
+async def test_apply_then_provision_commits_before_and_after_branch() -> None:
+    """The durability boundary commits before AND right after the branch-
+    creation network call, when not nested.
+
+    Not-nested (mirrors ``claim(provision=True)``'s own sequencing): the row
+    lock must be released by ``_apply_claim_fields`` before
+    ``_ensure_branch_for_task``'s git I/O runs, so a client-side timeout
+    during that call can't turn into a lock storm; and ``_provision_claim``
+    commits again right after the branch lands (the Finding A fix) so a
+    later failure (work session, upstream-base inherit) can't roll back an
+    uncommitted branch_name out from under an already-durable CLAIMED row.
+    """
+    svc, task, agent = _claim_fields_harness()
+    agent_id = uuid4()
+    call_order: list[str] = []
+
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    session.in_nested_transaction = MagicMock(return_value=False)
+    session.commit = AsyncMock(side_effect=lambda: call_order.append("commit"))
+    svc.session = session
+
+    async def _ensure_branch(_t: MagicMock, _aid: object) -> str:
+        call_order.append("ensure_branch_for_task")
+        return "feature/dev/x"
+
+    object.__setattr__(
+        svc, "_ensure_branch_for_task", AsyncMock(side_effect=_ensure_branch)
+    )
+
+    snapshot = await svc._apply_claim_fields(task, agent, agent_id)
+    await svc._provision_claim(task, agent, agent_id, snapshot)
+
+    assert call_order == ["commit", "ensure_branch_for_task", "commit"], (
+        "claim fields must commit before the branch-creation network call,"
+        " and the branch must commit again right after it lands"
+    )
+    expected_commit_count = 2
+    assert session.commit.await_count == expected_commit_count
+
+
+@pytest.mark.asyncio
+async def test_apply_claim_fields_skips_commit_inside_savepoint() -> None:
+    """Nested (mirrors the verb runner's composed claim/set_plan/start).
+
+    ``Session.commit()`` always commits to the root transaction, so calling
+    it while a savepoint is active would end that savepoint out from under
+    ``_run_composed_actions`` and its next composed action would raise
+    ``InvalidRequestError``. The boundary must no-op here instead, and stash
+    the snapshot on ``_pending_claim_snapshots`` for the later, separate
+    ``provision_claim()`` call.
+    """
+    svc, task, agent = _claim_fields_harness()
+    agent_id = uuid4()
+
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.in_nested_transaction = MagicMock(return_value=True)
+    session.commit = AsyncMock()
+    svc.session = session
+
+    snapshot = await svc._apply_claim_fields(task, agent, agent_id)
+
+    session.commit.assert_not_awaited()
+    assert svc._pending_claim_snapshots[task.id] is snapshot

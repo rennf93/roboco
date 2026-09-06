@@ -24,6 +24,13 @@ import structlog
 from mcp.server.mcpserver import MCPServer
 
 from roboco.agents_config import get_agent_team
+from roboco.mcp.utils import configure_stdio_logging, guard_blocked_envelope
+
+# See flow_server.py: __name__ is already "__main__" at this point when run
+# as the real stdio server, so this guards a plain in-process test import
+# from clobbering the ambient structlog config for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
@@ -266,6 +273,30 @@ def _build_headers() -> dict[str, str]:
     return headers
 
 
+def _transport_error_or_guard_block(
+    response: httpx.Response, path: str
+) -> dict[str, Any]:
+    """Mirrors flow_server._transport_error_or_guard_block: no JSON body is
+    either roboco.security's guard blocking with plain text, or a genuine
+    transport failure. Split out of _post to keep its own complexity in
+    check."""
+    blocked = guard_blocked_envelope(response.status_code, response.text, path)
+    if blocked is not None:
+        return blocked
+    return {
+        "error": "transport_error",
+        "message": (
+            f"orchestrator returned HTTP {response.status_code}"
+            f" with no JSON body for {path}"
+        ),
+        "remediate": (
+            "check that the orchestrator is up and the route exists;"
+            " contact the human operator if this persists"
+        ),
+        "missing": [],
+    }
+
+
 def _post(
     path: str, body: dict[str, Any], *, timeout: float = _TIMEOUT
 ) -> dict[str, Any]:
@@ -348,18 +379,7 @@ def _post(
         try:
             payload: dict[str, Any] = response.json()
         except (ValueError, json.JSONDecodeError):
-            return {
-                "error": "transport_error",
-                "message": (
-                    f"orchestrator returned HTTP {response.status_code}"
-                    f" with no JSON body for {path}"
-                ),
-                "remediate": (
-                    "check that the orchestrator is up and the route exists;"
-                    " contact the human operator if this persists"
-                ),
-                "missing": [],
-            }
+            return _transport_error_or_guard_block(response, path)
     # Outside the orchestrator client so the SDK call is its own connection.
     # A non-404 JSON body that is NOT a real Envelope (dict `error` from an
     # exception handler, or a 422 `detail` list) is normalized to the Envelope
@@ -1313,6 +1333,17 @@ def read_a2a() -> dict[str, Any]:
     return _post("/api/v1/do/read_a2a", {})
 
 
+def task_time(task_id: str) -> dict[str, Any]:
+    """Real, uptime-adjusted elapsed times for a task.
+
+    `active_seconds` excludes the hours the fleet was shut down or dispatch
+    was paused; `wall_seconds` is the naive clock. Use active_seconds
+    whenever you judge a task stale, stuck, blocked too long, or
+    unattended, and quote the downtime windows if they explain the gap.
+    """
+    return _post("/api/v1/do/task_time", {"task_id": task_id})
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -1350,6 +1381,7 @@ _TOOLS: dict[str, Any] = {
     "pr_update": pr_update,
     "read_messages": read_messages,
     "read_a2a": read_a2a,
+    "task_time": task_time,
     "draft_playbook": draft_playbook,
     "approve_playbook": approve_playbook,
     "reject_playbook": reject_playbook,

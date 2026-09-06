@@ -24,13 +24,37 @@ from roboco.models.base import (
     Team,
 )
 from roboco.services.task import TaskService
+from sqlalchemy import delete
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def _seed_claimed_task(session: AsyncSession) -> UUID:
-    """Seed a project + dev agent + claimed task; return the task id.
+async def _delete_seeded_rows(
+    session: AsyncSession, task_id: UUID, project_id: UUID, agent_ids: list[UUID]
+) -> None:
+    """Delete a seed's rows and commit, on the SAME session that committed
+    them.
+
+    Both seeds below commit for real (CLAIMED is one of
+    ``metrics.ACTIVE_STATUSES``, and this file predates the claim
+    durability boundary's own commits), so ``db_session``'s rollback-based
+    teardown never reaches these rows; left alone they inflate
+    ``get_team_metrics``'s active-task count for team=backend in any other
+    real-DB test sharing this pytest process (reproduced against
+    test_metrics_service.py). No second connection is needed here, unlike
+    the fixtures that must survive a lock a still-open OTHER session holds:
+    this is the one and only session that ever touched these rows.
+    """
+    await session.execute(delete(TaskTable).where(TaskTable.id == task_id))
+    await session.execute(delete(ProjectTable).where(ProjectTable.id == project_id))
+    await session.execute(delete(AgentTable).where(AgentTable.id.in_(agent_ids)))
+    await session.commit()
+
+
+async def _seed_claimed_task(session: AsyncSession) -> tuple[UUID, UUID, list[UUID]]:
+    """Seed a project + dev agent + claimed task; return
+    (task_id, project_id, [system_agent_id, dev_agent_id]).
 
     Mirrors the minimum subset of `smoke_test_batch` needed to satisfy
     the FK chain (created_by → agent, project_id → project, assigned_to →
@@ -113,13 +137,17 @@ async def _seed_claimed_task(session: AsyncSession) -> UUID:
 
     # `TaskTable.id` is annotated `Mapped[UUID]` (SA dialect type, not stdlib).
     # Convert through `str()` so the returned value is a real `uuid.UUID`.
-    return UUID(str(task.id))
+    return (
+        UUID(str(task.id)),
+        UUID(str(project.id)),
+        [UUID(str(system_agent.id)), UUID(str(dev_agent.id))],
+    )
 
 
 @pytest.mark.asyncio
 async def test_heartbeat_updates_last_heartbeat_at(db_session: AsyncSession) -> None:
     """Calling heartbeat() must set last_heartbeat_at to a fresh UTC datetime."""
-    task_id = await _seed_claimed_task(db_session)
+    task_id, project_id, agent_ids = await _seed_claimed_task(db_session)
     before = datetime.now(UTC) - timedelta(seconds=2)
 
     svc = TaskService(db_session)
@@ -130,6 +158,8 @@ async def test_heartbeat_updates_last_heartbeat_at(db_session: AsyncSession) -> 
     assert row is not None
     assert row.last_heartbeat_at is not None
     assert row.last_heartbeat_at > before
+
+    await _delete_seeded_rows(db_session, task_id, project_id, agent_ids)
 
 
 @pytest.mark.asyncio
@@ -143,8 +173,9 @@ async def test_heartbeat_is_noop_for_missing_task(db_session: AsyncSession) -> N
 
 async def _seed_pending_task_for_claim(
     session: AsyncSession,
-) -> tuple[UUID, UUID]:
-    """Seed a pending task pre-assigned to a dev. Returns (task_id, agent_id).
+) -> tuple[UUID, UUID, UUID, list[UUID]]:
+    """Seed a pending task pre-assigned to a dev. Returns
+    (task_id, agent_id, project_id, [system_agent_id, dev_agent_id]).
 
     Pre-assigned-and-pending mirrors the production case where the CEO/PM
     creates a task already assigned to the executor; claim() is then the
@@ -206,7 +237,7 @@ async def _seed_pending_task_for_claim(
         task_type=TaskType.CODE,
         nature=TaskNature.TECHNICAL,
         project_id=project.id,
-        # Pre-set branch_name so _finalize_claim's _ensure_branch_for_task
+        # Pre-set branch_name so _provision_claim's _ensure_branch_for_task
         # short-circuits — the test's assertion is on heartbeat seeding,
         # not branch creation, and unit Postgres has no git auth.
         branch_name="feature/backend/CLAIMED1",
@@ -227,7 +258,12 @@ async def _seed_pending_task_for_claim(
     session.add(task)
     await session.commit()
 
-    return UUID(str(task.id)), UUID(str(dev_agent.id))
+    return (
+        UUID(str(task.id)),
+        UUID(str(dev_agent.id)),
+        UUID(str(project.id)),
+        [UUID(str(system_agent.id)), UUID(str(dev_agent.id))],
+    )
 
 
 @pytest.mark.asyncio
@@ -240,7 +276,9 @@ async def test_claim_seeds_last_heartbeat_at(db_session: AsyncSession) -> None:
     called a hot verb (heartbeat-on-_touch). The fix in c0eb90e seeds the
     heartbeat at claim time. This test pins the contract.
     """
-    task_id, agent_id = await _seed_pending_task_for_claim(db_session)
+    task_id, agent_id, project_id, agent_ids = await _seed_pending_task_for_claim(
+        db_session
+    )
     before = datetime.now(UTC) - timedelta(seconds=2)
 
     svc = TaskService(db_session)
@@ -258,3 +296,5 @@ async def test_claim_seeds_last_heartbeat_at(db_session: AsyncSession) -> None:
         "interprets NULL as stale and reaps the claim immediately"
     )
     assert row.last_heartbeat_at > before
+
+    await _delete_seeded_rows(db_session, task_id, project_id, agent_ids)

@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer (fastapi-guard 7.6.0 / guard-core 3.12.0).
+"""RoboCo HTTP security layer (fastapi-guard 8.0.0 / guard-core 4.0.1).
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:
@@ -8,10 +8,10 @@ the middleware is mounted and enforcement happens ONLY when the flag is on
 effect once the middleware is mounted, so decorating is a harmless no-op while
 the flag is off (the guard-core-api pattern).
 
-Cloud-host-ready but env-driven: ``enforce_https`` follows
-``ROBOCO_ENVIRONMENT`` (dev on the NAS -> not enforced, TLS terminates at
-nginx regardless). ``ROBOCO_GUARD_FAIL_SECURE`` ships ``true`` (fail-secure
-ON) everywhere, including the personal NAS deploy.
+``enforce_https`` is always off: nginx is the single entry point and
+terminates TLS, so the app only ever sees proxy-HTTP (see
+:func:`build_security_config`). ``ROBOCO_GUARD_FAIL_SECURE`` ships ``true``
+(fail-secure ON) everywhere, including the personal NAS deploy.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from ipaddress import ip_address, ip_network
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from guard import SecurityConfig, SecurityDecorator, SecurityMiddleware
 from guard import status as guard_status
@@ -27,6 +27,7 @@ from guard.adapters import StarletteGuardResponse
 from guard.lifespan import make_lifespan
 from guard_core.core.behavioral.processor import BehavioralProcessor
 from guard_core.exceptions import GuardRedisError
+from guard_core.handlers.ipban_handler import IPBanManager
 from guard_core.models import BehaviorRuleConfig, ThreatBanConfig
 from starlette.responses import Response as _StarletteResponse
 
@@ -34,6 +35,8 @@ from roboco.config import settings
 from roboco.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastapi import FastAPI
     from guard_core.decorators.base import RouteConfig
     from guard_core.handlers.behavior_handler import BehaviorRule
@@ -53,7 +56,7 @@ logger = get_logger(__name__)
 # track_return_pattern call redis unguarded and raise GuardRedisError (not an
 # HTTPException) on a redis blip, so they fall through to roboco's generic
 # exception handler as a 500 instead of failing open like every pipeline check
-# does. Verified still required at guard-core 3.12.0 (redis_fail_open is
+# does. Verified still required at guard-core 4.0.1 (redis_fail_open is
 # still not consulted on either seam). Wrap all three seams here rather than
 # fork/vendor guard-core; the durable fix belongs upstream (route these calls
 # through the pipeline's own GuardRedisError / redis_fail_open handling).
@@ -272,7 +275,10 @@ async def internal_ssrf_validator(request: GuardRequest) -> GuardResponse | None
 # SecurityConfig
 # --------------------------------------------------------------------------
 
-# Tracing/observability headers that must never trip the signature WAF.
+# Tracing/observability headers passed to excluded_detection_headers. guard-core
+# 4.0 only skips the ssrf category, and only for its hardcoded address-header
+# names or an IP-shaped value - neither applies here, so this no longer exempts
+# these headers from the signature WAF at all.
 _TRACING_HEADERS = {
     "x-correlation-id",
     "x-request-id",
@@ -282,6 +288,30 @@ _TRACING_HEADERS = {
     "baggage",
     "sentry-trace",
 }
+
+# HMAC agent-mesh credential (see roboco.mcp.utils._get_agent_headers). Not in
+# guard-core's default log_sensitive_headers (authorization, proxy-
+# authorization, cookie, x-api-key), so a raw guard log/threat-event line
+# would otherwise carry it unredacted.
+_LOG_SENSITIVE_HEADERS: frozenset[str] = frozenset({"x-agent-token"})
+
+# Request-body field names that carry a secret but aren't in guard-core's
+# default log_sensitive_body_fields (access_token, refresh_token, api_key,
+# apikey, token, password, secret, client_secret, signature), matched by
+# exact lowercase key: X OAuth1 (api_secret, access_token_secret), TikTok
+# (client_key), Telegram (bot_token), GitHub App (private_key), self-hosted
+# Ollama (auth_token), project git auth (git_token).
+_LOG_SENSITIVE_BODY_FIELDS: frozenset[str] = frozenset(
+    {
+        "api_secret",
+        "access_token_secret",
+        "client_key",
+        "bot_token",
+        "private_key",
+        "auth_token",
+        "git_token",
+    }
+)
 
 # Paths the middleware must never touch: WS upgrades, health, API docs, the
 # A2A well-known discovery, and static.
@@ -328,6 +358,13 @@ _THREAT_BAN_CONFIG: MappingProxyType[str, ThreatBanConfig] = MappingProxyType(
         "recon": ThreatBanConfig(threshold=5, duration=86400),
         "sensitive_file": ThreatBanConfig(threshold=3, duration=86400),
         "cms_probing": ThreatBanConfig(threshold=3, duration=86400),
+        # Rate-limit auto-ban (enable_rate_limit_auto_ban): a client still
+        # hammering after 20 rejected requests is a bot, not a retry.
+        # Whitelisted peers (mesh, tailnet) never reach the rate limiter and
+        # passive mode suppresses the count, so only external repeat
+        # offenders are banned. 1h, not 24h: a NAT-shared or webhook IP must
+        # not be locked out for a day over one burst.
+        "rate_limit": ThreatBanConfig(threshold=20, duration=3600),
     }
 )
 
@@ -365,30 +402,52 @@ def _endpoint_rate_limits() -> dict[str, tuple[int, int]]:
 # request bodies legitimately carry code, SQL, diffs, file paths, HTML and URLs
 # (task specs, agent notes/commits, RAG queries, git bodies, chat). The signature
 # WAF (SQLi/XSS/path-traversal/URL) false-positives on ~half of that traffic when
-# active, so these free-text TOP-LEVEL body fields are excluded from scanning.
-# guard scans each non-excluded top-level field's whole stringified value, so the
-# free-form container fields (plan/risks/findings/section/payload/…) are excluded
-# too — otherwise their nested prose is stringified and scanned. The actual roboco
-# threats (prompt-injection, secret-exfil, internal SSRF) are caught by the custom
-# validators, which run independently of this exclusion; the WAF still scans every
-# non-excluded (id/enum/slug/branch) field. Matching is case-insensitive and
-# top-level only. Field set derived from the real request models; passive-mode NAS
-# logs calibrate any stragglers.
+# active, so these free-text body fields are excluded from scanning.
+#
+# Matching is case-insensitive and by KEY NAME AT ANY DEPTH, not top-level only
+# (verified in guard_core/_utils/body_json_scan.py). `_scan_json_dict_entry_key`
+# returns `None` the instant `key_str.lower() in excluded_body_fields`; its
+# caller, `_scan_json_entry_frame`, treats that `None` as "stop, don't descend":
+#   key_result = await _scan_json_dict_entry_key(...)
+#   if key_result is None:
+#       return None
+#   ...
+#   stack.append(("value", item, key_str, depth + 1, own_redact))
+# An excluded key's value is never pushed onto the walk stack, so the WHOLE
+# subtree under that key (however deeply nested, dicts and lists alike) is
+# skipped, not just that one field's own stringified value. This is why a
+# handful of CONTAINER field names below (items/posts/resolved_findings/
+# process_change, findings/drafts/options/... already here) are enough to
+# shield every leaf inside a batch of proposal/finding/plan objects, including
+# sibling identifier fields (project_slug, team, priority, ...) nested in the
+# same object that are deliberately NOT excluded on their own; see the
+# "rejected" list in the review evidence for why those leaf names stay scanned.
+# The actual roboco threats (prompt-injection, secret-exfil, internal SSRF) are
+# caught by the custom validators, which run independently of this exclusion;
+# the WAF still scans every non-excluded (id/enum/slug/branch) field. Field set
+# derived from the real request models; passive-mode NAS logs calibrate any
+# stragglers.
 _WAF_FREETEXT_BODY_FIELDS: set[str] = {
     "ac_verdicts",
     "acceptance_criteria",
     "actual",
+    "angle",
     "approach",
     "auditor_notes",
     "base_url",
     "body",
+    "campaign_name",
     "chosen",
     "code",
+    "commit",
     "cons",
     "consequences",
     "content",
     "context",
+    "covers_parent_criteria",
+    "criteria",
     "criteria_verified",
+    "cycle_goal",
     "decision",
     "description",
     "details",
@@ -398,29 +457,44 @@ _WAF_FREETEXT_BODY_FIELDS: set[str] = {
     "draft",
     "drafts",
     "error_message",
+    "evidence",
     "expected",
+    "failed_stage",
+    "feature_title",
     "file",
     "file_path",
     "files",
+    "finding_id",
     "findings",
+    "headline",
+    "incident_summary",
     "initial_message",
     "initial_prompt",
+    "input_props",
     "intends_to_touch",
     "issues",
+    "items",
     "justification",
     "message",
     "mitigation",
+    "narrative",
     "next",
     "next_steps",
+    "note",
     "notes",
     "notes_structured",
     "open_questions",
+    "opportunities",
     "options",
+    "overall_assessment",
     "payload",
     "plan",
+    "positioning_note",
+    "posts",
     "pr_reviewer_notes",
     "problem",
     "procedure",
+    "process_change",
     "proposed_solution",
     "pros",
     "qa_notes",
@@ -430,11 +504,15 @@ _WAF_FREETEXT_BODY_FIELDS: set[str] = {
     "rationale",
     "reason",
     "remaining_work",
+    "reply_body",
     "required_changes",
     "resolution",
+    "resolved_findings",
     "risks",
+    "root_cause",
     "scope",
     "section",
+    "skip_reason",
     "solution",
     "sources",
     "state_summary",
@@ -442,19 +520,23 @@ _WAF_FREETEXT_BODY_FIELDS: set[str] = {
     "sub_tasks",
     "technical_considerations",
     "text",
+    "threats",
+    "tiktok_caption",
     "title",
     "topic",
     "url",
     "value",
+    "video_script",
     "what_done",
     "what_learned",
     "what_needed",
     "what_struggled",
     "where_to_look",
+    "x_caption",
 }
 
 # Log-only 404-scan sweep detection (calibration signal, never bans).
-# pattern is "status:" (not a bare substring): guard-core 3.12.0 rejects a
+# pattern is "status:" (not a bare substring): guard-core 4.0.0 rejects a
 # body-based return_pattern rule at construction unless
 # behavior_scan_response_body=True. status: is validation-exempt and is the
 # form that actually matches a response's status code.
@@ -508,11 +590,15 @@ def _redis_url() -> str:
 # `_build_trusted_hop_networks`) and stamps the guard's request.state.client_ip
 # cache, so Tailscale-Serve/host-proxied traffic resolves to the real
 # tailnet/LAN client instead of loopback and no longer rides this exemption.
-_INTERNAL_NETWORKS = [
-    "127.0.0.1",
-    "::1",
-    "172.16.0.0/12",
-]
+# The internal agent mesh's network literal: loopback + docker's default
+# bridge pool. The ONE definition of "the mesh": _INTERNAL_NETWORKS (global
+# whitelist member, below), build_security_config's own trusted_proxies
+# (which MUST mirror the whitelist, see the INVARIANT comment there), and the
+# route-level gateway allowlist (_MESH_ROUTE_ALLOWLIST, far below) all derive
+# from this instead of three hand-typed copies of the same three strings.
+_MESH_NETWORKS: tuple[str, ...] = ("127.0.0.1", "::1", "172.16.0.0/12")
+
+_INTERNAL_NETWORKS = list(_MESH_NETWORKS)
 
 # Docker's default bridge address-pool range — the WHOLE pool, used only by
 # the broader connecting-peer gate below (never the operator-scoped hop set).
@@ -695,13 +781,16 @@ class ClientIpResolutionMiddleware:
     the operator-scoped hop-peel set the XFF entries are matched against) —
     a directly-connected client's forged XFF is never consulted here (the
     guard's own depth-1 logic keeps handling that class unchanged).
+    Websocket handshakes are stamped too: the /ws router's ``guard_ws``
+    dependency (roboco.api.websocket) reads the same cache, so /ws/* gets the
+    identical client attribution as HTTP.
     """
 
     def __init__(self, app: Any) -> None:
         self.app = app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http":
+        if scope["type"] in ("http", "websocket"):
             client = scope.get("client")
             connecting_ip = client[0] if client else None
             if connecting_ip and _is_trusted_connecting_peer(connecting_ip):
@@ -753,18 +842,26 @@ def _emergency_whitelist() -> list[str]:
 
 
 def _agent_kwargs() -> dict[str, Any]:
-    """guard-agent telemetry kwargs — empty unless telemetry is armed."""
-    if not settings.guard_telemetry_enabled:
+    """guard-agent telemetry kwargs: empty unless telemetry is armed AND keyed.
+
+    guard-core refuses ``enable_agent=True`` without ``agent_api_key`` at
+    construction, and this config is built at import, so an armed flag with
+    no key must leave the agent unconfigured rather than crash boot.
+    """
+    if not (settings.guard_telemetry_enabled and settings.guard_agent_api_key):
         return {}
     return {
         "enable_agent": True,
-        "agent_api_key": settings.guard_agent_api_key or None,
+        "agent_api_key": settings.guard_agent_api_key,
         "agent_project_id": settings.guard_project_id or None,
         "agent_endpoint": "https://api.guard-core.com",
         "agent_enable_events": True,
         "agent_enable_metrics": True,
         "agent_strict": False,
         "enable_dynamic_rules": True,
+        # Last-known rules snapshot (guard-core 4.0.0): redis first, this file
+        # only when redis has nothing usable. Unset = redis only.
+        "dynamic_rules_cache_path": settings.guard_dynamic_rules_cache_path or None,
         # HMAC/session material must never leave in a telemetry payload.
         "agent_sensitive_headers": [
             "x-agent-token",
@@ -779,16 +876,13 @@ def build_security_config() -> SecurityConfig:
     """Assemble roboco's global guard config from settings (behind nginx)."""
     return SecurityConfig(
         # Real client IP behind nginx (single hop) + the docker bridge ranges.
-        # INVARIANT: trusted_proxies must mirror _INTERNAL_NETWORKS exactly
-        # (loopback + 172.16/12). Adding LAN ranges (10.0.0.0/8, 192.168.0.0/16)
-        # here lets guard peel forwarded LAN IPs as trusted hops and fall back to
+        # Sourced from _MESH_NETWORKS (one definition, see above) so this can
+        # no longer drift from _INTERNAL_NETWORKS the way two hand-typed
+        # copies could. Adding LAN ranges (10.0.0.0/8, 192.168.0.0/16) here
+        # lets guard peel forwarded LAN IPs as trusted hops and fall back to
         # the whitelisted docker-bridge peer, bypassing the block — see
         # test_nginx_forwarded_lan_client_is_not_whitelisted.
-        trusted_proxies=(
-            "127.0.0.1",
-            "::1",
-            "172.16.0.0/12",
-        ),
+        trusted_proxies=_MESH_NETWORKS,
         trusted_proxy_depth=1,
         trust_x_forwarded_proto=True,
         # Calibrate-then-enforce.
@@ -815,6 +909,13 @@ def build_security_config() -> SecurityConfig:
         rate_limit=120,
         rate_limit_window=60,
         auto_ban_duration=300,
+        # Feed 429s into the same ban engine as the WAF (bar set by
+        # _THREAT_BAN_CONFIG["rate_limit"]); otherwise a scraper is re-429'd
+        # forever and only usage_monitor(action="ban") routes ever escalate.
+        # No legit third-party server reaches the limiter: Telegram is
+        # long-polled outbound (getUpdates), never a webhook, and every
+        # operator client arrives whitelisted (mesh, tailnet).
+        enable_rate_limit_auto_ban=True,
         endpoint_rate_limits=_endpoint_rate_limits(),
         # Always off: nginx is the single entry point, so the app only ever
         # sees proxy-HTTP — TLS (and any http->https redirect) is nginx's
@@ -835,7 +936,7 @@ def build_security_config() -> SecurityConfig:
         # The internal agent mesh skips all checks (WAF + IP-ban) — see
         # _INTERNAL_NETWORKS. External traffic via nginx carries the real
         # client IP (XFF, depth 1) and is still fully scrutinized.
-        whitelist=_guard_whitelist(),
+        whitelist=cast("tuple[str, ...] | None", _guard_whitelist()),
         exclude_paths=_EXCLUDE_PATHS,
         security_headers=_SECURITY_HEADERS,
         threat_ban_config=_THREAT_BAN_CONFIG,
@@ -847,6 +948,9 @@ def build_security_config() -> SecurityConfig:
         enable_penetration_detection=True,
         excluded_detection_headers=_TRACING_HEADERS,
         excluded_detection_body_fields=_WAF_FREETEXT_BODY_FIELDS,
+        # Extends (not replaces) guard-core's default redaction set.
+        log_sensitive_headers=_LOG_SENSITIVE_HEADERS,
+        log_sensitive_body_fields=_LOG_SENSITIVE_BODY_FIELDS,
         # roboco keeps its own CORSMiddleware (single origin via nginx).
         enable_cors=False,
         **_agent_kwargs(),
@@ -857,6 +961,142 @@ def build_security_config() -> SecurityConfig:
 # connects to redis / loads geo data when mounted by apply_guard.
 security_config = build_security_config()
 guard_deco = SecurityDecorator(security_config)
+
+# --------------------------------------------------------------------------
+# Agent gateway route policy: WAF-scan the mesh on the agent gateway
+# (roboco-flow / roboco-do, i.e. every endpoint in roboco/api/routes/v1/do.py
+# and flow_*.py -- only agents call these; grep roboco/panel/src confirms
+# zero panel callers of /api/v1/), without pulling the mesh off the GLOBAL
+# whitelist above. It can't leave that whitelist: the same docker bridge pool
+# also carries the panel container, the SDK sidecar, nginx and both bridges,
+# and the global list is EXCLUSIVE (guard_core.utils.is_ip_allowed: a
+# non-empty whitelist REFUSES any non-member outright).
+#
+# guard-core's route-level IP list is the documented escape hatch instead
+# (guard_core/core/checks/implementations/ip_security.py):
+#   def _route_overrides_ip_lists(route_config): return bool(route_config and
+#       route_config.ip_whitelist)
+# `_resolve_global_ip_access` passes that through as `skip_ip_lists` to
+# `check_ip_access`, and:
+#   def _resolve_is_whitelisted(client_ip, route_config, config, is_allowed,
+#       skip_ip_lists): return is_allowed and bool(config.whitelist) and not
+#       skip_ip_lists
+# so a mesh peer on a route with `ip_whitelist` set gets `is_whitelisted =
+# False` even though it still passes the route's OWN whitelist (checked
+# separately, unaffected by skip_ip_lists, in `_check_route_ip_restrictions`).
+# `SuspiciousActivityCheck.check` (the WAF) early-returns ONLY `if getattr(
+# request.state, "is_whitelisted", False)`, and DEFAULT_CHECK_CLASSES
+# (guard_core/core/checks/factory.py) runs IpSecurityCheck before it -- so the
+# WAF actually runs for the mesh here. `RateLimitCheck` is explicitly
+# bypassed instead (see `mesh_scanned` below): the ask was WAF scanning, not
+# a new way for agent traffic to 429.
+_MESH_ROUTE_ALLOWLIST: tuple[str, ...] = _MESH_NETWORKS
+
+
+def mesh_scanned(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Apply to every agent-gateway endpoint (do.py / flow_*.py).
+
+    `require_ip` sets `route_config.ip_whitelist`, forcing the route-level
+    evaluation above so the mesh is WAF-scanned here instead of riding the
+    global whitelist. Any OTHER caller IP (tailnet, forwarded LAN, public) is
+    judged solely against `_MESH_ROUTE_ALLOWLIST` on these routes and is
+    blocked outright (403), matching the global whitelist's own exclusivity.
+
+    `bypass(["ip_ban", "rate_limit"])`: scanned, never rate-limited, never
+    banned on the gateway. The mesh is HMAC-authenticated already, so a 429
+    on a verb buys no security and is just a new wedge vector for agents.
+    Confirmed in guard_core/core/checks/implementations/rate_limit.py that
+    the route-level bypass also skips the GLOBAL bucket for this route, not
+    just the per-route `@guard_deco.rate_limit(...)` decorators --
+    `RateLimitCheck.check` is:
+        if route_config and self.middleware.route_resolver.should_bypass_check(
+            "rate_limit", route_config
+        ):
+            return None
+        ...
+        if response := await self._check_endpoint_rate_limit(...): return response
+        if response := await self._check_route_rate_limit(...): return response
+        if response := await self._check_geo_rate_limit(...): return response
+        return await self._check_global_rate_limit(request, client_ip)
+    so the bypass returns `None` before endpoint/route/geo AND the trailing
+    `_check_global_rate_limit` ever run. `ip_ban` is belt-and-suspenders with
+    the ban-safety patch below: even a stale/manually-set ban on a mesh IP
+    can't wedge these routes specifically.
+    """
+    func = guard_deco.require_ip(whitelist=list(_MESH_ROUTE_ALLOWLIST))(func)
+    return guard_deco.bypass(["ip_ban", "rate_limit"])(func)
+
+
+# Ban safety. `_THREAT_BAN_CONFIG["cmd_injection"]` bans on a SINGLE hit (24h),
+# and a ban overrides the whitelist on EVERY route (IpSecurityCheck.check runs
+# `_check_banned_ip` before anything else) -- so one WAF false positive on a
+# gateway route would otherwise wedge that agent container fleet-wide,
+# including on routes `bypass(["ip_ban"])` above never reaches (`/api/optimal/
+# *`, `/api/docs/*`, ...). `IPBanManager.ban_ip` is the single seam a ban is
+# ever RECORDED through: the WAF's threat escalation
+# (SuspiciousActivityCheck._handle_suspicious_active_mode -> _try_threshold_ban)
+# calls `self.ip_ban_manager.ban_ip(...)` -- as does the rate-limit auto-ban
+# (RateLimitCheck -> the same _try_threshold_ban), though `bypass(["ip_ban",
+# "rate_limit"])` on `mesh_scanned` routes above means that second path can no
+# longer even fire there; it still can on any route this patch doesn't cover.
+# Both hold the SAME `ip_ban_manager` singleton instance imported from
+# guard_core.handlers.ipban_handler. Patched at import time exactly like the
+# three redis seams above (see the comment near line 53): wrap the original,
+# and for a mesh-overlapping target log and return instead of banning.
+# guard_core.sync (a separate WSGI-style mirror) is never imported by roboco
+# or by the `guard`/`fastapi-guard` package roboco uses, so it is not a second
+# seam here. guard-core 4.0.0 also independently refuses to ban any IP
+# overlapping `trusted_proxies` (`IpBanOperationsMixin._self_dos_refusal_
+# reason`, a self-DoS guard) -- today identical to `_MESH_ROUTE_ALLOWLIST`, so
+# it already backstops this. This patch stays anyway: it makes the never-ban
+# guarantee explicit and intent-scoped rather than an incidental side effect
+# of `trusted_proxies`, a knob about XFF proxy-hop depth, not ban policy, that
+# could change for unrelated reasons.
+#
+# guard-core 4.0.1 made `ban_ip` return a bool that every ban call site reads
+# (`_resolve_and_apply_threshold_ban`, `escalate_identity_violation`,
+# `_execute_ban_action`): falsy = refused, so the WAF answers 400 instead of
+# 403 "IP has been banned", the ban log line is skipped, and the event says
+# "tracked" instead of "banned". In RoboCo's topology the event/log effect is
+# the live one (identity escalation, usage_monitor bans); the wrapper below
+# must propagate the bool.
+_orig_ban_ip = IPBanManager.ban_ip
+
+
+def _ip_overlaps_mesh(ip: str) -> bool:
+    """True for a plain mesh address OR any CIDR range overlapping the mesh.
+
+    `ip_network(ip, strict=False)` parses both shapes uniformly (a plain
+    address becomes its own /32 or /128), so one `.overlaps()` check replaces
+    the old `"/" not in ip` skip, which let a CIDR-form ban request straight
+    through unrefused even when it overlapped the mesh (e.g. banning
+    172.16.0.0/16 -- a superset of no single `_MESH_ROUTE_ALLOWLIST` entry,
+    but still very much inside 172.16.0.0/12).
+    """
+    try:
+        requested = ip_network(ip.strip(), strict=False)
+    except (ValueError, TypeError):
+        return False
+    return any(requested.overlaps(ip_network(net)) for net in _MESH_ROUTE_ALLOWLIST)
+
+
+async def _ban_ip_mesh_safe(
+    self: IPBanManager, ip: str, duration: int, reason: str = "threshold_exceeded"
+) -> bool:
+    # ponytail: mesh containers are blocked per request by the route policy
+    # above, never banned fleet-wide -- that is the ceiling this buys.
+    if _ip_overlaps_mesh(ip):
+        logger.warning(
+            "refused to ban mesh-overlapping IP/range %s: blocked per "
+            "request only (reason=%s)",
+            ip,
+            reason,
+        )
+        return False
+    return await _orig_ban_ip(self, ip, duration, reason)
+
+
+setattr(IPBanManager, "ban_ip", _ban_ip_mesh_safe)
 
 
 def apply_guard(app: FastAPI) -> None:

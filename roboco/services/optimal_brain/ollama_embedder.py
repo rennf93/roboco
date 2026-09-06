@@ -164,6 +164,7 @@ class OllamaEmbedder:
         timeout: float = 120.0,
         max_concurrent: int = MAX_CONCURRENT_BATCHES,
         cache_size: int = 10000,
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ):
         """Initialize Ollama embedder.
 
@@ -173,11 +174,14 @@ class OllamaEmbedder:
             timeout: Request timeout in seconds (default 120s for CPU embedding)
             max_concurrent: Max concurrent batch requests (default 4)
             cache_size: Max cached embeddings (default 10000)
+            batch_size: Default batch size for embed_chunks/aembed_chunks
+                (default 32); a per-call batch_size argument still overrides it.
         """
         self.model = model
         self.base_url = base_url or settings.ollama_base_url
         self.timeout = timeout
         self.max_concurrent = max_concurrent
+        self.batch_size = batch_size
         self._dimensions: int | None = None
         self._cache = EmbeddingCache(max_size=cache_size)
         # Reusable sync client (async clients created per-operation)
@@ -737,14 +741,16 @@ class OllamaEmbedder:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # Already in async context - use sync fallback
-                embeddings = self.embed_documents(texts, batch_size=DEFAULT_BATCH_SIZE)
+                embeddings = self.embed_documents(texts, batch_size=self.batch_size)
             else:
                 embeddings = loop.run_until_complete(
-                    self.aembed_documents_parallel(texts)
+                    self.aembed_documents_parallel(texts, batch_size=self.batch_size)
                 )
         except RuntimeError:
             # No event loop - create one
-            embeddings = asyncio.run(self.aembed_documents_parallel(texts))
+            embeddings = asyncio.run(
+                self.aembed_documents_parallel(texts, batch_size=self.batch_size)
+            )
 
         for chunk, embedding in zip(chunks, embeddings, strict=True):
             chunk.embedding = embedding
@@ -764,7 +770,9 @@ class OllamaEmbedder:
             return chunks
 
         texts = [chunk.text for chunk in chunks]
-        embeddings = await self.aembed_documents_parallel(texts)
+        embeddings = await self.aembed_documents_parallel(
+            texts, batch_size=self.batch_size
+        )
 
         for chunk, embedding in zip(chunks, embeddings, strict=True):
             chunk.embedding = embedding

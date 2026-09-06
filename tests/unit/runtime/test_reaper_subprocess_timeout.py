@@ -151,7 +151,7 @@ async def test_inspect_container_state_times_out_raises_and_kills(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "roboco.runtime.orchestrator._DOCKER_INSPECT_TIMEOUT_SECONDS", 0.05
+        "roboco.runtime.engines.spawn_exit._DOCKER_INSPECT_TIMEOUT_SECONDS", 0.05
     )
     proc = _HangingInspectProc()
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec_returning(proc))
@@ -167,7 +167,7 @@ async def test_resolve_container_id_times_out_raises_and_kills(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "roboco.runtime.orchestrator._DOCKER_INSPECT_TIMEOUT_SECONDS", 0.05
+        "roboco.runtime.engines.reconcile._DOCKER_INSPECT_TIMEOUT_SECONDS", 0.05
     )
     proc = _HangingInspectProc()
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec_returning(proc))
@@ -188,7 +188,7 @@ async def test_probe_gateway_health_times_out_returns_none_and_kills(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "roboco.runtime.orchestrator._DOCKER_EXEC_TIMEOUT_SECONDS", 0.05
+        "roboco.runtime.engines.dispatch_breaker._DOCKER_EXEC_TIMEOUT_SECONDS", 0.05
     )
     proc = _HangingExecProc()
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec_returning(proc))
@@ -260,7 +260,7 @@ async def test_check_health_skips_agent_on_inspect_timeout_not_aborts(
     inspected and found stopped -> _handle_stopped_container is called for a2.
     Reaching a2 proves the sweep did NOT abort on a1's timeout."""
     monkeypatch.setattr(
-        "roboco.runtime.orchestrator._DOCKER_INSPECT_TIMEOUT_SECONDS", 0.05
+        "roboco.runtime.engines.spawn_exit._DOCKER_INSPECT_TIMEOUT_SECONDS", 0.05
     )
     orch = _orch()
     orch._instances["a1"] = _instance()

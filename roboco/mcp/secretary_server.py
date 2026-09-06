@@ -28,6 +28,13 @@ from roboco.agent_sdk.secretary_driver import (
     _do_search_tasks,
     _do_submit_directive,
 )
+from roboco.mcp.utils import configure_stdio_logging
+
+# See flow_server.py: __name__ is already "__main__" at this point when run
+# as the real stdio server, so this guards a plain in-process test import
+# from clobbering the ambient structlog config for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 mcp = MCPServer("roboco-secretary")
 

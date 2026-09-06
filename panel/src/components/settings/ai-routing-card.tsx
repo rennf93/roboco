@@ -544,20 +544,27 @@ export function AIRoutingCard() {
     }
   };
 
-  // --- Cost-tiered defaults (additive seed — never wipes existing routing) ---
+  // --- Cost-tiered routing (additive, never wipes existing routing) ---
   const flipToCostTiered = async () => {
     if (
       !confirm(
-        "Seed the day-1 cost-tiered default (developer:low → Haiku)? " +
-          "Unlike the other buttons this is additive — it does not clear " +
-          "any existing routing.",
+        "Apply cost-tiered routing? No rows are seeded automatically (the " +
+          "built-in day-1 seed was retired). Pin cheaper models per role and " +
+          "complexity in the Complexity overrides table below.",
       )
     )
       return;
     try {
-      await applyMode.mutateAsync({ mode: "cost_tiered" });
+      const result = await applyMode.mutateAsync({ mode: "cost_tiered" });
+      // The backend seeds nothing, so report the real post-state from the
+      // response snapshot: how many complexity override rows it carries.
+      const overrideCount = result.assignments.filter(
+        (a) => a.scope === AssignmentScope.ROLE && a.scope_value?.includes(":"),
+      ).length;
       toast.success(
-        "Cost-tiered default seeded (developer:low → Haiku)",
+        overrideCount === 0
+          ? "Cost-tiered mode applied. No rows seeded."
+          : `Cost-tiered mode applied. ${overrideCount} complexity override row${overrideCount === 1 ? "" : "s"} active.`,
       );
     } catch (e) {
       toast.error("Apply failed: " + errMsg(e));
@@ -659,7 +666,9 @@ export function AIRoutingCard() {
       toast.error("Pick a preset first");
       return;
     }
-    if (!confirm(`Delete preset "${selectedPreset?.name ?? selectedPresetId}"?`))
+    if (
+      !confirm(`Delete preset "${selectedPreset?.name ?? selectedPresetId}"?`)
+    )
       return;
     try {
       await deletePreset.mutateAsync(selectedPresetId);
@@ -1048,11 +1057,11 @@ export function AIRoutingCard() {
             <ModeButton
               icon={<Gauge className="h-4 w-4" />}
               label="Cost-Tiered"
-              description="Seed developer:low → Haiku (see below)."
-              active={false}
+              description="Pin cheaper models per role and complexity in the Complexity overrides table below. No rows are seeded automatically."
+              active={currentMode === "cost_tiered"}
               onClick={flipToCostTiered}
               disabled={applyMode.isPending}
-              labelHint="Unlike every button to the left this never wipes existing routing — it's a one-time additive seed you can re-run anytime. Edit or remove individual rows in the Complexity overrides section below."
+              labelHint="Unlike every button to the left this never wipes existing routing: nothing is cleared and no rows are seeded automatically. Add, edit, or remove tier rows in the Complexity overrides section below."
             />
           </div>
           {pinnedCount > 0 ? (
@@ -1152,7 +1161,10 @@ export function AIRoutingCard() {
             <Label className="text-sm font-medium">Routing presets</Label>
           </HelpTip>
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed p-2">
-            <Select value={selectedPresetId} onValueChange={setSelectedPresetId}>
+            <Select
+              value={selectedPresetId}
+              onValueChange={setSelectedPresetId}
+            >
               <SelectTrigger size="sm" className="w-48 text-xs">
                 <SelectValue
                   placeholder={
@@ -1255,7 +1267,11 @@ export function AIRoutingCard() {
               >
                 Clear all
               </Button>
-              <Button size="sm" onClick={saveMix} disabled={applyMode.isPending}>
+              <Button
+                size="sm"
+                onClick={saveMix}
+                disabled={applyMode.isPending}
+              >
                 {applyMode.isPending ? "Saving…" : "Save mix"}
               </Button>
             </div>
@@ -1351,9 +1367,7 @@ export function AIRoutingCard() {
         <Separator />
         <section className="space-y-3">
           <HelpTip label="Downgrade-only by policy: a role+complexity override can never point to a costlier tier than that role's baseline model — this lever only saves cost, it never spends more. Coordinator roles (cell_pm, main_pm), pr_reviewer, and board/CEO-facing roles aren't offered a row here at all; tier pinning for those is deliberate — cell_pm especially, since a coordinator is the last place to gamble a downgrade.">
-            <Label className="text-sm font-medium">
-              Complexity overrides
-            </Label>
+            <Label className="text-sm font-medium">Complexity overrides</Label>
           </HelpTip>
           <p className="text-xs text-muted-foreground">
             Pin a role to a cheaper model for LOW- or HIGH-complexity tasks

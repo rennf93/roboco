@@ -9,9 +9,11 @@ deleted in Phase 4 T9; their helpers (agent UUID resolution + cache,
 """
 
 import os
+import sys
 from typing import Any
 
 import httpx
+import structlog
 
 from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
@@ -22,6 +24,59 @@ _HTTP_SUCCESS_MAX = 300
 
 # Default timeout for API calls (seconds).
 DEFAULT_TIMEOUT = 30.0
+
+# roboco.security's guard middleware blocks with plain text, not JSON: 400
+# "Suspicious activity detected" (WAF), 403 "Forbidden" / "IP has been
+# banned" (IP list / ban), 429 (rate limit), verified live, no
+# content-type header at all, response.json() raises JSONDecodeError.
+_GUARD_BLOCK_STATUS_CODES = frozenset({400, 403, 429})
+
+
+def guard_blocked_envelope(
+    status_code: int, text: str, path: str
+) -> dict[str, Any] | None:
+    """A ``gateway_blocked`` Envelope for a guard-blocked request, else None.
+
+    Both flow_server._post and do_server._post call this from the same spot
+    their generic "no JSON body" transport_error branch used to catch alone:
+    a guard block IS a "no JSON body" response, and without this check the
+    agent was told the orchestrator looked down when the request never even
+    reached the route handler.
+    """
+    if status_code not in _GUARD_BLOCK_STATUS_CODES:
+        return None
+    return {
+        "error": "gateway_blocked",
+        "message": (
+            f"security gateway rejected the request to {path} with HTTP"
+            f" {status_code}: {text[:200]}"
+        ),
+        "remediate": (
+            "the security gateway rejected this request's content (it reads"
+            " as shell/SQL/HTML-like, or you are rate-limited/banned)."
+            " Move any shell/SQL/HTML-looking text into a free-text verb"
+            " field (evidence, notes, findings) and retry once; escalate to"
+            " the human operator if it repeats."
+        ),
+        "missing": [],
+    }
+
+
+def configure_stdio_logging() -> None:
+    """Route structlog output to stderr.
+
+    Without this, structlog falls back to its un-configured default, a
+    PrintLogger on stdout. The stdio transport requires stdout to carry
+    only JSON-RPC frames, so any log line emitted during a server's
+    lifetime would corrupt the protocol stream.
+
+    Call this only from a stdio MCP server's own process. A module that
+    another process also imports must guard the call (e.g. under
+    ``if __name__ == "__main__":``, before ``mcp.run()``), never call it
+    at plain module scope - the reconfiguration is global structlog
+    state and would otherwise leak into the importer too.
+    """
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
 
 
 def _get_agent_headers(agent_id: str) -> dict[str, str]:

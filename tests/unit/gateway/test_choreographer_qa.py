@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.enforcement import A2AAccessDeniedError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
@@ -603,3 +604,211 @@ async def test_pass_review_survives_a2a_send_failure() -> None:
     assert body.get("error") is None, body
     assert body.get("warning") is not None
     assert "a2a" in body["warning"].lower()
+
+
+# ---------------------------------------------------------------------------
+# 0664b042: fail_review survives a2a.send failure
+# ---------------------------------------------------------------------------
+
+
+def _add_assigns_id(obj: Any) -> None:
+    """Mimic a real flush populating a column ``default=uuid4`` primary key —
+    a bare mocked ``session.add`` leaves ``obj.id`` at ``None``, which would
+    silently strip the ``[F-xxxxxxxx]`` prefix from the findings rendering
+    that ``render_finding_line`` builds off ``row.id``."""
+    if getattr(obj, "id", None) is None:
+        obj.id = uuid4()
+
+
+def _fail_review_fixture(
+    qa_id: Any,
+    task_id: Any,
+    dev_id: Any,
+    a2a_side_effect: Exception | None = None,
+) -> tuple[Choreographer, AsyncMock, AsyncMock]:
+    """Shared fixture shape as test_fail_review_succeeds, parameterized on
+    whether a2a.send raises."""
+    t = _qa_owned_task(task_id, qa_id)
+    after = MagicMock(
+        id=task_id,
+        status="needs_revision",
+        assigned_to=dev_id,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
+    task_svc.qa_fail.return_value = after
+    task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock(side_effect=_add_assigns_id)
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    a2a_svc = AsyncMock()
+    if a2a_side_effect is not None:
+        a2a_svc.send = AsyncMock(side_effect=a2a_side_effect)
+    deps = _make_deps(task=task_svc, journal=journal_svc, a2a=a2a_svc)
+    return Choreographer(deps), task_svc, a2a_svc
+
+
+_FAIL_REVIEW_ISSUES = [
+    "Missing unit test coverage for /healthz endpoint — add at least one assertion",
+    "Lint errors in /api/foo.py: unused import and missing return type annotation",
+]
+
+
+@pytest.mark.asyncio
+async def test_fail_review_survives_a2a_send_failure() -> None:
+    """a2a.send throws after the runner commits the needs_revision
+    transition. The verb must NOT raise — the transition, findings rows,
+    and structured qa note stay committed; the failure degrades to a
+    warning carrying the exception identity."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, task_svc, a2a_svc = _fail_review_fixture(
+        qa_id, task_id, dev_id, a2a_side_effect=RuntimeError("a2a down")
+    )
+
+    env = await c.fail_review(qa_id, task_id, _FAIL_REVIEW_ISSUES)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "needs_revision"
+    task_svc.qa_fail.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+    assert body.get("warning") is not None
+    assert "notification failed" in body["warning"]
+    assert "RuntimeError" in body["warning"]
+
+
+@pytest.mark.asyncio
+async def test_fail_review_success_carries_no_warning() -> None:
+    """a2a.send succeeding leaves the warning channel empty."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, _task_svc, a2a_svc = _fail_review_fixture(qa_id, task_id, dev_id)
+
+    env = await c.fail_review(qa_id, task_id, _FAIL_REVIEW_ISSUES)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body.get("warning") is None
+    a2a_svc.send.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "a2a_exc",
+    [
+        RuntimeError("a2a down"),
+        A2AAccessDeniedError(
+            from_agent="be-qa", to_agent="be-dev-1", reason="not in same cell"
+        ),
+    ],
+    ids=["generic_runtime_error", "a2a_access_denied_policy"],
+)
+@pytest.mark.asyncio
+async def test_fail_review_bounce_survives_a2a_raise_broadly(
+    a2a_exc: Exception,
+) -> None:
+    """The guard must catch broadly — a transient RuntimeError AND a typed
+    policy denial (A2AAccessDeniedError, the actual exception A2AService.send
+    raises on a disallowed route) both degrade to a warning, never an error
+    envelope. The needs_revision transition, the task_review_findings ledger
+    rows, and the id-prefixed rendering in the qa_notes mirror all survive —
+    proving the bounce that just happened is still fully recorded even though
+    the developer notification itself failed."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, task_svc, a2a_svc = _fail_review_fixture(
+        qa_id, task_id, dev_id, a2a_side_effect=a2a_exc
+    )
+
+    env = await c.fail_review(qa_id, task_id, _FAIL_REVIEW_ISSUES)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "needs_revision"
+    assert body.get("warning") is not None
+    # Both findings' ledger rows were inserted (persisted) before the a2a
+    # step ran, regardless of what a2a.send does afterwards.
+    assert task_svc.session.add.call_count == len(_FAIL_REVIEW_ISSUES)
+    task_svc.qa_fail.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+    # The structured qa_notes mirror still carries the deterministic
+    # id-prefixed rendering (render_finding_line's "[F-<id8>] ..." lines).
+    t = task_svc.get.return_value
+    assert "[F-" in t.qa_notes
+
+
+@pytest.mark.asyncio
+async def test_fail_review_warning_combines_with_findings_hint() -> None:
+    """Both warnings in one envelope: the notify-failure warning and the
+    soft above-nudge findings count hint survive into the same string."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, _task_svc, a2a_svc = _fail_review_fixture(
+        qa_id, task_id, dev_id, a2a_side_effect=RuntimeError("a2a down")
+    )
+    issues = [f"Finding number {n}: needs a concrete fix suggestion" for n in range(7)]
+
+    env = await c.fail_review(qa_id, task_id, issues)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    warning = body.get("warning") or ""
+    assert "notification failed" in warning
+    assert "findings in one call" in warning
+    a2a_svc.send.assert_awaited_once()
+
+
+def _begin_nested_flushes_on_clean_exit(session: AsyncMock) -> MagicMock:
+    """Return a ``begin_nested()`` stub whose savepoint RELEASE calls
+    ``session.flush()`` on a clean exit — the real SQLAlchemy behavior a
+    real savepoint relies on when the wrapped block raised nothing. Lets a
+    test drive a flush failure that happens at savepoint-release time even
+    though the wrapped ``a2a.send`` call itself returned normally, proving
+    the guard must sit at the call site (wrapping the whole
+    ``async with``), not just inside the notify helper's own send-only
+    try/except."""
+
+    class _FakeNestedTxn:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            if exc_type is None:
+                await session.flush()
+            return False
+
+    return MagicMock(return_value=_FakeNestedTxn())
+
+
+@pytest.mark.asyncio
+async def test_fail_review_survives_savepoint_flush_failure() -> None:
+    """A mid-flush failure inside the begin_nested() savepoint — not just
+    a2a.send() itself raising — must still degrade to the identical
+    warning instead of leaving the shared session rollback-only, which
+    would otherwise poison the request's own later commit and silently
+    lose the needs_revision transition the reviewer just committed."""
+    qa_id, task_id, dev_id = uuid4(), uuid4(), uuid4()
+    c, task_svc, a2a_svc = _fail_review_fixture(qa_id, task_id, dev_id)
+    # Three flush() calls precede the notify savepoint's own release: the
+    # findings-ledger insert, then VerbRunner's own begin_nested() around
+    # the composed qa_fail transition (both must succeed so we actually
+    # reach the notify step) — only the notify savepoint's release fails.
+    task_svc.session.flush = AsyncMock(
+        side_effect=[None, None, RuntimeError("flush failed")]
+    )
+    task_svc.session.begin_nested = _begin_nested_flushes_on_clean_exit(
+        task_svc.session
+    )
+    task_svc.session.refresh = AsyncMock()
+
+    env = await c.fail_review(qa_id, task_id, _FAIL_REVIEW_ISSUES)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "needs_revision"
+    task_svc.qa_fail.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+    task_svc.session.refresh.assert_awaited_once()
+    warning = body.get("warning") or ""
+    assert "notification failed" in warning
+    assert "RuntimeError" in warning

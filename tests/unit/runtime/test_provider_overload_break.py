@@ -17,6 +17,7 @@ import pytest
 from roboco.config import settings
 from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
+    _ANTHROPIC_AUTH_RETRY_AFTER_S,
     _OVERLOAD_RETRY_AFTER_S,
     _RATE_LIMIT_MARKERS_BY_PROVIDER,
     _RATE_LIMIT_RETRY_AFTER_S,
@@ -33,6 +34,17 @@ _SESSION_LIMIT_LOG = (
     '{"type":"result","is_error":true,"api_error_status":429,'
     '"result":"You have hit your session limit - resets 1am (UTC)",'
     '"rate_limit_info":{"rateLimitType":"five_hour"}}'
+)
+# Real Claude Code stream-json shape for an expired/unrefreshable host OAuth
+# session (the live NAS incident this drill fixes).
+_AUTH_FAILURE_LOG = (
+    '{"type":"assistant","message":{"model":"<synthetic>","content":'
+    '[{"type":"text","text":"Failed to authenticate: OAuth session expired '
+    'and could not be refreshed"}]},"error":"authentication_failed",'
+    '"is_api_error_message":true}\n'
+    '{"type":"result","subtype":"success","is_error":true,'
+    '"terminal_reason":"api_error","result":"Failed to authenticate: OAuth '
+    'session expired and could not be refreshed","total_cost_usd":0}'
 )
 
 
@@ -51,12 +63,18 @@ def _instance(provider_type: str | None = "anthropic") -> AgentInstance:
 @pytest.fixture
 def orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    # Tests for parking detection control docker logs directly; keep the durable
-    # transcript fallback empty by default so dev environments with stray
-    # transcripts do not make the tests flaky.
+    # Tests for parking detection control docker logs directly; keep both the
+    # docker-logs tail and the durable transcript fallback empty by default
+    # (individual tests override) so a real `docker logs` subprocess and dev
+    # environments with stray transcripts do not make the tests flaky/slow,
+    # since _handle_stopped_container now runs three park-target checks in a
+    # row, not just the one or two a given test mocks directly.
+    monkeypatch.setattr(orch, "_tail_container_logs", AsyncMock(return_value=""))
     monkeypatch.setattr(orch, "_transcript_tail_text", lambda _a, _lines=80: "")
     orch._waiting_records = {}
     orch._rate_limit_ceo_notified = set()
+    orch._auth_ceo_notified = set()
+    orch._auth_parked_agents = set()
     orch._instances = {}
     orch._bg_tasks = set()
     orch._resume_confirm_delay = 0.0  # #71: deterministic liveness confirmation
@@ -503,3 +521,143 @@ async def test_dispatch_pause_blocks_crash_respawn(
 
     spawn.assert_not_awaited()
     assert inst.error_count == 0  # full retry budget preserved for post-resume
+
+
+# ---------------------------------------------------------------------------
+# Host Claude Code OAuth expiry (auth_missing) parking, Anthropic only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detects_auth_failure_marker_for_anthropic(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=_AUTH_FAILURE_LOG)
+    )
+    assert await orch._provider_auth_park_target("be-dev-1", _instance()) == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_detects_auth_failure_marker_in_transcript(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docker logs miss the SDK-server log; the durable transcript still has it."""
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(orch, "_tail_container_logs", AsyncMock(return_value=""))
+    monkeypatch.setattr(
+        orch, "_transcript_tail_text", lambda _a, _lines=80: _AUTH_FAILURE_LOG
+    )
+    assert await orch._provider_auth_park_target("be-dev-1", _instance()) == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_auth_prose_and_escaped_source_read_do_not_park(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An agent's own prose about the incident, plus a Read of this source file
+    # embedded in the transcript (JSON-escaped: error\":\"authentication_failed),
+    # must NOT trip the detector.
+    log = (
+        "Failed to authenticate: OAuth session expired and could not be "
+        "refreshed -- summarizing the incident for the handoff note. Also "
+        'read orchestrator.py: _ANTHROPIC_AUTH_MARKERS = (\'error\\":\\"'
+        "authentication_failed',)"
+    )
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(orch, "_tail_container_logs", AsyncMock(return_value=log))
+    assert await orch._provider_auth_park_target("be-dev-1", _instance()) is None
+
+
+@pytest.mark.asyncio
+async def test_stopped_container_auth_failure_parks_and_notifies_once(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inst = _instance()
+    tracker = _FakeTracker()
+    notify = AsyncMock()
+    finalize = AsyncMock()
+    spawn = AsyncMock()
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=_AUTH_FAILURE_LOG)
+    )
+    monkeypatch.setattr(orch, "_is_grok_rate_limit_exit", lambda _i, _e: False)
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", finalize)
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
+    monkeypatch.setattr(orch, "_notify_auth_missing_ceo", notify)
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._handle_stopped_container("be-dev-1", inst, exit_code=1)
+
+    assert tracker.activated_with is not None
+    assert tracker.activated_with["kind"] == "auth_missing"
+    assert tracker.activated_with["retry_after"] == pytest.approx(
+        _ANTHROPIC_AUTH_RETRY_AFTER_S
+    )
+    spawn.assert_not_awaited()
+    finalize.assert_awaited_once_with("be-dev-1", exit_reason="auth_missing")
+    notify.assert_awaited_once_with(
+        provider="anthropic", agent_id="be-dev-1", task_id=inst.current_task_id
+    )
+
+    # A second stopped-container call on the still-parked provider must not
+    # notify again: the episode's one-shot flag stays set until a graceful exit.
+    await orch._handle_stopped_container("be-dev-1", inst, exit_code=1)
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_graceful_exit_rearms_auth_notification(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-arm requires the exiting agent to have itself been auth-parked -
+    proof the credential is back, not just any provider-matching exit."""
+    inst = _instance()
+    orch._auth_ceo_notified = {"anthropic"}
+    orch._auth_parked_agents = {"be-dev-1"}
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+
+    await orch._handle_stopped_container("be-dev-1", inst, exit_code=0)
+
+    assert "anthropic" not in orch._auth_ceo_notified
+    assert "be-dev-1" not in orch._auth_parked_agents
+
+
+@pytest.mark.asyncio
+async def test_unrelated_graceful_exit_does_not_rearm(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live outage: be-dev-1 auth-parks and notifies once; an UNRELATED
+    agent (be-qa, same provider, never auth-parked) later exits gracefully -
+    that must not clear the one-shot flag, or the next auth crash (be-dev-2,
+    same dead credential) pages the CEO again."""
+    inst = _instance()
+    tracker = _FakeTracker()
+    notify = AsyncMock()
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=_AUTH_FAILURE_LOG)
+    )
+    monkeypatch.setattr(orch, "_is_grok_rate_limit_exit", lambda _i, _e: False)
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
+    monkeypatch.setattr(orch, "_notify_auth_missing_ceo", notify)
+    monkeypatch.setattr(orch, "spawn_agent", AsyncMock())
+
+    # be-dev-1 crashes on the dead credential: parks + notifies once.
+    await orch._handle_stopped_container("be-dev-1", inst, exit_code=1)
+    notify.assert_awaited_once()
+    assert "anthropic" in orch._auth_ceo_notified
+
+    # be-qa exits gracefully mid-outage - never auth-parked itself, so it
+    # must not clear the flag.
+    await orch._handle_stopped_container("be-qa", _instance(), exit_code=0)
+    assert "anthropic" in orch._auth_ceo_notified
+
+    # be-dev-2 crashes on the same still-dead credential: must NOT re-notify.
+    await orch._handle_stopped_container("be-dev-2", _instance(), exit_code=1)
+    notify.assert_awaited_once()

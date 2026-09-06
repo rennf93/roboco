@@ -21,6 +21,7 @@ Everything Cell PM can do, PLUS:
 - Triage tasks across ALL cells via `triage_all()`
 - Coordinate cross-cell work
 - Escalate to the CEO via `escalate_to_ceo`
+- `cancel_leaf`'s ownership scope is unrestricted for you - a cell PM may only close a zero-diff leaf under its own coordination task, but you may act on any root's descendant company-wide; the leaf-only (no children), zero-diff, and no-open-PR refusals still apply to you the same as everyone else
 
 ## Task Breakdown Flow
 
@@ -75,7 +76,7 @@ triage_all()  # actionable tasks across all teams (Main PM only)
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
-| `roboco-flow`         | `triage`, `triage_all`, `give_me_work`, `i_will_plan`, `delegate`, `unblock`, `submit_root`, `complete`, `request_changes`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim`, `i_am_idle` |
+| `roboco-flow`         | `triage`, `triage_all`, `give_me_work`, `i_will_plan`, `delegate`, `unblock`, `cancel_leaf`, `submit_root`, `complete`, `request_changes`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim`, `i_am_idle` |
 | `roboco-do`           | `note`, `dm`, `notify`, `evidence`, `pr_update` |
 | `roboco-docs`         | `roboco_docs_write`, `roboco_docs_read`, `roboco_docs_list` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |

@@ -47,9 +47,11 @@ from roboco.api.schemas.v1.do import (
     RejectPlaybookRequest,
     RequestRenderRequest,
     RequestSandboxRequest,
+    TaskTimeRequest,
 )
 from roboco.security import (
     guard_deco,
+    mesh_scanned,
     prompt_injection_validator,
     secret_exfil_validator,
 )
@@ -73,6 +75,7 @@ _ContentActionsDep = Annotated[ContentActions, Depends(get_content_actions)]
 
 
 @router.post("/commit")
+@mesh_scanned
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -93,6 +96,7 @@ async def do_commit(
 
 
 @router.post("/note")
+@mesh_scanned
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -130,6 +134,7 @@ async def do_note(
 
 
 @router.post("/pitch")
+@mesh_scanned
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -153,6 +158,7 @@ async def do_pitch(
 
 
 @router.post("/propose_roadmap")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -173,6 +179,7 @@ async def do_propose_roadmap(
 
 
 @router.post("/propose_bug_hunt")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -192,6 +199,7 @@ async def do_propose_bug_hunt(
 
 
 @router.post("/propose_gap_fill")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -211,6 +219,7 @@ async def do_propose_gap_fill(
 
 
 @router.post("/propose_rebalance")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -230,6 +239,7 @@ async def do_propose_rebalance(
 
 
 @router.post("/propose_messaging_fixes")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -249,6 +259,7 @@ async def do_propose_messaging_fixes(
 
 
 @router.post("/propose_friction_fixes")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -268,6 +279,7 @@ async def do_propose_friction_fixes(
 
 
 @router.post("/propose_feature_spotlight")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -293,6 +305,7 @@ async def do_propose_feature_spotlight(
 
 
 @router.post("/propose_conversation_replies")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -312,6 +325,7 @@ async def do_propose_conversation_replies(
 
 
 @router.post("/propose_market_brief")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -335,6 +349,7 @@ async def do_propose_market_brief(
 
 
 @router.post("/propose_editorial_post")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -356,6 +371,7 @@ async def do_propose_editorial_post(
 
 
 @router.post("/propose_postmortem")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -379,6 +395,7 @@ async def do_propose_postmortem(
 
 
 @router.post("/propose_quality_report")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -400,6 +417,7 @@ async def do_propose_quality_report(
 
 
 @router.post("/propose_playbook_drafts")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -419,6 +437,7 @@ async def do_propose_playbook_drafts(
 
 
 @router.post("/propose_campaign")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -439,6 +458,7 @@ async def do_propose_campaign(
 
 
 @router.post("/propose_video")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -462,6 +482,7 @@ async def do_propose_video(
 
 
 @router.post("/nothing_to_propose")
+@mesh_scanned
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -482,6 +503,7 @@ async def do_nothing_to_propose(
 
 
 @router.post("/dm")
+@mesh_scanned
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
@@ -505,6 +527,7 @@ async def do_dm(
 
 
 @router.post("/notify")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.content_type_filter(["application/json"])
@@ -526,6 +549,7 @@ async def do_notify(
 
 
 @router.post("/evidence")
+@mesh_scanned
 async def do_evidence(
     request: Request,
     body: EvidenceRequest,
@@ -537,6 +561,7 @@ async def do_evidence(
 
 
 @router.post("/request_sandbox")
+@mesh_scanned
 async def do_request_sandbox(
     request: Request,
     body: RequestSandboxRequest,
@@ -550,6 +575,7 @@ async def do_request_sandbox(
 
 
 @router.post("/request_render")
+@mesh_scanned
 async def do_request_render(
     request: Request,
     body: RequestRenderRequest,
@@ -572,6 +598,7 @@ async def do_request_render(
 
 
 @router.post("/progress")
+@mesh_scanned
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -594,6 +621,7 @@ async def do_progress(
 
 
 @router.post("/notify_list")
+@mesh_scanned
 async def do_notify_list(
     request: Request,
     body: NotifyListRequest,
@@ -610,6 +638,7 @@ async def do_notify_list(
 
 
 @router.post("/notify_get")
+@mesh_scanned
 async def do_notify_get(
     request: Request,
     body: NotifyGetRequest,
@@ -624,6 +653,7 @@ async def do_notify_get(
 
 
 @router.post("/notify_ack")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -641,6 +671,7 @@ async def do_notify_ack(
 
 
 @router.post("/read_messages")
+@mesh_scanned
 async def do_read_messages(
     request: Request,
     _body: ReadMessagesRequest,
@@ -652,6 +683,7 @@ async def do_read_messages(
 
 
 @router.post("/read_a2a")
+@mesh_scanned
 async def do_read_a2a(
     request: Request,
     _body: ReadMessagesRequest,
@@ -662,7 +694,20 @@ async def do_read_a2a(
     return envelope_to_response(env, request)
 
 
+@router.post("/task_time")
+@mesh_scanned
+async def do_task_time(
+    request: Request,
+    body: TaskTimeRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.task_time(agent_id=x_agent_id, task_id=body.task_id)
+    return envelope_to_response(env, request)
+
+
 @router.post("/pr_update")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -685,6 +730,7 @@ async def do_pr_update(
 
 
 @router.post("/draft_playbook")
+@mesh_scanned
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -708,6 +754,7 @@ async def do_draft_playbook(
 
 
 @router.post("/approve_playbook")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -724,6 +771,7 @@ async def do_approve_playbook(
 
 
 @router.post("/reject_playbook")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
@@ -742,6 +790,7 @@ async def do_reject_playbook(
 
 
 @router.post("/archive_playbook")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -758,6 +807,7 @@ async def do_archive_playbook(
 
 
 @router.post("/curate_vault")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)

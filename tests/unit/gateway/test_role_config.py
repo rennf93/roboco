@@ -125,3 +125,22 @@ class TestRoleCarriesNotifyAck:
         """Single source of truth check: never drift from the do_tools tuple."""
         for role, cfg in ROLE_CONFIGS.items():
             assert role_carries_notify_ack(role) is ("notify_ack" in cfg.do_tools)
+
+
+def test_task_time_is_a_board_pm_auditor_tool() -> None:
+    """task_time (uptime-adjusted elapsed times) is scoped to the roles that
+    write staleness judgements: PMs, Board, Auditor, Secretary, PR reviewer.
+    Developers/QA/documenters do the work, they don't report on its age."""
+    for role in (
+        "auditor",
+        "cell_pm",
+        "main_pm",
+        "product_owner",
+        "head_marketing",
+        "secretary",
+        "pr_reviewer",
+    ):
+        assert "task_time" in get_role_config(role).do_tools, role
+
+    for role in ("developer", "qa", "documenter", "prompter"):
+        assert "task_time" not in get_role_config(role).do_tools, role

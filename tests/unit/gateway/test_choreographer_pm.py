@@ -687,6 +687,147 @@ async def test_submit_root_accepts_main_pm_and_enters_the_gate() -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_root_reassigns_task_to_root_pr_reviewer() -> None:
+    """submit_root clears Main PM ownership at gate entry the same way
+    submit_up does, so it must not leave the root→master gate task
+    unassigned either: `_notify_pr_reviewer` reassigns it to
+    `pr_reviewer_for`'s pick (pr-reviewer-1 for the root level)."""
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    reviewer_id = uuid4()
+    in_prog = MagicMock(
+        id=root_task_id,
+        status="in_progress",
+        assigned_to=main_pm_id,
+        pr_number=None,
+        branch_name="feature/main_pm/root123",
+        parent_task_id=None,
+        batch_id=None,
+        team="main_pm",
+    )
+    gated = MagicMock(
+        **{**in_prog.__dict__, "status": "awaiting_pr_review", "assigned_to": None}
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = in_prog
+    task_svc.submit_for_review.return_value = gated
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.pr_reviewer_for.return_value = MagicMock(id=reviewer_id)
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    git_svc = AsyncMock()
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.submit_root(
+        main_pm_id, root_task_id, notes="root scope assembled; opening root→master PR"
+    )
+    assert env.error is None, env.as_dict()
+    task_svc.reassign.assert_awaited_once_with(root_task_id, reviewer_id)
+
+
+@pytest.mark.asyncio
+async def test_submit_root_skips_reassign_when_no_root_pr_reviewer() -> None:
+    """No root-level reviewer configured -> no reassign call."""
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    in_prog = MagicMock(
+        id=root_task_id,
+        status="in_progress",
+        assigned_to=main_pm_id,
+        pr_number=None,
+        branch_name="feature/main_pm/root123",
+        parent_task_id=None,
+        batch_id=None,
+        team="main_pm",
+    )
+    gated = MagicMock(
+        **{**in_prog.__dict__, "status": "awaiting_pr_review", "assigned_to": None}
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = in_prog
+    task_svc.submit_for_review.return_value = gated
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.pr_reviewer_for.return_value = None
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    git_svc = AsyncMock()
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.submit_root(
+        main_pm_id, root_task_id, notes="root scope assembled; opening root→master PR"
+    )
+    assert env.error is None, env.as_dict()
+    task_svc.reassign.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_root_waived_skips_reassign_and_keeps_pm_owner() -> None:
+    """A zero-diff root branch (report-only work, ahead=0) is PR-waived
+    straight to awaiting_pm_review instead of entering the gate
+    (VerbRunner reroutes submit_for_review -> submit_pm_review). The task
+    never actually reached awaiting_pr_review, so `_notify_pr_reviewer`
+    must be a no-op: reassigning to pr-reviewer-1 here would overwrite the
+    Main PM ownership awaiting_pm_review depends on and stall `complete`."""
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    in_prog = MagicMock(
+        id=root_task_id,
+        status="in_progress",
+        assigned_to=main_pm_id,
+        pr_number=None,
+        branch_name="feature/main_pm/root123",
+        parent_task_id=None,
+        batch_id=None,
+        team="main_pm",
+    )
+    waived = MagicMock(**{**in_prog.__dict__, "status": "awaiting_pm_review"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = in_prog
+    task_svc.submit_pm_review.return_value = waived
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    git_svc = AsyncMock()
+    git_svc.is_behind_base.return_value = (0, 0)
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.submit_root(
+        main_pm_id, root_task_id, notes="root scope assembled; opening root→master PR"
+    )
+    assert env.error is None, env.as_dict()
+    assert env.status == "awaiting_pm_review"
+    task_svc.submit_for_review.assert_not_awaited()
+    task_svc.submit_pm_review.assert_awaited_once()
+    task_svc.pr_reviewer_for.assert_not_awaited()
+    task_svc.reassign.assert_not_awaited()
+    assert waived.assigned_to == main_pm_id
+
+
+@pytest.mark.asyncio
 async def test_main_pm_complete_walks_branchless_coordination_root_to_ceo() -> None:
     """A branchless coordination root (product fan-out, no repo/PR) skips the
     in-path gate: main_pm_complete walks it in_progress→awaiting_pm_review and

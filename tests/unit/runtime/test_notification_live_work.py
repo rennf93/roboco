@@ -8,7 +8,7 @@ already terminal — otherwise a wedged/old notification loops the fleet.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -53,6 +53,32 @@ async def test_stale_notification_has_no_work() -> None:
     )
     notif = {"timestamp": _iso(old)}
     assert await orch._notification_has_live_work(_client(), notif) is False
+
+
+class _FakeLedger:
+    """Reports a fixed `active_elapsed` for any start/end - a stand-in for a
+    real `UptimeLedger` carrying a known downtime window."""
+
+    def __init__(self, active_elapsed: timedelta) -> None:
+        self._active_elapsed = active_elapsed
+
+    def active_elapsed(self, start: datetime, end: datetime | None = None) -> timedelta:
+        del start, end
+        return self._active_elapsed
+
+
+@pytest.mark.asyncio
+async def test_stale_by_wall_clock_but_active_time_under_max_age_has_work() -> None:
+    """The same notification age as `test_stale_notification_has_no_work`
+    reads as fresh in active time (a long CEO pause in between), so it must
+    NOT be treated as stale."""
+    orch = _orch()
+    orch._uptime = cast("Any", _FakeLedger(timedelta(seconds=30)))
+    old = datetime.now(UTC) - timedelta(
+        seconds=settings.notification_spawn_max_age_seconds + 60
+    )
+    notif = {"timestamp": _iso(old)}
+    assert await orch._notification_has_live_work(_client(), notif) is True
 
 
 @pytest.mark.asyncio

@@ -161,6 +161,36 @@ async def test_old_creator_task_falls_through_to_routing() -> None:
     spawn.assert_awaited_once()
 
 
+class _FakeLedger:
+    """Reports a fixed `active_elapsed` for any start/end - a stand-in for a
+    real `UptimeLedger` carrying a known downtime window."""
+
+    def __init__(self, active_elapsed: timedelta) -> None:
+        self._active_elapsed = active_elapsed
+
+    def active_elapsed(self, start: datetime, end: datetime | None = None) -> timedelta:
+        del start, end
+        return self._active_elapsed
+
+
+@pytest.mark.asyncio
+async def test_creator_skip_holds_when_active_time_still_within_grace() -> None:
+    """Wall-clock age is well past the grace window, but a CEO pause means
+    active time is still young - the creator-skip guard must still hold
+    (claim/spawn skipped) rather than fall through to routing."""
+    orch = _orch()
+    orch._uptime = cast("Any", _FakeLedger(timedelta(seconds=30)))
+    task = _pending_task(
+        created_by=str(uuid4()),
+        created_at=_iso_age(_CREATOR_ROUTE_GRACE_SECONDS + 3600),
+    )
+
+    claim, spawn = await _route_with_creator_task(orch, task)
+
+    claim.assert_not_awaited()
+    spawn.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_unparseable_created_at_fails_open_to_routing() -> None:
     """(c) A garbage created_at can't be aged, so the guard fails open

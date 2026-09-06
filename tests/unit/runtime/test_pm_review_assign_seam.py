@@ -294,7 +294,10 @@ async def test_dispatch_pm_review_work_spawns_resolved_pm() -> None:
             orch, "_blocked_by_earlier_sibling", new=AsyncMock(return_value=False)
         ),
         patch.object(orch, "_review_pm_slug", new=AsyncMock(return_value="be-pm")),
-        patch("roboco.runtime.orchestrator.is_spawnable_agent_slug", return_value=True),
+        patch(
+            "roboco.runtime.engines.dispatch_work.is_spawnable_agent_slug",
+            return_value=True,
+        ),
         patch.object(orch, "_is_agent_active", return_value=False),
         patch.object(
             orch, "_pm_respawn_should_gate", new=AsyncMock(return_value=False)
