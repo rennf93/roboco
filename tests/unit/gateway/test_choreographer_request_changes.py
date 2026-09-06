@@ -149,6 +149,7 @@ async def test_request_changes_survives_a2a_raise_broadly(a2a_exc: Exception) ->
     task_svc.session = MagicMock()
     task_svc.session.add = MagicMock(side_effect=_add_assigns_id)
     task_svc.session.flush = AsyncMock()
+    task_svc.session.refresh = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=None),

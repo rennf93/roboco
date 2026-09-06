@@ -4079,16 +4079,29 @@ class Choreographer:
         if qa_agent is None:
             return None
         try:
-            await self.task.reassign(task_id, qa_agent.id)
-            skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
-            await self.a2a.send(
-                from_agent=agent_id,
-                to_agent=qa_agent.id,
-                skill=skill,
-                task_id=task_id,
-                body=f"Ready for review. PR: {t.pr_url}",
-            )
+            # Savepoint: reassign()'s flush would otherwise poison the
+            # shared session on a mid-flush failure — the response commit
+            # (DbCommitMiddleware) reuses it right after this returns.
+            async with self.task.session.begin_nested():
+                await self.task.reassign(task_id, qa_agent.id)
+                skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
+                await self.a2a.send(
+                    from_agent=agent_id,
+                    to_agent=qa_agent.id,
+                    skill=skill,
+                    task_id=task_id,
+                    body=f"Ready for review. PR: {t.pr_url}",
+                )
         except Exception as exc:
+            # The savepoint rollback on ANY exception here — not just a DB
+            # error, e.g. a2a.send failing — fully expires every attribute
+            # of `t` (the same identity-map object reassign() mutated
+            # inside the block). The caller reads t.status / with_introspection(t)
+            # building the envelope right after this returns, so a refresh
+            # failure here means the DB is genuinely broken; let it raise —
+            # that 500 is honest, unlike silently returning a warning off a
+            # task object that will itself blow up on read.
+            await self.task.session.refresh(t)
             logger.warning(
                 "notify_qa side-effect failed - transition committed, "
                 "handoff did not fire",
@@ -9397,14 +9410,29 @@ class Choreographer:
         if t.assigned_to is None or t.assigned_to == pm_agent_id:
             return None
         try:
-            await self.a2a.send(
-                from_agent=pm_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"PM merge review needs changes.\n{summary}",
-            )
+            # Savepoint: a2a.send's flush would otherwise poison the shared
+            # session on a mid-flush failure — the response commit
+            # (DbCommitMiddleware) reuses it right after this returns, and
+            # it must still carry the needs_revision transition, the
+            # findings-ledger rows, and the pm_notes note already written
+            # earlier this request.
+            async with self.task.session.begin_nested():
+                await self.a2a.send(
+                    from_agent=pm_agent_id,
+                    to_agent=t.assigned_to,
+                    skill="code_review",
+                    task_id=task_id,
+                    body=f"PM merge review needs changes.\n{summary}",
+                )
         except Exception as exc:
+            # The savepoint rollback here can also expire attributes on `t`
+            # (mutated earlier this request by request_changes' own
+            # transition) — refresh before the caller reads t.status /
+            # with_introspection(t) building the envelope right after this
+            # returns. A refresh failure means the DB is genuinely broken;
+            # let it raise rather than silently return a warning off a task
+            # object that will itself blow up on read.
+            await self.task.session.refresh(t)
             logger.warning(
                 "request_changes a2a to revision owner failed — "
                 "transition committed, notification did not fire",
