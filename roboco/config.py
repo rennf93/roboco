@@ -2260,6 +2260,47 @@ class Settings(BaseSettings):
             "ROBOCO_KIMI_MAX_CONCURRENT only if you understand that risk"
         ),
     )
+    # OpenRouter — the Ollama shape, not Grok. A static metered API key
+    # injected via env (OPENROUTER_API_KEY + OPENROUTER_BASE_URL), no ~/. auth
+    # mount and no refresh loop (see roboco.llm.providers.openrouter). The
+    # default base URL is OpenRouter's public endpoint; the operator's key is
+    # stored Fernet-encrypted by the routing service (set_openrouter_api_key).
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description=(
+            "OpenRouter API base URL injected as OPENROUTER_BASE_URL at "
+            "spawn. Override via ROBOCO_OPENROUTER_BASE_URL"
+        ),
+    )
+    # The default OpenRouter model id (provider/model form, e.g.
+    # "anthropic/claude-sonnet-4") passed to `opencode run --model` when the
+    # routing assignment does not pin a specific model. The live catalog is
+    # searched on demand (GET /providers/openrouter/models) and the picked
+    # model id is stored via provider_type_override — this is only the floor.
+    openrouter_cli_model: str = Field(
+        default="anthropic/claude-sonnet-4",
+        description=(
+            "Default OpenRouter model id (provider/model) passed to opencode "
+            "when no per-assignment model is pinned. Override via "
+            "ROBOCO_OPENROUTER_CLI_MODEL"
+        ),
+    )
+    openrouter_http_referer: str = Field(
+        default="",
+        description=(
+            "Optional HTTP-Referer sent on OpenRouter requests (OpenRouter "
+            "surfaces it on the usage dashboard). Override via "
+            "ROBOCO_OPENROUTER_HTTP_REFERER"
+        ),
+    )
+    openrouter_x_title: str = Field(
+        default="RoboCo",
+        description=(
+            "Optional X-Title sent on OpenRouter requests (site name shown on "
+            "the OpenRouter usage dashboard). Override via "
+            "ROBOCO_OPENROUTER_X_TITLE"
+        ),
+    )
     # An interactive intake/secretary chat the human abandoned (closed the tab
     # without confirming/stopping) otherwise leaks its container until the
     # orchestrator restarts. The sweeper reaps a live session whose
