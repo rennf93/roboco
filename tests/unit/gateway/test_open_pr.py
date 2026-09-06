@@ -264,3 +264,178 @@ async def test_open_pr_returns_not_found_for_unknown_task() -> None:
     env = await c.open_pr(aid, tid)
 
     assert env.error == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_open_pr_refuses_parented_task_stranded_on_head_branch() -> None:
+    """Shape (a) — the 5612b225/PR #856 incident class: a task re-parented
+    under a real coordination root whose branch/PR base is still the
+    integration branch. open_pr refuses BEFORE create_pr runs, naming the
+    expected base (the parent's branch) and the repair."""
+    aid = uuid4()
+    tid = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=None,
+        parent_task_id=parent_id,
+        branch_name="feature/backend/root0001--child0001",
+    )
+    parent = MagicMock(branch_name="feature/main_pm/root0001")
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = [t, parent]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.recorded_pr_base = AsyncMock(return_value="slave")
+    task_svc.project_default_branch_for_task = AsyncMock(return_value="slave")
+    git_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.open_pr(aid, tid)
+
+    git_svc.push_branch.assert_not_awaited()
+    git_svc.create_pr.assert_not_awaited()
+    assert env.error == "invalid_state"
+    assert "feature/main_pm/root0001" in (env.remediate or "")
+    assert "slave" in (env.message or "")
+
+
+@pytest.mark.asyncio
+async def test_open_pr_refuses_parentless_root_nested_in_coordination_tree() -> None:
+    """Shape (b) — a parentless root whose branch encodes a nested
+    hierarchy (depth > 1): it looks detached from a coordination ancestor
+    during a restructure rather than being a genuinely standalone root."""
+    aid = uuid4()
+    tid = uuid4()
+    t = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=None,
+        parent_task_id=None,
+        branch_name="feature/backend/root0001--child0001",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.project_default_branch_for_task = AsyncMock(return_value="slave")
+    git_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.open_pr(aid, tid)
+
+    git_svc.push_branch.assert_not_awaited()
+    git_svc.create_pr.assert_not_awaited()
+    assert env.error == "invalid_state"
+    assert "slave" in (env.remediate or "")
+
+
+@pytest.mark.asyncio
+async def test_open_pr_fails_open_on_topology_check_exception() -> None:
+    """F-81e261bd: find_topology_issue's DB calls can raise (e.g. a
+    transient error resolving the parent task). open_pr must fail OPEN —
+    mirroring _behind_base_gate's posture — rather than let the exception
+    escape and wedge a submit that this check only ever refuses, never
+    requires."""
+    aid = uuid4()
+    tid = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=None,
+        parent_task_id=parent_id,
+        branch_name="feature/backend/root0001--child0001",
+    )
+    t_after = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=99,
+        pr_url="https://gh/x/99",
+        parent_task_id=parent_id,
+        branch_name="feature/backend/root0001--child0001",
+    )
+    task_svc = AsyncMock()
+    # 1st .get() is open_pr's own initial fetch; 2nd is the parent lookup
+    # inside find_topology_issue, which raises (a transient DB error); every
+    # call after that (the runner's own re-fetch, the success envelope's
+    # refresh) returns the post-open_pr task state — padded generously since
+    # the exact count is an internal implementation detail, not a contract.
+    task_svc.get.side_effect = [t, RuntimeError("db unavailable"), *([t_after] * 5)]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    _wire_savepoint(task_svc)
+    git_svc = AsyncMock()
+    git_svc.push_branch.return_value = ("feature/backend/root0001--child0001", 1)
+    git_svc.create_pr.return_value = {
+        "pr_number": 99,
+        "pr_url": "https://gh/x/99",
+        "is_root_pr": False,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.open_pr(aid, tid)
+
+    git_svc.create_pr.assert_awaited()
+    assert env.error is None
+
+
+@pytest.mark.asyncio
+async def test_open_pr_allows_standalone_parentless_root() -> None:
+    """Allow-shape: a genuinely standalone root (depth-1 branch, no parent)
+    is NOT refused by the topology check."""
+    aid = uuid4()
+    tid = uuid4()
+    t = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=None,
+        parent_task_id=None,
+        branch_name="feature/backend/root0001",
+    )
+    t_after = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=99,
+        pr_url="https://gh/x/99",
+        parent_task_id=None,
+        branch_name="feature/backend/root0001",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = [t, t_after]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    task_svc.project_default_branch_for_task = AsyncMock(return_value="slave")
+    _wire_savepoint(task_svc)
+    git_svc = AsyncMock()
+    git_svc.push_branch.return_value = ("feature/backend/root0001", 1)
+    git_svc.create_pr.return_value = {
+        "pr_number": 99,
+        "pr_url": "https://gh/x/99",
+        "is_root_pr": False,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.open_pr(aid, tid)
+
+    git_svc.create_pr.assert_awaited()
+    assert env.error is None

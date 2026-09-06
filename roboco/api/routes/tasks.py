@@ -54,6 +54,7 @@ from roboco.api.utils.tasks import (
     _pm_editor_scope,
     _pop_null_clears,
     _reassert_batch_shape,
+    _recheck_topology_after_detach,
     _resolve_assigned_to_slug,
     _resolve_project_for_merge,
     _StatusOverride,
@@ -807,6 +808,10 @@ async def update_task(
     # the MegaTask shape here too — a cleared parent_task_id / project_id must not
     # turn a root-subtask into an umbrella-shaped-but-targeted spoof.
     _reassert_batch_shape(task)
+    # A detach-style re-parent (parent_task_id: null) bypasses update()'s own
+    # field-update loop, so the topology recheck must be re-run here too —
+    # see _recheck_topology_after_detach.
+    await _recheck_topology_after_detach(task, service, null_clears)
     if new_status is not None:
         task = await _apply_forced_status_override(
             _StatusOverride(
