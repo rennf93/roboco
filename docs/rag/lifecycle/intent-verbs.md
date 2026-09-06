@@ -158,7 +158,7 @@ PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_prog
 
 **Allowed roles:** cell_pm, main_pm
 
-**Composes:** claim → set_plan → start
+**Composes:** claim → set_plan
 
 **Preconditions:** plan
 
@@ -169,7 +169,7 @@ Claim a task, set the plan, and transition to in_progress. Atomic - precondition
 
 **Allowed roles:** developer
 
-**Composes:** claim → set_plan → start
+**Composes:** claim → set_plan
 
 **Preconditions:** plan
 

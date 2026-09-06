@@ -745,8 +745,8 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     # owning PM's merge decision (complete / request_changes), not on
     # re-planning. A prior revision granted CELL_PM/MAIN_PM a claim from
     # AWAITING_PM_REVIEW so a respawned PM could "re-claim its own review-queue
-    # task", but claim composes into i_will_plan's (claim, set_plan, start)
-    # sequence: every respawn legally re-claimed the task, reset it to
+    # task", but claim composes into i_will_plan's (claim, set_plan)
+    # + start sequence: every respawn legally re-claimed the task, reset it to
     # in_progress, and re-ran the full submit_up -> pr_pass ->
     # awaiting_pm_review cycle — looping forever with no progress (one
     # production task cycled 11 times across 37 spawns in 4h before this was
@@ -1211,7 +1211,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "Claim a task, set the plan, and transition to in_progress."
             " Atomic - preconditions checked before any state mutation."
         ),
-        composes=("claim", "set_plan", "start"),
+        composes=("claim", "set_plan"),
         extra_preconditions=(PRECONDITION_PLAN,),
         side_effects=(),
         next_hint=_next_hint_after_claim,
@@ -1223,7 +1223,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "PM mirror of i_will_work_on for parent tasks. Claim, plan,"
             " transition to in_progress; from there delegate subtasks."
         ),
-        composes=("claim", "set_plan", "start"),
+        composes=("claim", "set_plan"),
         extra_preconditions=(PRECONDITION_PLAN,),
         side_effects=(),
         next_hint=_next_hint_after_plan,

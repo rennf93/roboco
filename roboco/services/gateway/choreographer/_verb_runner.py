@@ -277,12 +277,12 @@ class VerbRunner:
         # provision=False: runs inside _run_composed_actions's begin_nested()
         # savepoint, so branch creation must NOT run here (the runner's own
         # module docstring says side effects run after the savepoint, never
-        # inside it, and _do_claim used to violate that). claim/set_plan/
-        # start still land or roll back together as one unit; the caller
+        # inside it, and _do_claim used to violate that). claim/set_plan
+        # still land or roll back together as one unit; the caller
         # (Choreographer._claim_plan_start_run) calls TaskService.
         # provision_claim once this savepoint closes, which itself commits
         # that unit durably before running the deferred branch creation
-        # outside any savepoint.
+        # outside any savepoint, and only then start (its branch gate).
         return await self.task_service.claim(task.id, agent.id, provision=False)
 
     async def _do_set_plan(self, task: Any, _agent: Any, ctx: spec.Context) -> Any:

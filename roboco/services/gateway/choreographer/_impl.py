@@ -1717,12 +1717,26 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
 
+    @staticmethod
+    def _step_failed_envelope(
+        step: str, ctx: _ClaimPlanStartContext, briefing: Any, role_str: str
+    ) -> Envelope:
+        """Rejection for a claim/plan/start step that returned ``None``."""
+        return Envelope.invalid_state(
+            message=f"{step} failed for task {ctx.task_id}",
+            remediate=(
+                "task not in a startable state"
+                " (claimed/paused/needs_revision) or no plan recorded"
+            ),
+            context_briefing=briefing,
+        ).with_introspection(task=None, role=role_str)
+
     async def _claim_plan_start_run(
         self, ctx: _ClaimPlanStartContext, agent: Any, spec_ctx: spec_module.Context
     ) -> Envelope:
-        """Execute composed (claim, set_plan, start) via the verb runner,
-        then provision the claim (branch, upstream-base inherit, work
-        session) outside any savepoint.
+        """Execute composed (claim, set_plan) via the verb runner, then
+        provision the claim (branch, upstream-base inherit, work session)
+        outside any savepoint, then start the task.
 
         Caller has already validated all gates. Translates runner
         exceptions and ``None`` returns into invalid_state envelopes
@@ -1730,9 +1744,14 @@ class Choreographer:
         between ``i_will_work_on`` and ``i_will_plan``.
 
         The verb runner's ``_do_claim`` calls ``claim(provision=False)``
-        inside ``_run_composed_actions``'s savepoint: claim/set_plan/start
-        land or roll back together as one unit, with no branch creation
-        inside that savepoint. Once ``run_intent`` returns successfully,
+        inside ``_run_composed_actions``'s savepoint: claim/set_plan land
+        or roll back together as one unit, with no branch creation inside
+        that savepoint. ``start`` runs only after ``provision_claim``: the
+        claimed -> in_progress transition carries a branch gate that
+        refuses a branchless task, so it cannot sit inside a savepoint the
+        branch commit has to follow (the E2E smoke caught the opposite
+        order as "Cannot start work: no branch assigned").
+        Once ``run_intent`` returns successfully,
         ``TaskService.provision_claim`` commits that unit durably
         (releasing the claim row lock) BEFORE its own network git work,
         with no savepoint left to undo it on failure; that commit lives
@@ -1741,7 +1760,7 @@ class Choreographer:
         mocks ``self.task`` as a whole service and would otherwise need
         its own raw-session plumbing for a call this method has no other
         reason to make). A provisioning failure durably reverts the
-        claim/plan/start fields (``TaskService``'s own revert-and-commit,
+        claim/plan fields (``TaskService``'s own revert-and-commit,
         the same revert a branch-creation failure always triggered) and
         surfaces the same "verb runner failed" rejection a savepoint
         failure above already does.
@@ -1759,28 +1778,30 @@ class Choreographer:
                 verb=verb_name,
             )
         if t is None:
-            # A composed atomic action returned None (e.g. start() rejected
-            # because of an ownership/state mismatch the spec gate could not
-            # see). Surface as invalid_state so the agent gets a remediation
-            # rather than a 500.
+            # A composed atomic action returned None (an ownership/state
+            # mismatch the spec gate could not see). Surface as invalid_state
+            # so the agent gets a remediation rather than a 500.
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"start failed for task {ctx.task_id}",
-                    remediate=(
-                        "task not in a startable state"
-                        " (claimed/paused/needs_revision) or no plan recorded"
-                    ),
-                    context_briefing=briefing,
-                ).with_introspection(task=None, role=role_str),
+                self._step_failed_envelope("claim", ctx, briefing, role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
                 verb=verb_name,
             )
         try:
             await self.task.provision_claim(ctx.task_id, ctx.agent_id)
+            # claimed -> in_progress needs the branch provision_claim just
+            # committed, so start runs here, never inside the savepoint.
+            t = await self.task.start(ctx.task_id, ctx.agent_id)
         except Exception as exc:
             return await self._emit_rejection(
                 self._runner_failed_envelope(exc, t, briefing, role_str),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb=verb_name,
+            )
+        if t is None:
+            return await self._emit_rejection(
+                self._step_failed_envelope("start", ctx, briefing, role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
                 verb=verb_name,
@@ -1830,9 +1851,10 @@ class Choreographer:
         """Claim a task and start work on it.
 
         Atomic: spec.can_invoke_intent runs before any state mutation;
-        the composed (claim, set_plan, start) sequence is wrapped in a
+        the composed (claim, set_plan) sequence is wrapped in a
         savepoint by the runner so a mid-sequence failure rolls back
-        the DB. Idempotent re-entry: a respawned dev re-calling on a
+        the DB; start follows the branch provisioning.
+        Idempotent re-entry: a respawned dev re-calling on a
         task they already own in_progress just refreshes the heartbeat.
 
         ``steps`` is the developer's execution checklist (same
@@ -5839,9 +5861,9 @@ class Choreographer:
         """PM mirror of i_will_work_on for parent tasks.
 
         Atomic: spec.can_invoke_intent runs before any state mutation;
-        the composed (claim, set_plan, start) sequence is wrapped in a
+        the composed (claim, set_plan) sequence is wrapped in a
         savepoint by the runner so a mid-sequence failure rolls back
-        the DB.
+        the DB; start follows the branch provisioning.
 
         PM callers must supply ``approach`` (>= 20 chars) and a non-empty
         ``sub_tasks`` list inside ``rich_plan`` — these are enforced in

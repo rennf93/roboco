@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -598,3 +598,51 @@ async def test_full_chain_through_doc_handoff(
 # the merge chain, plus a real `git.pr_merge` simulation that updates
 # the underlying repo. The _StubGit class covers the API surface; what's
 # missing is the seeded parent task + main_pm agent.
+
+
+@pytest.mark.asyncio
+async def test_dev_claim_cuts_branch_before_start(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """A branchless pending task (the real fleet shape; the fixture pre-seeds
+    a branch) reaches in_progress: the branch is cut while the task is still
+    claimed, and start runs after it. The E2E smoke caught the reverse order
+    as "Cannot start work: no branch assigned"."""
+    task = lifecycle_setup["task"]
+    dev_agent = lifecycle_setup["dev_agent"]
+    task.branch_name = None
+    await db_session.flush()
+    task_service = TaskService(db_session)
+    deps = ChoreographerDeps(
+        task=task_service,
+        work_session=_mock_work_session(),
+        git=_StubGit(db_session, task),
+        a2a=AsyncMock(),
+        journal=_mock_journal_with_reflect(),
+        audit=AsyncMock(),
+        evidence_repo=_mock_evidence_repo(),
+    )
+    seen_status: list[str] = []
+
+    async def _cut_branch(_svc: TaskService, row: TaskTable, _agent_id: UUID) -> str:
+        seen_status.append(str(row.status))
+        row.branch_name = _BRANCH
+        await _svc.session.flush()
+        return _BRANCH
+
+    with patch.object(TaskService, "_auto_create_branch", _cut_branch):
+        env = await Choreographer(deps).i_will_work_on(
+            agent_id=dev_agent.id,
+            task_id=task.id,
+            plan=_GOOD_PLAN,
+            steps=_STEPS,
+            technical_considerations=_GOOD_TC,
+            risks=_GOOD_RISKS,
+        )
+    assert env.error is None, f"claim failed: {env.message}"
+    assert env.status == "in_progress"
+    assert seen_status == ["claimed"], "branch must be cut before start()"
+    refreshed = await task_service.get(task.id)
+    assert refreshed is not None
+    assert refreshed.branch_name == _BRANCH
+    assert str(refreshed.status) == "in_progress"

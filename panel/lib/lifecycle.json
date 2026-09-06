@@ -238,8 +238,7 @@
       ],
       "composes": [
         "claim",
-        "set_plan",
-        "start"
+        "set_plan"
       ],
       "description": "PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.",
       "name": "i_will_plan",
@@ -252,8 +251,7 @@
       ],
       "composes": [
         "claim",
-        "set_plan",
-        "start"
+        "set_plan"
       ],
       "description": "Claim a task, set the plan, and transition to in_progress. Atomic - preconditions checked before any state mutation.",
       "name": "i_will_work_on",

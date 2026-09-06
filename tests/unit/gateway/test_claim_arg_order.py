@@ -350,3 +350,65 @@ async def test_i_will_plan_calls_claim_and_start_with_task_id_first() -> None:
     task_svc.claim.assert_awaited_once_with(task_id, pm_id, provision=False)
     task_svc.start.assert_awaited_once_with(task_id, pm_id)
     assert env.error is None
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_starts_only_after_provisioning() -> None:
+    """claimed -> in_progress carries a branch gate, so start must run after
+    provision_claim has committed the branch, never inside the composed
+    savepoint (the E2E smoke caught the reverse as "no branch assigned")."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    pending = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        task_type="code",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+    )
+    claimed = MagicMock(
+        id=task_id, status="claimed", plan=None, assigned_to=agent_id, task_type="code"
+    )
+    started = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=agent_id,
+        task_type="code",
+    )
+    order: list[str] = []
+
+    def _rec(name: str, ret: Any) -> Any:
+        def _inner(*_args: Any, **_kwargs: Any) -> Any:
+            order.append(name)
+            return ret
+
+        return _inner
+
+    task_svc = AsyncMock()
+    task_svc.get.return_value = pending
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.claim.side_effect = _rec("claim", claimed)
+    task_svc.set_plan.side_effect = _rec("set_plan", claimed)
+    task_svc.provision_claim.side_effect = _rec("provision_claim", claimed)
+    task_svc.start.side_effect = _rec("start", started)
+    c = Choreographer(_make_deps(task=task_svc))
+    env = await c.i_will_work_on(
+        agent_id=agent_id,
+        task_id=task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
+    assert env.error is None, env.message
+    assert env.status == "in_progress"
+    assert order == ["claim", "set_plan", "provision_claim", "start"]

@@ -4505,7 +4505,7 @@ class TaskService(BaseService):
         half) can run OUTSIDE this method entirely, on both call shapes:
         ``claim(provision=True)`` calls this then ``_provision_claim``
         directly in the same transaction span; the verb runner's composed
-        claim/set_plan/start calls this via ``claim(provision=False)``
+        claim/set_plan calls this via ``claim(provision=False)``
         INSIDE its own savepoint, and the choreographer runs
         ``provision_claim`` separately afterward, once that savepoint has
         committed. Provisioning never runs inside a savepoint on either
@@ -4517,7 +4517,7 @@ class TaskService(BaseService):
         root transaction, so calling it while nested would end that
         savepoint out from under the caller (verified: the next composed
         action then raises ``InvalidRequestError``); the verb runner's own
-        composed sequence (claim, set_plan, start) commits this
+        composed sequence (claim, set_plan) commits this
         durably right after, once the savepoint closes, see
         ``_claim_plan_start_run``.
 
@@ -4745,8 +4745,8 @@ class TaskService(BaseService):
     async def provision_claim(self, task_id: UUID, agent_id: UUID) -> TaskTable:
         """Public wrapper: durably commit a claim applied by
         ``claim(..., provision=False)`` (the verb runner's composed claim,
-        set_plan, start for ``i_will_work_on`` / ``i_will_plan``), then run
-        ``_provision_claim`` for it.
+        set_plan for ``i_will_work_on`` / ``i_will_plan``; ``start`` follows
+        this call), then run ``_provision_claim`` for it.
 
         Called by ``Choreographer._claim_plan_start_run`` right after
         ``run_intent``'s composed savepoint returns. That savepoint's own
