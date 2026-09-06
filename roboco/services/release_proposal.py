@@ -13,25 +13,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import redis.asyncio as redis
+from sqlalchemy import select
 
 from roboco.config import settings
+from roboco.db.tables import TaskTable
 from roboco.foundation.policy.content import markers
-from roboco.models.base import TaskStatus
+from roboco.models.base import TaskStatus, TaskType
 from roboco.services.base import BaseService
 from roboco.services.release_executor import ReleaseResult, get_release_executor
 from roboco.services.release_readiness import report_from_dict
-from roboco.services.task import RELEASE_MANAGER_SOURCE, get_task_service
+from roboco.services.task import (
+    LEAD_TIME_EXCLUDED_SOURCES,
+    PR_REVIEW_SOURCES,
+    RELEASE_MANAGER_SOURCE,
+    get_task_service,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from roboco.db.tables import TaskTable
     from roboco.services.release_readiness import ReleaseReadinessReport
 
 logger = logging.getLogger(__name__)
@@ -645,3 +651,56 @@ def dispatch_approve(
     _INFLIGHT_APPROVES[task_id] = bg_task
     bg_task.add_done_callback(lambda _t: _INFLIGHT_APPROVES.pop(task_id, None))
     return bg_task
+
+
+# excluded_sources scoped to this module's derivation only — LEAD_TIME_
+# EXCLUDED_SOURCES itself stays untouched for its other consumers.
+_MEMBER_TASK_EXCLUDED_SOURCES: frozenset[str] = LEAD_TIME_EXCLUDED_SOURCES | (
+    frozenset(PR_REVIEW_SOURCES)
+)
+
+
+async def member_task_ids_for_proposal(
+    session: AsyncSession, proposal: TaskTable
+) -> list[dict[str, Any]]:
+    """The delivery tasks (id + pr_number) that belong to *proposal*'s release.
+
+    release_readiness.py builds its ``change_summary`` as free-text "kind:
+    summary" strings with no task linkage, so the release-proposal card has
+    no reachable source for per-member-task verification receipts. This
+    derives membership the same way delivery windows are reasoned about
+    elsewhere: tasks ``COMPLETED`` in the proposal's own project since the
+    previous COMPLETED release proposal for that SAME project (or since the
+    beginning, for a project's first release) — held/coordination artifacts
+    (administrative task_type, engine-held sources, PR-review tasks) are
+    excluded, mirroring the deny-list a published release's own certificate
+    uses. Scoped to the proposal's project so a sibling project's task never
+    leaks in. Returns ``[]`` for a project-less proposal (not producible
+    today; degrading rather than guessing a scope).
+    """
+    if proposal.project_id is None:
+        return []
+    previous_completed_at = (
+        await session.execute(
+            select(TaskTable.completed_at)
+            .where(
+                TaskTable.source == RELEASE_MANAGER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.project_id == proposal.project_id,
+                TaskTable.id != proposal.id,
+            )
+            .order_by(TaskTable.completed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    stmt = select(TaskTable.id, TaskTable.pr_number).where(
+        TaskTable.status == TaskStatus.COMPLETED,
+        TaskTable.project_id == proposal.project_id,
+        TaskTable.task_type != TaskType.ADMINISTRATIVE,
+        TaskTable.source.notin_(_MEMBER_TASK_EXCLUDED_SOURCES),
+    )
+    if previous_completed_at is not None:
+        stmt = stmt.where(TaskTable.completed_at > previous_completed_at)
+    rows = (await session.execute(stmt)).all()
+    return [{"task_id": str(r.id), "pr_number": r.pr_number} for r in rows]
