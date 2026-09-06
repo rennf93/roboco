@@ -146,17 +146,17 @@ select = [
 
 # Lazy imports to avoid circular dependencies
 [tool.ruff.lint.per-file-ignores]
-# B010: the behavioral usage-rule redis-fail-open patch (see the module
-# docstring block) must use setattr, not a direct method assignment - mypy's
-# method-assign check rejects `BehavioralProcessor.process_usage_rules = ...`
-# outright, and a `# type: ignore` is not allowed in this codebase.
-"roboco/security.py" = ["B010"]
 # MCP tool surfaces ARE the LLM-facing contract — every parameter must be
 # top-level + typed so the SDK exposes it as a discrete schema field with
 # enum constraints. Bundling into a dataclass would hide enum hints from
 # the LLM and bring back invented values like nature='standard'.
 "roboco/mcp/**/*.py" = ["PLC0415", "PLR0913"]
 "roboco/services/*.py" = ["PLC0415"]
+# B010: the behavioral usage-rule redis-fail-open patch (see the module
+# docstring block) must use setattr, not a direct method assignment - mypy's
+# method-assign check rejects `BehavioralProcessor.process_usage_rules = ...`
+# outright, and a `# type: ignore` is not allowed in this codebase.
+"roboco/security.py" = ["B010"]
 # confirm_live_batch carries the MegaTask confirm contract (title, drafts,
 # agent_id, project_ids, route, session_id) — same >5-kwarg rationale as the
 # gateway verb surfaces below.
@@ -348,6 +348,13 @@ select = [
 # count (a plain, no-defaults dataclass) — same rationale as the collision
 # builder above.
 "tests/unit/eval/test_scoring.py" = ["PLR0913"]
+# OpenRouter CLI usage test: _step_finish carries the full 4-bucket token shape
+# (input, output, reasoning, cache_read, cache_write, cost) — the same named
+# fields the event carries, not reducible to fewer without dropping a bucket.
+"tests/unit/llm/providers/test_openrouter_cli_usage.py" = ["PLR0913", "PLR2004"]
+# Config test renders opencode.json inside a temp dir — tempfile imports are
+# deferred to the test bodies that need them.
+"tests/unit/llm/providers/test_openrouter_cli_config.py" = ["PLC0415"]
 
 # =============================================================================
 # MyPy Configuration
