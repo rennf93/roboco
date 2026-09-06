@@ -21,7 +21,6 @@
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
 | `nothing_to_propose` | `nothing_to_propose(task_id: UUID, reason: str)` |
-| `task_time` | `task_time(task_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
