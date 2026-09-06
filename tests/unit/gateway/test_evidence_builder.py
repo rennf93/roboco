@@ -183,6 +183,36 @@ class TestTaskHandoff:
         assert digest is not None
         assert digest["completed_dependency_ids"] == [str(dep_id)]
 
+    def test_surfaces_topology_issue(self) -> None:
+        """F-01e642fd: the topology_issue marker (set by TaskService.
+        recheck_topology_after_reparent) was write-only with zero
+        production consumers — a re-parent that strands an open PR must
+        surface here so the assignee/PM see it on their next verb call,
+        even with no other prior-work signal present."""
+        t = _task(pr_number=None, pr_url=None, dev_notes="")
+        t.commits = []
+        t.acceptance_criteria_status = []
+        t.orchestration_markers = {
+            "topology_issue": {
+                "shape": "parented_base_is_head",
+                "expected_base": "feature/main_pm/root0001",
+                "actual_base": "slave",
+                "message": "stranded on the integration branch",
+                "repair": "retarget onto feature/main_pm/root0001",
+            }
+        }
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        assert digest["topology_issue"]["shape"] == "parented_base_is_head"
+        assert digest["topology_issue"]["expected_base"] == "feature/main_pm/root0001"
+
+    def test_omits_topology_issue_when_absent(self) -> None:
+        t = _task()
+        t.orchestration_markers = None
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        assert "topology_issue" not in digest
+
     def test_caps_lists_and_type_guards(self) -> None:
         thirty = [{"sha": str(i)} for i in range(30)]
         t = _task(pr_number=7, commits=thirty)

@@ -338,6 +338,62 @@ async def test_open_pr_refuses_parentless_root_nested_in_coordination_tree() -> 
 
 
 @pytest.mark.asyncio
+async def test_open_pr_fails_open_on_topology_check_exception() -> None:
+    """F-81e261bd: find_topology_issue's DB calls can raise (e.g. a
+    transient error resolving the parent task). open_pr must fail OPEN —
+    mirroring _behind_base_gate's posture — rather than let the exception
+    escape and wedge a submit that this check only ever refuses, never
+    requires."""
+    aid = uuid4()
+    tid = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=None,
+        parent_task_id=parent_id,
+        branch_name="feature/backend/root0001--child0001",
+    )
+    t_after = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=99,
+        pr_url="https://gh/x/99",
+        parent_task_id=parent_id,
+        branch_name="feature/backend/root0001--child0001",
+    )
+    task_svc = AsyncMock()
+    # 1st .get() is open_pr's own initial fetch; 2nd is the parent lookup
+    # inside find_topology_issue, which raises (a transient DB error); every
+    # call after that (the runner's own re-fetch, the success envelope's
+    # refresh) returns the post-open_pr task state — padded generously since
+    # the exact count is an internal implementation detail, not a contract.
+    task_svc.get.side_effect = [t, RuntimeError("db unavailable"), *([t_after] * 5)]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    _wire_savepoint(task_svc)
+    git_svc = AsyncMock()
+    git_svc.push_branch.return_value = ("feature/backend/root0001--child0001", 1)
+    git_svc.create_pr.return_value = {
+        "pr_number": 99,
+        "pr_url": "https://gh/x/99",
+        "is_root_pr": False,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.open_pr(aid, tid)
+
+    git_svc.create_pr.assert_awaited()
+    assert env.error is None
+
+
+@pytest.mark.asyncio
 async def test_open_pr_allows_standalone_parentless_root() -> None:
     """Allow-shape: a genuinely standalone root (depth-1 branch, no parent)
     is NOT refused by the topology check."""

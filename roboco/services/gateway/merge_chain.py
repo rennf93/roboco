@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from roboco.foundation.policy.content import markers
 from roboco.models.env_branches import head_branch
 
 _TYPES = ("feature", "bug", "chore", "docs", "hotfix")
@@ -170,8 +171,14 @@ async def _parented_topology_issue(
     (a legitimate branchless-coordination parent, or one not yet claimed) —
     ``resolve_parent_branch`` already falls back correctly for those, and
     the terminal-verb CEO_ONLY head-branch routing already handles the
-    legitimate branchless-parent case.
+    legitimate branchless-parent case. Also skips when THIS task's own
+    branch was cut via the deliberate ``base_branch_fallback`` (the parent
+    branch was DB-recorded but not yet pushed at branch-creation time) —
+    a real, already-logged git.py fallback the developer has no verb to
+    repair, not a restructure.
     """
+    if markers.is_base_branch_fallback(task):
+        return None
     parent = await task_service.get(UUID(str(parent_id)))
     parent_branch = getattr(parent, "branch_name", None) if parent else None
     if not parent_branch:

@@ -2186,8 +2186,16 @@ class Choreographer:
         during a restructure). The existing terminal-verb CEO_ONLY head-
         branch routing (``_maybe_route_head_branch_to_ceo``) is untouched —
         this is an additional, earlier catch, not a replacement.
+
+        Fail-open on a ``find_topology_issue`` exception (its DB calls can
+        raise) — mirrors ``_behind_base_gate``'s posture — so a transient
+        error cannot wedge ``open_pr`` on a check that only ever refuses.
         """
-        issue = await find_topology_issue(t, self.task)
+        try:
+            issue = await find_topology_issue(t, self.task)
+        except Exception as exc:
+            logger.warning("topology_check_skip", task_id=str(t.id), error=str(exc))
+            return None
         if issue is None:
             return None
         return Envelope.invalid_state(

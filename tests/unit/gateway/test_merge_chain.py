@@ -230,6 +230,31 @@ class TestFindTopologyIssue:
         assert await find_topology_issue(task, task_service) is None
 
     @pytest.mark.asyncio
+    async def test_deliberate_base_branch_fallback_is_not_flagged(self) -> None:
+        """F-2789f259: shape (a) must not fire when THIS task's own branch
+        was cut via git.py's deliberate base_branch_fallback (the parent's
+        branch was DB-recorded but not yet pushed at branch-creation time)
+        — a real, already-logged fallback the developer has no verb to
+        repair, not a restructure. Would otherwise look identical to a real
+        shape-(a) drift since the recorded base is the head branch."""
+        parent_id = uuid4()
+        task = MagicMock(
+            id=uuid4(),
+            parent_task_id=parent_id,
+            branch_name="feature/backend/root0001--child0001",
+            orchestration_markers={"base_branch_fallback": True},
+        )
+        task_service = AsyncMock()
+        task_service.get = AsyncMock(
+            return_value=MagicMock(branch_name="feature/main_pm/root0001")
+        )
+        task_service.recorded_pr_base = AsyncMock(return_value="slave")
+        task_service.project_default_branch_for_task = AsyncMock(return_value="slave")
+
+        assert await find_topology_issue(task, task_service) is None
+        task_service.get.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_branchless_coordination_parent_is_not_flagged(self) -> None:
         """Allow-shape: a legitimate branchless coordination parent (no
         branch of its own) is the existing, intentional pattern — the
