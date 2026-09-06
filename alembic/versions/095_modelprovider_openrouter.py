@@ -9,7 +9,7 @@ newly added enum value in the same transaction — so we wrap it in
 The companion row-seed lives in migration 096.
 
 Revision ID: 095_modelprovider_openrouter
-Revises: 094_verb_latency_samples
+Revises: 095_pg_stat_statements
 Create Date: 2026-08-24
 """
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "095_modelprovider_openrouter"
-down_revision = "094_verb_latency_samples"
+down_revision = "095_pg_stat_statements"
 branch_labels = None
 depends_on = None
 
