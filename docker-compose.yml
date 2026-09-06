@@ -984,6 +984,14 @@ services:
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       ROBOCO_ENVIRONMENT: production
+    healthcheck:
+      # Same probe as the orchestrator: every role runs uvicorn, only the
+      # lifespan work is role-gated, so /health answers here too.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
     depends_on:
       orchestrator:
         condition: service_healthy
