@@ -918,6 +918,10 @@ services:
   # ==========================================================================
   dispatcher:
     image: roboco-orchestrator
+    # Built by the orchestrator service above, never on a registry: a
+    # pre-deploy `compose pull` (UGOS does one) must skip it or the whole
+    # deploy fails with \"pull access denied for roboco-orchestrator\".
+    pull_policy: never
     container_name: roboco-dispatcher
     restart: unless-stopped
     networks:
@@ -956,6 +960,10 @@ services:
   # ==========================================================================
   indexer:
     image: roboco-orchestrator
+    # Built by the orchestrator service above, never on a registry: a
+    # pre-deploy `compose pull` (UGOS does one) must skip it or the whole
+    # deploy fails with \"pull access denied for roboco-orchestrator\".
+    pull_policy: never
     container_name: roboco-indexer
     restart: unless-stopped
     networks:
