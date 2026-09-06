@@ -246,3 +246,26 @@ def test_role_accepts_every_declared_value() -> None:
 def test_role_rejects_unknown_value() -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({"role": "worker"})
+
+
+# ---------------------------------------------------------------------------
+# internal_api_url x role - dispatcher always resolves to its own loopback
+# uvicorn, never the agent-facing api_url (2026-09-06 outage: a loopback
+# api_url leaked into every spawned agent's MCP config via that shared field)
+# ---------------------------------------------------------------------------
+
+
+def test_internal_api_url_dispatcher_ignores_api_url() -> None:
+    s = Settings(
+        role="dispatcher",
+        api_url="http://roboco-orchestrator:8000",
+        host="0.0.0.0",
+        port=8000,
+    )
+    assert s.internal_api_url == "http://127.0.0.1:8000/api"
+
+
+def test_internal_api_url_non_dispatcher_roles_still_use_api_url() -> None:
+    for role in ("api", "all"):
+        s = Settings(role=role, api_url="http://roboco-orchestrator:8000")
+        assert s.internal_api_url == "http://roboco-orchestrator:8000/api"

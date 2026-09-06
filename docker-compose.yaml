@@ -911,10 +911,14 @@ services:
   # reconciliation. Split from the orchestrator (ROBOCO_ROLE=api) so the two
   # don't share one GIL-pinned process (measured 113% CPU / 120s gateway
   # timeouts on a single-process fleet, 2026-09-05). Its own task/notification
-  # queries go over HTTP to its OWN uvicorn (internal_api_url resolves to
-  # 127.0.0.1, explicit via ROBOCO_API_URL below, not the orchestrator/api-role
-  # container), rather than in-process; it needs the SAME docker socket + host
-  # volumes as the orchestrator to spawn/manage agent containers directly.
+  # queries go over HTTP to its OWN uvicorn: internal_api_url resolves to
+  # loopback for the dispatcher role by construction (roboco/config.py), not
+  # via ROBOCO_API_URL, rather than in-process; it needs the SAME docker
+  # socket + host volumes as the orchestrator to spawn/manage agent
+  # containers directly. NEVER set ROBOCO_API_URL to a loopback address here
+  # - this service spawns every agent container, and _generate_mcp_config
+  # hands ROBOCO_API_URL straight to each agent's MCP servers, so a loopback
+  # value here broke every gateway verb fleet-wide for hours (2026-09-06).
   # ==========================================================================
   dispatcher:
     image: roboco-orchestrator
@@ -931,13 +935,6 @@ services:
     environment:
       <<: *orchestrator-env
       ROBOCO_ROLE: dispatcher
-      # Explicit, not accidental: ROBOCO_HOST=0.0.0.0 in orchestrator-env
-      # already makes internal_api_url fall back to 127.0.0.1 (see
-      # roboco/config.py), so this is a no-op today - pinned so a future
-      # change to that fallback can't silently repoint the dispatcher's
-      # own content-tool/RAG-query calls at the orchestrator (api role)
-      # service instead of its own uvicorn.
-      ROBOCO_API_URL: http://127.0.0.1:8000
     volumes: *orchestrator-volumes
     healthcheck:
       # curl is purged from the runtime image after the docker-cli install

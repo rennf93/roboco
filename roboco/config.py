@@ -65,8 +65,9 @@ class Settings(BaseSettings):
             "fleet's in-memory state (spawn/waiting-agent registries) is "
             "never split across two processes. Its own task/notification "
             "queries go over HTTP to its OWN uvicorn (internal_api_url "
-            "resolves to 127.0.0.1 - see ROBOCO_API_URL in the compose "
-            "files - never the orchestrator/api-role service). 'indexer': "
+            "resolves to 127.0.0.1 because the property derives that from "
+            "role='dispatcher' in code, never the orchestrator/api-role "
+            "service). 'indexer': "
             "runs only the KB/embedding worker. The split exists because "
             "the single 'all' process pins one core under load (measured "
             "113% CPU on a 12-core box) and every gateway verb starves."
@@ -116,7 +117,11 @@ class Settings(BaseSettings):
     )
     api_url: str | None = Field(
         default=None,
-        description="Override API URL for containerized agents (e.g., http://roboco-orchestrator:8000)",
+        description=(
+            "Agent-facing API URL handed to spawned containers' MCP servers "
+            "(env ROBOCO_API_URL, e.g. http://roboco-orchestrator:8000) - "
+            "never used as the dispatcher's own URL, see internal_api_url."
+        ),
     )
     # CORS
     cors_origins: list[str] = Field(
@@ -133,12 +138,18 @@ class Settings(BaseSettings):
         """
         Internal API base URL for service-to-service communication.
 
-        Uses api_url if set (for containerized agents), otherwise builds from host/port.
-        Note: 0.0.0.0 is only valid for binding, not connecting - use 127.0.0.1 instead.
+        The dispatcher role always resolves to its own loopback uvicorn,
+        regardless of api_url (which is the agent-facing URL handed to
+        spawned containers, not the dispatcher's own address). Every other
+        role uses api_url if set, otherwise builds from host/port.
+        Note: 0.0.0.0 is only valid for binding, not connecting - use
+        127.0.0.1 instead.
         """
+        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
+        if self.role == "dispatcher":
+            return f"http://{connect_host}:{self.port}/api"
         if self.api_url:
             return f"{self.api_url.rstrip('/')}/api"
-        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
         return f"http://{connect_host}:{self.port}/api"
 
     # ==========================================================================
