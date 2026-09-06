@@ -10,13 +10,19 @@ from uuid import UUID
 from roboco.api.deps import CurrentAgentContext, require_ceo_role
 from roboco.api.schemas.release import (
     ReleaseGapModel,
+    ReleaseMemberTaskModel,
     ReleaseProposalResponse,
     ReleaseReportModel,
 )
 from roboco.foundation.policy.content import markers
-from roboco.services.release_proposal import is_approve_in_flight
+from roboco.services.release_proposal import (
+    is_approve_in_flight,
+    member_task_ids_for_proposal,
+)
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from roboco.db.tables import TaskTable
 
 
@@ -29,9 +35,12 @@ def _status_value(task: "TaskTable") -> str:
     return raw.value if hasattr(raw, "value") else str(raw)
 
 
-def _to_response(task: "TaskTable") -> ReleaseProposalResponse:
+async def _to_response(
+    task: "TaskTable", db: "AsyncSession"
+) -> ReleaseProposalResponse:
     report = markers.get_release_report(task) or {}
     outcome = markers.get_release_execute_outcome(task)
+    member_tasks = await member_task_ids_for_proposal(db, task)
     return ReleaseProposalResponse(
         task_id=str(task.id),
         title=task.title,
@@ -50,4 +59,5 @@ def _to_response(task: "TaskTable") -> ReleaseProposalResponse:
             migration_notes=report.get("migration_notes", []),
             gate_state=report.get("gate_state", "unknown"),
         ),
+        member_task_ids=[ReleaseMemberTaskModel(**m) for m in member_tasks],
     )

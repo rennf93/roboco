@@ -213,6 +213,8 @@ release-manager slice
 | POST /api/release/proposal/approve | roboco/api/routes/release.py | CEO panel approve → dispatch_approve → background _run_approve_background → ReleaseProposalService.approve → ReleaseExecutor.execute (returns 202 immediately; panel polls GET /proposal for outcome) |
 | POST /api/release/proposal/reject | roboco/api/routes/release.py | CEO panel reject-with-changes → ReleaseProposalService.reject (keep held) |
 
+**`member_task_ids` (task `d6d8853c`, pr_gate finding F-41ebb0a6).** `ReleaseProposalResponse` (`roboco/api/schemas/release.py`) gained `member_task_ids: list[ReleaseMemberTaskModel]` (`{task_id, pr_number}` pairs), populated by the new `member_task_ids_for_proposal()` (`roboco/services/release_proposal.py`) and threaded through both `GET /api/release/proposal` and `POST /api/release/proposal/reject`'s shared `_to_response` (`roboco/api/utils/release.py`, now `async(task, db)` since the derivation needs a DB query). The set is derived from a since-last-release completion window — tasks completed after the previous release tag/commit — rather than parsed out of `release_readiness.py`'s free-text `change_summary` strings, since those carry no structured task id. Purely additive: no change to `release_readiness.py`'s own classification/bump logic. Feeds the panel's release-proposal card so it can fetch and aggregate each member task's verification receipt instead of rendering the release as an opaque commit list.
+
 ## Config Flags
 - ROBOCO_RELEASE_MANAGER_ENABLED (release_manager_enabled, default False) — master switch; when off the loop returns immediately and no proposal is ever originated
 - ROBOCO_RELEASE_MIN_COMMITS (release_min_commits, default 8, min 1) — commit floor for the _past_threshold gate
