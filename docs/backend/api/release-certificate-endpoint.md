@@ -2,20 +2,9 @@
 
 **Date:** 2026-08-31 **Task:** 63375b3c **PR:** #969 **Files:** `roboco/api/routes/releases.py`, `roboco/services/release_certificate.py`, `roboco/api/schemas/release.py`, `roboco/api/app.py`
 
-**Update (2026-09-05, PR #1022 pr_gate bounce):** `conventions_clean`, the
-release-window task set, `ceo_approved_at`, and `qa_passed` all measured the
-wrong thing — see "Semantics" and "Where each piece comes from" below for the
-corrected derivations. Files touched: `roboco/services/release_certificate.py`,
-`roboco/api/routes/release.py`, `roboco/api/schemas/release.py`,
-`roboco/foundation/policy/content/markers.py`.
+**Update (2026-09-05, PR #1022 pr_gate bounce):** `conventions_clean`, the release-window task set, `ceo_approved_at`, and `qa_passed` all measured the wrong thing — see "Semantics" and "Where each piece comes from" below for the corrected derivations. Files touched: `roboco/services/release_certificate.py`, `roboco/api/routes/release.py`, `roboco/api/schemas/release.py`, `roboco/foundation/policy/content/markers.py`.
 
-**Update (2026-09-05, PR #1046 pr_gate round-2 bounce):** the widened deny-list
-still let external/internal PR-review tasks count as release-window delivered
-work, and `ceo_approved_at` was only ever stamped by the HTTP approve route —
-a Telegram-approved release certified `ceo_approved_at: null`. Both fixed; see
-the task-set-derivation and `ceo_approved_at` rows below. Files touched:
-`roboco/services/release_certificate.py`, `roboco/services/release_proposal.py`,
-`roboco/api/routes/release.py`.
+**Update (2026-09-05, PR #1046 pr_gate round-2 bounce):** the widened deny-list still let external/internal PR-review tasks count as release-window delivered work, and `ceo_approved_at` was only ever stamped by the HTTP approve route — a Telegram-approved release certified `ceo_approved_at: null`. Both fixed; see the task-set-derivation and `ceo_approved_at` rows below. Files touched: `roboco/services/release_certificate.py`, `roboco/services/release_proposal.py`, `roboco/api/routes/release.py`.
 
 ## What
 
@@ -92,8 +81,8 @@ Changing this heuristic changes what `task_states`/`findings_summary` cover; tre
 
 ## Tests
 
-- `tests/integration/test_release_routes.py` — happy path (full gate chain, including an engine-originated delivery root and all three `qa_passed` states), conventions-dirty/-clean cases keyed off real persisted findings, `ceo_approved_at` present/absent, 404 for an unpublished version, non-CEO denial, cross-project task exclusion, and (round-2) a seeded `external_pr`/`internal_pr` review task proving `test_certificate_packages_release_gate_chain` excludes it from both `task_states` and `findings_summary`. DB-backed; needs Postgres.
-- `tests/unit/services/test_release_certificate.py` — version normalization, `[AC]`-stamp counting, severity bucketing, per-task pass state (including the zero-AC `None` case), window/same-project scoping.
+- `tests/integration/test_release_routes.py` — happy path (full gate chain, including an engine-originated delivery root and all three `qa_passed` states), conventions-dirty/-clean cases keyed off real persisted findings, `ceo_approved_at` present/absent, 404 for an unpublished version, non-CEO denial, cross-project task exclusion, and (round-2) a seeded `external_pr` review task proving `test_certificate_packages_release_gate_chain` excludes it from both `task_states` and `findings_summary` (`internal_pr` is covered by `PR_REVIEW_SOURCES` at `roboco/services/task.py:660` but is not separately seeded here). DB-backed; needs Postgres.
+- `tests/unit/services/test_release_certificate.py` — version normalization, `[AC]`-stamp counting, severity bucketing, per-task pass state (including the zero-AC `None` case), window/same-project scoping, and (round-3) `_conventions_clean`'s three branches (empty task list, no block finding, a block finding present) against a mocked session.
 - `tests/unit/services/test_telegram_release_approve_marker.py` — a test on the Telegram approve path proving `ceo_approved_at` is populated via `dispatch_approve` → `ReleaseProposalService.approve()`, not just the HTTP route.
 
 ## Risks and follow-ups
