@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
@@ -186,6 +187,13 @@ class ReleaseProposalService(BaseService):
             return None
         if refusal is not None:
             return refusal
+
+        # Stamp the CEO's actual approval-dispatch moment here — the single
+        # chokepoint both dispatch_approve call sites (the HTTP route and the
+        # Telegram approve path) route through — so ceo_approved_at
+        # (release_certificate.py reads this marker) is populated no matter
+        # which surface the CEO clicked approve on, not just the HTTP route.
+        markers.set_release_approved_at(task, datetime.now(UTC).isoformat())
 
         lock_key = f"{_RELEASE_LOCK_PREFIX}{task_id}"
         try:

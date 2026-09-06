@@ -71,6 +71,10 @@ async def approve_release_proposal(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
         )
+    # ceo_approved_at is now stamped inside ReleaseProposalService.approve()
+    # itself — the shared chokepoint both this route and the Telegram approve
+    # path dispatch through — rather than here, so every CEO-approve surface
+    # gets it, not just this one (see release_proposal.py).
     # Materialize the proposal for the background session (a no-op in prod,
     # where the release-manager engine already committed it; tests seed it only
     # flushed into the request session).
