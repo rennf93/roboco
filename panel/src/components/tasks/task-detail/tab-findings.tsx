@@ -50,6 +50,7 @@ const ORIGIN_LABEL: Record<string, string> = {
   pr_gate: "PR Review",
   pm: "PM",
   ceo: "CEO",
+  second_review: "Second Review",
 };
 
 // Per-state description maps (task-status-badge.tsx idiom), local to the

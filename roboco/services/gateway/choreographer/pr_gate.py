@@ -40,6 +40,10 @@ from roboco.services.gateway.choreographer.evidence_legs import (
     LegBudget,
     run_bounded_leg,
 )
+from roboco.services.gateway.choreographer.second_review_gate import (
+    insert_second_review_findings,
+    run_second_review_for_gate,
+)
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import render_findings
 from roboco.services.gateway.merge_chain import resolve_parent_branch
@@ -47,6 +51,7 @@ from roboco.services.gateway.merge_chain import resolve_parent_branch
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from roboco.models.base import ModelProvider
     from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
 
     _Base = ChoreographerHelpers
@@ -662,12 +667,16 @@ class PRGateMixin(_Base):
         if gate is not None:
             return gate
         ci_note: str | None = None
+        second_review_evidence: dict[str, Any] | None = None
         if verb == "pr_pass":
             rejection, ci_note = await self._gate_pr_pass_preflight(
                 reviewer_agent_id, task_id, t, role_str, briefing
             )
             if rejection is not None:
                 return rejection
+            second_review_evidence = await self._run_second_review_pass(
+                t, agent, role_str
+            )
         # Insert the ledger rows now that the task + role gates are settled,
         # THEN rebuild `notes` with the real ids — every downstream reader
         # (the structured note, the PR comment, the a2a to the owning PM)
@@ -711,6 +720,7 @@ class PRGateMixin(_Base):
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS[verb].next_hint(t),
+            evidence=second_review_evidence,
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
         if verb == "pr_fail" and (hint := findings_lib.findings_count_hint(findings)):
@@ -746,6 +756,117 @@ class PRGateMixin(_Base):
         if stamp_rejection is not None:
             return stamp_rejection, None
         return None, ci_note
+
+    async def _gate_second_review_diff(self, t: Any) -> str:
+        """The assembled PR's diff for the second-review pass, same base as
+        the primary reviewer's own diff. Best-effort: a fetch failure yields
+        ``""`` — the second pass simply has nothing to review that round
+        rather than blocking ``pr_pass``."""
+        if not t.branch_name:
+            return ""
+        gate_parent = await self._gate_diff_parent(t)
+        try:
+            diff = await self.git.diff(
+                branch_name=t.branch_name, preferred_parent=gate_parent
+            )
+        except Exception as exc:
+            logger.warning("second_review_diff_skip", task_id=str(t.id), error=str(exc))
+            return ""
+        return str(diff)
+
+    async def _authoring_providers(self, t: Any) -> list[ModelProvider]:
+        """The distinct providers that authored this assembled task's code.
+
+        An assembled cell/root task has no single contributing dev's agent —
+        resolve every CODE-type descendant's assignee via the fleet's
+        provider-routing seam (``ModelRoutingService.resolve_for_agent``, the
+        same seam ``SecondReviewService.resolve_second_reviewer_for_agent``
+        wraps) instead of assuming one provider authored everything. When an
+        assembled task has more than one authoring agent on different
+        providers, every one of them is returned so the caller excludes the
+        full set, not just the first. Falls back to ``[ANTHROPIC]`` (the
+        fleet's always-enabled baseline) only when no assignee is resolvable
+        at all (e.g. every leaf still unclaimed).
+        """
+        from roboco.models.base import ModelProvider, TaskType
+        from roboco.services.llm import ModelRoutingService
+
+        descendants = await self.task.get_all_descendants(t.id)
+        agent_ids = {
+            d.assigned_to
+            for d in descendants
+            if d.task_type == TaskType.CODE and d.assigned_to is not None
+        }
+        routing = ModelRoutingService(self.task.session)
+        providers: set[ModelProvider] = set()
+        for agent_id in agent_ids:
+            agent = await self.task.agent_for(agent_id)
+            slug = getattr(agent, "slug", None)
+            if not slug:
+                continue
+            route = await routing.resolve_for_agent(slug)
+            providers.add(route.provider_type)
+        return list(providers) or [ModelProvider.ANTHROPIC]
+
+    async def _run_second_review_pass(
+        self,
+        t: Any,
+        agent: Any,
+        role_str: str,
+        *,
+        runner: Any = None,
+    ) -> dict[str, Any] | None:
+        """The cross-vendor second-review pass, gated by the sibling
+        ``is_high_stakes``/provider-resolution service (flag + risk
+        threshold). Returns the envelope-facing evidence payload, or
+        ``None`` when the task doesn't qualify — callers must attach
+        ``evidence`` only when this returns non-``None``, so the flag-off /
+        below-threshold ``pr_pass`` output stays byte-for-byte unchanged.
+
+        The risk-threshold check runs BEFORE fetching the diff — a
+        flag-off/below-threshold ``pr_pass`` must not pay for a ``git diff``
+        call it will throw away, and must not touch the git service at all
+        (the regression the flag-off test pins). A resolver skip (single
+        provider enabled fleet-wide) never blocks — it is recorded in the
+        evidence payload and ``pr_pass`` proceeds exactly as the existing
+        single-review path. A resolved second pass's findings insert into
+        the existing ``task_review_findings`` ledger under the dedicated
+        ``second_review`` origin (best-effort: an insert failure is logged
+        and never blocks the pass already in flight). ``runner`` is the
+        injectable second-pass check (see ``second_review_gate.py``) —
+        ``None`` in production, overridable in tests.
+        """
+        from roboco.services.second_review import task_is_high_stakes
+
+        if not task_is_high_stakes(t):
+            return None
+        authoring_providers = await self._authoring_providers(t)
+        diff = await self._gate_second_review_diff(t)
+        outcome = await run_second_review_for_gate(
+            self.task.session,
+            t,
+            diff,
+            authoring_provider=authoring_providers,
+            runner=runner,
+        )
+        if outcome.findings:
+            author_slug = getattr(agent, "slug", None) or role_str
+            try:
+                async with self.task.session.begin_nested():
+                    await insert_second_review_findings(
+                        self.task.session,
+                        task_id=t.id,
+                        round=findings_lib.next_round(t),
+                        author_slug=author_slug,
+                        findings=list(outcome.findings),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "second_review_findings_insert_skip",
+                    task_id=str(t.id),
+                    error=str(exc),
+                )
+        return outcome.as_evidence()
 
     async def _pr_pass_blocked(
         self,
