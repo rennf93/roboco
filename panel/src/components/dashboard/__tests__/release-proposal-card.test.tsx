@@ -43,6 +43,7 @@ function buildProposal(): ReleaseProposal {
     title: "Cut v0.14.0",
     status: "awaiting_ceo_approval",
     required_changes: null,
+    member_task_ids: [],
     report: {
       proposed_version: "0.14.0",
       bump_kind: "minor",
@@ -124,10 +125,10 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the verification rollup, unavailable when no member_task_ids are given", () => {
-    // No existing endpoint populates member_task_ids yet (see
-    // RELEASE_MEMBER_TASK_IDS_UNAVAILABLE) — the card must still render the
-    // rollup section wired to that state instead of omitting it.
+  it("renders the verification rollup, stating no member tasks when the release genuinely has none", () => {
+    // member_task_ids is always present now (an empty list is a real
+    // "this release has no member tasks" state, not an unreachable-data gap)
+    // — the card must still render the rollup section wired to that state.
     mockUseQuery.mockReturnValue({
       data: buildProposal(),
       isLoading: false,
@@ -139,7 +140,7 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
     render(withPageRefresh(<ReleaseProposalCard />));
     expect(screen.getByText("Verification rollup")).toBeInTheDocument();
     expect(
-      screen.getByText(/verification isn't available for this release/i),
+      screen.getByText(/this release has no member tasks/i),
     ).toBeInTheDocument();
   });
 });

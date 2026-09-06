@@ -24,6 +24,16 @@ const ORIGIN_LABEL: Record<string, string> = {
   ceo: "CEO",
 };
 
+// The reviewer chain's `role` vocabulary (agent_spawn_sessions review roles)
+// is distinct from the findings ledger's `origin` above (pr_gate vs.
+// pr_reviewer, pm vs. cell_pm/main_pm).
+const REVIEWER_ROLE_LABEL: Record<string, string> = {
+  qa: "QA",
+  pr_reviewer: "PR Review",
+  cell_pm: "Cell PM",
+  main_pm: "Main PM",
+};
+
 const SEVERITY_CLASS: Record<string, string> = {
   blocker: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
   major:
@@ -189,8 +199,9 @@ export function ConventionsFindingsList({
   );
 }
 
-// (e) The reviewer chain — role + round, model where reachable (always
-// "unknown" today — see `buildReviewerChain` for why).
+// (e) The reviewer chain — role, agent, and the real model it ran on, one
+// entry per review round (roboco/services/metrics.py
+// `_reviewer_chain_for_task`; covers every round, including a clean pass).
 export function ReviewerChainList({
   data,
   isLoading,
@@ -199,38 +210,27 @@ export function ReviewerChainList({
   if (!data || data.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        No review rounds recorded yet. Only rounds that recorded findings
-        appear here — a round that passed clean has no entry.
+        No review rounds recorded yet for this task.
       </p>
     );
   }
   return (
-    <div className="space-y-1.5">
-      <p className="text-xs text-muted-foreground">
-        Only rounds that recorded findings appear here — a round that passed
-        clean has no entry.
-      </p>
-      <ul className="divide-y divide-border text-sm tabular-nums">
-        {data.map((entry) => (
-          <li
-            key={entry.round}
-            className="flex flex-wrap items-center gap-2 py-1.5"
-          >
-            <span className="text-xs text-muted-foreground">
-              Round {entry.round}
-            </span>
-            <Badge variant="outline">
-              {ORIGIN_LABEL[entry.origin] ?? entry.origin}
-            </Badge>
-            {entry.author_slug && <span>{entry.author_slug}</span>}
-            <HelpTip label="No endpoint exposes which model an agent ran on for a given review round">
-              <span className="text-xs text-muted-foreground">
-                model: {entry.model ?? "unknown"}
-              </span>
-            </HelpTip>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <ul className="divide-y divide-border text-sm tabular-nums">
+      {data.map((entry) => (
+        <li
+          key={entry.round}
+          className="flex flex-wrap items-center gap-2 py-1.5"
+        >
+          <span className="text-xs text-muted-foreground">
+            Round {entry.round}
+          </span>
+          <Badge variant="outline">
+            {REVIEWER_ROLE_LABEL[entry.role] ?? entry.role}
+          </Badge>
+          <span>{entry.agent_slug}</span>
+          <span className="text-xs text-muted-foreground">{entry.model}</span>
+        </li>
+      ))}
+    </ul>
   );
 }

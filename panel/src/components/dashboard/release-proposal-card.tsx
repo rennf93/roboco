@@ -268,7 +268,7 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
               </p>
             </HelpTip>
             <ReleaseVerificationRollup
-              taskIds={proposal.member_task_ids ?? []}
+              taskIds={proposal.member_task_ids.map((m) => m.task_id)}
             />
           </div>
 

@@ -3,6 +3,7 @@
 // export here reshapes data GET /tasks/{id}, GET /tasks/{id}/findings, and
 // GET /projects/{id}/conventions/findings already return.
 import type { TaskFinding } from "./tasks";
+import type { TaskMetricsReviewerChainEntry } from "./dashboard";
 
 // One acceptance criterion's QA verification state, parsed from the
 // deterministic "[AC] <criterion> — verified: <evidence>" lines
@@ -89,38 +90,21 @@ export function groupFindingsByRound(
   return rounds;
 }
 
-// One reviewer-stage entry in a task's review history, derived from the
-// revision-findings ledger — the only reachable "review record" for this
-// (no endpoint exposes agent_spawn_sessions per task). Covers only rounds
-// that produced a finding (a bounce); a round that passed clean leaves no
-// ledger row and so has no entry here.
-export interface ReviewerChainEntry {
-  round: number;
-  origin: TaskFinding["origin"];
-  author_slug: string | null;
-  // Always null: no endpoint exposes which model an agent ran on for a
-  // given round (AgentResponse carries no model field, and
-  // agent_spawn_sessions has no REST route at all). Escalated for a
-  // dedicated endpoint rather than invented — see PR_CI_VERDICT_UNAVAILABLE
-  // below for the same class of gap.
-  model: null;
-}
+// One reviewer-stage entry in a task's review history — one per review-role
+// (qa/pr_reviewer/cell_pm/main_pm) spawn session against the task, sourced
+// from GET /dashboard/metrics/task/{task_id}'s `reviewer_chain`
+// (roboco/services/metrics.py `_reviewer_chain_for_task`), `round` numbered
+// identically to the revision-findings ledger. Replaces the earlier
+// findings-ledger derivation, which could only ever report `model: null`
+// (no endpoint exposed agent_spawn_sessions per task/round) and covered only
+// rounds that produced a finding — this covers every review round,
+// including a round that passed clean.
+export type ReviewerChainEntry = TaskMetricsReviewerChainEntry;
 
 export function buildReviewerChain(
-  findings: TaskFinding[],
+  entries: TaskMetricsReviewerChainEntry[],
 ): ReviewerChainEntry[] {
-  const byRound = new Map<number, ReviewerChainEntry>();
-  for (const f of findings) {
-    if (!byRound.has(f.round)) {
-      byRound.set(f.round, {
-        round: f.round,
-        origin: f.origin,
-        author_slug: f.author_slug,
-        model: null,
-      });
-    }
-  }
-  return [...byRound.values()].sort((a, b) => a.round - b.round);
+  return [...entries].sort((a, b) => a.round - b.round);
 }
 
 // The PR CI verdict bound to the task's PR head commit — NOT reachable from
@@ -152,34 +136,11 @@ export const PR_CI_VERDICT_UNAVAILABLE: PrCiVerdict = {
     "endpoint; escalate rather than invent.",
 };
 
-// The release proposal's member-task set — NOT reachable from any existing
-// endpoint. ReleaseReport.change_summary (roboco/services/release_readiness.py)
-// is free-text commit strings only; no task_id/pr_number is exposed anywhere
-// on the release-manager surface (release.py schema, ReleaseReportModel).
-// Per this task's intake facts ("no new backend data capture"), that gap is
-// reported here for escalation instead of invented — the release-proposal
-// verification rollup (@/components/verification/release-rollup) is
-// parametrized over an explicit task-id list instead, so it renders the real
-// aggregation the day a real endpoint exposes the member set.
-export interface ReleaseMemberTaskIdsUnavailable {
-  available: false;
-  /** Short sentence safe to render directly to the approver. */
-  reason: string;
-  /**
-   * The backend-facing escalation detail (which endpoint is missing, why) —
-   * for a HelpTip, code comment, or the docs. Never render this as the
-   * primary visible sentence; it names internals the approver has no use for.
-   */
-  technicalDetail: string;
-}
-
-export const RELEASE_MEMBER_TASK_IDS_UNAVAILABLE: ReleaseMemberTaskIdsUnavailable =
-  {
-    available: false,
-    reason: "Per-task verification isn't available for this release yet.",
-    technicalDetail:
-      "No backend endpoint exposes this release's member task set " +
-      "(ReleaseReport.change_summary is free-text commit strings only, no " +
-      "task_id/pr_number) — needs a new endpoint; escalate rather than " +
-      "invent.",
-  };
+// The release proposal's member-task set. GET /release/proposal's
+// `member_task_ids` (roboco/api/schemas/release.py ReleaseProposalResponse)
+// is now always present — an empty list is a real, legitimate state ("this
+// release genuinely carries no member tasks", e.g. a hotfix/env-sync
+// release), not the old "no endpoint exposes this" escalation gap. This
+// message is the release-proposal rollup's empty-state copy for that case.
+export const RELEASE_NO_MEMBER_TASKS_MESSAGE =
+  "This release has no member tasks. There's nothing to verify per-task.";

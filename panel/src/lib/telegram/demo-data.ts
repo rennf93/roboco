@@ -30,6 +30,7 @@ export const DEMO_RELEASE: ReleaseProposal = {
   task_id: "demo-release",
   title: "Release proposal 0.26.0",
   status: "awaiting_ceo_approval",
+  member_task_ids: [],
   report: {
     proposed_version: "0.26.0",
     bump_kind: "minor",

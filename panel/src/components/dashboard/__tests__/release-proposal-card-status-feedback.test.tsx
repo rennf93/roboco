@@ -21,6 +21,7 @@ const { getProposal, approve, reject } = vi.hoisted(() => ({
       title: "Cut v0.14.0",
       status: "awaiting_ceo_approval",
       required_changes: null,
+      member_task_ids: [],
       report: {
         proposed_version: "0.14.0",
         bump_kind: "minor",
