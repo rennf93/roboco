@@ -19,6 +19,7 @@ from roboco.foundation.identity import (
 )
 from roboco.foundation.policy.content import markers as _markers
 from roboco.runtime.orchestrator import (
+    _PARENT_BRANCH_WAIT,
     _PM_DISPATCH_FETCH_LIMIT,
     _dispatch_board_program_exploration,
     _is_branch_pending,
@@ -1354,7 +1355,14 @@ class DispatchWorkEngine(_Base):
             return
         validation_issue = await self._validate_task_for_spawn(client, task, agent_slug)
         if validation_issue:
-            logger.warning(
+            # The provisioning wait recurs every tick for up to the grace
+            # window on the healthy path; only real refusals warrant WARNING.
+            log = (
+                logger.debug
+                if validation_issue.endswith(_PARENT_BRANCH_WAIT)
+                else logger.warning
+            )
+            log(
                 "Skipping spawn due to validation failure",
                 task_id=task["id"],
                 agent=agent_slug,

@@ -22,6 +22,7 @@ from roboco.models.runtime import (
     SpawnGitContext,
 )
 from roboco.runtime.orchestrator import (
+    _PARENT_BRANCH_WAIT,
     AgentState,
     _agent_api_headers,
     _branch_is_expected,
@@ -182,7 +183,7 @@ class DispatchClaimEngine(_Base):
                     task_id=task_id,
                     parent_id=parent_id,
                 )
-                return f"Task {task_id} waiting for parent branch provisioning"
+                return f"Task {task_id} {_PARENT_BRANCH_WAIT}"
 
         await self._auto_block_task(
             client,

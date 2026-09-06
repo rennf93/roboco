@@ -46,12 +46,14 @@ def _resp(payload: dict[str, Any]) -> MagicMock:
     return r
 
 
-def _mid_claim(parent_id: str, claimed_at: datetime | None) -> dict[str, Any]:
-    """A parent stuck mid-claim: in_progress, assigned, branchless."""
+def _mid_claim(
+    parent_id: str, claimed_at: datetime | None, status: str = "in_progress"
+) -> dict[str, Any]:
+    """A parent stuck mid-claim: claimed/in_progress, assigned, branchless."""
     return {
         "id": parent_id,
         "branch_name": None,
-        "status": "in_progress",
+        "status": status,
         "assigned_to": "main-pm",
         "claimed_at": claimed_at.isoformat() if claimed_at else None,
     }
@@ -140,16 +142,20 @@ async def test_no_retry_when_parent_not_mid_claim() -> None:
 
 
 @pytest.mark.asyncio
-async def test_within_grace_skips_without_auto_block() -> None:
+@pytest.mark.parametrize("status", ["claimed", "in_progress"])
+async def test_within_grace_skips_without_auto_block(status: str) -> None:
     """Parent claimed 10s ago, still branchless after the fast retry: well
     inside parent_branch_provisioning_grace_seconds, so skip this tick
     instead of auto-blocking - the common, healthy path under slow branch
-    creation."""
+    creation. `claimed` is the raw POST /tasks/{id}/claim shape (CLAIMED
+    commits before a separate start()), `in_progress` the composed one."""
     task_id = str(uuid4())
     parent_id = str(uuid4())
 
     orch = _make_orch()
-    mid_claim = _mid_claim(parent_id, datetime.now(UTC) - timedelta(seconds=10))
+    mid_claim = _mid_claim(
+        parent_id, datetime.now(UTC) - timedelta(seconds=10), status=status
+    )
     client = AsyncMock()
     client.get.return_value = _resp(mid_claim)
 

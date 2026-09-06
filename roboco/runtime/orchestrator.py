@@ -227,6 +227,9 @@ _CREATOR_ROUTE_GRACE_SECONDS = 600
 # team-scoped: _dispatch_pm_work, _dispatch_dev_work, _dispatch_qa_work,
 # _dispatch_pr_review_work, _dispatch_pr_gate_work, _dispatch_doc_work.
 _PM_DISPATCH_FETCH_LIMIT = 500
+# Validation reason suffix for a child whose parent is still cutting its
+# branch inside the provisioning grace: a healthy, recurring wait, not a fault.
+_PARENT_BRANCH_WAIT = "waiting for parent branch provisioning"
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
