@@ -1619,8 +1619,9 @@ class AgentOrchestrator(
 
         # Self-heal: roll back orphan claims left over from a prior crash.
         # Tasks that show CLAIMED/IN_PROGRESS but have NO
-        # branch_name set indicate _finalize_claim flushed the status before
-        # branch creation failed (before claim-rollback was atomic). Without
+        # branch_name set indicate _apply_claim_fields committed the claim
+        # (status + claimant fields) before _provision_claim's branch
+        # creation committed (or before claim-rollback was atomic). Without
         # this, the next claim attempt fails non-idempotent on `git checkout -b`.
         await self._reconcile_orphan_claims_on_startup()
 

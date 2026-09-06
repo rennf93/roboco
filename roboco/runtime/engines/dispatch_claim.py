@@ -97,23 +97,61 @@ class DispatchClaimEngine(_Base):
             logger.debug("notification task-fields fetch failed", error=str(exc))
         return None
 
+    async def _retry_parent_branch_fetch(
+        self, client: httpx.AsyncClient, parent_id: str, parent: dict[str, Any]
+    ) -> tuple[bool, dict[str, Any]]:
+        """Re-fetch the parent up to 3 times (250ms apart) for its branch.
+
+        Returns (True, parent) the moment branch_name lands, else
+        (False, last-seen parent) once retries are exhausted.
+        """
+        for _ in range(3):
+            await asyncio.sleep(0.25)
+            parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
+            if not parent_resp.is_success:
+                continue
+            parent = parent_resp.json()
+            if parent.get("branch_name"):
+                return True, parent
+        return False, parent
+
+    def _parent_within_provisioning_grace(self, parent: dict[str, Any]) -> bool:
+        """True if a mid-claim, still-branchless parent's `claimed_at` is
+        younger than `parent_branch_provisioning_grace_seconds`, measured in
+        fleet-active time so a paused fleet never eats into the budget."""
+        claimed_at = self._parse_iso_dt(parent.get("claimed_at"))
+        if claimed_at is None:
+            return False
+        grace = timedelta(seconds=settings.parent_branch_provisioning_grace_seconds)
+        return self._active_age(claimed_at) < grace
+
     async def _check_parent_branch_ready(
         self, client: httpx.AsyncClient, task_id: str, parent_id: str
     ) -> str | None:
         """Verify the parent task has a branch; auto-block + return msg if not.
 
         Race window: the PM's `i_will_plan` claims the parent (transitions
-        status -> in_progress, sets assigned_to) and then `_finalize_claim`
-        creates the branch via `_ensure_branch_for_task`. Both actions land
-        in the same DB transaction but a child dev's spawn dispatch can fire
-        microseconds before that transaction commits and see branch_name=None.
-        Without retry we'd auto-block the child unnecessarily.
+        status -> claimed/in_progress, sets assigned_to, commits via
+        `_apply_claim_fields`) and then `_provision_claim` creates the branch
+        and commits again right after. A child dev's spawn dispatch can fire
+        microseconds after the first commit (the fields land, sub-second gap)
+        or minutes into a slow branch creation (git network I/O under load),
+        and sees branch_name=None either way. Without tolerating both, the
+        common healthy path auto-blocks the child.
 
-        When the parent is clearly mid-claim (in_progress + assigned_to set)
-        re-fetch up to 3 times with a 250ms delay before giving up. Total
-        worst-case wait is 750ms — well inside the dispatcher's tick budget
-        and only paid when the race actually triggers. Real misses (parent
-        still pending or unassigned) auto-block immediately as before.
+        Two tolerances, checked in order, only while the parent is mid-claim
+        (status claimed/in_progress with assigned_to set):
+        - Fast retry (`_retry_parent_branch_fetch`): re-fetch up to 3 times
+          with a 250ms delay. Total worst-case wait is 750ms, absorbing the
+          sub-second gap between the two commits above.
+        - Provisioning grace (`_parent_within_provisioning_grace`): once the
+          fast retry is exhausted, a parent still inside
+          `parent_branch_provisioning_grace_seconds` of its `claimed_at` is
+          skipped this dispatch tick (no auto-block) and the next tick
+          retries; branch creation itself can outlast the fast retry under
+          load. Past the grace, or when the parent isn't mid-claim at all
+          (pending/unassigned, or terminal - no branch is ever coming),
+          auto-block as before.
         """
         parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
         if not parent_resp.is_success:
@@ -125,19 +163,26 @@ class DispatchClaimEngine(_Base):
         # A coordination/fan-out parent (product, no repo of its own) never gets
         # a branch: the child resolves its own real project and cuts from that
         # project's default branch, not from the parent. Blocking the child on a
-        # branch the parent will never have wedges the cell↔Main-PM loop.
+        # branch the parent will never have wedges the cell<->Main-PM loop.
         if _is_coordination_task(parent):
             return None
 
-        if parent.get("status") == "in_progress" and parent.get("assigned_to"):
-            for _ in range(3):
-                await asyncio.sleep(0.25)
-                parent_resp = await client.get(f"{self._api_url}/tasks/{parent_id}")
-                if not parent_resp.is_success:
-                    continue
-                parent = parent_resp.json()
-                if parent.get("branch_name"):
-                    return None
+        mid_claim = parent.get("status") in ("claimed", "in_progress") and parent.get(
+            "assigned_to"
+        )
+        if mid_claim:
+            ready, parent = await self._retry_parent_branch_fetch(
+                client, parent_id, parent
+            )
+            if ready:
+                return None
+            if self._parent_within_provisioning_grace(parent):
+                logger.debug(
+                    "Parent branch still provisioning, skipping child this tick",
+                    task_id=task_id,
+                    parent_id=parent_id,
+                )
+                return f"Task {task_id} waiting for parent branch provisioning"
 
         await self._auto_block_task(
             client,

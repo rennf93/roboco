@@ -483,6 +483,19 @@ class Settings(BaseSettings):
             "while the first is still uncertain."
         ),
     )
+    parent_branch_provisioning_grace_seconds: int = Field(
+        default=900,
+        ge=0,
+        description=(
+            "How long a claimed/in_progress parent task may sit with "
+            "branch_name NULL, measured in fleet-active time, before the "
+            "dispatcher auto-blocks a waiting child. Claim fields commit "
+            "(TaskService._apply_claim_fields) before branch creation "
+            "(_provision_claim), so a parent's branch can still be minutes "
+            "away under load; matches flow_verb_slow_timeout_seconds, the "
+            "same budget a slow claim/branch verb already gets server-side."
+        ),
+    )
 
     # ==========================================================================
     # Architectural Conventions (per-project placement + house-style standard)

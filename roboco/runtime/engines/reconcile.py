@@ -245,10 +245,12 @@ class ReconcileEngine(_Base):
         """Roll back tasks left in CLAIMED/IN_PROGRESS without a branch.
 
         A task in CLAIMED/IN_PROGRESS with ``branch_name IS NULL`` is an
-        orphan: ``_finalize_claim`` flushed the status before branch creation
-        failed (or before claim rollback became atomic). The next claim then
-        fails non-idempotent on ``git checkout -b`` because the on-disk
-        branch may exist while the DB state is stale.
+        orphan: ``_apply_claim_fields`` committed the claim (status +
+        claimant fields) before ``_provision_claim``'s branch creation
+        committed, and that branch creation then failed (or claim rollback
+        was not yet atomic). The next claim then fails non-idempotent on
+        ``git checkout -b`` because the on-disk branch may exist while the
+        DB state is stale.
 
         Opens its own session via the factory; the logic itself lives in
         ``_reconcile_with_service`` so tests can drive it against an
