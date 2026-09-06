@@ -358,6 +358,7 @@ async def _seed_blocked_task(
     *,
     title: str = "stranded-seed-task",
     age_minutes: int = 240,
+    dev_notes: str | None = None,
 ) -> UUID:
     """Seed a BLOCKED task with ``updated_at`` in the past so
     ``list_long_running_blocked`` finds it past the threshold."""
@@ -374,6 +375,7 @@ async def _seed_blocked_task(
         project_id=project_id,
         blocker_resolver_type=BlockerResolverType.HUMAN,
         revision_count=0,
+        dev_notes=dev_notes,
         updated_at=datetime.now(UTC) - timedelta(minutes=age_minutes),
     )
     session.add(task)
@@ -427,9 +429,20 @@ async def test_stranded_time_blocked_uses_audit_event_not_updated_at(
     """time_blocked is derived from the latest task.blocked audit
     transition, not the task's updated_at — updated_at moves on any later
     touch while the task sits blocked and would otherwise wildly
-    underestimate how long it's actually been stuck."""
+    underestimate how long it's actually been stuck. Also asserts
+    block_reason (parsed from the real dev_notes blocker note, not just
+    blocker_resolver_type) and escalation_history (real task.escalated
+    audit rows, not just the blocked-event count) — both were write-only
+    before this test covered them."""
     project_id = await _seed_coroner_fixture(db_session)
-    task_id = await _seed_blocked_task(db_session, project_id, age_minutes=5)
+    blocked_note = (
+        "[BLOCKED - QUESTION]\n"
+        "Reason: need the staging DB credentials\n"
+        "What's needed: the ops team to rotate and share a token"
+    )
+    task_id = await _seed_blocked_task(
+        db_session, project_id, age_minutes=5, dev_notes=blocked_note
+    )
     # The real blockage started hours before the last updated_at touch.
     db_session.add(
         AuditLogTable(
@@ -440,6 +453,17 @@ async def test_stranded_time_blocked_uses_audit_event_not_updated_at(
             severity="info",
             details={},
             timestamp=datetime.now(UTC) - timedelta(hours=6),
+        )
+    )
+    db_session.add(
+        AuditLogTable(
+            id=uuid4(),
+            event_type="task.escalated",
+            target_type="task",
+            target_id=task_id,
+            severity="info",
+            details={},
+            timestamp=datetime.now(UTC) - timedelta(hours=5),
         )
     )
     monkeypatch.setattr(se_module.settings, "strategy_engine_enabled", True)
@@ -464,6 +488,14 @@ async def test_stranded_time_blocked_uses_audit_event_not_updated_at(
     minutes = int(incident_ref["time_blocked"].split()[0])
     # ~360 minutes (the audit event, 6h ago), never ~5 (updated_at's age).
     assert minutes > _MIN_BLOCKED_MINUTES_FROM_AUDIT
+    # block_reason is the real dev_notes text, not blocker_resolver_type
+    # ("human").
+    assert "staging DB credentials" in incident_ref["block_reason"]
+    assert "rotate and share a token" in incident_ref["block_reason"]
+    assert "human" not in incident_ref["block_reason"].lower()
+    # escalation_history reports the seeded task.escalated row, not just
+    # the blocked-event count.
+    assert "escalated 1 time" in incident_ref["escalation_history"]
 
 
 @pytest.mark.asyncio
