@@ -48,7 +48,7 @@ its message — enough to debug without re-deriving from logs alone.
 
 | Site | Verb | File | Landed as |
 |---|---|---|---|
-| 1a | `fail_review` → original developer | `qa.py:1124-1131` | task `0664b042` |
+| 1a | `fail_review` → original developer | `qa.py:1063` (inner catch), `qa.py:1199` (outer savepoint) | task `0664b042`, savepoint follow-up task `8476df26` (F-71881265) |
 | 1b | `request_changes` → revision owner | `_impl.py:8751-8758` | sibling leaf under 41b4459e |
 | 1c | submit-qa QA handoff (`_notify_qa`) | `_impl.py:3941-3958` | sibling leaf under 41b4459e |
 | 1d | `i_documented` PM handoff (`_handoff_to_cell_pm`) | `doc.py:658-676` | task `ee084ee2` |
@@ -64,6 +64,17 @@ savepoint rollback's attribute-expiry, per the durability doctrine in
 guard exists for a different failure class (a mid-flush DB error inside the
 `begin_nested()` block) and is not replaced by the new inner guard; the two
 are complementary layers, not duplicates.
+
+**Site 1a now carries the identical two-layer shape as site 1d.** A
+round-1 pr_gate finding (F-71881265) on this branch caught that site 1a's
+original fix (see `docs/backend/qa/fail-review-notify-failure-safe.md`)
+only guarded `a2a.send()` raising, not a mid-flush failure inside it that
+leaves the shared session rollback-only while still being caught.
+`fail_review` now wraps `_fail_review_developer_notify` in the same outer
+`session.begin_nested()` + `except` + `session.refresh(t)`-before-any-read
+backstop site 1d already had, with both the inner and outer catches
+rendering the identical warning via a shared `_fail_review_notify_failure_warning`
+helper. Full writeup: `docs/backend/qa/fail-review-savepoint-flush-guard.md`.
 
 ## Test pattern
 
