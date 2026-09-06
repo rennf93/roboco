@@ -73,6 +73,7 @@ BRANCH_PENDING = "branch_pending"
 SUPERSEDE_COMMENT_POSTED = "supersede_comment_posted"
 BRANCH_CUT_FAILED = "branch_cut_failed"
 BRANCH_CUT_NEXT_RETRY_AT = "branch_cut_next_retry_at"
+BASE_BRANCH_FALLBACK = "base_branch_fallback"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -994,3 +995,47 @@ def mark_oscillation_tripped(task: HasMarkers) -> None:
             "tripped": True,
         },
     )
+
+
+# --- PR-base / parent-topology drift ----------------------------------------
+# Recorded by the ``parent_task_id`` re-parent write-through
+# (``TaskService.recheck_topology_after_reparent``) when
+# ``merge_chain.find_topology_issue`` flags a task whose branch/PR is now
+# stranded on the wrong base after a re-parent (the 5612b225/PR #856
+# incident class — the terminal verbs used to be the only place this ever
+# surfaced, days into review). Payload: {shape, expected_base, actual_base,
+# message, repair}. A re-parent that resolves a prior mismatch clears it.
+
+TOPOLOGY_ISSUE = "topology_issue"
+
+
+def get_topology_issue(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, TOPOLOGY_ISSUE)
+    return val if isinstance(val, dict) else None
+
+
+def set_topology_issue(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, TOPOLOGY_ISSUE, payload)
+
+
+def clear_topology_issue(task: HasMarkers) -> None:
+    clear_marker(task, TOPOLOGY_ISSUE)
+
+
+# Recorded by ``TaskService._create_branch_in_project`` when the branch it
+# just cut was based on the project default rather than the requested
+# parent branch — ``GitService.create_branch``'s own deliberate,
+# already-logged fallback (parent branch recorded in the DB but not yet
+# pushed to the remote — e.g. the parent was claimed but paused before any
+# commit). Read by ``merge_chain.find_topology_issue`` to exclude this
+# known-benign case from the shape-(a) refusal, which otherwise names a
+# repair ("retarget/rebase onto the parent's branch") the developer who
+# triggered the fallback has no verb to perform.
+
+
+def is_base_branch_fallback(task: HasMarkers) -> bool:
+    return bool(get_marker(task, BASE_BRANCH_FALLBACK, False))
+
+
+def mark_base_branch_fallback(task: HasMarkers) -> None:
+    set_marker(task, BASE_BRANCH_FALLBACK, True)

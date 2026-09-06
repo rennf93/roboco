@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from roboco.services.gateway.merge_chain import (
     branch_depth,
+    find_topology_issue,
     parent_branch_for,
     resolve_parent_branch,
 )
@@ -134,3 +135,139 @@ def test_branch_depth_invalid_pattern_raises() -> None:
     """Line 31: invalid branch pattern raises."""
     with pytest.raises(ValueError, match="invalid branch"):
         branch_depth("garbage-branch-name")
+
+
+class TestFindTopologyIssue:
+    """Postmortem follow-up: the topology-comparison helper that moves
+    PR-base/parent-topology validation from the terminal verbs to open_pr +
+    the re-parent path. Fixtures are modeled on incident 5612b225/PR #856
+    (a task restructured out of a parentless root left its PR based on
+    'slave' instead of an intermediate root branch) and the same-class
+    incidents on record (6866e888, 6b9e19aa, 7de89c6e)."""
+
+    @pytest.mark.asyncio
+    async def test_parented_task_stranded_on_head_branch_is_flagged(self) -> None:
+        """Shape (a): the parent owns a real branch, but the task's
+        recorded base is still the integration/head branch — the
+        5612b225/PR #856 shape (re-parented after the PR/branch base was
+        already cut against 'slave')."""
+        parent_id = uuid4()
+        task = MagicMock(
+            id=uuid4(),
+            parent_task_id=parent_id,
+            branch_name="feature/backend/root0001--child0001",
+        )
+        task_service = AsyncMock()
+        task_service.get = AsyncMock(
+            return_value=MagicMock(branch_name="feature/main_pm/root0001")
+        )
+        task_service.recorded_pr_base = AsyncMock(return_value="slave")
+        task_service.project_default_branch_for_task = AsyncMock(return_value="slave")
+
+        issue = await find_topology_issue(task, task_service)
+
+        assert issue is not None
+        assert issue.shape == "parented_base_is_head"
+        assert issue.expected_base == "feature/main_pm/root0001"
+        assert issue.actual_base == "slave"
+        assert "feature/main_pm/root0001" in issue.repair
+
+    @pytest.mark.asyncio
+    async def test_parentless_root_nested_in_coordination_tree_is_flagged(
+        self,
+    ) -> None:
+        """Shape (b): parent_task_id is None, but the branch name encodes a
+        nested hierarchy (depth > 1) — the task looks detached from a
+        coordination ancestor during a restructure."""
+        task = MagicMock(
+            id=uuid4(),
+            parent_task_id=None,
+            branch_name="feature/backend/root0001--child0001",
+        )
+        task_service = AsyncMock()
+        task_service.project_default_branch_for_task = AsyncMock(return_value="slave")
+        task_service.recorded_pr_base = AsyncMock(return_value="slave")
+
+        issue = await find_topology_issue(task, task_service)
+
+        assert issue is not None
+        assert issue.shape == "parentless_in_coordination_tree"
+        assert issue.expected_base == "slave"
+        task_service.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_standalone_parentless_root_is_not_flagged(self) -> None:
+        """Allow-shape: a genuinely standalone root (depth-1 branch, no
+        parent) must NOT fire — this is the legitimate, existing pattern."""
+        task = MagicMock(
+            id=uuid4(),
+            parent_task_id=None,
+            branch_name="feature/backend/root0001",
+        )
+        task_service = AsyncMock()
+        task_service.project_default_branch_for_task = AsyncMock(return_value="slave")
+
+        assert await find_topology_issue(task, task_service) is None
+
+    @pytest.mark.asyncio
+    async def test_parented_task_matching_parent_branch_is_not_flagged(self) -> None:
+        """Allow-shape: the recorded base already matches the parent's own
+        branch — no drift, nothing to refuse."""
+        parent_id = uuid4()
+        task = MagicMock(
+            id=uuid4(),
+            parent_task_id=parent_id,
+            branch_name="feature/backend/root0001--child0001",
+        )
+        task_service = AsyncMock()
+        task_service.get = AsyncMock(
+            return_value=MagicMock(branch_name="feature/main_pm/root0001")
+        )
+        task_service.recorded_pr_base = AsyncMock(
+            return_value="feature/main_pm/root0001"
+        )
+
+        assert await find_topology_issue(task, task_service) is None
+
+    @pytest.mark.asyncio
+    async def test_deliberate_base_branch_fallback_is_not_flagged(self) -> None:
+        """F-2789f259: shape (a) must not fire when THIS task's own branch
+        was cut via git.py's deliberate base_branch_fallback (the parent's
+        branch was DB-recorded but not yet pushed at branch-creation time)
+        — a real, already-logged fallback the developer has no verb to
+        repair, not a restructure. Would otherwise look identical to a real
+        shape-(a) drift since the recorded base is the head branch."""
+        parent_id = uuid4()
+        task = MagicMock(
+            id=uuid4(),
+            parent_task_id=parent_id,
+            branch_name="feature/backend/root0001--child0001",
+            orchestration_markers={"base_branch_fallback": True},
+        )
+        task_service = AsyncMock()
+        task_service.get = AsyncMock(
+            return_value=MagicMock(branch_name="feature/main_pm/root0001")
+        )
+        task_service.recorded_pr_base = AsyncMock(return_value="slave")
+        task_service.project_default_branch_for_task = AsyncMock(return_value="slave")
+
+        assert await find_topology_issue(task, task_service) is None
+        task_service.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_branchless_coordination_parent_is_not_flagged(self) -> None:
+        """Allow-shape: a legitimate branchless coordination parent (no
+        branch of its own) is the existing, intentional pattern — the
+        terminal-verb CEO_ONLY head-branch routing handles it, not this
+        check."""
+        parent_id = uuid4()
+        task = MagicMock(
+            id=uuid4(),
+            parent_task_id=parent_id,
+            branch_name="feature/backend/root0001--child0001",
+        )
+        task_service = AsyncMock()
+        task_service.get = AsyncMock(return_value=MagicMock(branch_name=None))
+
+        assert await find_topology_issue(task, task_service) is None
+        task_service.recorded_pr_base.assert_not_called()

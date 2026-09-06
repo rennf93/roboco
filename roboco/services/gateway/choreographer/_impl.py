@@ -54,7 +54,10 @@ from roboco.services.gateway.evidence_builder import (
     build_task_handoff,
     shape_memory_query,
 )
-from roboco.services.gateway.merge_chain import resolve_parent_branch
+from roboco.services.gateway.merge_chain import (
+    find_topology_issue,
+    resolve_parent_branch,
+)
 from roboco.services.gateway.remediation import (
     hint_for_evidence_not_inspected,
     hint_for_missing_ac_coverage,
@@ -2094,7 +2097,7 @@ class Choreographer:
             agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
-        if rejection := self._open_pr_preflight_rejection(
+        if rejection := await self._open_pr_preflight_rejection(
             agent_id=agent_id,
             task_id=task_id,
             t=t,
@@ -2120,7 +2123,7 @@ class Choreographer:
             agent_id, task_id, t, briefing, role_str
         )
 
-    def _open_pr_preflight_rejection(
+    async def _open_pr_preflight_rejection(
         self,
         *,
         agent_id: UUID,
@@ -2130,7 +2133,7 @@ class Choreographer:
         briefing: dict[str, Any],
         spec_ctx: Any,
     ) -> Envelope | None:
-        """Role + reassignment + spec-gate rejection for open_pr (or None).
+        """Role + reassignment + spec-gate + topology rejection for open_pr.
 
         A stale/superseded agent (task reassigned away) is steered to
         give_me_work with a clear not_authorized BEFORE the spec gate would
@@ -2166,7 +2169,43 @@ class Choreographer:
             return Envelope.from_decision(
                 decision, briefing=briefing
             ).with_introspection(task=t, role=role_str)
-        return None
+        return await self._open_pr_topology_rejection(t, briefing, role_str)
+
+    async def _open_pr_topology_rejection(
+        self, t: Any, briefing: dict[str, Any], role_str: str
+    ) -> Envelope | None:
+        """Refuse BEFORE create_pr runs when the task's branch/parent
+        topology is already incoherent (or None).
+
+        Catches the 5612b225/PR #856 incident class at the earliest possible
+        point instead of only at complete()/submit_root, after all
+        implementation and review has already been spent: a parented task
+        whose branch/PR is anchored to the integration branch instead of its
+        parent's own branch, or a parentless root whose branch encodes a
+        nested hierarchy (it was detached from a coordination ancestor
+        during a restructure). The existing terminal-verb CEO_ONLY head-
+        branch routing (``_maybe_route_head_branch_to_ceo``) is untouched —
+        this is an additional, earlier catch, not a replacement.
+
+        Fail-open on a ``find_topology_issue`` exception (its DB calls can
+        raise) — mirrors ``_behind_base_gate``'s posture — so a transient
+        error cannot wedge ``open_pr`` on a check that only ever refuses.
+        """
+        try:
+            issue = await find_topology_issue(t, self.task)
+        except Exception as exc:
+            logger.warning("topology_check_skip", task_id=str(t.id), error=str(exc))
+            return None
+        if issue is None:
+            return None
+        return Envelope.invalid_state(
+            message=issue.message,
+            remediate=(
+                f"do not open this PR yet — expected base branch is "
+                f"'{issue.expected_base}'. {issue.repair}"
+            ),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
 
     @staticmethod
     def _open_pr_failure_env(
