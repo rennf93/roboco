@@ -261,7 +261,7 @@ async def test_i_will_work_on_pending_no_plan_returns_tracing_gap() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_work_on_needs_revision_re_starts() -> None:
-    """needs_revision dev path: spec composes (claim, set_plan, start), so
+    """needs_revision dev path: spec composes (claim, set_plan) then starts, so
     claim now runs even when the task is already assigned to the dev (the
     spec source-status for claim includes NEEDS_REVISION). Migration
     behavior change vs. the pre-spec verb body, which skipped claim if

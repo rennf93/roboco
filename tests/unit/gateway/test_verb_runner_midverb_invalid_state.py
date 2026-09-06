@@ -39,7 +39,7 @@ def _session_with_savepoint() -> MagicMock:
 async def test_mid_verb_none_raises_invalid_state() -> None:
     """i_will_plan composes (claim, set_plan). If a concurrent transition
     makes ``claim`` return None mid-sequence, the runner raises INVALID_STATE
-    before dispatching ``set_plan`` — not a cryptic None.id crash."""
+    before dispatching ``set_plan``, not a cryptic None.id crash."""
     task = MagicMock(id=uuid4())
     task_service = MagicMock()
     task_service.session = _session_with_savepoint()
@@ -53,7 +53,7 @@ async def test_mid_verb_none_raises_invalid_state() -> None:
     with pytest.raises(ValueError, match="INVALID_STATE"):
         await runner.run_intent("i_will_plan", task, agent, ctx)
 
-    # set_plan must NOT run after the None — the runner fails loud before it.
+    # set_plan must NOT run after the None: the runner fails loud before it.
     task_service.set_plan.assert_not_awaited()
 
 

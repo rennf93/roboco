@@ -164,7 +164,8 @@ async def test_i_will_work_on_pending_calls_claim_with_task_id_first() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_work_on_needs_revision_calls_start_with_task_id_first() -> None:
-    """Dev needs_revision: spec composes (claim, set_plan, start), so all three
+    """Dev needs_revision: spec composes (claim, set_plan) and the choreographer
+    starts after provisioning, so all three
     run; positional args on every transition must be (task_id, agent_id)."""
     agent_id = uuid4()
     task_id = uuid4()

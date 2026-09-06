@@ -316,7 +316,7 @@ class ChoreographerDeps:
 class _ClaimPlanStartContext:
     """Bundle of fields shared by ``i_will_work_on`` / ``i_will_plan`` helpers.
 
-    Both verbs compose the same (claim, set_plan, start) sequence and
+    Both verbs run the same claim, set_plan, provision, start sequence and
     share gating + recovery branches; they only differ in role gate
     (DEV vs PM) and verb name on rejections / next_hint. Frozen so the
     helper sites can't mutate caller state and to keep PLR0913 (too
@@ -1782,7 +1782,7 @@ class Choreographer:
             # mismatch the spec gate could not see). Surface as invalid_state
             # so the agent gets a remediation rather than a 500.
             return await self._emit_rejection(
-                self._step_failed_envelope("claim", ctx, briefing, role_str),
+                self._step_failed_envelope("claim/set_plan", ctx, briefing, role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
                 verb=verb_name,
@@ -3439,7 +3439,7 @@ class Choreographer:
     ) -> Envelope:
         """Apply the claim-time journal tracing gate AFTER a successful claim.
 
-        Pre-gateway parity (spec §11 P1, P3): the (claim, set_plan, start)
+        Pre-gateway parity (spec §11 P1, P3): the claim, set_plan, start
         sequence is allowed to commit so the agent owns the task, then we
         verify the matching journal entry exists. If absent, the agent
         gets a tracing_gap with a remediation hint — they journal and
@@ -3465,7 +3465,7 @@ class Choreographer:
 
         Pre-gateway parity (spec §11 P1, P3): developers wrote a
         journal:note on every claim; PMs wrote a journal:decision on
-        plan. The check runs AFTER the composed (claim, set_plan, start)
+        plan. The check runs AFTER the claim, set_plan, start
         sequence has succeeded — the claim itself stays. If the journal
         entry is missing, the agent receives a tracing_gap envelope and
         must journal then retry the verb (similar to how i_am_done's
