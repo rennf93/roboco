@@ -1703,15 +1703,48 @@ class Choreographer:
             )
         return None
 
+    @staticmethod
+    def _runner_failed_envelope(
+        exc: Exception, t: Any, briefing: Any, role_str: str
+    ) -> Envelope:
+        """Shared 'verb runner failed' rejection for a claim/plan/start
+        sequence: the same shape whether the failure came from inside the
+        composed savepoint (``run_intent``) or from ``provision_claim``'s
+        post-savepoint branch creation."""
+        return Envelope.invalid_state(
+            message=f"verb runner failed: {exc}",
+            remediate="check workspace + retry; if persistent, escalate",
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
     async def _claim_plan_start_run(
         self, ctx: _ClaimPlanStartContext, agent: Any, spec_ctx: spec_module.Context
     ) -> Envelope:
-        """Execute composed (claim, set_plan, start) via the verb runner.
+        """Execute composed (claim, set_plan, start) via the verb runner,
+        then provision the claim (branch, upstream-base inherit, work
+        session) outside any savepoint.
 
         Caller has already validated all gates. Translates runner
         exceptions and ``None`` returns into invalid_state envelopes
         so the agent gets a remediation instead of a 500. Shared
         between ``i_will_work_on`` and ``i_will_plan``.
+
+        The verb runner's ``_do_claim`` calls ``claim(provision=False)``
+        inside ``_run_composed_actions``'s savepoint: claim/set_plan/start
+        land or roll back together as one unit, with no branch creation
+        inside that savepoint. Once ``run_intent`` returns successfully,
+        ``TaskService.provision_claim`` commits that unit durably
+        (releasing the claim row lock) BEFORE its own network git work,
+        with no savepoint left to undo it on failure; that commit lives
+        inside ``provision_claim`` itself, not here, so this method never
+        touches ``self.task.session`` directly (every gateway unit test
+        mocks ``self.task`` as a whole service and would otherwise need
+        its own raw-session plumbing for a call this method has no other
+        reason to make). A provisioning failure durably reverts the
+        claim/plan/start fields (``TaskService``'s own revert-and-commit,
+        the same revert a branch-creation failure always triggered) and
+        surfaces the same "verb runner failed" rejection a savepoint
+        failure above already does.
         """
         t, briefing, role_str = ctx.task, ctx.briefing, ctx.role_str
         verb_name = ctx.verb_name
@@ -1720,11 +1753,7 @@ class Choreographer:
             t = await runner.run_intent(verb_name, t, agent, spec_ctx)
         except Exception as exc:
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"verb runner failed: {exc}",
-                    remediate="check workspace + retry; if persistent, escalate",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+                self._runner_failed_envelope(exc, t, briefing, role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
                 verb=verb_name,
@@ -1743,6 +1772,15 @@ class Choreographer:
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=None, role=role_str),
+                agent_id=ctx.agent_id,
+                task_id=ctx.task_id,
+                verb=verb_name,
+            )
+        try:
+            await self.task.provision_claim(ctx.task_id, ctx.agent_id)
+        except Exception as exc:
+            return await self._emit_rejection(
+                self._runner_failed_envelope(exc, t, briefing, role_str),
                 agent_id=ctx.agent_id,
                 task_id=ctx.task_id,
                 verb=verb_name,

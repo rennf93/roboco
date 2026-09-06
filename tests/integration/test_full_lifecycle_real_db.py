@@ -41,6 +41,8 @@ from roboco.models.base import (
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 
+from tests.integration.conftest import cleanup_claim_durable_rows
+
 # #172: a developer fresh claim must carry a substantive step checklist.
 _STEPS = [
     {
@@ -226,6 +228,7 @@ def _mock_work_session() -> Any:
 @pytest_asyncio.fixture
 async def lifecycle_setup(
     db_session: AsyncSession,
+    _test_database_url: str,
 ) -> AsyncIterator[dict[str, Any]]:
     """Seed a project + dev agent + a single pending task ready to claim."""
     system_agent = AgentTable(
@@ -335,14 +338,33 @@ async def lifecycle_setup(
     db_session.add(task)
     await db_session.flush()
 
-    yield {
-        "project": project,
-        "dev_agent": dev_agent,
-        "qa_agent": qa_agent,
-        "doc_agent": doc_agent,
-        "cell_pm_agent": cell_pm_agent,
-        "task": task,
+    ids = {
+        "task_id": task.id,
+        "project_id": project.id,
+        "agent_ids": [
+            system_agent.id,
+            dev_agent.id,
+            qa_agent.id,
+            doc_agent.id,
+            cell_pm_agent.id,
+        ],
     }
+    try:
+        yield {
+            "project": project,
+            "dev_agent": dev_agent,
+            "qa_agent": qa_agent,
+            "doc_agent": doc_agent,
+            "cell_pm_agent": cell_pm_agent,
+            "task": task,
+        }
+    finally:
+        # Roll back db_session's OWN transaction first (releases any lock a
+        # post-claim verb call still holds on these rows), THEN delete
+        # whatever the claim durability boundary committed for real on a
+        # fresh connection. See cleanup_claim_durable_rows's own docstring.
+        await db_session.rollback()
+        await cleanup_claim_durable_rows(_test_database_url, ids)
 
 
 @pytest.mark.asyncio

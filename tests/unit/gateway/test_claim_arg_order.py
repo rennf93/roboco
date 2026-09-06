@@ -157,7 +157,7 @@ async def test_i_will_work_on_pending_calls_claim_with_task_id_first() -> None:
     )
 
     # Service signature is (task_id, agent_id, ...) — pin that order.
-    task_svc.claim.assert_awaited_once_with(task_id, agent_id)
+    task_svc.claim.assert_awaited_once_with(task_id, agent_id, provision=False)
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
     assert env.error is None
 
@@ -216,7 +216,7 @@ async def test_i_will_work_on_needs_revision_calls_start_with_task_id_first() ->
     )
 
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
-    task_svc.claim.assert_awaited_once_with(task_id, agent_id)
+    task_svc.claim.assert_awaited_once_with(task_id, agent_id, provision=False)
     assert env.error is None
 
 
@@ -229,6 +229,11 @@ async def test_i_will_work_on_claimed_resumption_calls_start_with_task_id_first(
     a bespoke `claimed` re-entry (``_resume_from_claimed``) for the
     recovery scenario where an agent already owns the task and the
     orchestrator died mid-claim. start args still use (task_id, agent_id).
+
+    Also pins that this recovery path heals a work session a prior claim's
+    provisioning failed to create: ``_resume_from_claimed`` calls
+    ``ensure_work_session`` (idempotent, see test_work_session_auto_create.py)
+    after ``start()`` succeeds, same guarantee as a fresh claim.
     """
     agent_id = uuid4()
     task_id = uuid4()
@@ -264,6 +269,7 @@ async def test_i_will_work_on_claimed_resumption_calls_start_with_task_id_first(
     env = await c.i_will_work_on(agent_id=agent_id, task_id=task_id, steps=_STEPS)
 
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
+    task_svc.ensure_work_session.assert_awaited_once_with(task_id, agent_id)
     assert env.error is None
 
 
@@ -341,6 +347,6 @@ async def test_i_will_plan_calls_claim_and_start_with_task_id_first() -> None:
         },
     )
 
-    task_svc.claim.assert_awaited_once_with(task_id, pm_id)
+    task_svc.claim.assert_awaited_once_with(task_id, pm_id, provision=False)
     task_svc.start.assert_awaited_once_with(task_id, pm_id)
     assert env.error is None

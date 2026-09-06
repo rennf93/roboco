@@ -1486,8 +1486,8 @@ async def test_unblock_restores_to_in_progress(
     # Owner restored into both fields so the dev dispatcher respawns it.
     assert unblocked.assigned_to == task_setup["agent_id"]
     assert unblocked.claimed_by == task_setup["agent_id"]
-    # A real resume with no fresh claim() call — unblock must flip the
-    # owner's fleet marker itself (mirrors _finalize_claim/_qa_or_doc_claim).
+    # A real resume with no fresh claim() call, unblock must flip the
+    # owner's fleet marker itself (mirrors _apply_claim_fields/_qa_or_doc_claim).
     owner_row = await db_session.get(AgentTable, task_setup["agent_id"])
     assert owner_row is not None
     assert owner_row.status == AgentStatus.ACTIVE
@@ -1950,10 +1950,11 @@ async def test_claim_pending_with_unmet_dependency_returns_none(
 async def test_claim_sets_agent_active_and_current_task(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """_finalize_claim is the one production chokepoint every claim verb
-    routes through — before this fix, nothing ever wrote agent.status=ACTIVE
-    or current_task_id, so the fleet/Today-brief breakdown could never show
-    a real "active" agent or populate "working[]"."""
+    """_apply_claim_fields is the one production chokepoint every claim
+    verb routes through: before this fix, nothing ever wrote
+    agent.status=ACTIVE or current_task_id, so the fleet/Today-brief
+    breakdown could never show a real "active" agent or populate
+    "working[]"."""
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.branch_name = "feature/backend/abcd1234"

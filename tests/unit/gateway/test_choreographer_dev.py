@@ -216,7 +216,7 @@ async def test_i_will_work_on_pending_with_plan() -> None:
     )
     assert env.error is None
     assert env.status == "in_progress"
-    task_svc.claim.assert_awaited_once_with(task_id, agent_id)
+    task_svc.claim.assert_awaited_once_with(task_id, agent_id, provision=False)
     task_svc.set_plan.assert_awaited_once()
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
@@ -429,7 +429,7 @@ async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> Non
     assert "note(scope='note'" in body["remediate"]
     # The composed action ran — claim+set_plan+start were called even though
     # the post-claim gate failed.
-    task_svc.claim.assert_awaited_once_with(task_id, agent_id)
+    task_svc.claim.assert_awaited_once_with(task_id, agent_id, provision=False)
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
 

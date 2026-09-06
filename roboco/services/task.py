@@ -438,13 +438,44 @@ def _should_inherit_base(
 ) -> bool:
     """True iff this claim should merge the advanced upstream base in:
     a pre-existing branch on a project task, claimed by a WORK role, from a
-    pre-review status. Kept out of ``_finalize_claim`` for complexity budget."""
+    pre-review status. Kept out of ``_provision_claim`` for complexity budget."""
     return bool(
         original_branch_name
         and project_id
         and agent_role in _BASE_INHERIT_ROLES
         and original_status in _BASE_INHERIT_STATUSES
     )
+
+
+@dataclass(frozen=True)
+class _ClaimFieldSnapshot:
+    """Pre-claim field values, captured by ``TaskService._apply_claim_fields``.
+
+    ``TaskService._provision_claim``'s branch-failure revert reuses these
+    exact values on both call shapes: passed straight through when
+    ``claim(provision=True)`` calls both methods itself in one go, or
+    fetched back out of ``TaskService._pending_claim_snapshots`` when the
+    verb runner's ``claim(provision=False)`` and the later, separate
+    ``provision_claim()`` call are split across the composed savepoint.
+    """
+
+    status: Any
+    assigned_to: Any
+    claimed_by: Any
+    claimed_at: Any
+    heartbeat: Any
+    claimant_id: Any
+    branch_name: Any
+    agent_status: "AgentStatus | None"
+    agent_task: Any
+    # Composed claim/set_plan/start (i_will_work_on / i_will_plan) commits
+    # these on the verb runner's savepoint BEFORE _ensure_branch_for_task
+    # runs; without capturing them here, a branch-creation failure's
+    # revert put the task back to PENDING while leaving the failed
+    # attempt's plan and started_at in place (cycle-time corruption, a
+    # plan shown on a pending task).
+    plan: Any
+    started_at: Any
 
 
 def _ceo_reject_finding_texts(reason: str) -> tuple[str, str | None]:
@@ -1196,6 +1227,20 @@ class TaskService(BaseService):
     _worktree_cleanup_escalated: ClassVar[bool] = False
     _WORKTREE_CLEANUP_ESCALATE_AFTER: ClassVar[int] = 3
 
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        # Bridges claim(provision=False)'s _apply_claim_fields to a LATER,
+        # separate provision_claim() call (the verb runner's composed
+        # claim/set_plan/start commits durably, then provisions outside any
+        # savepoint, see provision_claim's docstring). Per-instance and
+        # per-request: the gateway builds one TaskService per request, so
+        # this never survives past the request that populated it. Popped on
+        # use; an entry lingers only if the composed sequence never reaches
+        # provision_claim at all (set_plan/start raises, or returns None on
+        # a concurrent status change), bounded by this instance's request
+        # lifetime, so it never accumulates across requests.
+        self._pending_claim_snapshots: dict[UUID, _ClaimFieldSnapshot] = {}
+
     # =========================================================================
     # STATUS TRANSITION HELPER
     # =========================================================================
@@ -1340,8 +1385,9 @@ class TaskService(BaseService):
           (``_verb_runner`` wraps composed actions in ``begin_nested``) now
           rolls its audit row back too — no phantom ``task.<status>`` row for a
           transition that did not stick. (The claim-branch-failure rollback in
-          ``_finalize_claim`` is one such site; the savepoint rollback handles
-          the general case.)
+          ``_provision_claim`` commits its own reversal explicitly instead,
+          since it runs outside any savepoint by design; the savepoint
+          rollback handles the general case.)
 
         The ``revision_count`` rework counter is incremented synchronously
         here (the single chokepoint every transition funnels through).
@@ -2791,7 +2837,7 @@ class TaskService(BaseService):
         task.assigned_to = cast("Any", reviewer_agent_id)
         task.claimed_by = cast("Any", reviewer_agent_id)
         task.claimed_at = now
-        # Single-claimant invariant (mirrors _qa_or_doc_claim / _finalize_claim):
+        # Single-claimant invariant (mirrors _qa_or_doc_claim / _apply_claim_fields):
         # active_claimant_id is what _active_claim_violation checks for content
         # writes (note/evidence). Without it the reviewer can claim + read the PR
         # but every note() returns _not_active_claimant, so the journal:learning
@@ -2800,7 +2846,7 @@ class TaskService(BaseService):
         # into the do-server breaker. Cleared by complete_review.
         task.active_claimant_id = cast("Any", reviewer_agent_id)
         # Flip agent.status/current_task_id to ACTIVE/this-task (mirrors
-        # _finalize_claim / _qa_or_doc_claim) — the external-PR-review
+        # _apply_claim_fields / _qa_or_doc_claim), the external-PR-review
         # claim chokepoint (claim_pr_review), otherwise the reviewer never
         # shows as active in the fleet either.
         reviewer_agent = await self.session.get(AgentTable, reviewer_agent_id)
@@ -2814,7 +2860,7 @@ class TaskService(BaseService):
             "pr_reviewer",
             audit_agent_id=reviewer_agent_id,
         )
-        # Seed the heartbeat at claim time — same invariant as _finalize_claim
+        # Seed the heartbeat at claim time, same invariant as _apply_claim_fields
         # and the QA/Doc claims. The reaper treats last_heartbeat_at IS NULL as
         # a stale claim, and for a GROK reviewer the idle-kill watchdog bypasses
         # the live-container skip on a NULL heartbeat: without this seed the
@@ -4177,14 +4223,15 @@ class TaskService(BaseService):
         if task.assigned_to and str(task.assigned_to) != str(agent.id):
             markers.set_original_developer(task, task.assigned_to)
 
-    # Consulted only inside _finalize_claim (both its target-status write and
-    # its branch-failure rollback's reversal-audit check), reached only via
-    # claim() -> _validate_claim_preconditions -> _get_valid_claim_statuses,
-    # which already screens the pre-claim status against _ROLE_CLAIM_STATUSES
-    # per role. AWAITING_PM_REVIEW is deliberately absent: no role's
-    # _ROLE_CLAIM_STATUSES grants it anymore (the i_will_plan re-claim loop
-    # fix), so _finalize_claim can never run with that pre-claim status —
-    # listing it here would be dead weight, not an independent gate.
+    # Consulted inside _apply_claim_fields's target-status write and inside
+    # _provision_claim's branch-failure rollback's reversal-audit check,
+    # reached only via claim() -> _validate_claim_preconditions ->
+    # _get_valid_claim_statuses, which already screens the pre-claim status
+    # against _ROLE_CLAIM_STATUSES per role. AWAITING_PM_REVIEW is
+    # deliberately absent: no role's _ROLE_CLAIM_STATUSES grants it anymore
+    # (the i_will_plan re-claim loop fix), so claim() can never run with
+    # that pre-claim status; listing it here would be dead weight, not an
+    # independent gate.
     _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]] = {
         TaskStatus.PENDING,
         TaskStatus.AWAITING_QA,
@@ -4444,35 +4491,45 @@ class TaskService(BaseService):
             return False
         return True
 
-    async def _finalize_claim(
+    async def _apply_claim_fields(
         self,
         task: TaskTable,
         agent: AgentTable | None,
         agent_id: UUID,
-    ) -> None:
+    ) -> "_ClaimFieldSnapshot":
         """
-        Apply claim-side-effects: status transition, branch + work session + context.
+        Apply claim-side-effects: status transition + claimant fields only.
 
-        On branch-creation failure, the claim fields are rolled back to
-        their pre-claim values so a retry starts from a clean state. Without
-        this, a partial failure leaves the task CLAIMED with branch_name=NULL,
-        and `git checkout -b` on retry fails non-idempotent.
+        Split from the former ``_finalize_claim`` so provisioning (branch
+        creation, work session, upstream-base inherit, the network-git
+        half) can run OUTSIDE this method entirely, on both call shapes:
+        ``claim(provision=True)`` calls this then ``_provision_claim``
+        directly in the same transaction span; the verb runner's composed
+        claim/set_plan/start calls this via ``claim(provision=False)``
+        INSIDE its own savepoint, and the choreographer runs
+        ``provision_claim`` separately afterward, once that savepoint has
+        committed. Provisioning never runs inside a savepoint on either
+        path; see ``_provision_claim``'s own docstring.
+
+        Durability boundary: commits here, before returning, unless called
+        from inside a savepoint, the same boundary PR #951 pinned on the
+        QA/PR/doc review claims. ``Session.commit()`` always commits to the
+        root transaction, so calling it while nested would end that
+        savepoint out from under the caller (verified: the next composed
+        action then raises ``InvalidRequestError``); the verb runner's own
+        composed sequence (claim, set_plan, start) commits this
+        durably right after, once the savepoint closes, see
+        ``_claim_plan_start_run``.
+
+        Returns the pre-mutation snapshot. ``_provision_claim``'s
+        branch-failure revert needs it on both paths: passed straight
+        through when ``claim(provision=True)`` calls both methods itself,
+        or fetched back out of ``self._pending_claim_snapshots`` when
+        ``provision_claim`` runs later as its own call.
         """
         # Set context for QA/Documenter claims (only if not already set)
         self._set_original_developer_context(task, agent)
 
-        # Snapshot for rollback on branch-creation failure.
-        original_status = task.status
-        original_assigned_to = task.assigned_to
-        original_claimed_by = task.claimed_by
-        original_claimed_at = task.claimed_at
-        original_heartbeat = task.last_heartbeat_at
-        original_claimant_id = task.active_claimant_id
-        # branch_name too: _ensure_branch_for_task may set it (create_branch's
-        # task_service.update + the in-memory assignment) before a later step
-        # throws — without restoring it, a retried claim sees the field set and
-        # the trust-but-verify short-circuits, never re-pushing the branch.
-        original_branch_name = task.branch_name
         # agent.status/current_task_id too: this IS the one production
         # chokepoint every claim verb (give_me_work -> i_will_work_on /
         # i_will_plan, claim_review, claim_doc_task, claim_pr_review,
@@ -4482,9 +4539,29 @@ class TaskService(BaseService):
         # current_task_id, so the Today brief's fleet/agents breakdown and
         # /status's "Active agents" count were structurally incapable of
         # reflecting real activity. Snapshot for the same rollback-on-
-        # branch-failure path as the task fields above.
-        original_agent_status = agent.status if agent else None
-        original_agent_task = agent.current_task_id if agent else None
+        # branch-failure path as the task fields below.
+        snapshot = _ClaimFieldSnapshot(
+            status=task.status,
+            assigned_to=task.assigned_to,
+            claimed_by=task.claimed_by,
+            claimed_at=task.claimed_at,
+            heartbeat=task.last_heartbeat_at,
+            claimant_id=task.active_claimant_id,
+            # _ensure_branch_for_task may set branch_name (create_branch's
+            # task_service.update + the in-memory assignment) before a later
+            # step throws; without restoring it, a retried claim sees the
+            # field set and the trust-but-verify short-circuits, never
+            # re-pushing the branch.
+            branch_name=task.branch_name,
+            agent_status=agent.status if agent else None,
+            agent_task=agent.current_task_id if agent else None,
+            # Pre-claim values: set_plan/start (composed with claim in the
+            # verb runner's savepoint) write these before provisioning
+            # runs, so a branch-failure revert needs the values from
+            # BEFORE that composed sequence, not just before this method.
+            plan=task.plan,
+            started_at=task.started_at,
+        )
 
         now = datetime.now(UTC)
         task.assigned_to = cast("Any", agent_id)
@@ -4504,31 +4581,89 @@ class TaskService(BaseService):
         task.active_claimant_id = cast("Any", agent_id)
         self._mark_agent_active_for_claim(agent, task.id)
 
-        agent_role = agent.role.value if agent and agent.role else None
         if task.status in self._CLAIMABLE_STATUSES:
+            agent_role = agent.role.value if agent and agent.role else None
             self._validate_and_set_status(task, TaskStatus.CLAIMED, agent_role)
 
         await self.session.flush()
 
-        # Always run _ensure_branch_for_task — it is the single chokepoint that
-        # ensures the task's branch exists on origin, whether by creating it
-        # (branch_name unset) or by trust-but-verify of a pre-set name
-        # (branch_name set: a manual field write or a prior failed create can
-        # leave the field set while the ref was never pushed). Branchless
-        # coordination/umbrella tasks return "" without touching the network.
+        # Durability boundary: commit here, before the network git work in
+        # _provision_claim, so the FOR UPDATE row lock (task) and the
+        # implicit update-lock (agent) are released instead of spanning a
+        # multi-minute branch-creation call (the 2026-09-05 NAS incident: a
+        # client-side timeout re-claimed every 30s and each retry died on
+        # the row's lock_timeout). Skipped inside a savepoint: see the
+        # docstring above.
+        if not self.session.in_nested_transaction():
+            await self.session.commit()
+        else:
+            # Nested (verb runner composed claim, provision=False): the
+            # caller's own explicit commit lands this once the savepoint
+            # closes, then calls provision_claim(task_id, agent_id);
+            # stash the snapshot so that separate call has it too.
+            self._pending_claim_snapshots[require_uuid(task.id)] = snapshot
+        return snapshot
+
+    async def _provision_claim(
+        self,
+        task: TaskTable,
+        agent: AgentTable | None,
+        agent_id: UUID,
+        snapshot: "_ClaimFieldSnapshot | None",
+    ) -> None:
+        """
+        Run the network-git half of a claim: branch, upstream-base inherit,
+        work session, proactive context. Called non-nested on both paths
+        (``claim(provision=True)`` runs it right after
+        ``_apply_claim_fields``'s own non-nested commit; ``provision_claim``
+        runs it after the verb runner's composed savepoint has already
+        closed and been committed), so its own commits below are not
+        no-ops in practice; the ``in_nested_transaction()`` guard on each
+        one is defensive symmetry with ``_apply_claim_fields``, not a
+        signal this method is ever meant to run inside a savepoint. A
+        raise here is never silently undone by a savepoint rollback and
+        must revert by hand instead.
+
+        On branch-creation failure, the claim fields are reverted to
+        ``snapshot`` (the pre-claim values ``_apply_claim_fields``
+        captured) and that revert is committed, so the durable CLAIMED row
+        does not outlive the failure that undoes it. ``snapshot=None`` is
+        a defensive fallback for a lost/never-stashed snapshot (a bug, not
+        a designed path); the claim is left standing rather than reverted
+        with fabricated values.
+
+        Once the branch exists, ``_finish_claim_provisioning`` runs the
+        rest (durable commit, upstream-base inherit, work session,
+        proactive context); see its own docstring for that half's
+        failure semantics.
+        """
+        agent_role = agent.role.value if agent and agent.role else None
         try:
             await self._ensure_branch_for_task(task, agent_id)
         except Exception:
+            if snapshot is None:
+                self.log.warning(
+                    "provision_claim branch failure with no revert snapshot"
+                    ", leaving the claim standing",
+                    task_id=str(task.id),
+                )
+                raise
             # Roll back claim fields so the task is reclaimable.
-            task.status = original_status
-            task.assigned_to = original_assigned_to
-            task.claimed_by = original_claimed_by
-            task.claimed_at = original_claimed_at
-            task.last_heartbeat_at = original_heartbeat
-            task.active_claimant_id = original_claimant_id
-            task.branch_name = original_branch_name
+            task.status = snapshot.status
+            task.assigned_to = snapshot.assigned_to
+            task.claimed_by = snapshot.claimed_by
+            task.claimed_at = snapshot.claimed_at
+            task.last_heartbeat_at = snapshot.heartbeat
+            task.active_claimant_id = snapshot.claimant_id
+            task.branch_name = snapshot.branch_name
+            # The verb runner's composed claim/set_plan/start commits
+            # these before this method ever runs; revert them too or a
+            # pending task keeps the failed attempt's plan and started_at
+            # (cycle-time corruption, plan showing on a pending task).
+            task.plan = snapshot.plan
+            task.started_at = snapshot.started_at
             self._restore_agent_claim_snapshot(
-                agent, original_agent_status, original_agent_task
+                agent, snapshot.agent_status, snapshot.agent_task
             )
             await self.session.flush()
             # emit the reversal audit row so the journey doesn't diverge
@@ -4538,20 +4673,52 @@ class TaskService(BaseService):
             # Without a matching reversal row, downstream metrics
             # (cycle time, bottlenecks) reconstructed from ``task.<status>``
             # events would be corrupted.
-            if original_status in self._CLAIMABLE_STATUSES:
+            if snapshot.status in self._CLAIMABLE_STATUSES:
                 self._emit_status_transition_audit(
                     task,
                     from_status=TaskStatus.CLAIMED.value,
                     to_status=(
-                        original_status.value
-                        if isinstance(original_status, TaskStatus)
-                        else str(original_status)
+                        snapshot.status.value
+                        if isinstance(snapshot.status, TaskStatus)
+                        else str(snapshot.status)
                     ),
                     agent_role=agent_role,
                     audit_agent_id=agent_id,
                 )
+            if not self.session.in_nested_transaction():
+                await self.session.commit()
             raise
+        await self._finish_claim_provisioning(task, agent_id, agent_role, snapshot)
+
+    async def _finish_claim_provisioning(
+        self,
+        task: TaskTable,
+        agent_id: UUID,
+        agent_role: str | None,
+        snapshot: "_ClaimFieldSnapshot | None",
+    ) -> None:
+        """Post-branch tail of ``_provision_claim``: durable commit, then
+        upstream-base inherit, work session, proactive context. Split out
+        to keep ``_provision_claim`` under the xenon complexity budget; no
+        behavior change from when this lived inline.
+
+        Finding A fix: commits the branch right away, before any of the
+        steps below get a chance to fail and roll back an uncommitted
+        branch_name out from under an already-durable CLAIMED row. A
+        failure after this commit (work session, upstream-base inherit) is
+        NOT reverted; post-boundary it leaves the claim (and branch)
+        standing rather than rolling everything back, the same trade-off
+        PR #951 made for the review claims. That standing state is
+        retry-safe either way: ``_ensure_branch_for_task`` trust-but-
+        verifies a pre-set ``branch_name`` (a re-run of provisioning only
+        redoes the failed remainder), and the agent's own re-entry
+        (``_resume_from_claimed``) calls ``TaskService.ensure_work_session``
+        after ``start()``, healing a work session that failed here on the
+        agent's first verb call.
+        """
         await self.session.refresh(task)
+        if not self.session.in_nested_transaction():
+            await self.session.commit()
 
         # Upstream base inheritance: a re-claim reuses a branch cut at an
         # earlier claim, so upstream work merged since (e.g. UX/UI landing on
@@ -4560,9 +4727,12 @@ class TaskService(BaseService):
         # QA/doc/gate claims must review the branch as pushed, and a PM's
         # i_will_plan re-claim of its own AWAITING_PM_REVIEW task must not
         # move a branch that already passed QA + the PR gate. A fresh cut
-        # (original_branch_name unset) already branches from the live base.
+        # (snapshot.branch_name unset) already branches from the live base.
         if _should_inherit_base(
-            original_branch_name, task.project_id, agent_role, original_status
+            snapshot.branch_name if snapshot else None,
+            task.project_id,
+            agent_role,
+            snapshot.status if snapshot else None,
         ):
             await self._inherit_upstream_base(task, agent_id)
 
@@ -4571,6 +4741,42 @@ class TaskService(BaseService):
         bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
+
+    async def provision_claim(self, task_id: UUID, agent_id: UUID) -> TaskTable:
+        """Public wrapper: durably commit a claim applied by
+        ``claim(..., provision=False)`` (the verb runner's composed claim,
+        set_plan, start for ``i_will_work_on`` / ``i_will_plan``), then run
+        ``_provision_claim`` for it.
+
+        Called by ``Choreographer._claim_plan_start_run`` right after
+        ``run_intent``'s composed savepoint returns. That savepoint's own
+        release only folds the changes into the OUTER transaction, it does
+        not commit to Postgres or release the task/agent row locks, so
+        this method's own commit is what actually does both, before doing
+        any of ``_provision_claim``'s network git work. The commit lives
+        here rather than in the choreographer so a choreographer built
+        with a mocked ``TaskService`` (every gateway unit test) never
+        touches a raw session call it did not already have to mock; this
+        is a normal service method, no different from ``claim`` or
+        ``set_plan`` on that mock.
+
+        Re-reads the task and agent fresh after the commit, so this is a
+        separate DB round-trip, not a continuation of the same in-memory
+        objects. Pops the snapshot ``_apply_claim_fields`` stashed on
+        ``self._pending_claim_snapshots`` for the revert-on-failure path.
+        Raises whatever ``_provision_claim`` raises; this method's own
+        commit already landed by then, so a raise here does not undo it
+        (only ``_provision_claim``'s own explicit revert-and-commit does).
+        """
+        if not self.session.in_nested_transaction():
+            await self.session.commit()
+        task = await self.get(task_id)
+        if task is None:
+            raise ValueError(f"provision_claim: task {task_id} not found")
+        agent = await self.session.get(AgentTable, agent_id)
+        snapshot = self._pending_claim_snapshots.pop(task_id, None)
+        await self._provision_claim(task, agent, agent_id, snapshot)
+        return task
 
     def _mark_agent_active_for_claim(
         self, agent: AgentTable | None, task_id: Any
@@ -4584,8 +4790,9 @@ class TaskService(BaseService):
 
         Every production call site (every place an agent starts genuinely
         working a task without a further claim call in between):
-        - ``_finalize_claim`` — the dev/PM claim chokepoint (``claim()``),
-          with branch-failure rollback via ``_restore_agent_claim_snapshot``.
+        - ``_apply_claim_fields``, the dev/PM claim chokepoint (``claim()``),
+          with branch-failure rollback (in ``_provision_claim``) via
+          ``_restore_agent_claim_snapshot``.
         - ``_qa_or_doc_claim`` — QA / Documenter / in-path PR-reviewer claim
           (backs ``qa_claim``, ``doc_claim``, ``pr_gate_claim``). No
           rollback needed — no failure path follows the field writes.
@@ -4730,7 +4937,12 @@ class TaskService(BaseService):
         )
 
     async def claim(
-        self, task_id: UUID, agent_id: UUID, allow_reassign: bool = False
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        allow_reassign: bool = False,
+        *,
+        provision: bool = True,
     ) -> TaskTable | None:
         """
         Claim a task for an agent.
@@ -4743,6 +4955,15 @@ class TaskService(BaseService):
         Uses SELECT ... FOR UPDATE to serialize concurrent claim attempts on
         the same task, preventing last-write-wins races between two agents
         racing for the same pending task.
+
+        ``provision`` (default True) runs ``_provision_claim`` (branch,
+        work session, upstream-base inherit) right here, same as this
+        method always did before the apply/provision split. The verb
+        runner's ``_do_claim`` passes ``provision=False``; it runs this
+        inside ``_run_composed_actions``'s savepoint, where provisioning's
+        network git work must NOT run (see ``_provision_claim``'s
+        docstring); the choreographer calls ``provision_claim`` separately
+        once that savepoint has committed.
         """
         # Lock the task row for the duration of this transaction so concurrent
         # claim attempts serialize at the DB level. `with_for_update(of=...)`
@@ -4768,7 +4989,9 @@ class TaskService(BaseService):
         ):
             return None
 
-        await self._finalize_claim(task, agent, agent_id)
+        snapshot = await self._apply_claim_fields(task, agent, agent_id)
+        if provision:
+            await self._provision_claim(task, agent, agent_id, snapshot)
         return task
 
     async def _inject_proactive_context(self, task: TaskTable, agent_id: UUID) -> None:
@@ -5951,7 +6174,7 @@ class TaskService(BaseService):
 
         # Look up the requesting agent's role so role-restricted-transition
         # rules apply if/when claimed→pending or in_progress→pending ever
-        # gain restrictions. Mirrors the pattern in `_finalize_claim`.
+        # gain restrictions. Mirrors the pattern in `_apply_claim_fields`.
         agent_result = await self.session.execute(
             select(AgentTable).where(AgentTable.id == agent_id)
         )
@@ -5988,7 +6211,7 @@ class TaskService(BaseService):
     ) -> None:
         """Clear the agent's ``current_task_id`` iff it still points at
         ``task_id`` — every release path's specific side effect on the claim
-        marker (``_finalize_claim`` / ``_retarget_agent_claim`` /
+        marker (``_apply_claim_fields`` / ``_retarget_agent_claim`` /
         ``mark_agent_idle`` own writing it; this is the release half).
         ``agent_id=None`` (no prior claimant to release) is a no-op — lets
         every release call site skip its own None-guard. Leaves
@@ -6092,7 +6315,7 @@ class TaskService(BaseService):
 
         # Look up the requesting agent's role so role-restricted-transition
         # rules apply if/when paused→in_progress ever gains restrictions.
-        # Mirrors the pattern in `unclaim_for_agent` and `_finalize_claim`.
+        # Mirrors the pattern in `unclaim_for_agent` and `_apply_claim_fields`.
         agent_result = await self.session.execute(
             select(AgentTable).where(AgentTable.id == agent_id)
         )
@@ -10237,6 +10460,11 @@ class TaskService(BaseService):
         if not claimed:
             status_msg = "not pending or claimed" if allow_reassign else "not pending"
             raise ValidationError(f"Cannot claim task - {status_msg}")
+        # claim()'s _apply_claim_fields and _provision_claim (branch,
+        # upstream-base inherit, work session) already committed on their
+        # own durability boundaries; this commit only covers whatever this
+        # method itself touched since (nothing, on the success path today)
+        # plus anything the caller's own request scope still expects here.
         await self.session.commit()
         return claimed
 
@@ -11765,7 +11993,7 @@ class TaskService(BaseService):
     ) -> None:
         """Move the ACTIVE marker + ``current_task_id`` from the old
         claimant to the new one on a handoff. The OTHER production
-        chokepoint (besides ``_finalize_claim``) that hands a task to an
+        chokepoint (besides ``_apply_claim_fields``) that hands a task to an
         agent — ``reassign_active_claim`` — needs the same write, or a
         reassigned task keeps reporting its stale prior claimant as "the one
         working on it" while the real new claimant never shows as active."""
@@ -11785,7 +12013,7 @@ class TaskService(BaseService):
         """Set agent.status = IDLE, clear current_task_id, + emit an
         ``agent.idle`` audit row.
 
-        Clearing ``current_task_id`` matters now that ``_finalize_claim`` /
+        Clearing ``current_task_id`` matters now that ``_apply_claim_fields`` /
         ``_retarget_agent_claim`` actually populate it on claim: without this,
         an agent that goes idle (container about to shut down) would keep
         reporting its last task as "currently working" forever, since
@@ -11845,11 +12073,12 @@ class TaskService(BaseService):
         overridable by the first reviewer.
 
         Also flips agent.status/current_task_id to ACTIVE/this-task
-        (``_mark_agent_active_for_claim``, mirroring ``_finalize_claim``) —
+        (``_mark_agent_active_for_claim``, mirroring ``_apply_claim_fields``),
         this is the QA/Documenter/in-path-PR-reviewer claim chokepoint
         (backs ``qa_claim``, ``doc_claim``, ``pr_gate_claim``), so without it
         those three roles could never show as active in the fleet. No
-        branch-creation step follows (unlike ``_finalize_claim``), so there
+        branch-creation step follows (unlike ``claim()``'s ``_provision_claim``
+        half), so there
         is no failure path afterward to roll the marker back from.
         """
         lock_result = await self.session.execute(
@@ -11876,14 +12105,14 @@ class TaskService(BaseService):
         task.assigned_to = cast("Any", agent_id)
         task.claimed_by = cast("Any", agent_id)
         task.claimed_at = now
-        # Seed the heartbeat — same rationale as _finalize_claim line 959.
+        # Seed the heartbeat, same rationale as _apply_claim_fields.
         # `claimant_lock.is_stale` and the reaper both treat
         # last_heartbeat_at IS NULL as stale; without this seed a QA/Doc
         # claim is "stale" the moment it's recorded and any code that
         # consults claimant_lock for awaiting_qa / awaiting_documentation
         # tasks will misclassify the live claim as abandoned.
         task.last_heartbeat_at = now
-        # Single-claimant invariant — see _finalize_claim. Same column
+        # Single-claimant invariant, see _apply_claim_fields. Same column
         # used by claimant_lock. Cleared by QA pass/fail
         # and doc-complete when the review hand-off finishes.
         task.active_claimant_id = cast("Any", agent_id)
@@ -12369,7 +12598,7 @@ class TaskService(BaseService):
         restored_owner_id = to_python_uuid(restored_owner)
         if restored_status == TaskStatus.IN_PROGRESS and restored_owner_id is not None:
             # A real resume of active dev work with no fresh claim() call in
-            # between — _finalize_claim's own ACTIVE-marking never runs
+            # between; _apply_claim_fields's own ACTIVE-marking never runs
             # here, so this is the one restore outcome that needs the same
             # write directly. PENDING (the branchless divert above) and any
             # review-queue restored_status deliberately do NOT mark the
