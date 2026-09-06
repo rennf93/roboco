@@ -18154,6 +18154,15 @@ ever propose.
         incident_task_id = incident_ref.get("incident_task_id", "unknown")
         kind = incident_ref.get("kind", "unknown")
         title = incident_ref.get("title", "unknown")
+        stranded_block = (
+            "\n## Stranded-block context\n"
+            f"- Block reason: {incident_ref.get('block_reason', 'unknown')}\n"
+            f"- Time blocked: {incident_ref.get('time_blocked', 'unknown')}\n"
+            "- Escalation history: "
+            f"{incident_ref.get('escalation_history', 'none')}\n"
+            if kind == "stranded"
+            else ""
+        )
         context_block = (
             f"\n## Evidence gathered for you\n{incident_context}\n"
             if incident_context
@@ -18165,7 +18174,7 @@ You are the Auditor. An incident just triggered your Coroner postmortem.
 TASK: {task_id}
 
 INCIDENT: {title!r} ({incident_task_id}) — {kind}
-{context_block}
+{stranded_block}{context_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
