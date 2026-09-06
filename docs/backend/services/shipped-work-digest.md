@@ -31,7 +31,7 @@ The orchestrator mirrors the megaphone pattern for all three Product Owner explo
 
 ### `_shipped_work_digest_context()` wrapper
 
-`AgentOrchestrator._shipped_work_digest_context()` (`orchestrator.py:14869`) is the best-effort wrapper that calls the shared helper directly (not through `MegaphoneEngine`) so the PO prompts do not depend on the megaphone engine. It catches all exceptions, logs a warning, and returns `""` on failure — a digest failure drops the section from the prompt, it never blocks a spawn.
+`AgentOrchestrator._shipped_work_digest_context()` (`roboco/runtime/engines/dispatch_work.py`) is the best-effort wrapper that calls the shared helper directly (not through `MegaphoneEngine`) so the PO prompts do not depend on the megaphone engine. It catches all exceptions, logs a warning, and returns `""` on failure — a digest failure drops the section from the prompt, it never blocks a spawn.
 
 ### Dispatch wiring
 
@@ -45,7 +45,7 @@ Each dispatch method calls `_shipped_work_digest_context()` and passes the resul
 
 ### `_shipped_digest_block()` renderer
 
-The module-level helper `_shipped_digest_block(digest_context)` (`orchestrator.py:1203`) renders the `## Shipped-this-week digest` block for all three prompts. It returns `""` when no digest was assembled so the section is omitted entirely (no empty header, no orphan instruction). When a digest is present, it renders:
+The module-level helper `_shipped_digest_block(digest_context)` (`roboco/runtime/orchestrator.py`) renders the `## Shipped-this-week digest` block for all three prompts. It returns `""` when no digest was assembled so the section is omitted entirely (no empty header, no orphan instruction). When a digest is present, it renders:
 
 ```
 ## Shipped-this-week digest
@@ -56,7 +56,7 @@ The module-level helper `_shipped_digest_block(digest_context)` (`orchestrator.p
 
 ### Instruction text
 
-`_SHIPPED_DIGEST_INSTRUCTION` (`orchestrator.py:1195`) carries the "do not propose already-shipped work" directive, adapted from the intake prompter's existing "don't propose what's already been done" wording (`agents/prompts/roles/prompter.md`):
+`_SHIPPED_DIGEST_INSTRUCTION` (`roboco/runtime/orchestrator.py`) carries the "do not propose already-shipped work" directive, adapted from the intake prompter's existing "don't propose what's already been done" wording (`agents/prompts/roles/prompter.md`):
 
 > Before proposing, check the shipped-this-week digest above — do not propose already-shipped work. If a candidate item duplicates work that already shipped this week (named above) or is in flight, say so plainly and skip it instead of quietly drafting a duplicate.
 
