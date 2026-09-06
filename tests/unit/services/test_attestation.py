@@ -1,15 +1,25 @@
-"""Pin the Markdown rendering of a per-task verification attestation.
+"""Pin the Markdown rendering of a per-task verification attestation, plus
+the DB-backed assembly logic in ``assemble_task_attestation``.
 
 ``render_attestation_markdown`` renders directly off an already-assembled
-``TaskAttestation`` — these tests build that dataclass by hand (no DB), the
-same "task fixture" shape the parent task asks for, with mixed finding
-states (open, addressed, verified, waived) so every status renders.
+``TaskAttestation`` — the render tests build that dataclass by hand (no DB),
+the same "task fixture" shape the parent task asks for, with mixed finding
+states (open, addressed, verified, waived) so every status renders. The
+assembly tests below exercise ``assemble_task_attestation`` itself against a
+real DB session, covering the qa_notes ``[AC]`` stamp match by criterion id
+AND by text, and the reviewer-chain duplicate-row skip.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+from uuid import uuid4
 
+import pytest
+from roboco.db.tables import AuditLogTable, TaskTable
+from roboco.models import Team
+from roboco.models.base import TaskNature, TaskStatus, TaskType
 from roboco.services.attestation import (
     AttestedCriterion,
     AttestedFinding,
@@ -19,8 +29,12 @@ from roboco.services.attestation import (
     ReviewerChainEntry,
     TaskAttestation,
     WorkSessionRef,
+    assemble_task_attestation,
     render_attestation_markdown,
 )
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 _NOW = datetime(2026, 9, 5, 12, 0, 0, tzinfo=UTC)
 _EMPTY_SECTION_COUNT = 4  # AC, conventions, reviewer, sessions
@@ -173,3 +187,106 @@ def test_render_empty_sections_degrade_to_placeholders() -> None:
     assert "**PR:** n/a" in md
     assert "_No findings raised._" in md
     assert md.count("_None recorded._") == _EMPTY_SECTION_COUNT
+
+
+def _seed_task(**overrides: object) -> TaskTable:
+    defaults: dict[str, object] = {
+        "id": uuid4(),
+        "title": "Attested task",
+        "description": "d",
+        "acceptance_criteria": ["Criterion by text", "Criterion by id"],
+        "acceptance_criteria_ids": ["", "ac-2"],
+        "status": TaskStatus.AWAITING_QA,
+        "priority": 2,
+        "task_type": TaskType.CODE,
+        "nature": TaskNature.TECHNICAL,
+        "created_by": uuid4(),
+        "team": Team.BACKEND,
+        "revision_count": 0,
+    }
+    defaults.update(overrides)
+    return TaskTable(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_assemble_matches_ac_stamps_by_text_and_by_id(
+    db_session: AsyncSession,
+) -> None:
+    """``criteria_verified``'s ``criterion`` may be the AC's stable id or its
+    exact text — a stamp keyed either way must mark that criterion verified,
+    not just the text-keyed one."""
+    task = _seed_task(
+        qa_notes=(
+            "[AC] Criterion by text — verified: seen in the diff\n"
+            "[AC] ac-2 — verified: seen via id lookup"
+        ),
+    )
+    db_session.add(task)
+    await db_session.flush()
+
+    attestation = await assemble_task_attestation(db_session, task)
+
+    by_text = {c.text: c for c in attestation.acceptance_criteria}
+    assert by_text["Criterion by text"].verified is True
+    assert by_text["Criterion by text"].evidence == "seen in the diff"
+    assert by_text["Criterion by id"].verified is True
+    assert by_text["Criterion by id"].evidence == "seen via id lookup"
+
+
+@pytest.mark.asyncio
+async def test_assemble_reviewer_chain_skips_rejector_duplicate_rows(
+    db_session: AsyncSession,
+) -> None:
+    """``TaskService._audit_events_for`` emits a rejector-attributed duplicate
+    row (``task.qa_fail`` etc.) alongside the generic ``task.<to_status>``
+    row for rework attribution — the chain must show each real transition
+    exactly once, not double it."""
+    task = _seed_task(qa_notes=None)
+    db_session.add(task)
+    await db_session.flush()
+
+    db_session.add_all(
+        [
+            AuditLogTable(
+                id=uuid4(),
+                event_type="task.needs_revision",
+                target_type="task",
+                target_id=task.id,
+                severity="info",
+                details={"to_status": "needs_revision"},
+                timestamp=datetime(2026, 9, 5, 10, 0, 0, tzinfo=UTC),
+            ),
+            AuditLogTable(
+                id=uuid4(),
+                event_type="task.qa_fail",
+                target_type="task",
+                target_id=task.id,
+                severity="info",
+                details={"to_status": "needs_revision"},
+                timestamp=datetime(2026, 9, 5, 10, 0, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    attestation = await assemble_task_attestation(db_session, task)
+
+    to_statuses = [rc.to_status for rc in attestation.reviewer_chain]
+    assert to_statuses == ["needs_revision"]
+
+
+@pytest.mark.asyncio
+async def test_assemble_no_project_resolves_ci_not_available(
+    db_session: AsyncSession,
+) -> None:
+    """A task with no project_id skips project/git-service resolution
+    entirely and degrades the CI verdict to not_available — no live call is
+    attempted."""
+    task = _seed_task(project_id=None)
+    db_session.add(task)
+    await db_session.flush()
+
+    attestation = await assemble_task_attestation(db_session, task)
+
+    assert attestation.project_slug is None
+    assert attestation.ci.state == "not_available"
