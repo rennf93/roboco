@@ -3235,9 +3235,26 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 
 ## Files
 
+2026-09-06 god-class decomposition: `orchestrator.py`'s ~525 non-core methods moved verbatim into per-family mixins under `roboco/runtime/engines/`; `AgentOrchestrator` now inherits all of them plus the core lifecycle (`__new__`/`__init__`/`start`/`stop`) it kept. Every module-level constant/function orchestrator.py used to own still resolves at `roboco.runtime.orchestrator.<name>` (re-exported) for any caller/test that patches it there. The per-symbol table below still cites the OLD pre-decomposition line numbers within `orchestrator.py`; use the family table to find a method's new home file, not a specific line.
+
 | Path | Role | LOC |
 |---|---|---|
-| /Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco/roboco/runtime/orchestrator.py | Single 11485-line module: module helpers + the AgentOrchestrator class — container lifecycle, dispatchers, reaper, provider-parking, interactive intake/secretary spawns, background engine loops, token/cost capture, durable-state restore. | 11485 |
+| roboco/runtime/orchestrator.py | Core: `AgentOrchestrator.__new__`/`__init__`/`start`/`stop`, module-level helpers/constants, base-class composition of every engine below. | 2137 |
+| roboco/runtime/engines/dispatch_routing.py | Task-type/team routing classification (no claim/spawn side effects). | 435 |
+| roboco/runtime/engines/dispatch_claim.py | Agent selection + claim/park lifecycle for cell tasks (in-flight claim tracking, claim-and-spawn). | 1651 |
+| roboco/runtime/engines/dispatch_prompts.py | Per-role/per-program prompt builders. | 2034 |
+| roboco/runtime/engines/dispatch_work.py | Per-status dispatch handlers (dev/QA/doc/PM/board/audit/a2a/escalation/approval work). | 2097 |
+| roboco/runtime/engines/dispatch_breaker.py | Cost/gateway/respawn breakers + the stale-claim reaper. | 1419 |
+| roboco/runtime/engines/spawn_config.py | Settings/MCP-config/prompt/briefing generation for a spawn. | 1205 |
+| roboco/runtime/engines/spawn_launch.py | Git/worktree resolve, docker invocation, capacity gates, readiness. | 1994 |
+| roboco/runtime/engines/spawn_exit.py | Container exit/crash/provider-park handling, per-provider usage/token finalize. | 1814 |
+| roboco/runtime/engines/sweeps.py | Sweeper-loop tasks: image/transcript prune, rate-limit probes, supersede-PR lifecycle (external PR discovery through close), sandbox janitor. | 2487 |
+| roboco/runtime/engines/reconcile.py | Startup reconciliation (orphan claims/sessions, readopt), the health-check loop, the board-program engine loop. | 663 |
+| roboco/runtime/engines/rate_limit_probe.py | Provider rate-limit/overload probe-and-recover loop. | 489 |
+| roboco/runtime/engines/interactive_sessions.py | On-demand intake/secretary interactive session subsystem (not loop-reached). | 1133 |
+| roboco/runtime/engines/_shared.py | Cross-family generic helpers with no single natural owner. | 218 |
+| roboco/runtime/engines/_types.py | TYPE_CHECKING-only `AgentOrchestratorSelf` Protocol every mixin's class uses as its typed base (mypy cross-mixin attribute resolution; not part of the runtime MRO). | 309 |
+| roboco/runtime/engines/ci_watch.py, dep_update.py, env_sync.py, release_manager.py (+ self-heal), strategy.py, telegram_poll.py, vault.py, video_render.py, x_mentions.py | The remaining small default-off autonomy-engine / board-program poll loops, one file per family (self-heal merged into release_manager.py; a stray tiny family otherwise averaged below the xenon module-complexity floor). | 60 to 279 each, video_render.py the largest |
 
 ## Key Symbols
 

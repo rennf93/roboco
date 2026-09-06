@@ -30,6 +30,8 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import select, text
 
+from tests.integration.conftest import cleanup_project_durable_rows
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -38,7 +40,7 @@ if TYPE_CHECKING:
 
 @pytest_asyncio.fixture
 async def task_setup(
-    db_session: AsyncSession,
+    db_session: AsyncSession, _test_database_url: str
 ) -> AsyncIterator[dict]:
     agent = AgentTable(
         id=uuid4(),
@@ -65,12 +67,19 @@ async def task_setup(
     )
     db_session.add(project)
     await db_session.flush()
-    yield {
-        "svc": TaskService(db_session),
-        "agent_id": agent.id,
-        "project_id": project.id,
-        "db": db_session,
-    }
+    agent_id, project_id = agent.id, project.id
+    try:
+        yield {
+            "svc": TaskService(db_session),
+            "agent_id": agent_id,
+            "project_id": project_id,
+            "db": db_session,
+        }
+    finally:
+        # claim() now commits durably, so rows outlive the session rollback;
+        # roll back first (release locks), then delete on a fresh connection.
+        await db_session.rollback()
+        await cleanup_project_durable_rows(_test_database_url, project_id, [agent_id])
 
 
 def _req(setup: dict[str, Any], **overrides: Any) -> TaskCreateRequest:

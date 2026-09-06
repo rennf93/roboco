@@ -16,7 +16,7 @@ from roboco.db.tables import (
     TaskTable,
     WorkSessionTable,
 )
-from sqlalchemy import delete
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
@@ -58,6 +58,54 @@ async def cleanup_claim_durable_rows(database_url: str, ids: dict[str, Any]) -> 
             )
             await cleanup.execute(
                 delete(AgentTable).where(AgentTable.id.in_(ids["agent_ids"]))
+            )
+            await cleanup.commit()
+    finally:
+        await engine.dispose()
+
+
+async def cleanup_project_durable_rows(
+    database_url: str, project_id: Any, agent_ids: list[Any]
+) -> None:
+    """Project-scoped variant of ``cleanup_claim_durable_rows`` for fixtures
+    whose tests create their tasks ad hoc: every task under ``project_id``
+    (children first via the FK order below), then the project and agents.
+    Same fresh-connection, ids-only contract as the task-scoped helper.
+    """
+    engine = create_async_engine(database_url, future=True)
+    try:
+        factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+        async with factory() as cleanup:
+            task_ids = list(
+                (
+                    await cleanup.execute(
+                        select(TaskTable.id).where(TaskTable.project_id == project_id)
+                    )
+                ).scalars()
+            )
+            if task_ids:
+                await cleanup.execute(
+                    delete(AuditLogTable).where(AuditLogTable.target_id.in_(task_ids))
+                )
+                await cleanup.execute(
+                    delete(WorkSessionTable).where(
+                        WorkSessionTable.task_id.in_(task_ids)
+                    )
+                )
+                # children reference parents; clear the links before deleting
+                await cleanup.execute(
+                    update(TaskTable)
+                    .where(TaskTable.id.in_(task_ids))
+                    .values(parent_task_id=None)
+                )
+                await cleanup.execute(
+                    delete(TaskTable).where(TaskTable.id.in_(task_ids))
+                )
+            await cleanup.execute(
+                delete(ProjectTable).where(ProjectTable.id == project_id)
+            )
+            await cleanup.execute(
+                delete(AgentTable).where(AgentTable.id.in_(agent_ids))
             )
             await cleanup.commit()
     finally:

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 from roboco.models.runtime import AgentInstance
-from roboco.runtime import orchestrator as orch_mod
+from roboco.runtime.engines import spawn_exit as usage_root_mod
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
@@ -109,13 +109,13 @@ async def test_resolve_active_tokens_routes_gemini_to_usage_json(
 def test_gemini_usage_dir_branches_compose_vs_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "")
     local = AgentOrchestrator._gemini_usage_dir("be-dev-1")
     assert "roboco-gemini-usage" in str(local)
     assert local.name == "be-dev-1"
 
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "/volume1/roboco")
-    monkeypatch.setattr(orch_mod, "GEMINI_USAGE_DATA_DIR", "/data/gemini-usage")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "/volume1/roboco")
+    monkeypatch.setattr(usage_root_mod, "GEMINI_USAGE_DATA_DIR", "/data/gemini-usage")
     assert str(AgentOrchestrator._gemini_usage_dir("be-dev-1")) == (
         "/data/gemini-usage/be-dev-1"
     )
@@ -135,7 +135,7 @@ def test_gemini_usage_json_reads_the_real_local_dir(
 ) -> None:
     # The un-mocked read path must find usage.json in the SAME branched dir the
     # writer mounts (mirrors _ensure_gemini_usage_dir's create path).
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "")
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     udir = tmp_path / "roboco-gemini-usage" / "be-dev-1"
     udir.mkdir(parents=True)
@@ -150,7 +150,7 @@ def test_gemini_usage_json_reads_the_real_local_dir(
 def test_ensure_gemini_usage_dir_creates_world_writable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "")
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._ensure_gemini_usage_dir("be-dev-1")

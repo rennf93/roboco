@@ -116,10 +116,10 @@ def _build_cmd(container_name: str, config: OrchestratorAgentConfig) -> list[str
     hosts = _minimal_hosts()
     attrs = _mock_settings()
     with (
-        patch("roboco.runtime.orchestrator.settings") as mock_settings,
+        patch("roboco.runtime.engines.spawn_launch.settings") as mock_settings,
         patch("roboco.runtime.orchestrator.Path.exists", return_value=False),
         patch(
-            "roboco.runtime.orchestrator._build_manifest_for_agent",
+            "roboco.runtime.engines.spawn_launch._build_manifest_for_agent",
             return_value=None,
         ),
     ):
