@@ -37,11 +37,11 @@ The orchestrator mirrors the megaphone pattern for all three Product Owner explo
 
 Each dispatch method calls `_shipped_work_digest_context()` and passes the result to its prompt builder:
 
-| Dispatch method | Prompt builder | Line (dispatch) |
-|---|---|---|
-| `_dispatch_roadmap_exploration` | `_build_roadmap_prompt(task, prior_context, market_brief_context, digest_context)` | 14325 |
-| `_dispatch_pest_control_exploration` | `_build_pest_control_prompt(task, prior_context, evidence_context, digest_context)` | 14380 |
-| `_dispatch_spackle_exploration` | `_build_spackle_prompt(task, prior_context, digest_context)` | 14562 |
+| Dispatch method | Prompt builder |
+|---|---|
+| `_dispatch_roadmap_exploration` | `_build_roadmap_prompt(task, prior_context, market_brief_context, digest_context)` |
+| `_dispatch_pest_control_exploration` | `_build_pest_control_prompt(task, prior_context, evidence_context, digest_context)` |
+| `_dispatch_spackle_exploration` | `_build_spackle_prompt(task, prior_context, digest_context)` |
 
 ### `_shipped_digest_block()` renderer
 
