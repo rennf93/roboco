@@ -312,8 +312,26 @@ class OptimalService:
         await self._warmup_embedder()
 
         # Auto-index code and documentation on startup (truly non-blocking)
-        # Run in background so API can start accepting requests immediately
-        self._indexing_task = asyncio.create_task(self._auto_index_on_startup_safe())
+        # Run in background so API can start accepting requests immediately.
+        # Role-gated: this is fleet-wide, once-per-KB re-index/re-embed work
+        # (plus the periodic file-change loop it kicks off), not per-request.
+        # 'api' and 'dispatcher' each run the full FastAPI lifespan (see
+        # roboco/api/app.py) and would otherwise both run it, doubling the
+        # CPU cost for no benefit; only 'all' (single-process) and 'indexer'
+        # (the dedicated KB worker role) own it. Plugins are still
+        # initialized above in every role, since routes query the KB
+        # regardless of who indexes it.
+        from roboco.config import settings
+
+        if settings.role in ("all", "indexer"):
+            self._indexing_task = asyncio.create_task(
+                self._auto_index_on_startup_safe()
+            )
+        else:
+            logger.info(
+                "Auto-index/periodic-update skipped for role",
+                role=settings.role,
+            )
 
     async def _warmup_embedder(self) -> None:
         """Warm up the embedding model to avoid cold start latency."""
@@ -509,6 +527,16 @@ class OptimalService:
     # =========================================================================
     # PERIODIC UPDATE (File Change Detection)
     # =========================================================================
+
+    async def ensure_periodic_update_running(self) -> None:
+        """Start the periodic RAG update loop if it isn't already running.
+
+        Called by the indexer worker (``ROBOCO_ROLE=indexer``) so that role
+        owns the periodic re-index sweep; idempotent against the auto-start
+        already inside ``initialize()``; never a second competing loop.
+        """
+        if self._periodic_update_task is None:
+            await self._start_periodic_update()
 
     async def _start_periodic_update(self) -> None:
         """Start periodic update task if enabled in config."""

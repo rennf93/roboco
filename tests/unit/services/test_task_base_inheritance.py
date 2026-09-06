@@ -3,9 +3,9 @@
 A re-claim reuses a branch cut at an earlier claim; upstream work merged
 since (a sibling UX/UI cell landing on the root, master advancing under a
 root) never reached it, so BE/FE branches diverged from design work they
-were meant to build on. ``_finalize_claim`` now merges the advanced base
+were meant to build on. ``_provision_claim`` now merges the advanced base
 into the pre-existing branch on WORK claims (developer / cell_pm / main_pm)
-via ``_inherit_upstream_base`` — QA/doc/gate claims never move the branch,
+via ``_inherit_upstream_base``. QA/doc/gate claims never move the branch,
 and a fresh cut already branches from the live remote base.
 """
 
@@ -28,6 +28,9 @@ def _service() -> TaskService:
     session.flush = AsyncMock()
     session.refresh = AsyncMock()
     svc.session = session
+    # __new__ skips __init__, so the claim durability boundary's snapshot
+    # bridge needs its own manual init here, same as log/session above.
+    svc._pending_claim_snapshots = {}
     return svc
 
 
@@ -51,8 +54,9 @@ def _claim_task(
     )
 
 
-def _wire_finalize(svc: TaskService) -> AsyncMock:
-    """Stub every _finalize_claim collaborator; return the inherit mock."""
+def _wire_claim(svc: TaskService) -> AsyncMock:
+    """Stub every _apply_claim_fields / _provision_claim collaborator;
+    return the inherit mock."""
     object.__setattr__(svc, "_set_original_developer_context", MagicMock())
     object.__setattr__(svc, "_validate_and_set_status", MagicMock())
     object.__setattr__(svc, "_emit_status_transition_audit", MagicMock())
@@ -60,9 +64,17 @@ def _wire_finalize(svc: TaskService) -> AsyncMock:
     object.__setattr__(svc, "_create_work_session_if_needed", AsyncMock())
     object.__setattr__(svc, "_inject_proactive_context", AsyncMock())
     object.__setattr__(svc, "_CLAIMABLE_STATUSES", {TaskStatus.PENDING})
+    object.__setattr__(svc, "_background_tasks", set())
     inherit = AsyncMock()
     object.__setattr__(svc, "_inherit_upstream_base", inherit)
     return inherit
+
+
+async def _claim(svc: TaskService, task: MagicMock, agent: MagicMock) -> None:
+    """Run apply-then-provision, the same sequence claim(provision=True) runs."""
+    agent_id = uuid4()
+    snapshot = await svc._apply_claim_fields(task, agent, agent_id)
+    await svc._provision_claim(task, agent, agent_id, snapshot)
 
 
 def _agent(role: str) -> MagicMock:
@@ -72,17 +84,17 @@ def _agent(role: str) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# _finalize_claim gating
+# _apply_claim_fields / _provision_claim gating
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_dev_reclaim_with_existing_branch_inherits() -> None:
     svc = _service()
-    inherit = _wire_finalize(svc)
+    inherit = _wire_claim(svc)
     task = _claim_task("feature/backend/AAA--BBB")
 
-    await svc._finalize_claim(task, _agent("developer"), uuid4())
+    await _claim(svc, task, _agent("developer"))
 
     inherit.assert_awaited_once()
 
@@ -90,10 +102,10 @@ async def test_dev_reclaim_with_existing_branch_inherits() -> None:
 @pytest.mark.asyncio
 async def test_pm_reclaim_with_existing_branch_inherits() -> None:
     svc = _service()
-    inherit = _wire_finalize(svc)
+    inherit = _wire_claim(svc)
     task = _claim_task("feature/main_pm/AAA")
 
-    await svc._finalize_claim(task, _agent("cell_pm"), uuid4())
+    await _claim(svc, task, _agent("cell_pm"))
 
     inherit.assert_awaited_once()
 
@@ -101,13 +113,13 @@ async def test_pm_reclaim_with_existing_branch_inherits() -> None:
 @pytest.mark.asyncio
 async def test_pm_review_queue_reclaim_never_inherits() -> None:
     """A PM's i_will_plan re-claim of its own AWAITING_PM_REVIEW task must
-    not move a branch that already passed QA + the PR gate — a silent base
+    not move a branch that already passed QA + the PR gate: a silent base
     merge there would put unreviewed content under the merge decision."""
     svc = _service()
-    inherit = _wire_finalize(svc)
+    inherit = _wire_claim(svc)
     task = _claim_task("feature/main_pm/AAA", status=TaskStatus.AWAITING_PM_REVIEW)
 
-    await svc._finalize_claim(task, _agent("cell_pm"), uuid4())
+    await _claim(svc, task, _agent("cell_pm"))
 
     inherit.assert_not_awaited()
 
@@ -116,10 +128,10 @@ async def test_pm_review_queue_reclaim_never_inherits() -> None:
 async def test_needs_revision_reclaim_inherits() -> None:
     """A bounced task re-claimed by its dev is the flagship inherit case."""
     svc = _service()
-    inherit = _wire_finalize(svc)
+    inherit = _wire_claim(svc)
     task = _claim_task("feature/backend/AAA--BBB", status=TaskStatus.NEEDS_REVISION)
 
-    await svc._finalize_claim(task, _agent("developer"), uuid4())
+    await _claim(svc, task, _agent("developer"))
 
     inherit.assert_awaited_once()
 
@@ -127,22 +139,22 @@ async def test_needs_revision_reclaim_inherits() -> None:
 @pytest.mark.asyncio
 async def test_qa_claim_never_moves_the_branch() -> None:
     svc = _service()
-    inherit = _wire_finalize(svc)
+    inherit = _wire_claim(svc)
     task = _claim_task("feature/backend/AAA--BBB")
 
-    await svc._finalize_claim(task, _agent("qa"), uuid4())
+    await _claim(svc, task, _agent("qa"))
 
     inherit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_fresh_branch_skips_inheritance() -> None:
-    """No pre-claim branch → the fresh cut already builds on the live base."""
+    """No pre-claim branch: the fresh cut already builds on the live base."""
     svc = _service()
-    inherit = _wire_finalize(svc)
+    inherit = _wire_claim(svc)
     task = _claim_task(None)
 
-    await svc._finalize_claim(task, _agent("developer"), uuid4())
+    await _claim(svc, task, _agent("developer"))
 
     inherit.assert_not_awaited()
 
@@ -150,11 +162,11 @@ async def test_fresh_branch_skips_inheritance() -> None:
 @pytest.mark.asyncio
 async def test_branchless_coordination_skips_inheritance() -> None:
     svc = _service()
-    inherit = _wire_finalize(svc)
+    inherit = _wire_claim(svc)
     task = _claim_task("feature/main_pm/AAA")
     task.project_id = None
 
-    await svc._finalize_claim(task, _agent("main_pm"), uuid4())
+    await _claim(svc, task, _agent("main_pm"))
 
     inherit.assert_not_awaited()
 

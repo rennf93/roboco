@@ -16,6 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
+# py-spy: a standalone Rust binary with no Python runtime of its own, for
+# live-profiling a stuck orchestrator (`docker compose exec orchestrator
+# py-spy dump --pid 1`) without restarting it. `uv tool install` keeps it out
+# of the project venv/lock (never a roboco dependency); its bin-dir entry is
+# a symlink into the isolated tool venv, so resolve that with `readlink -f`
+# before copying, so the runner stage only gets the plain binary, not a link
+# into a tool-venv tree that stage never copies.
+RUN uv tool install py-spy \
+    && install -m755 "$(readlink -f "$(uv tool dir --bin)/py-spy")" /usr/local/bin/py-spy
+
 WORKDIR /app
 
 ENV UV_HTTP_TIMEOUT=300 \
@@ -87,6 +97,11 @@ COPY --from=builder /app/alembic /app/alembic
 # Python cell deps, and CI commands shell out to `uv run`. The builder stage
 # has it at /usr/local/bin/uv; carry it into the runner so it's on PATH.
 COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
+
+# py-spy for live profiling (docker compose exec orchestrator py-spy dump
+# --pid 1). Needs SYS_PTRACE, granted via cap_add on the orchestrator
+# service in the compose files.
+COPY --from=builder /usr/local/bin/py-spy /usr/local/bin/py-spy
 
 # Orchestrator clones workspaces as root, then chowns them to the agent
 # user (uid 1000) so the agent container can read/write. After the chown,

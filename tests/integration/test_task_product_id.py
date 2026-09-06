@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -10,6 +12,7 @@ from roboco.db.tables import AgentTable, ProductTable, ProjectTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.task import TaskCreateRequest
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 
 if TYPE_CHECKING:
@@ -189,3 +192,99 @@ async def test_coordination_task_claims_plans_and_starts_without_branch(
     assert refreshed is not None
     assert refreshed.status == TaskStatus.IN_PROGRESS
     assert not refreshed.branch_name  # coordination task does no git, has no branch
+
+
+_FANOUT_APPROACH = (
+    "Delegate one leaf to each of the three cells in dependency order: the "
+    "backend leaf lands the API first, the frontend leaf consumes it, and the "
+    "UX leaf polishes the flow last. Each leaf carries its own acceptance "
+    "criteria and PR; this root only coordinates and never touches a repo."
+)
+
+
+@pytest.mark.asyncio
+async def test_coordination_root_i_will_plan_reaches_in_progress_via_gateway(
+    svc_setup: dict, db_session: AsyncSession
+) -> None:
+    """The same coordination root, driven through the gateway verb: the
+    choreographer composes (claim, set_plan), provisions (no branch for a
+    product-backed root), then starts. Pins that the post-provision start
+    still passes the branchless coordination exemption end to end."""
+    svc: TaskService = svc_setup["svc"]
+    pm = AgentTable(
+        id=uuid4(),
+        name="Main PM",
+        slug=f"main-pm-{uuid4().hex[:6]}",
+        role=AgentRole.MAIN_PM,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="s",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(pm)
+    await db_session.flush()
+    task = await svc.create(
+        TaskCreateRequest(
+            title="Prompter (board fan-out)",
+            description="a real coordination task description over twenty chars",
+            acceptance_criteria=["delegated to backend, frontend, ux_ui cells"],
+            team=Team.BOARD,
+            created_by=svc_setup["creator"],
+            project_id=None,
+            product_id=svc_setup["product_id"],
+            assigned_to=cast("UUID", pm.id),
+            task_type=TaskType.CODE,
+            nature=TaskNature.NON_TECHNICAL,
+            estimated_complexity=Complexity.HIGH,
+        )
+    )
+    journal = AsyncMock()
+    journal.has_decision_for_task.return_value = True
+    journal.latest_decision_at.return_value = datetime.now(UTC)
+    evidence = AsyncMock()
+    for method in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
+        getattr(evidence, method).return_value = []
+    deps = ChoreographerDeps(
+        task=svc,
+        work_session=AsyncMock(),
+        git=AsyncMock(),
+        a2a=AsyncMock(),
+        journal=journal,
+        audit=AsyncMock(),
+        evidence_repo=evidence,
+    )
+    env = await Choreographer(deps).i_will_plan(
+        pm_agent_id=cast("UUID", pm.id),
+        task_id=cast("UUID", task.id),
+        plan=_FANOUT_APPROACH,
+        rich_plan={
+            "approach": _FANOUT_APPROACH,
+            "sub_tasks": [
+                {
+                    "title": "backend leaf",
+                    "description": (
+                        "Backend cell builds the API surface behind the prompter "
+                        "and wires its persistence; the PM reviews the PR before "
+                        "the frontend leaf integrates against it."
+                    ),
+                }
+            ],
+        },
+    )
+    assert env.error is None, f"i_will_plan failed: {env.message}"
+    assert env.status == "in_progress"
+    refreshed = await svc.get(cast("UUID", task.id))
+    assert refreshed is not None
+    assert str(refreshed.status) == "in_progress"
+    assert not refreshed.branch_name

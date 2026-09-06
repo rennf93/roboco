@@ -36,6 +36,7 @@ from roboco.models.journal import (
     TaskReflectionParams,
 )
 from roboco.services.journal import JournalService, drain_rag_index_tasks
+from roboco.services.optimal_brain.indexer_worker import drain_inline_index_tasks
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError as _IE
 
@@ -505,7 +506,12 @@ async def test_create_entry_learning_calls_record_learning(
         )
     )
     assert entry is not None
-    await drain_rag_index_tasks()  # indexing is fire-and-forget; let it run
+    # No real Redis in tests, so the enqueue falls back inline; the fallback
+    # resolves the service through the journal service's own
+    # _get_optimal_service (see enqueue_index_request's optimal_resolver),
+    # so it sees the injected mock. The inline fallback stays a background
+    # task, so await it before asserting.
+    await drain_inline_index_tasks()
     mock_optimal.record_learning.assert_awaited()
 
 
@@ -529,7 +535,7 @@ async def test_nonprivate_entry_is_indexed_to_shared_corpus(
             is_private=False,
         )
     )
-    await drain_rag_index_tasks()
+    await drain_inline_index_tasks()
     mock_optimal.index_journal_entry.assert_awaited()
 
 

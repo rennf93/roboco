@@ -435,6 +435,24 @@ class UnblockRequest(BaseModel):
     restore: bool = True
 
 
+class CancelLeafRequest(BaseModel):
+    """HTTP body for the cell_pm/main_pm `cancel_leaf` verb.
+
+    ``task_id`` is the CHILD to close - a zero-diff leaf (no commits ahead
+    of its base, no open PR) whose findings a merged sibling already fixed.
+    """
+
+    task_id: UUID
+    reason: str = Field(
+        ...,
+        min_length=10,
+        description=(
+            "Why no legitimate diff remains - recorded as the PM's "
+            "journal:decision and on the task's cancellation note."
+        ),
+    )
+
+
 class CompleteRequest(BaseModel):
     task_id: UUID
     notes: str = Field(..., min_length=1)

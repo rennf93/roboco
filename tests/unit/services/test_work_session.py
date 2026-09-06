@@ -15,6 +15,7 @@ from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.work_session import WorkSessionCreate, WorkSessionStatus
 from roboco.services.base import ConflictError
 from roboco.services.work_session import WorkSessionService, get_work_session_service
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
@@ -211,6 +212,42 @@ async def test_merge_pr_locks_work_session_row_with_for_update() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _delete_active_session_seed(
+    database_url: str, ws_id: UUID, project_id: UUID, agent_ids: list[UUID]
+) -> None:
+    """Delete _seed_active_session's rows on a FRESH connection.
+
+    _seed_active_session commits for real (needed so the two concurrent
+    sessions below can see it), so db_session's rollback-based teardown
+    never reaches these rows. Left alone, the two CELL_PM/backend
+    "merger" agents accumulate in the shared per-run test DB and make any
+    OTHER test's unscoped "find the cell_pm for this team" lookup
+    (TaskService._agent_with_role_and_team has no ORDER BY) pick one of
+    these instead of its own agent, reproduced against
+    test_full_lifecycle_real_db.py::test_full_chain_through_doc_handoff
+    when both files run in the same pytest process.
+    """
+    engine = create_async_engine(database_url, future=True)
+    try:
+        factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+        async with factory() as cleanup:
+            await cleanup.execute(
+                delete(WorkSessionTable).where(WorkSessionTable.id == ws_id)
+            )
+            await cleanup.execute(
+                delete(TaskTable).where(TaskTable.project_id == project_id)
+            )
+            await cleanup.execute(
+                delete(ProjectTable).where(ProjectTable.id == project_id)
+            )
+            await cleanup.execute(
+                delete(AgentTable).where(AgentTable.id.in_(agent_ids))
+            )
+            await cleanup.commit()
+    finally:
+        await engine.dispose()
+
+
 async def _seed_active_session(
     db_session: AsyncSession,
 ) -> tuple[UUID, UUID, UUID, UUID, UUID]:
@@ -322,10 +359,10 @@ async def test_merge_pr_concurrent_calls_serialize_one_write(
     sees status=COMPLETED and no-ops."""
     (
         ws_id,
-        _worker_id,
+        worker_id,
         merger_a_id,
         merger_b_id,
-        _project_id,
+        project_id,
     ) = await _seed_active_session(db_session)
 
     engine = create_async_engine(_test_database_url, future=True)
@@ -342,14 +379,16 @@ async def test_merge_pr_concurrent_calls_serialize_one_write(
             await sess.commit()
             return result, merger
 
-    # Both fire together: without FOR UPDATE, each session's SELECT sees the
-    # last committed (ACTIVE) row and both write their own merger. With FOR
-    # UPDATE, one caller's SELECT blocks on the other's row lock until it
-    # commits, then reads COMPLETED and no-ops — exactly one merger is
-    # recorded. Which caller wins the lock is non-deterministic, so the
-    # assertions below check the invariant, not the winner.
-    res_a, res_b = await asyncio.gather(_call(merger_a), _call(merger_b))
-    await engine.dispose()
+    try:
+        # Both fire together: without FOR UPDATE, each session's SELECT sees
+        # the last committed (ACTIVE) row and both write their own merger.
+        # With FOR UPDATE, one caller's SELECT blocks on the other's row lock
+        # until it commits, then reads COMPLETED and no-ops, exactly one
+        # merger is recorded. Which caller wins the lock is non-deterministic,
+        # so the assertions below check the invariant, not the winner.
+        res_a, res_b = await asyncio.gather(_call(merger_a), _call(merger_b))
+    finally:
+        await engine.dispose()
 
     a_row, a_merger = res_a
     b_row, b_merger = res_b
@@ -361,6 +400,10 @@ async def test_merge_pr_concurrent_calls_serialize_one_write(
     winner = a_row.merged_by
     assert winner in (a_merger, b_merger)
     assert b_row.merged_by == winner
+
+    await _delete_active_session_seed(
+        _test_database_url, ws_id, project_id, [worker_id, merger_a_id, merger_b_id]
+    )
 
 
 # ---------------------------------------------------------------------------

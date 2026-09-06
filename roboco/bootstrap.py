@@ -6,6 +6,7 @@ Data constants are in roboco/seeds/, database operations in roboco/db/seed.py.
 """
 
 import asyncio
+import socket
 from http import HTTPStatus
 
 import httpx
@@ -47,6 +48,32 @@ async def _run_api_server() -> None:
     )
     server = uvicorn.Server(config)
     await server.serve()
+
+
+async def _run_indexer_role() -> None:
+    """ROBOCO_ROLE=indexer: run ONLY the KB/embedding worker. No API server,
+    no orchestrator, no event bus; this process just consumes the RAG index
+    request stream. Imported lazily so the api and dispatcher roles never
+    pay for the worker's import graph.
+
+    ``dedicated_embedder=True``: this dedicated role owns its own
+    low-concurrency embedder instead of sharing the fleet's
+    ``shared_embedder`` singleton, so query embeds elsewhere keep a free slot.
+    """
+    from roboco.services.optimal_brain.indexer_worker import run_indexer
+
+    await run_indexer(dedicated_embedder=True)
+
+
+def _start_indexer_task_if_available() -> asyncio.Task[None] | None:
+    """ROBOCO_ROLE=all: run the indexer worker in-process too, alongside the
+    orchestrator's own loops, so the single-process mode keeps doing
+    everything. Imported lazily like ``_run_indexer_role`` so the other
+    roles never load the worker's import graph.
+    """
+    from roboco.services.optimal_brain.indexer_worker import run_indexer
+
+    return asyncio.create_task(run_indexer())
 
 
 async def _wait_for_api_ready(max_wait: int = 120) -> None:
@@ -94,15 +121,30 @@ async def main(
         logger.info("Orchestrator skipped, exiting")
         return
 
-    # Initialize event bus (Redis Streams with consumer groups)
+    if settings.role == "indexer":
+        await _run_indexer_role()
+        return
+
+    # Initialize event bus (Redis Streams with consumer groups). Consumer
+    # name includes role + hostname (the container id in Docker): api and
+    # dispatcher both set ROBOCO_HOST=0.0.0.0/ROBOCO_PORT=8000, so the old
+    # host:port name collided across the two containers, putting them under
+    # one Redis consumer identity in the same consumer group. Group name is
+    # unchanged, so consumer-group delivery still balances events once each.
     event_bus = await init_event_bus(
-        consumer_name=f"orchestrator-{settings.host}:{settings.port}",
+        consumer_name=f"orchestrator-{settings.role}-{socket.gethostname()}",
         recover_pending=True,  # Recover unacknowledged messages from previous run
     )
     register_default_handlers(event_bus)
 
-    # Register WebSocket bridge handlers (forward stream events to WebSocket clients)
-    await start_websocket_bridge()
+    # WebSocket bridge forwards stream events to the panel's live /ws/
+    # connections, which only ever terminate on the api-role process (nginx
+    # routes /ws/ to the orchestrator service). A dispatcher-role copy of the
+    # bridge would just steal deliveries from the consumer group with no
+    # connections behind it to forward to, silently dropping the event
+    # fleet-wide. Skipped for role='dispatcher'.
+    if settings.role != "dispatcher":
+        await start_websocket_bridge()
 
     await event_bus.start_listening()
     logger.info("Event bus initialized (Redis Streams)")
@@ -133,6 +175,9 @@ async def main(
     await _wait_for_api_ready()
 
     await orchestrator.start()
+
+    if settings.role == "all":
+        _start_indexer_task_if_available()
 
     # Spawn requested agents
     if spawn_agents:

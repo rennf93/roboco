@@ -11,6 +11,7 @@ from roboco.utils.crypto import (
     encrypt_token,
     is_encryption_configured,
 )
+from roboco.utils.shipped_work_digest import shipped_work_digest
 
 __all__ = [
     "EncryptionError",
@@ -18,6 +19,7 @@ __all__ = [
     "encrypt_token",
     "is_encryption_configured",
     "require_uuid",
+    "shipped_work_digest",
     "to_python_uuid",
     "to_python_uuid_list",
 ]

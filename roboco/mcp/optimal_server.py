@@ -28,7 +28,13 @@ from fastapi import status as http_status
 from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 
-from roboco.mcp.utils import ApiClient, format_error_response
+from roboco.mcp.utils import ApiClient, configure_stdio_logging, format_error_response
+
+# See flow_server.py: __name__ is already "__main__" at this point when run
+# as the real stdio server, so this guards a plain in-process test import
+# from clobbering the ambient structlog config for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 
 class RecordDecisionInput(BaseModel):
@@ -1227,7 +1233,7 @@ if __name__ == "__main__":
 
     _MIN_ARGS = 2
     if len(sys.argv) < _MIN_ARGS:
-        print("Usage: python -m roboco.mcp.optimal_server <agent_id>")
+        print("Usage: python -m roboco.mcp.optimal_server <agent_id>", file=sys.stderr)
         sys.exit(1)
 
     agent_id_cli = sys.argv[1]

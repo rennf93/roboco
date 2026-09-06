@@ -745,8 +745,8 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     # owning PM's merge decision (complete / request_changes), not on
     # re-planning. A prior revision granted CELL_PM/MAIN_PM a claim from
     # AWAITING_PM_REVIEW so a respawned PM could "re-claim its own review-queue
-    # task", but claim composes into i_will_plan's (claim, set_plan, start)
-    # sequence: every respawn legally re-claimed the task, reset it to
+    # task", but claim composes into i_will_plan's (claim, set_plan)
+    # + start sequence: every respawn legally re-claimed the task, reset it to
     # in_progress, and re-ran the full submit_up -> pr_pass ->
     # awaiting_pm_review cycle — looping forever with no progress (one
     # production task cycled 11 times across 37 spawns in 4h before this was
@@ -895,6 +895,15 @@ def _next_hint_pm_complete(_t: Any) -> str:
 
 def _next_hint_pm_idle(_t: Any) -> str:
     return "idle until subtasks finish"
+
+
+def _next_hint_cancel_leaf(t: Any) -> str:
+    parent_id = getattr(t, "parent_task_id", None)
+    parent_ref = f" ({parent_id})" if parent_id else ""
+    return (
+        f"leaf cancelled - submit_up (or submit_root) on its parent{parent_ref},"
+        " naming any already-fixed findings in resolved_findings, to roll up"
+    )
 
 
 def _next_hint_submit_up(t: Any) -> str:
@@ -1202,7 +1211,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "Claim a task, set the plan, and transition to in_progress."
             " Atomic - preconditions checked before any state mutation."
         ),
-        composes=("claim", "set_plan", "start"),
+        composes=("claim", "set_plan"),
         extra_preconditions=(PRECONDITION_PLAN,),
         side_effects=(),
         next_hint=_next_hint_after_claim,
@@ -1214,7 +1223,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "PM mirror of i_will_work_on for parent tasks. Claim, plan,"
             " transition to in_progress; from there delegate subtasks."
         ),
-        composes=("claim", "set_plan", "start"),
+        composes=("claim", "set_plan"),
         extra_preconditions=(PRECONDITION_PLAN,),
         side_effects=(),
         next_hint=_next_hint_after_plan,
@@ -1607,6 +1616,25 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         extra_preconditions=(),
         side_effects=(),
         next_hint=lambda _t: "task restored; original assignee will resume",
+    ),
+    "cancel_leaf": IntentSpec(
+        name="cancel_leaf",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "Close a zero-diff leaf: a delegated child whose findings a"
+            " merged sibling already fixed, so no legitimate diff remains"
+            " and i_am_done/complete can never accept it. Refuses a target"
+            " with any children of its own (not a leaf), any commit ahead"
+            " of its base, or an open PR - those go through the normal"
+            " review path, not this. `reason` is recorded as your"
+            " journal:decision and on the task's audit trail. Cell PM:"
+            " only your own coordination task's children. Main PM: any"
+            " root's descendant."
+        ),
+        composes=(),  # special - the verb body owns ownership + zero-diff checks
+        extra_preconditions=(PRECONDITION_NON_TERMINAL,),
+        side_effects=(),
+        next_hint=_next_hint_cancel_leaf,
     ),
     "triage": IntentSpec(
         name="triage",

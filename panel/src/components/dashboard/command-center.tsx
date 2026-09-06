@@ -33,6 +33,8 @@ import { Button } from "@/components/ui/button";
 import { UsageOverviewPanel } from "./usage-overview-panel";
 import { ScorecardOverviewPanel } from "./scorecard-overview-panel";
 import { CostTrendChart } from "./cost-trend-chart";
+import { PortfolioCards } from "./portfolio-cards";
+import { CeoGate } from "./ceo-gate";
 import {
   Tooltip,
   TooltipContent,
@@ -174,6 +176,21 @@ export function CommandCenter() {
       </div>
 
       <CostTrendChart data={costTrend} isLoading={loadingCostTrend} />
+
+      {/* Portfolio — per-project cross-fleet metrics, CEO-only. The backend
+          require_ceo_role-gates GET /dashboard/portfolio; the CeoGate keeps an
+          agent-role browser from mounting the section (and fetching the
+          CEO-only endpoint) at all. */}
+      <CeoGate>
+        <section>
+          <HelpTip label="Per-project delivery, rework, findings, and budget burn across the whole fleet">
+            <h2 className="text-lg font-semibold mb-4 inline-block">
+              Portfolio
+            </h2>
+          </HelpTip>
+          <PortfolioCards />
+        </section>
+      </CeoGate>
 
       {/* Section 2: Team Health (team cards + Task Intake + Secretary) */}
       <section>

@@ -115,6 +115,17 @@ vi.mock("../cost-trend-chart", () => ({
 vi.mock("../stalled-needs-you-panel", () => ({
   StalledNeedsYouPanel: () => <div>StalledNeedsYouPanelStub</div>,
 }));
+vi.mock("../portfolio-cards", () => ({
+  PortfolioCards: () => <div>PortfolioCardsStub</div>,
+}));
+
+// The panel's presented role — mockable so the in-path CEO gate under
+// CommandCenter is exercised both ways.
+const { mockRole } = vi.hoisted(() => ({ mockRole: vi.fn(() => "ceo") }));
+vi.mock("../panel-role", () => ({
+  currentPanelRole: mockRole,
+  isCeoRole: (role: string) => role === "ceo",
+}));
 
 import { CommandCenter } from "../command-center";
 
@@ -135,6 +146,7 @@ describe("CommandCenter", () => {
       "UsageOverviewPanelStub",
       "ScorecardOverviewPanelStub",
       "CostTrendChartStub",
+      "PortfolioCardsStub",
       "TeamHealthCardsStub",
       "CeoApprovalQueueStub",
       "StrategySignalsPanelStub",
@@ -161,6 +173,7 @@ describe("CommandCenter", () => {
     const order = [
       "QuickActionsCardStub",
       "KeyMetricsPanelStub",
+      "PortfolioCardsStub",
       "TeamHealthCardsStub",
       "CeoApprovalQueueStub",
       "PrReviewQueueStub",
@@ -191,5 +204,11 @@ describe("CommandCenter", () => {
       prReview.compareDocumentPosition(release) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("hides the CEO-gated portfolio section for an agent role", () => {
+    mockRole.mockReturnValueOnce("developer");
+    render(<CommandCenter />);
+    expect(screen.queryByText("PortfolioCardsStub")).not.toBeInTheDocument();
   });
 });

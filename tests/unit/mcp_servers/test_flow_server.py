@@ -504,6 +504,25 @@ def test_complete_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kwargs["json"] == {"task_id": "task-uuid", "notes": "approved"}
 
 
+def test_cancel_leaf_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    srv = _reload_for_role(
+        monkeypatch, "cell_pm", "00000000-0000-0000-0000-000000000004"
+    )
+
+    fake_client = _make_fake_client({"status": "cancelled"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = srv.cancel_leaf("task-uuid", "sibling PR already fixed this")
+
+    assert result["status"] == "cancelled"
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v1/flow/cell_pm/cancel_leaf" in args[0]
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "reason": "sibling PR already fixed this",
+    }
+
+
 def test_escalate_up_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     srv = _reload_for_role(
         monkeypatch, "cell_pm", "00000000-0000-0000-0000-000000000004"

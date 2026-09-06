@@ -565,3 +565,37 @@ async def test_sync_branch_rejection_writes_audit_row() -> None:
     kwargs = audit_svc.log_event.await_args.kwargs
     assert kwargs["event_type"] == "gateway.rejected"
     assert kwargs["details"]["verb"] == "sync_branch"
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_commits_before_the_git_rebase() -> None:
+    """sync_task_branch chown-walks the workspace (checkout/reset/rebase) for
+    tens of seconds on a slow volume. The request's DB transaction must be
+    closed out first, holding it open across that git I/O is the same
+    chown-storm-starves-writers pattern as a held row lock."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    committed_before_git: list[bool] = []
+
+    async def _sync_task_branch(*_a: object, **_k: object) -> dict[str, object]:
+        committed_before_git.append(task_svc.session.commit.await_count > 0)
+        return {"status": "rebased", "commits_rebased": 1}
+
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.side_effect = _sync_task_branch
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error is None
+    assert committed_before_git == [True]
+    task_svc.session.commit.assert_awaited()

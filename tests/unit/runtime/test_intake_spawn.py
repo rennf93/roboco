@@ -806,7 +806,8 @@ class TestSpawnIntakeSession:
             return ["--label", f"com.docker.compose.service={service}"]
 
         monkeypatch.setattr(
-            "roboco.runtime.orchestrator.compose_label_args", _fake_label_args
+            "roboco.runtime.engines.interactive_sessions.compose_label_args",
+            _fake_label_args,
         )
 
         await orch.spawn_intake_session("sess-labels", project_slug="roboco")
@@ -830,7 +831,7 @@ class TestSpawnIntakeSession:
             return []
 
         monkeypatch.setattr(
-            "roboco.runtime.orchestrator.compose_label_args", _no_labels
+            "roboco.runtime.engines.interactive_sessions.compose_label_args", _no_labels
         )
 
         await orch.spawn_intake_session("sess-no-labels", project_slug="roboco")

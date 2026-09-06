@@ -243,7 +243,7 @@ async def test_pr_review_claim_and_complete(db_session: AsyncSession) -> None:
     # claim to the reaper and, for a GROK reviewer, trips the idle-kill
     # watchdog before the review is posted (the wedge/respawn loop).
     assert claimed.last_heartbeat_at is not None
-    # Single-claimant invariant (mirrors _qa_or_doc_claim / _finalize_claim):
+    # Single-claimant invariant (mirrors _qa_or_doc_claim / _apply_claim_fields):
     # active_claimant_id is what _active_claim_violation checks for content
     # writes (note/evidence). Without it the reviewer can claim + read the PR
     # but every note() returns _not_active_claimant -> the journal:learning

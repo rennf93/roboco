@@ -99,6 +99,8 @@ _CELL_PM_DO = (
     "evidence",
     "pr_update",
     "draft_playbook",
+    # Real, uptime-adjusted elapsed times, so PMs report on task age/staleness.
+    "task_time",
     *_NOTIFY_RECEIVER,
 )
 
@@ -110,6 +112,8 @@ _MAIN_PM_DO = (
     "evidence",
     "pr_update",
     "draft_playbook",
+    # Real, uptime-adjusted elapsed times, so PMs report on task age/staleness.
+    "task_time",
     *_NOTIFY_RECEIVER,
 )
 
@@ -127,6 +131,9 @@ _BOARD_DO = (
     # below), the runtime role-vs-program check in content_actions.py does
     # the real gating.
     "nothing_to_propose",
+    # Real, uptime-adjusted elapsed times, so Board roles cite this instead
+    # of wall-clock hours when a report calls a task stale/stuck/unattended.
+    "task_time",
     *_NOTIFY_RECEIVER,
 )
 
@@ -188,6 +195,9 @@ _AUDITOR_DO = (
     "evidence",
     "dm",
     "read_a2a",
+    # Real, uptime-adjusted elapsed times, so the Auditor cites this instead
+    # of wall-clock hours before calling a task stale/stuck/unattended.
+    "task_time",
     "approve_playbook",
     "reject_playbook",
     "archive_playbook",
@@ -215,7 +225,15 @@ _AUDITOR_DO = (
 # in-thread; its only INITIATION target stays its owning cell_pm/main_pm
 # (agents_config._check_pr_reviewer_a2a).
 _PR_REVIEWER_FLOW = spec.intents_for_role(spec.Role.PR_REVIEWER)
-_PR_REVIEWER_DO = ("note", "evidence", "dm", "read_a2a", "notify_list", "notify_get")
+_PR_REVIEWER_DO = (
+    "note",
+    "evidence",
+    "dm",
+    "read_a2a",
+    "notify_list",
+    "notify_get",
+    "task_time",
+)
 
 _PROMPTER_FLOW = spec.intents_for_role(
     spec.Role.PROMPTER
@@ -231,7 +249,7 @@ _PROMPTER_DO = ("note", "evidence")
 # bridge). Its gated CEO-authority directive tools are layered on separately by
 # the secretary authority surface, not registered as generic do-tools here.
 _SECRETARY_FLOW = spec.intents_for_role(spec.Role.SECRETARY)  # none — human-only
-_SECRETARY_DO = ("note", "evidence")
+_SECRETARY_DO = ("note", "evidence", "task_time")
 
 
 ROLE_CONFIGS: dict[str, RoleConfig] = {

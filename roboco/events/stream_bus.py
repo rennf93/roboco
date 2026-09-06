@@ -49,6 +49,10 @@ class StreamEventBus:
     # Undecodable messages are parked here before ACK so an operator can
     # inspect a poison pill instead of losing it to a silent ACK.
     DEAD_LETTER_STREAM = "roboco:stream:dead-letter"
+    # A message a handler keeps failing on is reclaimed forever otherwise
+    # (XREADGROUP '>' never re-delivers it, only the reclaim loop does):
+    # past this many deliveries it's dead-lettered instead of retried again.
+    MAX_DELIVERY_COUNT = 5
 
     def __init__(
         self,
@@ -84,6 +88,12 @@ class StreamEventBus:
     def is_connected(self) -> bool:
         """Check if the event bus is connected to Redis."""
         return self._redis is not None
+
+    @property
+    def redis(self) -> "redis.Redis | None":
+        """Public accessor for raw stream ops this bus doesn't wrap (e.g. XLEN/
+        XRANGE for a caller-owned backlog check). None until ``connect()``."""
+        return self._redis
 
     async def disconnect(self) -> None:
         """Disconnect from Redis."""
@@ -431,6 +441,13 @@ class StreamEventBus:
                 message_id=message_id,
             )
 
+    async def dead_letter(
+        self, stream: str, message_id: str, data: dict, reason: str
+    ) -> None:
+        """Public wrapper over :meth:`_dead_letter` for callers outside this
+        class doing their own stream inspection (e.g. a backlog shed check)."""
+        await self._dead_letter(stream, message_id, data, reason)
+
     async def _handle_message(
         self,
         stream: str,
@@ -507,6 +524,26 @@ class StreamEventBus:
             await self._handle_message(stream, self._to_str(claim_id), data)
         return 1
 
+    async def _dead_letter_repeated(self, stream: str, msg_id: str) -> None:
+        """Claim a message stuck past MAX_DELIVERY_COUNT retries and
+        dead-letter it instead of reclaiming it forever."""
+        if self._redis is None:
+            raise RuntimeError("Invariant: self._redis must be set (guarded by caller)")
+        raw = await self._redis.xclaim(
+            stream,
+            self.group_name,
+            self.consumer_name,
+            min_idle_time=0,
+            message_ids=[msg_id],
+        )
+        if not raw:
+            return
+        claimed = cast("list[tuple[bytes, dict[bytes, bytes]]]", raw)
+        for claim_id, data in claimed:
+            cid = self._to_str(claim_id)
+            await self._dead_letter(stream, cid, data, "max_delivery_count_exceeded")
+            await self._redis.xack(stream, self.group_name, cid)
+
     async def _recover_stream(self, stream: str, idle_time_ms: int) -> int:
         """Recover idle pending messages from a single stream."""
         if self._redis is None:
@@ -525,13 +562,20 @@ class StreamEventBus:
 
         recovered = 0
         for msg in pending_details:
-            if int(msg["time_since_delivered"]) >= idle_time_ms:
-                # Decode the id: xpending_range returns bytes (no
-                # decode_responses); str(bytes) → "b'..'", which Redis rejects
-                # as an unrecognized XCLAIM option, wedging pending recovery.
-                recovered += await self._claim_and_handle(
-                    stream, self._to_str(msg["message_id"]), idle_time_ms
-                )
+            # Decode the id: xpending_range returns bytes (no
+            # decode_responses); str(bytes) → "b'..'", which Redis rejects
+            # as an unrecognized XCLAIM option, wedging pending recovery.
+            msg_id = self._to_str(msg["message_id"])
+            idle_ms = int(msg["time_since_delivered"])
+            if idle_ms < idle_time_ms:
+                # Still within a normal in-flight window, a handler mid
+                # execution on its Nth delivery is not a poison pill yet.
+                continue
+            if int(msg.get("times_delivered", 0)) > self.MAX_DELIVERY_COUNT:
+                await self._dead_letter_repeated(stream, msg_id)
+                recovered += 1
+                continue
+            recovered += await self._claim_and_handle(stream, msg_id, idle_time_ms)
         return recovered
 
     async def recover_pending(self, idle_time_ms: int = 60000) -> int:

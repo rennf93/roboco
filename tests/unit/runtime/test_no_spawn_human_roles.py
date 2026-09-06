@@ -25,7 +25,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import roboco.runtime.orchestrator as orch_mod
 from roboco.foundation.identity import Role, role_for_slug
 from roboco.runtime.orchestrator import AgentOrchestrator, AgentReadinessError
 from roboco.seeds.initial_data import AGENT_UUIDS
@@ -155,7 +154,7 @@ async def test_dispatch_a2a_surfaces_human_only_target_skip(
         def __getattr__(self, _name: str) -> object:
             return lambda *_a, **_k: None
 
-    monkeypatch.setattr(orch_mod, "logger", _Logger())
+    monkeypatch.setattr("roboco.runtime.engines.dispatch_work.logger", _Logger())
     orch = _a2a_orch(AGENT_UUIDS["ceo"])
     await orch._dispatch_a2a_work(MagicMock())
     orch.spawn_agent.assert_not_awaited()

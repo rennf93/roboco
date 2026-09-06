@@ -12,6 +12,7 @@ Documentation for the Frontend Cell team.
 - `/components/` - Component documentation
   - [Page-scoped refresh provider](./components/page-refresh-provider.md) — `PageRefreshProvider` callback registry that lets the navbar refresh button re-fetch only the current page.
   - [Project selector](./components/project-selector.md) — `ProjectSelector` dropdown for picking a project, with optional filtering by team and video-engine enablement.
+  - [Portfolio cards](./components/portfolio-cards.md) — `PortfolioCards` CEO-only per-project metrics cards (five metrics, endpoint-order sort, `/tasks?project=` drill-down) with the `CeoGate`/`panel-role` gating seam and the known slug-vs-`project_id` drill-down follow-up.
 - `/hooks/` - Hook documentation
 - `/qa/` - QA-related docs
 

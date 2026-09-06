@@ -64,10 +64,12 @@ _REF_OBJECT_ID_RE = re.compile(r"\A[0-9a-f]{40}\Z|\A[0-9a-f]{64}\Z")
 _AGENT_UID = int(os.environ.get("ROBOCO_AGENT_UID", "1000"))
 _AGENT_GID = int(os.environ.get("ROBOCO_AGENT_GID", "1000"))
 
-# Large, gitignored, agent-regenerated trees we never need to chown — they are
-# either absent or already agent-owned (the agent created them), and walking
-# node_modules alone cost 2.7-15.5s per git op. Pruning them keeps the
-# ownership walk fast while still handing the agent every tracked file + .git.
+# Large, gitignored, agent-regenerated trees we never need to chown here,
+# either absent or already agent-owned (the agent created them), EXCEPT when
+# install_dev_deps just wrote them as root; _own_install_outputs covers that
+# case separately. Walking node_modules alone cost 2.7-15.5s per git op, so
+# pruning them keeps the ownership walk fast while still handing the agent
+# every tracked file + .git.
 _PRUNE_DIRS = frozenset(
     {
         "node_modules",
@@ -229,6 +231,40 @@ def _ensure_agent_owned(workspace: Path) -> None:
         )
     else:
         _write_owned_marker(workspace)
+
+
+def _own_install_outputs(workspace: Path) -> None:
+    """Chown the root-run dev-deps install output the main ownership walk misses.
+
+    ``install_dev_deps`` runs ``uv sync`` / ``pnpm install`` / ``npm ci`` as
+    root, writing straight into ``.venv``, ``venv``, and ``node_modules``. The
+    main walk (``_iter_ownable_entries``) prunes those same names via
+    ``_PRUNE_DIRS`` on the assumption the agent created them, so it never
+    chowns what the install just wrote as root.
+    """
+    failed = 0
+    for name in (".venv", "venv", "node_modules"):
+        entry = workspace / name
+        if entry.is_symlink():
+            # Worktrees symlink .venv to the clone root's shared .venv
+            # (_link_shared_venv). Own the link itself, never the target.
+            failed += _own_and_grant_rw(str(entry))
+            continue
+        if not entry.is_dir():
+            continue
+        failed += _own_and_grant_rw(str(entry))
+        for root, dirs, files in os.walk(entry, followlinks=False):
+            for child in (*dirs, *files):
+                failed += _own_and_grant_rw(str(Path(root) / child))
+
+    if failed:
+        logger.warning(
+            "Some chowns failed while owning install outputs, agent writes "
+            "may still fail. Check docker user-namespace config or run "
+            "agents as root on this host.",
+            workspace=str(workspace),
+            failures=failed,
+        )
 
 
 def _resolve_clone_root(workspace: Path) -> Path:
@@ -1978,6 +2014,10 @@ class WorkspaceService:
             await self._record_toolchain(workspace, target_python, only_if_missing=True)
             return False
 
+        # The install runs as root and writes .venv / node_modules outside the
+        # git chokepoints, so a live owned-marker would make the repair walk
+        # below skip the freshly root-owned files. Invalidate before running.
+        invalidate_owned_marker(workspace)
         any_ok = False
         for label, argv in commands:
             ok = await self._run_dep_install(workspace, label, argv)
@@ -1989,8 +2029,10 @@ class WorkspaceService:
             with contextlib.suppress(OSError):
                 (workspace / _DEP_INSTALL_MARKER).write_text(digest)
 
-        # The install runs as root (orchestrator); hand the freshly written
-        # .venv / node_modules back to the agent user.
+        # The install runs as root (orchestrator). The main walk below prunes
+        # .venv / node_modules as agent-created, so own those trees first,
+        # then hand the rest of the freshly written workspace to the agent.
+        await asyncio.to_thread(_own_install_outputs, workspace)
         await asyncio.to_thread(_ensure_agent_owned, workspace)
         await self._record_toolchain(workspace, target_python)
         return any_ok

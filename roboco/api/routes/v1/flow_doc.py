@@ -17,7 +17,7 @@ from roboco.api.schemas.v1.flow import (
     ResumeRequest,
     UnclaimRequest,
 )
-from roboco.security import guard_deco
+from roboco.security import guard_deco, mesh_scanned
 from roboco.services.gateway.choreographer import Choreographer
 
 _RUNAWAY_RULES = [
@@ -36,6 +36,7 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 
 @router.post("/give_me_work")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -50,6 +51,7 @@ async def give_me_work(
 
 
 @router.post("/claim_doc_task")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -64,6 +66,7 @@ async def claim_doc_task(
 
 
 @router.post("/i_documented")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -80,6 +83,7 @@ async def i_documented(
 
 
 @router.post("/unclaim")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -94,6 +98,7 @@ async def unclaim(
 
 
 @router.post("/resume")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -108,6 +113,7 @@ async def resume(
 
 
 @router.post("/i_am_idle")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -122,6 +128,7 @@ async def i_am_idle(
 
 
 @router.post("/i_am_blocked")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)

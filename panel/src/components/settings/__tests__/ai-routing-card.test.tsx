@@ -9,7 +9,12 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import React from "react";
-import type { ComplexityOverride, RoutingPreset } from "@/lib/api/providers";
+import type {
+  ComplexityOverride,
+  ModeSnapshot,
+  RoutingPreset,
+} from "@/lib/api/providers";
+import { AssignmentScope, ModelProvider } from "@/types";
 
 const {
   catalog,
@@ -63,10 +68,12 @@ const {
   getGrokKey: vi.fn(async () => ({ has_key: false, enabled: true })),
   setGrokKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   getMode: vi.fn(async () => ({ mode: "anthropic", assignments: [] })),
-  applyMode: vi.fn(async (payload: { mode: string }) => ({
-    mode: payload.mode,
-    assignments: [],
-  })),
+  applyMode: vi.fn(
+    async (payload: { mode: string }): Promise<ModeSnapshot> => ({
+      mode: payload.mode as ModeSnapshot["mode"],
+      assignments: [],
+    }),
+  ),
   getSelfHostedConfig: vi.fn(async () => ({
     base_url: null,
     has_token: false,
@@ -826,7 +833,9 @@ describe("AIRoutingCard", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Cost-Tiered mode button (additive seed, never wipes routing)
+  // Cost-Tiered mode button (additive, never wipes routing; seeds nothing,
+  // the backend's day-1 seed was retired, so the copy and the toast report
+  // what actually happens instead of a developer:low → Haiku seed)
   // -------------------------------------------------------------------------
 
   describe("Cost-Tiered mode button", () => {
@@ -853,6 +862,112 @@ describe("AIRoutingCard", () => {
       await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
       expect(applyMode).not.toHaveBeenCalled();
       confirmSpy.mockRestore();
+    });
+
+    it("its confirm and description never promise the retired developer:low → Haiku seed", async () => {
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      expect(
+        screen.getByText(/No rows are seeded automatically/),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Cost-Tiered"));
+
+      await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+      expect(confirmSpy.mock.calls[0][0]).toContain("No rows are seeded");
+      confirmSpy.mockRestore();
+      // The button copy mentions Haiku nowhere on the whole card.
+      expect(document.body.textContent).not.toContain("Haiku");
+    });
+
+    it("the success toast reports zero rows seeded when the response snapshot carries none", async () => {
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      fireEvent.click(screen.getByText("Cost-Tiered"));
+
+      await waitFor(() =>
+        expect(toast.success).toHaveBeenCalledWith(
+          "Cost-tiered mode applied. No rows seeded.",
+        ),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("the success toast reports the actual override-row count from the response snapshot", async () => {
+      applyMode.mockResolvedValueOnce({
+        mode: "anthropic",
+        assignments: [
+          {
+            id: "a1",
+            scope: AssignmentScope.ROLE,
+            scope_value: "developer",
+            provider_type: ModelProvider.ANTHROPIC,
+            model_name: "claude-opus-5",
+          },
+          {
+            id: "a2",
+            scope: AssignmentScope.ROLE,
+            scope_value: "qa:low",
+            provider_type: ModelProvider.GROK,
+            model_name: "grok-build-0.1",
+          },
+          {
+            id: "a3",
+            scope: AssignmentScope.AGENT_SLUG,
+            scope_value: "be-dev-1",
+            provider_type: ModelProvider.ANTHROPIC,
+            model_name: "claude-opus-5",
+          },
+        ],
+      });
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      fireEvent.click(screen.getByText("Cost-Tiered"));
+
+      // Only the compound "role:complexity" rows count as complexity overrides
+      // (a plain role row and an agent pin are neither).
+      await waitFor(() =>
+        expect(toast.success).toHaveBeenCalledWith(
+          "Cost-tiered mode applied. 1 complexity override row active.",
+        ),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("surfaces an apply failure as an error toast instead of a success", async () => {
+      applyMode.mockRejectedValueOnce(new Error("boom"));
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      fireEvent.click(screen.getByText("Cost-Tiered"));
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith("Apply failed: boom"),
+      );
+      expect(toast.success).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it("highlights as active only when the mode snapshot says cost_tiered, matching the other mode buttons", async () => {
+      getMode.mockResolvedValueOnce({
+        mode: "cost_tiered",
+        assignments: [],
+      });
+      render(withQueryClient(<AIRoutingCard />));
+
+      const costTieredButton = screen
+        .getByText("Cost-Tiered")
+        .closest("button")!;
+      await waitFor(() =>
+        expect(costTieredButton.className).toContain("border-primary"),
+      );
+      expect(costTieredButton.textContent).toContain("active");
     });
   });
 

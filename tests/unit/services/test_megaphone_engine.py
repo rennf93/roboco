@@ -14,6 +14,7 @@ task carries) even though the program itself needs no per-project opt-in.
 
 from __future__ import annotations
 
+import importlib
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
@@ -292,17 +293,19 @@ async def test_a_completed_cycle_unblocks_the_next_one(
 async def test_digest_context_empty_shipped_says_so(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``_shipped_this_week`` is monkeypatched rather than relying on a truly
-    empty DB — this suite runs inside a 14000+-test full-suite pass against
-    one shared Postgres, where a completed task from an unrelated test file
-    can legitimately land inside the real query's 7-day window (a raw DELETE
-    across all TaskTable rows would be needed to rule that out, and that
-    risks FK failures against other tests' audit/journal/work-session rows —
-    see the purge fixture's docstring). This isolates the render logic under
-    test from that query."""
-    monkeypatch.setattr(
-        MegaphoneEngine, "_shipped_this_week", AsyncMock(return_value=[])
-    )
+    """``shipped_work_digest``'s internal queries are monkeypatched rather than
+    relying on a truly empty DB — this suite runs inside a 14000+-test
+    full-suite pass against one shared Postgres, where a completed task from
+    an unrelated test file can legitimately land inside the real query's 7-day
+    window (a raw DELETE across all TaskTable rows would be needed to rule
+    that out, and that risks FK failures against other tests'
+    audit/journal/work-session rows — see the purge fixture's docstring). This
+    isolates the render logic under test from those queries. After the
+    refactor, ``digest_context`` delegates to ``shipped_work_digest``, so the
+    patches target that helper's internals, not a MegaphoneEngine method."""
+    _swd = importlib.import_module("roboco.utils.shipped_work_digest")
+    monkeypatch.setattr(_swd, "_shipped_this_week", AsyncMock(return_value=[]))
+    monkeypatch.setattr(_swd, "_unreleased_changelog", AsyncMock(return_value=""))
     context = await MegaphoneEngine(db_session).digest_context()
     assert "nothing completed" in context
     assert "not available this cycle" in context

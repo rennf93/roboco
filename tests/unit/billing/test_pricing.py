@@ -49,6 +49,15 @@ _SONNET5_OUTPUT = 10.05
 _SONNET5_CACHE_READ = 0.201
 _SONNET5_CACHE_WRITE = 0.5025
 
+# Sonnet 5 promo date gate — frozen window edges for the tests. The promo
+# tests pin the end to a far-future date (_PROMO_FAR_FUTURE_END) so the promo
+# branch stays active on any run date; the list-price tests pin it to a past
+# date (_PROMO_PAST_END) so the real date.today() always exceeds it and the
+# list branch is covered on any run date — neither side of the gate
+# date-bombs on the calendar again.
+_PROMO_FAR_FUTURE_END = date(2099, 12, 31)
+_PROMO_PAST_END = date(2026, 8, 30)
+
 _HAIKU_INPUT = 1.00
 _HAIKU_OUTPUT = 5.00
 _HAIKU_CACHE_READ = 0.10
@@ -219,6 +228,13 @@ class TestSonnet5Tier:
     Sonnet-4.6 list rates after. Tests assert against ``p._sonnet5_prices()``
     so they hold on either side of the boundary."""
 
+    @pytest.fixture(autouse=True)
+    def _promo_window_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Freeze the promo window open: the real window expired 2026-08-31,
+        so these promo-rate assertions must pin a far-future end to hold on
+        any run date instead of date-bombing once the calendar passes it."""
+        monkeypatch.setattr(p, "_SONNET5_PROMO_END", _PROMO_FAR_FUTURE_END)
+
     def test_input_only(self) -> None:
         cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
         assert abs(cost - p._sonnet5_prices()[0]) < _TOL
@@ -263,6 +279,58 @@ class TestSonnet5Tier:
             "claude-sonnet-5-20260930", tokens_input=_M, tokens_output=0
         )
         assert abs(cost - p._sonnet5_prices()[0]) < _TOL
+
+
+class TestSonnet5ListTier:
+    """claude-sonnet-5 list pricing after the promo window closes. The window
+    end is pinned to a past date so the real date.today() always exceeds it —
+    the list branch of the gate stays covered on any run date."""
+
+    @pytest.fixture(autouse=True)
+    def _promo_window_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Freeze the promo window shut: pin the end to a past date so
+        date.today() is always past it and list rates apply regardless of
+        when the suite runs."""
+        monkeypatch.setattr(p, "_SONNET5_PROMO_END", _PROMO_PAST_END)
+
+    def test_input_only(self) -> None:
+        cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
+        assert abs(cost - _SONNET_INPUT) < _TOL
+
+    def test_output_only(self) -> None:
+        cost = calculate_cost("claude-sonnet-5", tokens_input=0, tokens_output=_M)
+        assert abs(cost - _SONNET_OUTPUT) < _TOL
+
+    def test_cache_read_only(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_read=_M
+        )
+        assert abs(cost - _SONNET_CACHE_READ) < _TOL
+
+    def test_cache_write_only(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_write=_M
+        )
+        assert abs(cost - _SONNET_CACHE_WRITE) < _TOL
+
+    def test_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = (
+            _SONNET_INPUT + _SONNET_OUTPUT + _SONNET_CACHE_READ + _SONNET_CACHE_WRITE
+        )
+        assert abs(cost - expected) < _TOL
+
+    def test_matches_sonnet4_list_price(self) -> None:
+        """Off-promo Sonnet 5 costs the same as full Sonnet 4.6."""
+        five = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=_M)
+        four = calculate_cost("claude-sonnet-4-6", tokens_input=_M, tokens_output=_M)
+        assert abs(five - four) < _TOL
 
 
 # ---------------------------------------------------------------------------

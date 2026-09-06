@@ -181,6 +181,34 @@ _GIT_EXECUTOR = ThreadPoolExecutor(
 # only a genuinely slow op (>5s) is worth a warning.
 _SLOW_GIT_OP_MS = 5000.0
 
+# `prune_remote_best_effort` TTL, see its docstring. Process-wide, keyed by
+# workspace path, mirrors WorkspaceService's `_read_clone_synced` fetch-TTL
+# cache.
+_REMOTE_PRUNE_TTL_SECONDS = 60.0
+_remote_pruned_at: dict[str, float] = {}
+
+# Serializes the git op sequence in `pr_merge`'s post-merge local sync, keyed
+# by workspace path. PMs are exempt from one-task-at-a-time claim
+# serialization, so two sibling `pr_merge` calls from the same PM (same
+# clone root) can now reach this concurrently once the parent-row lock is
+# released early; without this, their checkout/fetch/reset --hard sequences
+# race on one working tree (git index.lock collisions). A sibling of
+# `_ENSURE_WORKSPACE_LOCKS` in workspace.py, not a reuse of it: that registry
+# is keyed by (project_slug, agent_slug) for the clone-creation race, a
+# different critical section, reusing it would block unrelated
+# ensure_workspace calls behind this one's chown-heavy git I/O.
+_workspace_sync_locks: dict[str, asyncio.Lock] = {}
+
+
+def _workspace_sync_lock(workspace: Path) -> asyncio.Lock:
+    """Return the asyncio.Lock for `workspace`, creating it lazily."""
+    key = str(workspace)
+    lock = _workspace_sync_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _workspace_sync_locks[key] = lock
+    return lock
+
 
 def resolve_git_dir(workspace: Path) -> Path | None:
     """Resolve the real ``.git`` directory for a workspace or linked worktree.
@@ -259,8 +287,12 @@ _READ_ONLY_GIT_VERBS = frozenset(
 
 # Verbs that write only inside `.git/` (refs, objects, index) — never the
 # working tree. Ownership repair can be scoped to `.git/` alone instead of a
-# full-workspace walk.
-_GIT_SCOPED_VERBS = frozenset({"add", "commit", "fetch", "push"})
+# full-workspace walk. `remote` (add/rename/set-url/prune, ...) only ever
+# touches `.git/config` and `refs/remotes/*` / `packed-refs`, but it fell
+# through to the "full" default unclassified, which meant a bare
+# `remote prune` (the branch-list route's self-heal, a read-only poll) paid
+# a whole-workspace chown walk for an op that never touches the working tree.
+_GIT_SCOPED_VERBS = frozenset({"add", "commit", "fetch", "push", "remote"})
 
 
 def _branch_or_symbolic_ref_scope(verb: str, rest: list[str]) -> str:
@@ -723,7 +755,19 @@ class GitService(BaseService):
         transfer) so a branch deleted upstream stops showing in the viewing
         clone's remote branch list. Never raises — a prune failure must not
         break the caller's listing, mirroring `branch_exists_on_remote`.
+
+        TTL-gated: the caller (the branch-list route) is a read-only GET the
+        panel polls every couple minutes, so pruning on every single call ran
+        a git subprocess + ownership repair per poll for no benefit: refs
+        deleted upstream between two polls inside the window are still
+        correctly absent on the NEXT prune. ``_REMOTE_PRUNE_TTL_SECONDS``
+        caps that to at most once per workspace per window, process-wide.
         """
+        now = time.monotonic()
+        key = str(workspace)
+        last = _remote_pruned_at.get(key)
+        if last is not None and (now - last) < _REMOTE_PRUNE_TTL_SECONDS:
+            return
         try:
             token = await self._token_for_workspace(workspace)
             await self._run_git(
@@ -733,6 +777,7 @@ class GitService(BaseService):
                 token=token,
                 timeout=_network_git_timeout(),
             )
+            _remote_pruned_at[key] = now
         except Exception as exc:
             self.log.warning(
                 "remote prune failed; continuing with existing refs",
@@ -5059,16 +5104,20 @@ class GitService(BaseService):
         target: str
 
     async def _merge_with_retry(self, ctx: GitService._MergeContext) -> Any:
-        """Single-retry merge: on 409 (race) sync target then retry; on 405
+        """Single-retry merge: on 409 (race) retry once; on 405
         (repo disallows the merge method) fall back to a permitted method."""
         resp = await self._call_merge_api(
             ctx.repo_ref, ctx.pr_number, ctx.git_token, "squash"
         )
         if resp.status_code == _HTTP_CONFLICT:
-            # Another PM merged a sibling subtask first and our local target
-            # ref is stale. Refresh and retry once; a second 409 is a real
-            # conflict the PM resolves manually.
-            await self._sync_target_branch(ctx.workspace, ctx.target, ctx.git_token)
+            # Another PM merged a sibling subtask first and GitHub's own
+            # mergeability check raced. Retry once against GitHub directly;
+            # a second 409 is a real conflict the PM resolves manually. No
+            # local sync here: the merge PUT sends only `merge_method`, no
+            # sha, so it never reads our local clone, and the caller's
+            # post-merge best-effort sync already refreshes the local
+            # target branch once the merge lands. Syncing here would just
+            # be more chown-heavy git I/O run under the parent-row lock.
             resp = await self._call_merge_api(
                 ctx.repo_ref, ctx.pr_number, ctx.git_token, "squash"
             )
@@ -5201,8 +5250,20 @@ class GitService(BaseService):
         Concurrency: takes a row-level lock on the parent task before
         invoking the GitHub merge API so that two PMs completing
         sibling subtasks of the same parent are serialized. On a 409
-        merge conflict the local target branch is re-pulled and the
-        merge is retried exactly once before giving up with `GitError`.
+        merge conflict (GitHub's own mergeability check, not our local
+        clone) the merge is retried exactly once before giving up with
+        `GitError`.
+
+        The lock is released (``session.commit()``) as soon as the
+        authoritative merge + work-session bookkeeping land, BEFORE the
+        best-effort local target-branch sync, which is cosmetic git I/O
+        (checkout/reset) that can chown-walk the workspace for tens of
+        seconds on a slow volume. Holding the row lock across that starved
+        every other writer of the same parent task row into lock_timeout.
+        That sync is further serialized per workspace path (see
+        ``_workspace_sync_lock``): PMs skip one-task-at-a-time claim
+        serialization, so two sibling merges from the same PM's clone can
+        reach it concurrently once the row lock above is gone.
         """
         from sqlalchemy import select
 
@@ -5261,15 +5322,24 @@ class GitService(BaseService):
         await self._delete_pr_branch_best_effort(
             repo_ref, pr_number, git_token, project.slug
         )
-        merge_commit = await self._sync_target_branch_best_effort(
-            workspace, target, git_token
-        )
-
         if task.work_session_id:
             ws_service = get_work_session_service(self.session)
             await ws_service.merge_pr(
                 require_uuid(task.work_session_id),
                 self._resolve_merger_id(task, actor_agent_id),
+            )
+        # Merge is authoritative on GitHub and the bookkeeping above is
+        # committed, the parent-row lock's job is done. Release it before
+        # the chown-heavy local sync below so sibling merges/writes on the
+        # same parent stop queuing behind it.
+        await self.session.commit()
+        # PMs skip one-task-at-a-time claim serialization, so two sibling
+        # merges from the same PM's clone can land here concurrently now
+        # that the row lock is gone. Serialize the git sequence itself so
+        # their checkout/fetch/reset --hard don't race on one working tree.
+        async with _workspace_sync_lock(workspace):
+            merge_commit = await self._sync_target_branch_best_effort(
+                workspace, target, git_token
             )
         return {"merge_commit_sha": merge_commit or None}
 

@@ -403,3 +403,121 @@ async def test_cancelled_handler_clears_idempotency_marker() -> None:
 
     # Marker cleared despite cancellation → a replay re-runs the handler.
     assert key not in fake.keys
+
+
+# --- a message stuck past MAX_DELIVERY_COUNT is dead-lettered, not retried forever ---
+
+
+class _FakeMaxDeliveryRedis:
+    """Fake whose one pending message has exceeded MAX_DELIVERY_COUNT deliveries."""
+
+    def __init__(
+        self,
+        message_id: bytes,
+        times_delivered: int,
+        time_since_delivered: int = 10_000,
+    ) -> None:
+        self._message_id = message_id
+        self._times_delivered = times_delivered
+        self._time_since_delivered = time_since_delivered
+        self.xclaim_calls: list[list[object]] = []
+        self.xack_calls: list[tuple[str, str, tuple[str, ...]]] = []
+        self.xadd_calls: list[tuple[str, dict]] = []
+
+    async def xpending(self, *args: object, **kwargs: object) -> dict:
+        del args, kwargs
+        return {"pending": 1}
+
+    async def xpending_range(self, *args: object, **kwargs: object) -> list:
+        del args, kwargs
+        return [
+            {
+                "message_id": self._message_id,
+                "time_since_delivered": self._time_since_delivered,
+                "times_delivered": self._times_delivered,
+            }
+        ]
+
+    async def xclaim(self, *args: object, **kwargs: object) -> list:
+        del args
+        self.xclaim_calls.append(cast("list[object]", kwargs.get("message_ids") or []))
+        valid_event = Event(
+            type=EventType.INDEX_REQUESTED,
+            data={"kind": "journal_entry", "payload": {}},
+        ).to_json()
+        return [(self._message_id, {b"data": valid_event.encode()})]
+
+    async def xack(self, stream: str, group: str, *ids: str) -> int:
+        self.xack_calls.append((stream, group, ids))
+        return len(ids)
+
+    async def xadd(
+        self,
+        stream: str,
+        fields: dict,
+        maxlen: int | None = None,
+        approximate: bool = True,
+    ) -> bytes:
+        del maxlen, approximate
+        self.xadd_calls.append((stream, dict(fields)))
+        return b"1-0"
+
+
+@pytest.mark.asyncio
+async def test_recover_stream_dead_letters_past_max_delivery_count() -> None:
+    """A message reclaimed more than MAX_DELIVERY_COUNT times is a poison
+    pill for its handler: dead-lettered and ACKed instead of reclaimed
+    forever (the old behavior: XREADGROUP '>' never re-delivers it, so only
+    the reclaim loop ever touches it, retrying indefinitely)."""
+    bus = StreamEventBus()
+    fake = _FakeMaxDeliveryRedis(
+        b"1-0", times_delivered=StreamEventBus.MAX_DELIVERY_COUNT + 1
+    )
+    bus._redis = cast("Redis", fake)
+
+    recovered = await bus._recover_stream("roboco:stream:index", idle_time_ms=0)
+
+    assert recovered == 1
+    assert fake.xclaim_calls == [["1-0"]]
+    assert fake.xack_calls == [("roboco:stream:index", bus.group_name, ("1-0",))]
+    assert fake.xadd_calls[0][0] == StreamEventBus.DEAD_LETTER_STREAM
+    assert fake.xadd_calls[0][1]["reason"] == "max_delivery_count_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_recover_stream_still_reclaims_under_max_delivery_count() -> None:
+    """A message under the delivery cap still goes through the normal
+    claim-and-handle path, not straight to dead-letter."""
+    bus = StreamEventBus()
+    fake = _FakeMaxDeliveryRedis(b"1-0", times_delivered=1)
+    bus._redis = cast("Redis", fake)
+
+    async def _handler(_event: Event) -> None: ...
+
+    bus.subscribe(EventType.INDEX_REQUESTED, _handler)
+
+    await bus._recover_stream("roboco:stream:index", idle_time_ms=0)
+
+    assert fake.xadd_calls == []  # no dead-letter for an under-cap message
+
+
+@pytest.mark.asyncio
+async def test_recover_stream_still_idle_past_max_delivery_not_dead_lettered() -> None:
+    """Past MAX_DELIVERY_COUNT is not enough on its own: a handler still
+    actively working the message (idle only 1s) must never be dead-lettered
+    mid-execution. Only BOTH past-cap AND idle-past-the-reclaim-threshold
+    counts as poison."""
+    bus = StreamEventBus()
+    fake = _FakeMaxDeliveryRedis(
+        b"1-0",
+        times_delivered=StreamEventBus.MAX_DELIVERY_COUNT + 1,
+        time_since_delivered=1_000,
+    )
+    bus._redis = cast("Redis", fake)
+
+    recovered = await bus._recover_stream("roboco:stream:index", idle_time_ms=60_000)
+
+    assert recovered == 0
+    assert fake.xclaim_calls == []
+    assert fake.xack_calls == []
+    assert fake.xadd_calls == []
