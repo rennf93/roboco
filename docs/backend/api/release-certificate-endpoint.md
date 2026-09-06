@@ -9,6 +9,14 @@ corrected derivations. Files touched: `roboco/services/release_certificate.py`,
 `roboco/api/routes/release.py`, `roboco/api/schemas/release.py`,
 `roboco/foundation/policy/content/markers.py`.
 
+**Update (2026-09-05, PR #1046 pr_gate round-2 bounce):** the widened deny-list
+still let external/internal PR-review tasks count as release-window delivered
+work, and `ceo_approved_at` was only ever stamped by the HTTP approve route —
+a Telegram-approved release certified `ceo_approved_at: null`. Both fixed; see
+the task-set-derivation and `ceo_approved_at` rows below. Files touched:
+`roboco/services/release_certificate.py`, `roboco/services/release_proposal.py`,
+`roboco/api/routes/release.py`.
+
 ## What
 
 CEO-only `GET /api/releases/{version}/certificate` packages one published release's full gate chain into a single exportable artifact — the external-facing proof a release was governed end-to-end. It is the backend half of a two-cell feature: the panel's "Download certificate" action consumes the response schema (`ReleaseCertificateResponse`) verbatim, so that schema is a **cross-cell contract** — additive changes only.
@@ -67,7 +75,7 @@ class ReleaseCertificateFindingsSummary(BaseModel):
 |---|---|
 | `ci_verdict`, `changelog_excerpt` | The proposal's stored readiness report (`markers.get_release_report` → `report_from_dict`, `roboco/services/release_readiness.py`): `gate_state` / `drafted_changelog`. |
 | `conventions_clean` | `ReleaseCertificateService._conventions_clean`: True unless any task in the release window has an unresolved **`level="block"`** row in `project_convention_findings` — the durable record of the REAL conventions validator's own output (`GitService.conventions_check_for_task`, git.py:6416), persisted per task at `i_am_done` time by `ConventionsService.record_findings`. Read from the persisted table rather than re-running the validator live: a merged task's branch is deleted post-merge, so a live re-check would fail-closed on every historical task with nothing left to diff. (Previously this reused `release_readiness.py`'s commit-classification gaps — an unrelated signal about whether commit subjects could be auto-classified, not architectural conventions at all.) |
-| `ceo_approved_at` | `markers.get_release_approved_at(target)` — the timestamp the CEO's `POST /api/release/proposal/approve` route stamps on the proposal task the moment it dispatches the background executor (`roboco/api/routes/release.py`), parsed back to a `datetime`. `None` when the marker is absent (a release published before this fix shipped). (Previously this read the proposal's `completed_at`, which is when the ~40min background `ReleaseExecutor` finished *publishing* — long after the CEO actually clicked approve.) |
+| `ceo_approved_at` | `markers.get_release_approved_at(target)` — the timestamp `ReleaseProposalService.approve()` stamps on the proposal task right before it acquires the release lock (`roboco/services/release_proposal.py`), parsed back to a `datetime`. `approve()` is the single chokepoint both `dispatch_approve` call sites route through — the HTTP `POST /api/release/proposal/approve` route and `TelegramInboundService._approve_release` — so `ceo_approved_at` is populated regardless of which surface the CEO used to approve, not just the HTTP route. `None` when the marker is absent (a release published before this fix shipped). (Previously this read the proposal's `completed_at`, which is when the ~40min background `ReleaseExecutor` finished *publishing* — long after the CEO actually clicked approve; then, after that fix, only the HTTP route stamped the marker at all, so a Telegram-approved release still certified `ceo_approved_at: null`.) |
 | `task_states[]` | One entry per task in the release task set (below); per-AC counts parsed from each task's `qa_notes` `[AC] ` stamp lines (the deterministic rendering QA's `pass_review` produces); `qa_passed` is `None` for a zero-criteria task (never went through QA), else `criteria_verified >= criteria_total`. |
 | `findings_summary` | The task-review-findings ledger (`ReviewFindingsRepository.list_for_task`) aggregated across the release task set, bucketed open / closed (`addressed`+`verified`) / waived, by severity (`blocker`/`major`/`minor`/`nit`, unknown severities ignored). |
 
@@ -78,13 +86,15 @@ There is **no schema link** between a release and its tasks — the release prop
 - **Project-scoped:** `TaskTable.project_id == proposal.project_id` — the readiness report assesses that project's changes, so another project's task completing inside the window must not leak into this certificate. Null-project proposals aren't producible today; if one ever appears the filter degrades to unfiltered rather than guessing a scope.
 - **First release** of a project takes everything completed before its own completion.
 - **Held/coordination artifacts excluded, delivery roots included:** the proposal itself, X posts, video drafts, and board-program exploration cycles are filtered out via `task_type != ADMINISTRATIVE` and `source NOT IN LEAD_TIME_EXCLUDED_SOURCES` (mirroring `TaskService.get_delivery_stats_30d`'s real-delivery-work filter) — **not** by allow-listing `HUMAN_AUTHORED_SOURCES` ("manual"/"prompter"). The prior allow-list silently dropped every engine-originated delivery root (self_heal/ci_watch/dep_update/docs_sync/roadmap/pest_control, task.py:666-788) while still including their subtasks: a delegated subtask's own `source` column is always "manual" (`create_subtask` never inherits the parent's source), so only the ROOT of an engine-originated tree carried the non-allow-listed source value.
+- **PR-review tasks excluded too:** `source NOT IN PR_REVIEW_SOURCES` (`external_pr`/`internal_pr`) on top of the deny-list above, via a module-local combined constant (`_RELEASE_TASK_SET_EXCLUDED_SOURCES` in `release_certificate.py`) rather than widening the shared `LEAD_TIME_EXCLUDED_SOURCES` itself, which other consumers (e.g. `TaskService.get_delivery_stats_30d`) still read unchanged. A fork/internal-PR review task is `TaskType.CODE` with a source outside `LEAD_TIME_EXCLUDED_SOURCES`, so before this fix it passed the deny-list and appeared in `task_states`/`findings_summary` as release-window delivered work even though a review merges no code into the release.
 
 Changing this heuristic changes what `task_states`/`findings_summary` cover; treat any change as a contract-adjacent decision worth a QA pass and a journal decision entry.
 
 ## Tests
 
-- `tests/integration/test_release_routes.py` — happy path (full gate chain, including an engine-originated delivery root and all three `qa_passed` states), conventions-dirty/-clean cases keyed off real persisted findings, `ceo_approved_at` present/absent, 404 for an unpublished version, non-CEO denial, cross-project task exclusion. DB-backed; needs Postgres.
+- `tests/integration/test_release_routes.py` — happy path (full gate chain, including an engine-originated delivery root and all three `qa_passed` states), conventions-dirty/-clean cases keyed off real persisted findings, `ceo_approved_at` present/absent, 404 for an unpublished version, non-CEO denial, cross-project task exclusion, and (round-2) a seeded `external_pr`/`internal_pr` review task proving `test_certificate_packages_release_gate_chain` excludes it from both `task_states` and `findings_summary`. DB-backed; needs Postgres.
 - `tests/unit/services/test_release_certificate.py` — version normalization, `[AC]`-stamp counting, severity bucketing, per-task pass state (including the zero-AC `None` case), window/same-project scoping.
+- `tests/unit/services/test_telegram_release_approve_marker.py` — a test on the Telegram approve path proving `ceo_approved_at` is populated via `dispatch_approve` → `ReleaseProposalService.approve()`, not just the HTTP route.
 
 ## Risks and follow-ups
 
