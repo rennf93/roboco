@@ -4,7 +4,8 @@ import {
   groupFindingsByRound,
   parseAcVerificationStamps,
   PR_CI_VERDICT_UNAVAILABLE,
-  RELEASE_MEMBER_TASK_IDS_UNAVAILABLE,
+  RELEASE_NO_MEMBER_TASKS_MESSAGE,
+  type ReviewerChainEntry,
 } from "../verification";
 import type { TaskFinding } from "../tasks";
 
@@ -155,35 +156,28 @@ describe("groupFindingsByRound", () => {
 });
 
 describe("buildReviewerChain", () => {
-  it("groups by round, keeps the first entry's author/origin per round, sorted ascending", () => {
-    const findings: TaskFinding[] = [
-      finding({
-        id: "f-2",
-        round: 2,
-        origin: "pr_gate",
-        author_slug: "fe-pr-reviewer",
-      }),
-      finding({ id: "f-1", round: 1, origin: "qa", author_slug: "fe-qa" }),
-      finding({
-        id: "f-1b",
-        round: 1,
-        origin: "qa",
-        author_slug: "fe-qa-other",
-      }),
-    ];
-
-    expect(buildReviewerChain(findings)).toEqual([
-      { round: 1, origin: "qa", author_slug: "fe-qa", model: null },
+  it("sorts the task-metrics reviewer-chain entries ascending by round, real model included", () => {
+    const entries: ReviewerChainEntry[] = [
       {
         round: 2,
-        origin: "pr_gate",
-        author_slug: "fe-pr-reviewer",
-        model: null,
+        role: "pr_reviewer",
+        agent_slug: "fe-pr-reviewer",
+        model: "claude-opus-4-1",
+        started_at: "2026-09-02T00:00:00Z",
       },
-    ]);
+      {
+        round: 1,
+        role: "qa",
+        agent_slug: "fe-qa",
+        model: "claude-sonnet-4-5",
+        started_at: "2026-09-01T00:00:00Z",
+      },
+    ];
+
+    expect(buildReviewerChain(entries)).toEqual([entries[1], entries[0]]);
   });
 
-  it("returns an empty chain for a task never bounced", () => {
+  it("returns an empty chain for a task with no review-role spawn sessions", () => {
     expect(buildReviewerChain([])).toEqual([]);
   });
 });
@@ -199,17 +193,11 @@ describe("PR_CI_VERDICT_UNAVAILABLE", () => {
   });
 });
 
-describe("RELEASE_MEMBER_TASK_IDS_UNAVAILABLE", () => {
-  it("reports unavailable with a short reader-facing reason distinct from the technical escalation detail", () => {
-    expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.available).toBe(false);
-    expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason.length).toBeGreaterThan(
-      0,
-    );
-    expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason).not.toMatch(
-      /endpoint|escalate/i,
-    );
-    expect(RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.technicalDetail).toMatch(
-      /endpoint|escalate/i,
+describe("RELEASE_NO_MEMBER_TASKS_MESSAGE", () => {
+  it("reads as a legitimate empty state, not an unreachable-data escalation", () => {
+    expect(RELEASE_NO_MEMBER_TASKS_MESSAGE.length).toBeGreaterThan(0);
+    expect(RELEASE_NO_MEMBER_TASKS_MESSAGE).not.toMatch(
+      /available yet|endpoint|escalate/i,
     );
   });
 });

@@ -5,6 +5,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { conventionsApi, type ConventionFinding } from "@/lib/api/conventions";
+import { dashboardApi } from "@/lib/api/dashboard";
 import {
   buildReviewerChain,
   groupFindingsByRound,
@@ -52,16 +53,20 @@ export function useAcVerificationStamps(taskId: string): {
   return { data, isLoading };
 }
 
-// Reviewer/role/round chain, derived from the same revision-findings ledger
-// the Findings tab already fetches (`useTaskFindings`) — see
-// `buildReviewerChain` for why `model` always reads null.
+// Reviewer/role/round chain — sourced from GET /dashboard/metrics/task/
+// {task_id}'s `reviewer_chain` (real role/agent_slug/model per round), not
+// the revision-findings ledger the Findings tab fetches — see
+// `buildReviewerChain` for why the ledger derivation is gone.
 export function useReviewerChain(taskId: string): {
   data: ReviewerChainEntry[] | undefined;
   isLoading: boolean;
 } {
-  const { data, isLoading } = useTaskFindings(taskId);
+  const { data, isLoading } = useQuery({
+    queryKey: ["task-metrics", taskId],
+    queryFn: () => dashboardApi.getTaskMetrics(taskId),
+  });
   const chain = useMemo(
-    () => (data ? buildReviewerChain(data.findings) : undefined),
+    () => (data ? buildReviewerChain(data.reviewer_chain) : undefined),
     [data],
   );
   return { data: chain, isLoading };
