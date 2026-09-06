@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from roboco.api.app import app as default_app
 from roboco.api.app import create_app, lifespan
 from roboco.api.deps import clear_orchestrator, set_orchestrator
+from roboco.config import settings
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -183,6 +184,41 @@ async def test_lifespan_never_awaits_the_rag_reconcile() -> None:
         with suppress(asyncio.CancelledError):
             await task
         assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_leaves_the_rag_reconcile_to_run_indexer_under_indexer_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROBOCO_ROLE=indexer never runs this lifespan in production
+    (roboco/bootstrap.py runs only run_indexer), so gating the reconcile on
+    that role here scheduled it nowhere after the split (2026-09-06).
+    run_indexer owns it for that role; the lifespan schedules it only for
+    'all' (pinned by test_lifespan_never_awaits_the_rag_reconcile)."""
+    monkeypatch.setattr(settings, "role", "indexer")
+    schedule_mock = MagicMock()
+    transcription_mock = MagicMock()
+    transcription_mock.start = AsyncMock()
+    transcription_mock.stop = AsyncMock()
+
+    with (
+        patch("roboco.api.app.init_db", new=AsyncMock()),
+        patch("roboco.api.app.close_db", new=AsyncMock()),
+        patch("roboco.api.app.TranscriptionService", return_value=transcription_mock),
+        patch("roboco.api.app.ExtractionService"),
+        patch("roboco.api.app.ExtractionPipeline"),
+        patch(
+            "roboco.api.app.get_optimal_service",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch("roboco.api.app.close_optimal_service", new=AsyncMock()),
+        patch("roboco.api.app._schedule_rag_reconcile", new=schedule_mock),
+    ):
+        app = create_app()
+        async with lifespan(app):
+            pass
+
+    schedule_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
