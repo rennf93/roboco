@@ -163,9 +163,7 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
   // Persist {taskId, version} the moment a proposal with a report loads — the
   // panel already knows the target version before the CEO even clicks
   // Approve, so this doesn't need to wait for the approve response. This
-  // effect only writes through to localStorage (an external system); the
-  // open proposal itself is always the freshest source for `pointer` below,
-  // so there is no local state to re-derive here.
+  // effect only writes through to localStorage (an external system).
   useEffect(() => {
     if (proposal?.task_id && proposal.report) {
       writeStoredPointer({
@@ -176,12 +174,35 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
   }, [proposal?.task_id, proposal?.report]);
 
   // The open proposal (while present) is the freshest source for the target
-  // version; the stored pointer is what survives once it disappears —
-  // post-publish, or a reload/navigation mid-execute.
-  const pointer: CertificatePointer | null =
+  // version — the same derivation the effect above just persisted.
+  const derivedPointer: CertificatePointer | null =
     proposal?.task_id && proposal.report
       ? { taskId: proposal.task_id, version: proposal.report.proposed_version }
-      : storedPointer;
+      : null;
+
+  // Mirror the same derivation into storedPointer state so the fallback
+  // below is never null on a fresh session, and never a stale prior-cycle
+  // pointer once a new proposal loads — a real publish (proposal -> null)
+  // always falls back to the pointer most recently derived here. Adjusted
+  // during render (guarded against re-firing for an unchanged value) rather
+  // than in an effect, per https://react.dev/learn/you-might-not-need-an-effect
+  // — mirrors the lastSeenStatusRef pattern below exactly (useRef seeded
+  // with the tracked value, compared to that same value each render).
+  const derivedKey = derivedPointer
+    ? `${derivedPointer.taskId}:${derivedPointer.version}`
+    : null;
+  const lastDerivedKeyRef = useRef(derivedKey);
+  if (lastDerivedKeyRef.current !== derivedKey) {
+    lastDerivedKeyRef.current = derivedKey;
+    if (derivedPointer) {
+      setStoredPointer(derivedPointer);
+    }
+  }
+
+  // The freshly derived pointer wins while the proposal is open; the stored
+  // pointer is what survives once it disappears — post-publish, or a
+  // reload/navigation mid-execute.
+  const pointer: CertificatePointer | null = derivedPointer ?? storedPointer;
 
   // Re-confirm the stored pointer against the server: the ONLY source of
   // truth for "published" is the release-manager's own task reaching

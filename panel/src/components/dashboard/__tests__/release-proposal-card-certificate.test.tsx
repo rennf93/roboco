@@ -288,4 +288,62 @@ describe("ReleaseProposalCard — Download certificate (task-status-confirmed pu
       screen.queryByRole("button", { name: /Download certificate/i }),
     ).not.toBeInTheDocument();
   });
+
+  // Covers the round-2 pr_gate gap (F-96e5436e): every test above pre-seeds
+  // localStorage and mocks getProposal to null BEFORE the first render, so
+  // the component always mounted with the pointer already in state — no
+  // test ever lost a live proposal mid-mount, which is exactly how the two
+  // blockers (the pointer-derivation effect never mirroring into React
+  // state) slipped past this suite. This one mounts with an OPEN,
+  // non-terminal proposal and no pre-seeded storage, then transitions the
+  // mocks mid-session (publish lands) and asserts the confirmation card
+  // still resolves to the just-published version without a reload.
+  it("resolves the confirmation card to the just-published version on a mid-mount publish transition (no localStorage pre-seed)", async () => {
+    getProposal.mockResolvedValue(buildProposal());
+    getTask.mockResolvedValue(
+      buildTask({ id: "t1", status: TaskStatus.AWAITING_CEO_APPROVAL }),
+    );
+    getCertificate.mockResolvedValue(buildCertificate());
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <PageRefreshProvider>
+          <ReleaseProposalCard />
+        </PageRefreshProvider>
+      </QueryClientProvider>,
+    );
+
+    // Mounts with an open, non-terminal proposal — no confirmation card yet.
+    await screen.findByRole("button", { name: /^Approve & publish$/i });
+    expect(
+      screen.queryByRole("button", { name: /Download certificate/i }),
+    ).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(_POINTER_KEY)).toContain("0.14.0");
+
+    // The publish lands: the open-proposal query goes to null and the
+    // proposal's own task reaches completed.
+    getProposal.mockResolvedValue(null);
+    getTask.mockResolvedValue(
+      buildTask({ id: "t1", status: TaskStatus.COMPLETED }),
+    );
+    await client.invalidateQueries();
+
+    const buttons = await screen.findAllByRole("button", {
+      name: /Download certificate/i,
+    });
+    expect(buttons).toHaveLength(1);
+    expect(screen.getByText(/Published v0\.14\.0/)).toBeInTheDocument();
+
+    await userEvent.click(buttons[0]);
+    await waitFor(() => expect(getCertificate).toHaveBeenCalledWith("0.14.0"));
+    expect(clickSpy).toHaveBeenCalled();
+
+    clickSpy.mockRestore();
+  });
 });
