@@ -484,6 +484,12 @@ class ReadMessagesRequest(BaseModel):
     """No params — clears the caller's unread A2A inbox (X-Agent-ID header)."""
 
 
+class TaskTimeRequest(BaseModel):
+    """Task to compute real, uptime-adjusted elapsed times for."""
+
+    task_id: UUID
+
+
 class PRUpdateRequest(BaseModel):
     """Update an open PR's title/body and/or request reviewers.
 

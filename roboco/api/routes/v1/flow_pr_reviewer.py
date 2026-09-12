@@ -17,7 +17,7 @@ from roboco.api.schemas.v1.flow import (
     PrFailRequest,
     PrPassRequest,
 )
-from roboco.security import guard_deco
+from roboco.security import guard_deco, mesh_scanned
 from roboco.services.gateway.choreographer import Choreographer
 
 _RUNAWAY_RULES = [
@@ -36,6 +36,7 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 
 @router.post("/give_me_work")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -50,6 +51,7 @@ async def give_me_work(
 
 
 @router.post("/claim_pr_review")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -64,6 +66,7 @@ async def claim_pr_review(
 
 
 @router.post("/post_pr_review")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -80,6 +83,7 @@ async def post_pr_review(
 
 
 @router.post("/claim_gate_review")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -94,6 +98,7 @@ async def claim_gate_review(
 
 
 @router.post("/pr_pass")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -108,6 +113,7 @@ async def pr_pass(
 
 
 @router.post("/pr_fail")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -124,6 +130,7 @@ async def pr_fail(
 
 
 @router.post("/i_am_idle")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)

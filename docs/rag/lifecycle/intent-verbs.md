@@ -1,5 +1,16 @@
 # Intent Verbs (gateway-facing surface)
 
+## cancel_leaf
+
+Close a zero-diff leaf: a delegated child whose findings a merged sibling already fixed, so no legitimate diff remains and i_am_done/complete can never accept it. Refuses a target with any children of its own (not a leaf), any commit ahead of its base, or an open PR - those go through the normal review path, not this. `reason` is recorded as your journal:decision and on the task's audit trail. Cell PM: only your own coordination task's children. Main PM: any root's descendant.
+
+**Allowed roles:** cell_pm, main_pm
+
+**Composes:** (no atomic actions)
+
+**Preconditions:** non_terminal
+
+
 ## claim_doc_task
 
 Claim awaiting_documentation. Returns evidence inline.
@@ -147,7 +158,7 @@ PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_prog
 
 **Allowed roles:** cell_pm, main_pm
 
-**Composes:** claim → set_plan → start
+**Composes:** claim → set_plan
 
 **Preconditions:** plan
 
@@ -158,7 +169,7 @@ Claim a task, set the plan, and transition to in_progress. Atomic - precondition
 
 **Allowed roles:** developer
 
-**Composes:** claim → set_plan → start
+**Composes:** claim → set_plan
 
 **Preconditions:** plan
 

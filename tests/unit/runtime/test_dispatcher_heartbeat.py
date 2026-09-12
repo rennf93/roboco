@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4  # noqa: F401 - parity with sibling harnesses
 
 import pytest
@@ -20,11 +20,12 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 _TWO_HEARTBEATS = 2
 
 
-def _orch() -> AgentOrchestrator:
+def _orch(*, paused: bool = False) -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     o = cast("Any", orch)
     o._last_dispatch_heartbeat = None
     o._fire_audit = MagicMock()
+    o._is_paused = AsyncMock(return_value=paused)
     return orch
 
 
@@ -54,3 +55,13 @@ async def test_heartbeat_re_emits_after_window() -> None:
     )
     await orch._emit_dispatcher_heartbeat()
     assert cast("Any", orch)._fire_audit.call_count == _TWO_HEARTBEATS
+
+
+@pytest.mark.parametrize("paused", [True, False])
+@pytest.mark.asyncio
+async def test_heartbeat_carries_dispatch_paused_flag(paused: bool) -> None:
+    """The uptime ledger needs `dispatch_paused` on every row, matching `_is_paused`."""
+    orch = _orch(paused=paused)
+    await orch._emit_dispatcher_heartbeat()
+    kwargs = cast("Any", orch)._fire_audit.call_args.kwargs
+    assert kwargs["details"]["dispatch_paused"] is paused

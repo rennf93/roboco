@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 from roboco.models.runtime import AgentInstance
-from roboco.runtime import orchestrator as orch_mod
+from roboco.runtime.engines import spawn_exit as usage_root_mod
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
@@ -98,13 +98,13 @@ async def test_resolve_active_tokens_routes_grok_to_usage_json(
 def test_grok_usage_dir_branches_compose_vs_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "")
     local = AgentOrchestrator._grok_usage_dir("be-dev-1")
     assert "roboco-grok-usage" in str(local)
     assert local.name == "be-dev-1"
 
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "/volume1/roboco")
-    monkeypatch.setattr(orch_mod, "GROK_USAGE_DATA_DIR", "/data/grok-usage")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "/volume1/roboco")
+    monkeypatch.setattr(usage_root_mod, "GROK_USAGE_DATA_DIR", "/data/grok-usage")
     assert str(AgentOrchestrator._grok_usage_dir("be-dev-1")) == (
         "/data/grok-usage/be-dev-1"
     )
@@ -131,7 +131,7 @@ def test_grok_usage_json_reads_the_real_local_dir(
 ) -> None:
     # The un-mocked read path must find usage.json in the SAME branched dir the
     # writer mounts (the local-mode fix: read side mirrors the write side).
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "")
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     udir = tmp_path / "roboco-grok-usage" / "be-dev-1"
     udir.mkdir(parents=True)

@@ -12,12 +12,13 @@ the run-order starvation guard.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from roboco.foundation.identity import AGENTS, Role, Team
 from roboco.runtime.orchestrator import AGENT_IMAGES, AgentOrchestrator
-from roboco.seeds.initial_data import _AGENT_PRESENTATION
+from roboco.seeds.initial_data import _AGENT_PRESENTATION, AGENT_UUIDS
 
 _TWO_SPAWNS = 2
 
@@ -159,6 +160,211 @@ async def test_no_routing_to_pr_reviewer_1() -> None:
     spawn_ids = [c.kwargs["agent_id"] for c in orch.spawn_agent.await_args_list]
     assert "pr-reviewer-1" not in spawn_ids
     assert orch.spawn_agent.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# _sync_gate_reviewer_assignment: assigned_to follows the spawned reviewer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_gate_reviewer_assignment_skips_when_unassigned() -> None:
+    """A task with no assigned_to yet (the common, already-correct case
+    once submit_up/submit_root assign the primary reviewer at gate entry)
+    costs no DB round trip."""
+    orch = _orch()
+    with patch("roboco.services.task.TaskService") as task_service_cls:
+        await orch._sync_gate_reviewer_assignment(
+            _gate_task("11111111-1111-1111-1111-111111111111"), "be-pr-reviewer"
+        )
+    task_service_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_gate_reviewer_assignment_skips_when_already_matches() -> None:
+    """assigned_to/claimed_by already name the reviewer being spawned (the
+    real post-gate-entry state ``_notify_pr_reviewer`` leaves) -> no DB
+    call."""
+    orch = _orch()
+    task = _gate_task("11111111-1111-1111-1111-111111111111")
+    task["assigned_to"] = AGENT_UUIDS["be-pr-reviewer"]
+    task["claimed_by"] = AGENT_UUIDS["be-pr-reviewer"]
+    with patch("roboco.services.task.TaskService") as task_service_cls:
+        await orch._sync_gate_reviewer_assignment(task, "be-pr-reviewer")
+    task_service_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_gate_reviewer_assignment_reassigns_on_overflow_mismatch() -> None:
+    """assigned_to/claimed_by name the busy dedicated reviewer (the
+    gate-entry state) but the overflow reviewer is the one actually being
+    spawned -> reassign to the overflow reviewer so assigned_to names the
+    real spawned agent."""
+    orch = _orch()
+    task = _gate_task("11111111-1111-1111-1111-111111111111")
+    task["assigned_to"] = AGENT_UUIDS["be-pr-reviewer"]
+    task["claimed_by"] = AGENT_UUIDS["be-pr-reviewer"]
+
+    svc = AsyncMock()
+    db = MagicMock()
+    db_ctx = MagicMock(
+        __aenter__=AsyncMock(return_value=db), __aexit__=AsyncMock(return_value=False)
+    )
+    with (
+        patch("roboco.db.base.get_db_context", return_value=db_ctx),
+        patch("roboco.services.task.TaskService", return_value=svc) as task_service_cls,
+    ):
+        await orch._sync_gate_reviewer_assignment(task, "cell-pr-reviewer-2")
+
+    task_service_cls.assert_called_once_with(db)
+    svc.reassign.assert_awaited_once_with(
+        UUID(task["id"]), UUID(AGENT_UUIDS["cell-pr-reviewer-2"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_primary_idle_spawns_primary_no_reassign() -> None:
+    """(a) Real post-gate-entry state: assigned_to/claimed_by both already
+    name the primary reviewer (set by ``_notify_pr_reviewer``),
+    active_claimant_id still None (no real claim taken yet). Primary idle
+    -> primary spawned, and since the entry assignment already matches,
+    ``_sync_gate_reviewer_assignment`` costs no DB round trip."""
+    orch = _orch()
+    task = _gate_task("11111111-1111-1111-1111-111111111111")
+    task["assigned_to"] = AGENT_UUIDS["be-pr-reviewer"]
+    task["claimed_by"] = AGENT_UUIDS["be-pr-reviewer"]
+    task["active_claimant_id"] = None
+    orch._fetch_tasks = AsyncMock(return_value=[task])
+    orch._pm_respawn_should_gate = AsyncMock(return_value=False)
+    orch._is_agent_active = MagicMock(return_value=False)
+    orch.spawn_agent = AsyncMock()
+
+    with patch("roboco.services.task.TaskService") as task_service_cls:
+        await orch._dispatch_pr_gate_work(MagicMock())
+
+    task_service_cls.assert_not_called()
+    assert orch.spawn_agent.await_args.kwargs["agent_id"] == "be-pr-reviewer"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_gate_work_reassigns_on_overflow_spawn() -> None:
+    """(b) Real post-gate-entry state, primary busy -> overflow spawned and
+    the task is synced to the overflow reviewer that actually gets
+    spawned."""
+    orch = _orch()
+    task = _gate_task("11111111-1111-1111-1111-111111111111")
+    task["assigned_to"] = AGENT_UUIDS["be-pr-reviewer"]
+    task["claimed_by"] = AGENT_UUIDS["be-pr-reviewer"]
+    orch._fetch_tasks = AsyncMock(return_value=[task])
+    orch._pm_respawn_should_gate = AsyncMock(return_value=False)
+    orch._is_agent_active = MagicMock(side_effect=lambda aid: aid == "be-pr-reviewer")
+    orch.spawn_agent = AsyncMock()
+    orch._sync_gate_reviewer_assignment = AsyncMock()
+
+    await orch._dispatch_pr_gate_work(MagicMock())
+
+    orch._sync_gate_reviewer_assignment.assert_awaited_once_with(
+        task, "cell-pr-reviewer-2"
+    )
+    assert orch.spawn_agent.await_args.kwargs["agent_id"] == "cell-pr-reviewer-2"
+
+
+# ---------------------------------------------------------------------------
+# _gate_task_reviewer / double-dispatch onto an already-claimed task
+# ---------------------------------------------------------------------------
+
+
+def test_gate_task_reviewer_targets_the_existing_claimant() -> None:
+    """A task with a REAL claim (``active_claimant_id`` set by
+    ``claim_gate_review``) always resolves back to that claimant, never to
+    the team-based selection (which could pick a different/overflow
+    reviewer)."""
+    orch = _orch()
+    task = _gate_task("11111111-1111-1111-1111-111111111111", team="frontend")
+    task["active_claimant_id"] = AGENT_UUIDS["fe-pr-reviewer"]
+    assert orch._gate_task_reviewer(task) == "fe-pr-reviewer"
+
+
+def test_gate_task_reviewer_ignores_assigned_to_without_a_real_claim() -> None:
+    """assigned_to/claimed_by naming the primary reviewer is the gate-entry
+    state ``_notify_pr_reviewer`` leaves before any claim - it must NOT pin
+    the reviewer the way a real ``active_claimant_id`` claim does. Falls
+    through to team selection, which lands on the same primary reviewer
+    while it is idle."""
+    orch = _orch()
+    orch._is_agent_active = MagicMock(return_value=False)
+    task = _gate_task("11111111-1111-1111-1111-111111111111", team="frontend")
+    task["assigned_to"] = AGENT_UUIDS["fe-pr-reviewer"]
+    task["claimed_by"] = AGENT_UUIDS["fe-pr-reviewer"]
+    assert orch._gate_task_reviewer(task) == "fe-pr-reviewer"
+
+
+def test_gate_task_reviewer_falls_back_to_team_selection_when_unclaimed() -> None:
+    orch = _orch()
+    orch._is_agent_active = MagicMock(return_value=False)
+    task = _gate_task("11111111-1111-1111-1111-111111111111", team="frontend")
+    assert orch._gate_task_reviewer(task) == "fe-pr-reviewer"
+
+
+def test_gate_task_reviewer_falls_back_when_claimant_slug_unresolvable() -> None:
+    """An unrecognized active_claimant_id (not in the seeded AGENT_UUIDS
+    map) falls back to team-based selection rather than dispatching a
+    bogus id."""
+    orch = _orch()
+    orch._is_agent_active = MagicMock(return_value=False)
+    task = _gate_task("11111111-1111-1111-1111-111111111111", team="frontend")
+    task["active_claimant_id"] = "99999999-9999-9999-9999-999999999999"
+    assert orch._gate_task_reviewer(task) == "fe-pr-reviewer"
+
+
+@pytest.mark.asyncio
+async def test_no_second_spawn_onto_an_already_claimed_task() -> None:
+    """(c) Regression: the primary reviewer holds a REAL claim
+    (active_claimant_id) from an earlier tick and is still active, so a
+    later tick must not spawn ANY reviewer (not the overflow, not a
+    duplicate of the claimant) onto the same task."""
+    orch = _orch()
+    task = _gate_task("11111111-1111-1111-1111-111111111111", team="frontend")
+    task["assigned_to"] = AGENT_UUIDS["fe-pr-reviewer"]
+    task["claimed_by"] = AGENT_UUIDS["fe-pr-reviewer"]
+    task["active_claimant_id"] = AGENT_UUIDS["fe-pr-reviewer"]
+    orch._fetch_tasks = AsyncMock(return_value=[task])
+    orch._pm_respawn_should_gate = AsyncMock(return_value=False)
+    orch._is_agent_active = MagicMock(side_effect=lambda aid: aid == "fe-pr-reviewer")
+    orch.spawn_agent = AsyncMock()
+
+    await orch._dispatch_pr_gate_work(MagicMock())
+
+    orch.spawn_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_respawns_same_claimant_not_overflow_when_container_died() -> (
+    None
+):
+    """(d) Regression (live 2026-09, task 8ea28f7a / PR #990): fe-pr-reviewer
+    held a REAL claim (active_claimant_id) on the gate task, its container
+    exited between ticks, and the dispatcher kept spawning cell-pr-reviewer-2
+    onto the SAME task every tick, each claim_gate_review rejected outright,
+    burning spawns until the respawn breaker paged the CEO over a task that
+    had already advanced. The claimed reviewer's own container dying must
+    respawn THAT SAME reviewer, never the overflow."""
+    orch = _orch()
+    task = _gate_task("11111111-1111-1111-1111-111111111111", team="frontend")
+    task["assigned_to"] = AGENT_UUIDS["fe-pr-reviewer"]
+    task["claimed_by"] = AGENT_UUIDS["fe-pr-reviewer"]
+    task["active_claimant_id"] = AGENT_UUIDS["fe-pr-reviewer"]
+    orch._fetch_tasks = AsyncMock(return_value=[task])
+    orch._pm_respawn_should_gate = AsyncMock(return_value=False)
+    orch._is_agent_active = MagicMock(return_value=False)
+    orch.spawn_agent = AsyncMock()
+    orch._sync_gate_reviewer_assignment = AsyncMock()
+
+    await orch._dispatch_pr_gate_work(MagicMock())
+
+    assert orch.spawn_agent.await_args.kwargs["agent_id"] == "fe-pr-reviewer"
+    spawn_ids = [c.kwargs["agent_id"] for c in orch.spawn_agent.await_args_list]
+    assert "cell-pr-reviewer-2" not in spawn_ids
 
 
 # ---------------------------------------------------------------------------
