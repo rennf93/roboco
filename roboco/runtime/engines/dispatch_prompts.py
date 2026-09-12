@@ -917,7 +917,7 @@ TASK: {task_id}
 Explore the company's projects and propose ONE themed cycle of roadmap items
 for the CEO to review — you author this alone. The Head of Marketing is not
 involved in this cycle.
-{brief_block}{digest_block}{prior_block}
+{brief_block}{digest_block}{digest_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -1243,7 +1243,7 @@ TASK: {task_id}
 Audit the target project's half-shipped surface area — the gaps between what
 was built and what was finished. Propose evidence-backed gap-fill tasks for
 the CEO to review; you author this alone.
-{digest_block}{prior_block}
+{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.

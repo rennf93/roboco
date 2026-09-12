@@ -1204,6 +1204,29 @@ def _format_shipped_since(markers_dict: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+_SHIPPED_DIGEST_INSTRUCTION = (
+    "Before proposing, check the shipped-this-week digest above - do not "
+    "propose already-shipped work. If a candidate item duplicates work that "
+    "already shipped this week (named above) or is in flight, say so plainly "
+    "and skip it instead of quietly drafting a duplicate."
+)
+
+
+def _shipped_digest_block(digest_context: str) -> str:
+    """Render the ``## Shipped-this-week digest`` block (digest + the
+    do-not-propose-already-shipped-work instruction) for the roadmap, Pest
+    Control, and Spackle exploration prompts. Returns ``""`` when no digest
+    was assembled so the section is omitted entirely - mirrors the
+    megaphone ``digest_block`` pattern. Module-level (not a method) so it's
+    unit-testable without a wholesale-mocked ``self``."""
+    if not digest_context:
+        return ""
+    return (
+        f"\n## Shipped-this-week digest\n{digest_context}\n\n"
+        f"{_SHIPPED_DIGEST_INSTRUCTION}\n"
+    )
+
+
 def _format_rejected_spotlights(markers_dict: dict[str, Any]) -> str:
     """Render recently CEO-rejected x_feature drafts + their reasons, so HoM
     steers away from ground the CEO already turned down."""
@@ -1229,34 +1252,6 @@ def _format_barfly_candidates(markers_dict: dict[str, Any]) -> str:
         f"{c.get('text')} ({c.get('engagement_note')})"
         for c in candidates
         if isinstance(c, dict)
-    )
-
-
-# Instruction text appended to the shipped-this-week digest block in the
-# roadmap, Pest Control, and Spackle exploration prompts — adapts intake's
-# "don't propose what's already been done" wording (prompter.md §"Task
-# history") for the board-exploration context: check the digest before
-# proposing and skip duplicates of work that already shipped.
-_SHIPPED_DIGEST_INSTRUCTION = (
-    "Before proposing, check the shipped-this-week digest above — do not "
-    "propose already-shipped work. If a candidate item duplicates work that "
-    "already shipped this week (named above) or is in flight, say so plainly "
-    "and skip it instead of quietly drafting a duplicate."
-)
-
-
-def _shipped_digest_block(digest_context: str) -> str:
-    """Render the ``## Shipped-this-week digest`` block (digest + the
-    do-not-propose-already-shipped-work instruction) for the roadmap, Pest
-    Control, and Spackle exploration prompts. Returns ``""`` when no digest
-    was assembled so the section is omitted entirely — mirrors the
-    megaphone ``digest_block`` pattern. Module-level (not a method) so it's
-    unit-testable without a wholesale-mocked ``self``."""
-    if not digest_context:
-        return ""
-    return (
-        f"\n## Shipped-this-week digest\n{digest_context}\n\n"
-        f"{_SHIPPED_DIGEST_INSTRUCTION}\n"
     )
 
 
