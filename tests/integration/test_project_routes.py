@@ -774,6 +774,7 @@ async def test_add_agent_access_exposes_restricted_state_with_resolved_agent(
 
 
 @pytest.mark.asyncio
+# (merge-resolution head: cell-default semantics pinned in the test below)
 async def test_remove_agent_access_reverts_to_cell_default(
     project_client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -811,4 +812,3 @@ async def test_remove_agent_access_reverts_to_cell_default(
     body = remove_response.json()
     assert body["access_restricted"] is False
     assert body["allowed_agents"] is None
-
