@@ -27,7 +27,19 @@ class ReleaseReportModel(BaseModel):
 
 class ReleaseMemberTaskModel(BaseModel):
     """One delivery task that belongs to this release, for the panel's
-    per-member-task verification-receipt rollup."""
+    per-member-task verification-receipt rollup.
+
+    Wire contract (pr_gate F-b7ba8602, confirmed against the consuming
+    frontend, PR #1069 / branch feature/frontend/0e923eb8--54e30535--07f3373f):
+    ``member_task_ids`` carries ``{task_id, pr_number}`` OBJECTS, matching the
+    panel's ``ReleaseMemberTaskId`` in ``panel/src/lib/api/release.ts``
+    (``task_id: string; pr_number: number | null``), which maps
+    ``m.task_id`` per member into the release verification rollup. The
+    ``member_task_ids`` field name is kept (not renamed to e.g.
+    ``member_tasks``) because the FE is already wired to it; the object
+    shape leaves room for per-member display fields (e.g. pr links)
+    without another contract break.
+    """
 
     task_id: str
     pr_number: int | None = None

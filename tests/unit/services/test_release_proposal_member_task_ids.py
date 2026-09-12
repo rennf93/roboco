@@ -85,18 +85,29 @@ async def _seed_project(session: AsyncSession, system_uuid: UUID) -> ProjectTabl
 async def _seed_proposal(
     session: AsyncSession,
     project: ProjectTable,
-    system_uuid: UUID,
-    secretary_uuid: UUID,
     *,
     completed_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> TaskTable:
+    """Seed a release-proposal task row.
+
+    ``updated_at`` exists to reproduce the row shape the publish path
+    actually leaves behind for pre-stamp (legacy) proposals: status
+    COMPLETED with ``completed_at`` still NULL (pr_gate F-2cadcce6) and
+    only ``updated_at`` written, by the same COMPLETED commit's ORM
+    onupdate.
+    """
+    system_uuid, secretary_uuid = await _seed_agents(session)
     task = TaskTable(
         id=uuid4(),
         title=f"Release proposal: v{_VERSION}",
         description="proposal body",
         acceptance_criteria=["CEO approves"],
-        status=TaskStatus.COMPLETED if completed_at else TaskStatus.PENDING,
+        status=(
+            TaskStatus.COMPLETED if (completed_at or updated_at) else TaskStatus.PENDING
+        ),
         completed_at=completed_at,
+        updated_at=updated_at,
         priority=2,
         task_type=TaskType.ADMINISTRATIVE,
         nature=TaskNature.NON_TECHNICAL,
@@ -154,15 +165,9 @@ async def test_member_task_ids_scoped_to_window_and_project(
     system_uuid, secretary_uuid = await _seed_agents(db_session)
     project = await _seed_project(db_session, system_uuid)
     previous = await _seed_proposal(
-        db_session,
-        project,
-        system_uuid,
-        secretary_uuid,
-        completed_at=_T0 - timedelta(hours=1),
+        db_session, project, completed_at=_T0 - timedelta(hours=1)
     )
-    target = await _seed_proposal(
-        db_session, project, system_uuid, secretary_uuid, completed_at=None
-    )
+    target = await _seed_proposal(db_session, project, completed_at=None)
     in_window = await _seed_delivery_task(
         db_session, project, system_uuid, _T0 + timedelta(minutes=30), pr_number=42
     )
@@ -200,10 +205,86 @@ async def test_member_task_ids_empty_for_project_less_proposal(
 ) -> None:
     system_uuid, secretary_uuid = await _seed_agents(db_session)
     project = await _seed_project(db_session, system_uuid)
-    target = await _seed_proposal(
-        db_session, project, system_uuid, secretary_uuid, completed_at=None
-    )
+    target = await _seed_proposal(db_session, project, completed_at=None)
     target.project_id = None
     await db_session.flush()
 
     assert await member_task_ids_for_proposal(db_session, target) == []
+
+
+@pytest.mark.asyncio
+async def test_member_task_ids_window_survives_legacy_proposal_without_completed_at(
+    db_session: AsyncSession,
+) -> None:
+    """pr_gate F-2cadcce6: the previous release is seeded the way the publish
+    path actually leaves pre-stamp rows: status COMPLETED with
+    ``completed_at`` unset and only ``updated_at`` written. The window
+    filter must still apply. Postgres DESC orders NULLS FIRST, so without
+    the IS NOT NULL guard plus the updated_at fallback the NULL row won
+    LIMIT 1, the boundary resolved to None, and every COMPLETED delivery
+    task in the project's history became a member."""
+    system_uuid, secretary_uuid = await _seed_agents(db_session)
+    project = await _seed_project(db_session, system_uuid)
+    await _seed_proposal(
+        db_session, project, updated_at=_T0 - timedelta(hours=1)
+    )  # legacy previous release: COMPLETED, completed_at NULL
+    target = await _seed_proposal(db_session, project, completed_at=None)
+    in_window = await _seed_delivery_task(
+        db_session, project, system_uuid, _T0 + timedelta(minutes=30), pr_number=42
+    )
+    await _seed_delivery_task(
+        db_session,
+        project,
+        system_uuid,
+        _T0 - timedelta(hours=2),
+        pr_number=1,
+    )  # predates the previous release -- must stay outside the window
+
+    result = await member_task_ids_for_proposal(db_session, target)
+
+    assert result == [{"task_id": str(in_window.id), "pr_number": 42}]
+
+
+@pytest.mark.asyncio
+async def test_member_task_ids_ordering_is_deterministic(
+    db_session: AsyncSession,
+) -> None:
+    """pr_gate F-a35e595f: members come back as a total order (completed_at
+    then id) regardless of insertion order, so repeated GET
+    /release/proposal polls never reshuffle the panel's rollup. Two members
+    share a completed_at to pin the id tiebreak."""
+    system_uuid, secretary_uuid = await _seed_agents(db_session)
+    project = await _seed_project(db_session, system_uuid)
+    await _seed_proposal(db_session, project, updated_at=_T0 - timedelta(hours=1))
+    target = await _seed_proposal(db_session, project, completed_at=None)
+    tied_ts = _T0 + timedelta(hours=1)
+    latest = await _seed_delivery_task(
+        db_session, project, system_uuid, _T0 + timedelta(hours=2), pr_number=7
+    )
+    tied_a = await _seed_delivery_task(
+        db_session, project, system_uuid, tied_ts, pr_number=8
+    )
+    tied_b = await _seed_delivery_task(
+        db_session, project, system_uuid, tied_ts, pr_number=9
+    )
+    earliest = await _seed_delivery_task(
+        db_session, project, system_uuid, _T0 + timedelta(minutes=1), pr_number=10
+    )
+
+    result = await member_task_ids_for_proposal(db_session, target)
+
+    pr_by_id = {earliest.id: 10, tied_a.id: 8, tied_b.id: 9, latest.id: 7}
+    # hex-string order == PG's uuid byte order == UUID int order
+    tied_ordered = sorted((tied_a.id, tied_b.id), key=str)
+    assert [r["task_id"] for r in result] == [
+        str(earliest.id),
+        str(tied_ordered[0]),
+        str(tied_ordered[1]),
+        str(latest.id),
+    ]
+    assert [r["pr_number"] for r in result] == [
+        pr_by_id[earliest.id],
+        pr_by_id[tied_ordered[0]],
+        pr_by_id[tied_ordered[1]],
+        pr_by_id[latest.id],
+    ]
