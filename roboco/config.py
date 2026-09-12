@@ -2273,16 +2273,41 @@ class Settings(BaseSettings):
         ),
     )
     # The default OpenRouter model id (provider/model form, e.g.
-    # "anthropic/claude-sonnet-4") passed to `opencode run --model` when the
+    # "anthropic/claude-sonnet-5") passed to `opencode run --model` when the
     # routing assignment does not pin a specific model. The live catalog is
     # searched on demand (GET /providers/openrouter/models) and the picked
     # model id is stored via provider_type_override — this is only the floor.
     openrouter_cli_model: str = Field(
-        default="anthropic/claude-sonnet-4",
+        default="anthropic/claude-sonnet-5",
         description=(
             "Default OpenRouter model id (provider/model) passed to opencode "
             "when no per-assignment model is pinned. Override via "
             "ROBOCO_OPENROUTER_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the OPENROUTER provider (the kimi
+    # pattern: real Settings fields, not hardcoded module constants). An
+    # operator may want a different cadence for OpenRouter's metered credit
+    # pools than the flat 60s default. The rate-limit value backs
+    # _park_openrouter_rate_limited's exponential re-park backoff (429 -> exit
+    # 75); the auth value covers the missing/invalid API key preflight (401 ->
+    # exit 78).
+    openrouter_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the OPENROUTER provider "
+            "on a quota/rate-limit exit; override via "
+            "ROBOCO_OPENROUTER_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    openrouter_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the OPENROUTER provider on a "
+            "missing/invalid API key (entrypoint preflight exit 78); override "
+            "via ROBOCO_OPENROUTER_AUTH_RETRY_AFTER_SECONDS"
         ),
     )
     openrouter_http_referer: str = Field(
