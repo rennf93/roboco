@@ -773,7 +773,7 @@ def _begin_nested_flushes_on_clean_exit(session: AsyncMock) -> MagicMock:
         async def __aenter__(self) -> None:
             return None
 
-        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        async def __aexit__(self, exc_type: Any, _exc: Any, _tb: Any) -> bool:
             if exc_type is None:
                 await session.flush()
             return False
