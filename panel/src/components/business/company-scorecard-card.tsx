@@ -243,18 +243,35 @@ function SpeedSection({ medianLeadTimeHours }: SpeedSectionProps) {
 // metric against its target.
 //
 // ponytail: The charter `objectives` field is free text
-// (Record<string, unknown>[]) while the three metrics are hardcoded
-// (first_pass_yield, median_lead_time_hours, escaped_defects). The mapping
-// is positional-by-convention, not derived — one card per charter objective
-// only holds until you edit the Goals tab. Stated assumption, not
-// discovered later.
+// (Record<string, unknown>[]) with no id/slug the backend guarantees, so the
+// only stable key available is the objective's own `metric` wording. Each
+// canonical metric below is paired to its owning objective by matching a
+// keyword phrase against every `objectives[].metric` string — order-
+// independent and unaffected by an extra objective — rather than by array
+// index. The patterns use the full distinguishing phrase (not a single
+// common word) so two objectives sharing a word, e.g. both mentioning
+// "defect", don't collide via find() returning whichever comes first; an
+// objective whose free-text wording happens to contain another canonical
+// card's full phrase can still claim that card — this is a best-effort
+// content match, not a guaranteed-unique key.
 // ---------------------------------------------------------------------------
 
-const OBJECTIVE_FALLBACK_LABELS = [
-  "Tasks shipped to merge with no human code edits",
-  "Median lead time, intake → merged",
-  "Critical escaped defects per release",
-] as const;
+type CanonicalMetricKey = "first_pass_yield" | "median_lead_time" | "escaped_defects";
+
+// Full distinguishing phrases, not single common words, to avoid the
+// keyword-collision case above (e.g. /defect/i alone matches both a
+// "defect triage" objective and the "escaped defects" objective).
+const CANONICAL_METRIC_PATTERNS: Record<CanonicalMetricKey, RegExp> = {
+  first_pass_yield: /shipped to merge|no human code edit/i,
+  median_lead_time: /median lead time/i,
+  escaped_defects: /escaped defect/i,
+};
+
+const OBJECTIVE_FALLBACK_LABELS: Record<CanonicalMetricKey, string> = {
+  first_pass_yield: "Tasks shipped to merge with no human code edits",
+  median_lead_time: "Median lead time, intake → merged",
+  escaped_defects: "Critical escaped defects per release",
+};
 
 interface ObjectivesSectionProps {
   objectives: Record<string, unknown>[];
@@ -265,12 +282,17 @@ interface ObjectivesSectionProps {
 
 function objectiveLabel(
   objectives: Record<string, unknown>[],
-  index: number,
+  key: CanonicalMetricKey,
 ): string {
-  const raw = objectives[index]?.metric;
+  const pattern = CANONICAL_METRIC_PATTERNS[key];
+  const match = objectives.find((objective) => {
+    const raw = objective?.metric;
+    return typeof raw === "string" && raw.length > 0 && pattern.test(raw);
+  });
+  const raw = match?.metric;
   return typeof raw === "string" && raw.length > 0
     ? raw
-    : OBJECTIVE_FALLBACK_LABELS[index];
+    : OBJECTIVE_FALLBACK_LABELS[key];
 }
 
 interface ObjectiveCardProps {
@@ -287,7 +309,7 @@ function ObjectiveCard({
   targetText,
 }: ObjectiveCardProps) {
   return (
-    <div className="rounded-lg border bg-card p-3 space-y-1">
+    <div data-testid="objective-card" className="rounded-lg border bg-card p-3 space-y-1">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="flex items-center justify-between text-sm">
         {hasData ? (
@@ -320,7 +342,7 @@ function ObjectivesSection({
       <SectionLabel>Objectives</SectionLabel>
       <div className="space-y-2">
         <ObjectiveCard
-          label={objectiveLabel(objectives, 0)}
+          label={objectiveLabel(objectives, "first_pass_yield")}
           hasData={fpyHasData}
           formattedValue={
             fpyHasData
@@ -330,17 +352,15 @@ function ObjectivesSection({
           targetText="90%"
         />
         <ObjectiveCard
-          label={objectiveLabel(objectives, 1)}
+          label={objectiveLabel(objectives, "median_lead_time")}
           hasData={ltHasData}
           formattedValue={
-            ltHasData
-              ? `${(medianLeadTimeHours as number).toFixed(1)}h`
-              : ""
+            ltHasData ? `${(medianLeadTimeHours as number).toFixed(1)}h` : ""
           }
           targetText="< 24h"
         />
         <ObjectiveCard
-          label={objectiveLabel(objectives, 2)}
+          label={objectiveLabel(objectives, "escaped_defects")}
           hasData={edHasData}
           formattedValue={edHasData ? `${escapedDefects as number}` : ""}
           targetText="0"
@@ -378,12 +398,14 @@ function ScorecardBody({
           spendTrend={spendTrend}
           spendTrendLoading={spendTrendLoading}
         />
-        <SpeedSection medianLeadTimeHours={data.median_lead_time_hours} />
+        <SpeedSection
+          medianLeadTimeHours={data.delivery.median_lead_time_hours}
+        />
         <ObjectivesSection
           objectives={data.objectives}
-          firstPassYield={data.first_pass_yield}
-          medianLeadTimeHours={data.median_lead_time_hours}
-          escapedDefects={data.escaped_defects}
+          firstPassYield={data.delivery.first_pass_yield}
+          medianLeadTimeHours={data.delivery.median_lead_time_hours}
+          escapedDefects={data.delivery.escaped_defects}
         />
       </CardContent>
     </Card>

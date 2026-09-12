@@ -43,6 +43,35 @@ class Settings(BaseSettings):
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
     )
+    role: Literal["all", "api", "dispatcher", "indexer"] = Field(
+        default="all",
+        description=(
+            "Which slice of the single roboco.cli entry point this process "
+            "runs (env ROBOCO_ROLE). 'all': today's behavior, byte-for-byte "
+            "(FastAPI + every Orchestrator background loop + the in-process "
+            "indexer, one process) - used by tests and `make quickstart`. "
+            "'api': serves stateless FastAPI request/response routes; its "
+            "background loops and startup reconciliation are skipped. It "
+            "keeps its own Orchestrator instance only for isolated "
+            "on-demand actions with no fleet-state dependency (the CEO's "
+            "external-PR-supersede branch cut, /api/tasks/{id}/"
+            "supersede-external-pr) - NOT the secretary/intake live chats, "
+            "which nginx routes to the dispatcher instead (see "
+            "docker/nginx.conf) because spawning them needs the SAME "
+            "process as the reconciliation/reaper loops that must see them. "
+            "'dispatcher': the fleet owner - runs the startup reconciliation "
+            "+ every Orchestrator loop, AND (via nginx) the /api/orchestrator/*, "
+            "/api/secretary/live/* and /api/prompter/live/* routes, so the "
+            "fleet's in-memory state (spawn/waiting-agent registries) is "
+            "never split across two processes. Its own task/notification "
+            "queries go over HTTP to its OWN uvicorn (internal_api_url "
+            "resolves to 127.0.0.1 - see ROBOCO_API_URL in the compose "
+            "files - never the orchestrator/api-role service). 'indexer': "
+            "runs only the KB/embedding worker. The split exists because "
+            "the single 'all' process pins one core under load (measured "
+            "113% CPU on a 12-core box) and every gateway verb starves."
+        ),
+    )
     display_timezone: str = Field(
         default="UTC",
         description=(
@@ -222,6 +251,25 @@ class Settings(BaseSettings):
     rag_auto_update_enabled: bool = Field(default=True)
     rag_auto_update_interval: int = Field(
         default=300, ge=60, description="Seconds between auto-updates"
+    )
+    indexer_stream_enabled: bool = Field(
+        default=True,
+        description="Route index/embedding writes through the indexer stream worker",
+    )
+    indexer_max_backlog: int = Field(
+        default=500,
+        ge=1,
+        description="Max backlog on the index stream before oldest are dead-lettered",
+    )
+    indexer_embed_concurrency: int = Field(
+        default=1,
+        ge=1,
+        description="Max concurrent embed batches for the indexer's own embedder",
+    )
+    indexer_embed_batch_size: int = Field(
+        default=8,
+        ge=1,
+        description="Embed batch size for the indexer's own embedder",
     )
 
     @computed_field  # type: ignore[prop-decorator]
@@ -421,6 +469,31 @@ class Settings(BaseSettings):
         description=(
             "How long an agent gateway may probe as broken before the reaper "
             "recovers it — tolerates a transient probe miss (the gateway mid-call)."
+        ),
+    )
+    dispatch_claim_inflight_ttl_seconds: int = Field(
+        default=600,
+        ge=0,
+        description=(
+            "How long the dispatcher keeps an agent marked claim-in-flight after "
+            "a client-side timeout/exception on the claim POST, before treating "
+            "it as free again. The server may still be finishing the claim "
+            "(branch creation can outlast the client's own request timeout), so "
+            "a second pending task must not stack a claim onto the same agent "
+            "while the first is still uncertain."
+        ),
+    )
+    parent_branch_provisioning_grace_seconds: int = Field(
+        default=900,
+        ge=0,
+        description=(
+            "How long a claimed/in_progress parent task may sit with "
+            "branch_name NULL, measured in fleet-active time, before the "
+            "dispatcher auto-blocks a waiting child. Claim fields commit "
+            "(TaskService._apply_claim_fields) before branch creation "
+            "(_provision_claim), so a parent's branch can still be minutes "
+            "away under load; matches flow_verb_slow_timeout_seconds, the "
+            "same budget a slow claim/branch verb already gets server-side."
         ),
     )
 
@@ -792,7 +865,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 7.6.0 / guard-core 3.12.0), DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 8.0.0 / guard-core 4.0.1), DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
@@ -841,6 +914,16 @@ class Settings(BaseSettings):
     guard_project_id: str = Field(
         default="",
         description="guard-core project id for guard-agent telemetry (telemetry only).",
+    )
+    guard_dynamic_rules_cache_path: str = Field(
+        default="",
+        description=(
+            "Local JSON snapshot of the last-known dynamic rules (guard-core "
+            "4.0.0): a restart during a SaaS or redis outage restores the last "
+            "applied rules instead of base config. Redis is the primary store; "
+            "this file is the fallback. Empty disables the file layer. "
+            "Telemetry only."
+        ),
     )
     guard_emergency: bool = Field(
         default=False,
@@ -1838,6 +1921,18 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)
     # ==========================================================================
+    agent_mcp_startup_timeout_ms: int = Field(
+        default=120000,
+        ge=1000,
+        description=(
+            "MCP_TIMEOUT (ms) injected into the Claude agent container env, "
+            "Claude Code's own MCP server connect-timeout budget, default "
+            "30000. Under a fleet-wide spawn burst, several stdio MCP "
+            "servers starting per container routinely exceed 30s, so every "
+            "verb tool goes 'failed' at init. Claude runtime only; the "
+            "grok/gemini/codex/kimi CLIs don't read this env var."
+        ),
+    )
     agent_tool_call_warn: int = Field(
         default=50,
         ge=1,

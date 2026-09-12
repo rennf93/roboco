@@ -15,7 +15,13 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.dashboard import get_main_pm_kanban
 from roboco.api.routes.dashboard import router as dashboard_router
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import (
+    AgentSpawnSessionTable,
+    AgentTable,
+    ProjectTable,
+    TaskReviewFindingTable,
+    TaskTable,
+)
 from roboco.models import AgentRole, AgentStatus
 from roboco.models.base import (
     Complexity,
@@ -694,3 +700,308 @@ async def test_stalled_tasks_endpoint_returns_marked_task(
     expected_seconds = stalled_minutes * 60
     slack_seconds = 100
     assert abs(entry["stalled_seconds"] - expected_seconds) < slack_seconds
+
+
+# ---------------------------------------------------------------------------
+# CEO portfolio: per-project aggregation + CEO-only gate
+# ---------------------------------------------------------------------------
+
+_FINDING_REQUIRED = {"expected": "handled", "actual": "missing"}
+
+# Alpha's seeded metrics (see _seed_portfolio_projects) — named to keep the
+# aggregation assertions below self-explanatory.
+ALPHA_ACTIVE_TASKS = 2
+ALPHA_OPEN_FINDINGS = 2
+ALPHA_MEDIAN_LEAD_HOURS = 2.5  # median of the seeded 1h and 4h lead times
+ALPHA_REWORK_RATE = 0.5  # one of the two completed tasks bounced once
+ALPHA_MONTH_BURN_USD = 2.5
+
+
+@pytest_asyncio.fixture
+async def non_ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
+    """The dashboard app with the agent context overridden to a non-CEO role."""
+    reset_storage()
+    app = FastAPI()
+    app.include_router(dashboard_router, prefix="/api/dashboard")
+
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
+        yield db_session
+
+    async def _override_agent() -> AgentContext:
+        return AgentContext(
+            agent_id=uuid4(), role=AgentRole.DEVELOPER, team=Team.BACKEND
+        )
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_agent_context] = _override_agent
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+async def _seed_portfolio_projects(
+    db_session: AsyncSession,
+) -> tuple[ProjectTable, ProjectTable]:
+    """Two projects with disjoint task/findings/spend rows:
+
+    Alpha: 2 active, 2 completed (leads 1h + 4h, one reworked), 2 open +
+    1 addressed finding, $2.50 month burn.
+    Beta: 1 active + 1 cancelled, 1 open finding, $0 burn.
+    """
+    creator = (await db_session.execute(select(AgentTable).limit(1))).scalar_one()
+    now = datetime.now(UTC)
+    alpha = ProjectTable(
+        id=uuid4(),
+        name="Alpha",
+        slug=f"alpha-{uuid4().hex[:6]}",
+        git_url="https://example.com/alpha.git",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
+    )
+    beta = ProjectTable(
+        id=uuid4(),
+        name="Beta",
+        slug=f"beta-{uuid4().hex[:6]}",
+        git_url="https://example.com/beta.git",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
+    )
+    db_session.add_all([alpha, beta])
+    await db_session.flush()
+
+    def _task(
+        project: ProjectTable,
+        title: str,
+        status: TaskStatus,
+        created_at: datetime,
+        completed_at: datetime | None = None,
+    ) -> TaskTable:
+        return TaskTable(
+            id=uuid4(),
+            title=title,
+            description="d",
+            acceptance_criteria=["ac"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            status=status,
+            team=Team.BACKEND,
+            project_id=project.id,
+            created_by=creator.id,
+            estimated_complexity=Complexity.MEDIUM,
+            created_at=created_at,
+            completed_at=completed_at,
+        )
+
+    def hours_ago(n: int) -> datetime:
+        return now - timedelta(hours=n)
+
+    alpha_1 = _task(alpha, "a active 1", TaskStatus.IN_PROGRESS, hours_ago(2))
+    alpha_2 = _task(alpha, "a active 2", TaskStatus.AWAITING_QA, hours_ago(2))
+    alpha_done_1 = _task(
+        alpha, "a done 1", TaskStatus.COMPLETED, hours_ago(2), hours_ago(1)
+    )
+    alpha_done_1.revision_count = 1
+    alpha_done_2 = _task(
+        alpha, "a done 2", TaskStatus.COMPLETED, hours_ago(8), hours_ago(4)
+    )
+    beta_active = _task(beta, "b active", TaskStatus.IN_PROGRESS, hours_ago(1))
+    beta_cancelled = _task(beta, "b cancelled", TaskStatus.CANCELLED, hours_ago(1))
+    db_session.add_all(
+        [
+            alpha_1,
+            alpha_2,
+            alpha_done_1,
+            alpha_done_2,
+            beta_active,
+            beta_cancelled,
+        ]
+    )
+    await db_session.flush()
+
+    db_session.add_all(
+        [
+            TaskReviewFindingTable(
+                task_id=alpha_done_1.id,
+                origin="qa",
+                round=1,
+                severity="blocker",
+                status="open",
+                **_FINDING_REQUIRED,
+            ),
+            TaskReviewFindingTable(
+                task_id=alpha_done_2.id,
+                origin="qa",
+                round=1,
+                severity="minor",
+                status="open",
+                **_FINDING_REQUIRED,
+            ),
+            # Addressed findings never count as open.
+            TaskReviewFindingTable(
+                task_id=alpha_done_1.id,
+                origin="qa",
+                round=1,
+                severity="minor",
+                status="addressed",
+                **_FINDING_REQUIRED,
+            ),
+            TaskReviewFindingTable(
+                task_id=beta_active.id,
+                origin="qa",
+                round=1,
+                severity="minor",
+                status="open",
+                **_FINDING_REQUIRED,
+            ),
+        ]
+    )
+    # Clamp to this calendar month: hours_ago(3) crosses the month boundary
+    # when tests run in the first ~3 hours of a month, and the burn is
+    # attributed by start-month.
+    db_session.add(
+        AgentSpawnSessionTable(
+            agent_slug=f"be-dev-{uuid4().hex[:6]}",
+            team="backend",
+            role="developer",
+            model="claude-sonnet-4",
+            task_id=str(alpha_done_1.id),
+            started_at=max(
+                now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+                hours_ago(3),
+            ),
+            ended_at=hours_ago(2),
+            estimated_cost_usd=2.5,
+        )
+    )
+    await db_session.flush()
+    return alpha, beta
+
+
+@pytest.mark.asyncio
+async def test_portfolio_aggregation(
+    db_session: AsyncSession, dashboard_client: AsyncClient
+) -> None:
+    alpha, beta = await _seed_portfolio_projects(db_session)
+
+    resp = await dashboard_client.get("/api/dashboard/portfolio?days=30", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    rows = resp.json()
+    assert isinstance(rows, list)
+
+    by_id = {row["project_id"]: row for row in rows}
+    alpha_row = by_id[str(alpha.id)]
+    beta_row = by_id[str(beta.id)]
+
+    assert alpha_row["project_slug"] == alpha.slug
+    assert alpha_row["project_name"] == "Alpha"
+    assert alpha_row["active_task_count"] == ALPHA_ACTIVE_TASKS
+    assert alpha_row["median_lead_time_hours"] == pytest.approx(ALPHA_MEDIAN_LEAD_HOURS)
+    assert alpha_row["rework_rate"] == pytest.approx(ALPHA_REWORK_RATE)
+    assert alpha_row["open_findings_count"] == ALPHA_OPEN_FINDINGS
+    assert alpha_row["monthly_budget_burn_usd"] == pytest.approx(ALPHA_MONTH_BURN_USD)
+
+    assert beta_row["active_task_count"] == 1  # cancelled task excluded
+    assert beta_row["median_lead_time_hours"] is None  # nothing completed
+    assert beta_row["rework_rate"] == 0.0
+    assert beta_row["open_findings_count"] == 1
+    assert beta_row["monthly_budget_burn_usd"] == 0.0
+
+    # Most active first — Alpha (2) ranks above Beta (1).
+    active_counts = [row["active_task_count"] for row in rows]
+    assert active_counts == sorted(active_counts, reverse=True)
+    assert rows.index(alpha_row) < rows.index(beta_row)
+
+    for row in rows:
+        assert set(row) >= {
+            "project_id",
+            "project_slug",
+            "project_name",
+            "active_task_count",
+            "median_lead_time_hours",
+            "rework_rate",
+            "open_findings_count",
+            "monthly_budget_burn_usd",
+        }
+
+
+@pytest.mark.asyncio
+async def test_portfolio_is_ceo_only(non_ceo_client: AsyncClient) -> None:
+    resp = await non_ceo_client.get("/api/dashboard/portfolio", headers=_HDR)
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    assert "CEO" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_portfolio_tiebreak_orders_by_name_case_insensitive(
+    db_session: AsyncSession, dashboard_client: AsyncClient
+) -> None:
+    """Two projects tied on active_task_count sort by name, case-insensitively.
+
+    "apple" and "Zebra" are chosen so a case-sensitive sort would rank
+    "Zebra" first (capital Z sorts before lowercase a in ASCII) while
+    lowercasing correctly ranks "apple" first.
+    """
+    creator = (await db_session.execute(select(AgentTable).limit(1))).scalar_one()
+    now = datetime.now(UTC)
+    zebra = ProjectTable(
+        id=uuid4(),
+        name="Zebra",
+        slug=f"zebra-{uuid4().hex[:6]}",
+        git_url="https://example.com/zebra.git",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
+    )
+    apple = ProjectTable(
+        id=uuid4(),
+        name="apple",
+        slug=f"apple-{uuid4().hex[:6]}",
+        git_url="https://example.com/apple.git",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
+    )
+    db_session.add_all([zebra, apple])
+    await db_session.flush()
+
+    def _active_task(project: ProjectTable) -> TaskTable:
+        return TaskTable(
+            id=uuid4(),
+            title="t",
+            description="d",
+            acceptance_criteria=["ac"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            status=TaskStatus.IN_PROGRESS,
+            team=Team.BACKEND,
+            project_id=project.id,
+            created_by=creator.id,
+            estimated_complexity=Complexity.MEDIUM,
+            created_at=now,
+        )
+
+    db_session.add_all([_active_task(zebra), _active_task(apple)])
+    await db_session.flush()
+
+    resp = await dashboard_client.get("/api/dashboard/portfolio?days=30", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    ids = {str(zebra.id), str(apple.id)}
+    names = [row["project_name"] for row in resp.json() if row["project_id"] in ids]
+    assert names == ["apple", "Zebra"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("days", [0, 91])
+async def test_portfolio_days_out_of_bounds_rejected(
+    dashboard_client: AsyncClient, days: int
+) -> None:
+    resp = await dashboard_client.get(
+        f"/api/dashboard/portfolio?days={days}", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_portfolio_days_in_bounds_accepted(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get("/api/dashboard/portfolio?days=45", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK

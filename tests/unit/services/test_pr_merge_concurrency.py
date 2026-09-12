@@ -4,10 +4,10 @@ Two PMs completing different subtasks of the same parent could race on
 the gh API merge call. The fix is to:
 
 1. Take a row-level lock on the parent task before invoking the merge.
-2. Retry once if GitHub returns 409 (merge conflict from racing merges),
-   re-pulling the local target branch in between to refresh refs.
+2. Retry once if GitHub returns 409 (merge conflict from racing merges) -
+   a pure GitHub-side recheck, no local git I/O.
 
-These are unit tests — concurrency is exercised via mocks (status code
+These are unit tests, concurrency is exercised via mocks (status code
 sequence + assertions on `with_for_update` use), not real DB transactions.
 The lock-acquisition path is asserted by checking that the parent-task
 SELECT statement passed to `session.execute` carries `FOR UPDATE` semantics.
@@ -15,6 +15,7 @@ SELECT statement passed to `session.execute` carries `FOR UPDATE` semantics.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,11 +30,12 @@ from roboco.services.git import GitService
 # ruff's PLR2004 magic-value rule has nothing to complain about. The
 # threshold mirrors httpx's `Response.is_success` rule (status < 400).
 # The expected-call counters document the retry contract: at most two
-# merge attempts, two `_sync_target_branch` calls (refresh + post-success),
-# two SELECTs (PR lookup + parent FOR UPDATE).
+# merge attempts, one `_sync_target_branch` call (post-success only, the
+# 409 retry no longer syncs locally), two SELECTs (PR lookup + parent
+# FOR UPDATE).
 _HTTP_OK_THRESHOLD = 400
 _EXPECTED_MERGE_ATTEMPTS = 2
-_EXPECTED_SYNC_CALLS = 2
+_EXPECTED_SYNC_CALLS = 1
 _EXPECTED_SELECT_CALLS = 2
 
 
@@ -80,8 +82,8 @@ def _fake_response(status_code: int) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# Scenario: GitHub returns 409 once, then 200. Retry must succeed and call
-# `_sync_target_branch` between attempts to refresh local state.
+# Scenario: GitHub returns 409 once, then 200. Retry must succeed without any
+# local git I/O between attempts (the merge PUT carries no local state).
 # ---------------------------------------------------------------------------
 
 
@@ -116,10 +118,10 @@ async def test_pr_merge_retries_once_on_409_conflict() -> None:
         )
 
     assert out == {"merge_commit_sha": "merged-sha"}
-    # _call_merge_api invoked twice — once 409, once 200.
+    # _call_merge_api invoked twice: once 409, once 200.
     assert call_seq.await_count == _EXPECTED_MERGE_ATTEMPTS
-    # _sync_target_branch invoked twice — once for the 409 refresh, once
-    # for the post-success refresh that returns the merge SHA.
+    # _sync_target_branch invoked once: the post-success refresh that
+    # returns the merge SHA. No sync happens on the 409 retry itself.
     assert sync_branch.await_count == _EXPECTED_SYNC_CALLS
 
 
@@ -237,6 +239,127 @@ async def test_pr_merge_locks_parent_task_with_for_update() -> None:
     # Read via getattr so mypy doesn't trip on the protected attr name and
     # we don't need a `# type: ignore` escape hatch.
     assert getattr(parent_stmt, "_for_update_arg", None) is not None
+
+
+# ---------------------------------------------------------------------------
+# Regression: the parent-row FOR UPDATE lock must be released (session
+# commit) BEFORE the cosmetic local target-branch sync (checkout/reset,
+# chown-heavy git I/O) runs. Holding it across that starved sibling merges
+# on the same parent into lock_timeout on a slow workspace volume.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pr_merge_commits_before_local_target_branch_sync() -> None:
+    project_id = uuid4()
+    parent_id = uuid4()
+    fake_task = MagicMock(
+        id=uuid4(),
+        project_id=project_id,
+        parent_task_id=parent_id,
+        assigned_to=uuid4(),
+        work_session_id=None,
+    )
+    fake_parent = MagicMock(id=parent_id)
+    fake_project = MagicMock(slug="roboco")
+
+    session = _make_session(fake_task, fake_parent)
+    committed_before_sync: list[bool] = []
+
+    async def _sync_target_branch(*_a: object, **_k: object) -> str:
+        committed_before_sync.append(session.commit.await_count > 0)
+        return "sha"
+
+    svc = GitService(session)
+    _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
+    _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
+    _bind(svc, "_sync_target_branch", AsyncMock(side_effect=_sync_target_branch))
+
+    with _patch_project_service(fake_project):
+        out = await svc.pr_merge(
+            11, target="feature/backend/parent", project_id=project_id
+        )
+
+    assert out == {"merge_commit_sha": "sha"}
+    # The local sync ran exactly once, and the lock-releasing commit had
+    # already happened by the time it started.
+    assert committed_before_sync == [True]
+    session.commit.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Regression: releasing the parent-row lock early means two sibling
+# `pr_merge` calls resolving the SAME workspace (a cell PM completing two
+# leaves) can now reach the post-merge git sync concurrently, since PMs are
+# exempt from one-task-at-a-time claim serialization. Without an in-process
+# lock keyed by workspace path, their checkout/fetch/reset --hard sequences
+# would interleave on one directory.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pr_merge_serializes_git_sync_for_same_workspace() -> None:
+    workspace = Path("/tmp/ws-shared")
+    order: list[tuple[str, str]] = []
+
+    async def _one_merge(label: str) -> dict[str, Any]:
+        project_id = uuid4()
+        parent_id = uuid4()
+        fake_task = MagicMock(
+            id=uuid4(),
+            project_id=project_id,
+            parent_task_id=parent_id,
+            assigned_to=uuid4(),
+            work_session_id=None,
+        )
+        fake_parent = MagicMock(id=parent_id)
+        fake_project = MagicMock(slug="roboco")
+        svc = GitService(_make_session(fake_task, fake_parent))
+        # Bound directly per-instance rather than patching the module-level
+        # `get_project_service`: two of these run concurrently below, and a
+        # `with patch(...)` around each would race on that shared global.
+        _bind(svc, "_project_for_task", AsyncMock(return_value=fake_project))
+        _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
+        _bind(svc, "get_workspace", AsyncMock(return_value=workspace))
+        _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+        _bind(
+            svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo"))
+        )
+        _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
+        _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
+
+        async def _run_git(
+            _workspace: Path, args: list[str], **_kwargs: object
+        ) -> MagicMock:
+            order.append((label, "enter"))
+            await asyncio.sleep(0.005)
+            order.append((label, "exit"))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "deadbeef" if args[:2] == ["log", "-1"] else ""
+            result.stderr = ""
+            return result
+
+        _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+        return await svc.pr_merge(
+            11, target="feature/backend/parent", project_id=project_id
+        )
+
+    results = await asyncio.gather(_one_merge("a"), _one_merge("b"))
+
+    assert {r["merge_commit_sha"] for r in results} == {"deadbeef"}
+    # No interleaving: an "enter" for one label never appears while the
+    # other label's git sequence is still in flight.
+    active: set[str] = set()
+    for label, kind in order:
+        if kind == "enter":
+            assert not active, f"{label} started while {active} was in flight"
+            active.add(label)
+        else:
+            active.discard(label)
 
 
 # ---------------------------------------------------------------------------

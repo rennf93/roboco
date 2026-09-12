@@ -10,6 +10,13 @@ export interface CockpitSummary {
     blocked: number;
     awaiting_ceo: number;
     completed_30d?: number;
+    median_lead_time_hours?: number | null;
+    // Fraction of tasks shipped to merge with no human code edits (0–1).
+    // Formatted as a percentage, matching the phone's pctOrDash convention
+    // in tg-metrics-tab.tsx.
+    first_pass_yield?: number | null;
+    // Count of critical escaped defects per release.
+    escaped_defects?: number | null;
   };
   spend: {
     spend_30d_usd: number;
@@ -19,14 +26,6 @@ export interface CockpitSummary {
   };
   pending_pitches: number;
   signals: CockpitSignal[];
-  median_lead_time_hours?: number | null;
-  // Fraction of tasks shipped to merge with no human code edits (0–1).
-  // Backend companion item adds this; until it ships the field is absent
-  // and the UI renders 'No data yet'. Formatted as a percentage, matching
-  // the phone's pctOrDash convention in tg-metrics-tab.tsx.
-  first_pass_yield?: number | null;
-  // Count of critical escaped defects per release (backend companion item).
-  escaped_defects?: number | null;
 }
 
 export interface CockpitSignal {
