@@ -410,6 +410,9 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
     "request_changes": frozenset({Requirement.JOURNAL_DECISION}),
     # PM unblock — was inline at _impl.py:2192-2200; now declared.
     "unblock": frozenset({Requirement.JOURNAL_DECISION}),
+    # PM cancel_leaf - closing a zero-diff leaf is a real decision, same
+    # accountability bar as unblock/escalate_up/request_changes.
+    "cancel_leaf": frozenset({Requirement.JOURNAL_DECISION}),
     # PM escalate up — was inline.
     "escalate_up": frozenset({Requirement.JOURNAL_DECISION}),
     # Board/MainPM escalate to CEO.

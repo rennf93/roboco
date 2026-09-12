@@ -238,6 +238,11 @@ async def list_branches(
         current_branch = await git_service.get_current_branch(workspace)
 
         if include_remote:
+            # Nothing left to read/write on `db` before the response is
+            # built below, so close out this request's transaction before
+            # the self-heal prune's git subprocess (+ ownership repair)
+            # runs: a slow prune must never hold an open DB session across it.
+            await db.commit()
             # Self-heal orphaned remote-tracking refs (branches deleted
             # upstream via the forge API) before listing them.
             await git_service.prune_remote_best_effort(workspace)
