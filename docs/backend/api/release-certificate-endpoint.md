@@ -2,20 +2,9 @@
 
 **Date:** 2026-08-31 **Task:** 63375b3c **PR:** #969 **Files:** `roboco/api/routes/releases.py`, `roboco/services/release_certificate.py`, `roboco/api/schemas/release.py`, `roboco/api/app.py`
 
-**Update (2026-09-05, PR #1022 pr_gate bounce):** `conventions_clean`, the
-release-window task set, `ceo_approved_at`, and `qa_passed` all measured the
-wrong thing — see "Semantics" and "Where each piece comes from" below for the
-corrected derivations. Files touched: `roboco/services/release_certificate.py`,
-`roboco/api/routes/release.py`, `roboco/api/schemas/release.py`,
-`roboco/foundation/policy/content/markers.py`.
+**Update (2026-09-05, PR #1022 pr_gate bounce):** `conventions_clean`, the release-window task set, `ceo_approved_at`, and `qa_passed` all measured the wrong thing — see "Semantics" and "Where each piece comes from" below for the corrected derivations. Files touched: `roboco/services/release_certificate.py`, `roboco/api/routes/release.py`, `roboco/api/schemas/release.py`, `roboco/foundation/policy/content/markers.py`.
 
-**Update (2026-09-05, PR #1046 pr_gate round-2 bounce):** the widened deny-list
-still let external/internal PR-review tasks count as release-window delivered
-work, and `ceo_approved_at` was only ever stamped by the HTTP approve route —
-a Telegram-approved release certified `ceo_approved_at: null`. Both fixed; see
-the task-set-derivation and `ceo_approved_at` rows below. Files touched:
-`roboco/services/release_certificate.py`, `roboco/services/release_proposal.py`,
-`roboco/api/routes/release.py`.
+**Update (2026-09-05, PR #1046 pr_gate round-2 bounce):** the widened deny-list still let external/internal PR-review tasks count as release-window delivered work, and `ceo_approved_at` was only ever stamped by the HTTP approve route — a Telegram-approved release certified `ceo_approved_at: null`. Both fixed; see the task-set-derivation and `ceo_approved_at` rows below. Files touched: `roboco/services/release_certificate.py`, `roboco/services/release_proposal.py`, `roboco/api/routes/release.py`.
 
 ## What
 
