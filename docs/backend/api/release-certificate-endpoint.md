@@ -81,8 +81,8 @@ Changing this heuristic changes what `task_states`/`findings_summary` cover; tre
 
 ## Tests
 
-- `tests/integration/test_release_routes.py` — happy path (full gate chain, including an engine-originated delivery root and all three `qa_passed` states), conventions-dirty/-clean cases keyed off real persisted findings, `ceo_approved_at` present/absent, 404 for an unpublished version, non-CEO denial, cross-project task exclusion, and (round-2) a seeded `external_pr`/`internal_pr` review task proving `test_certificate_packages_release_gate_chain` excludes it from both `task_states` and `findings_summary`. DB-backed; needs Postgres.
-- `tests/unit/services/test_release_certificate.py` — version normalization, `[AC]`-stamp counting, severity bucketing, per-task pass state (including the zero-AC `None` case), window/same-project scoping.
+- `tests/integration/test_release_routes.py` — happy path (full gate chain, including an engine-originated delivery root and all three `qa_passed` states), conventions-dirty/-clean cases keyed off real persisted findings, `ceo_approved_at` present/absent, 404 for an unpublished version, non-CEO denial, cross-project task exclusion, and (round-2) a seeded `external_pr` review task proving `test_certificate_packages_release_gate_chain` excludes it from both `task_states` and `findings_summary` (`internal_pr` is covered by `PR_REVIEW_SOURCES` at `roboco/services/task.py:660` but is not separately seeded here). DB-backed; needs Postgres.
+- `tests/unit/services/test_release_certificate.py` — version normalization, `[AC]`-stamp counting, severity bucketing, per-task pass state (including the zero-AC `None` case), window/same-project scoping, and (round-3) `_conventions_clean`'s three branches (empty task list, no block finding, a block finding present) against a mocked session.
 - `tests/unit/services/test_telegram_release_approve_marker.py` — a test on the Telegram approve path proving `ceo_approved_at` is populated via `dispatch_approve` → `ReleaseProposalService.approve()`, not just the HTTP route.
 
 ## Risks and follow-ups

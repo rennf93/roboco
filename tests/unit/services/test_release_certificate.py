@@ -7,6 +7,7 @@ the integration suite in tests/integration/test_release_routes.py.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 from roboco.db.tables import TaskReviewFindingTable, TaskTable
@@ -145,3 +146,49 @@ def test_task_state_no_criteria_is_neither_pass_nor_fail() -> None:
     state = ReleaseCertificateService._task_state(task)
     assert state.criteria_total == 0
     assert state.qa_passed is None
+
+
+# --------------------------------------------------------------------------- #
+# _conventions_clean — True unless an unresolved block-level finding exists
+# for the release window. The empty-list short-circuit needs no DB round
+# trip; the query-result branches are exercised here with a mocked session
+# rather than the DB-backed integration suite, since they are pure branch
+# logic over whatever `scalar_one_or_none()` returns.
+# --------------------------------------------------------------------------- #
+
+
+def _svc(session: AsyncMock) -> ReleaseCertificateService:
+    # __new__ skips BaseService.__init__ so mypy infers `session`'s type from
+    # this direct assignment (AsyncMock) rather than the constructor's
+    # declared `AsyncSession` param type, which would hide Mock-only
+    # attributes like `.assert_not_called`.
+    svc = ReleaseCertificateService.__new__(ReleaseCertificateService)
+    svc.session = session
+    return svc
+
+
+async def test_conventions_clean_true_for_empty_task_list_skips_query() -> None:
+    session = AsyncMock()
+    svc = _svc(session)
+    assert await svc._conventions_clean([]) is True
+    session.execute.assert_not_called()
+
+
+async def test_conventions_clean_true_when_no_block_finding_recorded() -> None:
+    session = AsyncMock()
+    session.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=None)
+    )
+    svc = _svc(session)
+    task = TaskTable(title="Ship it", status=TaskStatus.COMPLETED)
+    assert await svc._conventions_clean([task]) is True
+
+
+async def test_conventions_clean_false_when_block_finding_recorded() -> None:
+    session = AsyncMock()
+    session.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=uuid4())
+    )
+    svc = _svc(session)
+    task = TaskTable(title="Ship it", status=TaskStatus.COMPLETED)
+    assert await svc._conventions_clean([task]) is False
