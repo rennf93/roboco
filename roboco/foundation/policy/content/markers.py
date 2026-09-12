@@ -34,6 +34,7 @@ DISMISSED = "dismissed"
 ESCALATION = "escalation"
 APPROVE_AND_START_NOTES = "approve_and_start_notes"
 RELEASE_REPORT = "release_report"
+RELEASE_APPROVED_AT = "release_approved_at"
 RELEASE_REQUIRED_CHANGES = "release_required_changes"
 RELEASE_EXECUTE_STATUS = "release_execute_status"
 RELEASE_EXECUTE_DETAIL = "release_execute_detail"
@@ -156,6 +157,19 @@ def get_release_report(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_release_report(task: HasMarkers, report: dict[str, Any]) -> None:
     set_marker(task, RELEASE_REPORT, report)
+
+
+def get_release_approved_at(task: HasMarkers) -> str | None:
+    """The ISO timestamp of the CEO's approve-dispatch click, or None when the
+    proposal predates this marker (or was never approved through the route).
+    Distinct from ``completed_at`` — the ~40min background executor's publish
+    completion, stamped long after the CEO actually clicked approve."""
+    val = get_marker(task, RELEASE_APPROVED_AT)
+    return str(val) if val else None
+
+
+def set_release_approved_at(task: HasMarkers, approved_at_iso: str) -> None:
+    set_marker(task, RELEASE_APPROVED_AT, approved_at_iso)
 
 
 def get_release_required_changes(task: HasMarkers) -> str | None:

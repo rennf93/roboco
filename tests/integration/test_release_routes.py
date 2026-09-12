@@ -19,7 +19,12 @@ from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes import release as release_route
 from roboco.api.routes.release import router as release_router
 from roboco.api.routes.releases import router as releases_router
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import (
+    AgentTable,
+    ProjectConventionFindingTable,
+    ProjectTable,
+    TaskTable,
+)
 from roboco.foundation.policy.content import Finding, Severity, markers
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskNature, TaskStatus, TaskType
@@ -27,7 +32,6 @@ from roboco.models.permissions import AgentContext
 from roboco.services.release_executor import ReleaseResult
 from roboco.services.release_proposal import ReleaseProposalService
 from roboco.services.release_readiness import (
-    Gap,
     ReleaseReadinessReport,
     report_to_dict,
 )
@@ -223,6 +227,11 @@ async def test_approve_dispatches_async_and_completes(
     fake_executor.execute.assert_awaited_once()
     await db_session.refresh(task)
     assert task.status == TaskStatus.COMPLETED
+    # ReleaseProposalService.approve() stamps the dispatch moment itself
+    # (the shared chokepoint both this route and the Telegram approve path
+    # dispatch through), not the background executor's much-later
+    # completed_at.
+    assert markers.get_release_approved_at(task) is not None
 
 
 @pytest.mark.asyncio
@@ -447,9 +456,18 @@ async def _seed_published_proposal(
     session: AsyncSession,
     *,
     completed_at: datetime = _PUBLISHED_AT,
+    approved_at: datetime | None = None,
+    stamp_approved_at: bool = True,
     report: ReleaseReadinessReport | None = None,
 ) -> tuple[ProjectTable, TaskTable]:
-    """A COMPLETED (= published) release proposal; returns (project, task)."""
+    """A COMPLETED (= published) release proposal; returns (project, task).
+
+    ``approved_at`` models the CEO's actual approve-dispatch click, distinct
+    from ``completed_at`` (the ~40min background executor's publish
+    completion) — defaults 40 minutes before completion when unset.
+    ``stamp_approved_at=False`` omits the marker entirely, modeling a release
+    published before this marker existed.
+    """
     system = await _seed_agent(session, AgentRole.SYSTEM, "system")
     project = ProjectTable(
         id=uuid4(),
@@ -461,6 +479,12 @@ async def _seed_published_proposal(
     )
     session.add(project)
     await session.flush()
+    task_markers: dict[str, Any] = {
+        "release_report": report_to_dict(report or _report())
+    }
+    if stamp_approved_at:
+        resolved_approved_at = approved_at or (completed_at - timedelta(minutes=40))
+        task_markers["release_approved_at"] = resolved_approved_at.isoformat()
     task = TaskTable(
         id=uuid4(),
         title=f"Release proposal: v{_VERSION}",
@@ -476,7 +500,7 @@ async def _seed_published_proposal(
         team=Team.MAIN_PM,
         source=RELEASE_MANAGER_SOURCE,
         confirmed_by_human=False,
-        orchestration_markers={"release_report": report_to_dict(report or _report())},
+        orchestration_markers=task_markers,
     )
     session.add(task)
     await session.flush()
@@ -490,7 +514,7 @@ async def _seed_delivery_task(
     **spec: Any,
 ) -> TaskTable:
     """A COMPLETED delivery task; optional spec keys ``title`` / ``source`` /
-    ``criteria`` / ``qa_notes`` override the defaults."""
+    ``criteria`` / ``qa_notes`` / ``task_type`` override the defaults."""
     task = TaskTable(
         id=uuid4(),
         title=spec.get("title", "Delivery work"),
@@ -499,7 +523,7 @@ async def _seed_delivery_task(
         status=TaskStatus.COMPLETED,
         completed_at=completed_at,
         priority=2,
-        task_type=TaskType.CODE,
+        task_type=spec.get("task_type", TaskType.CODE),
         nature=TaskNature.TECHNICAL,
         project_id=project.id,
         created_by=project.created_by,
@@ -536,7 +560,10 @@ async def cert_ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient
 async def test_certificate_packages_release_gate_chain(
     db_session: AsyncSession, cert_ceo_client: AsyncClient
 ) -> None:
-    project, _proposal = await _seed_published_proposal(db_session)
+    approved_at = _PUBLISHED_AT - timedelta(minutes=40)
+    project, _proposal = await _seed_published_proposal(
+        db_session, approved_at=approved_at
+    )
     delivered = await _seed_delivery_task(
         db_session,
         project,
@@ -546,19 +573,60 @@ async def test_certificate_packages_release_gate_chain(
         # Only 1 of 2 criteria stamped by QA → qa_passed False.
         qa_notes="[AC] route exists — verified: routes/releases.py:30\n",
     )
-    all_clear = await _seed_delivery_task(
+    await _seed_delivery_task(
         db_session,
         project,
         _PUBLISHED_AT - timedelta(hours=2),
+        title="Fix the flaky test",
+        criteria=["test is deterministic"],
+        qa_notes="[AC] test is deterministic — verified: tests/test_x.py:5\n",
+    )
+    no_ac_task = await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=2, minutes=30),
         title="Docs sweep",
     )
-    # Engine-held artifact: not delivered work, must stay out of task_states.
+    # Engine-originated delivery root: its OWN source is the engine constant
+    # (a delegated subtask's source is always "manual"), but it IS dispatched,
+    # shipped delivery work and must appear in task_states like any other.
+    await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=2, minutes=45),
+        source="self_heal",
+        title="Self-heal: fix red CI",
+    )
+    # Engine-held artifact: a release proposal draft, not delivered work —
+    # pins the source predicate (source NOT IN LEAD_TIME_EXCLUDED_SOURCES) in
+    # isolation, since its own task_type is CODE (not ADMINISTRATIVE).
     await _seed_delivery_task(
         db_session,
         project,
         _PUBLISHED_AT - timedelta(hours=3),
         source=RELEASE_MANAGER_SOURCE,
-        title="X post draft",
+        title="Release proposal draft",
+    )
+    # Round-2 pr_gate finding F-b0dc8c0b: a fork/internal PR review task is
+    # TaskType.CODE like any delivery task, but it merges no code into the
+    # release — must not appear as release-window delivered work either.
+    await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=3, minutes=5),
+        source="external_pr",
+        title="Review external PR #99: a thing",
+    )
+    # Board-program exploration cycle: pins the task_type != ADMINISTRATIVE
+    # predicate in isolation, since its own source ("manual") is not in
+    # LEAD_TIME_EXCLUDED_SOURCES — see test_delivery_stats_scope_db.py:164
+    # for the same two-predicates-pinned-independently pattern.
+    await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=3, minutes=15),
+        task_type=TaskType.ADMINISTRATIVE,
+        title="Board exploration cycle",
     )
     # Completed after this release's publication: belongs to the next window.
     await _seed_delivery_task(
@@ -582,7 +650,7 @@ async def test_certificate_packages_release_gate_chain(
         ],
     )
     await repo.insert_many(
-        task_id=UUID(str(all_clear.id)),
+        task_id=UUID(str(no_ac_task.id)),
         origin="pr_gate",
         round=1,
         author_slug="pr-reviewer",
@@ -594,7 +662,7 @@ async def test_certificate_packages_release_gate_chain(
             )
         ],
     )
-    row = (await repo.list_for_task(UUID(str(all_clear.id))))[0]
+    row = (await repo.list_for_task(UUID(str(no_ac_task.id))))[0]
     row.status = "addressed"
     await db_session.flush()
 
@@ -603,18 +671,28 @@ async def test_certificate_packages_release_gate_chain(
     body = resp.json()
     assert body["version"] == _VERSION
     assert body["ci_verdict"] == "green"
-    assert body["conventions_clean"] is True  # report carries no gaps
+    # No block-level architectural-convention finding recorded for any
+    # release-window task.
+    assert body["conventions_clean"] is True
     assert body["changelog_excerpt"].startswith("## [0.13.0]")
-    assert body["ceo_approved_at"] is not None
+    assert datetime.fromisoformat(body["ceo_approved_at"]) == approved_at
     titles = {t["title"] for t in body["task_states"]}
-    assert titles == {"Ship certificate endpoint", "Docs sweep"}
+    assert titles == {
+        "Ship certificate endpoint",
+        "Fix the flaky test",
+        "Docs sweep",
+        "Self-heal: fix red CI",
+    }
     failed = next(
         t for t in body["task_states"] if t["title"] == "Ship certificate endpoint"
     )
     assert failed["qa_passed"] is False
     assert (failed["criteria_total"], failed["criteria_verified"]) == (2, 1)
-    passed = next(t for t in body["task_states"] if t["title"] == "Docs sweep")
-    assert passed["qa_passed"] is True  # no criterion to verify
+    passed = next(t for t in body["task_states"] if t["title"] == "Fix the flaky test")
+    assert passed["qa_passed"] is True
+    assert (passed["criteria_total"], passed["criteria_verified"]) == (1, 1)
+    no_ac = next(t for t in body["task_states"] if t["title"] == "Docs sweep")
+    assert no_ac["qa_passed"] is None  # zero criteria — no QA required, not a pass
     findings = body["findings_summary"]
     assert findings["open"]["major"] == 1
     assert findings["open"]["minor"] == 0
@@ -668,23 +746,78 @@ async def test_certificate_excludes_other_projects_tasks(
 
 
 @pytest.mark.asyncio
-async def test_certificate_conventions_dirty_when_classification_gap(
+async def test_certificate_conventions_dirty_when_block_finding_recorded(
     db_session: AsyncSession, cert_ceo_client: AsyncClient
 ) -> None:
-    report = ReleaseReadinessReport(
-        proposed_version=_VERSION,
-        bump_kind="patch",
-        change_summary=[],
-        drafted_changelog="## [0.13.0]\n",
-        version_bump_plan=[],
-        gaps=[Gap(category="classification", detail="1 manual subject")],
-        migration_notes=[],
-        gate_state="green",
+    """conventions_clean reads the real conventions validator's own persisted
+    findings (recorded at i_am_done time), not the readiness report's
+    unrelated commit-classification gaps."""
+    project, _proposal = await _seed_published_proposal(db_session)
+    dirty_task = await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=1),
+        title="Misplaced model",
     )
-    await _seed_published_proposal(db_session, report=report)
+    db_session.add(
+        ProjectConventionFindingTable(
+            project_id=project.id,
+            task_id=dirty_task.id,
+            file="roboco/api/routes/foo.py",
+            line=12,
+            rule="no_models_in_routes",
+            level="block",
+            kind="model",
+            message="Pydantic model defined inside a router",
+        )
+    )
+    await db_session.flush()
     resp = await cert_ceo_client.get(f"/api/releases/{_VERSION}/certificate")
     assert resp.status_code == HTTPStatus.OK
     assert resp.json()["conventions_clean"] is False
+
+
+@pytest.mark.asyncio
+async def test_certificate_conventions_clean_when_only_warn_findings(
+    db_session: AsyncSession, cert_ceo_client: AsyncClient
+) -> None:
+    """A warn-level finding (e.g. a misplaced helper) never blocked the
+    submit, so it must not dirty the certificate either."""
+    project, _proposal = await _seed_published_proposal(db_session)
+    task = await _seed_delivery_task(
+        db_session,
+        project,
+        _PUBLISHED_AT - timedelta(hours=1),
+        title="Loose helper",
+    )
+    db_session.add(
+        ProjectConventionFindingTable(
+            project_id=project.id,
+            task_id=task.id,
+            file="roboco/services/foo.py",
+            line=5,
+            rule="placement_helper",
+            level="warn",
+            kind="helper",
+            message="helper defined outside its owning module",
+        )
+    )
+    await db_session.flush()
+    resp = await cert_ceo_client.get(f"/api/releases/{_VERSION}/certificate")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["conventions_clean"] is True
+
+
+@pytest.mark.asyncio
+async def test_certificate_ceo_approved_at_none_without_marker(
+    db_session: AsyncSession, cert_ceo_client: AsyncClient
+) -> None:
+    """A release published before the approval-dispatch marker existed
+    reports ceo_approved_at as None rather than the wrong completion time."""
+    await _seed_published_proposal(db_session, stamp_approved_at=False)
+    resp = await cert_ceo_client.get(f"/api/releases/{_VERSION}/certificate")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["ceo_approved_at"] is None
 
 
 @pytest.mark.asyncio

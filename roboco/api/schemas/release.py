@@ -66,8 +66,9 @@ class ReleaseCertificateTaskState(BaseModel):
     `criteria_total` is the task's acceptance-criterion count;
     `criteria_verified` is how many of them QA stamped
     ('[AC] <criterion> — verified: <evidence>' lines in qa_notes);
-    `qa_passed` is True when every criterion is verified (tasks with no
-    acceptance criteria count as passed).
+    `qa_passed` is True when every criterion is verified, False when at least
+    one isn't, and None when the task carries zero acceptance criteria — it
+    never went through QA at all, which is distinct from QA having passed it.
     """
 
     task_id: str
@@ -75,7 +76,7 @@ class ReleaseCertificateTaskState(BaseModel):
     status: str
     criteria_total: int
     criteria_verified: int
-    qa_passed: bool
+    qa_passed: bool | None
 
 
 class ReleaseCertificateSeverityCounts(BaseModel):
@@ -110,10 +111,14 @@ class ReleaseCertificateResponse(BaseModel):
     version: str
     generated_at: datetime
     ci_verdict: str
-    # Classification-category gaps only; 'gate' gaps are excluded — CI red is
-    # already carried by ci_verdict, and double-reporting it here would read
-    # as two failures from one signal.
+    # True unless a release-window task carries an unresolved block-level
+    # architectural-convention finding (the real conventions validator's own
+    # persisted output — see ReleaseCertificateService._conventions_clean).
     conventions_clean: bool
+    # The CEO's approval-dispatch timestamp (release.py's approve route),
+    # None when the release predates that marker being recorded — distinct
+    # from the proposal's completion time, which the ~40min background
+    # executor stamps only once publish finishes.
     ceo_approved_at: datetime | None
     changelog_excerpt: str
     task_states: list[ReleaseCertificateTaskState]

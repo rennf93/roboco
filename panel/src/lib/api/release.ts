@@ -62,7 +62,7 @@ export interface ReleaseCertificateTaskState {
   status: string;
   criteria_total: number;
   criteria_verified: number;
-  qa_passed: boolean;
+  qa_passed: boolean | null;
 }
 
 export interface ReleaseCertificate {

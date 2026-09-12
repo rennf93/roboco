@@ -26,6 +26,14 @@ function buildCertificate(): ReleaseCertificate {
         criteria_verified: 2,
         qa_passed: true,
       },
+      {
+        task_id: "t2",
+        title: "Docs sweep",
+        status: "completed",
+        criteria_total: 0,
+        criteria_verified: 0,
+        qa_passed: null,
+      },
     ],
     findings_summary: {
       open: { blocker: 0, major: 0, minor: 0, nit: 0 },
