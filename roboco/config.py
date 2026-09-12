@@ -2260,6 +2260,71 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Cross-vendor second review (in-path PR gate risk threshold) — DEFAULT OFF
+    # ==========================================================================
+    # Drives roboco/services/second_review.py's risk-threshold classifier: a
+    # high-stakes task gets its PR gate second review from a model provider
+    # that differs from the one that authored/QA'd it. Off by default; every
+    # threshold below is settings-driven, never hardcoded in the classifier.
+    cross_vendor_review_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the cross-vendor second-review risk threshold. "
+            "OFF by default; when off, is_high_stakes() always returns False."
+        ),
+    )
+    cross_vendor_review_max_priority: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        description=(
+            "A task at this priority value or more urgent (lower int; 0=P0) "
+            "qualifies as high-stakes. Default 1 covers P0+P1."
+        ),
+    )
+    cross_vendor_review_flag_migrations: bool = Field(
+        default=True,
+        description=(
+            "Whether a migration-adding task (Task.adds_migration) qualifies "
+            "as high-stakes."
+        ),
+    )
+    cross_vendor_review_flag_protected_surface: bool = Field(
+        default=True,
+        description=(
+            "Whether a task touching a widely-shared surface "
+            "(Task.touches_shared) qualifies as high-stakes."
+        ),
+    )
+    cross_vendor_review_flag_security: bool = Field(
+        default=True,
+        description=(
+            "Whether a security-relevant task (matched via "
+            "cross_vendor_review_security_keywords) qualifies as high-stakes."
+        ),
+    )
+    cross_vendor_review_security_keywords: tuple[str, ...] = Field(
+        default=(
+            "auth",
+            "security",
+            "credential",
+            "password",
+            "secret",
+            "token",
+            "encrypt",
+            "crypto",
+            "permission",
+            "vulnerab",
+            "cve",
+            "injection",
+        ),
+        description=(
+            "Case-insensitive keywords matched against a task's title + "
+            "description to derive security-relevance."
+        ),
+    )
+
+    # ==========================================================================
     # Obsidian vault projection (V1 — projection core) — DEFAULT OFF
     # ==========================================================================
     # The org's human-readable memory palace: tasks/journals/A2A conversations

@@ -1,6 +1,6 @@
 # RoboCo Slice Map — `support-services`
 
-Slice key: `support-services` Repo root: `/Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco` Scope: `roboco/services/{agent,health,settings,toolchain,provider,llm,proactive,transcription,base,exceptions}.py`, `roboco/events/`, `roboco/seeds/`, `roboco/utils/`
+Slice key: `support-services` Repo root: `/Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco` Scope: `roboco/services/{agent,health,settings,toolchain,provider,llm,proactive,transcription,base,exceptions,second_review}.py`, `roboco/events/`, `roboco/seeds/`, `roboco/utils/`
 
 ## Purpose
 
@@ -20,6 +20,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/services/llm.py` | `ModelRoutingService`: resolve (provider, model) per agent spawn; assignment CRUD; mode apply (anthropic/grok/ollama/self_hosted/mix); Ollama probe | 599 |
 | `roboco/services/proactive.py` | `ProactiveKnowledgeService`: assemble RAG context packages on task-claim / session-start | 542 |
 | `roboco/services/transcription.py` | `TranscriptionService`: buffer raw LLM stream chunks into extractable segments | 278 |
+| `roboco/services/second_review.py` | Cross-vendor second-review selection: settings-driven risk-threshold classifier + a pure provider-difference resolver over `ProviderService`'s enabled-provider set (never a hardcoded vendor list); non-raising skip when only one provider is enabled | 176 |
 | `roboco/events/__init__.py` | Public re-exports for the event system | 41 |
 | `roboco/events/bus.py` | Backward-compat shim: `EventBus = StreamEventBus`, `get_event_bus`, `init_event_bus` | 57 |
 | `roboco/events/handlers.py` | Workflow trigger handlers (task status → notifications, QA result, blocker, question, auditor spawn) + `register_default_handlers` | 419 |
@@ -83,6 +84,12 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `TranscriptionService` | class | `services/transcription.py:28` | Per-(agent,session) `StreamBuffer` map; periodic flush task; callback registration |
 | `process_chunk` | method | `services/transcription.py:120` | Append chunk, return buffer if ready-for-extraction else None |
 | `_periodic_flush` | method | `services/transcription.py:225` | Background loop: sleep `flush_interval_seconds`, yield ready buffers to callbacks |
+| `SecondReviewSelection` | frozen dataclass | `services/second_review.py:44` | Outcome of a second-review resolution: `.resolved(provider)` (skipped=False) or `.skip(reason)` (skipped=True, provider=None) — consumers branch on `skipped`, not on `provider is None` |
+| `is_high_stakes` | func | `services/second_review.py:68` | Pure risk-threshold check over explicit signals + `Settings`; unconditionally `False` when `settings.cross_vendor_review_enabled` is off (default) |
+| `task_is_high_stakes` | func | `services/second_review.py:93` | `is_high_stakes` wrapper for a real `Task`; derives `security_relevant` from a settings-configurable keyword match against title+description (no dedicated `Task` field) |
+| `resolve_second_review_provider` | func | `services/second_review.py:113` | Pure resolver: first enabled provider differing from every provider in `authoring_provider` (a single `ModelProvider` or a `Sequence` of them — an assembled cell/root task can have more than one authoring dev/QA agent on different providers), in caller-supplied order; never raises — returns `SecondReviewSelection.skip(...)` with an evidence note when no differing enabled provider exists (e.g. single-vendor fleet) |
+| `SecondReviewService` | class | `services/second_review.py:136` | DB-backed entry point: `enabled_providers()` reads distinct enabled types via `ProviderService.list_providers(include_disabled=False)`; `resolve_second_reviewer_for_agent` resolves the authoring provider via `ModelRoutingService.resolve_for_agent` then delegates to the pure resolver |
+| `get_second_review_service` | func | `services/second_review.py:173` | Factory mirroring the other `get_*_service` singletons in this package |
 | `StreamEventBus` | class | `events/stream_bus.py:35` | Redis Streams bus: `xadd` trim, `xreadgroup` block=5000, ACK-on-success, `xclaim` recovery, periodic `_reclaim_loop`, dead-letter for undecodable messages |
 | `DEAD_LETTER_STREAM` | class attr | `events/stream_bus.py:51` | `"roboco:stream:dead-letter"` — undecodable messages are parked here before ACK for operator inspection |
 | `publish` / `publish_task_event` | methods | `events/stream_bus.py:152,191` | `xadd` to category-grouped stream, returns message id |
@@ -123,6 +130,8 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 **Toolchain.** `WorkspaceService` (`services/workspace.py:1308`) calls `resolve_target_python(workspace)` to pick the interpreter for `uv --python` when provisioning a target project's clone.
 
 **Health.** `api/routes/health.py:41` calls `check_database()` + `check_redis()` for `/health`.
+
+**Cross-vendor second review (wired into `pr_pass`).** `SecondReviewService.resolve_second_reviewer_for_agent` calls `ModelRoutingService(session).resolve_for_agent` to get the authoring dev/QA chain's `ModelProvider`, then `enabled_providers()` (via `ProviderService.list_providers(include_disabled=False)`) to get the fleet's currently-enabled provider set, and delegates to the pure `resolve_second_review_provider` to pick a differing one (or an explicit non-raising skip). `task_is_high_stakes`/`is_high_stakes` independently gate whether a task even qualifies, purely off `Settings` + task signals — the flag defaults off, so both paths are currently dormant in production regardless of wiring. This module's caller is `PRGateMixin._run_second_review_pass` (`pr_gate.py`, called from `_gate_decision`'s `pr_pass` branch), which resolves the REAL authoring provider(s) via its own `_authoring_providers` (walking the assembled task's CODE-descendant assignees through `ModelRoutingService.resolve_for_agent` — the same seam `resolve_second_reviewer_for_agent` wraps) rather than a hardcoded vendor. See `docs/map/pr-gate-review.md` for the gate wiring and `docs/map/review-findings.md` for the `origin="second_review"` ledger detail.
 
 ## Mermaid
 
@@ -195,7 +204,8 @@ support-services
 │   ├── provider.py        # ProviderService (provider_configs CRUD + Fernet tokens)
 │   ├── llm.py             # ModelRoutingService (spawn routing + modes + Ollama probe)
 │   ├── proactive.py       # ProactiveKnowledgeService (RAG context packages)
-│   └── transcription.py   # TranscriptionService (stream buffering)
+│   ├── transcription.py   # TranscriptionService (stream buffering)
+│   └── second_review.py   # SecondReviewSelection / resolve_second_review_provider / SecondReviewService
 ├── events/
 │   ├── __init__.py        # public re-exports
 │   ├── bus.py             # EventBus = StreamEventBus (compat shim)
@@ -286,6 +296,8 @@ Cloud auth (`ROBOCO_CLOUD_AUTH_ENABLED`) and DB network isolation (`ROBOCO_DB_NE
 
 Other settings read here: `transcript_retention_days` (int, ≥1; read by orchestrator at `runtime/orchestrator.py:5910`). Non-flag config consumed: `settings.redis_url` (`health`, `stream_bus`), `settings.encryption_key` (`crypto`).
 
+`second_review.py` reads a dedicated settings block, not part of `FEATURE_FLAGS` (env-only, not panel-tunable): `cross_vendor_review_enabled` (master switch, default `False`), `cross_vendor_review_max_priority` (int 0-3, default `1` — P0/P1 qualify), `cross_vendor_review_flag_migrations` / `_flag_protected_surface` / `_flag_security` (each default `True`, gating whether `Task.adds_migration` / `Task.touches_shared` / a security-keyword match respectively counts toward high-stakes once the master switch is on), and `cross_vendor_review_security_keywords` (tuple of substrings matched case-insensitively against a task's title+description).
+
 ## Gotchas
 
 - **`resolve_for_agent` never raises for a normal agent** (`llm.py:124`) — decrypt failures, unreachable LOCAL servers, and missing agents all downgrade to the legacy Anthropic path. A misconfigured provider therefore silently spawns against Anthropic instead of erroring; check orchestrator logs for "falling back to legacy path" / "Self-hosted server unreachable".
@@ -303,6 +315,8 @@ Other settings read here: `transcript_retention_days` (int, ≥1; read by orches
 - **`require_uuid` raises `InvalidIdentifierError` (a `ValueError` subclass), not `NotFoundError`** (`utils/converters.py:38`) — callers in `llm.py` use it on `provider.id` which is a PK and never None in practice, but a None would surface as a 500-class error not a 404. The typed subclass allows callers to handle a bad identifier distinctly from other exceptions; existing `except ValueError` handlers are unaffected.
 - **`encrypt_token` rejects empty strings** (`crypto.py:53`) — the provider/project token convention is `""` = clear to NULL, handled at the service layer (`_apply_auth_token_change` checks `clear_auth_token`/`not data.auth_token` before calling encrypt); never pass `""` directly to `encrypt_token`.
 - **`check_redis` opens a fresh client each call and closes it** (`health.py:27`) — fine for a health probe, but don't reuse the pattern for hot paths.
+- **`second_review.py`'s caller is `PRGateMixin._run_second_review_pass`** (`pr_gate.py`, wired via `second_review_gate.py`) — `SecondReviewSelection` / `resolve_second_review_provider` / `SecondReviewService` are unit-tested both standalone (`tests/unit/services/test_second_review.py`) and through the gate (`tests/unit/gateway/test_second_review_gate.py`, `test_pr_gate_authoring_providers.py`); `cross_vendor_review_enabled` still defaults `False`, so the classifier stays inert in production regardless of wiring. The production `runner` passed into the gate is still `None` (no synchronous cross-vendor completion client exists in this codebase yet), so a qualifying task's second pass reports an honest skip (`ran=False`) rather than a real second opinion — don't assume a high-stakes task actually gets a differing second reviewer's findings today.
+- **`resolve_second_review_provider` is deterministic on `enabled_providers` order, not random** — it returns the FIRST enabled provider that differs from the authoring one, in whatever order `SecondReviewService.enabled_providers()` returns them (`ProviderService.list_providers` order, by provider name). Two enabled non-authoring providers will always yield the same second reviewer rather than being load-balanced across them.
 
 ## Drift from CLAUDE.md
 

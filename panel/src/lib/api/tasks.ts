@@ -39,7 +39,7 @@ export interface BoardReviewEntry {
 export interface TaskFinding {
   id: string;
   task_id: string;
-  origin: "qa" | "pr_gate" | "pm" | "ceo";
+  origin: "qa" | "pr_gate" | "pm" | "ceo" | "second_review";
   round: number;
   author_slug: string | null;
   file: string | null;
