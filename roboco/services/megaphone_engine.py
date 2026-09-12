@@ -29,11 +29,7 @@ drafts already land in.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
-
-from sqlalchemy import select
 
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
@@ -43,6 +39,7 @@ from roboco.services.board_programs import program_armed
 from roboco.services.project import get_project_service
 from roboco.services.task import MEGAPHONE_SOURCE, TaskCreateRequest, get_task_service
 from roboco.services.x_credentials import get_x_credentials_service
+from roboco.utils.shipped_work_digest import shipped_work_digest
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -60,10 +57,6 @@ _EXPLORATION_DESCRIPTION = (
     "spotlights: a dev-log thread on what the fleet shipped this week, a "
     "behind-the-scenes note, or a changelog highlight."
 )
-
-# Completed-task digest cap (spec §4) — bounds the section regardless of how
-# busy the week was.
-_DIGEST_TASK_LIMIT = 15
 
 
 class MegaphoneEngine(BaseService):
@@ -135,55 +128,12 @@ class MegaphoneEngine(BaseService):
         tasks this week (title/project/team, capped) plus the CHANGELOG's
         Unreleased bullets, when cheaply readable. Best-effort throughout — a
         read failure degrades that section to an explicit "unavailable" line
-        rather than blocking the spawn (spec: "skip cleanly if not — say so")."""
-        shipped = await self._shipped_this_week()
-        changelog = await self._unreleased_changelog()
-        lines = ["Completed this week:", *(shipped or ["- (nothing completed)"])]
-        lines.append("")
-        lines.append("CHANGELOG.md Unreleased section:")
-        lines.append(changelog or "(not available this cycle)")
-        return "\n".join(lines)
+        rather than blocking the spawn (spec: "skip cleanly if not — say so").
 
-    async def _shipped_this_week(self) -> list[str]:
-        from roboco.db.tables import ProjectTable, TaskTable
-
-        cutoff = datetime.now(UTC) - timedelta(days=7)
-        result = await self.session.execute(
-            select(TaskTable.title, TaskTable.team, ProjectTable.name)
-            .outerjoin(ProjectTable, TaskTable.project_id == ProjectTable.id)
-            .where(
-                TaskTable.status == TaskStatus.COMPLETED,
-                TaskTable.completed_at.is_not(None),
-                TaskTable.completed_at >= cutoff,
-            )
-            .order_by(TaskTable.completed_at.desc())
-            .limit(_DIGEST_TASK_LIMIT)
-        )
-        return [
-            f"- {title} ({project_name or 'no project'}, {team.value})"
-            for title, team, project_name in result.all()
-        ]
-
-    async def _unreleased_changelog(self) -> str:
-        """The curated ``## [Unreleased]`` body from the RoboCo project's read
-        clone; "" when the file/section is absent, blank, or unreadable —
-        never raises (caller renders the empty case explicitly)."""
-        try:
-            from roboco.services.release_readiness import (
-                _read_changelog,
-                _unreleased_body,
-            )
-            from roboco.services.workspace import get_workspace_service
-
-            slug = (settings.self_heal_project_slug or "roboco-api").strip()
-            root = await get_workspace_service(self.session).ensure_read_clone(slug)
-            return _unreleased_body(_read_changelog(Path(root)))
-        except Exception as exc:
-            self.log.warning(
-                "megaphone-engine: changelog read failed (best-effort)",
-                error=str(exc),
-            )
-            return ""
+        Delegates to the shared ``shipped_work_digest`` helper so roadmap,
+        Pest Control, and Spackle prompts share one assembly path."""
+        slug = (settings.self_heal_project_slug or "roboco-api").strip()
+        return await shipped_work_digest(self.session, slug)
 
 
 def get_megaphone_engine(session: AsyncSession) -> MegaphoneEngine:

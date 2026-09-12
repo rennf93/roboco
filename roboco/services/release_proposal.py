@@ -194,6 +194,13 @@ class ReleaseProposalService(BaseService):
         if refusal is not None:
             return refusal
 
+        # Stamp the CEO's actual approval-dispatch moment here — the single
+        # chokepoint both dispatch_approve call sites (the HTTP route and the
+        # Telegram approve path) route through — so ceo_approved_at
+        # (release_certificate.py reads this marker) is populated no matter
+        # which surface the CEO clicked approve on, not just the HTTP route.
+        markers.set_release_approved_at(task, datetime.now(UTC).isoformat())
+
         lock_key = f"{_RELEASE_LOCK_PREFIX}{task_id}"
         try:
             lock_token = await self._acquire_release_lock(lock_key)

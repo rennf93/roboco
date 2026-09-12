@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.foundation.policy.content import markers
 from roboco.services.task import TaskService
 
 
@@ -104,3 +105,85 @@ async def test_successful_create_does_not_remove_worktree() -> None:
 
     assert out == "feature/x"
     ws_svc.remove_worktree.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_base_branch_fallback_is_marked_when_actual_base_differs() -> None:
+    """F-2789f259: git.py's deliberate base-fallback (the requested parent
+    branch is real but not yet pushed, so create_branch falls back to the
+    project default) must be recorded on the task — merge_chain's shape-(a)
+    check reads this marker to exclude the case from its refusal."""
+    svc = _service()
+    task_id = uuid4()
+    clone = Path("/tmp/ws")
+
+    task = MagicMock(id=task_id, project_id=uuid4(), branch_name=None)
+    project = MagicMock(slug="roboco-api")
+
+    object.__setattr__(
+        svc, "_resolve_parent_branch", AsyncMock(return_value="feature/main_pm/root1")
+    )
+    object.__setattr__(svc, "_resolve_team_dir", MagicMock(return_value="backend"))
+
+    git_service = MagicMock()
+    git_service.get_workspace = AsyncMock(return_value=clone)
+    # Requested parent_branch was "feature/main_pm/root1" but git.py fell
+    # back to "master" because that branch wasn't on the remote yet.
+    git_service.create_branch = AsyncMock(return_value=("feature/x", "master"))
+
+    session = MagicMock()
+    session.flush = AsyncMock()
+    svc.session = session
+
+    with (
+        patch(
+            "roboco.services.git.get_git_service", MagicMock(return_value=git_service)
+        ),
+        patch(
+            "roboco.services.workspace.get_workspace_service",
+            MagicMock(return_value=MagicMock()),
+        ),
+    ):
+        await svc._create_branch_in_project(task, uuid4(), project)
+
+    assert markers.is_base_branch_fallback(task) is True
+
+
+@pytest.mark.asyncio
+async def test_no_fallback_marker_when_actual_base_matches_requested() -> None:
+    """The common case — the requested parent branch was actually used —
+    must NOT be marked as a fallback."""
+    svc = _service()
+    task_id = uuid4()
+    clone = Path("/tmp/ws")
+
+    task = MagicMock(id=task_id, project_id=uuid4(), branch_name=None)
+    project = MagicMock(slug="roboco-api")
+
+    object.__setattr__(
+        svc, "_resolve_parent_branch", AsyncMock(return_value="feature/main_pm/root1")
+    )
+    object.__setattr__(svc, "_resolve_team_dir", MagicMock(return_value="backend"))
+
+    git_service = MagicMock()
+    git_service.get_workspace = AsyncMock(return_value=clone)
+    git_service.create_branch = AsyncMock(
+        return_value=("feature/x", "feature/main_pm/root1")
+    )
+
+    session = MagicMock()
+    session.flush = AsyncMock()
+    svc.session = session
+
+    with (
+        patch(
+            "roboco.services.git.get_git_service", MagicMock(return_value=git_service)
+        ),
+        patch(
+            "roboco.services.workspace.get_workspace_service",
+            MagicMock(return_value=MagicMock()),
+        ),
+    ):
+        await svc._create_branch_in_project(task, uuid4(), project)
+
+    assert markers.is_base_branch_fallback(task) is False

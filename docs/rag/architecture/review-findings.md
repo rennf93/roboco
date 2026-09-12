@@ -78,6 +78,10 @@ The CEO acts through the panel, not a gateway verb — there is no agent-facing 
 
 `convention_findings` (surfaced in QA's `claim_review` evidence when the architectural-conventions standard is enabled) is a completely different concept: diff-time lint findings from the architecture validator (misplaced definitions, lint suppressions), keyed to a different table (`project_convention_findings`), replaced per-task rather than append-only. A findings-driven `claim_review` evidence payload can carry BOTH `convention_findings` and `revision_findings`/`prior_findings` at once — don't conflate the two words.
 
+## Aggregated release-wide: the release certificate
+
+The ledger's first cross-task consumer is the release certificate: `GET /api/releases/{version}/certificate` (CEO-only) aggregates `ReviewFindingsRepository.list_for_task` across every task in a published release and folds them into one `findings_summary` — per-status bucket (`open`, `closed` = `addressed`+`verified`, `waived`) × severity (`blocker`/`major`/`minor`/`nit`) counts. So a release certificate telling you "zero open blockers" is a claim about THIS ledger, scoped to the release's derived task set (completion window between same-project publications). See `docs/backend/api/release-certificate-endpoint.md`.
+
 ## See also
 
 - `docs/rag/roles/qa.md` — `fail`/`pass` in practice

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -28,6 +29,7 @@ from roboco.services.docs import (
     _refused_doc_types,
     get_docs_service,
 )
+from roboco.services.task import TaskService
 from sqlalchemy import select
 
 if TYPE_CHECKING:
@@ -946,6 +948,39 @@ async def test_index_doc_in_rag_no_task_id_still_marks_live_write(
     _, kwargs = mock_optimal.index_documentation.await_args
     assert kwargs["provenance"] == "live_write"
     assert kwargs["task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_doc_flips_to_repo_tree_when_root_chain_completes(
+    docs_setup: dict,
+) -> None:
+    """Full lifecycle: a doc written by roboco_docs_write (live_write +
+    task_id, tested above) is un-caveated automatically once its writing
+    task's root chain reaches terminal completed — no restart, no manual
+    reindex. TaskService's completion hook resolves the root chain inline
+    and flips the stamped task_id's chunk provenance in place."""
+    task_id = docs_setup["task_id"]
+    task = await docs_setup["svc"].session.get(TaskTable, task_id)
+
+    # A parentless task IS its own root; terminal-completed = chain exhausted.
+    task.status = TaskStatus.COMPLETED
+    await docs_setup["svc"].session.flush()
+
+    svc = TaskService(docs_setup["svc"].session)
+    mock_optimal = AsyncMock()
+    mock_optimal.flip_docs_task_provenance = AsyncMock(return_value=1)
+    before = set(TaskService._background_tasks)
+    with (
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=mock_optimal),
+        ),
+        patch.object(svc, "_extract_completion_learnings", AsyncMock()),
+    ):
+        await svc._trigger_completion_hooks(task, None)
+        await asyncio.gather(*(TaskService._background_tasks - before))
+
+    mock_optimal.flip_docs_task_provenance.assert_awaited_once_with([str(task_id)])
 
 
 @pytest.mark.asyncio

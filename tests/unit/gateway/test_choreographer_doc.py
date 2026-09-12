@@ -31,6 +31,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
     )
+    base["task"].session.commit = AsyncMock()
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -60,6 +61,7 @@ async def test_claim_doc_task_returns_evidence() -> None:
         id=task_id,
         status="awaiting_documentation",
         assigned_to=None,
+        active_claimant_id=None,
         pr_number=8,
         pr_url="https://github.com/x/y/pull/8",
         commits=[{"sha": "abc", "message": "feat: x"}],
@@ -388,3 +390,54 @@ async def test_i_documented_survives_handoff_failure() -> None:
     assert body.get("error") is None, body
     assert body.get("warning") is not None
     assert "handoff" in body["warning"].lower()
+
+
+@pytest.mark.asyncio
+async def test_i_documented_survives_a2a_send_failure() -> None:
+    """a2a.send itself raising (policy denial / missing agent / mid-flush DB
+    error) must not escape _handoff_to_cell_pm: the documented transition is
+    already committed, so the verb still returns ok with a warning carrying
+    the recipient and the exception type/repr enough to debug."""
+    doc_id = uuid4()
+    task_id = uuid4()
+    t = _doc_owned_task(task_id, doc_id)
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=doc_id,
+        team="backend",
+    )
+    pm_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
+    task_svc.docs_complete.return_value = after
+    task_svc.cell_pm_for_team.return_value = MagicMock(id=pm_id)
+    task_svc.session = MagicMock()
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.refresh = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    a2a_svc = AsyncMock()
+    a2a_svc.send = AsyncMock(side_effect=RuntimeError("a2a down"))
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, a2a=a2a_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    notes = "Wrote backend/guides/feature-x.md with usage examples and config notes."
+    files = ["backend/guides/feature-x.md"]
+    env = await c.i_documented(doc_id, task_id, notes=notes, files=files)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "awaiting_pm_review"
+    task_svc.docs_complete.assert_awaited_once()
+    a2a_svc.send.assert_awaited_once()
+    warning = body.get("warning") or ""
+    assert str(pm_id) in warning
+    assert "RuntimeError" in warning
+    assert "a2a down" in warning

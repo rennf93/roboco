@@ -40,6 +40,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
     )
+    base["task"].session.commit = AsyncMock()
     repo = base["evidence_repo"]
     for m in (
         "list_unread_a2a",
@@ -119,6 +120,7 @@ async def test_claim_doc_task_checks_out_branch() -> None:
         id=task_id,
         status="awaiting_documentation",
         assigned_to=None,
+        active_claimant_id=None,
         task_type="documentation",
         team="backend",
         branch_name=branch,
@@ -171,6 +173,7 @@ async def test_claim_doc_task_checkout_failure_does_not_break_claim() -> None:
         id=task_id,
         status="awaiting_documentation",
         assigned_to=None,
+        active_claimant_id=None,
         task_type="documentation",
         team="backend",
         branch_name=branch,

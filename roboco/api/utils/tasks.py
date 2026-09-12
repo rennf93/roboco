@@ -282,6 +282,24 @@ def _apply_null_clears(task: Any, null_clears: dict[str, None]) -> None:
         task.active_claimant_id = None
 
 
+async def _recheck_topology_after_detach(
+    task: Any, service: Any, null_clears: dict[str, None]
+) -> None:
+    """Re-run the PR-base/parent-topology check for a detach-style re-parent.
+
+    ``TaskService.update()`` only re-checks topology when ``parent_task_id``
+    is passed through its field-update loop — an explicit
+    ``parent_task_id: null`` (detaching a task from its parent) is instead
+    popped into *null_clears* and applied via direct ``setattr`` on the ORM
+    object, bypassing that loop entirely, so the service-side recheck never
+    fired for the detach direction of a re-parent. Mirrors
+    ``TaskService.recheck_topology_after_reparent`` for that direction.
+    """
+    if "parent_task_id" not in null_clears:
+        return
+    await service.recheck_topology_after_reparent(task)
+
+
 def _reassert_batch_shape(task: Any) -> None:
     """Raise HTTP 400 if a mutation broke the task's MegaTask shape. Raised
     before any commit, so a violation rolls back cleanly."""

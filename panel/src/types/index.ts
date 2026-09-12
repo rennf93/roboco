@@ -108,6 +108,7 @@ export enum ModelProvider {
   GROK = "grok",
   GEMINI = "gemini",
   KIMI = "kimi",
+  OPENROUTER = "openrouter",
 }
 
 export enum AssignmentScope {
@@ -1077,6 +1078,15 @@ export interface EnvironmentRung {
   branch: string;
 }
 
+// One agent in a project's allowed-access list — the backend resolves the
+// stored agent UUIDs to slug/name for display (AllowedAgentSummary in
+// roboco/api/schemas/project.py).
+export interface AllowedAgentSummary {
+  id: string;
+  slug: string;
+  name: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -1093,6 +1103,14 @@ export interface Project {
   environments: EnvironmentRung[] | null;
   protected_branches: string[];
   assigned_cell: Team;
+  // Access restriction (backend slice 0e99f678): null/undefined allowed_agents
+  // = the whole assigned cell has access (today's default); a list = access
+  // restricted to only those agents. access_restricted spells out the
+  // None-vs-list distinction explicitly so a typed client never has to treat
+  // a null array as ambiguous. Optional on the wire: backends predating the
+  // restriction slice omit both fields.
+  access_restricted?: boolean;
+  allowed_agents?: AllowedAgentSummary[] | null;
   // Git authentication (token never exposed, only boolean indicator)
   has_git_token: boolean;
   is_active: boolean;

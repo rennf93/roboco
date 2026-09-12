@@ -317,6 +317,16 @@ async def db_session(_test_database_url: str) -> AsyncIterator[AsyncSession]:
 
     Each test gets its own session and connection; teardown rolls back any
     uncommitted state and disposes the engine to keep connection counts low.
+
+    Verb code that calls ``session.commit()`` (the claim_review /
+    claim_doc_task / claim_gate_review durability boundary) persists rows past
+    the rollback into this session-scoped shared DB, so teardown also
+    TRUNCATEs every table, otherwise the next test's fixed-slug ``_seed``
+    (slugs match ``agents_config.ESCALATION_CHAIN``, load-bearing for
+    escalation lookups) collides on ``ix_agents_slug``. Truncate rather than a
+    savepoint wrapper so the code's own ``begin_nested()`` savepoint-expiry
+    semantics stay at the same nesting depth the "real session" regression
+    tests assert.
     """
     # No pool_pre_ping: a fresh per-test engine can't have stale connections, and
     # pre-ping on asyncpg leaves an un-awaited Connection._cancel coroutine that
@@ -330,6 +340,15 @@ async def db_session(_test_database_url: str) -> AsyncIterator[AsyncSession]:
             yield session
         finally:
             await session.rollback()
+            # Clear any rows a mid-verb session.commit() persisted into the
+            # shared DB so the next test seeds onto a clean slate.
+            # CASCADE makes order irrelevant (sorted_tables would warn on the
+            # agents/products/projects/tasks/work_sessions FK cycle anyway).
+            _tables = ", ".join(f'"{t.name}"' for t in Base.metadata.tables.values())
+            await session.execute(
+                text(f"TRUNCATE TABLE {_tables} RESTART IDENTITY CASCADE")
+            )
+            await session.commit()
     await engine.dispose()
 
 

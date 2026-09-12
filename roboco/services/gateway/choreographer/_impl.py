@@ -21,6 +21,7 @@ from uuid import UUID
 import structlog
 
 from roboco.exceptions import MergeConflictError
+from roboco.foundation.identity import Team
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.batch import is_batch_root_subtask, is_batch_umbrella
 from roboco.foundation.policy.content import (
@@ -40,6 +41,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
     run_bounded_leg,
 )
 from roboco.services.gateway.claim_guards import (
+    agent_access_denied_guard,
     already_active_guard,
     paused_tasks_guard,
     project_budget_exceeded_guard,
@@ -54,7 +56,10 @@ from roboco.services.gateway.evidence_builder import (
     build_task_handoff,
     shape_memory_query,
 )
-from roboco.services.gateway.merge_chain import resolve_parent_branch
+from roboco.services.gateway.merge_chain import (
+    find_topology_issue,
+    resolve_parent_branch,
+)
 from roboco.services.gateway.remediation import (
     hint_for_evidence_not_inspected,
     hint_for_missing_ac_coverage,
@@ -299,6 +304,10 @@ class ChoreographerDeps:
     # callsites / tests that don't exercise Product routing don't have to plumb
     # it in; when None, delegate falls back to parent-project inheritance.
     product: Any = None
+    # ProjectService for the agent-access claim guard
+    # (check_agent_access — the allowed_agents restriction). Optional so
+    # existing callsites / tests that don't plumb it keep the guard inert.
+    project: Any = None
     # Orchestrator access for the rate-limited i_am_blocked path.
     # Implements get_provider_for_agent(slug) -> str | None,
     # get_active_agent_slugs_for_provider(provider) -> list[str], and
@@ -460,6 +469,10 @@ class Choreographer:
     @property
     def product(self) -> Any:
         return self._deps.product
+
+    @property
+    def project(self) -> Any:
+        return self._deps.project
 
     @property
     def orchestrator(self) -> Any:
@@ -1248,6 +1261,7 @@ class Choreographer:
         role_str: str | None = None,
         skip_dev_guards: bool = False,
         check_project_budget: bool = False,
+        check_agent_access: bool = False,
     ) -> Envelope | None:
         """Run concurrency-invariant claim guards. Returns rejection or None.
 
@@ -1281,6 +1295,12 @@ class Choreographer:
         an exhausted cap whose incremental cost is negligible next to the
         sunk spend.
 
+        ``check_agent_access`` (same default-False work-STARTING opt-in)
+        scopes the project agent-access guard to the same two call sites —
+        it is the enforcement chokepoint for the project's
+        ``allowed_agents`` restriction: a same-cell agent not on the list
+        is refused before any task-status mutation.
+
         Pre-gateway location: _helpers.py:124-204.
         """
         if not skip_dev_guards and role_str not in self._COORDINATOR_ROLES:
@@ -1292,13 +1312,69 @@ class Choreographer:
                 return guard
         if guard := await self._sequencing_claim_guard(task):
             return guard
-        if check_project_budget and (
-            guard := await self._project_budget_claim_guard(task)
+        if guard := await self._opt_in_claim_guards(
+            task,
+            agent_id=agent_id,
+            check_project_budget=check_project_budget,
+            check_agent_access=check_agent_access,
         ):
             return guard
         if skip_dev_guards:
             return None
         return await self._lane_claim_guard(task)
+
+    async def _opt_in_claim_guards(
+        self,
+        task: Any,
+        *,
+        agent_id: UUID,
+        check_project_budget: bool,
+        check_agent_access: bool,
+    ) -> Envelope | None:
+        """The two opt-in, work-STARTING-only guards in one call — the
+        project monthly-budget guard and the project agent-access guard.
+        Extracted from ``_run_claim_guards`` (xenon return-count budget).
+        """
+        if check_project_budget and (
+            guard := await self._project_budget_claim_guard(task)
+        ):
+            return guard
+        if check_agent_access and (
+            guard := await self._agent_access_claim_guard(task, agent_id)
+        ):
+            return guard
+        return None
+
+    async def _agent_access_claim_guard(
+        self, task: Any, agent_id: UUID
+    ) -> Envelope | None:
+        """Refuse claim when the project's access rule denies the agent.
+
+        Enforces ``ProjectService.check_agent_access`` — the services-layer
+        rule (project exists, assigned cell matches, optional
+        ``allowed_agents`` list; None = whole cell passes) — at the
+        agent-to-project grant chokepoint, so a restriction set via
+        POST /projects/{id}/access/{agent_id} is actually enforced. The
+        deny decision comes solely from that rule; this helper only
+        resolves its inputs. Inert when the deps lack a project service
+        (existing tests), the task has no project (branchless coordination
+        root), or the agent view carries no usable team — mirroring
+        ``_sequence_claim_guard``'s mock-safety guard.
+        """
+        if self._deps.project is None:
+            return None
+        project = getattr(task, "project", None)
+        if project is None or getattr(project, "id", None) is None:
+            return None
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or not isinstance(agent.team, str):
+            return None
+        try:
+            team = Team(agent.team)
+        except ValueError:
+            return None
+        has_access = await self.project.check_agent_access(project.id, agent.id, team)
+        return agent_access_denied_guard(task, project.id, agent.id, has_access)
 
     async def _sequencing_claim_guard(self, task: Any) -> Envelope | None:
         """Both halves of the claim-time sequencing bar in one call — an
@@ -1574,12 +1650,15 @@ class Choreographer:
             )
         # Concurrency guards still apply on resumption (paused / already-active
         # in another task). check_project_budget=True: resuming i_will_work_on
-        # / i_will_plan is still a work-STARTING claim.
+        # / i_will_plan is still a work-STARTING claim. check_agent_access
+        # likewise — the grant chokepoint for the project's allowed_agents
+        # restriction.
         if guard := await self._run_claim_guards(
             agent_id=agent_id,
             task=t,
             role_str=role_str,
             check_project_budget=True,
+            check_agent_access=True,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
@@ -1692,6 +1771,7 @@ class Choreographer:
             task=t,
             role_str=role_str,
             check_project_budget=True,
+            check_agent_access=True,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
@@ -2159,7 +2239,7 @@ class Choreographer:
             agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
-        if rejection := self._open_pr_preflight_rejection(
+        if rejection := await self._open_pr_preflight_rejection(
             agent_id=agent_id,
             task_id=task_id,
             t=t,
@@ -2185,7 +2265,7 @@ class Choreographer:
             agent_id, task_id, t, briefing, role_str
         )
 
-    def _open_pr_preflight_rejection(
+    async def _open_pr_preflight_rejection(
         self,
         *,
         agent_id: UUID,
@@ -2195,7 +2275,7 @@ class Choreographer:
         briefing: dict[str, Any],
         spec_ctx: Any,
     ) -> Envelope | None:
-        """Role + reassignment + spec-gate rejection for open_pr (or None).
+        """Role + reassignment + spec-gate + topology rejection for open_pr.
 
         A stale/superseded agent (task reassigned away) is steered to
         give_me_work with a clear not_authorized BEFORE the spec gate would
@@ -2231,7 +2311,43 @@ class Choreographer:
             return Envelope.from_decision(
                 decision, briefing=briefing
             ).with_introspection(task=t, role=role_str)
-        return None
+        return await self._open_pr_topology_rejection(t, briefing, role_str)
+
+    async def _open_pr_topology_rejection(
+        self, t: Any, briefing: dict[str, Any], role_str: str
+    ) -> Envelope | None:
+        """Refuse BEFORE create_pr runs when the task's branch/parent
+        topology is already incoherent (or None).
+
+        Catches the 5612b225/PR #856 incident class at the earliest possible
+        point instead of only at complete()/submit_root, after all
+        implementation and review has already been spent: a parented task
+        whose branch/PR is anchored to the integration branch instead of its
+        parent's own branch, or a parentless root whose branch encodes a
+        nested hierarchy (it was detached from a coordination ancestor
+        during a restructure). The existing terminal-verb CEO_ONLY head-
+        branch routing (``_maybe_route_head_branch_to_ceo``) is untouched —
+        this is an additional, earlier catch, not a replacement.
+
+        Fail-open on a ``find_topology_issue`` exception (its DB calls can
+        raise) — mirrors ``_behind_base_gate``'s posture — so a transient
+        error cannot wedge ``open_pr`` on a check that only ever refuses.
+        """
+        try:
+            issue = await find_topology_issue(t, self.task)
+        except Exception as exc:
+            logger.warning("topology_check_skip", task_id=str(t.id), error=str(exc))
+            return None
+        if issue is None:
+            return None
+        return Envelope.invalid_state(
+            message=issue.message,
+            remediate=(
+                f"do not open this PR yet — expected base branch is "
+                f"'{issue.expected_base}'. {issue.repair}"
+            ),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
 
     @staticmethod
     def _open_pr_failure_env(
@@ -3128,7 +3244,7 @@ class Choreographer:
                     context_briefing=ctx.briefing,
                 ),
             )
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
         # Server-side milestone progress so the panel always
         # records the QA handoff regardless of agent's progress() habits.
@@ -3138,7 +3254,10 @@ class Choreographer:
             "submitted for QA review",
             percentage=90,
         )
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _i_am_done_resume_from_verifying(self, ctx: _IAmDoneContext) -> Envelope:
         """Recovery path: task is already in `verifying` owned by caller.
@@ -3163,9 +3282,12 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _i_am_done_pre_gate_dispatch(
         self, ctx: _IAmDoneContext, t: Any, agent_id: UUID
@@ -3293,12 +3415,15 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
         await self._record_milestone_progress(
             ctx.task_id, ctx.agent_id, "submitted for QA review", percentage=90
         )
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _open_finding_ids(self, task_id: UUID) -> tuple[str, ...]:
         """8-char ids of the task's still-OPEN revision-ledger findings.
@@ -4050,24 +4175,63 @@ class Choreographer:
         if reviewer is not None:
             await self.task.reassign(task_id, reviewer.id)
 
-    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
+    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> str | None:
         """Reassign + A2A-notify the QA agent for this task's team.
 
         ``submit_qa`` clears ``assigned_to`` to None. We then explicitly
         reassign to the QA agent so the orchestrator's per-agent task
         polling spawns QA (not the dev again) for the next stage.
+
+        The submit-qa transition is already committed by the time this
+        runs, so a raise here (``A2AService.send`` is NOT best-effort —
+        it raises on policy denial, missing-agent lookup, participant
+        validation, and transient DB errors) must not escape and blow up
+        the verb path. Degrades to a warning string instead, mirroring
+        ``_pass_review_documenter_handoff`` (qa.py) and the ``pr_fail``
+        loop-closer (pr_gate.py) — the two existing precedents for this
+        exact shape.
         """
         qa_agent = await self.task.qa_agent_for_team(t.team)
-        if qa_agent is not None:
-            await self.task.reassign(task_id, qa_agent.id)
-            skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
-            await self.a2a.send(
-                from_agent=agent_id,
-                to_agent=qa_agent.id,
-                skill=skill,
-                task_id=task_id,
-                body=f"Ready for review. PR: {t.pr_url}",
+        if qa_agent is None:
+            return None
+        try:
+            # Savepoint: reassign()'s flush would otherwise poison the
+            # shared session on a mid-flush failure — the response commit
+            # (DbCommitMiddleware) reuses it right after this returns.
+            async with self.task.session.begin_nested():
+                await self.task.reassign(task_id, qa_agent.id)
+                skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
+                await self.a2a.send(
+                    from_agent=agent_id,
+                    to_agent=qa_agent.id,
+                    skill=skill,
+                    task_id=task_id,
+                    body=f"Ready for review. PR: {t.pr_url}",
+                )
+        except Exception as exc:
+            # The savepoint rollback on ANY exception here — not just a DB
+            # error, e.g. a2a.send failing — fully expires every attribute
+            # of `t` (the same identity-map object reassign() mutated
+            # inside the block). The caller reads t.status / with_introspection(t)
+            # building the envelope right after this returns, so a refresh
+            # failure here means the DB is genuinely broken; let it raise —
+            # that 500 is honest, unlike silently returning a warning off a
+            # task object that will itself blow up on read.
+            await self.task.session.refresh(t)
+            logger.warning(
+                "notify_qa side-effect failed - transition committed, "
+                "handoff did not fire",
+                task_id=str(task_id),
+                recipient=str(qa_agent.id),
+                error_type=type(exc).__name__,
+                error=repr(exc),
             )
+            return (
+                f"submit-qa transition committed but the QA handoff to "
+                f"{qa_agent.id} failed ({type(exc).__name__}: {exc!r}). "
+                f"Re-issue the notification via dm."
+            )
+        return None
 
     def _resolve_skill(self, target_agent: Any, preference: list[str]) -> str:
         """Pick first skill in preference list that target_agent has.
@@ -9330,23 +9494,75 @@ class Choreographer:
             )
         # Close the signal loop — the reject reason must reach whoever owns
         # the revision (mirrors fail_review / the pr_fail loop-closer).
-        if t.assigned_to is not None and t.assigned_to != pm_agent_id:
-            await self.a2a.send(
-                from_agent=pm_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"PM merge review needs changes.\n{summary}",
-            )
+        warning = await self._notify_request_changes_owner(
+            pm_agent_id, task_id, t, summary
+        )
         env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
-        if hint := findings_lib.findings_count_hint(validated):
+        hint = findings_lib.findings_count_hint(validated)
+        if warning:
+            env.warning = f"{warning} {hint}" if hint else warning
+        elif hint:
             env.warning = hint
         return env
+
+    async def _notify_request_changes_owner(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, summary: str
+    ) -> str | None:
+        """Best-effort a2a the reject rendering to the revision owner.
+
+        Returns a warning string when the notification failed (the
+        needs_revision transition plus the ledger rows and the pm_notes note
+        are already committed at this point), else None. Pulled out of
+        ``request_changes`` to keep it under the cyclomatic bound. A2AService
+        .send raises on policy denial, unknown recipients, and transient DB
+        errors — a failure here must degrade to a warning in the unchanged
+        success envelope, never reject the verb or roll the bounce back.
+        """
+        if t.assigned_to is None or t.assigned_to == pm_agent_id:
+            return None
+        try:
+            # Savepoint: a2a.send's flush would otherwise poison the shared
+            # session on a mid-flush failure — the response commit
+            # (DbCommitMiddleware) reuses it right after this returns, and
+            # it must still carry the needs_revision transition, the
+            # findings-ledger rows, and the pm_notes note already written
+            # earlier this request.
+            async with self.task.session.begin_nested():
+                await self.a2a.send(
+                    from_agent=pm_agent_id,
+                    to_agent=t.assigned_to,
+                    skill="code_review",
+                    task_id=task_id,
+                    body=f"PM merge review needs changes.\n{summary}",
+                )
+        except Exception as exc:
+            # The savepoint rollback here can also expire attributes on `t`
+            # (mutated earlier this request by request_changes' own
+            # transition) — refresh before the caller reads t.status /
+            # with_introspection(t) building the envelope right after this
+            # returns. A refresh failure means the DB is genuinely broken;
+            # let it raise rather than silently return a warning off a task
+            # object that will itself blow up on read.
+            await self.task.session.refresh(t)
+            logger.warning(
+                "request_changes a2a to revision owner failed — "
+                "transition committed, notification did not fire",
+                task_id=str(task_id),
+                recipient=str(t.assigned_to),
+                error=repr(exc),
+            )
+            return (
+                f"request_changes transition committed but the a2a "
+                f"notification to the revision owner ({t.assigned_to}) "
+                f"failed ({exc!r}). The reject reason is on the task's "
+                f"findings ledger — re-issue it via dm."
+            )
+        return None
 
     async def _request_changes_spec_gate(
         self,

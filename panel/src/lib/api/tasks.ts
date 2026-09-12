@@ -39,7 +39,7 @@ export interface BoardReviewEntry {
 export interface TaskFinding {
   id: string;
   task_id: string;
-  origin: "qa" | "pr_gate" | "pm" | "ceo";
+  origin: "qa" | "pr_gate" | "pm" | "ceo" | "second_review";
   round: number;
   author_slug: string | null;
   file: string | null;
@@ -101,6 +101,107 @@ export interface CollisionMap {
   adds_migration: boolean;
   touches_shared: boolean;
   siblings: CollisionSibling[];
+}
+
+// ============================================================================
+// Per-task attestation receipt — wire shapes mirroring
+// roboco/api/schemas/attestation.py (backend subtask 3e269117).
+// ============================================================================
+
+// One acceptance criterion plus its verification stamp, if any.
+export interface AttestationCriterion {
+  id?: string | null;
+  text: string;
+  verified: boolean;
+  evidence?: string | null;
+}
+
+// One row of the revision-findings ledger (task_review_findings).
+export interface AttestationFinding {
+  id: string;
+  round: number;
+  origin: string;
+  severity: string;
+  status: string;
+  file?: string | null;
+  line?: number | null;
+  criterion?: string | null;
+  expected: string;
+  actual: string;
+  fix?: string | null;
+  resolution_note?: string | null;
+  created_at: string;
+}
+
+// Every ledger row raised in one revision round.
+export interface AttestationFindingsRound {
+  round: number;
+  findings: AttestationFinding[];
+}
+
+// The CI verdict for the PR's head commit, or not_available when no PR/CI
+// signal could be resolved.
+export interface AttestationCiVerdict {
+  state: string;
+  head_sha?: string | null;
+  failing_checks: string[];
+}
+
+// One recorded architectural-conventions finding for this task's diff.
+export interface AttestationConventionFinding {
+  file: string;
+  line: number;
+  rule: string;
+  level: string;
+  kind?: string | null;
+  message: string;
+}
+
+// One status-transition hop in the task's custody chain.
+export interface AttestationReviewerChainEntry {
+  to_status: string;
+  agent_slug?: string | null;
+  agent_role?: string | null;
+  timestamp: string;
+}
+
+// One work session bound to this task — the commit/PR refs an outside
+// auditor can verify against the real git history.
+export interface AttestationWorkSession {
+  agent_slug?: string | null;
+  branch_name: string;
+  base_branch: string;
+  target_branch: string;
+  status: string;
+  commits: string[];
+  pr_number?: number | null;
+  pr_url?: string | null;
+  pr_status?: string | null;
+  started_at: string;
+  ended_at?: string | null;
+}
+
+// The full per-task verification attestation — everything an outside auditor
+// needs to confirm a task's acceptance criteria, review history, and
+// CI/conventions state without the live panel.
+export interface TaskAttestation {
+  task_id: string;
+  title: string;
+  status: string;
+  team: string;
+  project_slug?: string | null;
+  branch_name?: string | null;
+  pr_number?: number | null;
+  pr_url?: string | null;
+  revision_count: number;
+  commits: Record<string, unknown>[];
+  work_sessions: AttestationWorkSession[];
+  acceptance_criteria: AttestationCriterion[];
+  findings_by_round: AttestationFindingsRound[];
+  ci: AttestationCiVerdict;
+  conventions_findings: AttestationConventionFinding[];
+  reviewer_chain: AttestationReviewerChainEntry[];
+  generated_at: string;
 }
 
 // Wire shape of GET /tasks/summary (backend TaskSummaryResponse) — exactly
@@ -1065,6 +1166,59 @@ export const tasksApi = {
     const { data } = await api.post<{ ok: boolean; task_id: string }>(
       "/tasks/" + taskId + "/dismiss-external-pr",
     );
+    return data;
+  },
+
+  // =========================================================================
+  // PER-TASK ATTESTATION RECEIPT
+  // =========================================================================
+
+  // The JSON variant of the per-task verification receipt — every acceptance
+  // criterion with its verified stamp and evidence line, the findings ledger
+  // by round, the CI verdict for the PR head, conventions findings, and the
+  // reviewer/custody chain, bound to commit and PR refs. Matches the backend
+  // TaskAttestationResponse schema (roboco/api/schemas/attestation.py).
+  getAttestation: async (taskId: string): Promise<TaskAttestation> => {
+    if (isMockMode())
+      return {
+        task_id: taskId,
+        title: "Mock task",
+        status: "completed",
+        team: "backend",
+        project_slug: null,
+        branch_name: null,
+        pr_number: null,
+        pr_url: null,
+        revision_count: 0,
+        commits: [],
+        work_sessions: [],
+        acceptance_criteria: [],
+        findings_by_round: [],
+        ci: { state: "not_available", head_sha: null, failing_checks: [] },
+        conventions_findings: [],
+        reviewer_chain: [],
+        generated_at: new Date().toISOString(),
+      };
+    const { data } = await api.get<TaskAttestation>(
+      "/tasks/" + taskId + "/attestation",
+    );
+    return data;
+  },
+
+  // The Markdown variant — the SAME assembled attestation rendered
+  // server-side as a human-readable receipt (format=md answers with
+  // text/markdown; never a second computation, so JSON and Markdown can't
+  // diverge). Returns the raw text so the caller can hand it to the
+  // browser's save-file machinery.
+  getAttestationMarkdown: async (taskId: string): Promise<string> => {
+    if (isMockMode())
+      return "# Verification receipt\n\n(mock receipt for " + taskId + ")\n";
+    const { data } = await api.get<string>("/tasks/" + taskId + "/attestation", {
+      params: { format: "md" },
+      // text/markdown must not ride axios's JSON.parse attempt — pass the
+      // body through untouched.
+      transformResponse: (body) => body,
+    });
     return data;
   },
 };

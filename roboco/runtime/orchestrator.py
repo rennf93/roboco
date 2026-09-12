@@ -432,6 +432,7 @@ _INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
     ModelProvider.OPENAI,
     ModelProvider.GEMINI,
     ModelProvider.KIMI,
+    ModelProvider.OPENROUTER,
 )
 
 
@@ -633,6 +634,24 @@ KIMI_USAGE_DATA_DIR = os.environ.get("ROBOCO_KIMI_USAGE_DIR", "/data/kimi-usage"
 # 60s codex/gemini default.
 _KIMI_RATE_LIMIT_EXIT_CODE = 75
 _KIMI_AUTH_EXIT_CODE = 78
+
+# In-orchestrator path where each OPENROUTER agent's usage capture is visible
+# — the openrouter analogue of KIMI_USAGE_DATA_DIR (see there for the mount
+# shape). OpenRouter usage is captured from the opencode --format json stream
+# (see roboco.llm.providers.openrouter_cli_usage).
+OPENROUTER_USAGE_DATA_DIR = os.environ.get(
+    "ROBOCO_OPENROUTER_USAGE_DIR", "/data/openrouter-usage"
+)
+
+# A one-shot OpenRouter container exits with these SAME codes for the SAME
+# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention —
+# see docker/scripts/openrouter-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected OpenRouter rate-limit/quota error, 78 (EX_CONFIG) when the
+# openrouter_cli_config --check auth preflight finds OPENROUTER_API_KEY
+# missing (the Ollama shape — a static key, no expiry read). Scoped by
+# provider_type (ModelProvider.OPENROUTER), never by exit code alone.
+_OPENROUTER_RATE_LIMIT_EXIT_CODE = 75
+_OPENROUTER_AUTH_EXIT_CODE = 78
 
 
 # =============================================================================
@@ -1204,6 +1223,29 @@ def _format_shipped_since(markers_dict: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+_SHIPPED_DIGEST_INSTRUCTION = (
+    "Before proposing, check the shipped-this-week digest above - do not "
+    "propose already-shipped work. If a candidate item duplicates work that "
+    "already shipped this week (named above) or is in flight, say so plainly "
+    "and skip it instead of quietly drafting a duplicate."
+)
+
+
+def _shipped_digest_block(digest_context: str) -> str:
+    """Render the ``## Shipped-this-week digest`` block (digest + the
+    do-not-propose-already-shipped-work instruction) for the roadmap, Pest
+    Control, and Spackle exploration prompts. Returns ``""`` when no digest
+    was assembled so the section is omitted entirely - mirrors the
+    megaphone ``digest_block`` pattern. Module-level (not a method) so it's
+    unit-testable without a wholesale-mocked ``self``."""
+    if not digest_context:
+        return ""
+    return (
+        f"\n## Shipped-this-week digest\n{digest_context}\n\n"
+        f"{_SHIPPED_DIGEST_INSTRUCTION}\n"
+    )
+
+
 def _format_rejected_spotlights(markers_dict: dict[str, Any]) -> str:
     """Render recently CEO-rejected x_feature drafts + their reasons, so HoM
     steers away from ground the CEO already turned down."""
@@ -1547,6 +1589,16 @@ class AgentOrchestrator(
         # separately so the two providers' rate-limit episodes never interfere.
         self._gemini_last_park_at: datetime | None = None
         self._gemini_repark_count: int = 0
+        self._init_park_retry_tunables()
+
+    def _init_park_retry_tunables(self) -> None:
+        """Per-provider park retry_after bases (Settings-backed).
+
+        Split out of __init__ (rather than inlined) to keep it under the
+        statement budget as tunable providers accrete. Grok/codex park with
+        hardcoded module constants instead (see _park_grok_rate_limited /
+        _park_codex_rate_limited); the Settings-backed ones live here.
+        """
         # Configurable retry_after base for GEMINI parks (operators may want to
         # tune these for Google's own OAuth-quota reset cadence, unlike grok's
         # hardcoded equivalents — see settings.gemini_rate_limit_retry_after_seconds).
@@ -1564,6 +1616,17 @@ class AgentOrchestrator(
             settings.kimi_rate_limit_retry_after_seconds
         )
         self._kimi_auth_retry_after_s: float = settings.kimi_auth_retry_after_seconds
+        # Configurable retry_after base for OPENROUTER parks (kimi's tunable
+        # pattern). getattr-with-default keeps this branch shippable ahead of
+        # the 711b4bd7 config PR that lands the Settings fields themselves;
+        # once both merge the attribute is always present and the fallback
+        # default is dead.
+        self._openrouter_rate_limit_retry_after_s: float = getattr(
+            settings, "openrouter_rate_limit_retry_after_seconds", 60.0
+        )
+        self._openrouter_auth_retry_after_s: float = getattr(
+            settings, "openrouter_auth_retry_after_seconds", 60.0
+        )
 
     def _init_engine_loop_task_slots(self) -> None:
         """Task handles for the default-off engine loops. Split out of

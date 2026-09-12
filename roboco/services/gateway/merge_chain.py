@@ -12,9 +12,11 @@ Merge chain:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from roboco.foundation.policy.content import markers
 from roboco.models.env_branches import head_branch
 
 _TYPES = ("feature", "bug", "chore", "docs", "hotfix")
@@ -118,3 +120,123 @@ async def _project_default_branch(task: Any, task_service: Any) -> str | None:
         return None
     project = getattr(task, "project", None)
     return head_branch(project) if project else None
+
+
+@dataclass(frozen=True)
+class TopologyIssue:
+    """A detected PR-base / parent-topology mismatch (see :func:`find_topology_issue`).
+
+    ``shape`` is one of:
+      - ``"parented_base_is_head"``: the task has a parent that owns its own
+        branch, but the task's actual recorded base is the project's
+        integration/head branch instead of that parent's branch — the
+        5612b225/PR #856 incident class (a task re-parented after its
+        branch/PR base was already cut against the head branch).
+      - ``"parentless_in_coordination_tree"``: the task is parentless (a
+        root), but its own branch name encodes a nested hierarchy
+        (``branch_depth`` > 1) — the signature of a task detached from a
+        coordination ancestor during a restructure, not a genuinely
+        standalone root (whose branch is always depth 1).
+    """
+
+    shape: str
+    expected_base: str
+    actual_base: str | None
+    message: str
+    repair: str
+
+
+async def find_topology_issue(task: Any, task_service: Any) -> TopologyIssue | None:
+    """Detect a stale/incoherent PR-base <-> parent-topology mismatch, or None.
+
+    Reused at two catch points: ``open_pr`` preflight (before a PR/branch
+    goes any further) and the ``parent_task_id`` re-parent write-through —
+    so branch/parent topology is validated at the earliest points instead of
+    only at the terminal verbs (``complete``/``submit_root``), where the
+    5612b225 incident class (PR #856 bounced 3+ times over two days after
+    all work and review had already been spent) only ever surfaced.
+    """
+    parent_id = getattr(task, "parent_task_id", None)
+    if parent_id is not None:
+        return await _parented_topology_issue(task, task_service, parent_id)
+    return await _parentless_topology_issue(task, task_service)
+
+
+async def _parented_topology_issue(
+    task: Any, task_service: Any, parent_id: Any
+) -> TopologyIssue | None:
+    """Shape (a): a real parent branch exists, but the recorded base isn't it.
+
+    Skips entirely when the parent is missing or owns no branch of its own
+    (a legitimate branchless-coordination parent, or one not yet claimed) —
+    ``resolve_parent_branch`` already falls back correctly for those, and
+    the terminal-verb CEO_ONLY head-branch routing already handles the
+    legitimate branchless-parent case. Also skips when THIS task's own
+    branch was cut via the deliberate ``base_branch_fallback`` (the parent
+    branch was DB-recorded but not yet pushed at branch-creation time) —
+    a real, already-logged git.py fallback the developer has no verb to
+    repair, not a restructure.
+    """
+    if markers.is_base_branch_fallback(task):
+        return None
+    parent = await task_service.get(UUID(str(parent_id)))
+    parent_branch = getattr(parent, "branch_name", None) if parent else None
+    if not parent_branch:
+        return None
+    actual = await task_service.recorded_pr_base(task)
+    if actual is None or actual == parent_branch:
+        return None
+    head = await _project_default_branch(task, task_service)
+    if head is None or actual != head:
+        return None
+    return TopologyIssue(
+        shape="parented_base_is_head",
+        expected_base=parent_branch,
+        actual_base=actual,
+        message=(
+            f"task {task.id} has parent {parent_id} with its own branch "
+            f"'{parent_branch}', but the task's branch/PR is based on the "
+            f"integration branch '{actual}' instead"
+        ),
+        repair=(
+            f"retarget/rebase this task's branch and PR onto '{parent_branch}' "
+            "(its parent's branch) — it was likely re-parented after its "
+            "branch/PR base was already cut against the integration branch"
+        ),
+    )
+
+
+async def _parentless_topology_issue(
+    task: Any, task_service: Any
+) -> TopologyIssue | None:
+    """Shape (b): a parentless root whose branch encodes a nested hierarchy.
+
+    A genuinely standalone root's branch is always depth 1 (just its own
+    root segment) and never fires this.
+    """
+    branch_name = getattr(task, "branch_name", None)
+    if not branch_name:
+        return None
+    try:
+        depth = branch_depth(branch_name)
+    except ValueError:
+        return None
+    if depth <= 1:
+        return None
+    expected = await resolve_parent_branch(task, task_service)
+    return TopologyIssue(
+        shape="parentless_in_coordination_tree",
+        expected_base=expected,
+        actual_base=await task_service.recorded_pr_base(task),
+        message=(
+            f"task {task.id} is parentless (a root) but its branch "
+            f"'{branch_name}' encodes a nested hierarchy (depth {depth}) — "
+            "it looks detached from a coordination ancestor during a "
+            "restructure rather than being a genuinely standalone root"
+        ),
+        repair=(
+            "set parent_task_id to the real coordination ancestor this task "
+            "belongs under, or if it is genuinely standalone, recreate its "
+            f"branch at depth 1 off '{expected}'"
+        ),
+    )

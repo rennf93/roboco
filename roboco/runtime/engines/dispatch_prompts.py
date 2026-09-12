@@ -17,6 +17,7 @@ from roboco.runtime.orchestrator import (
     _format_seen_features,
     _format_shipped_since,
     _render_open_finding_prompt_line,
+    _shipped_digest_block,
     logger,
 )
 from roboco.services.task import (
@@ -882,6 +883,7 @@ those, and a substantive recorded note IS your job here.
         task: dict[str, Any],
         prior_context: str = "",
         market_brief_context: str = "",
+        digest_context: str = "",
     ) -> str:
         """Prompt for the Product Owner's one-shot roadmap-exploration cycle.
 
@@ -892,7 +894,10 @@ those, and a substantive recorded note IS your job here.
         closed cycles (``BoardProgramEngine.prior_cycle_context``) — empty
         when none exist yet. ``market_brief_context`` is Periscope's latest
         filed market brief (spec §4: "its brief is Printer's cross-role
-        input") — empty when no brief has ever been filed; never blocks."""
+        input") — empty when no brief has ever been filed; never blocks.
+        ``digest_context`` is the server-assembled shipped-this-week digest
+        (``shipped_work_digest``) — empty when the digest could not be
+        assembled; never blocks."""
         task_id = task.get("id", "unknown")
         min_items = settings.roadmap_min_items_per_cycle
         max_items = settings.roadmap_max_items_per_cycle
@@ -903,6 +908,7 @@ those, and a substantive recorded note IS your job here.
             if market_brief_context
             else ""
         )
+        digest_block = _shipped_digest_block(digest_context)
         return f"""\
 You are the Product Owner. It's time for your periodic roadmap exploration.
 
@@ -911,7 +917,7 @@ TASK: {task_id}
 Explore the company's projects and propose ONE themed cycle of roadmap items
 for the CEO to review — you author this alone. The Head of Marketing is not
 involved in this cycle.
-{brief_block}{prior_block}
+{brief_block}{digest_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -944,6 +950,7 @@ that is not your job here, and the gateway will reject those verbs.
         task: dict[str, Any],
         prior_context: str = "",
         evidence_context: str = "",
+        digest_context: str = "",
     ) -> str:
         """Prompt for the Product Owner's one-shot Pest Control exploration.
 
@@ -952,8 +959,9 @@ that is not your job here, and the gateway will reject those verbs.
         ``prior_context`` is the LEARN rendering of the last closed cycles
         (``BoardProgramEngine.prior_cycle_context``); ``evidence_context`` is
         the server-assembled rework/findings evidence
-        (``PestControlEngine.evidence_context``) — both empty when none
-        exist yet."""
+        (``PestControlEngine.evidence_context``); ``digest_context`` is the
+        server-assembled shipped-this-week digest (``shipped_work_digest``)
+        — all empty when none exist yet; never blocks."""
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         task_id = task.get("id", "unknown")
@@ -964,6 +972,7 @@ that is not your job here, and the gateway will reject those verbs.
             if evidence_context
             else ""
         )
+        digest_block = _shipped_digest_block(digest_context)
         return f"""\
 You are the Product Owner. It's time for your periodic Pest Control exploration.
 
@@ -973,7 +982,7 @@ Hunt LATENT defects — bugs the org already recorded but nobody read, not
 whatever CI happens to be red on right now (that's self-heal/CI-watch's job,
 not yours). Propose evidence-backed bug tasks for the CEO to review; you
 author this alone.
-{evidence_block}{prior_block}
+{evidence_block}{digest_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -1087,6 +1096,15 @@ ever propose.
         incident_task_id = incident_ref.get("incident_task_id", "unknown")
         kind = incident_ref.get("kind", "unknown")
         title = incident_ref.get("title", "unknown")
+        stranded_block = (
+            "\n## Stranded-block context\n"
+            f"- Block reason: {incident_ref.get('block_reason', 'unknown')}\n"
+            f"- Time blocked: {incident_ref.get('time_blocked', 'unknown')}\n"
+            "- Escalation history: "
+            f"{incident_ref.get('escalation_history', 'none')}\n"
+            if kind == "stranded"
+            else ""
+        )
         context_block = (
             f"\n## Evidence gathered for you\n{incident_context}\n"
             if incident_context
@@ -1098,7 +1116,7 @@ You are the Auditor. An incident just triggered your Coroner postmortem.
 TASK: {task_id}
 
 INCIDENT: {title!r} ({incident_task_id}) — {kind}
-{context_block}
+{stranded_block}{context_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -1206,6 +1224,7 @@ not your job here, and the gateway will reject those.
         self,
         task: dict[str, Any],
         prior_context: str = "",
+        digest_context: str = "",
     ) -> str:
         """Prompt for the Product Owner's one-shot Spackle exploration.
 
@@ -1215,13 +1234,16 @@ not your job here, and the gateway will reject those.
         docs, docs claims vs code, coverage holes, dead-end panel tabs) is
         the PO's own read-tool work, ordered explicitly below. ``prior_
         context`` is the LEARN rendering of the last closed cycles
-        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
-        yet."""
+        (``BoardProgramEngine.prior_cycle_context``); ``digest_context`` is
+        the server-assembled shipped-this-week digest
+        (``shipped_work_digest``) — both empty when none exist yet; never
+        blocks."""
         from roboco.foundation.policy.board_programs import PROGRAMS
 
         task_id = task.get("id", "unknown")
         max_items = PROGRAMS["spackle"].max_items_per_cycle
         prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        digest_block = _shipped_digest_block(digest_context)
         return f"""\
 You are the Product Owner. It's time for your periodic Spackle exploration.
 
@@ -1230,7 +1252,7 @@ TASK: {task_id}
 Audit the target project's half-shipped surface area — the gaps between what
 was built and what was finished. Propose evidence-backed gap-fill tasks for
 the CEO to review; you author this alone.
-{prior_block}
+{digest_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
