@@ -128,6 +128,46 @@ async def test_give_me_work_returns_idle_when_no_work() -> None:
 
 
 @pytest.mark.asyncio
+async def test_give_me_work_returns_bounced_task_before_pending() -> None:
+    """A needs_revision task carries open findings a reviewer is waiting
+    on: it must not sit behind a freshly seeded pending task (2026-08-24:
+    be-dev-1 held 3 bounced tasks all day behind new pending ones)."""
+    agent_id = uuid4()
+    pending_task = MagicMock(id=uuid4(), status="pending", title="new work")
+    bounced_task = MagicMock(id=uuid4(), status="needs_revision", title="bounced work")
+    task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = [pending_task]
+    task_svc.list_assigned_for_agent.return_value = [bounced_task]
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.give_me_work(agent_id)
+    body = env.as_dict()
+    assert body["status"] == "needs_revision"
+    assert body["task_id"] == str(bounced_task.id)
+
+
+@pytest.mark.asyncio
+async def test_give_me_work_bounced_task_still_respects_dependency_hold() -> None:
+    """A held needs_revision task (unmet dependency / sequence) is skipped
+    for the pending task, same as the pre-existing assigned-branch hold."""
+    agent_id = uuid4()
+    pending_task = MagicMock(id=uuid4(), status="pending", title="new work")
+    held_bounced = MagicMock(id=uuid4(), status="needs_revision", title="held bounce")
+    task_svc = AsyncMock()
+    task_svc.list_pending_for_agent.return_value = [pending_task]
+    task_svc.list_assigned_for_agent.return_value = [held_bounced]
+    task_svc.is_pending_claim_blocked.return_value = True
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.give_me_work(agent_id)
+    body = env.as_dict()
+    assert body["status"] == "pending"
+    assert body["task_id"] == str(pending_task.id)
+
+
+@pytest.mark.asyncio
 async def test_i_will_work_on_pending_with_plan() -> None:
     agent_id = uuid4()
     task_id = uuid4()
@@ -176,7 +216,7 @@ async def test_i_will_work_on_pending_with_plan() -> None:
     )
     assert env.error is None
     assert env.status == "in_progress"
-    task_svc.claim.assert_awaited_once_with(task_id, agent_id)
+    task_svc.claim.assert_awaited_once_with(task_id, agent_id, provision=False)
     task_svc.set_plan.assert_awaited_once()
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
@@ -221,7 +261,7 @@ async def test_i_will_work_on_pending_no_plan_returns_tracing_gap() -> None:
 
 @pytest.mark.asyncio
 async def test_i_will_work_on_needs_revision_re_starts() -> None:
-    """needs_revision dev path: spec composes (claim, set_plan, start), so
+    """needs_revision dev path: spec composes (claim, set_plan) then starts, so
     claim now runs even when the task is already assigned to the dev (the
     spec source-status for claim includes NEEDS_REVISION). Migration
     behavior change vs. the pre-spec verb body, which skipped claim if
@@ -389,7 +429,7 @@ async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> Non
     assert "note(scope='note'" in body["remediate"]
     # The composed action ran — claim+set_plan+start were called even though
     # the post-claim gate failed.
-    task_svc.claim.assert_awaited_once_with(task_id, agent_id)
+    task_svc.claim.assert_awaited_once_with(task_id, agent_id, provision=False)
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
 

@@ -28,6 +28,15 @@ from pydantic import BeforeValidator
 from roboco.agents_config import get_agent_team
 from roboco.foundation.policy.content.validators import coerce_str_list
 from roboco.foundation.policy.flow_timeouts import CLIENT_HEADROOM_SECONDS, SLOW_VERBS
+from roboco.mcp.utils import configure_stdio_logging, guard_blocked_envelope
+
+# __name__ is already "__main__" here when launched as `python -m
+# roboco.mcp.flow_server` (the real stdio server), so this runs early enough
+# to protect _register_tools()'s own logging below. A plain import (test
+# code importing this module in-process) leaves the ambient structlog config
+# alone instead of clobbering it for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 # A ``list[str]`` field that tolerates the Claude SDK's XML-ish tool-input
 # parsing: an LLM emitting a bullet list as ``<item>…</item>`` elements arrives
@@ -311,6 +320,30 @@ def _client_timeout_for(verb: str) -> float:
     return _SLOW_TIMEOUT if verb in SLOW_VERBS else _TIMEOUT
 
 
+def _transport_error_or_guard_block(
+    response: httpx.Response, path: str
+) -> dict[str, Any]:
+    """No JSON body: either roboco.security's guard blocking with plain text
+    (see guard_blocked_envelope) or a genuine transport failure (HTML error
+    page, empty body, etc). Split out of _post to keep its own complexity in
+    check."""
+    blocked = guard_blocked_envelope(response.status_code, response.text, path)
+    if blocked is not None:
+        return blocked
+    return {
+        "error": "transport_error",
+        "message": (
+            f"orchestrator returned HTTP {response.status_code}"
+            f" with no JSON body for {path}"
+        ),
+        "remediate": (
+            "check that the orchestrator is up and the route exists;"
+            " contact the human operator if this persists"
+        ),
+        "missing": [],
+    }
+
+
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     """POST a request to the orchestrator and return the JSON envelope.
 
@@ -397,21 +430,7 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
         try:
             payload: dict[str, Any] = response.json()
         except (ValueError, json.JSONDecodeError):
-            # No JSON body (HTML error page, empty body, etc). Surface the
-            # status as a synthetic envelope so the agent gets a remediate
-            # hint instead of a Python traceback.
-            return {
-                "error": "transport_error",
-                "message": (
-                    f"orchestrator returned HTTP {response.status_code}"
-                    f" with no JSON body for {path}"
-                ),
-                "remediate": (
-                    "check that the orchestrator is up and the route exists;"
-                    " contact the human operator if this persists"
-                ),
-                "missing": [],
-            }
+            return _transport_error_or_guard_block(response, path)
     # Outside the orchestrator client context so the SDK call is its own
     # connection — keeps semantics independent and timeouts separated.
     # A non-404 JSON body that is NOT a real Envelope (dict `error` from an
@@ -830,6 +849,20 @@ def unblock(task_id: str, reason: str, restore: bool = True) -> dict[str, Any]:
     )
 
 
+def cancel_leaf(task_id: str, reason: str) -> dict[str, Any]:
+    """PM: close a zero-diff leaf a merged sibling already fixed.
+
+    Use this ONLY when the leaf has zero commits ahead of its base and no
+    open PR - a fix task whose findings a sibling resolved on the parent
+    branch first, so no legitimate diff remains and i_am_done/complete can
+    never accept it. `reason` is recorded as your decision. A cell PM
+    closes only its own coordination task's children; a main PM may act
+    on any root's descendant. A leaf with real commits or an open PR is
+    refused - route those through the normal review path instead.
+    """
+    return _post(_role_path("cancel_leaf"), {"task_id": task_id, "reason": reason})
+
+
 def declare_coverage(task_id: str, criteria: StrList) -> dict[str, Any]:
     """PM: stamp parent acceptance criteria onto an existing child (task_id).
 
@@ -1137,6 +1170,7 @@ _TOOLS: dict[str, Any] = {
     "submit_up": submit_up,
     "submit_root": submit_root,
     "declare_coverage": declare_coverage,
+    "cancel_leaf": cancel_leaf,
     # board / main pm
     "escalate_to_ceo": escalate_to_ceo,
     # auditor

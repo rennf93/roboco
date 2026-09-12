@@ -38,14 +38,18 @@ def _spawn_args(agent_id: str) -> list[str]:
 
 
 def test_effort_flag_injected_for_mapped_role() -> None:
-    with patch("roboco.runtime.orchestrator.ROLE_EFFORT_MAP", {"developer": "low"}):
+    with patch(
+        "roboco.runtime.engines.spawn_launch.ROLE_EFFORT_MAP", {"developer": "low"}
+    ):
         args = _spawn_args("be-dev-1")  # be-dev-1 → developer
     assert "--effort" in args
     assert args[args.index("--effort") + 1] == "low"
 
 
 def test_no_effort_flag_for_unmapped_role() -> None:
-    with patch("roboco.runtime.orchestrator.ROLE_EFFORT_MAP", {"cell_pm": "medium"}):
+    with patch(
+        "roboco.runtime.engines.spawn_launch.ROLE_EFFORT_MAP", {"cell_pm": "medium"}
+    ):
         args = _spawn_args("be-dev-1")  # developer — not in the patched map
     assert "--effort" not in args
 
