@@ -87,3 +87,47 @@ export function useDeactivateProject() {
     },
   });
 }
+
+// Add an agent to a project's allowed-access list. The access routes respond
+// with the updated ProjectResponse, so onSuccess seeds the detail cache with
+// it and invalidates the detail to refetch (heals any server-side slug/name
+// resolution drift) — the "refetch-on-success" the Access card relies on.
+export function useGrantProjectAccess() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      agentId,
+    }: {
+      projectId: string;
+      agentId: string;
+    }) => projectsApi.grantAccess(projectId, agentId),
+    onSuccess: (project) => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
+      queryClient.setQueryData(projectKeys.detail(project.id), project);
+      queryClient.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
+    },
+  });
+}
+
+// Remove an agent from a project's allowed-access list (see
+// useGrantProjectAccess for the cache/refetch posture).
+export function useRevokeProjectAccess() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      agentId,
+    }: {
+      projectId: string;
+      agentId: string;
+    }) => projectsApi.revokeAccess(projectId, agentId),
+    onSuccess: (project) => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
+      queryClient.setQueryData(projectKeys.detail(project.id), project);
+      queryClient.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
+    },
+  });
+}

@@ -17,6 +17,7 @@ import {
 import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { ConventionsTab } from "@/components/conventions/conventions-tab";
 import { IdentityCard } from "@/components/projects/settings/identity-card";
+import { AccessCard } from "@/components/projects/settings/access-card";
 import { GitAuthCard } from "@/components/projects/settings/git-auth-card";
 import { PlacementCard } from "@/components/projects/settings/placement-card";
 import { EnvironmentsCard } from "@/components/projects/settings/environments-card";
@@ -34,7 +35,7 @@ const TAB_DEFS: TabDef[] = [
   {
     value: "settings",
     label: "Settings",
-    hint: "Identity, git auth, placement, environments, CI/CD commands, budget, and sandbox — one card per concern",
+    hint: "Identity, access, git auth, placement, environments, CI/CD commands, budget, and sandbox — one card per concern",
   },
   {
     value: "conventions",
@@ -167,6 +168,7 @@ function ProjectSettingsPageContent({ projectId }: { projectId: string }) {
         <TabsContent value="settings" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <IdentityCard project={project} />
+            <AccessCard project={project} />
             <GitAuthCard project={project} />
             <PlacementCard project={project} />
             <EnvironmentsCard project={project} />

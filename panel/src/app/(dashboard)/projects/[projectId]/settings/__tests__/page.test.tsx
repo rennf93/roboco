@@ -29,11 +29,16 @@ vi.mock("@/components/conventions/conventions-tab", () => ({
 
 // Each card's own behavior (fields, dirty-state save, mutation payload) is
 // covered by its dedicated test in settings/__tests__/*.test.tsx — this
-// route test only cares that the page assembles all seven, so each is
+// route test only cares that the page assembles all eight, so each is
 // stubbed to a nameable marker.
 vi.mock("@/components/projects/settings/identity-card", () => ({
   IdentityCard: ({ project }: { project: Project }) => (
     <div data-testid="identity-card-stub" data-project-id={project.id} />
+  ),
+}));
+vi.mock("@/components/projects/settings/access-card", () => ({
+  AccessCard: ({ project }: { project: Project }) => (
+    <div data-testid="access-card-stub" data-project-id={project.id} />
   ),
 }));
 vi.mock("@/components/projects/settings/git-auth-card", () => ({
@@ -164,6 +169,7 @@ describe("ProjectSettingsPage", () => {
 
     for (const testId of [
       "identity-card-stub",
+      "access-card-stub",
       "git-auth-card-stub",
       "placement-card-stub",
       "environments-card-stub",

@@ -289,20 +289,56 @@ export const projectsApi = {
     await api.delete("/projects/" + projectId);
   },
 
-  // Grant agent access to project
-  grantAccess: async (projectId: string, agentId: string): Promise<void> => {
+  // Add an agent to the project's allowed-access list (PM only). By default
+  // every agent in the assigned cell has access; the first grant switches the
+  // project to a restricted allow-list. Hits POST /projects/{id}/access/{agent_id},
+  // which responds with the updated ProjectResponse (access_restricted +
+  // resolved allowed_agents).
+  grantAccess: async (projectId: string, agentId: string): Promise<Project> => {
     if (isMockMode()) {
-      return;
+      const idx = mockProjects.findIndex((p) => p.id === projectId);
+      if (idx === -1) throw new Error("Project not found");
+      const allowed = mockProjects[idx].allowed_agents ?? [];
+      if (!allowed.some((a) => a.id === agentId)) {
+        allowed.push({ id: agentId, slug: agentId, name: agentId });
+      }
+      mockProjects[idx] = {
+        ...mockProjects[idx],
+        access_restricted: true,
+        allowed_agents: allowed,
+        updated_at: new Date().toISOString(),
+      };
+      return mockProjects[idx];
     }
-    await api.post("/projects/" + projectId + "/access/" + agentId);
+    const { data } = await api.post<Project>(
+      "/projects/" + projectId + "/access/" + agentId,
+    );
+    return data;
   },
 
-  // Revoke agent access from project
-  revokeAccess: async (projectId: string, agentId: string): Promise<void> => {
+  // Remove an agent from the project's allowed-access list (PM only). When
+  // the last agent is removed the backend keeps the empty restricted list.
+  // Hits DELETE /projects/{id}/access/{agent_id}, responding with the
+  // updated ProjectResponse.
+  revokeAccess: async (projectId: string, agentId: string): Promise<Project> => {
     if (isMockMode()) {
-      return;
+      const idx = mockProjects.findIndex((p) => p.id === projectId);
+      if (idx === -1) throw new Error("Project not found");
+      const allowed = (mockProjects[idx].allowed_agents ?? []).filter(
+        (a) => a.id !== agentId,
+      );
+      mockProjects[idx] = {
+        ...mockProjects[idx],
+        access_restricted: allowed.length > 0,
+        allowed_agents: allowed.length > 0 ? allowed : null,
+        updated_at: new Date().toISOString(),
+      };
+      return mockProjects[idx];
     }
-    await api.delete("/projects/" + projectId + "/access/" + agentId);
+    const { data } = await api.delete<Project>(
+      "/projects/" + projectId + "/access/" + agentId,
+    );
+    return data;
   },
 
   // Trigger git sync for project
