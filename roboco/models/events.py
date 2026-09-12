@@ -82,6 +82,10 @@ class EventType(StrEnum):
     QUESTION_ASKED = "question.asked"
     QUESTION_ANSWERED = "question.answered"
 
+    # Index events: RAG/embedding writes routed to the indexer worker via
+    # the "index" stream category (roboco:stream:index).
+    INDEX_REQUESTED = "index.requested"
+
 
 @dataclass
 class Event:

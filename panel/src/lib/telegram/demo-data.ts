@@ -8,6 +8,10 @@ import type { ReleaseProposal } from "@/lib/api/release";
 import type { XPost } from "@/lib/api/x";
 import type { VideoPost } from "@/lib/api/video";
 import type { RoadmapCycle } from "@/lib/api/roadmap";
+import type { PestHuntCycle } from "@/lib/api/pest-control";
+import type { SpackleCycle } from "@/lib/api/spackle";
+import type { RebalanceCycle } from "@/lib/api/scales";
+import type { DogfoodCycle } from "@/lib/api/dogfood";
 import type {
   A2AChatMessage,
   AdminConversationSummary,
@@ -117,6 +121,104 @@ export const DEMO_ROADMAP: RoadmapCycle[] = [
         team: "frontend",
         priority: 3,
         rationale: "Asked for twice during board reviews.",
+        status: "proposed",
+      },
+    ],
+  },
+];
+
+export const DEMO_PEST_CONTROL: PestHuntCycle[] = [
+  {
+    task_id: "demo-pest-1",
+    title: "Pest Control hunt — roboco",
+    status: "pending",
+    items: [
+      {
+        id: "item-leadleak",
+        title: "Escalation DMs leak stale task ids",
+        description:
+          "Blocker escalations reference tasks that were cancelled before dispatch; the bot renders them with no guard.",
+        acceptance_criteria: [
+          "Escalation bodies resolve live titles or say so",
+          "Cancelled targets are skipped at render time",
+        ],
+        project_slug: "roboco",
+        team: "backend",
+        priority: 1,
+        evidence:
+          "Findings ledger shows 3 rework clusters citing stale escalation text over the last two weeks.",
+        status: "proposed",
+      },
+    ],
+  },
+];
+
+export const DEMO_SPACKLE: SpackleCycle[] = [
+  {
+    task_id: "demo-spackle-1",
+    title: "Spackle audit — roboco",
+    status: "pending",
+    items: [
+      {
+        id: "item-flagdocs",
+        title: "Docs-divergence sync flag has no docs entry",
+        description:
+          "ROBOCO_DOCS_SYNC_ENABLED ships in the feature-flags card but docs.roboco.tech never mentions the engine.",
+        acceptance_criteria: [
+          "Feature-flags reference page lists the flag",
+          "Docs site links the release-manager section",
+        ],
+        project_slug: "roboco",
+        team: "backend",
+        priority: 2,
+        evidence: "Gap-fill scan: flag armed in config, zero doc hits.",
+        status: "proposed",
+      },
+    ],
+  },
+];
+
+export const DEMO_SCALES: RebalanceCycle[] = [
+  {
+    task_id: "demo-scales-1",
+    title: "Scales — portfolio rebalance",
+    status: "pending",
+    items: [
+      {
+        id: "item-demote",
+        task_ref: "demo-t7",
+        target_task_id: "demo-t7",
+        target_task_title: "Self-serve workspace invites",
+        action: "reprioritize",
+        new_priority: 0,
+        rationale:
+          "Two enterprise trials asked for it; the backlog parked it behind unrelated polish.",
+        status: "proposed",
+      },
+    ],
+  },
+];
+
+export const DEMO_DOGFOOD: DogfoodCycle[] = [
+  {
+    task_id: "demo-dogfood-1",
+    title: "Dogfood walk — panel",
+    status: "pending",
+    items: [
+      {
+        id: "item-deadend",
+        title: "Task detail tab bar is dead on narrow screens",
+        description:
+          "On a 390px viewport the Findings/Collision tabs overflow the shell and the hidden ones are unreachable.",
+        acceptance_criteria: [
+          "All tabs remain reachable at 360px width",
+          "Overflow scrolls horizontally with snap",
+        ],
+        project_slug: "roboco",
+        team: "frontend",
+        priority: 2,
+        evidence:
+          "Walked the task sheet on a phone viewport; the overflow tabs are clipped with no scroll affordance.",
         status: "proposed",
       },
     ],

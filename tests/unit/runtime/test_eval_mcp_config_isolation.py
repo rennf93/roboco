@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
+from roboco.runtime.engines import spawn_config
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
@@ -76,3 +77,21 @@ async def test_mcp_config_preserves_real_agent_uuid(
     first_env = next(iter(config["mcpServers"].values()))["env"]
     expected_uuid = str(_foundation.AGENTS[_AGENT_SLUG].uuid)
     assert first_env["ROBOCO_AGENT_ID"] == expected_uuid
+
+
+async def test_mcp_config_dispatcher_role_never_leaks_its_own_loopback_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-06 outage: the dispatcher spawns every agent container, and
+    with settings.api_url unset (the post-fix compose state) a spawned
+    container's MCP config must resolve to the production hostname
+    regardless of the SPAWNING process's own role."""
+    monkeypatch.setattr(settings, "role", "dispatcher")
+    monkeypatch.setattr(settings, "api_url", None)
+    monkeypatch.setattr(spawn_config, "PROJECT_HOST_PATH", "/some/host/path")
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    config_path = await orch._generate_mcp_config(_AGENT_SLUG)
+    config = json.loads(Path(config_path).read_text())
+    first_env = next(iter(config["mcpServers"].values()))["env"]
+    assert first_env["ROBOCO_API_URL"] == "http://roboco-orchestrator:8000"
+    assert first_env["ROBOCO_ORCHESTRATOR_URL"] == "http://roboco-orchestrator:8000"
