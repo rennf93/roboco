@@ -634,6 +634,24 @@ KIMI_USAGE_DATA_DIR = os.environ.get("ROBOCO_KIMI_USAGE_DIR", "/data/kimi-usage"
 _KIMI_RATE_LIMIT_EXIT_CODE = 75
 _KIMI_AUTH_EXIT_CODE = 78
 
+# In-orchestrator path where each OPENROUTER agent's usage capture is visible
+# — the openrouter analogue of KIMI_USAGE_DATA_DIR (see there for the mount
+# shape). OpenRouter usage is captured from the opencode --format json stream
+# (see roboco.llm.providers.openrouter_cli_usage).
+OPENROUTER_USAGE_DATA_DIR = os.environ.get(
+    "ROBOCO_OPENROUTER_USAGE_DIR", "/data/openrouter-usage"
+)
+
+# A one-shot OpenRouter container exits with these SAME codes for the SAME
+# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention —
+# see docker/scripts/openrouter-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected OpenRouter rate-limit/quota error, 78 (EX_CONFIG) when the
+# openrouter_cli_config --check auth preflight finds OPENROUTER_API_KEY
+# missing (the Ollama shape — a static key, no expiry read). Scoped by
+# provider_type (ModelProvider.OPENROUTER), never by exit code alone.
+_OPENROUTER_RATE_LIMIT_EXIT_CODE = 75
+_OPENROUTER_AUTH_EXIT_CODE = 78
+
 
 # =============================================================================
 # ORCHESTRATOR

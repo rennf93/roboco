@@ -67,7 +67,7 @@ class StalledReason(StrEnum):
     made server-side — so a wedged task is visible on the task row itself,
     not just in container logs / a bell notification that ages out.
     Stored as a plain string column (not a DB enum) so a new reason can be
-    added without an ``ALTER TYPE`` migration.
+    added without an `ALTER TYPE` migration.
     """
 
     BREAKER_TRIPPED = "breaker_tripped"  # _pm_respawn_should_gate strike cap hit
