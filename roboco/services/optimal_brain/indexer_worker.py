@@ -38,6 +38,7 @@ from roboco.events.stream_bus import StreamEventBus
 from roboco.models.events import Event, EventType
 
 if TYPE_CHECKING:
+    from roboco.services.optimal import OptimalService
     from roboco.services.optimal_brain.ollama_embedder import OllamaEmbedder
 
 logger = structlog.get_logger()
@@ -331,6 +332,88 @@ async def _backlog_loop(bus: StreamEventBus, interval: int = 60) -> None:
             logger.warning("Indexer backlog check failed; will retry", error=str(e))
 
 
+async def _reconcile_unindexed_playbooks() -> None:
+    """Re-index APPROVED playbooks left ``indexed_ok=False`` by a failed
+    post-commit embed (e.g. an Ollama restart mid-approval-burst). Best-effort:
+    rows stay unindexed and the next boot retries them. Skipped when the
+    org-memory loop is off (the index is inert)."""
+    if not settings.org_memory_enabled:
+        return
+    from roboco.db.base import get_session_factory
+    from roboco.services.playbook import PlaybookService
+
+    try:
+        async with get_session_factory()() as session:
+            reconciled = await PlaybookService(session).reconcile_unindexed_approved()
+        if reconciled:
+            logger.info(
+                "Playbook reconcile: re-indexed unindexed approved", count=reconciled
+            )
+    except Exception as e:
+        logger.warning("Playbook reconcile failed; continuing", error=str(e))
+
+
+async def _reclaim_rag_index_failures(optimal: OptimalService) -> None:
+    """Reclaim dead-lettered RAG index writes (embedder 429 after retries, etc.).
+    Best-effort: due rows stay in the dead-letter and the next boot retries."""
+    from roboco.services.rag_index_failures import reclaim_due
+
+    try:
+        reclaimed = await reclaim_due(optimal)
+        if reclaimed:
+            logger.info(
+                "RAG index dead-letter reclaim: re-indexed rows", count=reclaimed
+            )
+    except Exception as e:
+        logger.warning("RAG index dead-letter reclaim failed; continuing", error=str(e))
+
+
+async def _backfill_unindexed_journals(optimal: OptimalService) -> None:
+    """Re-index journal/learning entries silently zero-chunked before the
+    per-index chunk-floor fix (see ``backfill_unindexed_journals``). Best-effort:
+    the rows stay and the next boot retries them."""
+    from roboco.services.rag_index_failures import backfill_unindexed_journals
+
+    try:
+        await backfill_unindexed_journals(optimal)
+    except Exception as e:
+        logger.warning("Journal/learning RAG backfill failed; continuing", error=str(e))
+
+
+async def reconcile_rag_indexes(optimal: OptimalService | None) -> None:
+    """Boot-time RAG reconcile: playbooks, dead-letter reclaim, and the
+    journals/learnings zero-chunk backfill. Each pass swallows its own errors.
+    No-op when RAG is disabled (``optimal`` is None).
+
+    Owned by :func:`run_indexer` under ``ROBOCO_ROLE=indexer`` (that role never
+    runs the FastAPI lifespan) and by the lifespan under ``all``.
+    """
+    if optimal is None:
+        return
+    await _reconcile_unindexed_playbooks()
+    await _reclaim_rag_index_failures(optimal)
+    await _backfill_unindexed_journals(optimal)
+    logger.info("RAG index reconcile finished")
+
+
+def log_reconcile_outcome(task: asyncio.Task[None]) -> None:
+    """Surface a background-reconcile crash; each pass already swallows its
+    own errors, so anything landing here is an unexpected bug, not a retry."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Background RAG reconcile crashed", error=repr(exc))
+
+
+def schedule_rag_reconcile(optimal: OptimalService | None) -> asyncio.Task[None]:
+    """Run the reconcile in the background: a slow backfill must never hold
+    up the caller's own startup."""
+    task = asyncio.create_task(reconcile_rag_indexes(optimal))
+    task.add_done_callback(log_reconcile_outcome)
+    return task
+
+
 async def run_indexer(
     stop: asyncio.Event | None = None, *, dedicated_embedder: bool = False
 ) -> None:
@@ -343,7 +426,9 @@ async def run_indexer(
     ``stop`` is set, or forever when not given (the ``ROBOCO_ROLE=indexer``
     process). In ``ROBOCO_ROLE=all`` this also runs as an in-process task, so
     publish-then-consume in the same process works: ``enqueue_index_request``'s
-    fast path and this consumer both hit the same stream.
+    fast path and this consumer both hit the same stream. Under ``indexer`` this
+    process also owns the boot-time RAG reconcile (the FastAPI lifespan, which
+    that role never runs, owns it under ``all``).
 
     ``dedicated_embedder`` seeds this process's shared-embedder singleton
     with a low-concurrency instance (see :func:`_build_indexer_embedder`),
@@ -380,6 +465,11 @@ async def run_indexer(
     optimal = await get_optimal_service()
     await optimal.ensure_periodic_update_running()
 
+    # ROBOCO_ROLE=indexer never runs the FastAPI lifespan that schedules the
+    # boot-time reconcile for the single-process role, so it owns it here.
+    reconcile_task = (
+        schedule_rag_reconcile(optimal) if settings.role == "indexer" else None
+    )
     backlog_task = asyncio.create_task(_backlog_loop(bus))
     try:
         if stop is not None:
@@ -390,4 +480,6 @@ async def run_indexer(
         backlog_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await backlog_task
+        if reconcile_task is not None:
+            reconcile_task.cancel()
         await bus.disconnect()
