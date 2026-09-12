@@ -2223,7 +2223,7 @@ async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _finalize_claim — branch-creation failure rollback (F060)
+# _apply_claim_fields / _provision_claim, branch-creation failure rollback (F060)
 # ---------------------------------------------------------------------------
 
 
@@ -2265,8 +2265,9 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
         AsyncMock(side_effect=RuntimeError("branch boom")),
     )
 
+    snapshot = await svc._apply_claim_fields(task, agent, agent.id)
     with pytest.raises(RuntimeError, match="branch boom"):
-        await svc._finalize_claim(task, agent, agent.id)
+        await svc._provision_claim(task, agent, agent.id, snapshot)
 
     # The task reverted to its pre-claim status (the existing behavior).
     assert task.status == TaskStatus.PENDING
@@ -2279,7 +2280,7 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_claim_sets_agent_active_then_rolls_back_on_failure() -> None:
-    """_finalize_claim must flip agent.status/current_task_id to ACTIVE/this
+    """_apply_claim_fields must flip agent.status/current_task_id to ACTIVE/this
     task BEFORE the branch step runs (previously nothing ever wrote these
     fields at all — the fleet-status bug), and roll them back to their
     pre-claim values on a branch-creation failure, same as the task fields.
@@ -2316,8 +2317,9 @@ async def test_finalize_claim_sets_agent_active_then_rolls_back_on_failure() -> 
 
     _bind(svc, "_ensure_branch_for_task", _boom)
 
+    snapshot = await svc._apply_claim_fields(task, agent, agent.id)
     with pytest.raises(RuntimeError, match="branch boom"):
-        await svc._finalize_claim(task, agent, agent.id)
+        await svc._provision_claim(task, agent, agent.id, snapshot)
 
     # Set to ACTIVE/this-task before the branch step ran...
     assert captured["status"] == AgentStatus.ACTIVE

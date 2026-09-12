@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -44,6 +44,8 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.task import TaskService
+
+from tests.integration.conftest import cleanup_project_durable_rows
 
 # #172: a developer fresh claim must carry a substantive step checklist.
 _STEPS = [
@@ -422,6 +424,7 @@ def _mock_work_session() -> Any:
 @pytest_asyncio.fixture
 async def lifecycle_setup(
     db_session: AsyncSession,
+    _test_database_url: str,
 ) -> AsyncIterator[dict[str, Any]]:
     """Seed a project + dev agent + a single pending task ready to claim."""
     system_agent = AgentTable(
@@ -531,14 +534,45 @@ async def lifecycle_setup(
     db_session.add(task)
     await db_session.flush()
 
-    yield {
-        "project": project,
-        "dev_agent": dev_agent,
-        "qa_agent": qa_agent,
-        "doc_agent": doc_agent,
-        "cell_pm_agent": cell_pm_agent,
-        "task": task,
+    ids = {
+        "project_id": project.id,
+        "agent_ids": [
+            system_agent.id,
+            dev_agent.id,
+            qa_agent.id,
+            doc_agent.id,
+            cell_pm_agent.id,
+        ],
+        # Tests may seed additional agents of their own (the PR-review-gate
+        # reviewer) under this project; they register themselves here so the
+        # project-scoped durable-row cleanup below can delete them too.
+        "extra_agent_ids": [],
     }
+    try:
+        yield {
+            "project": project,
+            "dev_agent": dev_agent,
+            "qa_agent": qa_agent,
+            "doc_agent": doc_agent,
+            "cell_pm_agent": cell_pm_agent,
+            "task": task,
+            "extra_agent_ids": ids["extra_agent_ids"],
+        }
+    finally:
+        # Roll back db_session's OWN transaction first (releases any lock a
+        # post-claim verb call still holds on these rows), THEN delete
+        # whatever the claim durability boundary committed for real on a
+        # fresh connection. This file's final-stage tests seed ad-hoc extra
+        # tasks (the Main-PM coordination root) under the same project, so
+        # the cleanup must be project-scoped — every task under the project
+        # (children first), its work sessions + audit logs, then the project
+        # and the agents. See cleanup_project_durable_rows's own docstring.
+        await db_session.rollback()
+        await cleanup_project_durable_rows(
+            _test_database_url,
+            ids["project_id"],
+            [*ids["agent_ids"], *ids["extra_agent_ids"]],
+        )
 
 
 @pytest.mark.asyncio
@@ -955,6 +989,11 @@ async def _seed_root_cell_harness(
 
     main_pm_id = await _seed_main_pm(db_session)
     reviewer = await _seed_pr_reviewer(db_session)
+    # The reviewer is this test's own ad-hoc agent; register it so the
+    # fixture's project-scoped durable-row cleanup deletes it too (the
+    # main_pm agent is deliberately NOT registered: it is the fixed
+    # foundation UUID shared across tests).
+    lifecycle_setup["extra_agent_ids"].append(reviewer.id)
     root = await _seed_root_task(
         db_session,
         project_id=project.id,
@@ -1015,6 +1054,54 @@ async def _seed_root_cell_harness(
         task_service=task_service,
         git=git,
     )
+
+
+@pytest.mark.asyncio
+async def test_dev_claim_cuts_branch_before_start(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """A branchless pending task (the real fleet shape; the fixture pre-seeds
+    a branch) reaches in_progress: the branch is cut while the task is still
+    claimed, and start runs after it. The E2E smoke caught the reverse order
+    as "Cannot start work: no branch assigned"."""
+    task = lifecycle_setup["task"]
+    dev_agent = lifecycle_setup["dev_agent"]
+    task.branch_name = None
+    await db_session.flush()
+    task_service = TaskService(db_session)
+    deps = ChoreographerDeps(
+        task=task_service,
+        work_session=_mock_work_session(),
+        git=_StubGit(db_session, task),
+        a2a=AsyncMock(),
+        journal=_mock_journal_with_reflect(),
+        audit=AsyncMock(),
+        evidence_repo=_mock_evidence_repo(),
+    )
+    seen_status: list[str] = []
+
+    async def _cut_branch(_svc: TaskService, row: TaskTable, _agent_id: UUID) -> str:
+        seen_status.append(str(row.status))
+        row.branch_name = _BRANCH
+        await _svc.session.flush()
+        return _BRANCH
+
+    with patch.object(TaskService, "_auto_create_branch", _cut_branch):
+        env = await Choreographer(deps).i_will_work_on(
+            agent_id=dev_agent.id,
+            task_id=task.id,
+            plan=_GOOD_PLAN,
+            steps=_STEPS,
+            technical_considerations=_GOOD_TC,
+            risks=_GOOD_RISKS,
+        )
+    assert env.error is None, f"claim failed: {env.message}"
+    assert env.status == "in_progress"
+    assert seen_status == ["claimed"], "branch must be cut before start()"
+    refreshed = await task_service.get(task.id)
+    assert refreshed is not None
+    assert refreshed.branch_name == _BRANCH
+    assert str(refreshed.status) == "in_progress"
 
 
 @pytest.mark.asyncio

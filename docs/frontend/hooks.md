@@ -137,6 +137,39 @@ The hook does not call a dedicated stalled endpoint. `dashboardApi.getStalledTas
 
 All labels shown to the user (status, `blocker_resolver_type`, stalled membership) come verbatim from the backend response — no client-side relabeling or fabricated text. The only client-computed display value is the duration string in the Overview panel, which is display formatting over `task.updated_at`, not a stall condition.
 
+## `usePortfolio`
+
+Returns the CEO's cross-project portfolio — one `PortfolioCard` row per governed project with delivery, rework, open-findings, and budget-burn metrics, sorted by `active_task_count` descending. Backed by the dedicated CEO-gated aggregation endpoint `GET /api/dashboard/portfolio`; the frontend only consumes it. See [`../backend/api/dashboard-portfolio.md`](../backend/api/dashboard-portfolio.md) for the backend contract, field semantics, and aggregation behavior.
+
+```tsx
+import { usePortfolio } from "@/hooks/use-portfolio";
+
+const { data: portfolio, isLoading, isError, refetch } = usePortfolio();
+```
+
+### Types
+
+`PortfolioCard` (`panel/src/types/index.ts`) mirrors the backend's `PortfolioProjectMetrics` schema (`roboco/api/schemas/dashboard.py`) field-for-field: `project_id`, `project_slug`, `project_name`, `active_task_count`, `median_lead_time_hours` (`number | null` — null when nothing completed in the trailing window), `rework_rate`, `open_findings_count`, `monthly_budget_burn_usd`. Field names stay snake_case, verbatim from the wire.
+
+### Data source
+
+`dashboardApi.getPortfolio()` (`panel/src/lib/api/dashboard.ts`) calls `GET /dashboard/portfolio` and returns the unwrapped `PortfolioCard[]`, using the same request/response-unwrap pattern as `dashboardApi.getCeoOverview()`. In mock mode it returns `[]`, so panel demo mode renders an empty portfolio — the same trade-off as the stalled-tasks path.
+
+The endpoint is CEO-gated: any non-CEO panel token receives `403`, so a non-CEO consumer of this hook gets an error state (`isError`), not rows. The backend also accepts an optional `days={1..90}` query param (default 30) narrowing the lead-time/rework window; `getPortfolio()` deliberately omits it and always uses the default window. If a UI leaf ever needs a different window, thread the param through `dashboardApi.getPortfolio()` rather than re-fetching client-side.
+
+### API reference
+
+| Return | Type | Notes |
+|--------|------|-------|
+| `data` | `PortfolioCard[] \| undefined` | One row per governed project (including zero-activity projects, zeroed). Empty array when the fleet has no projects. |
+| `isLoading` | `boolean` | First-fetch loading state. |
+| `isError` | `boolean` | Fetch failed — notably for any non-CEO token (the endpoint is CEO-only). |
+| `refetch` | `function` | Re-runs the query. |
+
+- **Query key:** `["portfolio", "list"]` (`portfolioKeys.list()` from `@/hooks/use-portfolio`).
+- **Refetch interval:** 60 seconds.
+- **Mock mode:** returns `[]`.
+
 ## Data-hook null-guard audit
 
 Every useQuery hook in `panel/src/hooks/` has been audited for missing `enabled` guards on undefined/null IDs, staleTime mismatches, and refetchInterval leaks on unmount.

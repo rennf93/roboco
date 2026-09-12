@@ -26,3 +26,4 @@
 | `read_a2a` | `read_a2a(see do_server)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
+| `task_time` | `task_time(task_id: UUID)` |
