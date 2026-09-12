@@ -114,6 +114,7 @@ real tools live in their agent_sdk drivers, not role_config.
 
 | Verb | Body schema |
 |------|-------------|
+| `cancel_leaf` | `cancel_leaf(task_id: UUID, reason: str)` |
 | `complete` | `complete(task_id: UUID, notes: str)` |
 | `declare_coverage` | `declare_coverage(task_id: UUID, criteria: list[str])` |
 | `delegate` | `delegate(parent_task_id: UUID, title: str, description: str, assigned_to: str, team: str, task_type: str, nature: str, estimated_complexity: Complexity, acceptance_criteria: list[str], project_id: UUID | None = None, covers_parent_criteria: list[str] | None = None, intends_to_touch: list[str] | None = None, adds_migration: bool = False, touches_shared: bool = False, depends_on: list[UUID] | None = None)` |
@@ -139,6 +140,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `evidence` | `evidence(task_id: UUID)` |
 | `pr_update` | `pr_update(see do_server)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
+| `task_time` | `task_time(task_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
@@ -151,6 +153,7 @@ real tools live in their agent_sdk drivers, not role_config.
 
 | Verb | Body schema |
 |------|-------------|
+| `cancel_leaf` | `cancel_leaf(task_id: UUID, reason: str)` |
 | `complete` | `complete(task_id: UUID, notes: str)` |
 | `declare_coverage` | `declare_coverage(task_id: UUID, criteria: list[str])` |
 | `delegate` | `delegate(parent_task_id: UUID, title: str, description: str, assigned_to: str, team: str, task_type: str, nature: str, estimated_complexity: Complexity, acceptance_criteria: list[str], project_id: UUID | None = None, covers_parent_criteria: list[str] | None = None, intends_to_touch: list[str] | None = None, adds_migration: bool = False, touches_shared: bool = False, depends_on: list[UUID] | None = None)` |
@@ -177,6 +180,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `evidence` | `evidence(task_id: UUID)` |
 | `pr_update` | `pr_update(see do_server)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
+| `task_time` | `task_time(task_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
@@ -203,6 +207,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
 | `nothing_to_propose` | `nothing_to_propose(task_id: UUID, reason: str)` |
+| `task_time` | `task_time(task_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
@@ -234,6 +239,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
 | `nothing_to_propose` | `nothing_to_propose(task_id: UUID, reason: str)` |
+| `task_time` | `task_time(task_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
@@ -264,6 +270,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `evidence` | `evidence(task_id: UUID)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `read_a2a` | `read_a2a(see do_server)` |
+| `task_time` | `task_time(task_id: UUID)` |
 | `approve_playbook` | `approve_playbook(playbook_id: UUID)` |
 | `reject_playbook` | `reject_playbook(playbook_id: UUID, reason: str)` |
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
@@ -300,4 +307,5 @@ real tools live in their agent_sdk drivers, not role_config.
 | `read_a2a` | `read_a2a(see do_server)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
+| `task_time` | `task_time(task_id: UUID)` |
 

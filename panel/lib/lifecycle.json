@@ -31,6 +31,17 @@
   "intents": [
     {
       "allowed_roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "composes": [],
+      "description": "Close a zero-diff leaf: a delegated child whose findings a merged sibling already fixed, so no legitimate diff remains and i_am_done/complete can never accept it. Refuses a target with any children of its own (not a leaf), any commit ahead of its base, or an open PR - those go through the normal review path, not this. `reason` is recorded as your journal:decision and on the task's audit trail. Cell PM: only your own coordination task's children. Main PM: any root's descendant.",
+      "name": "cancel_leaf",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
         "documenter"
       ],
       "composes": [],
@@ -227,8 +238,7 @@
       ],
       "composes": [
         "claim",
-        "set_plan",
-        "start"
+        "set_plan"
       ],
       "description": "PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.",
       "name": "i_will_plan",
@@ -241,8 +251,7 @@
       ],
       "composes": [
         "claim",
-        "set_plan",
-        "start"
+        "set_plan"
       ],
       "description": "Claim a task, set the plan, and transition to in_progress. Atomic - preconditions checked before any state mutation.",
       "name": "i_will_work_on",
