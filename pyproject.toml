@@ -287,6 +287,11 @@ select = [
 # count (a plain, no-defaults dataclass) — same rationale as the collision
 # builder above.
 "tests/unit/eval/test_scoring.py" = ["PLR0913"]
+# _seed_task mirrors test_review_findings_repository.py's helper plus the
+# governance-specific fields (self_verified, qa_verified, revision_count) —
+# same >5-kwarg seed-helper rationale. PLR2004: literal counts in test
+# assertions are idiomatic for DB-seeded expectations.
+"tests/unit/services/test_governance_service.py" = ["PLR0913", "PLR2004"]
 
 # =============================================================================
 # MyPy Configuration
