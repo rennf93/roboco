@@ -23,15 +23,13 @@ import {
 } from "@/components/verification/receipt";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Badge } from "@/components/ui/badge";
-import { RELEASE_MEMBER_TASK_IDS_UNAVAILABLE } from "@/lib/api/verification";
+import { RELEASE_NO_MEMBER_TASKS_MESSAGE } from "@/lib/api/verification";
 
 interface ReleaseVerificationRollupProps {
   /**
-   * The release proposal's member task ids. No existing endpoint exposes
-   * this set today (see RELEASE_MEMBER_TASK_IDS_UNAVAILABLE) so this is
-   * always empty in production; the rollup is parametrized over the id list
-   * so it renders the real aggregation the day a real endpoint ships one,
-   * and so it can be exercised directly with injected ids in tests.
+   * The release proposal's member task ids (GET /release/proposal's
+   * `member_task_ids`, always present — an empty list means this release
+   * genuinely carries no member tasks, see RELEASE_NO_MEMBER_TASKS_MESSAGE).
    */
   taskIds: string[];
   /** Optional display title per task id — falls back to the bare id. */
@@ -45,7 +43,7 @@ export function ReleaseVerificationRollup({
   if (taskIds.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        {RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason}
+        {RELEASE_NO_MEMBER_TASKS_MESSAGE}
       </p>
     );
   }

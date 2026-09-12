@@ -61,26 +61,26 @@ describe("AcVerificationList", () => {
 });
 
 describe("ReviewerChainList", () => {
-  it("states the ledger-only scope in the empty state", () => {
+  it("states no rounds are recorded yet in the empty state", () => {
     render(<ReviewerChainList data={[]} isLoading={false} />);
     expect(
-      screen.getByText(
-        /only rounds that recorded findings appear here.*passed clean has no entry/i,
-      ),
+      screen.getByText(/no review rounds recorded yet/i),
     ).toBeInTheDocument();
   });
 
-  it("states the ledger-only scope as a caption above the populated list", () => {
+  it("renders each round's role, agent, and real model — no more escalation-only null", () => {
     const data: ReviewerChainEntry[] = [
-      { round: 1, origin: "qa", author_slug: "fe-qa", model: null },
+      {
+        round: 1,
+        role: "qa",
+        agent_slug: "fe-qa",
+        model: "claude-sonnet-4-5",
+        started_at: "2026-09-01T00:00:00Z",
+      },
     ];
     render(<ReviewerChainList data={data} isLoading={false} />);
-    expect(
-      screen.getByText(
-        /only rounds that recorded findings appear here.*passed clean has no entry/i,
-      ),
-    ).toBeInTheDocument();
     expect(screen.getByText("Round 1")).toBeInTheDocument();
     expect(screen.getByText("fe-qa")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet-4-5")).toBeInTheDocument();
   });
 });

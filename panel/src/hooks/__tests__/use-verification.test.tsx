@@ -3,11 +3,14 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode } from "react";
 
-const { get, getFindings, conventionsFindings } = vi.hoisted(() => ({
-  get: vi.fn(),
-  getFindings: vi.fn(),
-  conventionsFindings: vi.fn(),
-}));
+const { get, getFindings, conventionsFindings, getTaskMetrics } = vi.hoisted(
+  () => ({
+    get: vi.fn(),
+    getFindings: vi.fn(),
+    conventionsFindings: vi.fn(),
+    getTaskMetrics: vi.fn(),
+  }),
+);
 
 vi.mock("@/lib/api/tasks", async () => {
   const actual =
@@ -25,6 +28,16 @@ vi.mock("@/lib/api/conventions", async () => {
   return {
     ...actual,
     conventionsApi: { ...actual.conventionsApi, findings: conventionsFindings },
+  };
+});
+
+vi.mock("@/lib/api/dashboard", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api/dashboard")>(
+    "@/lib/api/dashboard",
+  );
+  return {
+    ...actual,
+    dashboardApi: { ...actual.dashboardApi, getTaskMetrics },
   };
 });
 
@@ -108,44 +121,34 @@ describe("useAcVerificationStamps", () => {
 
 describe("useReviewerChain", () => {
   beforeEach(() => {
-    getFindings.mockReset();
+    getTaskMetrics.mockReset();
   });
 
-  it("derives the round-by-round reviewer chain from the findings ledger", async () => {
-    const response: TaskFindingsResponse = {
-      findings: [
+  it("sources role/agent/model straight from the task-metrics reviewer chain — no more escalation-only null", async () => {
+    getTaskMetrics.mockResolvedValue({
+      task_id: "t1",
+      reviewer_chain: [
         {
-          id: "f1",
-          task_id: "t1",
-          origin: "qa",
           round: 1,
-          author_slug: "fe-qa",
-          file: null,
-          line: null,
-          severity: "major",
-          criterion: null,
-          expected: "x",
-          actual: "y",
-          fix: null,
-          evidence: null,
-          status: "open",
-          addressed_by_commit: null,
-          resolution_note: null,
-          created_at: "2026-09-01T00:00:00Z",
-          updated_at: null,
+          role: "qa",
+          agent_slug: "fe-qa",
+          model: "claude-sonnet-4-5",
+          started_at: "2026-09-01T00:00:00Z",
         },
       ],
-      summary: [],
-      total: 1,
-      truncated: false,
-    };
-    getFindings.mockResolvedValue(response);
+    });
 
     const { result } = renderHook(() => useReviewerChain("t1"), { wrapper });
 
     await waitFor(() => expect(result.current.data).toBeDefined());
     expect(result.current.data).toEqual([
-      { round: 1, origin: "qa", author_slug: "fe-qa", model: null },
+      {
+        round: 1,
+        role: "qa",
+        agent_slug: "fe-qa",
+        model: "claude-sonnet-4-5",
+        started_at: "2026-09-01T00:00:00Z",
+      },
     ]);
   });
 });

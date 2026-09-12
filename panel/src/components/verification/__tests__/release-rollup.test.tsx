@@ -112,8 +112,24 @@ const CONVENTIONS_BY_TASK: Record<string, ConventionFinding[]> = {
 };
 
 const REVIEWERS_BY_TASK: Record<string, ReviewerChainEntry[]> = {
-  t1: [{ round: 1, origin: "qa", author_slug: "fe-qa", model: null }],
-  t2: [{ round: 1, origin: "qa", author_slug: "fe-qa", model: null }],
+  t1: [
+    {
+      round: 1,
+      role: "qa",
+      agent_slug: "fe-qa",
+      model: "claude-sonnet-4-5",
+      started_at: "2026-09-01T00:00:00Z",
+    },
+  ],
+  t2: [
+    {
+      round: 1,
+      role: "qa",
+      agent_slug: "fe-qa",
+      model: "claude-sonnet-4-5",
+      started_at: "2026-09-01T00:00:00Z",
+    },
+  ],
 };
 
 function setup() {
@@ -144,14 +160,18 @@ function setup() {
 }
 
 describe("ReleaseVerificationRollup", () => {
-  it("reports the member-task set as unavailable with a reader-facing sentence when no ids are given", () => {
+  it("states this release genuinely has no member tasks, not that data is unavailable, when no ids are given", () => {
     render(<ReleaseVerificationRollup taskIds={[]} />);
     expect(
-      screen.getByText("Per-task verification isn't available for this release yet."),
+      screen.getByText(
+        "This release has no member tasks. There's nothing to verify per-task.",
+      ),
     ).toBeInTheDocument();
-    // The internal escalation detail (which endpoint is missing, why) must
-    // never render verbatim as the visible sentence.
-    expect(screen.queryByText(/endpoint|escalate/i)).not.toBeInTheDocument();
+    // Must read as a legitimate empty state, not the old unreachable-data
+    // escalation framing.
+    expect(
+      screen.queryByText(/available yet|endpoint|escalate/i),
+    ).not.toBeInTheDocument();
     expect(useAcVerificationStamps).not.toHaveBeenCalled();
   });
 
