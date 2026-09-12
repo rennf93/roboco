@@ -45,6 +45,8 @@ from roboco.runtime.orchestrator import (
     _GROK_REPARK_EPISODE_GAP_S,
     _KIMI_AUTH_EXIT_CODE,
     _KIMI_RATE_LIMIT_EXIT_CODE,
+    _OPENROUTER_AUTH_EXIT_CODE,
+    _OPENROUTER_RATE_LIMIT_EXIT_CODE,
     _OVERLOAD_MARKERS_BY_PROVIDER,
     _OVERLOAD_RETRY_AFTER_S,
     _RATE_LIMIT_MARKERS_BY_PROVIDER,
@@ -550,6 +552,36 @@ class SpawnExitEngine(_Base):
         """
         return self._read_usage_json_contained(self._kimi_usage_root(), agent_id)
 
+    def _openrouter_usage_json(self, agent_id: str) -> dict[str, Any] | None:
+        """Read an OPENROUTER agent's ``usage.json`` (mirrors ``_kimi_usage_json``).
+
+        Written by the openrouter (opencode) entrypoint's post-run capture
+        step (see ``roboco.llm.providers.openrouter_cli_usage``) to the
+        per-agent dir under ``_openrouter_usage_root`` (built by the
+        interactive-sessions mixin) - the finalize read side that helper's
+        docstring promised. Returns ``None`` when absent / unreadable.
+        """
+        return self._read_usage_json_contained(self._openrouter_usage_root(), agent_id)
+
+    def _openrouter_usage_cost(self, agent_id: str) -> float | None:
+        """An OPENROUTER agent's metered spend from its ``usage.json``.
+
+        OpenRouter bills per model at OpenRouter's own rates and the CLI
+        capture sums the per-step metered ``cost`` field into ``cost_usd``
+        (see ``openrouter_cli_usage``). That IS the spend - recalculating
+        from tokens via the static pricing table cannot know that catalog.
+        Returns ``None`` when absent/unreadable so the caller can fall back
+        to its default costing; a present-but-zero value passes through
+        (free models are genuinely $0).
+        """
+        data = self._openrouter_usage_json(agent_id)
+        if not data:
+            return None
+        try:
+            return float(data.get("cost_usd", 0.0))
+        except (TypeError, ValueError):
+            return None
+
     def _codex_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
         """An OPENAI agent's token usage from its ``usage.json``.
 
@@ -637,6 +669,36 @@ class SpawnExitEngine(_Base):
         except (TypeError, ValueError):
             return 0
 
+    def _openrouter_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+        """An OPENROUTER agent's token usage from its ``usage.json``.
+
+        OpenRouter's capture (see ``openrouter_cli_usage``) splits the
+        opencode stream into a genuine, already-disjoint 4-bucket split (the
+        codex/kimi shape), so this returns the real tuple instead of folding
+        everything into output. A WARNING logs on a missing/zero read (a
+        silent mount/uid failure is otherwise indistinguishable from a
+        genuine zero-cost run).
+        """
+        data = self._openrouter_usage_json(agent_id)
+        tokens = (0, 0, 0, 0)
+        if data:
+            try:
+                tokens = (
+                    int(data.get("tokens_input", 0)),
+                    int(data.get("tokens_output", 0)),
+                    int(data.get("tokens_cache_read", 0)),
+                    int(data.get("tokens_cache_write", 0)),
+                )
+            except (TypeError, ValueError):
+                tokens = (0, 0, 0, 0)
+        if not tokens[0] and not tokens[1]:
+            logger.warning(
+                "OPENROUTER agent finalized with no readable usage "
+                "(0 tokens / $0) - check the usage dir mount",
+                agent_id=agent_id,
+            )
+        return tokens
+
     def _gemini_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
         """A GEMINI agent's token usage from its ``usage.json``.
 
@@ -688,6 +750,7 @@ class SpawnExitEngine(_Base):
             ModelProvider.OPENAI.value: self._codex_usage_tokens,
             ModelProvider.GEMINI.value: self._gemini_usage_tokens,
             ModelProvider.KIMI.value: self._kimi_usage_tokens,
+            ModelProvider.OPENROUTER.value: self._openrouter_usage_tokens,
         }
         read_usage_json = usage_json_readers.get(provider) if provider else None
         if read_usage_json is not None:
@@ -740,13 +803,18 @@ class SpawnExitEngine(_Base):
         when the SDK misses. Grok and Gemini agents have neither — returns
         ``(0, 0)``. Codex and Kimi agents each have a real per-turn count
         (from their own usage.json) but no tool-call signal — returns
-        ``(turns, 0)``. Best-effort: any failure degrades to zeros, never
-        blocks finalize.
+        ``(turns, 0)``. OpenRouter's capture has no turn signal either
+        (the grok/gemini shape) — ``(0, 0)``. Best-effort: any failure
+        degrades to zeros, never blocks finalize.
         """
         from roboco.models.base import ModelProvider
 
         provider = self.get_provider_for_agent(agent_id)
-        if provider in (ModelProvider.GROK.value, ModelProvider.GEMINI.value):
+        if provider in (
+            ModelProvider.GROK.value,
+            ModelProvider.GEMINI.value,
+            ModelProvider.OPENROUTER.value,
+        ):
             return (0, 0)
         if provider == ModelProvider.OPENAI.value:
             return (self._codex_usage_turns(agent_id), 0)
@@ -778,6 +846,43 @@ class SpawnExitEngine(_Base):
             turns = t
         return turns, tool_calls
 
+    def _resolve_finalize_cost(
+        self,
+        agent_id: str,
+        provider: str | None,
+        model: str,
+        tokens: tuple[int, int, int, int],
+    ) -> float:
+        """Resolve a finalize's ``estimated_cost_usd`` for one spawn session.
+
+        A metered-cost provider's usage.json IS the spend (OpenRouter bills
+        per model at its own rates and the CLI capture sums the per-step
+        metered cost) - recalculating from tokens via the static pricing
+        table cannot know that catalog, so the metered read wins whenever it
+        is present. Everyone else prices through the static pricing table.
+        Split out of ``_finalize_spawn_session`` (which supplies the token
+        buckets) to keep that function's xenon budget flat as metered-cost
+        providers accrete.
+        """
+        from roboco.billing.pricing import calculate_cost
+        from roboco.models.base import ModelProvider
+
+        metered_cost_readers = {
+            ModelProvider.OPENROUTER.value: self._openrouter_usage_cost,
+        }
+        read_metered_cost = metered_cost_readers.get(provider) if provider else None
+        metered_cost = read_metered_cost(agent_id) if read_metered_cost else None
+        if metered_cost is not None:
+            return metered_cost
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write = tokens
+        return calculate_cost(
+            model=model,
+            tokens_input=tokens_input,
+            tokens_output=tokens_output,
+            tokens_cache_read=tokens_cache_read,
+            tokens_cache_write=tokens_cache_write,
+        )
+
     async def _finalize_spawn_session(
         self,
         agent_id: str,
@@ -786,12 +891,12 @@ class SpawnExitEngine(_Base):
         """Close the open agent_spawn_sessions row for this agent.
 
         Resolves final token counts (live SDK, with a durable transcript
-        fallback), calculates cost via the pricing module, then updates the DB
+        fallback), resolves cost (a metered-cost provider's own usage cost
+        where one exists, else the pricing module), then updates the DB
         row with ended_at, token totals, exit_reason, and estimated_cost_usd.
         Errors are caught and logged — finalization must never block stop_agent.
         """
         try:
-            from roboco.billing.pricing import calculate_cost
             from roboco.db.base import get_session_factory
             from roboco.db.tables import AgentSpawnSessionTable
 
@@ -815,12 +920,16 @@ class SpawnExitEngine(_Base):
             usage_session_id = instance.usage_session_id if instance else None
             doctrine_version = self._doctrine_version_for_instance(instance)
 
-            cost = calculate_cost(
-                model=model,
-                tokens_input=tokens_input,
-                tokens_output=tokens_output,
-                tokens_cache_read=tokens_cache_read,
-                tokens_cache_write=tokens_cache_write,
+            cost = self._resolve_finalize_cost(
+                agent_id,
+                self.get_provider_for_agent(agent_id),
+                model,
+                (
+                    tokens_input,
+                    tokens_output,
+                    tokens_cache_read,
+                    tokens_cache_write,
+                ),
             )
 
             session_factory = get_session_factory()
@@ -1022,12 +1131,12 @@ class SpawnExitEngine(_Base):
     ) -> bool:
         """Park the agent's provider on a recognized rate-limit/auth exit code.
 
-        Grok, Codex, Gemini, and Kimi each run a one-shot CLI with no live
-        SDK/usage signal, so a 429-equivalent or missing-credential exit is
-        detected purely from the exit code (see the individual ``_is_*_exit``
-        checks). Tries each provider's pair in turn; returns True on the
-        first match (having already awaited its ``_park_*`` call), False
-        when none match.
+        Grok, Codex, Gemini, Kimi, and OpenRouter each run a one-shot CLI
+        with no live SDK/usage signal, so a 429-equivalent or
+        missing-credential exit is detected purely from the exit code (see
+        the individual ``_is_*_exit`` checks). Tries each provider's pair in
+        turn; returns True on the first match (having already awaited its
+        ``_park_*`` call), False when none match.
         """
         checks = (
             (self._is_grok_rate_limit_exit, self._park_grok_rate_limited),
@@ -1038,6 +1147,11 @@ class SpawnExitEngine(_Base):
             (self._is_gemini_auth_exit, self._park_gemini_auth_unavailable),
             (self._is_kimi_rate_limit_exit, self._park_kimi_rate_limited),
             (self._is_kimi_auth_exit, self._park_kimi_auth_unavailable),
+            (
+                self._is_openrouter_rate_limit_exit,
+                self._park_openrouter_rate_limited,
+            ),
+            (self._is_openrouter_auth_exit, self._park_openrouter_auth_unavailable),
         )
         for is_exit, park in checks:
             if is_exit(instance, exit_code):
@@ -1353,6 +1467,33 @@ class SpawnExitEngine(_Base):
             exit_code == _KIMI_AUTH_EXIT_CODE
             and instance.config is not None
             and instance.config.provider_type == ModelProvider.KIMI.value
+        )
+
+    @staticmethod
+    def _is_openrouter_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot openrouter container that exited 75 (a 429/quota)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _OPENROUTER_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.OPENROUTER.value
+        )
+
+    @staticmethod
+    def _is_openrouter_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot openrouter container that exited 78 (key missing).
+
+        The entrypoint runs ``openrouter_cli_config --check`` as a backstop
+        and exits 78 when ``OPENROUTER_API_KEY`` is missing/invalid — see
+        ``_OPENROUTER_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _OPENROUTER_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.OPENROUTER.value
         )
 
     @staticmethod
@@ -1738,6 +1879,47 @@ class SpawnExitEngine(_Base):
             instance,
             provider=ModelProvider.KIMI.value,
             retry_after=getattr(self, "_kimi_auth_retry_after_s", 60.0),
+            kind="auth_missing",
+        )
+
+    async def _park_openrouter_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park an openrouter agent whose run hit a 429/quota (entrypoint exit 75).
+
+        Flat retry_after (no exponential re-park backoff like grok's/gemini's,
+        the codex/kimi simplicity): add backoff bookkeeping if OpenRouter is
+        observed re-parking in a tight cycle in practice. The base is a
+        tunable Setting (kimi's pattern) wired by the orchestrator init;
+        the getattr default keeps the mixin self-sufficient in tests.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.OPENROUTER.value,
+            retry_after=getattr(self, "_openrouter_rate_limit_retry_after_s", 60.0),
+            kind="rate_limited",
+        )
+
+    async def _park_openrouter_auth_unavailable(
+        self, agent_id: str, instance: Any
+    ) -> None:
+        """Park an openrouter agent whose API key was missing/invalid (exit 78).
+
+        The Ollama shape: a static metered key, no mount, no refresh loop
+        (see ``_OPENROUTER_AUTH_EXIT_CODE`` and
+        ``roboco.llm.providers.openrouter``'s module docstring), so a bad or
+        missing key re-parks flat until the operator sets one via the
+        provider-key endpoint - the same park-and-probe shape as the kimi
+        auth path.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.OPENROUTER.value,
+            retry_after=getattr(self, "_openrouter_auth_retry_after_s", 60.0),
             kind="auth_missing",
         )
 

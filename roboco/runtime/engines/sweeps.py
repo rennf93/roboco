@@ -312,10 +312,10 @@ class SweepsEngine(_Base):
         Tries the agent SDK's ``/usage/status`` first; on a zero/miss falls
         back to the durable transcript (the SDK can report zero mid-run, the
         same race the finalize path handles). Returns ``None`` when neither
-        source has any usage yet. GROK / OPENAI (codex) / GEMINI / KIMI have no
-        SDK server or Claude transcript, so each routes to its own
-        ``usage.json`` — the same early return the finalize path uses, so live
-        USAGE_SNAPSHOT reflects grok/codex/gemini/kimi agents mid-run too (in
+        source has any usage yet. GROK / OPENAI (codex) / GEMINI / KIMI /
+        OPENROUTER have no SDK server or Claude transcript, so each routes
+        to its own ``usage.json`` — the same early return the finalize path
+        uses, so live USAGE_SNAPSHOT reflects those agents mid-run too (in
         practice a one-shot run's usage.json is written only post-run, so
         this is a no-op ``None`` until the run ends).
         """
@@ -333,6 +333,7 @@ class SweepsEngine(_Base):
             ModelProvider.OPENAI.value: self._codex_usage_tokens,
             ModelProvider.GEMINI.value: self._gemini_usage_tokens,
             ModelProvider.KIMI.value: self._kimi_usage_tokens,
+            ModelProvider.OPENROUTER.value: self._openrouter_usage_tokens,
         }
         read_usage_json = usage_json_readers.get(provider) if provider else None
         if read_usage_json is not None:

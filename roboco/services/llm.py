@@ -261,19 +261,20 @@ class _ResolvedAssignment:
 
 
 # Interactive agents (Intake chat, Secretary chat) have no V1 support on the
-# Codex/Gemini/Kimi providers. A GLOBAL/ROLE assignment pointing them there
-# (e.g. the one-click Codex/Gemini mode) is treated as not-applicable at
-# resolution time — they fall back to the legacy Anthropic path, so a
-# fleet-wide mode switch always yields working chats. An EXPLICIT AGENT_SLUG
-# pin is honored here and refused loudly by the orchestrator's spawn guard
-# instead — a deliberate operator choice deserves an error, not a silent
-# override. The orchestrator imports these as the single source of truth for
-# that guard.
+# Codex/Gemini/Kimi/OpenRouter providers. A GLOBAL/ROLE assignment pointing
+# them there (e.g. the one-click Codex/Gemini mode) is treated as
+# not-applicable at resolution time — they fall back to the legacy Anthropic
+# path, so a fleet-wide mode switch always yields working chats. An EXPLICIT
+# AGENT_SLUG pin is honored here and refused loudly by the orchestrator's
+# spawn guard instead — a deliberate operator choice deserves an error, not a
+# silent override. The orchestrator imports these as the single source of
+# truth for that guard.
 INTERACTIVE_AGENT_SLUGS: tuple[str, ...] = ("intake-1", "secretary-1")
 INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
     ModelProvider.OPENAI,
     ModelProvider.GEMINI,
     ModelProvider.KIMI,
+    ModelProvider.OPENROUTER,
 )
 
 

@@ -432,6 +432,7 @@ _INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
     ModelProvider.OPENAI,
     ModelProvider.GEMINI,
     ModelProvider.KIMI,
+    ModelProvider.OPENROUTER,
 )
 
 
@@ -1565,6 +1566,16 @@ class AgentOrchestrator(
         # separately so the two providers' rate-limit episodes never interfere.
         self._gemini_last_park_at: datetime | None = None
         self._gemini_repark_count: int = 0
+        self._init_park_retry_tunables()
+
+    def _init_park_retry_tunables(self) -> None:
+        """Per-provider park retry_after bases (Settings-backed).
+
+        Split out of __init__ (rather than inlined) to keep it under the
+        statement budget as tunable providers accrete. Grok/codex park with
+        hardcoded module constants instead (see _park_grok_rate_limited /
+        _park_codex_rate_limited); the Settings-backed ones live here.
+        """
         # Configurable retry_after base for GEMINI parks (operators may want to
         # tune these for Google's own OAuth-quota reset cadence, unlike grok's
         # hardcoded equivalents — see settings.gemini_rate_limit_retry_after_seconds).
@@ -1582,6 +1593,17 @@ class AgentOrchestrator(
             settings.kimi_rate_limit_retry_after_seconds
         )
         self._kimi_auth_retry_after_s: float = settings.kimi_auth_retry_after_seconds
+        # Configurable retry_after base for OPENROUTER parks (kimi's tunable
+        # pattern). getattr-with-default keeps this branch shippable ahead of
+        # the 711b4bd7 config PR that lands the Settings fields themselves;
+        # once both merge the attribute is always present and the fallback
+        # default is dead.
+        self._openrouter_rate_limit_retry_after_s: float = getattr(
+            settings, "openrouter_rate_limit_retry_after_seconds", 60.0
+        )
+        self._openrouter_auth_retry_after_s: float = getattr(
+            settings, "openrouter_auth_retry_after_seconds", 60.0
+        )
 
     def _init_engine_loop_task_slots(self) -> None:
         """Task handles for the default-off engine loops. Split out of
