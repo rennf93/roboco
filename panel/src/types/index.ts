@@ -380,6 +380,45 @@ export interface TaskCountResponse {
   counts: Record<string, number>;
 }
 
+// ============================================================================
+// Per-task governance report (panel Governance tab)
+// ============================================================================
+
+// One stage in the task's quality-gate chain (conventions -> self-verification
+// -> QA -> PR-gate -> PM review -> CEO approval). Matches the backend
+// GateStageResponse schema (roboco/api/schemas/tasks.py). status is "passed",
+// "failed", "pending" (reached but not yet evaluated), or "not_reached" (the
+// task hasn't progressed far enough).
+export interface GovernanceGateStep {
+  gate: string;
+  status: string;
+  timestamp: string | null;
+  detail: string | null;
+}
+
+// Per-origin revision-finding counts — the same row shape the Findings tab
+// renders (TaskFindingsSummaryRow in lib/api/tasks); mirrored here so the
+// governance report stays a self-contained contract.
+export interface GovernanceFindingsSummaryRow {
+  origin: string;
+  open: number;
+  addressed: number;
+  verified: number;
+  waived: number;
+}
+
+// The per-task governance report. Matches the backend
+// TaskGovernanceReportResponse schema (roboco/api/schemas/tasks.py).
+export interface GovernanceReportResponse {
+  task_id: string;
+  task_status: string;
+  revision_count: number;
+  gate_chain: GovernanceGateStep[];
+  findings_summary: GovernanceFindingsSummaryRow[];
+  conventions_block_count: number;
+  conventions_warn_count: number;
+}
+
 export interface ModelConfig {
   provider: ModelProvider;
   name: string;

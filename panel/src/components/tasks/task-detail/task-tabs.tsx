@@ -17,6 +17,7 @@ import { TabCommits } from "./tab-commits";
 import { TabNotes } from "./tab-notes";
 import { TabDependencies } from "./tab-dependencies";
 import { TabFindings } from "./tab-findings";
+import { TabGovernance } from "./tab-governance";
 import { TabCollision } from "./tab-collision";
 import {
   FileText,
@@ -26,6 +27,7 @@ import {
   StickyNote,
   Link2,
   ListChecks,
+  ShieldCheck,
   GitBranch,
   type LucideIcon,
 } from "lucide-react";
@@ -111,6 +113,12 @@ export function TaskTabs({ task }: TaskTabsProps) {
       count: findingsCount > 0 ? findingsCount : undefined,
     },
     {
+      value: "governance",
+      label: "Governance",
+      icon: ShieldCheck,
+      hint: "Quality-gate chain — conventions, QA, PR review, CEO approval",
+    },
+    {
       value: "collision",
       label: "Collision",
       icon: GitBranch,
@@ -136,7 +144,7 @@ export function TaskTabs({ task }: TaskTabsProps) {
 
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange} className="mt-6">
-      <TabsList className="grid w-full grid-cols-8 lg:w-auto lg:inline-grid">
+      <TabsList className="grid w-full grid-cols-9 lg:w-auto lg:inline-grid">
         {tabs.map((tab) => (
           <Tooltip key={tab.value}>
             <TooltipTrigger asChild>
@@ -187,6 +195,9 @@ export function TaskTabs({ task }: TaskTabsProps) {
         </TabsContent>
         <TabsContent value="findings">
           <TabFindings task={task} />
+        </TabsContent>
+        <TabsContent value="governance">
+          <TabGovernance task={task} />
         </TabsContent>
         <TabsContent value="collision">
           <TabCollision task={task} />

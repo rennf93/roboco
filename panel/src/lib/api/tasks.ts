@@ -11,6 +11,8 @@ import type {
   EscalateRequest,
   EscalateResponse,
   TaskCountResponse,
+  GovernanceFindingsSummaryRow,
+  GovernanceReportResponse,
 } from "@/types";
 import { isMockMode, mockTasks } from "@/lib/mock-data";
 
@@ -57,14 +59,10 @@ export interface TaskFinding {
   updated_at: string | null;
 }
 
-// Per-origin status counts — matches TaskFindingsSummaryRow.
-export interface TaskFindingsSummaryRow {
-  origin: string;
-  open: number;
-  addressed: number;
-  verified: number;
-  waived: number;
-}
+// Per-origin status counts — matches TaskFindingsSummaryRow. Aliased to the
+// shared GovernanceFindingsSummaryRow type (same wire shape; the governance
+// report reuses it) so the two copies can't drift.
+export type TaskFindingsSummaryRow = GovernanceFindingsSummaryRow;
 
 export interface TaskFindingsResponse {
   findings: TaskFinding[];
@@ -257,6 +255,28 @@ export const tasksApi = {
       };
     const { data } = await api.get<CollisionMap>(
       "/tasks/" + taskId + "/collision-map",
+    );
+    return data;
+  },
+
+  // The per-task governance report — the quality-gate chain (conventions ->
+  // self-verification -> QA -> PR-gate -> PM review -> CEO approval), the
+  // revision-findings summary, conventions verdict counts, and the rework
+  // count. Feed for the panel's Governance tab; 404s only when the task
+  // itself doesn't exist.
+  getGovernance: async (taskId: string): Promise<GovernanceReportResponse> => {
+    if (isMockMode())
+      return {
+        task_id: taskId,
+        task_status: "pending",
+        revision_count: 0,
+        gate_chain: [],
+        findings_summary: [],
+        conventions_block_count: 0,
+        conventions_warn_count: 0,
+      };
+    const { data } = await api.get<GovernanceReportResponse>(
+      "/tasks/" + taskId + "/governance",
     );
     return data;
   },
