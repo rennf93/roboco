@@ -811,3 +811,4 @@ async def test_remove_agent_access_reverts_to_cell_default(
     body = remove_response.json()
     assert body["access_restricted"] is False
     assert body["allowed_agents"] is None
+
