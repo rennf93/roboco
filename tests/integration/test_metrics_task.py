@@ -315,3 +315,65 @@ async def test_task_metrics_includes_pm_ceo_rejects_and_findings_counts(
     assert m is not None
     assert (m.pm_rejects, m.ceo_rejects) == (1, 1)
     assert (m.findings_open, m.findings_total) == (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_reviewer_chain_excludes_developer_and_orders_by_round(
+    setup: dict,
+) -> None:
+    """reviewer_chain surfaces non-developer (review-layer) spawn sessions in
+    round order, with role + model + agent_slug -- a developer's own
+    authoring spawns are excluded, they aren't reviews."""
+    db = setup["db"]
+    tid = uuid4()
+    db.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["ac"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            status=TaskStatus.COMPLETED,
+            team=Team.BACKEND,
+            project_id=setup["project_id"],
+            created_by=setup["dev_id"],
+            assigned_to=setup["dev_id"],
+            estimated_complexity=Complexity.MEDIUM,
+            started_at=_T0,
+            completed_at=_sec(3600),
+        )
+    )
+    db.add_all(
+        [
+            _spawn(str(tid), _T0, _sec(600), _Usage(5, 10, 100, 50, 1.0)),
+            AgentSpawnSessionTable(
+                id=uuid4(),
+                agent_slug="be-qa",
+                team="backend",
+                role="qa",
+                model="claude-opus",
+                task_id=str(tid),
+                started_at=_sec(700),
+                ended_at=_sec(900),
+            ),
+            AgentSpawnSessionTable(
+                id=uuid4(),
+                agent_slug="be-pr-reviewer",
+                team="backend",
+                role="pr_reviewer",
+                model="claude-sonnet",
+                task_id=str(tid),
+                started_at=_sec(1000),
+                ended_at=_sec(1200),
+            ),
+        ]
+    )
+    await db.flush()
+
+    m = await setup["svc"].get_task_metrics(tid)
+    assert m is not None
+    assert [(r.round, r.role, r.model, r.agent_slug) for r in m.reviewer_chain] == [
+        (1, "qa", "claude-opus", "be-qa"),
+        (2, "pr_reviewer", "claude-sonnet", "be-pr-reviewer"),
+    ]

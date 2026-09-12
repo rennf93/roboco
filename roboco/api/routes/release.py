@@ -39,7 +39,7 @@ async def get_release_proposal(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
         )
-    return _to_response(task)
+    return await _to_response(task, db)
 
 
 @router.post(
@@ -121,4 +121,4 @@ async def reject_release_proposal(
             ),
         )
     await db.commit()
-    return _to_response(revised)
+    return await _to_response(revised, db)

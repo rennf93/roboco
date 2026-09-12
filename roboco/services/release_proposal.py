@@ -13,25 +13,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, cast
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import redis.asyncio as redis
+from sqlalchemy import select
 
 from roboco.config import settings
+from roboco.db.tables import TaskTable
 from roboco.foundation.policy.content import markers
-from roboco.models.base import TaskStatus
+from roboco.models.base import TaskStatus, TaskType
 from roboco.services.base import BaseService
 from roboco.services.release_executor import ReleaseResult, get_release_executor
 from roboco.services.release_readiness import report_from_dict
-from roboco.services.task import RELEASE_MANAGER_SOURCE, get_task_service
+from roboco.services.task import (
+    LEAD_TIME_EXCLUDED_SOURCES,
+    PR_REVIEW_SOURCES,
+    RELEASE_MANAGER_SOURCE,
+    get_task_service,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from roboco.db.tables import TaskTable
     from roboco.services.release_readiness import ReleaseReadinessReport
 
 logger = logging.getLogger(__name__)
@@ -263,6 +270,13 @@ class ReleaseProposalService(BaseService):
             if result.status in ("published", "already_published"):
                 release_project_id = cast("UUID | None", task.project_id)
                 task.status = TaskStatus.COMPLETED
+                # Stamp the boundary in the same commit that flips COMPLETED:
+                # the held proposal never passes through TaskService.complete
+                # or the CEO-approval path (the only other completed_at
+                # writers), so without this the row ships with completed_at
+                # NULL and downstream "since the previous release" windows
+                # cannot be derived from it.
+                task.completed_at = datetime.now(UTC)
                 # Commit while still holding the release lock so COMPLETED is
                 # durable before release — otherwise a racing reject() could
                 # acquire the lock the instant we drop it, re-read a row whose
@@ -645,3 +659,95 @@ def dispatch_approve(
     _INFLIGHT_APPROVES[task_id] = bg_task
     bg_task.add_done_callback(lambda _t: _INFLIGHT_APPROVES.pop(task_id, None))
     return bg_task
+
+
+# excluded_sources scoped to this module's derivation only — LEAD_TIME_
+# EXCLUDED_SOURCES itself stays untouched for its other consumers.
+_MEMBER_TASK_EXCLUDED_SOURCES: frozenset[str] = LEAD_TIME_EXCLUDED_SOURCES | (
+    frozenset(PR_REVIEW_SOURCES)
+)
+
+
+async def member_task_ids_for_proposal(
+    session: AsyncSession, proposal: TaskTable
+) -> list[dict[str, Any]]:
+    """The delivery tasks (id + pr_number) that belong to *proposal*'s release.
+
+    release_readiness.py builds its ``change_summary`` as free-text "kind:
+    summary" strings with no task linkage, so the release-proposal card has
+    no reachable source for per-member-task verification receipts. This
+    derives membership the same way delivery windows are reasoned about
+    elsewhere: tasks ``COMPLETED`` in the proposal's own project since the
+    previous COMPLETED release proposal for that SAME project (or since the
+    beginning, for a project's first release) — held/coordination artifacts
+    (administrative task_type, engine-held sources, PR-review tasks) are
+    excluded, mirroring the deny-list a published release's own certificate
+    uses. Scoped to the proposal's project so a sibling project's task never
+    leaks in. Returns ``[]`` for a project-less proposal (not producible
+    today; degrading rather than guessing a scope).
+
+    Wire contract (pr_gate F-b7ba8602, confirmed against the consuming
+    frontend): returns ``{task_id, pr_number}`` OBJECTS, not bare id
+    strings. The panel's ``ReleaseMemberTaskId`` in
+    ``panel/src/lib/api/release.ts`` (PR #1069) types the field exactly so
+    and reads ``m.task_id`` per member; the ``member_task_ids`` name is
+    kept for FE-side stability even though it carries objects. Both roots
+    and their leaf subtasks are listed (no root/PR scoping, decided
+    deliberately): each is a distinct delivery task with its own
+    verification receipt, and the rollup renders one section per id.
+    """
+    if proposal.project_id is None:
+        return []
+    # The window boundary is the previous release's completion time. The
+    # publish path stamps completed_at, but proposals it closed before that
+    # stamp landed carry completed_at=None, and Postgres DESC ordering is
+    # NULLS FIRST: without a guard a legacy NULL row would win LIMIT 1,
+    # resolve the boundary to None, and silently drop the window filter
+    # (every COMPLETED delivery task in the project's history would become a
+    # member; pr_gate F-2cadcce6). updated_at IS written by that same
+    # COMPLETED commit (ORM onupdate), so it is the legacy row's completion-
+    # time fallback; a row carrying neither timestamp is excluded outright.
+    previous_completed_at = (
+        await session.execute(
+            select(TaskTable.completed_at)
+            .where(
+                TaskTable.source == RELEASE_MANAGER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.project_id == proposal.project_id,
+                TaskTable.id != proposal.id,
+                TaskTable.completed_at.isnot(None),
+            )
+            .order_by(TaskTable.completed_at.desc(), TaskTable.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if previous_completed_at is None:
+        previous_completed_at = (
+            await session.execute(
+                select(TaskTable.updated_at)
+                .where(
+                    TaskTable.source == RELEASE_MANAGER_SOURCE,
+                    TaskTable.status == TaskStatus.COMPLETED,
+                    TaskTable.project_id == proposal.project_id,
+                    TaskTable.id != proposal.id,
+                    TaskTable.updated_at.isnot(None),
+                )
+                .order_by(TaskTable.updated_at.desc(), TaskTable.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    stmt = select(TaskTable.id, TaskTable.pr_number).where(
+        TaskTable.status == TaskStatus.COMPLETED,
+        TaskTable.project_id == proposal.project_id,
+        TaskTable.task_type != TaskType.ADMINISTRATIVE,
+        TaskTable.source.notin_(_MEMBER_TASK_EXCLUDED_SOURCES),
+    )
+    if previous_completed_at is not None:
+        stmt = stmt.where(TaskTable.completed_at > previous_completed_at)
+    # Total order (completed_at ASC is NULLS LAST in Postgres, id breaks
+    # ties) so repeated GET /release/proposal polls never reshuffle the
+    # panel's rollup (pr_gate F-a35e595f).
+    stmt = stmt.order_by(TaskTable.completed_at, TaskTable.id)
+    rows = (await session.execute(stmt)).all()
+    return [{"task_id": str(r.id), "pr_number": r.pr_number} for r in rows]

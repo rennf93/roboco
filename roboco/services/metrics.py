@@ -35,6 +35,7 @@ from roboco.models.metrics import (
     MemberScorecard,
     OrgScorecard,
     ProvenanceReport,
+    ReviewerChainEntry,
     ReworkReport,
     Scorecard,
     SpawnWasteReport,
@@ -863,6 +864,41 @@ class MetricsService(BaseService):
             counts.get("task.ceo_reject", 0),
         )
 
+    async def _reviewer_chain_for_task(self, task_id: UUID) -> list[ReviewerChainEntry]:
+        """The non-developer spawn chain for this task, in round order.
+
+        ``round`` is this session's 1-based position among the task's own
+        non-developer (review-layer: qa/pr_reviewer/cell_pm/main_pm/ceo)
+        spawn sessions, ordered by ``started_at`` — a developer's own
+        authoring spawns are excluded, they aren't reviews. Exposure only:
+        every field already exists on ``agent_spawn_sessions``.
+        """
+        rows = (
+            await self.session.execute(
+                select(
+                    AgentSpawnSessionTable.role,
+                    AgentSpawnSessionTable.model,
+                    AgentSpawnSessionTable.agent_slug,
+                    AgentSpawnSessionTable.started_at,
+                )
+                .where(
+                    AgentSpawnSessionTable.task_id == str(task_id),
+                    AgentSpawnSessionTable.role != str(AgentRole.DEVELOPER),
+                )
+                .order_by(AgentSpawnSessionTable.started_at)
+            )
+        ).all()
+        return [
+            ReviewerChainEntry(
+                round=i,
+                role=r.role,
+                model=r.model,
+                agent_slug=r.agent_slug,
+                started_at=r.started_at.isoformat(),
+            )
+            for i, r in enumerate(rows, start=1)
+        ]
+
     async def get_task_metrics(self, task_id: UUID) -> TaskMetrics | None:
         """Live granular metrics for one task, or None if the task doesn't exist.
 
@@ -894,6 +930,7 @@ class MetricsService(BaseService):
         )
         stages = compute_stage_effort(windows, spawn["stints"])
         findings = await ReviewFindingsRepository(self.session).list_for_task(task_id)
+        reviewer_chain = await self._reviewer_chain_for_task(task_id)
 
         return TaskMetrics(
             task_id=str(task_id),
@@ -912,6 +949,7 @@ class MetricsService(BaseService):
             stages=stages,
             findings_open=sum(1 for f in findings if f.status == STATUS_OPEN),
             findings_total=len(findings),
+            reviewer_chain=reviewer_chain,
         )
 
     async def _ceo_latency(
