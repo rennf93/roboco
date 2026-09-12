@@ -462,6 +462,24 @@ def render_attestation_markdown(attestation: TaskAttestation) -> str:
     return "\n".join(lines) + "\n"
 
 
+async def resolve_attestation_service_context(
+    session: AsyncSession, task: TaskTable
+) -> tuple[str | None, Any]:
+    """``(project_slug, git_service)`` for ``task``'s live CI verdict lookup,
+    or ``(None, None)`` when the task has no project (or the project row is
+    gone). Lives in the service layer — not the route — so
+    ``get_task_attestation`` stays a lookup + delegate + format branch."""
+    if task.project_id is None:
+        return None, None
+    from roboco.services.git import get_git_service
+    from roboco.services.project import get_project_service
+
+    project = await get_project_service(session).get(require_uuid(task.project_id))
+    if project is None:
+        return None, None
+    return project.slug, get_git_service(session)
+
+
 async def assemble_task_attestation(
     session: AsyncSession,
     task: TaskTable,
@@ -471,15 +489,21 @@ async def assemble_task_attestation(
 ) -> TaskAttestation:
     """Assemble the full verification attestation for ``task``.
 
-    ``project_slug``/``git_service`` are optional and duck-typed (the caller
-    passes an already-resolved ``GitService`` instance) purely to fetch the
-    live CI verdict — every other field comes from the DB rows already
-    passed in or reachable from ``session``. No new capture point: every
-    source here (``task_review_findings``, ``qa_notes``, ``work_sessions``,
-    ``audit_log``, ``project_convention_findings``) is written elsewhere in
-    the lifecycle; this only reads.
+    ``project_slug``/``git_service`` are optional — when omitted (the normal
+    route path), both are resolved here via
+    ``resolve_attestation_service_context`` so the route never has to. A
+    caller with an already-resolved pair (tests, a fake git service) may
+    still pass them explicitly. Every other field comes from the DB rows
+    already passed in or reachable from ``session``. No new capture point:
+    every source here (``task_review_findings``, ``qa_notes``,
+    ``work_sessions``, ``audit_log``, ``project_convention_findings``) is
+    written elsewhere in the lifecycle; this only reads.
     """
     task_id = require_uuid(task.id)
+    if project_slug is None and git_service is None:
+        project_slug, git_service = await resolve_attestation_service_context(
+            session, task
+        )
     return TaskAttestation(
         task_id=str(task.id),
         title=task.title,

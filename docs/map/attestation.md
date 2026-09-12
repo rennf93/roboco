@@ -2,25 +2,9 @@ Slice key: `attestation` Repo root: `roboco` Scope: `roboco/services/attestation
 
 ## Purpose
 
-The per-task verification attestation: a single, auditable JSON/Markdown
-snapshot proving how a task was verified — every acceptance criterion with
-its verified stamp and evidence, the full revision-findings ledger grouped
-by round, the CI verdict for the PR's head commit, architectural-conventions
-findings, the status-transition custody chain, and the commit/branch/PR
-refs a work session is bound to. This is an **export of what the lifecycle
-already proves** — no new data capture, no new tables or columns; every
-field is read from `task_review_findings`, the `qa_notes` `[AC]` stamps,
-`work_sessions`, `audit_log`, and `project_convention_findings`.
+The per-task verification attestation: a single, auditable JSON/Markdown snapshot proving how a task was verified — every acceptance criterion with its verified stamp and evidence, the full revision-findings ledger grouped by round, the CI verdict for the PR's head commit, architectural-conventions findings, the status-transition custody chain, and the commit/branch/PR refs a work session is bound to. This is an **export of what the lifecycle already proves** — no new data capture, no new tables or columns; every field is read from `task_review_findings`, the `qa_notes` `[AC]` stamps, `work_sessions`, `audit_log`, and `project_convention_findings`.
 
-Two sequenced leaves built this: `roboco/services/attestation.py` (the
-assembly service + frozen dataclasses, task `8d79e63a`) landed first, then
-`GET /api/tasks/{id}/attestation` (the thin route + Markdown render, task
-`d971bd3c`) consumed its merged output directly. This is the **per-task**
-sibling of the already-shipped **release-level** artifact
-(`docs/map/release-manager.md`'s `GET /api/releases/{version}/certificate`,
-task `cf266bc5`) — the CEO scope correction on the parent root explicitly
-forbade rebuilding a release-level rollup here; that half stays owned by
-the certificate endpoint.
+Two sequenced leaves built this: `roboco/services/attestation.py` (the assembly service + frozen dataclasses, task `8d79e63a`) landed first, then `GET /api/tasks/{id}/attestation` (the thin route + Markdown render, task `d971bd3c`) consumed its merged output directly. This is the **per-task** sibling of the already-shipped **release-level** artifact (`docs/map/release-manager.md`'s `GET /api/releases/{version}/certificate`, task `cf266bc5`) — the CEO scope correction on the parent root explicitly forbade rebuilding a release-level rollup here; that half stays owned by the certificate endpoint.
 
 ## Files
 
@@ -47,92 +31,32 @@ the certificate endpoint.
 
 ## Response shape (cross-cell contract)
 
-The frontend cell's task-detail download action consumes this response
-verbatim (`docs/map/release-manager.md`'s certificate endpoint is the
-sibling pattern for the CEO-facing release-level version) — treat field
-names/structure as a contract; extend additively only, and check with
-be-pm before renaming or reshaping.
+The frontend cell's task-detail download action consumes this response verbatim (`docs/map/release-manager.md`'s certificate endpoint is the sibling pattern for the CEO-facing release-level version) — treat field names/structure as a contract; extend additively only, and check with be-pm before renaming or reshaping.
 
 ```
 GET /api/tasks/{task_id}/attestation?format=json|markdown
 ```
 
-- `format=json` (default): `TaskAttestationResponse` — task identity/refs
-  (`task_id`, `title`, `status`, `team`, `project_slug`, `branch_name`,
-  `pr_number`, `pr_url`, `revision_count`), `commits`, `work_sessions[]`,
-  `acceptance_criteria[]` (`{id, text, verified, evidence}`),
-  `findings_by_round[]` (`{round, findings: [...]}`), `ci`
-  (`{state, head_sha, failing_checks}`), `conventions_findings[]`,
-  `reviewer_chain[]`, `generated_at`.
-- `format=markdown`: a `text/markdown` rendering of the identical data —
-  header block, `## Acceptance criteria` checklist (`[x]`/`[ ]` + evidence
-  line), `## Findings ledger` grouped by round, `## CI verdict`,
-  `## Conventions findings`, `## Reviewer chain`, `## Work sessions`. Every
-  empty section renders an explicit placeholder (`_None recorded._` /
-  `_No findings raised._`) rather than an empty heading.
-- No auth restriction beyond a valid agent context (unlike the CEO-only
-  release certificate) — usable for a completed OR in-flight task.
+- `format=json` (default): `TaskAttestationResponse` — task identity/refs (`task_id`, `title`, `status`, `team`, `project_slug`, `branch_name`, `pr_number`, `pr_url`, `revision_count`), `commits`, `work_sessions[]`, `acceptance_criteria[]` (`{id, text, verified, evidence}`), `findings_by_round[]` (`{round, findings: [...]}`), `ci` (`{state, head_sha, failing_checks}`), `conventions_findings[]`, `reviewer_chain[]`, `generated_at`.
+- `format=markdown`: a `text/markdown` rendering of the identical data — header block, `## Acceptance criteria` checklist (`[x]`/`[ ]` + evidence line), `## Findings ledger` grouped by round, `## CI verdict`, `## Conventions findings`, `## Reviewer chain`, `## Work sessions`. Every empty section renders an explicit placeholder (`_None recorded._` / `_No findings raised._`) rather than an empty heading.
+- No auth restriction beyond a valid agent context (unlike the CEO-only release certificate) — usable for a completed OR in-flight task.
 
 ## Tests
 
-- `tests/unit/services/test_attestation.py` — the Markdown render: header
-  identity/refs, the AC checklist, every ledger finding status
-  (open/addressed/verified/waived), the CI/conventions/reviewer-chain/
-  work-session sections, and each section's empty-state placeholder.
-- `tests/unit/api/schemas/test_attestation_schema.py` — the Pydantic
-  response shape and its JSON serialization round-trip, against the same
-  mixed-finding-states fixture.
-- No HTTP-level integration test for the route itself exists yet: any test
-  importing `roboco.api.routes` fails to collect in the shared dev sandbox
-  due to a pre-existing, unrelated stale `guard` package version mismatch
-  in `roboco/security.py` — reproduced on an untouched pre-existing
-  integration test file, confirming it predates this feature.
+- `tests/unit/services/test_attestation.py` — the Markdown render: header identity/refs, the AC checklist, every ledger finding status (open/addressed/verified/waived), the CI/conventions/reviewer-chain/ work-session sections, and each section's empty-state placeholder.
+- `tests/unit/api/schemas/test_attestation_schema.py` — the Pydantic response shape and its JSON serialization round-trip, against the same mixed-finding-states fixture.
+- No HTTP-level integration test for the route itself exists yet: any test importing `roboco.api.routes` fails to collect in the shared dev sandbox due to a pre-existing, unrelated stale `guard` package version mismatch in `roboco/security.py` — reproduced on an untouched pre-existing integration test file, confirming it predates this feature.
 
 ## Gotchas
 
-- **No new capture point, ever.** Every field this assembler returns is
-  read from data another part of the lifecycle already persists
-  (`task_review_findings`, the `qa_notes` stamps, `work_sessions`,
-  `audit_log`, `project_convention_findings`). If a future change needs a
-  field this assembler can't currently produce, the fix is exposing an
-  existing table/column here — not adding a write path to this module.
-- **JSON and Markdown must never diverge.** Both response branches in
-  `get_task_attestation` call `assemble_task_attestation` exactly once and
-  derive from that SAME `TaskAttestation` object — `render_attestation_markdown`
-  takes the already-assembled object, never raw tables. A future change
-  that adds a second `assemble_task_attestation` call (e.g. to avoid
-  passing the object around) would reintroduce the divergence class this
-  design exists to prevent.
-- **`_attested_criteria` must match by id OR text, not text alone.**
-  `pass_review`'s `criteria_verified` stamps a criterion into `qa_notes` by
-  whichever key the caller supplied (a stable AC id or its exact text) —
-  matching only by text silently misreports every id-keyed verified
-  criterion as unverified. Mirrors `findings_lib.unmatched_criteria`'s same
-  dual-key matching.
-- **This is the per-task twin of the release certificate, not a
-  replacement.** `docs/map/release-manager.md`'s `GET
-  /api/releases/{version}/certificate` aggregates the SAME kind of data
-  (CI, conventions, findings, AC verification) at release-window scope,
-  CEO-only, for a published release. This endpoint is per-task, open to
-  any authenticated agent, and works on in-flight tasks too. A future
-  release-level rollup of per-task attestations is an explicit follow-up
-  to the certificate endpoint (task `cf266bc5`), not this slice — do not
-  duplicate it here.
-- **Layering: services never import schemas.** `attestation_to_response`
-  lives in `roboco/api/schemas/attestation.py`, not
-  `roboco/services/attestation.py` — the service module only defines and
-  returns plain frozen dataclasses so it stays schema-agnostic per the
-  conventions map's layering rule.
+- **No new capture point, ever.** Every field this assembler returns is read from data another part of the lifecycle already persists (`task_review_findings`, the `qa_notes` stamps, `work_sessions`, `audit_log`, `project_convention_findings`). If a future change needs a field this assembler can't currently produce, the fix is exposing an existing table/column here — not adding a write path to this module.
+- **JSON and Markdown must never diverge.** Both response branches in `get_task_attestation` call `assemble_task_attestation` exactly once and derive from that SAME `TaskAttestation` object — `render_attestation_markdown` takes the already-assembled object, never raw tables. A future change that adds a second `assemble_task_attestation` call (e.g. to avoid passing the object around) would reintroduce the divergence class this design exists to prevent.
+- **`_attested_criteria` must match by id OR text, not text alone.** `pass_review`'s `criteria_verified` stamps a criterion into `qa_notes` by whichever key the caller supplied (a stable AC id or its exact text) — matching only by text silently misreports every id-keyed verified criterion as unverified. Mirrors `findings_lib.unmatched_criteria`'s same dual-key matching.
+- **This is the per-task twin of the release certificate, not a replacement.** `docs/map/release-manager.md`'s `GET /api/releases/{version}/certificate` aggregates the SAME kind of data (CI, conventions, findings, AC verification) at release-window scope, CEO-only, for a published release. This endpoint is per-task, open to any authenticated agent, and works on in-flight tasks too. A future release-level rollup of per-task attestations is an explicit follow-up to the certificate endpoint (task `cf266bc5`), not this slice — do not duplicate it here.
+- **Layering: services never import schemas.** `attestation_to_response` lives in `roboco/api/schemas/attestation.py`, not `roboco/services/attestation.py` — the service module only defines and returns plain frozen dataclasses so it stays schema-agnostic per the conventions map's layering rule.
 
 ## Related
 
-- `docs/map/release-manager.md` — the release-level sibling artifact (`GET
-  /api/releases/{version}/certificate`) this endpoint is explicitly scoped
-  apart from
-- `docs/map/review-findings.md` — the `task_review_findings` ledger
-  `findings_by_round` reads, including the rejector-attributed duplicate
-  audit rows `_reviewer_chain` filters out
-- `docs/map/metrics-observability.md` — `MetricsService`'s own separate
-  `reviewer_chain` field on `GET /dashboard/metrics/task/{id}` (a
-  DIFFERENT reviewer_chain shape, sourced from `agent_spawn_sessions`
-  rather than `audit_log` — do not conflate the two)
+- `docs/map/release-manager.md` — the release-level sibling artifact (`GET /api/releases/{version}/certificate`) this endpoint is explicitly scoped apart from
+- `docs/map/review-findings.md` — the `task_review_findings` ledger `findings_by_round` reads, including the rejector-attributed duplicate audit rows `_reviewer_chain` filters out
+- `docs/map/metrics-observability.md` — `MetricsService`'s own separate `reviewer_chain` field on `GET /dashboard/metrics/task/{id}` (a DIFFERENT reviewer_chain shape, sourced from `agent_spawn_sessions` rather than `audit_log` — do not conflate the two)

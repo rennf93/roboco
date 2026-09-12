@@ -130,12 +130,13 @@ class TaskAttestationResponse(BaseModel):
 
 
 class TaskAttestationQuery(BaseModel):
-    """Query params for the (future) attestation route: the task id plus an
-    optional output ``format`` — ``json`` (the default, this response
-    schema) or ``markdown`` (leaf 2's rendered report)."""
+    """Query params for the attestation route: the task id plus an optional
+    output ``format`` — ``json`` (the default, this response schema),
+    ``markdown``, or its shorthand alias ``md`` (both render the same
+    rendered report)."""
 
     task_id: str
-    format: Literal["json", "markdown"] = "json"
+    format: Literal["json", "markdown", "md"] = "json"
 
 
 def attestation_to_response(attestation: TaskAttestation) -> TaskAttestationResponse:
