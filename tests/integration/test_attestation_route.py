@@ -7,6 +7,7 @@ formats (json, the format=md alias for markdown) plus the 404 path.
 
 from __future__ import annotations
 
+import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
@@ -96,6 +97,16 @@ def _seed_task(setup: dict) -> TaskTable:
 
 _HDR = {"X-Agent-ID": "ignored", "X-Agent-Role": "main_pm"}
 
+_GENERATED_AT_LINE = re.compile(r"^- \*\*Generated at:\*\* .*$", re.MULTILINE)
+
+
+def _normalize_generated_at(body: str) -> str:
+    """Blank the receipt's wall-clock line: every GET assembles a fresh
+    ``TaskAttestation`` whose ``generated_at`` defaults to ``now(UTC)``, so
+    two legitimate requests differ ONLY on that line. Everything else must
+    be byte-identical between the two aliases."""
+    return _GENERATED_AT_LINE.sub("- **Generated at:** <per-request>", body)
+
 
 @pytest.mark.asyncio
 async def test_attestation_404_for_missing_task(attestation_client: dict) -> None:
@@ -151,4 +162,9 @@ async def test_attestation_format_md_alias_matches_markdown(
     )
     assert md_response.status_code == HTTPStatus.OK
     assert "text/markdown" in md_response.headers["content-type"]
-    assert md_response.text == markdown_response.text
+    assert markdown_response.status_code == HTTPStatus.OK
+    assert "text/markdown" in markdown_response.headers["content-type"]
+    assert "**Generated at:**" in md_response.text
+    assert _normalize_generated_at(md_response.text) == _normalize_generated_at(
+        markdown_response.text
+    )
