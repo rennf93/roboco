@@ -69,6 +69,91 @@ def test_error_text_from_event_accepts_top_level_message() -> None:
 
 
 # ---------------------------------------------------------------------------
+# error.data.statusCode — the live OpenRouter shape's only classifiable field
+# ---------------------------------------------------------------------------
+
+
+def test_error_text_from_event_pulls_status_code() -> None:
+    event = json.loads(
+        json.dumps(
+            {
+                "type": "error",
+                "error": {"name": "APIError", "data": {"statusCode": 401}},
+            }
+        )
+    )
+    text = sniff._error_text_from_event(event)
+    assert text is not None
+    assert "401" in text
+
+
+def test_live_apierror_401_shape_classifies_auth(tmp_path: Path) -> None:
+    """The live-verified OpenRouter 401: the transport error is wrapped under
+    a generic "APIError" name with a message matching no auth pattern — only
+    the structured statusCode classifies the run."""
+    log = tmp_path / "run.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "name": "APIError",
+                    "data": {"message": "User not found.", "statusCode": 401},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert sniff.classify(log) == "auth"
+
+
+def test_live_apierror_429_shape_classifies_rate_limit(tmp_path: Path) -> None:
+    log = tmp_path / "run.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "name": "APIError",
+                    "data": {
+                        "message": "Provider returned an error.",
+                        "statusCode": 429,
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert sniff.classify(log) == "rate_limit"
+
+
+def test_status_code_respects_word_boundary() -> None:
+    """A statusCode whose digits merely CONTAIN 429/401 must not classify
+    (the appended text hits the same word-boundaried guards as prose)."""
+    assert not sniff.is_auth_failure(sniff._status_code_text(40199) or "")
+    assert not sniff.is_rate_limited(sniff._status_code_text(42993) or "")
+
+
+def test_status_code_text_rejects_bools_and_empty() -> None:
+    assert sniff._status_code_text(True) is None
+    assert sniff._status_code_text(False) is None
+    assert sniff._status_code_text(None) is None
+    assert sniff._status_code_text("  ") is None
+    assert sniff._status_code_text(401) == "401"
+    assert sniff._status_code_text("429") == "429"
+
+
+def test_dict_error_text_without_status_code_unchanged() -> None:
+    # The pre-existing shapes classify exactly as before.
+    text = sniff._dict_error_text({"name": "APIError", "data": {"message": "boom"}})
+    assert text == "APIError boom"
+
+
+# ---------------------------------------------------------------------------
 # extract_error_text — the false-positive class this module exists to kill
 # ---------------------------------------------------------------------------
 

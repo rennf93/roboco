@@ -13,12 +13,17 @@
 #
 # The gateway, identity, and workspace are mounted by the orchestrator's
 # shared container assembly (the same that wires Claude/grok/kimi); this
-# entrypoint renders the opencode runtime config (opencode.json: agent
-# prompt + permission.bash deny-rules + mcp + the OpenRouter provider block)
-# from that mount and runs the CLI headless. opencode has NO PreToolUse hook
-# system (confirmed by the spike — see the decision journal note), so there
-# is NO bash-guard wrapper script here: the permission.bash deny-rules in the
-# rendered opencode.json ARE the bash-guard (roboco.llm.providers.openrouter_cli_config).
+# entrypoint renders the opencode runtime config into opencode's GLOBAL
+# config home (opencode.json: agent prompt + permission.bash deny-rules + mcp
+# + the OpenRouter provider block, plus the bash-guard plugin under plugins/)
+# from that mount and runs the CLI headless. opencode DOES have a
+# PreToolUse-equivalent — the plugin `tool.execute.before` hook (the spike's
+# original "no hooks" conclusion was wrong, live-verified on the re-run) — so
+# the rendered plugin feeds every bash call through the SAME
+# /app/scripts/bash-guard-hook.sh every other provider installs, as
+# defense-in-depth; the permission.bash deny-rules in the rendered
+# opencode.json remain the primary gate
+# (roboco.llm.providers.openrouter_cli_config).
 set -euo pipefail
 
 # Split-install sanity: docker/agent-openrouter.Dockerfile installs the
@@ -29,13 +34,19 @@ command -v opencode >/dev/null || {
   exit 1
 }
 
-# Render ~/.config/opencode/opencode.json (the `roboco` agent block with the
-# mounted system prompt + per-role permission.bash deny-rules + the mounted
-# mcp-config.json passthrough + the OpenRouter provider block pointing at
-# OPENROUTER_BASE_URL). Run from /app so `python -m` resolves the INSTALLED
-# roboco package: dev/doc/qa agents run at their workspace-clone cwd, whose
-# own roboco/ dir would shadow it on the sys.path front (the same
-# ModuleNotFound lesson the kimi/codex/grok entrypoints document).
+# Render opencode's GLOBAL config: ~/.config/opencode/opencode.json (the
+# `roboco` agent block with the mounted system prompt + per-role
+# permission.bash deny-rules + the mounted mcp-config.json passthrough + the
+# OpenRouter provider block pointing at OPENROUTER_BASE_URL) and the
+# bash-guard plugin at ~/.config/opencode/plugins/roboco-bash-guard.js. The
+# GLOBAL location is the point: this render runs from /app (so `python -m`
+# resolves the INSTALLED roboco package — dev/doc/qa agents run at their
+# workspace-clone cwd, whose own roboco/ dir would shadow it on the sys.path
+# front, the same ModuleNotFound lesson the kimi/codex/grok entrypoints
+# document), but `opencode run` below executes at the container's real -w cwd
+# (the agent workspace for developer/documenter roles) — a project-local
+# opencode.json dropped in /app would never be found there, while the global
+# config home loads regardless of cwd.
 ( cd /app && python -m roboco.llm.providers.openrouter_cli_config )
 
 # Prompt-injection guard (parity with the Claude/grok/kimi path): the task
@@ -78,15 +89,18 @@ fi
 # surfaced after the run. `--auto` is opencode's headless auto-approval
 # (parity with grok's --dangerously-skip-permissions / codex's --sandbox
 # workspace-write + full-auto); `--agent roboco` selects the rendered agent
-# block; `--model` is the OpenRouter model id (provider/model, e.g.
-# "anthropic/claude-sonnet-4") the orchestrator passes via ROBOCO_AGENT_MODEL.
+# block; `--model` is the opencode model REF (opencode's own provider id
+# prefixing the bare OpenRouter catalog id, e.g.
+# "openrouter/anthropic/claude-sonnet-4" — unprefixed, opencode resolves the
+# value against its built-in anthropic provider, which needs ANTHROPIC_API_KEY
+# and can never authenticate) the orchestrator passes via ROBOCO_AGENT_MODEL.
 RUN_LOG="/tmp/openrouter-run.jsonl"
 ERR_LOG="/tmp/openrouter-run.err"
 
 set +e
 opencode run "${ROBOCO_INITIAL_PROMPT:-}" \
   --agent roboco \
-  --model "${ROBOCO_AGENT_MODEL:-anthropic/claude-sonnet-4}" \
+  --model "${ROBOCO_AGENT_MODEL:-openrouter/anthropic/claude-sonnet-4}" \
   --auto \
   --format json \
   < /dev/null 2> "$ERR_LOG" | tee "$RUN_LOG"

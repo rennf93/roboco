@@ -1,5 +1,6 @@
 """openrouter_cli_config — opencode.json rendering (agent block + permission
-deny-rules + mcp passthrough + provider block) + the auth preflight."""
+deny-rules + mcp passthrough + provider block), the bash-guard plugin
+(tool.execute.before), and the auth preflight."""
 
 from __future__ import annotations
 
@@ -82,14 +83,44 @@ def test_unknown_role_gets_every_deny_category() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# opencode_model_ref — the --model / agent.model value must resolve against
+# the rendered provider.openrouter block, not opencode's built-in anthropic
+# ---------------------------------------------------------------------------
+
+
+def test_opencode_model_ref_prefixes_bare_catalog_id() -> None:
+    assert (
+        oc.opencode_model_ref("anthropic/claude-sonnet-4")
+        == "openrouter/anthropic/claude-sonnet-4"
+    )
+
+
+def test_opencode_model_ref_is_idempotent() -> None:
+    ref = "openrouter/anthropic/claude-sonnet-4"
+    assert oc.opencode_model_ref(ref) == ref
+
+
+def test_opencode_model_ref_tolerates_empty() -> None:
+    assert oc.opencode_model_ref("") == ""
+    assert oc.opencode_model_ref("   ") == ""
+
+
 def test_render_agent_block_carries_prompt_mode_model_permission() -> None:
     block = oc.render_agent_block("developer", "anthropic/claude-sonnet-4")
     assert block["mode"] == "primary"
-    assert block["model"] == "anthropic/claude-sonnet-4"
+    # The block's model is the opencode REF (prefixed), matching the
+    # entrypoint's --model value — both must route through OpenRouter.
+    assert block["model"] == "openrouter/anthropic/claude-sonnet-4"
     assert "permission" in block
     assert "tools" in block
     # The prompt is loaded from the system prompt path; empty string if absent.
     assert isinstance(block["prompt"], str)
+
+
+def test_render_agent_block_model_ref_is_idempotent_for_prefixed_input() -> None:
+    block = oc.render_agent_block("developer", "openrouter/anthropic/claude-sonnet-4")
+    assert block["model"] == "openrouter/anthropic/claude-sonnet-4"
 
 
 def test_render_agent_block_permission_vararies_by_role() -> None:
@@ -138,6 +169,84 @@ def test_render_mcp_block_passthrough_with_env() -> None:
 def test_render_mcp_block_empty_servers() -> None:
     assert oc.render_mcp_block({}) == {}
     assert oc.render_mcp_block({"mcpServers": {}}) == {}
+
+
+# ---------------------------------------------------------------------------
+# bash-guard plugin — opencode's tool.execute.before PreToolUse-equivalent
+# ---------------------------------------------------------------------------
+
+
+def test_render_bash_guard_plugin_wires_hook_and_blocks_on_deny() -> None:
+    plugin = oc.render_bash_guard_plugin("/app/scripts/bash-guard-hook.sh")
+    # The PreToolUse-equivalent hook opencode actually supports.
+    assert "tool.execute.before" in plugin
+    # The SAME hook script the Claude/grok/kimi paths install, fed the
+    # Claude-schema stdin payload the hook parses.
+    assert "/app/scripts/bash-guard-hook.sh" in plugin
+    assert "tool_name" in plugin
+    assert "tool_input" in plugin
+    # Only bash calls reach the hook; a deny (exit 2) blocks via throw.
+    assert 'input.tool !== "bash"' in plugin
+    assert "result.status === 2" in plugin
+    assert "throw new Error" in plugin
+    # Fail-open on hook-infrastructure errors (the deny-rules stay primary).
+    assert "result.error) return" in plugin
+
+
+def test_render_bash_guard_plugin_hook_path_read_at_call_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(oc, "BASH_GUARD_HOOK", "/custom/hook.sh")
+    assert "/custom/hook.sh" in oc.render_bash_guard_plugin()
+
+
+def test_write_bash_guard_plugin_writes_file_with_parents(tmp_path: Path) -> None:
+    target = tmp_path / "deep" / "plugins" / "roboco-bash-guard.js"
+    written = oc.write_bash_guard_plugin(target)
+    assert written == target
+    plugin = target.read_text(encoding="utf-8")
+    assert "tool.execute.before" in plugin
+    assert oc.BASH_GUARD_HOOK in plugin
+
+
+def test_write_bash_guard_plugin_default_path_read_at_call_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The default is resolved at CALL time, never bound as a stale default
+    # arg (the round-1 _load_system_prompt lesson).
+    target = tmp_path / "opencode" / "plugins" / "guard.js"
+    monkeypatch.setattr(oc, "OPENCODE_PLUGIN_PATH", target)
+    assert oc.write_bash_guard_plugin() == target
+    assert target.exists()
+
+
+# ---------------------------------------------------------------------------
+# Global config home — the render is cwd-independent (opencode run's cwd is
+# the agent workspace, not /app where the render executes)
+# ---------------------------------------------------------------------------
+
+
+def test_default_paths_are_global_and_cwd_independent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    from pathlib import Path as _Path
+
+    monkeypatch.delenv("ROBOCO_OPENCODE_CONFIG", raising=False)
+    monkeypatch.delenv("ROBOCO_OPENCODE_PLUGIN", raising=False)
+    reloaded = importlib.reload(oc)
+    try:
+        config_path = reloaded.OPENCODE_CONFIG_PATH
+        plugin_path = reloaded.OPENCODE_PLUGIN_PATH
+        assert config_path == _Path("~/.config/opencode/opencode.json").expanduser()
+        assert config_path.is_absolute()
+        assert (
+            plugin_path
+            == _Path("~/.config/opencode/plugins/roboco-bash-guard.js").expanduser()
+        )
+        assert plugin_path.is_absolute()
+    finally:
+        importlib.reload(oc)  # restore the cached module for other tests
 
 
 # ---------------------------------------------------------------------------
@@ -209,10 +318,12 @@ def test_main_writes_opencode_json(
     mcp_path = tmp_path / "mcp-config.json"
     mcp_path.write_text(json.dumps(_SAMPLE_MCP), encoding="utf-8")
     config_path = tmp_path / "opencode.json"
+    plugin_path = tmp_path / "plugins" / "roboco-bash-guard.js"
     system_prompt = tmp_path / "system-prompt.md"
     system_prompt.write_text("blueprint", encoding="utf-8")
 
     monkeypatch.setattr(oc, "OPENCODE_CONFIG_PATH", config_path)
+    monkeypatch.setattr(oc, "OPENCODE_PLUGIN_PATH", plugin_path)
     monkeypatch.setattr(oc, "SYSTEM_PROMPT_PATH", system_prompt)
     monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
     monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp_path))
@@ -223,10 +334,17 @@ def test_main_writes_opencode_json(
 
     rendered = json.loads(config_path.read_text(encoding="utf-8"))
     assert rendered["$schema"] == "https://opencode.ai/config.json"
-    assert rendered["agent"]["roboco"]["model"] == "anthropic/claude-sonnet-4"
+    # The agent block's model is the opencode REF — the same value the
+    # entrypoint passes to --model (both route through OpenRouter).
+    assert (
+        rendered["agent"]["roboco"]["model"] == "openrouter/anthropic/claude-sonnet-4"
+    )
     assert rendered["agent"]["roboco"]["prompt"] == "blueprint"
     assert "openrouter" in rendered["provider"]
     assert "roboco-flow" in rendered["mcp"]
+    # main() renders the bash-guard plugin alongside the config.
+    assert plugin_path.exists()
+    assert "tool.execute.before" in plugin_path.read_text(encoding="utf-8")
 
 
 def test_main_check_flag_passes_when_key_set(

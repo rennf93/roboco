@@ -15,11 +15,12 @@ fix).
 
 The fix is structural, not a pattern tweak: extract ONLY a structured
 ``error`` field off ``type: "error"`` JSONL events (opencode's error-event
-shape is ``{"type":"error", "error":{"name":..., "data":{"message":...}}}``
-plus a bare-string ``{"error": "..."}`` fallback) and the run's raw stderr,
-and sniff THAT text. The model's own echoed assistant/tool content
-(``{"type":"text", ...}`` / ``{"type":"tool_call", ...}``) can never reach the
-classifier, so it can never trigger a false park by construction.
+shape is ``{"type":"error", "error":{"name":..., "data":{"message":...,
+"statusCode":...}}}`` plus a bare-string ``{"error": "..."}`` fallback) and
+the run's raw stderr, and sniff THAT text. The model's own echoed
+assistant/tool content (``{"type":"text", ...}`` / ``{"type":"tool_call",
+...}``) can never reach the classifier, so it can never trigger a false park
+by construction.
 
 Patterns (the codex/kimi-proven word-boundaried digit guard, plus
 OpenRouter's own error vocabulary):
@@ -27,6 +28,11 @@ OpenRouter's own error vocabulary):
     "overloaded", "quota".
   - auth failure: a bare ``\\b401\\b``, "invalid api key", "unauthorized",
     "authentication".
+
+The structured ``error.data.statusCode`` matters live: OpenRouter's real 401
+response wraps the transport error under a generic ``"APIError"`` name whose
+message ("User not found.") matches no auth pattern above — the extracted
+status code is what classifies the run.
 
 The entrypoint calls this as ``python -m roboco.llm.providers.openrouter_cli_sniff
 <run_log> [err_log]``, printing ``rate_limit`` / ``auth`` / an empty line;
@@ -59,11 +65,28 @@ def _non_empty_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _status_code_text(status: Any) -> str | None:
+    """The structured ``statusCode`` as classifier-usable text, or ``None``.
+
+    Accepts the int OpenRouter sends (401 / 429) or a numeric string; bools
+    render as "True"/"False" and are rejected.
+    """
+    if status is None or isinstance(status, bool):
+        return None
+    text = str(status).strip()
+    return text or None
+
+
 def _dict_error_text(error: dict[str, Any]) -> str | None:
     """Extract error text from a dict-shaped ``error`` field.
 
     Handles opencode's ``{"error":{"name":..., "data":{"message":...}}}`` shape
     plus a bare ``{"error":{"message":...}}`` fallback and a ``data`` string.
+    ``data.statusCode`` is appended too: OpenRouter's real 401 response wraps
+    the transport error under a generic ``"APIError"`` name carrying a message
+    ("User not found.") that matches no auth pattern — the structured status
+    code is the only machine-classifiable field on the live shape (appended
+    text hits the word-boundaried ``\\b401\\b`` / ``\\b429\\b`` guards).
     """
     parts: list[str] = []
     if name := _non_empty_str(error.get("name")):
@@ -72,6 +95,8 @@ def _dict_error_text(error: dict[str, Any]) -> str | None:
     if isinstance(data, dict):
         if message := _non_empty_str(data.get("message")):
             parts.append(message)
+        if status := _status_code_text(data.get("statusCode")):
+            parts.append(status)
     elif isinstance(data, str) and data:
         parts.append(data)
     if message := _non_empty_str(error.get("message")):
@@ -83,12 +108,15 @@ def _error_text_from_event(event: dict[str, Any]) -> str | None:
     """Pull a structured error message off one JSONL event, or ``None``.
 
     opencode's ``type: "error"`` event shape is
-    ``{"type":"error", "error":{"name":..., "data":{"message":...}}}`` —
-    extract ``error.data.message`` and ``error.name`` (the name is an error
-    class like ``"RateLimitError"`` / ``"AuthenticationError"`` which also
-    classifies correctly). A bare-string ``{"error": "..."}`` fallback is
-    tolerated (parity with kimi_cli_sniff). Never reads ``text`` off a
-    ``type: "text"`` / ``type: "tool_call"`` event.
+    ``{"type":"error", "error":{"name":..., "data":{"message":...,
+    "statusCode":...}}}`` — extract ``error.data.message``,
+    ``error.data.statusCode`` and ``error.name`` (the name is an error class
+    like ``"RateLimitError"`` / ``"AuthenticationError"`` which also
+    classifies correctly; the statusCode classifies the live OpenRouter
+    shapes whose generic ``"APIError"`` name and message match nothing). A
+    bare-string ``{"error": "..."}`` fallback is tolerated (parity with
+    kimi_cli_sniff). Never reads ``text`` off a ``type: "text"`` /
+    ``type: "tool_call"`` event.
     """
     if event.get("type") not in (None, "error"):
         return None

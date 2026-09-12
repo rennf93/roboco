@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Protocol
 from roboco.config import settings
 from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
+from roboco.llm.providers.openrouter_cli_config import opencode_model_ref
 from roboco.runtime.compose_labels import compose_label_args
 
 if TYPE_CHECKING:
@@ -211,7 +212,12 @@ class OpenRouterProvider(AgentProvider):
         (surfaced on its usage dashboard). ``ROBOCO_AGENT_ID`` lets the
         renderer compute the per-role permission deny-rules; ``ROBOCO_MCP_CONFIG``
         points it at the mounted gateway config; the prompt travels as an env
-        var (never an argv positional).
+        var (never an argv positional). ``ROBOCO_AGENT_MODEL`` carries the
+        opencode model REF (:func:`opencode_model_ref` — the bare catalog id
+        prefixed with opencode's own ``openrouter`` provider id), because the
+        entrypoint passes it straight to ``--model``: unprefixed, opencode
+        resolves it against its built-in anthropic provider and the run
+        cannot authenticate.
         """
         base_url = config.provider_base_url or settings.openrouter_base_url
         model = config.model or _OPENROUTER_CLI_MODEL
@@ -219,7 +225,7 @@ class OpenRouterProvider(AgentProvider):
             "-e",
             f"ROBOCO_AGENT_ID={config.agent_id}",
             "-e",
-            f"ROBOCO_AGENT_MODEL={model}",
+            f"ROBOCO_AGENT_MODEL={opencode_model_ref(model)}",
             "-e",
             f"ROBOCO_MCP_CONFIG={_MCP_CONFIG_IN_CONTAINER}",
             "-e",

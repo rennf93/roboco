@@ -1,14 +1,21 @@
-"""Render an opencode CLI agent's runtime config (``opencode.json``) at start.
+"""Render an opencode CLI agent's runtime config at start.
 
 The ``roboco-agent-openrouter`` image's entrypoint runs ``python -m
-roboco.llm.providers.openrouter_cli_config`` to write the project-local
-``opencode.json`` that opencode loads at startup. The config carries:
+roboco.llm.providers.openrouter_cli_config`` to write opencode's GLOBAL
+config — ``~/.config/opencode/opencode.json`` plus the bash-guard plugin
+under ``~/.config/opencode/plugins/``. The global location is
+cwd-independent BY CONSTRUCTION: the render step executes from ``/app`` (so
+``python -m`` resolves the installed roboco package, not a workspace clone's
+shadowing copy), while ``opencode run`` itself executes at the container's
+real ``-w`` cwd — the agent's workspace for developer/documenter roles. A
+project-local ``opencode.json`` rendered into /app would simply never be
+found at run time. The config carries:
 
   * ``agent.roboco`` — the agent definition: ``prompt`` (the mounted role
     blueprint copied from ``system-prompt.md``), ``mode`` primary, ``model``
-    (the OpenRouter model id from ``ROBOCO_AGENT_MODEL``), ``permission``
-    (the per-role deny-rules — the bash-guard, see below), and per-tool
-    toggles.
+    (the OpenRouter model id from ``ROBOCO_AGENT_MODEL`` resolved through
+    :func:`opencode_model_ref` — see below), ``permission`` (the per-role
+    deny-rules — the bash-guard, see below), and per-tool toggles.
   * ``mcp`` — a near-passthrough of the mounted Claude Code
     ``mcp-config.json`` (opencode's ``mcp`` schema is Claude-identical,
     keyed by server name with ``{type, command, args, env}``).
@@ -20,20 +27,29 @@ unit-testable, mirroring :mod:`roboco.llm.providers.kimi_cli_config`.
 
 Parity notes (where opencode's runtime model differs from kimi's):
 
-  * **permission model** — opencode has NO PreToolUse hook system (the spike
-    confirmed no hooks in the JS/schema; ``permission`` is the only
-    pre-execution gate). The ``permission.bash`` deny-rules ARE the
-    functional equivalent of RoboCo's bash-guard: they deny
-    ``git push*`` / ``env`` / ``pip install*`` etc. BEFORE the command runs,
-    gracefully (the agent gets a permission error and recovers, the run is
-    never cancelled — the same semantics as kimi's deny-rules). The task's
-    "+ bash-guard wrapper if opencode supports the hook" clause therefore
-    SKIPS the wrapper: the permission model is the sole and sufficient
-    boundary. opencode's config-file ``permission`` is a map of
-    ``{permissionName: action | {pattern: action}}`` — ``permission.bash``
-    maps a command-glob to ``"deny"`` / ``"ask"`` / ``"allow"``, and a
-    per-tool toggle is a bare string action (``"edit": "allow"``,
-    ``"task": "deny"``).
+  * **permission model** — the ``permission.bash`` deny-rules are the
+    PRIMARY pre-execution gate: they deny ``git push*`` / ``env`` /
+    ``pip install*`` etc. BEFORE the command runs, gracefully (the agent
+    gets a permission error and recovers, the run is never cancelled — the
+    same semantics as kimi's deny-rules). opencode's config-file
+    ``permission`` is a map of ``{permissionName: action | {pattern:
+    action}}`` — ``permission.bash`` maps a command-glob to ``"deny"`` /
+    ``"ask"`` / ``"allow"``, and a per-tool toggle is a bare string action
+    (``"edit": "allow"``, ``"task": "deny"``). The spike's original "opencode
+    has no PreToolUse hook" conclusion was WRONG (live-verified on the
+    re-run): opencode plugins expose a genuine PreToolUse-equivalent, the
+    ``tool.execute.before`` hook, so :func:`render_bash_guard_plugin` ALSO
+    installs the same ``bash-guard-hook.sh`` every other provider runs, as
+    defense-in-depth against the compound-command vectors the first-token
+    permission globs cannot reach.
+  * **model ref** — opencode resolves a ``--model`` / ``agent.model`` value
+    against its own ``provider/model`` grammar. The orchestrator hands over
+    a BARE OpenRouter catalog id (``anthropic/claude-sonnet-4``), which
+    opencode would resolve against its built-in ``anthropic`` provider
+    (expecting ``ANTHROPIC_API_KEY``, never set here). :func:`opencode_model_ref`
+    prefixes the rendered agent block's ``model`` with opencode's own
+    ``openrouter`` provider id so the run routes through the rendered
+    ``provider.openrouter`` block.
   * **system prompt** — the agent's ``prompt`` field (string) IS the system
     prompt; opencode loads it as the agent's standing instruction. The
     mounted role blueprint is copied verbatim into this field (the kimi
@@ -57,9 +73,30 @@ from roboco.agents_config import get_agent_role
 from roboco.config import settings
 from roboco.services.gateway.role_config import get_role_config
 
-# opencode loads a project-local opencode.json from the working directory
-# (the agent's workspace, set via docker run -w). Rendered fresh at start.
-OPENCODE_CONFIG_PATH = Path(os.environ.get("ROBOCO_OPENCODE_CONFIG", "opencode.json"))
+# opencode's native GLOBAL config home (cwd-independent): the render step
+# runs from /app, but `opencode run` executes at the container's real -w cwd
+# (the agent's workspace for developer/documenter roles), so a project-local
+# opencode.json is never found there. The global location loads regardless
+# of cwd. Rendered fresh at start; ROBOCO_OPENCODE_CONFIG overrides (tests).
+OPENCODE_CONFIG_PATH = Path(
+    os.environ.get("ROBOCO_OPENCODE_CONFIG", "~/.config/opencode/opencode.json")
+).expanduser()
+
+# The rendered bash-guard plugin (see render_bash_guard_plugin) — opencode
+# loads every ``*.js`` in its global plugins dir alongside the global config.
+OPENCODE_PLUGIN_PATH = Path(
+    os.environ.get(
+        "ROBOCO_OPENCODE_PLUGIN",
+        "~/.config/opencode/plugins/roboco-bash-guard.js",
+    )
+).expanduser()
+
+# The bash-guard PreToolUse hook script, baked into the agent base image —
+# the SAME script the Claude/grok/kimi paths install (accepts the Claude
+# snake_case stdin payload unmodified; exit 0 = allow, exit 2 = deny).
+BASH_GUARD_HOOK = os.environ.get(
+    "ROBOCO_BASH_GUARD_HOOK", "/app/scripts/bash-guard-hook.sh"
+)
 
 # The composed role blueprint the orchestrator mounts into every container.
 SYSTEM_PROMPT_PATH = Path(
@@ -206,13 +243,37 @@ def _load_system_prompt(path: Path) -> str:
         return ""
 
 
+def opencode_model_ref(model: str) -> str:
+    """Resolve *model* to opencode's ``provider/model`` grammar.
+
+    The orchestrator passes a BARE OpenRouter catalog id (``anthropic/claude-
+    sonnet-4``) in ``ROBOCO_AGENT_MODEL`` — passed through verbatim, opencode
+    resolves it against its BUILT-IN ``anthropic`` provider (which expects
+    ``ANTHROPIC_API_KEY``, never set in this image) and the run cannot
+    authenticate (live-verified). Prefixing with opencode's own provider id
+    from the rendered ``provider.openrouter`` block routes every call through
+    OpenRouter: ``openrouter/anthropic/claude-sonnet-4``. Idempotent — an
+    already-prefixed ref passes through untouched (the provider injects the
+    prefixed ref into ``ROBOCO_AGENT_MODEL`` and the renderer re-derives it).
+    """
+    stripped = model.strip()
+    if not stripped or stripped.startswith("openrouter/"):
+        return stripped
+    return f"openrouter/{stripped}"
+
+
 def render_agent_block(role: str, model: str) -> dict[str, Any]:
-    """The ``agent.roboco`` block: prompt + mode + model + permission + tools."""
+    """The ``agent.roboco`` block: prompt + mode + model + permission + tools.
+
+    ``model`` is resolved through :func:`opencode_model_ref` — the block must
+    name the model the same way the entrypoint's ``--model`` flag does, or
+    the agent block and the CLI flag route to different providers.
+    """
     return {
         "prompt": _load_system_prompt(SYSTEM_PROMPT_PATH),
         "description": "RoboCo agent — follows the mounted role blueprint.",
         "mode": "primary",
-        "model": model,
+        "model": opencode_model_ref(model),
         "permission": permission_for_role(role),
         "tools": _tools_for_role(role),
     }
@@ -266,6 +327,101 @@ def render_mcp_block(mcp_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return servers
 
 
+# The opencode bash-guard plugin source (rendered verbatim into the global
+# plugins dir; ``__BASH_GUARD_HOOK__`` is replaced with BASH_GUARD_HOOK at
+# render time). opencode plugins are JS modules exporting an async factory
+# that returns a map of hook handlers (Bun runtime — node: built-ins work).
+# ``tool.execute.before`` is a genuine PreToolUse-equivalent (live-verified —
+# it fires before the tool spawns, and throwing blocks the call gracefully:
+# the agent sees the message and recovers, the run is never cancelled). The
+# plugin feeds every bash call through the SAME bash-guard-hook.sh the
+# Claude/grok/kimi paths install, using the hook's Claude-schema stdin
+# payload ({tool_name, tool_input:{command}}; exit 0 = allow, exit 2 = deny)
+# — defense-in-depth against the compound-command exfil vectors the
+# first-token permission.bash globs cannot reach (the deny-rules above stay
+# the PRIMARY gate). Fail-open on hook-infrastructure errors (script missing
+# or not executable): a broken tripwire must not take down every run while
+# the deny-rules are still in force; only an authoritative exit 2 blocks.
+_BASH_GUARD_PLUGIN_TEMPLATE = """\
+// RoboCo bash-guard plugin for opencode (rendered by
+// roboco.llm.providers.openrouter_cli_config — do not edit by hand; the
+// entrypoint re-renders it at every start).
+//
+// Defense-in-depth PreToolUse gate: opencode's `tool.execute.before` hook
+// fires BEFORE the bash tool spawns the command, and throwing inside the
+// handler blocks the call (the agent sees the message and recovers — the
+// same graceful semantics as opencode's permission.bash deny-rules, which
+// remain the primary gate). Every bash call is fed through the SAME
+// bash-guard-hook.sh the Claude/grok/kimi paths install, using the hook's
+// Claude-schema stdin payload: {tool_name, tool_input:{command}};
+// exit 0 = allow, exit 2 = deny. The hook catches compound-command
+// exfil/mutation vectors (`cd /ws && git fetch ...`) that permission.bash's
+// first-token globs cannot reach.
+//
+// Fail-open on hook-infrastructure errors (missing/unexecutable script): a
+// broken tripwire must not break every run while the deny-rules hold. Only
+// the hook's authoritative deny exit code (2) blocks.
+
+import { spawnSync } from "node:child_process"
+
+const HOOK_PATH = "__BASH_GUARD_HOOK__"
+
+export const robocoBashGuard = async () => {
+  return {
+    "tool.execute.before": async (input, output) => {
+      if (input.tool !== "bash") return
+      const command = output.args && output.args.command
+      if (typeof command !== "string" || command === "") return
+      let result
+      try {
+        result = spawnSync(HOOK_PATH, {
+          input: JSON.stringify({
+            tool_name: "bash",
+            tool_input: { command },
+          }),
+          encoding: "utf8",
+        })
+      } catch {
+        return // fail open on infrastructure errors
+      }
+      if (result.error) return // script missing / not executable
+      if (result.status === 2) {
+        throw new Error(
+          "Blocked by the RoboCo bash-guard: this command matches a denied " +
+            "pattern. Route git and package operations through the RoboCo " +
+            "MCP gateway verbs instead.",
+        )
+      }
+    },
+  }
+}
+"""
+
+
+def render_bash_guard_plugin(hook_path: str | None = None) -> str:
+    """The opencode bash-guard plugin JS source (``tool.execute.before`` hook).
+
+    *hook_path* defaults to :data:`BASH_GUARD_HOOK` read at call time (the
+    round-1 stale-default-arg lesson). See ``_BASH_GUARD_PLUGIN_TEMPLATE``
+    for the gate's contract.
+    """
+    return _BASH_GUARD_PLUGIN_TEMPLATE.replace(
+        "__BASH_GUARD_HOOK__", hook_path or BASH_GUARD_HOOK
+    )
+
+
+def write_bash_guard_plugin(path: Path | None = None) -> Path:
+    """Render the bash-guard plugin to opencode's global plugins dir.
+
+    Creates parent dirs; OSError propagates so a render failure is loud at
+    container start (before any model call), not silently unguarded.
+    """
+    target = path if path is not None else OPENCODE_PLUGIN_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_bash_guard_plugin(), encoding="utf-8")
+    return target
+
+
 def render_config(
     role: str,
     model: str,
@@ -295,7 +451,12 @@ def is_valid() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entrypoint: ``--check`` runs the auth preflight; else renders opencode.json."""
+    """Entrypoint: ``--check`` runs the auth preflight; else renders the config.
+
+    Render mode writes BOTH artifacts opencode loads from its global config
+    home: ``opencode.json`` (agent/permission/mcp/provider blocks) and the
+    bash-guard plugin (see :func:`write_bash_guard_plugin`).
+    """
     args = argv if argv is not None else sys.argv[1:]
     if "--check" in args:
         return 0 if is_valid() else 1
@@ -308,6 +469,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = render_config(role, model, base_url, mcp_path)
     OPENCODE_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    write_bash_guard_plugin()
     return 0
 
 

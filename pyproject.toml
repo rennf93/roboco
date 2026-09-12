@@ -355,6 +355,10 @@ select = [
 # Config test renders opencode.json inside a temp dir — tempfile imports are
 # deferred to the test bodies that need them.
 "tests/unit/llm/providers/test_openrouter_cli_config.py" = ["PLC0415"]
+# _config carries the spawn-config contract (agent_id, model, provider_type,
+# base_url, auth_token, mcp_config_path) — the model kwarg is how the
+# opencode model-ref prefixing tests hand over bare vs custom catalog ids.
+"tests/unit/llm/providers/test_openrouter_provider.py" = ["PLR0913"]
 
 # =============================================================================
 # MyPy Configuration

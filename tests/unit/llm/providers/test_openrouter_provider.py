@@ -32,6 +32,7 @@ _OPENROUTER_MODEL = "anthropic/claude-sonnet-4"
 def _config(
     *,
     agent_id: str = "be-dev-1",
+    model: str = _OPENROUTER_MODEL,
     provider_type: str = "openrouter",
     provider_base_url: str | None = "https://openrouter.ai/api/v1",
     provider_auth_token: str | None = "sk-or-v1-test-key",
@@ -40,7 +41,7 @@ def _config(
     return OrchestratorAgentConfig(
         agent_id=agent_id,
         blueprint_path=Path("/app/system-prompt.md"),
-        model=_OPENROUTER_MODEL,
+        model=model,
         mcp_config_path=mcp_config_path,
         claude_session_id="sess-1",
         provider_type=provider_type,
@@ -208,7 +209,11 @@ async def test_openrouter_spawn_wires_gateway_env_and_image_last() -> None:
     cmd = list(exec_mock.call_args.args)
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert "ROBOCO_AGENT_ID=be-dev-1" in cmd
-    assert "ROBOCO_AGENT_MODEL=anthropic/claude-sonnet-4" in cmd
+    # The env carries the opencode model REF (opencode's own provider id
+    # prefixing the bare catalog id) — the entrypoint passes it straight to
+    # --model; unprefixed, opencode resolves it against its built-in
+    # anthropic provider and the run cannot authenticate.
+    assert "ROBOCO_AGENT_MODEL=openrouter/anthropic/claude-sonnet-4" in cmd
     # Usage capture: per-agent data dir mounted + the entrypoint's usage file.
     assert host.data_dirs_ensured == ["be-dev-1"]
     assert "/host/data/openrouter-usage/be-dev-1:/home/agent/.opencode-usage" in cmd
@@ -223,6 +228,23 @@ async def test_openrouter_spawn_wires_gateway_env_and_image_last() -> None:
         instance_id="roboco-agent-be-dev-1",
         extra={"container_id": "cid", "model": "anthropic/claude-sonnet-4"},
     )
+
+
+async def test_openrouter_spawn_prefixes_custom_model_for_opencode() -> None:
+    """Any bare catalog id assigned by routing gets the openrouter/ ref."""
+    host = _FakeHost()
+    provider = OpenRouterProvider(host)
+    config = _config(model="z-ai/glm-5.3")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        result = await provider.spawn(config)
+    cmd = list(exec_mock.call_args.args)
+    assert "ROBOCO_AGENT_MODEL=openrouter/z-ai/glm-5.3" in cmd
+    # SpawnResult keeps the bare catalog id (the model identity, not the
+    # opencode grammar).
+    assert result.extra is not None
+    assert result.extra["model"] == "z-ai/glm-5.3"
 
 
 async def test_openrouter_spawn_adds_compose_labels_before_image(
