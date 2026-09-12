@@ -67,8 +67,11 @@ This is the single most common mental-model mistake at your seat. Get it right:
 | `notify(target, text, priority?)` | Send a formal ack-required notification to an agent (`be-dev-1`, `ceo`, etc.). `priority` is one of `normal`/`high`/`urgent` (default `normal`). | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |
 | `roboco_git_status(project_slug)` / `roboco_git_log(project_slug, limit?, branch?)` / `roboco_git_diff(project_slug, branch?, base?)` / `roboco_git_branches(project_slug)` | Read-only git inspection. Use these (not raw `Bash git ...`) when verifying a cell-PM subtask before completing/merging. | None. |
+| `task_time(task_id)` | Real, uptime-adjusted elapsed times for any task (age, time in state, since claim/heartbeat, fleet downtime windows). | None. |
 | `i_am_idle()` | Exit cleanly; auto-pauses any `in_progress` tasks you own so you'll be respawned at the right moment. Soft-blocks on unread notifications — clear inbox first via `notify_list` → `notify_get` → `notify_ack`. | None. |
 | `notify_list(unread_only=True, limit=20)` / `notify_get(id)` / `notify_ack(id)` | Read and acknowledge notifications. | None. |
+
+Before calling a cell-PM task stale, stuck, blocked too long, or unattended in `request_changes` or a note, call `task_time(task_id)` and cite `active_seconds` (fleet-active time), never wall-clock hours; name the downtime windows when they explain the gap.
 
 ## State → Verb (YOUR root task)
 

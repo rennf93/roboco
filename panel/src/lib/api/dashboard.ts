@@ -9,6 +9,7 @@ import type {
   CEOOverview as CEOOverviewType,
   Task,
   StalledTask,
+  PortfolioCard,
 } from "@/types";
 import {
   isMockMode,
@@ -612,6 +613,16 @@ export const dashboardApi = {
     const { data } = await api.get<TaskMetrics>(
       `/dashboard/metrics/task/${taskId}`,
     );
+    return data;
+  },
+
+  // CEO-gated cross-project portfolio: per-project delivery, rework, open
+  // findings, and this month's budget burn — most active first.
+  getPortfolio: async (): Promise<PortfolioCard[]> => {
+    if (isMockMode()) {
+      return [];
+    }
+    const { data } = await api.get<PortfolioCard[]>("/dashboard/portfolio");
     return data;
   },
 

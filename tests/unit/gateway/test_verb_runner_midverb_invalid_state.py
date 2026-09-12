@@ -37,15 +37,14 @@ def _session_with_savepoint() -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_mid_verb_none_raises_invalid_state() -> None:
-    """i_will_plan composes (claim, set_plan, start). If a concurrent
-    transition makes ``set_plan`` return None mid-sequence, the runner raises
-    INVALID_STATE before dispatching ``start`` — not a cryptic None.id crash."""
+    """i_will_plan composes (claim, set_plan). If a concurrent transition
+    makes ``claim`` return None mid-sequence, the runner raises INVALID_STATE
+    before dispatching ``set_plan``, not a cryptic None.id crash."""
     task = MagicMock(id=uuid4())
     task_service = MagicMock()
     task_service.session = _session_with_savepoint()
-    task_service.claim = AsyncMock(return_value=task)
-    task_service.set_plan = AsyncMock(return_value=None)  # mid-verb source-status fail
-    task_service.start = AsyncMock(return_value=task)
+    task_service.claim = AsyncMock(return_value=None)  # mid-verb source-status fail
+    task_service.set_plan = AsyncMock(return_value=task)
 
     agent = MagicMock(id=uuid4())
     ctx = MagicMock()
@@ -54,8 +53,8 @@ async def test_mid_verb_none_raises_invalid_state() -> None:
     with pytest.raises(ValueError, match="INVALID_STATE"):
         await runner.run_intent("i_will_plan", task, agent, ctx)
 
-    # start must NOT run after the None — the runner fails loud before it.
-    task_service.start.assert_not_awaited()
+    # set_plan must NOT run after the None: the runner fails loud before it.
+    task_service.set_plan.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -68,8 +67,7 @@ async def test_last_composed_none_flows_out_as_result() -> None:
     task_service = MagicMock()
     task_service.session = _session_with_savepoint()
     task_service.claim = AsyncMock(return_value=task)
-    task_service.set_plan = AsyncMock(return_value=task)
-    task_service.start = AsyncMock(return_value=None)  # last action declines
+    task_service.set_plan = AsyncMock(return_value=None)  # last action declines
 
     agent = MagicMock(id=uuid4())
     ctx = MagicMock()
