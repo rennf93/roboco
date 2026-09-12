@@ -846,6 +846,43 @@ class SpawnExitEngine(_Base):
             turns = t
         return turns, tool_calls
 
+    def _resolve_finalize_cost(
+        self,
+        agent_id: str,
+        provider: str | None,
+        model: str,
+        tokens: tuple[int, int, int, int],
+    ) -> float:
+        """Resolve a finalize's ``estimated_cost_usd`` for one spawn session.
+
+        A metered-cost provider's usage.json IS the spend (OpenRouter bills
+        per model at its own rates and the CLI capture sums the per-step
+        metered cost) - recalculating from tokens via the static pricing
+        table cannot know that catalog, so the metered read wins whenever it
+        is present. Everyone else prices through the static pricing table.
+        Split out of ``_finalize_spawn_session`` (which supplies the token
+        buckets) to keep that function's xenon budget flat as metered-cost
+        providers accrete.
+        """
+        from roboco.billing.pricing import calculate_cost
+        from roboco.models.base import ModelProvider
+
+        metered_cost_readers = {
+            ModelProvider.OPENROUTER.value: self._openrouter_usage_cost,
+        }
+        read_metered_cost = metered_cost_readers.get(provider) if provider else None
+        metered_cost = read_metered_cost(agent_id) if read_metered_cost else None
+        if metered_cost is not None:
+            return metered_cost
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write = tokens
+        return calculate_cost(
+            model=model,
+            tokens_input=tokens_input,
+            tokens_output=tokens_output,
+            tokens_cache_read=tokens_cache_read,
+            tokens_cache_write=tokens_cache_write,
+        )
+
     async def _finalize_spawn_session(
         self,
         agent_id: str,
@@ -854,15 +891,14 @@ class SpawnExitEngine(_Base):
         """Close the open agent_spawn_sessions row for this agent.
 
         Resolves final token counts (live SDK, with a durable transcript
-        fallback), calculates cost via the pricing module, then updates the DB
+        fallback), resolves cost (a metered-cost provider's own usage cost
+        where one exists, else the pricing module), then updates the DB
         row with ended_at, token totals, exit_reason, and estimated_cost_usd.
         Errors are caught and logged — finalization must never block stop_agent.
         """
         try:
-            from roboco.billing.pricing import calculate_cost
             from roboco.db.base import get_session_factory
             from roboco.db.tables import AgentSpawnSessionTable
-            from roboco.models.base import ModelProvider
 
             # Resolve final token counts (live SDK, with transcript fallback).
             (
@@ -884,28 +920,16 @@ class SpawnExitEngine(_Base):
             usage_session_id = instance.usage_session_id if instance else None
             doctrine_version = self._doctrine_version_for_instance(instance)
 
-            # A metered-cost provider's usage.json IS the spend (OpenRouter
-            # bills per model at its own rates and the CLI capture sums the
-            # per-step metered cost) - recalculating from tokens via the
-            # static pricing table cannot know that catalog, so the metered
-            # read wins whenever it is present.
-            provider = self.get_provider_for_agent(agent_id)
-            metered_cost_readers = {
-                ModelProvider.OPENROUTER.value: self._openrouter_usage_cost,
-            }
-            read_metered_cost = metered_cost_readers.get(provider) if provider else None
-            metered_cost = read_metered_cost(agent_id) if read_metered_cost else None
-
-            cost = (
-                metered_cost
-                if metered_cost is not None
-                else calculate_cost(
-                    model=model,
-                    tokens_input=tokens_input,
-                    tokens_output=tokens_output,
-                    tokens_cache_read=tokens_cache_read,
-                    tokens_cache_write=tokens_cache_write,
-                )
+            cost = self._resolve_finalize_cost(
+                agent_id,
+                self.get_provider_for_agent(agent_id),
+                model,
+                (
+                    tokens_input,
+                    tokens_output,
+                    tokens_cache_read,
+                    tokens_cache_write,
+                ),
             )
 
             session_factory = get_session_factory()
