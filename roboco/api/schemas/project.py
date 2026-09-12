@@ -22,6 +22,14 @@ if TYPE_CHECKING:
 # =============================================================================
 
 
+class AllowedAgentSummary(BaseModel):
+    """An agent id resolved to slug/name for the access-restriction list."""
+
+    id: UUID
+    slug: str
+    name: str
+
+
 class ProjectResponse(BaseModel):
     """Response model for project information."""
 
@@ -38,6 +46,15 @@ class ProjectResponse(BaseModel):
     protected_branches: list[str]
     environments: list[dict[str, str]] | None = None
     assigned_cell: Team
+
+    # Access restriction: mirrors the model's allowed_agents (None = whole
+    # assigned_cell has access, today's default behavior; a list = restricted
+    # to only these agents). access_restricted spells out the None-vs-list
+    # distinction explicitly so a typed client never has to treat a null
+    # array as ambiguous; allowed_agents carries the ids resolved to
+    # slug/name (None whenever access_restricted is False).
+    access_restricted: bool = False
+    allowed_agents: list[AllowedAgentSummary] | None = None
 
     # Git authentication status (token never exposed, only boolean)
     has_git_token: bool = False
@@ -300,6 +317,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         protected_branches=list(project.protected_branches or []),
         environments=list(project.environments) if project.environments else None,
         assigned_cell=project.assigned_cell,
+        access_restricted=project.allowed_agents is not None,
         has_git_token=bool(project.git_token_encrypted),
         test_command=project.test_command,
         lint_command=project.lint_command,

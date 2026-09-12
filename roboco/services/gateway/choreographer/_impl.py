@@ -21,6 +21,7 @@ from uuid import UUID
 import structlog
 
 from roboco.exceptions import MergeConflictError
+from roboco.foundation.identity import Team
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.batch import is_batch_root_subtask, is_batch_umbrella
 from roboco.foundation.policy.content import (
@@ -40,6 +41,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
     run_bounded_leg,
 )
 from roboco.services.gateway.claim_guards import (
+    agent_access_denied_guard,
     already_active_guard,
     paused_tasks_guard,
     project_budget_exceeded_guard,
@@ -299,6 +301,10 @@ class ChoreographerDeps:
     # callsites / tests that don't exercise Product routing don't have to plumb
     # it in; when None, delegate falls back to parent-project inheritance.
     product: Any = None
+    # ProjectService for the agent-access claim guard
+    # (check_agent_access — the allowed_agents restriction). Optional so
+    # existing callsites / tests that don't plumb it keep the guard inert.
+    project: Any = None
     # Orchestrator access for the rate-limited i_am_blocked path.
     # Implements get_provider_for_agent(slug) -> str | None,
     # get_active_agent_slugs_for_provider(provider) -> list[str], and
@@ -460,6 +466,10 @@ class Choreographer:
     @property
     def product(self) -> Any:
         return self._deps.product
+
+    @property
+    def project(self) -> Any:
+        return self._deps.project
 
     @property
     def orchestrator(self) -> Any:
@@ -1243,6 +1253,7 @@ class Choreographer:
         role_str: str | None = None,
         skip_dev_guards: bool = False,
         check_project_budget: bool = False,
+        check_agent_access: bool = False,
     ) -> Envelope | None:
         """Run concurrency-invariant claim guards. Returns rejection or None.
 
@@ -1276,6 +1287,12 @@ class Choreographer:
         an exhausted cap whose incremental cost is negligible next to the
         sunk spend.
 
+        ``check_agent_access`` (same default-False work-STARTING opt-in)
+        scopes the project agent-access guard to the same two call sites —
+        it is the enforcement chokepoint for the project's
+        ``allowed_agents`` restriction: a same-cell agent not on the list
+        is refused before any task-status mutation.
+
         Pre-gateway location: _helpers.py:124-204.
         """
         if not skip_dev_guards and role_str not in self._COORDINATOR_ROLES:
@@ -1287,13 +1304,69 @@ class Choreographer:
                 return guard
         if guard := await self._sequencing_claim_guard(task):
             return guard
-        if check_project_budget and (
-            guard := await self._project_budget_claim_guard(task)
+        if guard := await self._opt_in_claim_guards(
+            task,
+            agent_id=agent_id,
+            check_project_budget=check_project_budget,
+            check_agent_access=check_agent_access,
         ):
             return guard
         if skip_dev_guards:
             return None
         return await self._lane_claim_guard(task)
+
+    async def _opt_in_claim_guards(
+        self,
+        task: Any,
+        *,
+        agent_id: UUID,
+        check_project_budget: bool,
+        check_agent_access: bool,
+    ) -> Envelope | None:
+        """The two opt-in, work-STARTING-only guards in one call — the
+        project monthly-budget guard and the project agent-access guard.
+        Extracted from ``_run_claim_guards`` (xenon return-count budget).
+        """
+        if check_project_budget and (
+            guard := await self._project_budget_claim_guard(task)
+        ):
+            return guard
+        if check_agent_access and (
+            guard := await self._agent_access_claim_guard(task, agent_id)
+        ):
+            return guard
+        return None
+
+    async def _agent_access_claim_guard(
+        self, task: Any, agent_id: UUID
+    ) -> Envelope | None:
+        """Refuse claim when the project's access rule denies the agent.
+
+        Enforces ``ProjectService.check_agent_access`` — the services-layer
+        rule (project exists, assigned cell matches, optional
+        ``allowed_agents`` list; None = whole cell passes) — at the
+        agent-to-project grant chokepoint, so a restriction set via
+        POST /projects/{id}/access/{agent_id} is actually enforced. The
+        deny decision comes solely from that rule; this helper only
+        resolves its inputs. Inert when the deps lack a project service
+        (existing tests), the task has no project (branchless coordination
+        root), or the agent view carries no usable team — mirroring
+        ``_sequence_claim_guard``'s mock-safety guard.
+        """
+        if self._deps.project is None:
+            return None
+        project = getattr(task, "project", None)
+        if project is None or getattr(project, "id", None) is None:
+            return None
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or not isinstance(agent.team, str):
+            return None
+        try:
+            team = Team(agent.team)
+        except ValueError:
+            return None
+        has_access = await self.project.check_agent_access(project.id, agent.id, team)
+        return agent_access_denied_guard(task, project.id, agent.id, has_access)
 
     async def _sequencing_claim_guard(self, task: Any) -> Envelope | None:
         """Both halves of the claim-time sequencing bar in one call — an
@@ -1569,12 +1642,15 @@ class Choreographer:
             )
         # Concurrency guards still apply on resumption (paused / already-active
         # in another task). check_project_budget=True: resuming i_will_work_on
-        # / i_will_plan is still a work-STARTING claim.
+        # / i_will_plan is still a work-STARTING claim. check_agent_access
+        # likewise — the grant chokepoint for the project's allowed_agents
+        # restriction.
         if guard := await self._run_claim_guards(
             agent_id=agent_id,
             task=t,
             role_str=role_str,
             check_project_budget=True,
+            check_agent_access=True,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
@@ -1687,6 +1763,7 @@ class Choreographer:
             task=t,
             role_str=role_str,
             check_project_budget=True,
+            check_agent_access=True,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
