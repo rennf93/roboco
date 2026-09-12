@@ -14,8 +14,9 @@ round-trip in unit tests).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -430,3 +431,68 @@ async def test_reconcile_deleted_docs_from_db_swallows_query_failure(
     ):
         # Must not raise.
         await svc._reconcile_deleted_docs_from_db()
+
+
+# ---------------------------------------------------------------------------
+# initialize() - ROBOCO_ROLE gate on the auto-index/periodic-update task
+#
+# 'api' and 'dispatcher' both run the full FastAPI lifespan (roboco/api/app.py)
+# and would otherwise both schedule this CPU-heavy pass; only 'all' and the
+# dedicated 'indexer' role own it. Plugins still initialize in every role
+# (unit-tested here via a single fake plugin) since routes query the KB
+# regardless of who indexes it.
+# ---------------------------------------------------------------------------
+
+
+class _FakePlugin:
+    """Minimal stand-in for a BaseIndexPlugin: a no-op async initialize()."""
+
+    async def initialize(self) -> None:
+        return None
+
+
+async def _initialize_with_role(role: str) -> OptimalService:
+    """Run OptimalService.initialize() with one fake plugin and settings.role
+    pinned, everything else that reaches out to Ollama/DB stubbed out."""
+    svc = OptimalService()
+    with (
+        patch(
+            "roboco.services.optimal.PLUGIN_REGISTRY", {IndexType.JOURNALS: _FakePlugin}
+        ),
+        patch.object(svc, "_warmup_embedder", AsyncMock()),
+        patch("roboco.config.settings.role", role),
+    ):
+        await svc.initialize()
+    return svc
+
+
+async def _cancel_and_await(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_initialize_schedules_indexing_task_for_all_role() -> None:
+    svc = await _initialize_with_role("all")
+    assert svc._indexing_task is not None
+    await _cancel_and_await(svc._indexing_task)
+
+
+@pytest.mark.asyncio
+async def test_initialize_schedules_indexing_task_for_indexer_role() -> None:
+    svc = await _initialize_with_role("indexer")
+    assert svc._indexing_task is not None
+    await _cancel_and_await(svc._indexing_task)
+
+
+@pytest.mark.asyncio
+async def test_initialize_skips_indexing_task_for_api_role() -> None:
+    svc = await _initialize_with_role("api")
+    assert svc._indexing_task is None
+
+
+@pytest.mark.asyncio
+async def test_initialize_skips_indexing_task_for_dispatcher_role() -> None:
+    svc = await _initialize_with_role("dispatcher")
+    assert svc._indexing_task is None

@@ -1,9 +1,9 @@
 """Startup orphan-claim reconciler.
 
 The orchestrator's `_reconcile_orphan_claims_on_startup` rolls back
-tasks left in CLAIMED/IN_PROGRESS with `branch_name IS NULL` — the
-half-state from a crash where `_finalize_claim` flushed status=CLAIMED
-before branch creation failed.
+tasks left in CLAIMED/IN_PROGRESS with `branch_name IS NULL`: the
+half-state from a crash between `_apply_claim_fields`'s durable commit
+and `_provision_claim`'s branch creation.
 """
 
 from __future__ import annotations

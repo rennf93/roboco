@@ -7,12 +7,36 @@ active-agent breaker that prevents auditor spawn storms.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.config import Settings, settings
 from roboco.runtime.orchestrator import AgentOrchestrator
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@contextmanager
+def _frozen_audit_now(now: datetime) -> Iterator[MagicMock]:
+    """Freeze `datetime.now()` for the audit-dispatch path.
+
+    `_dispatch_audit_work` (dispatch_work.py) and `_audit_spawn_cooled` /
+    `_has_recent_delivery_activity` (dispatch_claim.py) each call
+    `datetime.now()` directly and neither is mocked via `patch.object` in
+    these tests, so both modules' `datetime` must be patched to the SAME
+    mock for a consistent frozen `now`.
+    """
+    dt_mock = MagicMock(wraps=datetime)
+    dt_mock.now.return_value = now
+    with (
+        patch("roboco.runtime.engines.dispatch_work.datetime", new=dt_mock),
+        patch("roboco.runtime.engines.dispatch_claim.datetime", new=dt_mock),
+    ):
+        yield dt_mock
 
 
 @pytest.fixture
@@ -49,9 +73,8 @@ async def test_spawns_when_overdue_and_delivery_activity(
     now = datetime.now(UTC)
     with (
         patch.object(settings, "audit_interval_seconds", 21600),
-        patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
+        _frozen_audit_now(now),
     ):
-        dt_mock.now.return_value = now
         orch._last_audit_spawn_at = now - timedelta(seconds=21601)
         spawn_mock = await _run_dispatch(
             orch,
@@ -75,9 +98,8 @@ async def test_skips_when_interval_not_elapsed(orch: AgentOrchestrator) -> None:
     now = datetime.now(UTC)
     with (
         patch.object(settings, "audit_interval_seconds", 21600),
-        patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
+        _frozen_audit_now(now),
     ):
-        dt_mock.now.return_value = now
         orch._last_audit_spawn_at = now - timedelta(seconds=1800)
         spawn_mock = await _run_dispatch(
             orch,
@@ -98,9 +120,8 @@ async def test_skips_when_no_delivery_activity(orch: AgentOrchestrator) -> None:
     now = datetime.now(UTC)
     with (
         patch.object(settings, "audit_interval_seconds", 21600),
-        patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
+        _frozen_audit_now(now),
     ):
-        dt_mock.now.return_value = now
         orch._last_audit_spawn_at = now - timedelta(seconds=21601)
         spawn_mock = await _run_dispatch(orch, tasks=[])
     assert spawn_mock.await_count == 0
@@ -113,7 +134,7 @@ async def test_breaker_skips_when_auditor_active(orch: AgentOrchestrator) -> Non
     now = datetime.now(UTC)
     with (
         patch.object(settings, "audit_interval_seconds", 21600),
-        patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
+        _frozen_audit_now(now),
         patch.object(
             orch, "_next_unobserved_audit_alert", new=AsyncMock(return_value=None)
         ),
@@ -122,7 +143,6 @@ async def test_breaker_skips_when_auditor_active(orch: AgentOrchestrator) -> Non
         patch.object(orch, "_is_agent_active", return_value=True),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn_mock,
     ):
-        dt_mock.now.return_value = now
         orch._last_audit_spawn_at = now - timedelta(seconds=21601)
         await orch._dispatch_audit_work(client)
     assert spawn_mock.await_count == 0
@@ -142,7 +162,7 @@ async def test_reactive_alert_stamps_last_spawn_and_blocks_scheduled(
     now = datetime.now(UTC)
     with (
         patch.object(settings, "audit_interval_seconds", 21600),
-        patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
+        _frozen_audit_now(now),
         patch.object(
             orch, "_next_unobserved_audit_alert", new=AsyncMock(return_value=alert)
         ),
@@ -151,7 +171,6 @@ async def test_reactive_alert_stamps_last_spawn_and_blocks_scheduled(
         patch.object(orch, "_is_agent_active", return_value=False),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn_mock,
     ):
-        dt_mock.now.return_value = now
         await orch._dispatch_audit_work(client)
     assert spawn_mock.await_count == 1
     assert orch._last_audit_spawn_at == now
@@ -178,14 +197,13 @@ async def test_reactive_alert_acks_so_it_cannot_rotate(
     fetch_mock = AsyncMock(side_effect=[alert, None])
     with (
         patch.object(settings, "audit_interval_seconds", 21600),
-        patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
+        _frozen_audit_now(now),
         patch.object(orch, "_next_unobserved_audit_alert", new=fetch_mock),
         patch.object(orch, "_ack_alert_as_auditor", new=ack_mock),
         patch.object(orch, "_fetch_tasks", new=AsyncMock(return_value=[])),
         patch.object(orch, "_is_agent_active", return_value=False),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn_mock,
     ):
-        dt_mock.now.return_value = now
         await orch._dispatch_audit_work(client)  # tick 1: alert -> spawn + ack
         await orch._dispatch_audit_work(client)  # tick 2: no alert -> scheduled
     assert spawn_mock.await_count == 1  # not respawned on tick 2
@@ -202,9 +220,8 @@ async def test_cooldown_zero_disables_scheduled_sweeps(orch: AgentOrchestrator) 
     now = datetime.now(UTC)
     with (
         patch.object(settings, "audit_interval_seconds", 0),
-        patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
+        _frozen_audit_now(now),
     ):
-        dt_mock.now.return_value = now
         orch._last_audit_spawn_at = None
         spawn_mock = await _run_dispatch(
             orch,
