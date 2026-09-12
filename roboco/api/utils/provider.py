@@ -35,6 +35,9 @@ _PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
         "button, or assign a Kimi model to an agent in Mix mode (both "
         "force-enable the row)."
     ),
+    ModelProvider.OPENROUTER: (
+        "Save the OpenRouter API key first (PUT /providers/openrouter-key)."
+    ),
 }
 
 
@@ -62,3 +65,13 @@ def parse_complexity_override(
             role=role, complexity="high", model_name=model_name
         )
     return None
+
+
+def safe_float(value: str | None) -> float | None:
+    """Convert OpenRouter's string pricing rates to float, or None."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None

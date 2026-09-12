@@ -131,3 +131,6 @@ docs/internal/
 
 # Local uv python pin (machine-specific)
 .python-version
+
+.mimosa/
+.video_agent/

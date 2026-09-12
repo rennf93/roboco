@@ -282,6 +282,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
 
 
 def _stub_empty_ledger(session: MagicMock) -> None:
+    session.commit = AsyncMock()
     session.execute = AsyncMock(
         return_value=MagicMock(
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
@@ -302,6 +303,7 @@ def _qa_task(task_id: Any) -> MagicMock:
         id=task_id,
         status="awaiting_qa",
         assigned_to=None,
+        active_claimant_id=None,
         pr_number=_PR_NUMBER,
         pr_url=_PR_URL,
         commits=[{"sha": "abc123", "message": "feat: x"}],
@@ -554,6 +556,7 @@ def _doc_task(task_id: Any, branch: str) -> MagicMock:
         id=task_id,
         status="awaiting_documentation",
         assigned_to=None,
+        active_claimant_id=None,
         task_type="documentation",
         team="backend",
         branch_name=branch,
@@ -657,6 +660,7 @@ def _gate_task() -> MagicMock:
         id=uuid4(),
         status="awaiting_pr_review",
         assigned_to=uuid4(),
+        active_claimant_id=None,
         parent_task_id=None,
         task_type="planning",
         dependency_ids=[],

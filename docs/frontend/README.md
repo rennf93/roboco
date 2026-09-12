@@ -12,6 +12,7 @@ Documentation for the Frontend Cell team.
 - `/components/` - Component documentation
   - [Page-scoped refresh provider](./components/page-refresh-provider.md) — `PageRefreshProvider` callback registry that lets the navbar refresh button re-fetch only the current page.
   - [Project selector](./components/project-selector.md) — `ProjectSelector` dropdown for picking a project, with optional filtering by team and video-engine enablement.
+  - [Portfolio cards](./components/portfolio-cards.md) — `PortfolioCards` CEO-only per-project metrics cards (five metrics, endpoint-order sort, `/tasks?project=` drill-down) with the `CeoGate`/`panel-role` gating seam and the known slug-vs-`project_id` drill-down follow-up.
 - `/hooks/` - Hook documentation
 - `/qa/` - QA-related docs
 
@@ -19,8 +20,10 @@ Documentation for the Frontend Cell team.
 
 - [`a2a-filtering.md`](./a2a-filtering.md) — A2A filter bar, conversation list, and pulse-flash hook
 - [`a2a-conversation-first-layout.md`](./a2a-conversation-first-layout.md) — Agent identity colors, connection states, context pane, transcript motion, and empty/error states
+- [`openrouter-provider.md`](./openrouter-provider.md) — OpenRouter foundation: `ModelProvider.OPENROUTER`, `providersApi` key/model-search client functions, and `useOpenRouterKey`/`useSetOpenRouterKey`/`useSearchOpenRouterModels` hooks
 - [`hooks.md`](./hooks.md) — `usePageRefresh`/`PageRefreshProvider` and `useStalledTasks` usage and API reference
 - [`stalled-needs-you.md`](./stalled-needs-you.md) — the Stalled/Needs-You feature: shared `useStalledTasks` hook, Overview section, Tasks filter, and detail-header chip; backend contract and empty/error state rules
+- [`components/openrouter-routing-ui.md`](./components/openrouter-routing-ui.md) — OpenRouter as a first-class provider in the AI routing settings: key card row (`OpenRouterProviderKeyRow` with false-Saved bug fix), ModeButton, debounced search model picker with per-million-token pricing and error/empty states, ProviderBadge variant
 - [`forms/forms-audit.md`](./forms/forms-audit.md) — the living panel-forms ↔ backend-schema consistency audit (settings page + project + task dialogs); update the matching row in the same PR as any schema change
 - [`forms/project-fields-audit.md`](./forms/project-fields-audit.md) — project dialog field reference (types, create-vs-edit exposure, the add-a-field checklist)
 - [`blocker-findings-audit-2026-07-29.md`](./blocker-findings-audit-2026-07-29.md) — 2026-07-29 audit of the frontend cell's `needs_revision`/`awaiting_pm_review` backlog for open BLOCKER-severity findings

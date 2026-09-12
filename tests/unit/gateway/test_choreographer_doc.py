@@ -31,6 +31,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
     )
+    base["task"].session.commit = AsyncMock()
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -60,6 +61,7 @@ async def test_claim_doc_task_returns_evidence() -> None:
         id=task_id,
         status="awaiting_documentation",
         assigned_to=None,
+        active_claimant_id=None,
         pr_number=8,
         pr_url="https://github.com/x/y/pull/8",
         commits=[{"sha": "abc", "message": "feat: x"}],

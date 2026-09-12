@@ -225,6 +225,15 @@ class ModelProvider(StrEnum):
     dedicated provider (roboco.llm.providers.kimi.KimiCliProvider), never
     ANTHROPIC_BASE_URL injection. One-shot delivery roles only — no
     interactive intake/secretary support.
+    `OPENROUTER` is OpenRouter (https://openrouter.ai) — a metered API key
+    gateway that speaks the OpenAI Chat Completions protocol and routes to
+    hundreds of models (GLM, DeepSeek, Qwen, Claude, GPT). Unlike the
+    subscription-CLI providers (Grok/Gemini/Codex/Kimi), it authenticates with
+    a stored Fernet-encrypted API key (mirroring the GROK key pattern). The
+    model catalog is live and lazy: the operator searches OpenRouter's model
+    list on demand via GET /providers/openrouter/models — never preloaded.
+    Cost is attributed from OpenRouter's own metered usage.cost, not a static
+    pricing table.
     """
 
     ANTHROPIC = "anthropic"
@@ -234,6 +243,7 @@ class ModelProvider(StrEnum):
     GROK = "grok"
     GEMINI = "gemini"
     KIMI = "kimi"
+    OPENROUTER = "openrouter"
 
 
 class AssignmentScope(StrEnum):

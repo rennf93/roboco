@@ -108,6 +108,7 @@ export enum ModelProvider {
   GROK = "grok",
   GEMINI = "gemini",
   KIMI = "kimi",
+  OPENROUTER = "openrouter",
 }
 
 export enum AssignmentScope {
@@ -713,6 +714,22 @@ export interface CEOOverview {
   key_metrics: Record<string, unknown>;
   auditor_alerts: Record<string, unknown>;
   roadmap_progress: Record<string, unknown>;
+}
+
+// =============================================================================
+// PORTFOLIO (matching backend schemas/dashboard.py PortfolioProjectMetrics)
+// =============================================================================
+
+/** One per-project row of the CEO portfolio view - GET /dashboard/portfolio, most active first */
+export interface PortfolioCard {
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+  active_task_count: number;
+  median_lead_time_hours: number | null;
+  rework_rate: number;
+  open_findings_count: number;
+  monthly_budget_burn_usd: number;
 }
 
 // =============================================================================
