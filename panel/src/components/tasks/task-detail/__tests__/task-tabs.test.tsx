@@ -47,6 +47,9 @@ vi.mock("../tab-dependencies", () => ({
 vi.mock("../tab-findings", () => ({
   TabFindings: () => <div data-testid="pane-findings" />,
 }));
+vi.mock("../tab-governance", () => ({
+  TabGovernance: () => <div data-testid="pane-governance" />,
+}));
 vi.mock("../tab-collision", () => ({
   TabCollision: () => <div data-testid="pane-collision" />,
 }));
@@ -91,7 +94,7 @@ describe("TaskTabs active-tab highlight", () => {
     const others = screen
       .getAllByRole("tab")
       .filter((t) => t !== overviewTrigger);
-    expect(others).toHaveLength(7);
+    expect(others).toHaveLength(8);
     for (const trigger of others) {
       expect(trigger).toHaveAttribute("data-state", "inactive");
     }
@@ -108,6 +111,16 @@ describe("TaskTabs active-tab highlight", () => {
     expect(screen.getByRole("tab", { name: /Overview/i })).toHaveAttribute(
       "data-state",
       "inactive",
+    );
+  });
+
+  it("selects the Governance tab from ?tab=governance", () => {
+    searchParams = new URLSearchParams("tab=governance");
+    render(<TaskTabs task={buildTask()} />);
+
+    expect(screen.getByRole("tab", { name: /Governance/i })).toHaveAttribute(
+      "data-state",
+      "active",
     );
   });
 });

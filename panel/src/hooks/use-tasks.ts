@@ -30,6 +30,7 @@ export const taskKeys = {
   boardReview: (id: string) => [...taskKeys.all, "board-review", id] as const,
   findings: (id: string) => [...taskKeys.all, "findings", id] as const,
   collisionMap: (id: string) => [...taskKeys.all, "collision-map", id] as const,
+  governance: (id: string) => [...taskKeys.all, "governance", id] as const,
   stats: () => [...taskKeys.all, "stats"] as const,
   statsByTeam: () => [...taskKeys.all, "stats-by-team"] as const,
 };
@@ -89,6 +90,19 @@ export function useTaskCollisionMap(taskId: string) {
   return useQuery<CollisionMap>({
     queryKey: taskKeys.collisionMap(taskId),
     queryFn: () => tasksApi.getCollisionMap(taskId),
+    enabled: !!taskId,
+    staleTime: 30000,
+  });
+}
+
+// The per-task governance report for the panel's Governance tab — the
+// quality-gate chain, findings summary, and rework count. A cheap read-only
+// aggregation (audit log + counters), fetched eagerly alongside the task
+// like the findings ledger so the tab renders without an extra click.
+export function useTaskGovernance(taskId: string) {
+  return useQuery({
+    queryKey: taskKeys.governance(taskId),
+    queryFn: () => tasksApi.getGovernance(taskId),
     enabled: !!taskId,
     staleTime: 30000,
   });
