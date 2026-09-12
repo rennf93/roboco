@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { tasksApi, type TaskFilters, type CollisionMap } from "@/lib/api/tasks";
+import { triggerTextFileDownload } from "@/lib/utils";
 import {
   Team,
   TaskStatus,
@@ -91,6 +92,34 @@ export function useTaskCollisionMap(taskId: string) {
     queryFn: () => tasksApi.getCollisionMap(taskId),
     enabled: !!taskId,
     staleTime: 30000,
+  });
+}
+
+// The per-task attestation receipt download (GET /tasks/{id}/attestation).
+// Fetches the endpoint in the requested format and hands the payload to the
+// browser's save-file machinery — no navigation, no second origin. The .md
+// variant is the server-rendered receipt (text/markdown); the .json variant
+// is the raw attestation object, pretty-printed client-side. Eager fetches
+// nothing: the endpoint is only hit when the approver asks for the receipt.
+export function useTaskAttestationDownload(taskId: string) {
+  return useMutation({
+    mutationFn: async ({ format }: { format: "md" | "json" }) => {
+      if (format === "md") {
+        const text = await tasksApi.getAttestationMarkdown(taskId);
+        triggerTextFileDownload(
+          text,
+          "attestation-" + taskId.slice(0, 8) + ".md",
+          "text/markdown",
+        );
+        return;
+      }
+      const attestation = await tasksApi.getAttestation(taskId);
+      triggerTextFileDownload(
+        JSON.stringify(attestation, null, 2),
+        "attestation-" + taskId.slice(0, 8) + ".json",
+        "application/json",
+      );
+    },
   });
 }
 

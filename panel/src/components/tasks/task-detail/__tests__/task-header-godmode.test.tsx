@@ -16,6 +16,9 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/hooks/use-tasks", () => ({
+  // The attestation download rides the shared hook module; the header tests
+  // stub it so no QueryClient is needed (mirrors the other lifecycle hooks).
+  useTaskAttestationDownload: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
   useUpdateTask: () => ({ mutateAsync, isPending: false }),
   useDeleteTask: () => ({ mutateAsync: vi.fn(), isPending: false }),
   // Empty valid-transitions => every other status is a god-mode override.
