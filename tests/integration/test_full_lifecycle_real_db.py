@@ -534,7 +534,7 @@ async def lifecycle_setup(
     db_session.add(task)
     await db_session.flush()
 
-    ids = {
+    ids: dict[str, Any] = {
         "project_id": project.id,
         "agent_ids": [
             system_agent.id,
