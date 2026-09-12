@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
-from roboco.db.tables import AuditLogTable, TaskTable
-from roboco.models import Team
+from roboco.db.tables import AgentTable, AuditLogTable, TaskTable
+from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskNature, TaskStatus, TaskType
 from roboco.services.attestation import (
     AttestedCriterion,
@@ -189,7 +189,26 @@ def test_render_empty_sections_degrade_to_placeholders() -> None:
     assert md.count("_None recorded._") == _EMPTY_SECTION_COUNT
 
 
-def _seed_task(**overrides: object) -> TaskTable:
+async def _seed_task(session: AsyncSession, **overrides: object) -> TaskTable:
+    """Seed the creator-of-record agent (``tasks.created_by`` carries a real
+    FK to ``agents``) plus the attested task, mirroring the integration
+    route-test fixture shape, and flush. Overrides land on the task row."""
+    creator = AgentTable(
+        id=uuid4(),
+        name="System",
+        slug=f"system-{uuid4().hex[:8]}",
+        role=AgentRole.SYSTEM,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="system",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    session.add(creator)
+    await session.flush()
+
     defaults: dict[str, object] = {
         "id": uuid4(),
         "title": "Attested task",
@@ -200,12 +219,15 @@ def _seed_task(**overrides: object) -> TaskTable:
         "priority": 2,
         "task_type": TaskType.CODE,
         "nature": TaskNature.TECHNICAL,
-        "created_by": uuid4(),
+        "created_by": creator.id,
         "team": Team.BACKEND,
         "revision_count": 0,
     }
     defaults.update(overrides)
-    return TaskTable(**defaults)
+    task = TaskTable(**defaults)
+    session.add(task)
+    await session.flush()
+    return task
 
 
 @pytest.mark.asyncio
@@ -215,14 +237,13 @@ async def test_assemble_matches_ac_stamps_by_text_and_by_id(
     """``criteria_verified``'s ``criterion`` may be the AC's stable id or its
     exact text — a stamp keyed either way must mark that criterion verified,
     not just the text-keyed one."""
-    task = _seed_task(
+    task = await _seed_task(
+        db_session,
         qa_notes=(
             "[AC] Criterion by text — verified: seen in the diff\n"
             "[AC] ac-2 — verified: seen via id lookup"
         ),
     )
-    db_session.add(task)
-    await db_session.flush()
 
     attestation = await assemble_task_attestation(db_session, task)
 
@@ -241,9 +262,7 @@ async def test_assemble_reviewer_chain_skips_rejector_duplicate_rows(
     row (``task.qa_fail`` etc.) alongside the generic ``task.<to_status>``
     row for rework attribution — the chain must show each real transition
     exactly once, not double it."""
-    task = _seed_task(qa_notes=None)
-    db_session.add(task)
-    await db_session.flush()
+    task = await _seed_task(db_session, qa_notes=None)
 
     db_session.add_all(
         [
@@ -282,9 +301,7 @@ async def test_assemble_no_project_resolves_ci_not_available(
     """A task with no project_id skips project/git-service resolution
     entirely and degrades the CI verdict to not_available — no live call is
     attempted."""
-    task = _seed_task(project_id=None)
-    db_session.add(task)
-    await db_session.flush()
+    task = await _seed_task(db_session, project_id=None)
 
     attestation = await assemble_task_attestation(db_session, task)
 
