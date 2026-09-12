@@ -23,6 +23,12 @@ export interface ReleaseReport {
   gate_state: string;
 }
 
+// One member task of a release proposal, for the verification rollup.
+export interface ReleaseMemberTaskId {
+  task_id: string;
+  pr_number: number | null;
+}
+
 export interface ReleaseProposal {
   task_id: string;
   title: string;
@@ -31,6 +37,10 @@ export interface ReleaseProposal {
   execute_status?: string | null;
   execute_detail?: string | null;
   execute_in_flight?: boolean;
+  // The release's member task ids, for the verification rollup — always
+  // present (an empty list means this release genuinely has no member
+  // tasks, see RELEASE_NO_MEMBER_TASKS_MESSAGE in @/lib/api/verification).
+  member_task_ids: ReleaseMemberTaskId[];
   report: ReleaseReport;
 }
 

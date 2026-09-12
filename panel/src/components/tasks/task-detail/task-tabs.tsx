@@ -3,6 +3,7 @@
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Task } from "@/types";
 import { useTaskFindings } from "@/hooks/use-tasks";
+import { useAcVerificationStamps } from "@/hooks/use-verification";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -18,6 +19,7 @@ import { TabNotes } from "./tab-notes";
 import { TabDependencies } from "./tab-dependencies";
 import { TabFindings } from "./tab-findings";
 import { TabCollision } from "./tab-collision";
+import { TabVerification } from "./tab-verification";
 import {
   FileText,
   Layout,
@@ -27,6 +29,7 @@ import {
   Link2,
   ListChecks,
   GitBranch,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -60,6 +63,8 @@ export function TaskTabs({ task }: TaskTabsProps) {
   const depsCount = task.dependency_ids.length + task.blocker_ids.length;
   const { data: findingsData } = useTaskFindings(task.id);
   const findingsCount = findingsData?.total ?? 0;
+  const { data: acStamps } = useAcVerificationStamps(task.id);
+  const unverifiedCount = acStamps?.filter((s) => !s.verified).length ?? 0;
 
   const tabs: TabDef[] = [
     {
@@ -67,6 +72,13 @@ export function TaskTabs({ task }: TaskTabsProps) {
       label: "Overview",
       icon: FileText,
       hint: "Description, acceptance criteria, and metadata",
+    },
+    {
+      value: "verification",
+      label: "Verification",
+      icon: ShieldCheck,
+      hint: "The approver's trust story: per-AC state, findings by round, CI verdict, conventions, reviewer chain",
+      count: unverifiedCount > 0 ? unverifiedCount : undefined,
     },
     {
       value: "plan",
@@ -136,7 +148,7 @@ export function TaskTabs({ task }: TaskTabsProps) {
 
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange} className="mt-6">
-      <TabsList className="grid w-full grid-cols-8 lg:w-auto lg:inline-grid">
+      <TabsList className="grid w-full grid-cols-9 lg:w-auto lg:inline-grid">
         {tabs.map((tab) => (
           <Tooltip key={tab.value}>
             <TooltipTrigger asChild>
@@ -169,6 +181,9 @@ export function TaskTabs({ task }: TaskTabsProps) {
       <div className="mt-4">
         <TabsContent value="overview">
           <TabOverview task={task} />
+        </TabsContent>
+        <TabsContent value="verification">
+          <TabVerification task={task} />
         </TabsContent>
         <TabsContent value="plan">
           <TabPlan task={task} />

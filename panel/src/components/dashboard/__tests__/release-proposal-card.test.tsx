@@ -43,6 +43,7 @@ function buildProposal(): ReleaseProposal {
     title: "Cut v0.14.0",
     status: "awaiting_ceo_approval",
     required_changes: null,
+    member_task_ids: [],
     report: {
       proposed_version: "0.14.0",
       bump_kind: "minor",
@@ -121,6 +122,25 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
     expect(screen.getByText("v0.14.0")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Approve & publish/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the verification rollup, stating no member tasks when the release genuinely has none", () => {
+    // member_task_ids is always present now (an empty list is a real
+    // "this release has no member tasks" state, not an unreachable-data gap)
+    // — the card must still render the rollup section wired to that state.
+    mockUseQuery.mockReturnValue({
+      data: buildProposal(),
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    render(withPageRefresh(<ReleaseProposalCard />));
+    expect(screen.getByText("Verification rollup")).toBeInTheDocument();
+    expect(
+      screen.getByText(/this release has no member tasks/i),
     ).toBeInTheDocument();
   });
 });
