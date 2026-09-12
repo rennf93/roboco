@@ -4,10 +4,11 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
+from fastapi.responses import PlainTextResponse
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -15,6 +16,10 @@ from roboco.api.deps import (
     PermissionServiceDep,
     get_permission_service,
     require_pm_or_above,
+)
+from roboco.api.schemas.attestation import (
+    TaskAttestationResponse,
+    attestation_to_response,
 )
 from roboco.api.schemas.tasks import (
     BoardReviewEntry,
@@ -69,6 +74,10 @@ from roboco.security import (
     guard_deco,
     prompt_injection_validator,
     secret_exfil_validator,
+)
+from roboco.services.attestation import (
+    assemble_task_attestation,
+    render_attestation_markdown,
 )
 from roboco.services.audit import get_audit_service
 from roboco.services.base import ServiceError
@@ -989,6 +998,45 @@ async def get_task_collision_map(
             for s in (ctx or [])
         ],
     )
+
+
+@router.get("/{task_id}/attestation", response_model=None)
+async def get_task_attestation(
+    task_id: UUID,
+    db: DbSession,
+    _agent: CurrentAgentContext,
+    format: Literal["json", "markdown", "md"] = Query("json"),
+) -> TaskAttestationResponse | PlainTextResponse:
+    """The full per-task verification attestation: every acceptance
+    criterion with its verified stamp, the findings ledger by round, the
+    CI verdict, conventions findings, and the reviewer/custody chain,
+    bound to commit and PR refs. ``format=markdown``/``format=md`` render
+    the SAME assembled object as a human-readable receipt — never a second
+    computation — so JSON and Markdown can never diverge. Delegates
+    entirely to ``assemble_task_attestation``/``render_attestation_markdown``
+    (roboco.services.attestation); no assembly logic lives here — project/
+    git-service resolution lives in the service too
+    (``resolve_attestation_service_context``).
+
+    ``response_model=None`` is required: the return type is a union
+    including a Starlette ``Response`` subclass (the markdown branch), and
+    FastAPI raises ``FastAPIError`` at decoration time trying to build a
+    response model for a non-Pydantic member of the union otherwise.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    attestation = await assemble_task_attestation(db, task)
+
+    if format in ("markdown", "md"):
+        return PlainTextResponse(
+            render_attestation_markdown(attestation), media_type="text/markdown"
+        )
+    return attestation_to_response(attestation)
 
 
 # =============================================================================
