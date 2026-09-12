@@ -777,9 +777,11 @@ async def test_add_agent_access_exposes_restricted_state_with_resolved_agent(
 async def test_remove_agent_access_reverts_to_cell_default(
     project_client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    """Removing the last restricted agent reverts allowed_agents to []
-    (still restricted, everyone removed) — not back to the None default;
-    only the write routes ever clear the restriction entirely."""
+    """Removing the last restricted agent reverts the project to the cell
+    default (``allowed_agents=None``, not restricted) — an emptied allow-list
+    that still denies everyone would lock every agent out of the project
+    (``remove_allowed_agent`` collapses the list to ``None``); only re-adding
+    an agent re-restricts it."""
     create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
     pid = create.json()["id"]
     other_agent = AgentTable(
@@ -807,5 +809,5 @@ async def test_remove_agent_access_reverts_to_cell_default(
 
     assert remove_response.status_code == HTTPStatus.OK
     body = remove_response.json()
-    assert body["access_restricted"] is True
-    assert body["allowed_agents"] == []
+    assert body["access_restricted"] is False
+    assert body["allowed_agents"] is None
