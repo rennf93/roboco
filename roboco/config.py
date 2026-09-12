@@ -2271,6 +2271,72 @@ class Settings(BaseSettings):
             "ROBOCO_KIMI_MAX_CONCURRENT only if you understand that risk"
         ),
     )
+    # OpenRouter — the Ollama shape, not Grok. A static metered API key
+    # injected via env (OPENROUTER_API_KEY + OPENROUTER_BASE_URL), no ~/. auth
+    # mount and no refresh loop (see roboco.llm.providers.openrouter). The
+    # default base URL is OpenRouter's public endpoint; the operator's key is
+    # stored Fernet-encrypted by the routing service (set_openrouter_api_key).
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description=(
+            "OpenRouter API base URL injected as OPENROUTER_BASE_URL at "
+            "spawn. Override via ROBOCO_OPENROUTER_BASE_URL"
+        ),
+    )
+    # The default OpenRouter model id (provider/model form, e.g.
+    # "anthropic/claude-sonnet-5") passed to `opencode run --model` when the
+    # routing assignment does not pin a specific model. The live catalog is
+    # searched on demand (GET /providers/openrouter/models) and the picked
+    # model id is stored via provider_type_override — this is only the floor.
+    openrouter_cli_model: str = Field(
+        default="anthropic/claude-sonnet-5",
+        description=(
+            "Default OpenRouter model id (provider/model) passed to opencode "
+            "when no per-assignment model is pinned. Override via "
+            "ROBOCO_OPENROUTER_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the OPENROUTER provider (the kimi
+    # pattern: real Settings fields, not hardcoded module constants). An
+    # operator may want a different cadence for OpenRouter's metered credit
+    # pools than the flat 60s default. The rate-limit value backs
+    # _park_openrouter_rate_limited's exponential re-park backoff (429 -> exit
+    # 75); the auth value covers the missing/invalid API key preflight (401 ->
+    # exit 78).
+    openrouter_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the OPENROUTER provider "
+            "on a quota/rate-limit exit; override via "
+            "ROBOCO_OPENROUTER_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    openrouter_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the OPENROUTER provider on a "
+            "missing/invalid API key (entrypoint preflight exit 78); override "
+            "via ROBOCO_OPENROUTER_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
+    openrouter_http_referer: str = Field(
+        default="",
+        description=(
+            "Optional HTTP-Referer sent on OpenRouter requests (OpenRouter "
+            "surfaces it on the usage dashboard). Override via "
+            "ROBOCO_OPENROUTER_HTTP_REFERER"
+        ),
+    )
+    openrouter_x_title: str = Field(
+        default="RoboCo",
+        description=(
+            "Optional X-Title sent on OpenRouter requests (site name shown on "
+            "the OpenRouter usage dashboard). Override via "
+            "ROBOCO_OPENROUTER_X_TITLE"
+        ),
+    )
     # An interactive intake/secretary chat the human abandoned (closed the tab
     # without confirming/stopping) otherwise leaks its container until the
     # orchestrator restarts. The sweeper reaps a live session whose

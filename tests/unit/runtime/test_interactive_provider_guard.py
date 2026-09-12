@@ -1,9 +1,9 @@
-"""Codex (OPENAI), Gemini (GEMINI), and Kimi (KIMI) are V1 delivery-roles-only
-— none has an interactive-session driver image (unlike GROK's dedicated
-GROK_PROMPTER_IMAGE / GROK_SECRETARY_IMAGE). Routing any of them to the
-persistent Intake/Secretary agent must refuse loudly instead of silently
-falling through to the plain Claude SDK-driver image with a mismatched
-provider env.
+"""Codex (OPENAI), Gemini (GEMINI), Kimi (KIMI), and OpenRouter (OPENROUTER)
+are V1 delivery-roles-only — none has an interactive-session driver image
+(unlike GROK's dedicated GROK_PROMPTER_IMAGE / GROK_SECRETARY_IMAGE). Routing
+any of them to the persistent Intake/Secretary agent must refuse loudly
+instead of silently falling through to the plain Claude SDK-driver image with
+a mismatched provider env.
 """
 
 from __future__ import annotations
@@ -69,7 +69,13 @@ class TestRejectInteractiveUnsupportedProvider:
         assert set(INTERACTIVE_AGENT_SLUGS) == {INTAKE_AGENT_ID, SECRETARY_AGENT_ID}
 
     @pytest.mark.parametrize(
-        "provider", [ModelProvider.OPENAI, ModelProvider.GEMINI, ModelProvider.KIMI]
+        "provider",
+        [
+            ModelProvider.OPENAI,
+            ModelProvider.GEMINI,
+            ModelProvider.KIMI,
+            ModelProvider.OPENROUTER,
+        ],
     )
     def test_raises_for_delivery_only_providers(self, provider: ModelProvider) -> None:
         with pytest.raises(RuntimeError, match="delivery-roles-only"):
@@ -97,7 +103,13 @@ class TestRejectInteractiveUnsupportedProvider:
 
 class TestIntakeSpawnRefusesDeliveryOnlyProvider:
     @pytest.mark.parametrize(
-        "provider", [ModelProvider.OPENAI, ModelProvider.GEMINI, ModelProvider.KIMI]
+        "provider",
+        [
+            ModelProvider.OPENAI,
+            ModelProvider.GEMINI,
+            ModelProvider.KIMI,
+            ModelProvider.OPENROUTER,
+        ],
     )
     @pytest.mark.asyncio
     async def test_refuses_before_any_container_work(
@@ -155,7 +167,13 @@ class TestIntakeSpawnRefusesDeliveryOnlyProvider:
 
 class TestSecretarySpawnRefusesDeliveryOnlyProvider:
     @pytest.mark.parametrize(
-        "provider", [ModelProvider.OPENAI, ModelProvider.GEMINI, ModelProvider.KIMI]
+        "provider",
+        [
+            ModelProvider.OPENAI,
+            ModelProvider.GEMINI,
+            ModelProvider.KIMI,
+            ModelProvider.OPENROUTER,
+        ],
     )
     @pytest.mark.asyncio
     async def test_refuses_before_any_container_work(

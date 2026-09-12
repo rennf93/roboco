@@ -28,6 +28,7 @@ from roboco.runtime.orchestrator import (
     GROK_PROMPTER_IMAGE,
     GROK_SECRETARY_IMAGE,
     INTAKE_AGENT_ID,
+    OPENROUTER_USAGE_DATA_DIR,
     PROJECT_HOST_PATH,
     SECRETARY_AGENT_ID,
     AgentConfig,
@@ -213,6 +214,47 @@ class InteractiveSessionsEngine(_Base):
         except OSError as exc:
             logger.warning(
                 "could not pre-create kimi usage dir; kimi agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _openrouter_usage_root() -> Path:
+        """The base dir all per-agent openrouter usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(OPENROUTER_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-openrouter-usage"
+
+    @staticmethod
+    def _openrouter_usage_dir(agent_id: str) -> Path:
+        """Per-agent openrouter usage dir under :meth:`_openrouter_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_openrouter_usage_dir``) and the finalize read side
+        (``_openrouter_usage_json``), mirroring ``_kimi_usage_dir``.
+        """
+        return AgentOrchestrator._openrouter_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_openrouter_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's openrouter usage dir before the mount.
+
+        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._openrouter_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create openrouter usage dir; agent may EACCES",
                 agent_id=agent_id,
                 path=str(target),
                 error=str(exc),
