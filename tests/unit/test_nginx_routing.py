@@ -25,10 +25,15 @@ def _read_conf() -> str:
     return _NGINX_CONF.read_text()
 
 
-def test_dispatcher_upstream_points_at_dispatcher_container() -> None:
+def test_dispatcher_is_resolved_per_request_not_at_startup() -> None:
+    """No `upstream dispatcher` block: nginx resolves upstream names once at
+    config load and refuses to start when one is missing, which took the
+    panel down whenever the dispatcher container was not up yet. The name
+    goes through Docker's embedded DNS per request instead."""
     conf = _read_conf()
-    assert "upstream dispatcher {" in conf
-    assert "server roboco-dispatcher:8000;" in conf
+    assert "upstream dispatcher {" not in conf
+    assert "resolver 127.0.0.11" in conf
+    assert "set $dispatcher http://roboco-dispatcher:8000;" in conf
 
 
 def test_fleet_owning_locations_proxy_to_dispatcher() -> None:
@@ -38,8 +43,8 @@ def test_fleet_owning_locations_proxy_to_dispatcher() -> None:
         # The location's own block, up to its closing brace.
         block_end = conf.index("}", start)
         block = conf[start:block_end]
-        assert "proxy_pass http://dispatcher;" in block, (
-            f"{location} must proxy to the dispatcher upstream"
+        assert "proxy_pass $dispatcher;" in block, (
+            f"{location} must proxy to the dispatcher via the runtime-resolved variable"
         )
 
 

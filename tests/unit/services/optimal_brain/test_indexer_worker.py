@@ -9,6 +9,7 @@ the convention in tests/unit/events/test_bus.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -596,3 +597,124 @@ async def test_run_indexer_dedicated_embedder_seeds_shared_singleton(
         await indexer_worker.run_indexer(stop, dedicated_embedder=True)
 
     set_shared_mock.assert_called_once_with(sentinel)
+
+
+# ---------------------------------------------------------------------------
+# run_indexer: boot-time RAG reconcile ownership per role
+# ---------------------------------------------------------------------------
+
+
+def _reconcile_probe(
+    monkeypatch: pytest.MonkeyPatch, role: str
+) -> tuple[asyncio.Event, MagicMock, MagicMock]:
+    """A run_indexer setup with the bus and backlog loop stubbed, the role
+    pinned, and schedule_rag_reconcile replaced by a recording mock."""
+    bus, _fake = _run_indexer_bus()
+    monkeypatch.setattr(bus, "start_listening", AsyncMock())
+    monkeypatch.setattr(bus, "disconnect", AsyncMock())
+    monkeypatch.setattr(indexer_worker, "_backlog_loop", AsyncMock())
+    monkeypatch.setattr(indexer_worker.settings, "role", role)
+    schedule_mock = MagicMock(return_value=None)
+    monkeypatch.setattr(indexer_worker, "schedule_rag_reconcile", schedule_mock)
+    fake_optimal = MagicMock()
+    fake_optimal.ensure_periodic_update_running = AsyncMock()
+    stop = asyncio.Event()
+    stop.set()
+    return stop, schedule_mock, fake_optimal
+
+
+@pytest.mark.asyncio
+async def test_run_indexer_owns_the_boot_reconcile_under_indexer_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROBOCO_ROLE=indexer never runs the FastAPI lifespan that schedules the
+    boot-time RAG reconcile for the single-process role, so run_indexer must
+    schedule it itself (2026-09-06: after the role split the zero-chunk
+    backfill ran nowhere)."""
+    stop, schedule_mock, fake_optimal = _reconcile_probe(monkeypatch, "indexer")
+
+    with patch(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=fake_optimal),
+    ):
+        await indexer_worker.run_indexer(stop)
+
+    schedule_mock.assert_called_once_with(fake_optimal)
+
+
+@pytest.mark.asyncio
+async def test_run_indexer_leaves_the_boot_reconcile_to_the_lifespan_under_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under ROBOCO_ROLE=all the lifespan schedules the reconcile; the
+    in-process run_indexer must not schedule a second copy."""
+    stop, schedule_mock, fake_optimal = _reconcile_probe(monkeypatch, "all")
+
+    with patch(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=fake_optimal),
+    ):
+        await indexer_worker.run_indexer(stop)
+
+    schedule_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_indexer_cancels_a_still_running_boot_reconcile_on_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reconcile still backfilling when the worker is stopped is cancelled,
+    not left running past the bus it indexes through."""
+    bus, _fake = _run_indexer_bus()
+    monkeypatch.setattr(bus, "start_listening", AsyncMock())
+    monkeypatch.setattr(bus, "disconnect", AsyncMock())
+    monkeypatch.setattr(indexer_worker, "_backlog_loop", AsyncMock())
+    monkeypatch.setattr(indexer_worker.settings, "role", "indexer")
+    started = asyncio.Event()
+
+    async def _slow_reconcile(_optimal: object) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(indexer_worker, "reconcile_rag_indexes", _slow_reconcile)
+    scheduled: list[asyncio.Task[None]] = []
+    real_schedule = indexer_worker.schedule_rag_reconcile
+
+    def _capture(optimal: Any) -> asyncio.Task[None]:
+        task = real_schedule(optimal)
+        scheduled.append(task)
+        return task
+
+    monkeypatch.setattr(indexer_worker, "schedule_rag_reconcile", _capture)
+    fake_optimal = MagicMock()
+    fake_optimal.ensure_periodic_update_running = AsyncMock()
+    stop = asyncio.Event()
+
+    async def _stop_once_started() -> None:
+        await started.wait()
+        stop.set()
+
+    stopper = asyncio.create_task(_stop_once_started())
+    with patch(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=fake_optimal),
+    ):
+        await indexer_worker.run_indexer(stop)
+    await stopper
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await scheduled[0]
+    assert scheduled[0].cancelled()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rag_indexes_is_a_noop_without_rag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RAG disabled (no OptimalService) skips every pass."""
+    reclaim_mock = AsyncMock()
+    monkeypatch.setattr(indexer_worker, "_reclaim_rag_index_failures", reclaim_mock)
+
+    await indexer_worker.reconcile_rag_indexes(None)
+
+    reclaim_mock.assert_not_awaited()
