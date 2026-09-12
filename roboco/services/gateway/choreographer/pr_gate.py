@@ -788,6 +788,7 @@ class PRGateMixin(_Base):
         fleet's always-enabled baseline) only when no assignee is resolvable
         at all (e.g. every leaf still unclaimed).
         """
+        from roboco.db.tables import AgentTable
         from roboco.models.base import ModelProvider, TaskType
         from roboco.services.llm import ModelRoutingService
 
@@ -800,7 +801,7 @@ class PRGateMixin(_Base):
         routing = ModelRoutingService(self.task.session)
         providers: set[ModelProvider] = set()
         for agent_id in agent_ids:
-            agent = await self.task.agent_for(agent_id)
+            agent = await self.task.session.get(AgentTable, agent_id)
             slug = getattr(agent, "slug", None)
             if not slug:
                 continue
