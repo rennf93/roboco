@@ -688,9 +688,13 @@ class ProjectService(BaseService):
             return None
 
         if agent_id in project.allowed_agents:
-            project.allowed_agents = [
-                a for a in project.allowed_agents if a != agent_id
-            ]
+            remaining = [a for a in project.allowed_agents if a != agent_id]
+            # An emptied list is no restriction at all (rule 3: None = whole
+            # cell has access) -- collapse back to None so removing the last
+            # allowed agent actually restores cell-default access instead of
+            # denying everyone (check_agent_access treats a non-None empty
+            # list as "nobody is on the list", not "no restriction").
+            project.allowed_agents = remaining or None
 
         await self.session.flush()
         return project
