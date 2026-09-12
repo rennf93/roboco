@@ -231,6 +231,38 @@ class DocsIndexPlugin(BaseIndexPlugin):
         logger.info(f"Batch indexing complete: {count} docs indexed")
         return count, indexed_files
 
+    async def flip_task_provenance(
+        self,
+        task_ids: list[str],
+        from_provenance: str = "live_write",
+        to_provenance: str = "repo_tree",
+    ) -> int:
+        """Targeted provenance flip for docs written by *task_ids*.
+
+        Reverses the ``index_sources(provenance="live_write", task_id=...)``
+        marking in place once the writing tasks' root chain reaches terminal
+        completed: chunks whose stamped ``task_id`` is one of *task_ids* AND
+        whose current provenance is *from_provenance* get *to_provenance*.
+        Queries the task_id already carried in chunk metadata — no
+        repo-tree re-derivation, no reindex of unchanged docs. Returns the
+        number of chunks flipped.
+        """
+        if not task_ids:
+            return 0
+        flipped = await self._require_store.flip_provenance(
+            ids=task_ids,
+            from_value=from_provenance,
+            to_value=to_provenance,
+        )
+        logger.info(
+            "Flipped docs task provenance",
+            task_ids=task_ids,
+            from_provenance=from_provenance,
+            to_provenance=to_provenance,
+            flipped=flipped,
+        )
+        return flipped
+
     def _detect_doc_type(self, file_path: Path) -> str:
         """Detect documentation type from filename."""
         name_lower = file_path.stem.lower()
