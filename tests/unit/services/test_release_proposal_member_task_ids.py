@@ -162,7 +162,7 @@ async def test_member_task_ids_scoped_to_window_and_project(
     same-project release's completion, are members — held/coordination
     artifacts and PR-review tasks are excluded, mirroring the release
     task-set deny-list used elsewhere."""
-    system_uuid, secretary_uuid = await _seed_agents(db_session)
+    system_uuid, _ = await _seed_agents(db_session)
     project = await _seed_project(db_session, system_uuid)
     previous = await _seed_proposal(
         db_session, project, completed_at=_T0 - timedelta(hours=1)
@@ -203,7 +203,7 @@ async def test_member_task_ids_scoped_to_window_and_project(
 async def test_member_task_ids_empty_for_project_less_proposal(
     db_session: AsyncSession,
 ) -> None:
-    system_uuid, secretary_uuid = await _seed_agents(db_session)
+    system_uuid, _ = await _seed_agents(db_session)
     project = await _seed_project(db_session, system_uuid)
     target = await _seed_proposal(db_session, project, completed_at=None)
     target.project_id = None
@@ -223,7 +223,7 @@ async def test_member_task_ids_window_survives_legacy_proposal_without_completed
     the IS NOT NULL guard plus the updated_at fallback the NULL row won
     LIMIT 1, the boundary resolved to None, and every COMPLETED delivery
     task in the project's history became a member."""
-    system_uuid, secretary_uuid = await _seed_agents(db_session)
+    system_uuid, _ = await _seed_agents(db_session)
     project = await _seed_project(db_session, system_uuid)
     await _seed_proposal(
         db_session, project, updated_at=_T0 - timedelta(hours=1)
@@ -253,7 +253,7 @@ async def test_member_task_ids_ordering_is_deterministic(
     then id) regardless of insertion order, so repeated GET
     /release/proposal polls never reshuffle the panel's rollup. Two members
     share a completed_at to pin the id tiebreak."""
-    system_uuid, secretary_uuid = await _seed_agents(db_session)
+    system_uuid, _ = await _seed_agents(db_session)
     project = await _seed_project(db_session, system_uuid)
     await _seed_proposal(db_session, project, updated_at=_T0 - timedelta(hours=1))
     target = await _seed_proposal(db_session, project, completed_at=None)
