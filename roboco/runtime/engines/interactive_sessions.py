@@ -28,6 +28,7 @@ from roboco.runtime.orchestrator import (
     GROK_PROMPTER_IMAGE,
     GROK_SECRETARY_IMAGE,
     INTAKE_AGENT_ID,
+    NEBIUS_USAGE_DATA_DIR,
     OPENROUTER_USAGE_DATA_DIR,
     PROJECT_HOST_PATH,
     SECRETARY_AGENT_ID,
@@ -255,6 +256,47 @@ class InteractiveSessionsEngine(_Base):
         except OSError as exc:
             logger.warning(
                 "could not pre-create openrouter usage dir; agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _nebius_usage_root() -> Path:
+        """The base dir all per-agent nebius usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_openrouter_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(NEBIUS_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-nebius-usage"
+
+    @staticmethod
+    def _nebius_usage_dir(agent_id: str) -> Path:
+        """Per-agent nebius usage dir under :meth:`_nebius_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_nebius_usage_dir``) and the finalize read side
+        (``_nebius_usage_json``), mirroring ``_openrouter_usage_dir``.
+        """
+        return AgentOrchestrator._nebius_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_nebius_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's nebius usage dir before the mount.
+
+        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._nebius_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create nebius usage dir; agent may EACCES",
                 agent_id=agent_id,
                 path=str(target),
                 error=str(exc),

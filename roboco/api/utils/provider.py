@@ -38,6 +38,9 @@ _PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
     ModelProvider.OPENROUTER: (
         "Save the OpenRouter API key first (PUT /providers/openrouter-key)."
     ),
+    ModelProvider.NEBIUS: (
+        "Save the Nebius API key first (PUT /providers/nebius-key)."
+    ),
 }
 
 

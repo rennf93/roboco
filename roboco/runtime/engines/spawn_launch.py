@@ -828,6 +828,8 @@ class SpawnLaunchEngine(_Base):
                 "openrouter_usage": (
                     f"{DATA_HOST_PATH}/openrouter-usage/{config.agent_id}"
                 ),
+                # Per-agent nebius usage dir (NEBIUS only); same shape.
+                "nebius_usage": f"{DATA_HOST_PATH}/nebius-usage/{config.agent_id}",
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -863,6 +865,9 @@ class SpawnLaunchEngine(_Base):
                 Path(tempfile.gettempdir())
                 / "roboco-openrouter-usage"
                 / config.agent_id
+            ),
+            "nebius_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-nebius-usage" / config.agent_id
             ),
             "prompt": str(
                 Path(tempfile.gettempdir())
@@ -1227,10 +1232,13 @@ class SpawnLaunchEngine(_Base):
         official CLI, one-shot delivery roles only — see
         roboco.llm.providers.gemini for the V1 scope), and KIMI (Moonshot,
         official CLI, one-shot delivery roles only — see
-        roboco.llm.providers.kimi for the V1 scope), and OPENROUTER (any
+        roboco.llm.providers.kimi for the V1 scope), OPENROUTER (any
         OpenRouter model via the opencode CLI, the Ollama shape — static key
         via env, no auth mount; one-shot delivery roles only — see
-        roboco.llm.providers.openrouter for the V1 scope).
+        roboco.llm.providers.openrouter for the V1 scope), and NEBIUS
+        (Nebius Token Factory open models - NVIDIA Nemotron et al. - via the
+        opencode CLI, the same Ollama shape; one-shot delivery roles only -
+        see roboco.llm.providers.nebius for the V1 scope).
         """
         if self._provider_registry is None:
             from roboco.llm.providers import (
@@ -1238,6 +1246,7 @@ class SpawnLaunchEngine(_Base):
                 GeminiCliProvider,
                 GrokCliProvider,
                 KimiCliProvider,
+                NebiusProvider,
                 OpenRouterProvider,
                 ProviderRegistry,
             )
@@ -1271,6 +1280,12 @@ class SpawnLaunchEngine(_Base):
                 ModelProvider.OPENROUTER,
                 OpenRouterProvider(
                     self, image=_qualify_agent_image("roboco-agent-openrouter")
+                ),
+            )
+            registry.register(
+                ModelProvider.NEBIUS,
+                NebiusProvider(
+                    self, image=_qualify_agent_image("roboco-agent-nebius")
                 ),
             )
             self._provider_registry = registry

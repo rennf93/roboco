@@ -45,6 +45,8 @@ from roboco.runtime.orchestrator import (
     _GROK_REPARK_EPISODE_GAP_S,
     _KIMI_AUTH_EXIT_CODE,
     _KIMI_RATE_LIMIT_EXIT_CODE,
+    _NEBIUS_AUTH_EXIT_CODE,
+    _NEBIUS_RATE_LIMIT_EXIT_CODE,
     _OPENROUTER_AUTH_EXIT_CODE,
     _OPENROUTER_RATE_LIMIT_EXIT_CODE,
     _OVERLOAD_MARKERS_BY_PROVIDER,
@@ -563,6 +565,37 @@ class SpawnExitEngine(_Base):
         """
         return self._read_usage_json_contained(self._openrouter_usage_root(), agent_id)
 
+    def _nebius_usage_json(self, agent_id: str) -> dict[str, Any] | None:
+        """Read a NEBIUS agent's ``usage.json`` (the ``_openrouter_usage_json``
+        twin).
+
+        Written by the nebius (opencode) entrypoint's post-run capture
+        step (see ``roboco.llm.providers.nebius_cli_usage``) to the
+        per-agent dir under ``_nebius_usage_root`` (built by the
+        interactive-sessions mixin) - the finalize read side that helper's
+        docstring promised. Returns ``None`` when absent / unreadable.
+        """
+        return self._read_usage_json_contained(self._nebius_usage_root(), agent_id)
+
+    def _nebius_usage_cost(self, agent_id: str) -> float | None:
+        """A NEBIUS agent's metered spend from its ``usage.json``.
+
+        Token Factory bills per model at Nebius's own rates and the CLI
+        capture sums the per-step metered ``cost`` field into ``cost_usd``
+        (see ``nebius_cli_usage``). That IS the spend - recalculating
+        from tokens via the static pricing table cannot know that catalog.
+        Returns ``None`` when absent/unreadable so the caller can fall back
+        to its default costing; a present-but-zero value passes through
+        (free models are genuinely $0).
+        """
+        data = self._nebius_usage_json(agent_id)
+        if not data:
+            return None
+        try:
+            return float(data.get("cost_usd", 0.0))
+        except (TypeError, ValueError):
+            return None
+
     def _openrouter_usage_cost(self, agent_id: str) -> float | None:
         """An OPENROUTER agent's metered spend from its ``usage.json``.
 
@@ -699,6 +732,36 @@ class SpawnExitEngine(_Base):
             )
         return tokens
 
+    def _nebius_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+        """A NEBIUS agent's token usage from its ``usage.json``.
+
+        Nebius's capture (see ``nebius_cli_usage``) splits the
+        opencode stream into a genuine, already-disjoint 4-bucket split (the
+        codex/kimi shape), so this returns the real tuple instead of folding
+        everything into output. A WARNING logs on a missing/zero read (a
+        silent mount/uid failure is otherwise indistinguishable from a
+        genuine zero-cost run).
+        """
+        data = self._nebius_usage_json(agent_id)
+        tokens = (0, 0, 0, 0)
+        if data:
+            try:
+                tokens = (
+                    int(data.get("tokens_input", 0)),
+                    int(data.get("tokens_output", 0)),
+                    int(data.get("tokens_cache_read", 0)),
+                    int(data.get("tokens_cache_write", 0)),
+                )
+            except (TypeError, ValueError):
+                tokens = (0, 0, 0, 0)
+        if not tokens[0] and not tokens[1]:
+            logger.warning(
+                "NEBIUS agent finalized with no readable usage "
+                "(0 tokens / $0) - check the usage dir mount",
+                agent_id=agent_id,
+            )
+        return tokens
+
     def _gemini_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
         """A GEMINI agent's token usage from its ``usage.json``.
 
@@ -751,6 +814,7 @@ class SpawnExitEngine(_Base):
             ModelProvider.GEMINI.value: self._gemini_usage_tokens,
             ModelProvider.KIMI.value: self._kimi_usage_tokens,
             ModelProvider.OPENROUTER.value: self._openrouter_usage_tokens,
+            ModelProvider.NEBIUS.value: self._nebius_usage_tokens,
         }
         read_usage_json = usage_json_readers.get(provider) if provider else None
         if read_usage_json is not None:
@@ -814,6 +878,7 @@ class SpawnExitEngine(_Base):
             ModelProvider.GROK.value,
             ModelProvider.GEMINI.value,
             ModelProvider.OPENROUTER.value,
+            ModelProvider.NEBIUS.value,
         ):
             return (0, 0)
         if provider == ModelProvider.OPENAI.value:
@@ -869,6 +934,7 @@ class SpawnExitEngine(_Base):
 
         metered_cost_readers = {
             ModelProvider.OPENROUTER.value: self._openrouter_usage_cost,
+            ModelProvider.NEBIUS.value: self._nebius_usage_cost,
         }
         read_metered_cost = metered_cost_readers.get(provider) if provider else None
         metered_cost = read_metered_cost(agent_id) if read_metered_cost else None
@@ -1131,7 +1197,7 @@ class SpawnExitEngine(_Base):
     ) -> bool:
         """Park the agent's provider on a recognized rate-limit/auth exit code.
 
-        Grok, Codex, Gemini, Kimi, and OpenRouter each run a one-shot CLI
+        Grok, Codex, Gemini, Kimi, OpenRouter, and Nebius each run a one-shot CLI
         with no live SDK/usage signal, so a 429-equivalent or
         missing-credential exit is detected purely from the exit code (see
         the individual ``_is_*_exit`` checks). Tries each provider's pair in
@@ -1152,6 +1218,8 @@ class SpawnExitEngine(_Base):
                 self._park_openrouter_rate_limited,
             ),
             (self._is_openrouter_auth_exit, self._park_openrouter_auth_unavailable),
+            (self._is_nebius_rate_limit_exit, self._park_nebius_rate_limited),
+            (self._is_nebius_auth_exit, self._park_nebius_auth_unavailable),
         )
         for is_exit, park in checks:
             if is_exit(instance, exit_code):
@@ -1494,6 +1562,33 @@ class SpawnExitEngine(_Base):
             exit_code == _OPENROUTER_AUTH_EXIT_CODE
             and instance.config is not None
             and instance.config.provider_type == ModelProvider.OPENROUTER.value
+        )
+
+    @staticmethod
+    def _is_nebius_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot nebius container that exited 75 (a 429/quota)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _NEBIUS_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.NEBIUS.value
+        )
+
+    @staticmethod
+    def _is_nebius_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot nebius container that exited 78 (key missing).
+
+        The entrypoint runs ``nebius_cli_config --check`` as a backstop
+        and exits 78 when ``NEBIUS_API_KEY`` is missing/invalid - see
+        ``_NEBIUS_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _NEBIUS_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.NEBIUS.value
         )
 
     @staticmethod
@@ -1920,6 +2015,45 @@ class SpawnExitEngine(_Base):
             instance,
             provider=ModelProvider.OPENROUTER.value,
             retry_after=getattr(self, "_openrouter_auth_retry_after_s", 60.0),
+            kind="auth_missing",
+        )
+
+    async def _park_nebius_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park a nebius agent whose run hit a 429/quota (entrypoint exit 75).
+
+        Flat retry_after (no exponential re-park backoff like grok's/gemini's,
+        the codex/kimi simplicity): add backoff bookkeeping if Nebius is
+        observed re-parking in a tight cycle in practice. The base is a
+        tunable Setting (kimi's pattern) wired by the orchestrator init;
+        the getattr default keeps the mixin self-sufficient in tests.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.NEBIUS.value,
+            retry_after=getattr(self, "_nebius_rate_limit_retry_after_s", 60.0),
+            kind="rate_limited",
+        )
+
+    async def _park_nebius_auth_unavailable(self, agent_id: str, instance: Any) -> None:
+        """Park a nebius agent whose API key was missing/invalid (exit 78).
+
+        The Ollama shape: a static metered key, no mount, no refresh loop
+        (see ``_NEBIUS_AUTH_EXIT_CODE`` and
+        ``roboco.llm.providers.nebius``'s module docstring), so a bad or
+        missing key re-parks flat until the operator sets one via the
+        provider-key endpoint - the same park-and-probe shape as the kimi
+        auth path.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.NEBIUS.value,
+            retry_after=getattr(self, "_nebius_auth_retry_after_s", 60.0),
             kind="auth_missing",
         )
 
