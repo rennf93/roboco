@@ -1,9 +1,9 @@
-"""Codex (OPENAI), Gemini (GEMINI), Kimi (KIMI), and OpenRouter (OPENROUTER)
-are V1 delivery-roles-only — none has an interactive-session driver image
-(unlike GROK's dedicated GROK_PROMPTER_IMAGE / GROK_SECRETARY_IMAGE). Routing
-any of them to the persistent Intake/Secretary agent must refuse loudly
-instead of silently falling through to the plain Claude SDK-driver image with
-a mismatched provider env.
+"""Codex (OPENAI), Gemini (GEMINI), Kimi (KIMI), OpenRouter (OPENROUTER), and
+Nebius (NEBIUS) are V1 delivery-roles-only - none has an interactive-session
+driver image (unlike GROK's dedicated GROK_PROMPTER_IMAGE /
+GROK_SECRETARY_IMAGE). Routing any of them to the persistent Intake/Secretary
+agent must refuse loudly instead of silently falling through to the plain
+Claude SDK-driver image with a mismatched provider env.
 """
 
 from __future__ import annotations
@@ -75,6 +75,7 @@ class TestRejectInteractiveUnsupportedProvider:
             ModelProvider.GEMINI,
             ModelProvider.KIMI,
             ModelProvider.OPENROUTER,
+            ModelProvider.NEBIUS,
         ],
     )
     def test_raises_for_delivery_only_providers(self, provider: ModelProvider) -> None:
@@ -109,6 +110,7 @@ class TestIntakeSpawnRefusesDeliveryOnlyProvider:
             ModelProvider.GEMINI,
             ModelProvider.KIMI,
             ModelProvider.OPENROUTER,
+            ModelProvider.NEBIUS,
         ],
     )
     @pytest.mark.asyncio
@@ -173,6 +175,7 @@ class TestSecretarySpawnRefusesDeliveryOnlyProvider:
             ModelProvider.GEMINI,
             ModelProvider.KIMI,
             ModelProvider.OPENROUTER,
+            ModelProvider.NEBIUS,
         ],
     )
     @pytest.mark.asyncio

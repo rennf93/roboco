@@ -364,6 +364,13 @@ select = [
 # base_url, auth_token, mcp_config_path) — the model kwarg is how the
 # opencode model-ref prefixing tests hand over bare vs custom catalog ids.
 "tests/unit/llm/providers/test_openrouter_provider.py" = ["PLR0913"]
+# Nebius tests: line-for-line clones of the OpenRouter suites above, so the
+# same rule relaxations apply for the same reasons (usage 4-bucket event
+# shape, deferred tempfile imports in the config-render tests, the
+# spawn-config contract kwarg count).
+"tests/unit/llm/providers/test_nebius_cli_usage.py" = ["PLR0913", "PLR2004"]
+"tests/unit/llm/providers/test_nebius_cli_config.py" = ["PLC0415"]
+"tests/unit/llm/providers/test_nebius_provider.py" = ["PLR0913"]
 
 # =============================================================================
 # MyPy Configuration

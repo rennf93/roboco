@@ -23,7 +23,10 @@ from roboco.models import AgentRole, Team
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.models.permissions import AgentContext
-from roboco.services.llm import _filter_openrouter_models
+from roboco.services.llm import (
+    _filter_nebius_models,
+    _filter_openrouter_models,
+)
 from sqlalchemy import delete, select
 
 if TYPE_CHECKING:
@@ -1414,5 +1417,237 @@ async def test_openrouter_key_forbidden_for_developer(
     hdr = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"}
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/providers/openrouter-key", headers=hdr)
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+# =============================================================================
+# Nebius endpoints
+# =============================================================================
+
+
+@pytest_asyncio.fixture
+async def app_client_with_nebius(
+    db_session: AsyncSession,
+) -> AsyncIterator[AsyncClient]:
+    """App client pre-seeded with Anthropic and Nebius providers.
+
+    The Nebius row is seeded disabled (mirrors migration 098) - no key
+    until the operator sets one via PUT /providers/nebius-key.
+    """
+    app = _make_app(db_session)
+    suffix = uuid4().hex[:8]
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
+    await db_session.flush()
+    db_session.add(
+        ProviderConfigTable(
+            name=f"anthropic-ne-{suffix}",
+            type=ModelProvider.ANTHROPIC,
+            enabled=True,
+        )
+    )
+    db_session.add(
+        ProviderConfigTable(
+            name=f"nebius-{suffix}",
+            type=ModelProvider.NEBIUS,
+            enabled=False,
+        )
+    )
+    await db_session.flush()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    # The routes' db.commit() calls persisted rows in the shared scratch DB;
+    # clear them so later test modules start from empty tables (FK order).
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
+    await db_session.commit()
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_nebius_key_status_unconfigured(
+    app_client_with_nebius: AsyncClient,
+) -> None:
+    """GET /nebius-key returns has_key=false, enabled=false when the
+    provider is seeded but no key has been set."""
+    response = await app_client_with_nebius.get(
+        "/api/providers/nebius-key", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["has_key"] is False
+    assert body["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_set_nebius_key_encrypts_and_enables(
+    app_client_with_nebius: AsyncClient,
+) -> None:
+    """PUT /nebius-key with a real key encrypts it and enables the
+    provider. The response body never contains the key itself."""
+    response = await app_client_with_nebius.put(
+        "/api/providers/nebius-key",
+        json={"api_key": "nebius-test-key-abcdef"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["has_key"] is True
+    assert body["enabled"] is True
+    # The key must never appear in the response body
+    assert "nebius-test-key-abcdef" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_set_nebius_key_empty_clears(
+    app_client_with_nebius: AsyncClient,
+) -> None:
+    """PUT /nebius-key with an empty string clears and disables."""
+    # Set first
+    await app_client_with_nebius.put(
+        "/api/providers/nebius-key",
+        json={"api_key": "nebius-test-key-abcdef"},
+        headers=_HDR_PM,
+    )
+    # Clear
+    response = await app_client_with_nebius.put(
+        "/api/providers/nebius-key",
+        json={"api_key": ""},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["has_key"] is False
+    assert body["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_nebius_models_returns_400_without_key(
+    app_client_with_nebius: AsyncClient,
+) -> None:
+    """GET /nebius/models returns 400 when no key is configured."""
+    response = await app_client_with_nebius.get(
+        "/api/providers/nebius/models", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert "not configured" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_nebius_models_returns_results_with_key(
+    app_client_with_nebius: AsyncClient,
+) -> None:
+    """GET /nebius/models proxies to Token Factory and returns
+    query-matching models. The key never appears in the response body."""
+    # Set a key first
+    await app_client_with_nebius.put(
+        "/api/providers/nebius-key",
+        json={"api_key": "nebius-test-key-abcdef"},
+        headers=_HDR_PM,
+    )
+
+    # Mock the probe so no real HTTP call is made - but route the raw
+    # OpenAI-list-shaped payloads through the REAL _filter_nebius_models
+    # (honouring the ?q kwarg the route passes), so the test exercises the
+    # actual query-filtering path instead of returning an unfiltered stub.
+    fake_raw_models = [
+        {
+            "id": "nvidia/nemotron-3-super-120b",
+            "name": "NVIDIA Nemotron 3 Super 120B",
+            "context_length": None,
+        },
+        {
+            "id": "deepseek-ai/DeepSeek-R1-0528",
+            "name": "DeepSeek-R1-0528",
+            "context_length": None,
+        },
+    ]
+
+    async def _fake_probe(
+        _api_key: str, query: str = ""
+    ) -> tuple[list[dict[str, object]], str | None]:
+        return _filter_nebius_models(fake_raw_models, query.lower()), None
+
+    probe_mock = AsyncMock(side_effect=_fake_probe)
+    with patch(
+        "roboco.api.routes.provider.probe_nebius_models",
+        probe_mock,
+    ):
+        response = await app_client_with_nebius.get(
+            "/api/providers/nebius/models?q=nemotron",
+            headers=_HDR_PM,
+        )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert len(body) == 1  # only nemotron matches the query
+    assert body[0]["id"] == "nvidia/nemotron-3-super-120b"
+    assert body[0]["name"] == "NVIDIA Nemotron 3 Super 120B"
+    assert body[0]["context_length"] is None
+    assert body[0]["prompt_price"] is None
+    assert body[0]["completion_price"] is None
+    # The key must never appear in the response body
+    assert "nebius-test-key-abcdef" not in response.text
+    # The ?q= query param reached the probe
+    assert probe_mock.call_args is not None
+    assert probe_mock.call_args.kwargs["query"] == "nemotron"
+
+
+@pytest.mark.asyncio
+async def test_nebius_models_503_on_probe_error(
+    app_client_with_nebius: AsyncClient,
+) -> None:
+    """GET /nebius/models returns 503 when the probe fails (e.g.
+    Token Factory timeout)."""
+    await app_client_with_nebius.put(
+        "/api/providers/nebius-key",
+        json={"api_key": "nebius-test-key-abcdef"},
+        headers=_HDR_PM,
+    )
+    with patch(
+        "roboco.api.routes.provider.probe_nebius_models",
+        new_callable=AsyncMock,
+        return_value=([], "Connection timed out"),
+    ):
+        response = await app_client_with_nebius.get(
+            "/api/providers/nebius/models", headers=_HDR_PM
+        )
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_nebius_returns_200_and_reflects_mode(
+    app_client_with_nebius: AsyncClient,
+) -> None:
+    """POST /providers with mode=nebius sets a GLOBAL assignment to
+    the default Nebius model and reports mode=nebius."""
+    response = await app_client_with_nebius.post(
+        "/api/providers",
+        json={"mode": "nebius"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["mode"] == "nebius"
+    assert len(body["assignments"]) == 1
+    assert body["assignments"][0]["provider_type"] == "nebius"
+    assert (
+        body["assignments"][0]["model_name"] == "nvidia/nemotron-3-super-120b"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nebius_key_forbidden_for_developer(
+    db_session: AsyncSession,
+) -> None:
+    """GET /nebius-key is forbidden for a developer role."""
+    app = _make_app(db_session, role=AgentRole.DEVELOPER, team=Team.BACKEND)
+    transport = ASGITransport(app=app)
+    hdr = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/providers/nebius-key", headers=hdr)
     app.dependency_overrides.clear()
     assert response.status_code == HTTPStatus.FORBIDDEN
