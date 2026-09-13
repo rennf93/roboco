@@ -57,6 +57,7 @@ function buildProposal(): ReleaseProposal {
     task_id: "t1",
     title: "Cut v0.14.0",
     status: "awaiting_ceo_approval",
+    member_task_ids: [],
     required_changes: null,
     report: {
       proposed_version: "0.14.0",
