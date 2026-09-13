@@ -2337,6 +2337,60 @@ class Settings(BaseSettings):
             "ROBOCO_OPENROUTER_X_TITLE"
         ),
     )
+    # Nebius Token Factory - the same Ollama shape as OpenRouter: a static
+    # metered API key injected via env (NEBIUS_API_KEY + NEBIUS_BASE_URL), no
+    # ~/. auth mount and no refresh loop (see roboco.llm.providers.nebius).
+    # The endpoint is OpenAI-compatible at
+    # https://api.tokenfactory.nebius.com/v1; the operator's key is stored
+    # Fernet-encrypted by the routing service (set_nebius_api_key). No
+    # attribution-header fields - Token Factory has no referer/title
+    # dashboard surface.
+    nebius_base_url: str = Field(
+        default="https://api.tokenfactory.nebius.com/v1",
+        description=(
+            "Nebius Token Factory API base URL injected as NEBIUS_BASE_URL at "
+            "spawn. Override via ROBOCO_NEBIUS_BASE_URL"
+        ),
+    )
+    # The default Nebius model id (provider/model form) passed to
+    # `opencode run --model` when the routing assignment does not pin a
+    # specific model. Defaults to NVIDIA's Nemotron 3 Super (the
+    # multi-agent-optimized Nemotron on Token Factory - the NVIDIA open model
+    # the provider must run to satisfy the Nebius x NVIDIA stack); the live
+    # catalog is searched on demand (GET /providers/nebius/models) and the
+    # picked model id is stored via provider_type_override - this is only
+    # the floor.
+    nebius_cli_model: str = Field(
+        default="nvidia/nemotron-3-super-120b",
+        description=(
+            "Default Nebius Token Factory model id (provider/model) passed to "
+            "opencode when no per-assignment model is pinned. Override via "
+            "ROBOCO_NEBIUS_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the NEBIUS provider (the openrouter
+    # pattern: real Settings fields, not hardcoded module constants). The
+    # rate-limit value backs _park_nebius_rate_limited's exponential re-park
+    # backoff (429 -> exit 75); the auth value covers the missing/invalid API
+    # key preflight (401 -> exit 78).
+    nebius_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the NEBIUS provider on a "
+            "quota/rate-limit exit; override via "
+            "ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    nebius_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the NEBIUS provider on a "
+            "missing/invalid API key (entrypoint preflight exit 78); override "
+            "via ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
     # An interactive intake/secretary chat the human abandoned (closed the tab
     # without confirming/stopping) otherwise leaks its container until the
     # orchestrator restarts. The sweeper reaps a live session whose

@@ -24,6 +24,10 @@ Backends:
   CLI, behind one metered API key (the Ollama shape — static key via env, no
   ``~/.`` auth mount, no refresh loop; one-shot delivery roles only — see
   :mod:`roboco.llm.providers.openrouter` for the V1 scope).
+- :class:`NebiusProvider` - Nebius Token Factory's open models (NVIDIA
+  Nemotron et al.) via the opencode CLI, behind one metered API key (the
+  same Ollama shape; one-shot delivery roles only - see
+  :mod:`roboco.llm.providers.nebius` for the V1 scope).
 """
 
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
@@ -32,6 +36,7 @@ from roboco.llm.providers.codex import CodexCliProvider
 from roboco.llm.providers.gemini import GeminiCliProvider
 from roboco.llm.providers.grok import GrokCliProvider
 from roboco.llm.providers.kimi import KimiCliProvider
+from roboco.llm.providers.nebius import NebiusProvider
 from roboco.llm.providers.openrouter import OpenRouterProvider
 from roboco.llm.providers.registry import ProviderNotRegisteredError, ProviderRegistry
 
@@ -42,6 +47,7 @@ __all__ = [
     "GeminiCliProvider",
     "GrokCliProvider",
     "KimiCliProvider",
+    "NebiusProvider",
     "OpenRouterProvider",
     "ProviderError",
     "ProviderNotRegisteredError",
