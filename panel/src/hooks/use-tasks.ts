@@ -96,7 +96,6 @@ export function useTaskCollisionMap(taskId: string) {
   });
 }
 
-<<<<<<< HEAD
 // The per-task governance report for the panel's Governance tab — the
 // quality-gate chain, findings summary, and rework count. A cheap read-only
 // aggregation (audit log + counters), fetched eagerly alongside the task
@@ -107,7 +106,9 @@ export function useTaskGovernance(taskId: string) {
     queryFn: () => tasksApi.getGovernance(taskId),
     enabled: !!taskId,
     staleTime: 30000,
-=======
+  });
+}
+
 // The per-task attestation receipt download (GET /tasks/{id}/attestation).
 // Fetches the endpoint in the requested format and hands the payload to the
 // browser's save-file machinery — no navigation, no second origin. The .md
@@ -133,7 +134,6 @@ export function useTaskAttestationDownload(taskId: string) {
         "application/json",
       );
     },
->>>>>>> origin/slave
   });
 }
 
