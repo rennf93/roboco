@@ -128,6 +128,11 @@ jobs:
             # image; pull-smoke went red on exactly that pull. Every new
             # docker/agent-*.Dockerfile MUST land here in the same PR.
             [roboco-agent-kimi]=docker/agent-kimi.Dockerfile
+            # OpenRouter (aggregated catalog, via the official opencode CLI) —
+            # same shape as kimi/gemini: one-shot delivery roles only, plain
+            # FROM agent-base. Missing from this map on v0.30.0 shipped the
+            # release without the image — the same class as kimi on v0.28.0.
+            [roboco-agent-openrouter]=docker/agent-openrouter.Dockerfile
           )
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"

@@ -829,6 +829,24 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent OpenRouter Image Builder (aggregated catalog via the official
+  # opencode CLI). One-shot delivery roles only (V1) — no interactive
+  # prompter/secretary variant exists for OpenRouter, contrast the Grok
+  # images above.
+  # ==========================================================================
+  agent-openrouter-image:
+    build:
+      context: .
+      dockerfile: docker/agent-openrouter.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
+    image: roboco-agent-openrouter
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent OpenRouter image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Sandbox PG Image Builder (kitchen-sink postgres for parameterized dev DBs)
   # Only pulled by the provisioner when a venture requests pg extensions; bare
   # sandboxes stay on the light upstream postgres image. See

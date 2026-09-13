@@ -543,6 +543,14 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-kimi image present'"]
     restart: "no"
 
+  # OpenRouter (aggregated catalog, via the official opencode CLI). One-shot
+  # delivery roles only — same shape as kimi above. Missing from this file on
+  # v0.30.0 meant the pull-smoke could not catch the missing image.
+  agent-openrouter-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-openrouter:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-openrouter image present'"]
+    restart: "no"
+
   # Sandbox PG (kitchen-sink) — pulled by the provisioner when a venture opts
   # into pg extensions. Bare sandboxes use the upstream postgres image, so this
   # is only needed by extension-using projects.
