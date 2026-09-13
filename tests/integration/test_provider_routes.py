@@ -1634,9 +1634,7 @@ async def test_apply_mode_nebius_returns_200_and_reflects_mode(
     assert body["mode"] == "nebius"
     assert len(body["assignments"]) == 1
     assert body["assignments"][0]["provider_type"] == "nebius"
-    assert (
-        body["assignments"][0]["model_name"] == "nvidia/nemotron-3-super-120b"
-    )
+    assert body["assignments"][0]["model_name"] == "nvidia/nemotron-3-super-120b"
 
 
 @pytest.mark.asyncio

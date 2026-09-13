@@ -163,9 +163,7 @@ def test_nebius_usage_dir_branches_compose_vs_local(
     assert local.name == "be-dev-1"
 
     monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "/volume1/roboco")
-    monkeypatch.setattr(
-        usage_root_mod, "NEBIUS_USAGE_DATA_DIR", "/data/nebius-usage"
-    )
+    monkeypatch.setattr(usage_root_mod, "NEBIUS_USAGE_DATA_DIR", "/data/nebius-usage")
     assert str(AgentOrchestrator._nebius_usage_dir("be-dev-1")) == (
         "/data/nebius-usage/be-dev-1"
     )

@@ -339,9 +339,7 @@ def test_main_writes_opencode_json(
     assert rendered["$schema"] == "https://opencode.ai/config.json"
     # The agent block's model is the opencode REF - the same value the
     # entrypoint passes to --model (both route through Nebius).
-    assert (
-        rendered["agent"]["roboco"]["model"] == "nebius/nvidia/nemotron-3-super-120b"
-    )
+    assert rendered["agent"]["roboco"]["model"] == "nebius/nvidia/nemotron-3-super-120b"
     assert rendered["agent"]["roboco"]["prompt"] == "blueprint"
     assert "nebius" in rendered["provider"]
     assert "roboco-flow" in rendered["mcp"]

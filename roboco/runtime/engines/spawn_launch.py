@@ -1284,9 +1284,7 @@ class SpawnLaunchEngine(_Base):
             )
             registry.register(
                 ModelProvider.NEBIUS,
-                NebiusProvider(
-                    self, image=_qualify_agent_image("roboco-agent-nebius")
-                ),
+                NebiusProvider(self, image=_qualify_agent_image("roboco-agent-nebius")),
             )
             self._provider_registry = registry
         return self._provider_registry

@@ -658,9 +658,7 @@ _OPENROUTER_AUTH_EXIT_CODE = 78
 # - the nebius analogue of OPENROUTER_USAGE_DATA_DIR (see there for the mount
 # shape). Nebius usage is captured from the opencode --format json stream
 # (see roboco.llm.providers.nebius_cli_usage).
-NEBIUS_USAGE_DATA_DIR = os.environ.get(
-    "ROBOCO_NEBIUS_USAGE_DIR", "/data/nebius-usage"
-)
+NEBIUS_USAGE_DATA_DIR = os.environ.get("ROBOCO_NEBIUS_USAGE_DIR", "/data/nebius-usage")
 
 # A one-shot Nebius container exits with these SAME codes for the SAME
 # reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -

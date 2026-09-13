@@ -176,9 +176,7 @@ async def test_migration_097_nebius_enum_round_trip(
     """The ``modelprovider`` PG enum carries ``nebius`` (migration 097)
     and the value round-trips through the ORM."""
     # Raw PG-level check: the enum type itself contains the label.
-    result = await db_session.execute(
-        text("SELECT 'nebius'::modelprovider = 'nebius'")
-    )
+    result = await db_session.execute(text("SELECT 'nebius'::modelprovider = 'nebius'"))
     assert result.scalar_one() is True
 
     # ORM round-trip: a row typed NEBIUS survives write + read.

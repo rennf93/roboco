@@ -150,9 +150,7 @@ async def test_handle_stopped_container_parks_on_nebius_429(
     monkeypatch.setattr(orch, "_park_nebius_rate_limited", park)
     monkeypatch.setattr(orch, "_finalize_spawn_session", finalize)
 
-    await orch._handle_stopped_container(
-        "be-dev-1", inst, _NEBIUS_RATE_LIMIT_EXIT_CODE
-    )
+    await orch._handle_stopped_container("be-dev-1", inst, _NEBIUS_RATE_LIMIT_EXIT_CODE)
 
     park.assert_awaited_once_with("be-dev-1", inst)
     finalize.assert_not_awaited()
