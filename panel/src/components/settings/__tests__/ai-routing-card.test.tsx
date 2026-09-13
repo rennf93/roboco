@@ -75,11 +75,11 @@ const {
   setOllamaKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   getGrokKey: vi.fn(async () => ({ has_key: false, enabled: true })),
   setGrokKey: vi.fn(async () => ({ has_key: true, enabled: true })),
-  getOpenRouterKey: vi.fn(async () => ({ key_set: false })),
-  setOpenRouterKey: vi.fn(async () => ({ key_set: true })),
+  getOpenRouterKey: vi.fn(async () => ({ has_key: false, enabled: false })),
+  setOpenRouterKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   searchOpenRouterModels: vi.fn(async (): Promise<OpenRouterModel[]> => []),
-  getNebiusKey: vi.fn(async () => ({ key_set: false })),
-  setNebiusKey: vi.fn(async () => ({ key_set: true })),
+  getNebiusKey: vi.fn(async () => ({ has_key: false, enabled: false })),
+  setNebiusKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   searchNebiusModels: vi.fn(async (): Promise<NebiusModel[]> => []),
   getMode: vi.fn(async () => ({ mode: "anthropic", assignments: [] })),
   applyMode: vi.fn(
@@ -1291,7 +1291,7 @@ describe("AIRoutingCard", () => {
     // returns the search input once the key status has landed and the input
     // is enabled (typing into a disabled input would silently no-op).
     async function openPicker() {
-      getOpenRouterKey.mockResolvedValueOnce({ key_set: true });
+      getOpenRouterKey.mockResolvedValueOnce({ has_key: true, enabled: true });
       getMode.mockResolvedValueOnce({ mode: "openrouter", assignments: [] });
       render(withQueryClient(<AIRoutingCard />));
       const input = await screen.findByPlaceholderText("Search models…");
@@ -1300,7 +1300,7 @@ describe("AIRoutingCard", () => {
     }
 
     it("applies mode='openrouter' on confirm when the key is set", async () => {
-      getOpenRouterKey.mockResolvedValueOnce({ key_set: true });
+      getOpenRouterKey.mockResolvedValueOnce({ has_key: true, enabled: true });
       const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Grok (xAI) API key");
@@ -1492,7 +1492,7 @@ describe("AIRoutingCard", () => {
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("OpenRouter API key");
 
-      let resolveSave!: (v: { key_set: boolean }) => void;
+      let resolveSave!: (v: { has_key: boolean; enabled: boolean }) => void;
       setOpenRouterKey.mockImplementationOnce(
         () =>
           new Promise((resolve) => {
@@ -1504,7 +1504,7 @@ describe("AIRoutingCard", () => {
       // Not yet: mutation still pending - no optimistic "Saved".
       expect(screen.queryByText("Saved")).not.toBeInTheDocument();
 
-      resolveSave({ key_set: true });
+      resolveSave({ has_key: true, enabled: true });
       await screen.findByText("Saved");
 
       // Any input change clears the badge again.
@@ -1530,13 +1530,13 @@ describe("AIRoutingCard", () => {
 
   // -------------------------------------------------------------------------
   // Nebius mode button + model picker + key row - each mirrors its OpenRouter
-  // counterpart above (same key_set contract, same debounce, same Saved-badge
+  // counterpart above (same has_key contract, same debounce, same Saved-badge
   // rules) against the /providers/nebius-* endpoints.
   // -------------------------------------------------------------------------
 
   describe("Nebius mode button", () => {
     it("applies mode='nebius' on confirm when the key is set", async () => {
-      getNebiusKey.mockResolvedValueOnce({ key_set: true });
+      getNebiusKey.mockResolvedValueOnce({ has_key: true, enabled: true });
       const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Grok (xAI) API key");
@@ -1568,7 +1568,7 @@ describe("AIRoutingCard", () => {
     // Renders the card with Nebius mode applied and a saved key, then returns
     // the search input once the key status has landed and the input is enabled.
     async function openPicker() {
-      getNebiusKey.mockResolvedValueOnce({ key_set: true });
+      getNebiusKey.mockResolvedValueOnce({ has_key: true, enabled: true });
       getMode.mockResolvedValueOnce({ mode: "nebius", assignments: [] });
       render(withQueryClient(<AIRoutingCard />));
       // Two pickers share the same "Search models…" placeholder (OpenRouter's
@@ -1646,7 +1646,7 @@ describe("AIRoutingCard", () => {
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Nebius API key");
 
-      let resolveSave!: (v: { key_set: boolean }) => void;
+      let resolveSave!: (v: { has_key: boolean; enabled: boolean }) => void;
       setNebiusKey.mockImplementationOnce(
         () =>
           new Promise((resolve) => {
@@ -1658,7 +1658,7 @@ describe("AIRoutingCard", () => {
       // Not yet: mutation still pending - no optimistic "Saved".
       expect(screen.queryByText("Saved")).not.toBeInTheDocument();
 
-      resolveSave({ key_set: true });
+      resolveSave({ has_key: true, enabled: true });
       await screen.findByText("Saved");
 
       // Any input change clears the badge again.

@@ -19,11 +19,13 @@ export interface GrokKeyStatus {
 }
 
 export interface OpenRouterKeyStatus {
-  key_set: boolean;
+  has_key: boolean;
+  enabled: boolean;
 }
 
 export interface NebiusKeyStatus {
-  key_set: boolean;
+  has_key: boolean;
+  enabled: boolean;
 }
 
 /** One model entry returned by the OpenRouter model search endpoint. */

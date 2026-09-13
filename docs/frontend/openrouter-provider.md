@@ -18,7 +18,7 @@ The client is built against this contract; the backend implements it in parallel
 
 | Method | Endpoint | Returns | Notes |
 |--------|----------|---------|-------|
-| GET | `/providers/openrouter-key` | `OpenRouterKeyStatus` (`{ key_set: boolean }`) | Whether an OpenRouter key is stored. |
+| GET | `/providers/openrouter-key` | `OpenRouterKeyStatus` (`{ has_key: boolean, enabled: boolean }`) | Whether an OpenRouter key is stored + provider enabled. |
 | PUT | `/providers/openrouter-key` | `OpenRouterKeyStatus` | Body: `SetOpenRouterKeyRequest` (`{ api_key: string }`). An empty string clears the key. |
 | GET | `/providers/openrouter/models?q=<query>` | `OpenRouterModel[]` | 400 if no key is set. Filtered to tools-supporting models. |
 
@@ -28,11 +28,12 @@ The client is built against this contract; the backend implements it in parallel
 
 ```ts
 interface OpenRouterKeyStatus {
-  key_set: boolean;
+  has_key: boolean;
+  enabled: boolean;
 }
 ```
 
-Note the field is `key_set`, not `has_key` + `enabled` like `GrokKeyStatus` / `OllamaKeyStatus` — OpenRouter has no separate enable toggle, only the set/clear state.
+Same shape as `GrokKeyStatus` / `OllamaKeyStatus` / `NebiusKeyStatus` - the backend stores the key Fernet-encrypted and gates the provider's `enabled` flag on it (an early draft of this doc claimed a `key_set`-only shape; the backend never shipped that, and the panel now reads `has_key`).
 
 ### `OpenRouterModel`
 
@@ -94,11 +95,11 @@ mutate(apiKey); // empty string clears
 
 ### `useSearchOpenRouterModels(query, enabled)`
 
-Searches OpenRouter's tools-supporting models. The hook takes two arguments: the debounced query, plus a caller-composed `enabled` boolean that ANDs the key-set flag (from `useOpenRouterKey`'s `key_set`) with a non-empty query. **The query is guarded inside the hook**: `enabled && query.length > 0`, so an idle picker and an unset key both make zero requests. Debounce the input in the UI so a user pause fires the search rather than every keystroke. 60-second `staleTime`.
+Searches OpenRouter's tools-supporting models. The hook takes two arguments: the debounced query, plus a caller-composed `enabled` boolean that ANDs the key-set flag (from `useOpenRouterKey`'s `has_key`) with a non-empty query. **The query is guarded inside the hook**: `enabled && query.length > 0`, so an idle picker and an unset key both make zero requests. Debounce the input in the UI so a user pause fires the search rather than every keystroke. 60-second `staleTime`.
 
 ```ts
 const { data: keyStatus } = useOpenRouterKey();
-const hasKey = keyStatus?.key_set ?? false;
+const hasKey = keyStatus?.has_key ?? false;
 const { data: models, isLoading } = useSearchOpenRouterModels(query, hasKey && query.length > 0);
 // models: OpenRouterModel[] | undefined
 ```

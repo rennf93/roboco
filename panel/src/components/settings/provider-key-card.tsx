@@ -28,7 +28,7 @@ export function OpenRouterProviderKeyRow() {
   const { data: keyStatus } = useOpenRouterKey();
   const setKeyMut = useSetOpenRouterKey();
 
-  const hasKey = !!keyStatus?.key_set;
+  const hasKey = !!keyStatus?.has_key;
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -124,13 +124,13 @@ export function OpenRouterProviderKeyRow() {
 
 /**
  * Nebius key row - password input, Save and Clear buttons. Mirrors
- * OpenRouterProviderKeyRow (same key_set contract, same Saved-badge rules).
+ * OpenRouterProviderKeyRow (same has_key contract, same Saved-badge rules).
  */
 export function NebiusProviderKeyRow() {
   const { data: keyStatus } = useNebiusKey();
   const setKeyMut = useSetNebiusKey();
 
-  const hasKey = !!keyStatus?.key_set;
+  const hasKey = !!keyStatus?.has_key;
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [saved, setSaved] = useState(false);

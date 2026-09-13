@@ -7,7 +7,7 @@ The AI Routing card (`panel/src/components/settings/ai-routing-card.tsx`) and th
 The OpenRouter API contract lives in `panel/src/lib/api/providers.ts`:
 
 - `OpenRouterModel` — one entry from `GET /providers/openrouter/models?q=`. OpenRouter's native wire format (per-token prices as strings); `pricing` and its `prompt`/`completion` fields, plus `context_length`, are all nullable because OpenRouter's catalog genuinely contains unpriced models.
-- `OpenRouterKeyStatus` — `{ key_set: boolean }` from `GET/PUT /providers/openrouter-key`.
+- `OpenRouterKeyStatus` — `{ has_key: boolean, enabled: boolean }` from `GET/PUT /providers/openrouter-key`.
 - `providersApi.getOpenRouterKey` / `setOpenRouterKey` / `searchOpenRouterModels`.
 
 `panel/src/hooks/use-providers.ts` exposes `useOpenRouterKey`, `useSetOpenRouterKey`, and `useSearchOpenRouterModels` keyed off `providerKeys.openRouterKey()` / `providerKeys.openRouterModels(query)`. Both consumers ("OpenRouter API key" row and the mode card) go through these — there are no hand-rolled query keys or inline duplicate contract types.

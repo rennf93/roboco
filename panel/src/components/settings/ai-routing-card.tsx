@@ -333,7 +333,7 @@ export function AIRoutingCard() {
 
   // --- OpenRouter API key status + model search ---
   const { data: openRouterKeyStatus } = useOpenRouterKey();
-  const hasOpenRouterKey = !!openRouterKeyStatus?.key_set;
+  const hasOpenRouterKey = !!openRouterKeyStatus?.has_key;
   const [openRouterModel, setOpenRouterModel] = useState("");
   const [openRouterSearch, setOpenRouterSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -352,7 +352,7 @@ export function AIRoutingCard() {
 
   // --- Nebius API key status + model search ---
   const { data: nebiusKeyStatus } = useNebiusKey();
-  const hasNebiusKey = !!nebiusKeyStatus?.key_set;
+  const hasNebiusKey = !!nebiusKeyStatus?.has_key;
   const [nebiusModel, setNebiusModel] = useState("");
   const [nebiusSearch, setNebiusSearch] = useState("");
   const [debouncedNebiusSearch, setDebouncedNebiusSearch] = useState("");
