@@ -9,11 +9,13 @@ import {
   useDeleteComplexityOverride,
   useDeletePreset,
   useGrokKey,
+  useNebiusKey,
   useOllamaKey,
   useOpenRouterKey,
   useRoutingMode,
   useRoutingPresets,
   useSavePreset,
+  useSearchNebiusModels,
   useSearchOpenRouterModels,
   useSetComplexityOverride,
   useSetGrokKey,
@@ -43,6 +45,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   AlertTriangle,
   Bot,
+  Cloud,
   Cpu,
   Gauge,
   Gem,
@@ -60,12 +63,16 @@ import { AssignmentScope, AgentRole, ModelProvider } from "@/types";
 import {
   COMPLEXITY_OVERRIDE_ROLES,
   type ComplexityLevel,
+  type NebiusModel,
   type OpenRouterModel,
   type SelfHostedModel,
 } from "@/lib/api/providers";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
-import { OpenRouterProviderKeyRow } from "@/components/settings/provider-key-card";
+import {
+  NebiusProviderKeyRow,
+  OpenRouterProviderKeyRow,
+} from "@/components/settings/provider-key-card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -202,6 +209,28 @@ function openRouterSearchErrorMessage(error: unknown): string {
   return "OpenRouter API is unavailable — try again in a moment.";
 }
 
+// Surface specific Nebius failure reasons instead of a generic message
+// (mirrors openRouterSearchErrorMessage above): 400 = no key, 401 = auth,
+// 429 = rate limit, timeout.
+function nebiusSearchErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "response" in error) {
+    const status = (error as { response?: { status?: number } }).response
+      ?.status;
+    if (status === 400)
+      return "Nebius API key not set - save your key above first.";
+    if (status === 401)
+      return "Nebius auth failure - your API key may be invalid or expired.";
+    if (status === 429)
+      return "Nebius rate limit - too many requests, try again in a moment.";
+  }
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: string }).code;
+    if (code === "ECONNABORTED" || code === "ETIMEDOUT")
+      return "Nebius search timed out - try again in a moment.";
+  }
+  return "Nebius API is unavailable - try again in a moment.";
+}
+
 export function AIRoutingCard() {
   const { data: catalog = [] } = useCatalog();
   const { data: keyStatus } = useOllamaKey();
@@ -320,6 +349,25 @@ export function AIRoutingCard() {
     isError: openRouterSearchError,
     error: openRouterSearchErr,
   } = useSearchOpenRouterModels(debouncedSearch, hasOpenRouterKey);
+
+  // --- Nebius API key status + model search ---
+  const { data: nebiusKeyStatus } = useNebiusKey();
+  const hasNebiusKey = !!nebiusKeyStatus?.key_set;
+  const [nebiusModel, setNebiusModel] = useState("");
+  const [nebiusSearch, setNebiusSearch] = useState("");
+  const [debouncedNebiusSearch, setDebouncedNebiusSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedNebiusSearch(nebiusSearch), 300);
+    return () => clearTimeout(timer);
+  }, [nebiusSearch]);
+
+  const {
+    data: nebiusModels,
+    isLoading: nebiusSearchLoading,
+    isError: nebiusSearchError,
+    error: nebiusSearchErr,
+  } = useSearchNebiusModels(debouncedNebiusSearch, hasNebiusKey);
 
   // --- Mix mode state: agent_slug → model_name ---
   const initialMix = useMemo(() => {
@@ -512,6 +560,32 @@ export function AIRoutingCard() {
       });
       toast.success(
         "Role/global routing now on OpenRouter — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToNebius = async () => {
+    if (!hasNebiusKey) {
+      toast.error("Save the Nebius API key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to Nebius? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced. " +
+          "V1: delivery roles only, not Intake/Secretary.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({
+        mode: "nebius",
+        ...(nebiusModel ? { default_model: nebiusModel } : {}),
+      });
+      toast.success(
+        "Role/global routing now on Nebius (per-agent pins and complexity overrides kept)",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -913,10 +987,11 @@ export function AIRoutingCard() {
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
           <code className="px-1"> ~/.claude </code> auth; Grok (xAI), Ollama
-          Cloud, and OpenRouter use the API keys you save below; Codex, Gemini,
-          and Kimi authenticate via their own mounted CLI subscriptions (no key
-          needed) — V1: delivery roles only, not Intake/Secretary; Self-Hosted
-          connects to any OpenAI-compatible endpoint you run locally.
+          Cloud, OpenRouter, and Nebius use the API keys you save below; Codex,
+          Gemini, and Kimi authenticate via their own mounted CLI subscriptions
+          (no key needed) — V1: delivery roles only, not Intake/Secretary;
+          Self-Hosted connects to any OpenAI-compatible endpoint you run
+          locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -1046,6 +1121,11 @@ export function AIRoutingCard() {
 
             {/* -------- OpenRouter key -------- */}
             <OpenRouterProviderKeyRow />
+
+            <Separator />
+
+            {/* -------- Nebius key -------- */}
+            <NebiusProviderKeyRow />
           </div>
 
           {/* -------- Self-Hosted LLM -------- */}
@@ -1060,10 +1140,10 @@ export function AIRoutingCard() {
 
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
+          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Nebius / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-10 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-11 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -1135,6 +1215,19 @@ export function AIRoutingCard() {
               onClick={flipToOpenRouter}
               disabled={applyMode.isPending || !hasOpenRouterKey}
               labelHint="One key unlocks hundreds of models on OpenRouter — GLM, DeepSeek, Qwen, Claude, GPT and more. Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
+              icon={<Cloud className="h-4 w-4" />}
+              label="Nebius"
+              description={
+                hasNebiusKey
+                  ? "Every agent uses Nebius (pick a model below)."
+                  : "Save the Nebius key first."
+              }
+              active={currentMode === "nebius"}
+              onClick={flipToNebius}
+              disabled={applyMode.isPending || !hasNebiusKey}
+              labelHint="One key unlocks Nebius AI Studio's hosted open models (DeepSeek, Qwen, Llama and more). Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Server className="h-4 w-4" />}
@@ -1224,6 +1317,15 @@ export function AIRoutingCard() {
               The same command / secret-exfiltration guard, prompt-injection
               guard, and per-agent cost cap all apply. V1: delivery roles only —
               not available for Intake/Secretary.
+            </p>
+          ) : null}
+          {currentMode === "nebius" || currentMode === "mix" ? (
+            <p className="text-xs text-muted-foreground">
+              Nebius agents run on the opencode CLI; one API key unlocks Nebius
+              AI Studio&apos;s hosted open models (DeepSeek, Qwen, Llama and
+              more). The same command / secret-exfiltration guard,
+              prompt-injection guard, and per-agent cost cap all apply. V1:
+              delivery roles only, not available for Intake/Secretary.
             </p>
           ) : null}
         </section>
@@ -1355,6 +1457,98 @@ export function AIRoutingCard() {
               {openRouterModel && (
                 <p className="text-xs text-muted-foreground">
                   Selected: <span className="font-mono">{openRouterModel}</span>
+                </p>
+              )}
+            </section>
+          </>
+        )}
+
+        {/* -------- Nebius model picker (when nebius mode active) -------- */}
+        {currentMode === "nebius" && (
+          <>
+            <Separator />
+            <section className="space-y-2">
+              <Label className="text-sm font-medium">
+                Nebius default model
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Search Nebius AI Studio&apos;s catalog and pick a model for all
+                agents in Nebius mode. Pricing shown per million tokens.
+              </p>
+              <Input
+                type="text"
+                value={nebiusSearch}
+                onChange={(e) => setNebiusSearch(e.target.value)}
+                placeholder="Search models…"
+                className="w-full max-w-sm"
+                disabled={!hasNebiusKey}
+              />
+              {!hasNebiusKey ? (
+                <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  Save your Nebius API key above to search and pick models.
+                </p>
+              ) : nebiusSearchError && debouncedNebiusSearch ? (
+                <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  {nebiusSearchErrorMessage(nebiusSearchErr)}
+                </p>
+              ) : nebiusSearchLoading && debouncedNebiusSearch ? (
+                <p className="text-xs text-muted-foreground">Searching…</p>
+              ) : nebiusModels && nebiusModels.length > 0 ? (
+                <div className="max-h-64 overflow-y-auto rounded-md border">
+                  {nebiusModels.map((m: NebiusModel) => (
+                    <button
+                      key={m.model_name}
+                      type="button"
+                      onClick={() => setNebiusModel(m.model_name)}
+                      className={
+                        "flex w-full items-center justify-between p-2 text-left text-xs hover:bg-muted/50 " +
+                        (nebiusModel === m.model_name ? "bg-primary/5" : "")
+                      }
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">
+                          {m.display_name}
+                        </div>
+                        <div className="text-muted-foreground font-mono truncate">
+                          {m.model_name}
+                        </div>
+                        {m.context_length != null && m.context_length > 0 && (
+                          <div className="text-muted-foreground">
+                            {m.context_length.toLocaleString()} ctx
+                          </div>
+                        )}
+                      </div>
+                      <div className="ml-2 shrink-0 text-right">
+                        <div>
+                          {m.pricing && m.pricing.prompt
+                            ? formatPricePerMillion(m.pricing.prompt)
+                            : "—"}{" "}
+                          in
+                        </div>
+                        <div className="text-muted-foreground">
+                          {m.pricing && m.pricing.completion
+                            ? formatPricePerMillion(m.pricing.completion)
+                            : "—"}{" "}
+                          out
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : nebiusModels &&
+                nebiusModels.length === 0 &&
+                debouncedNebiusSearch &&
+                !nebiusSearchLoading ? (
+                <p className="rounded-md border p-3 text-xs text-muted-foreground">
+                  No models found for &quot;{debouncedNebiusSearch}&quot;. Try a
+                  different search.
+                </p>
+              ) : null}
+              {nebiusModel && (
+                <p className="text-xs text-muted-foreground">
+                  Selected: <span className="font-mono">{nebiusModel}</span>
                 </p>
               )}
             </section>

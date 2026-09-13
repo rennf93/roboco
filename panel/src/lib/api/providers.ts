@@ -22,6 +22,10 @@ export interface OpenRouterKeyStatus {
   key_set: boolean;
 }
 
+export interface NebiusKeyStatus {
+  key_set: boolean;
+}
+
 /** One model entry returned by the OpenRouter model search endpoint. */
 export interface OpenRouterModel {
   model_name: string;
@@ -33,8 +37,24 @@ export interface OpenRouterModel {
   } | null;
 }
 
+/** One model entry returned by the Nebius model search endpoint. */
+export interface NebiusModel {
+  model_name: string;
+  display_name: string;
+  context_length: number | null;
+  pricing: {
+    prompt: string | null;
+    completion: string | null;
+  } | null;
+}
+
 /** Payload for setting or clearing the OpenRouter API key. */
 export interface SetOpenRouterKeyRequest {
+  api_key: string;
+}
+
+/** Payload for setting or clearing the Nebius API key. */
+export interface SetNebiusKeyRequest {
   api_key: string;
 }
 
@@ -59,6 +79,7 @@ export type RoutingMode =
   | "ollama"
   | "self_hosted"
   | "openrouter"
+  | "nebius"
   | "mix"
   | "cost_tiered";
 
@@ -190,6 +211,18 @@ export const providersApi = {
     return data;
   },
 
+  getNebiusKey: async (): Promise<NebiusKeyStatus> => {
+    const { data } = await api.get<NebiusKeyStatus>("/providers/nebius-key");
+    return data;
+  },
+
+  setNebiusKey: async (apiKey: string): Promise<NebiusKeyStatus> => {
+    const { data } = await api.put<NebiusKeyStatus>("/providers/nebius-key", {
+      api_key: apiKey,
+    });
+    return data;
+  },
+
   getMode: async (): Promise<ModeSnapshot> => {
     const { data } = await api.get<ModeSnapshot>("/providers");
     return data;
@@ -240,6 +273,13 @@ export const providersApi = {
       "/providers/openrouter/models",
       { params: { q: query } },
     );
+    return data;
+  },
+
+  searchNebiusModels: async (query: string): Promise<NebiusModel[]> => {
+    const { data } = await api.get<NebiusModel[]>("/providers/nebius/models", {
+      params: { q: query },
+    });
     return data;
   },
 

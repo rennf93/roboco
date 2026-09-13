@@ -109,6 +109,7 @@ export enum ModelProvider {
   GEMINI = "gemini",
   KIMI = "kimi",
   OPENROUTER = "openrouter",
+  NEBIUS = "nebius",
 }
 
 export enum AssignmentScope {

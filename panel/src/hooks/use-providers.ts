@@ -15,6 +15,9 @@ export const providerKeys = {
   openRouterKey: () => [...providerKeys.all, "openrouter-key"] as const,
   openRouterModels: (query: string) =>
     [...providerKeys.all, "openrouter-models", query] as const,
+  nebiusKey: () => [...providerKeys.all, "nebius-key"] as const,
+  nebiusModels: (query: string) =>
+    [...providerKeys.all, "nebius-models", query] as const,
   mode: () => [...providerKeys.all, "mode"] as const,
   selfHostedConfig: () => [...providerKeys.all, "self-hosted-config"] as const,
   selfHostedModels: () => [...providerKeys.all, "self-hosted-models"] as const,
@@ -91,6 +94,26 @@ export function useSetOpenRouterKey() {
   });
 }
 
+export function useNebiusKey() {
+  return useQuery({
+    queryKey: providerKeys.nebiusKey(),
+    queryFn: () => providersApi.getNebiusKey(),
+    staleTime: 60_000,
+  });
+}
+
+export function useSetNebiusKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (apiKey: string) => providersApi.setNebiusKey(apiKey),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.nebiusKey() });
+      // Applying a mode also reads this so refresh it too.
+      qc.invalidateQueries({ queryKey: providerKeys.mode() });
+    },
+  });
+}
+
 /** Query: search OpenRouter's catalog. Debouncing the input lives in the
  * component; `enabled` (key set + non-empty query) keeps the query idle so
  * nothing preloads while the picker is untouched. */
@@ -98,6 +121,18 @@ export function useSearchOpenRouterModels(query: string, enabled: boolean) {
   return useQuery({
     queryKey: providerKeys.openRouterModels(query),
     queryFn: () => providersApi.searchOpenRouterModels(query),
+    enabled: enabled && query.length > 0,
+    staleTime: 60_000,
+  });
+}
+
+/** Query: search Nebius AI Studio's catalog. Debouncing the input lives in
+ * the component; `enabled` (key set + non-empty query) keeps the query idle
+ * so nothing preloads while the picker is untouched. */
+export function useSearchNebiusModels(query: string, enabled: boolean) {
+  return useQuery({
+    queryKey: providerKeys.nebiusModels(query),
+    queryFn: () => providersApi.searchNebiusModels(query),
     enabled: enabled && query.length > 0,
     staleTime: 60_000,
   });

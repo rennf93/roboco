@@ -12,6 +12,7 @@ import React from "react";
 import type {
   ComplexityOverride,
   ModeSnapshot,
+  NebiusModel,
   OpenRouterModel,
   RoutingPreset,
 } from "@/lib/api/providers";
@@ -26,6 +27,9 @@ const {
   getOpenRouterKey,
   setOpenRouterKey,
   searchOpenRouterModels,
+  getNebiusKey,
+  setNebiusKey,
+  searchNebiusModels,
   getMode,
   applyMode,
   getSelfHostedConfig,
@@ -74,6 +78,9 @@ const {
   getOpenRouterKey: vi.fn(async () => ({ key_set: false })),
   setOpenRouterKey: vi.fn(async () => ({ key_set: true })),
   searchOpenRouterModels: vi.fn(async (): Promise<OpenRouterModel[]> => []),
+  getNebiusKey: vi.fn(async () => ({ key_set: false })),
+  setNebiusKey: vi.fn(async () => ({ key_set: true })),
+  searchNebiusModels: vi.fn(async (): Promise<NebiusModel[]> => []),
   getMode: vi.fn(async () => ({ mode: "anthropic", assignments: [] })),
   applyMode: vi.fn(
     async (payload: { mode: string }): Promise<ModeSnapshot> => ({
@@ -124,6 +131,9 @@ vi.mock("@/lib/api/providers", () => ({
     getOpenRouterKey,
     setOpenRouterKey,
     searchOpenRouterModels,
+    getNebiusKey,
+    setNebiusKey,
+    searchNebiusModels,
     getMode,
     applyMode,
     getSelfHostedConfig,
@@ -428,6 +438,9 @@ describe("AIRoutingCard", () => {
     getOpenRouterKey.mockClear();
     setOpenRouterKey.mockClear();
     searchOpenRouterModels.mockClear();
+    getNebiusKey.mockClear();
+    setNebiusKey.mockClear();
+    searchNebiusModels.mockClear();
     getMode.mockClear();
     applyMode.mockClear();
     getSelfHostedConfig.mockClear();
@@ -479,7 +492,7 @@ describe("AIRoutingCard", () => {
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
-    expect(screen.getAllByText("not set")).toHaveLength(3); // Grok + Ollama + OpenRouter
+    expect(screen.getAllByText("not set")).toHaveLength(4); // Grok + Ollama + OpenRouter + Nebius
 
     const grokInput = screen.getByPlaceholderText("xai-…");
     fireEvent.change(grokInput, { target: { value: "xai-secret" } });
@@ -613,7 +626,7 @@ describe("AIRoutingCard", () => {
     ).toBe("closed");
 
     const notSetBadges = screen.getAllByText("not set");
-    expect(notSetBadges).toHaveLength(3); // Grok + Ollama + OpenRouter
+    expect(notSetBadges).toHaveLength(4); // Grok + Ollama + OpenRouter + Nebius
     for (const badge of notSetBadges) {
       expect(badge.getAttribute("data-state")).toBe("closed");
     }
@@ -1488,7 +1501,7 @@ describe("AIRoutingCard", () => {
       );
       const input = await saveKey("sk-or-secret");
 
-      // Not yet: mutation still pending — no optimistic "Saved".
+      // Not yet: mutation still pending - no optimistic "Saved".
       expect(screen.queryByText("Saved")).not.toBeInTheDocument();
 
       resolveSave({ key_set: true });
@@ -1512,6 +1525,160 @@ describe("AIRoutingCard", () => {
       expect(screen.queryByText("Saved")).not.toBeInTheDocument();
       // The failed input is preserved so the operator can retry.
       expect((input as HTMLInputElement).value).toBe("sk-or-secret");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Nebius mode button + model picker + key row - each mirrors its OpenRouter
+  // counterpart above (same key_set contract, same debounce, same Saved-badge
+  // rules) against the /providers/nebius-* endpoints.
+  // -------------------------------------------------------------------------
+
+  describe("Nebius mode button", () => {
+    it("applies mode='nebius' on confirm when the key is set", async () => {
+      getNebiusKey.mockResolvedValueOnce({ key_set: true });
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+      // The Nebius button is key-gated - wait for the key status to land
+      // (until then the click would silently no-op on a disabled button).
+      const nebiusButton = await waitFor(() => {
+        const button = screen.getByText("Nebius").closest("button")!;
+        expect(button).not.toBeDisabled();
+        return button;
+      });
+
+      fireEvent.click(nebiusButton);
+
+      await waitFor(() =>
+        expect(applyMode).toHaveBeenCalledWith({ mode: "nebius" }),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("is disabled while the key is not saved", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      expect(screen.getByText("Nebius").closest("button")).toBeDisabled();
+    });
+  });
+
+  describe("Nebius model picker", () => {
+    // Renders the card with Nebius mode applied and a saved key, then returns
+    // the search input once the key status has landed and the input is enabled.
+    async function openPicker() {
+      getNebiusKey.mockResolvedValueOnce({ key_set: true });
+      getMode.mockResolvedValueOnce({ mode: "nebius", assignments: [] });
+      render(withQueryClient(<AIRoutingCard />));
+      // Two pickers share the same "Search models…" placeholder (OpenRouter's
+      // is only mounted in openrouter mode), so scope to the Nebius section.
+      const section = (await screen.findByText("Nebius default model")).closest(
+        "section",
+      )!;
+      const input = within(section).getByPlaceholderText(
+        "Search models…",
+      ) as HTMLInputElement;
+      await waitFor(() => expect(input).not.toBeDisabled());
+      return input;
+    }
+
+    it("does not preload the models query and debounces keystrokes before fetching", async () => {
+      await openPicker();
+      const section = screen
+        .getByText("Nebius default model")
+        .closest("section")!;
+
+      // No preload: the query stays idle until something is typed.
+      expect(searchNebiusModels).not.toHaveBeenCalled();
+
+      fireEvent.change(within(section).getByPlaceholderText("Search models…"), {
+        target: { value: "deepseek" },
+      });
+
+      // Debounced: nothing fetched immediately after the keystroke.
+      expect(searchNebiusModels).not.toHaveBeenCalled();
+
+      await waitFor(
+        () => expect(searchNebiusModels).toHaveBeenCalledWith("deepseek"),
+        { timeout: 3000 },
+      );
+    });
+
+    it("maps a failing models query to status-specific error copy (401 → auth failure)", async () => {
+      searchNebiusModels.mockRejectedValueOnce({
+        response: { status: 401 },
+      });
+      const search = await openPicker();
+      fireEvent.change(search, { target: { value: "deepseek" } });
+
+      await screen.findByText(
+        /Nebius auth failure - your API key may be invalid or expired/,
+        {},
+        { timeout: 3000 },
+      );
+      expect(screen.queryByText(/No models found/)).not.toBeInTheDocument();
+    });
+
+    it("shows the key-not-set notice instead of results when no key is saved", async () => {
+      getMode.mockResolvedValueOnce({ mode: "nebius", assignments: [] });
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText(/Save your Nebius API key above/);
+      expect(searchNebiusModels).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Nebius key row", () => {
+    async function saveKey(key: string) {
+      const input = screen.getByPlaceholderText("Nebius API key…");
+      fireEvent.change(input, { target: { value: key } });
+      const nebiusSection = screen
+        .getByText("Nebius API key")
+        .closest("section")!;
+      const saveButton = Array.from(
+        nebiusSection.querySelectorAll("button"),
+      ).find((b) => b.textContent === "Save")!;
+      fireEvent.click(saveButton);
+      return input;
+    }
+
+    it("shows the Saved badge only after the mutation succeeds, and clears it on input change", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Nebius API key");
+
+      let resolveSave!: (v: { key_set: boolean }) => void;
+      setNebiusKey.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSave = resolve;
+          }),
+      );
+      const input = await saveKey("nebius-secret");
+
+      // Not yet: mutation still pending - no optimistic "Saved".
+      expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+
+      resolveSave({ key_set: true });
+      await screen.findByText("Saved");
+
+      // Any input change clears the badge again.
+      fireEvent.change(input, { target: { value: "nebius-2" } });
+      expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    });
+
+    it("never shows Saved when the save fails", async () => {
+      setNebiusKey.mockRejectedValueOnce(new Error("boom"));
+      render(withQueryClient(<AIRoutingCard />));
+      const input = await saveKey("nebius-secret");
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(
+          expect.stringContaining("Save failed"),
+        ),
+      );
+      expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+      // The failed input is preserved so the operator can retry.
+      expect((input as HTMLInputElement).value).toBe("nebius-secret");
     });
   });
 });
