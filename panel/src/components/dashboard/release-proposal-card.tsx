@@ -451,24 +451,19 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
                 </p>
               </div>
 
-<<<<<<< HEAD
-          <div>
-            <HelpTip label="Per-member-task acceptance-criteria state, findings by review round, CI verdict, conventions findings, and reviewer chain — the same receipt the task-detail Verification tab shows, aggregated across every task this release carries">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Verification rollup
-              </p>
-            </HelpTip>
-            <ReleaseVerificationRollup
-              taskIds={proposal.member_task_ids.map((m) => m.task_id)}
-            />
-          </div>
+              {Array.isArray(proposal.member_task_ids) && (
+                <div>
+                  <HelpTip label="Per-member-task acceptance-criteria state, findings by review round, CI verdict, conventions findings, and reviewer chain — the same receipt the task-detail Verification tab shows, aggregated across every task this release carries">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Verification rollup
+                    </p>
+                  </HelpTip>
+                  <ReleaseVerificationRollup
+                    taskIds={proposal.member_task_ids.map((m) => m.task_id)}
+                  />
+                </div>
+              )}
 
-          {proposal.required_changes && (
-            <p className="text-sm text-amber-600">
-              Awaiting revision — you requested: {proposal.required_changes}
-            </p>
-          )}
-=======
               {report.migration_notes.length > 0 && (
                 <div>
                   <HelpTip label="Alembic migrations included in this release — check for a single head">
@@ -483,7 +478,6 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
                   </ul>
                 </div>
               )}
->>>>>>> origin/slave
 
               {proposal.required_changes && (
                 <p className="text-sm text-amber-600">
