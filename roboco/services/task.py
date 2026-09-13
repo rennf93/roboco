@@ -2306,6 +2306,24 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_completed_release_proposals(self) -> list[TaskTable]:
+        """Published (COMPLETED) release proposals, oldest completion first.
+
+        The release certificate's release boundary: each COMPLETED proposal's
+        ``completed_at`` is the CEO-approval/publication timestamp, and a
+        proposal's stored readiness report carries its ``proposed_version``,
+        so a caller can locate a version and the previous publication before it.
+        """
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == RELEASE_MANAGER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.completed_at, TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
     async def list_open_x_posts(self) -> list[TaskTable]:
         """Non-terminal X post/reply proposals (both sources) — the open-cap +
         panel-queue basis. Ordered oldest-first so the queue reads chronologically."""
@@ -3437,8 +3455,17 @@ class TaskService(BaseService):
         )
 
         try:
-            branch_name, _ = await git_service.create_branch(workspace, team, request)
+            branch_name, actual_base = await git_service.create_branch(
+                workspace, team, request
+            )
             task.branch_name = branch_name
+            # git.py falls back to the project default when the requested
+            # parent_branch is real (DB-recorded) but not yet pushed to the
+            # remote. Record that here — merge_chain.find_topology_issue
+            # reads it to exclude this deliberate, already-logged fallback
+            # from the shape-(a) refusal (see markers.BASE_BRANCH_FALLBACK).
+            if actual_base != parent_branch:
+                markers.mark_base_branch_fallback(task)
             await self.session.flush()
         except Exception:
             # create_branch cuts a per-task worktree at
@@ -3970,12 +3997,14 @@ class TaskService(BaseService):
                 new_criteria=new_criteria,
             )
 
+        old_parent_id = getattr(task, "parent_task_id", None)
         for key, value in updates.items():
             if hasattr(task, key) and value is not None:
                 setattr(task, key, value)
 
         self.assert_batch_shape_intact(task)
         await self.session.flush()
+        await self._maybe_recheck_topology(task, updates, old_parent_id)
 
         self.log.info(
             "Task updated",
@@ -3983,6 +4012,50 @@ class TaskService(BaseService):
             updates=list(updates.keys()),
         )
         return task
+
+    async def _maybe_recheck_topology(
+        self, task: TaskTable, updates: dict[str, Any], old_parent_id: object
+    ) -> None:
+        """Re-run the topology check iff this update actually re-parented."""
+        if "parent_task_id" not in updates:
+            return
+        if getattr(task, "parent_task_id", None) == old_parent_id:
+            return
+        await self.recheck_topology_after_reparent(task)
+
+    async def recheck_topology_after_reparent(self, task: TaskTable) -> None:
+        """Re-run the PR-base/parent-topology check after a re-parent PATCH.
+
+        Records (never blocks) a detected mismatch — the ``parent_task_id``
+        PATCH is often exactly the admin action fixing a mis-restructured
+        tree, so refusing it outright would prevent the fix. This makes the
+        stranded-base condition visible immediately (via the
+        ``topology_issue`` marker) instead of only surfacing at
+        complete()/submit_root, days into review (the 5612b225/PR #856
+        incident class). A re-parent that resolves a prior mismatch clears
+        the marker.
+
+        Public: also called directly by the PATCH route (``roboco.api.utils.
+        tasks``) for the null-clear/detach direction of a re-parent, which
+        bypasses ``update()``'s field-update loop entirely (see
+        ``_apply_null_clears``).
+        """
+        from roboco.services.gateway.merge_chain import find_topology_issue
+
+        issue = await find_topology_issue(task, self)
+        if issue is None:
+            markers.clear_topology_issue(task)
+            return
+        markers.set_topology_issue(
+            task,
+            {
+                "shape": issue.shape,
+                "expected_base": issue.expected_base,
+                "actual_base": issue.actual_base,
+                "message": issue.message,
+                "repair": issue.repair,
+            },
+        )
 
     async def admin_set_status(
         self,
@@ -7528,6 +7601,90 @@ class TaskService(BaseService):
             return None
         return all_descendants
 
+    async def _completed_root_subtree_ids(self, task: TaskTable) -> list[str] | None:
+        """Task-id strings of the completing task's ROOT subtree — but only
+        when the root ancestor is terminal-COMPLETED.
+
+        The docs-provenance flip guard: a doc written by a leaf/cell task
+        carries the caveat until the WHOLE root chain ships, so a leaf
+        completion while the root is still in flight returns None. Uses the
+        same recursive-ancestry CTE pattern as :meth:`resolve_root_source`.
+        The depth caps are safety nets past the real ``MAX_TASK_DEPTH``
+        invariant; they can only ever stop a hypothetical corrupt chain.
+        """
+        from roboco.templates.git.constants import MAX_TASK_DEPTH
+
+        max_depth = MAX_TASK_DEPTH + 4
+        root_row = await self.session.execute(
+            text(
+                """
+                WITH RECURSIVE ancestry(id, parent_task_id, status, depth) AS (
+                    SELECT id, parent_task_id, status, 0
+                    FROM tasks WHERE id = :task_id
+                    UNION ALL
+                    SELECT t.id, t.parent_task_id, t.status, a.depth + 1
+                    FROM tasks t
+                    JOIN ancestry a ON t.id = a.parent_task_id
+                    WHERE a.depth < :max_depth
+                )
+                SELECT id, status FROM ancestry WHERE parent_task_id IS NULL
+                """
+            ),
+            {"task_id": str(task.id), "max_depth": max_depth},
+        )
+        root = root_row.first()
+        if root is None:
+            return None
+        root_id, root_status = root
+        if root_status != TaskStatus.COMPLETED.value:
+            return None
+        subtree_rows = await self.session.execute(
+            text(
+                """
+                WITH RECURSIVE subtree(id, depth) AS (
+                    SELECT id, 0 FROM tasks WHERE id = :root_id
+                    UNION ALL
+                    SELECT t.id, s.depth + 1
+                    FROM tasks t
+                    JOIN subtree s ON t.parent_task_id = s.id
+                    WHERE s.depth < :max_depth
+                )
+                SELECT id FROM subtree
+                """
+            ),
+            {"root_id": str(root_id), "max_depth": max_depth},
+        )
+        # Sorted: the recursive CTE has no ORDER BY, so its row order is
+        # unspecified — the flip matches ids via ANY($1) and is
+        # order-agnostic, and a deterministic return keeps tests/log lines
+        # stable for every caller.
+        return sorted(str(row[0]) for row in subtree_rows.all())
+
+    async def _flip_docs_provenance_background(self, task_ids: list[str]) -> None:
+        """Flip KB docs written by *task_ids* from live_write to repo_tree.
+
+        Best-effort, mirroring DocsService._index_doc_in_rag: a KB/store
+        failure is a structlog warning and NEVER propagates — the task
+        completion that fired it is already committed.
+        """
+        try:
+            # Import here to avoid circular dependency
+            from roboco.services.optimal import get_optimal_service
+
+            optimal = await get_optimal_service()
+            flipped = await optimal.flip_docs_task_provenance(task_ids)
+            self.log.info(
+                "Flipped docs live_write provenance to repo_tree",
+                task_ids=task_ids,
+                flipped=flipped,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Failed to flip docs provenance on completion",
+                task_ids=task_ids,
+                error=str(e),
+            )
+
     async def _trigger_completion_hooks(
         self, task: TaskTable, agent_id: UUID | None
     ) -> None:
@@ -7561,6 +7718,26 @@ class TaskService(BaseService):
             )
             self._background_tasks.add(decision_task)
             decision_task.add_done_callback(self._background_tasks.discard)
+
+        # Docs provenance flip: when this completion exhausts the writing
+        # task's root chain, un-caveat every live_write doc of the subtree.
+        # The guard resolves inline (it must see the status change this
+        # transaction just flushed); the KB flip itself is fire-and-forget.
+        try:
+            subtree = await self._completed_root_subtree_ids(task)
+        except Exception as e:
+            self.log.warning(
+                "Docs provenance-flip guard failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+            subtree = None
+        if subtree:
+            flip_task = asyncio.create_task(
+                self._flip_docs_provenance_background(subtree)
+            )
+            self._background_tasks.add(flip_task)
+            flip_task.add_done_callback(self._background_tasks.discard)
 
     async def _apply_complete_approval_chain(
         self,
@@ -7613,6 +7790,30 @@ class TaskService(BaseService):
         if ws is not None and ws.pr_status == "open":
             return ws
         return None
+
+    async def recorded_pr_base(self, task: TaskTable) -> str | None:
+        """The branch this task's work is actually anchored to, or None.
+
+        Backs the gateway's topology-comparison helper
+        (:func:`roboco.services.gateway.merge_chain.find_topology_issue`):
+        prefers the still-open PR's recorded ``target_branch`` (set when
+        ``create_pr`` ran); falls back to the branch's ``base_branch`` (set
+        once at claim/branch-creation time) when no PR is open yet — the
+        "actual" side of the comparison against a freshly recomputed
+        expected base. None when the task has never had a work session
+        (not yet claimed), so there is nothing to compare.
+        """
+        if not task.work_session_id:
+            return None
+        result = await self.session.execute(
+            select(WorkSessionTable).where(WorkSessionTable.id == task.work_session_id)
+        )
+        ws = result.scalar_one_or_none()
+        if ws is None:
+            return None
+        if ws.pr_status == "open" and ws.target_branch:
+            return str(ws.target_branch)
+        return str(ws.base_branch) if ws.base_branch else None
 
     async def _assert_pr_merged_for_complete(self, task: TaskTable) -> bool:
         """True if the task's PR is merged (or no PR gate applies).

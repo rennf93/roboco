@@ -9,6 +9,7 @@ import {
   useUpdateTask,
   useTaskValidTransitions,
 } from "@/hooks/use-tasks";
+import { AttestationDownload } from "./attestation-download";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -723,10 +724,11 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
           </div>
         </div>
 
-        {/* Nav + Actions — pinned top-right; never moves regardless of title
+        {/* Nav + Attestation + Actions — pinned top-right; never moves regardless of title
             length or a dropdown's selected-label width. */}
         <div className="flex shrink-0 items-center gap-2">
           {nav}
+          <AttestationDownload task={task} />
           {actions.length > 0 && (
             <DropdownMenu>
               <Tooltip>

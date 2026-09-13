@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from roboco.api.utils.tasks import _apply_null_clears
+import pytest
+from roboco.api.utils.tasks import _apply_null_clears, _recheck_topology_after_detach
 
 
 def _task(**overrides: object) -> SimpleNamespace:
@@ -47,3 +49,31 @@ def test_other_null_clears_leave_claim_untouched() -> None:
     assert task.assigned_to == owner
     assert task.claimed_by == owner
     assert task.active_claimant_id == owner
+
+
+@pytest.mark.asyncio
+async def test_detach_reparent_reruns_topology_recheck() -> None:
+    """PATCH {"parent_task_id": null} bypasses TaskService.update()'s own
+    field-update loop (the null-clear is popped out and applied via direct
+    setattr instead), so _maybe_recheck_topology never fires for a detach.
+    The route must re-run the same recheck itself for this direction."""
+    task = _task()
+    service = MagicMock()
+    service.recheck_topology_after_reparent = AsyncMock()
+
+    await _recheck_topology_after_detach(task, service, {"parent_task_id": None})
+
+    service.recheck_topology_after_reparent.assert_awaited_once_with(task)
+
+
+@pytest.mark.asyncio
+async def test_non_reparent_null_clears_skip_topology_recheck() -> None:
+    """Clearing an unrelated nullable field (assigned_to, project_id,
+    budget_usd) never touches parent topology — no recheck call."""
+    task = _task()
+    service = MagicMock()
+    service.recheck_topology_after_reparent = AsyncMock()
+
+    await _recheck_topology_after_detach(task, service, {"assigned_to": None})
+
+    service.recheck_topology_after_reparent.assert_not_awaited()

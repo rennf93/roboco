@@ -789,6 +789,23 @@ async def test_remove_allowed_agent_when_allowed_list_is_none(
     assert await svc.remove_allowed_agent(project.id, uuid4()) is None
 
 
+@pytest.mark.asyncio
+async def test_remove_last_allowed_agent_restores_cell_default(
+    project_setup: dict,
+) -> None:
+    """Removing the only entry collapses the list back to None -- an emptied
+    restriction is no restriction, not a list nobody is on."""
+    svc = project_setup["svc"]
+    project = await svc.create(
+        _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
+    )
+    aid = uuid4()
+    await svc.add_allowed_agent(project.id, aid)
+    refreshed = await svc.remove_allowed_agent(project.id, aid)
+    assert refreshed is not None
+    assert refreshed.allowed_agents is None
+
+
 # ---------------------------------------------------------------------------
 # check_agent_access — non-matching cell + matching list
 # ---------------------------------------------------------------------------

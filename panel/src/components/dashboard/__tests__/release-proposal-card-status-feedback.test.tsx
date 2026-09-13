@@ -122,22 +122,13 @@ describe("ReleaseProposalCard — status feedback (silent-bug-sweep #c)", () => 
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it("shows a success toast for the published status", async () => {
-    await clickApprove();
-
-    resolveApproveRef.current?.({
-      status: "published",
-      version: "0.14.0",
-      files_changed: ["pyproject.toml"],
-      commit_sha: "abc123",
-      release_url: "https://github.com/example/example/releases/tag/v0.14.0",
-      detail: "published",
-    });
-
-    await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith("Published v0.14.0"),
-    );
-  });
+  // "published" was removed as a handled status (see e18d8f49): POST
+  // /release/proposal/approve is a 202-dispatch route that ALWAYS returns
+  // {status: "accepted"} synchronously — the real publish runs ~40min later
+  // in a background task, so this status can never actually reach the
+  // approve response in production. Published state is now confirmed by
+  // polling GET /tasks/{taskId}, covered in
+  // release-proposal-card-certificate.test.tsx.
 
   it("shows an info toast for the accepted (background-dispatched) status", async () => {
     await clickApprove();
