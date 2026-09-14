@@ -263,9 +263,7 @@ def test_nebius_catalog_entries_are_the_live_verified_ids() -> None:
         "nvidia/Nemotron-3_5-Lightning",
     }
     nebius = {
-        e.model_name
-        for e in MODEL_CATALOG
-        if e.provider_type is ModelProvider.NEBIUS
+        e.model_name for e in MODEL_CATALOG if e.provider_type is ModelProvider.NEBIUS
     }
     assert nebius == expected
     for model_name in expected:
@@ -276,6 +274,4 @@ def test_nebius_fleet_default_is_a_catalog_member() -> None:
     """The fleet default (nebius_cli_model) must be a catalog member, or the
     Mix picker and the complexity-override validator cannot see the model
     the whole fleet runs on in Nebius mode."""
-    assert settings.nebius_cli_model in {
-        e.model_name for e in MODEL_CATALOG
-    }
+    assert settings.nebius_cli_model in {e.model_name for e in MODEL_CATALOG}
