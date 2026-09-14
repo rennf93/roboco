@@ -54,9 +54,17 @@ export interface SetOpenRouterKeyRequest {
 
 /** Payload for setting or clearing the Nebius API key. */
 export interface SetNebiusKeyRequest {
+  api_key: string;
+}
+
 export interface ZaiKeyStatus {
   has_key: boolean;
   enabled: boolean;
+}
+
+/** Payload for setting or clearing the Z.ai API key. */
+export interface SetZaiKeyRequest {
+  api_key: string;
 }
 
 /** Payload for setting or clearing the Z.ai API key. */
@@ -231,6 +239,9 @@ export const providersApi = {
     const { data } = await api.put<NebiusKeyStatus>("/providers/nebius-key", {
       api_key: apiKey,
     });
+    return data;
+  },
+
   getZaiKey: async (): Promise<ZaiKeyStatus> => {
     const { data } = await api.get<ZaiKeyStatus>("/providers/zai-key");
     return data;

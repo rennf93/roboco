@@ -79,8 +79,6 @@ const {
   setGrokKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   getOpenRouterKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setOpenRouterKey: vi.fn(async () => ({ has_key: true, enabled: true })),
-  getOpenRouterKey: vi.fn(async () => ({ has_key: false })),
-  setOpenRouterKey: vi.fn(async () => ({ has_key: true })),
   // Mirrors the backend ZaiKeyStatus schema (has_key + enabled).
   getZaiKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setZaiKey: vi.fn(async () => ({ has_key: true, enabled: true })),
@@ -508,8 +506,7 @@ describe("AIRoutingCard", () => {
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
-    expect(screen.getAllByText("not set")).toHaveLength(4); // Grok + Ollama + OpenRouter + Nebius
-    expect(screen.getAllByText("not set")).toHaveLength(4); // Grok + Ollama + OpenRouter + Z.ai
+    expect(screen.getAllByText("not set")).toHaveLength(5); // Grok + Ollama + OpenRouter + Nebius + Z.ai
 
     const grokInput = screen.getByPlaceholderText("xai-…");
     fireEvent.change(grokInput, { target: { value: "xai-secret" } });
@@ -643,8 +640,7 @@ describe("AIRoutingCard", () => {
     ).toBe("closed");
 
     const notSetBadges = screen.getAllByText("not set");
-    expect(notSetBadges).toHaveLength(4); // Grok + Ollama + OpenRouter + Nebius
-    expect(notSetBadges).toHaveLength(4); // Grok + Ollama + OpenRouter + Z.ai
+    expect(notSetBadges).toHaveLength(5); // Grok + Ollama + OpenRouter + Nebius + Z.ai
     for (const badge of notSetBadges) {
       expect(badge.getAttribute("data-state")).toBe("closed");
     }
@@ -1135,7 +1131,9 @@ describe("AIRoutingCard", () => {
       await screen.findByText("Per-agent override (mix mode)");
 
       expect(
-        screen.getByText(/Codex, Gemini, Kimi, and Nebius are delivery-roles-only/i),
+        screen.getByText(
+          /Codex, Gemini, Kimi, and Nebius are delivery-roles-only/i,
+        ),
       ).toBeInTheDocument();
 
       // Wait for the catalog query to resolve (an unrelated row's groups)

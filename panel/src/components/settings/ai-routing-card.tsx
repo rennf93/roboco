@@ -581,10 +581,6 @@ export function AIRoutingCard() {
   const flipToNebius = async () => {
     if (!hasNebiusKey) {
       toast.error("Save the Nebius API key first");
-
-  const flipToZai = async () => {
-    if (!hasZaiKey) {
-      toast.error("Save the Z.ai API key first");
       return;
     }
     if (
@@ -592,9 +588,6 @@ export function AIRoutingCard() {
         "Switch every agent to Nebius? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
           "V1: delivery roles only, not Intake/Secretary.",
-
-        "Switch every agent to Z.ai GLM? Per-agent pins and complexity " +
-          "overrides are kept; other role/global assignments are replaced.",
       )
     )
       return;
@@ -605,7 +598,25 @@ export function AIRoutingCard() {
       });
       toast.success(
         "Role/global routing now on Nebius (per-agent pins and complexity overrides kept)",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
 
+  const flipToZai = async () => {
+    if (!hasZaiKey) {
+      toast.error("Save the Z.ai API key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to Z.ai GLM? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
+      )
+    )
+      return;
+    try {
       await applyMode.mutateAsync({ mode: "zai" });
       toast.success(
         "Role/global routing now on Z.ai GLM — per-agent pins and complexity overrides kept",
@@ -1039,134 +1050,129 @@ export function AIRoutingCard() {
       <CardContent className="space-y-6">
         {/* -------- Key cards band: 2x2 provider keys, self-hosted full-width below -------- */}
         <div className="grid grid-cols-1 items-start gap-x-10 gap-y-8 md:grid-cols-2">
-            {/* -------- Grok (xAI) key -------- */}
-            <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <HelpTip label="Stored encrypted server-side; never displayed once saved.">
-                  <Label className="text-sm font-medium">
-                    Grok (xAI) API key
-                  </Label>
-                </HelpTip>
-                {hasGrokKey ? (
-                  <HelpTip label="Enables the Grok mode button and any Grok row in Mix mode below.">
-                    <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                      <KeyRound className="h-3 w-3" /> key set
-                    </Badge>
-                  </HelpTip>
-                ) : (
-                  <HelpTip label="Required before any agent can route to a Grok model.">
-                    <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                      <Key className="h-3 w-3" /> not set
-                    </Badge>
-                  </HelpTip>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  type="password"
-                  value={grokKey}
-                  onChange={(e) => setGrokKey(e.target.value)}
-                  placeholder={
-                    hasGrokKey ? "•••••••••••• (leave blank to keep)" : "xai-…"
-                  }
-                  disabled={clearGrokKey}
-                />
-                <Button
-                  onClick={saveGrokKey}
-                  disabled={setGrokKeyMut.isPending}
-                >
-                  {setGrokKeyMut.isPending ? "Saving…" : "Save"}
-                </Button>
-              </div>
+          {/* -------- Grok (xAI) key -------- */}
+          <section className="space-y-2">
+            <div className="flex items-center justify-between">
+              <HelpTip label="Stored encrypted server-side; never displayed once saved.">
+                <Label className="text-sm font-medium">
+                  Grok (xAI) API key
+                </Label>
+              </HelpTip>
               {hasGrokKey ? (
-                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                  <Checkbox
-                    checked={clearGrokKey}
-                    onCheckedChange={(checked: boolean) => {
-                      const next = checked === true;
-                      setClearGrokKey(next);
-                      if (next) setGrokKey("");
-                    }}
-                  />
-                  Clear the stored key
-                </label>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Used for grok-build-0.1 at api.x.ai/v1. Stored
-                  Fernet-encrypted server-side; never returned by the API.
-                </p>
-              )}
-            </section>
-
-            {/* -------- Ollama key -------- */}
-            <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <HelpTip label="Stored encrypted server-side; never displayed once saved.">
-                  <Label className="text-sm font-medium">
-                    Ollama Cloud API key
-                  </Label>
+                <HelpTip label="Enables the Grok mode button and any Grok row in Mix mode below.">
+                  <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                    <KeyRound className="h-3 w-3" /> key set
+                  </Badge>
                 </HelpTip>
-                {hasOllamaKey ? (
-                  <HelpTip label="Enables the Ollama mode button and any Ollama row in Mix mode below.">
-                    <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                      <KeyRound className="h-3 w-3" /> key set
-                    </Badge>
-                  </HelpTip>
-                ) : (
-                  <HelpTip label="Required before any agent can route to an Ollama Cloud model.">
-                    <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                      <Key className="h-3 w-3" /> not set
-                    </Badge>
-                  </HelpTip>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={
-                    hasOllamaKey
-                      ? "•••••••••••• (leave blank to keep)"
-                      : "ollama_xxx…"
-                  }
-                  disabled={clearKey}
-                />
-                <Button onClick={saveKey} disabled={setKey.isPending}>
-                  {setKey.isPending ? "Saving…" : "Save"}
-                </Button>
-              </div>
-              {hasOllamaKey ? (
-                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                  <Checkbox
-                    checked={clearKey}
-                    onCheckedChange={(checked: boolean) => {
-                      const next = checked === true;
-                      setClearKey(next);
-                      if (next) setApiKey("");
-                    }}
-                  />
-                  Clear the stored key
-                </label>
               ) : (
-                <p className="text-xs text-muted-foreground">
-                  Stored Fernet-encrypted server-side; never returned by the
-                  API.
-                </p>
+                <HelpTip label="Required before any agent can route to a Grok model.">
+                  <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                    <Key className="h-3 w-3" /> not set
+                  </Badge>
+                </HelpTip>
               )}
-            </section>
+            </div>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                value={grokKey}
+                onChange={(e) => setGrokKey(e.target.value)}
+                placeholder={
+                  hasGrokKey ? "•••••••••••• (leave blank to keep)" : "xai-…"
+                }
+                disabled={clearGrokKey}
+              />
+              <Button onClick={saveGrokKey} disabled={setGrokKeyMut.isPending}>
+                {setGrokKeyMut.isPending ? "Saving…" : "Save"}
+              </Button>
+            </div>
+            {hasGrokKey ? (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <Checkbox
+                  checked={clearGrokKey}
+                  onCheckedChange={(checked: boolean) => {
+                    const next = checked === true;
+                    setClearGrokKey(next);
+                    if (next) setGrokKey("");
+                  }}
+                />
+                Clear the stored key
+              </label>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Used for grok-build-0.1 at api.x.ai/v1. Stored Fernet-encrypted
+                server-side; never returned by the API.
+              </p>
+            )}
+          </section>
 
-            {/* -------- OpenRouter key -------- */}
-            <OpenRouterProviderKeyRow />
+          {/* -------- Ollama key -------- */}
+          <section className="space-y-2">
+            <div className="flex items-center justify-between">
+              <HelpTip label="Stored encrypted server-side; never displayed once saved.">
+                <Label className="text-sm font-medium">
+                  Ollama Cloud API key
+                </Label>
+              </HelpTip>
+              {hasOllamaKey ? (
+                <HelpTip label="Enables the Ollama mode button and any Ollama row in Mix mode below.">
+                  <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                    <KeyRound className="h-3 w-3" /> key set
+                  </Badge>
+                </HelpTip>
+              ) : (
+                <HelpTip label="Required before any agent can route to an Ollama Cloud model.">
+                  <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                    <Key className="h-3 w-3" /> not set
+                  </Badge>
+                </HelpTip>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={
+                  hasOllamaKey
+                    ? "•••••••••••• (leave blank to keep)"
+                    : "ollama_xxx…"
+                }
+                disabled={clearKey}
+              />
+              <Button onClick={saveKey} disabled={setKey.isPending}>
+                {setKey.isPending ? "Saving…" : "Save"}
+              </Button>
+            </div>
+            {hasOllamaKey ? (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <Checkbox
+                  checked={clearKey}
+                  onCheckedChange={(checked: boolean) => {
+                    const next = checked === true;
+                    setClearKey(next);
+                    if (next) setApiKey("");
+                  }}
+                />
+                Clear the stored key
+              </label>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Stored Fernet-encrypted server-side; never returned by the API.
+              </p>
+            )}
+          </section>
 
-            <Separator />
+          {/* -------- OpenRouter key -------- */}
+          <OpenRouterProviderKeyRow />
 
-            {/* -------- Nebius key -------- */}
-            <NebiusProviderKeyRow />
-          </div>
+          <Separator />
 
-            {/* -------- Z.ai key -------- */}
-            <ZaiProviderKeyRow />
+          {/* -------- Nebius key -------- */}
+          <NebiusProviderKeyRow />
+
+          {/* -------- Z.ai key -------- */}
+          <ZaiProviderKeyRow />
         </div>
 
         <Separator />
@@ -1270,6 +1276,8 @@ export function AIRoutingCard() {
               onClick={flipToNebius}
               disabled={applyMode.isPending || !hasNebiusKey}
               labelHint="One key unlocks Nebius AI Studio's hosted open models (DeepSeek, Qwen, Llama and more). Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
               icon={<Bot className="h-4 w-4" />}
               label="Z.ai"
               description={

@@ -99,6 +99,10 @@ export function useNebiusKey() {
   return useQuery({
     queryKey: providerKeys.nebiusKey(),
     queryFn: () => providersApi.getNebiusKey(),
+    staleTime: 60_000,
+  });
+}
+
 export function useZaiKey() {
   return useQuery({
     queryKey: providerKeys.zaiKey(),
@@ -113,6 +117,12 @@ export function useSetNebiusKey() {
     mutationFn: (apiKey: string) => providersApi.setNebiusKey(apiKey),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: providerKeys.nebiusKey() });
+      // Applying a mode also reads this so refresh it too.
+      qc.invalidateQueries({ queryKey: providerKeys.mode() });
+    },
+  });
+}
+
 export function useSetZaiKey() {
   const qc = useQueryClient();
   return useMutation({
