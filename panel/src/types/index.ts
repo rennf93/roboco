@@ -177,17 +177,18 @@ export interface DocRef {
   version: string | null;
 }
 
-export interface FileRef {
-  path: string;
-  description: string;
-  file_type: string;
-  size_bytes: number | null;
-}
-
-export interface ExecutionLog {
-  events: Record<string, unknown>[];
-  errors: Record<string, unknown>[];
-  total_duration_seconds: number | null;
+// Embedded work-session summary on TaskResponse, mirroring the backend's
+// WorkSessionSummaryInTask (roboco/api/schemas/tasks.py). Distinct from
+// WorkSessionSummary above, which is the work-sessions list endpoint's row.
+export interface WorkSessionInTask {
+  id: string;
+  branch_name: string;
+  status: WorkSessionStatus;
+  commits: string[];
+  files_modified: string[];
+  pr_number: number | null;
+  pr_url: string | null;
+  pr_status: string | null;
 }
 
 export interface SubTask {
@@ -270,7 +271,10 @@ export interface Task {
   task_type: TaskType;
   project_id: string | null; // null for a fan-out task that carries product_id
   product_id?: string | null;
-  work_session_id?: string | null;
+  // Work session created when an agent claims this task (embedded by
+  // TaskResponse as WorkSessionSummaryInTask). Null while unclaimed; list
+  // summaries omit it entirely.
+  work_session?: WorkSessionInTask | null;
   // PR Tracking (parallel execution in awaiting_documentation)
   docs_complete: boolean;
   pr_created: boolean;
@@ -283,11 +287,9 @@ export interface Task {
   // Execution
   checkpoints: Checkpoint[];
   progress_updates: ProgressUpdate[];
-  execution_log?: ExecutionLog | null;
   // Artifacts
   commits: CommitRef[];
   documents?: DocRef[];
-  outputs?: FileRef[];
   // Documentation
   dev_notes: string | null;
   qa_notes: string | null;
@@ -525,15 +527,15 @@ export interface Notification {
   subject: string;
   body: string;
   requires_ack: boolean;
+  // Per-recipient ack state is resolved server-side from the viewer's
+  // perspective (NotificationResponse): is_acknowledged = the viewer is in
+  // the acked set, is_fully_acknowledged = every to_agents member is.
   is_acknowledged: boolean;
   is_fully_acknowledged: boolean;
   is_read: boolean;
   related_task_id: string | null;
-  related_message_ids: string[];
   timestamp: string;
   expires_at: string | null;
-  acked_by: string[];
-  acked_at: Record<string, string>; // Agent ID -> timestamp
 }
 
 export interface KanbanBoard {

@@ -438,11 +438,8 @@ export const DEMO_NOTIFICATIONS: Notification[] = [
     is_fully_acknowledged: false,
     is_read: false,
     related_task_id: "demo-t2",
-    related_message_ids: [],
     timestamp: _iso(35),
     expires_at: null,
-    acked_by: [],
-    acked_at: {},
   },
   {
     id: "demo-n2",
@@ -457,11 +454,8 @@ export const DEMO_NOTIFICATIONS: Notification[] = [
     is_fully_acknowledged: false,
     is_read: false,
     related_task_id: "demo-t1",
-    related_message_ids: [],
     timestamp: _iso(95),
     expires_at: null,
-    acked_by: [],
-    acked_at: {},
   },
   {
     id: "demo-n3",
@@ -476,11 +470,8 @@ export const DEMO_NOTIFICATIONS: Notification[] = [
     is_fully_acknowledged: true,
     is_read: true,
     related_task_id: null,
-    related_message_ids: [],
     timestamp: _iso(400),
     expires_at: null,
-    acked_by: ["ceo-renzo"],
-    acked_at: {},
   },
 ];
 

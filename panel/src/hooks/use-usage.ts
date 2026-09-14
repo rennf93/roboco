@@ -131,10 +131,10 @@ export function useSpawnWaste(period: UsagePeriod = "24h") {
 }
 
 /**
- * Recent inference sessions — mock-mode only.
- *
- * Returns an empty array in production (no real backend endpoint for sessions).
- * The SessionsTable will display "No sessions recorded yet" gracefully.
+ * Recent inference sessions, live data from GET /usage/sessions (the
+ * backend's most recent agent spawn sessions, newest first; an empty fleet
+ * returns [], so the SessionsTable shows its "No sessions recorded yet"
+ * state).
  */
 export function useUsageSessions(limit: number = 100) {
   return useQuery<UsageSession[]>({
