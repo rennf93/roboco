@@ -73,6 +73,12 @@ _QA_DO = (
     "evidence",
     "draft_playbook",
     "request_sandbox",
+    # run_sandbox_tests is QA's alone: the "run and test code" leg of the
+    # loop executes in a Token Factory Sandbox microVM (Nebius), gated for
+    # real by the verb's own flag + Nebius-key checks. Developers keep
+    # their container shell - the sandbox is the verification surface, not
+    # a second dev runtime.
+    "run_sandbox_tests",
     # QA's render source is a read-only branch export, never a working tree
     # (see request_render/_render_qa_source); gated the same way as above.
     "request_render",

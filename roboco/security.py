@@ -439,6 +439,7 @@ _WAF_FREETEXT_BODY_FIELDS: set[str] = {
     "campaign_name",
     "chosen",
     "code",
+    "command",
     "commit",
     "cons",
     "consequences",

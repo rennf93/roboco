@@ -433,6 +433,34 @@ class RequestSandboxRequest(BaseModel):
     extensions: dict[str, list[str]] | None = None
 
 
+class RunSandboxTestsRequest(BaseModel):
+    """Run the caller's test command for the ACTIVE task inside a Token
+    Factory Sandbox microVM (QA-only verb, default-off flag). The workspace
+    archive is uploaded server-side; ``command`` runs at the archive root."""
+
+    command: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Shell command to run at the workspace root, e.g. 'pytest -q'",
+    )
+    image: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+        description=(
+            "Sandbox image ref (a 'tag:'-prefixed reference or an image "
+            "uuid); default = settings. Constrained to reference syntax - "
+            "no whitespace or shell metacharacters, it names an image, it "
+            "is never executed"
+        ),
+    )
+    timeout_seconds: int | None = Field(
+        default=None,
+        ge=30,
+        le=3600,
+        description="Per-run wall-clock ceiling; default = settings",
+    )
+
+
 class RequestRenderRequest(BaseModel):
     """Render a video composition to preview frames for artifact
     verification. Omitted `composition_id` falls back to the task's

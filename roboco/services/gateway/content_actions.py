@@ -32,6 +32,10 @@ from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
 from roboco.foundation.policy.injection_guard import screen_external_text
 from roboco.foundation.policy.journaling import Scope as _Scope
+from roboco.llm.providers.nebius_sandboxes import (
+    run_sandbox_command,
+    tail_for_evidence,
+)
 from roboco.models.base import TaskStatus
 from roboco.services.content_notes import content_type_for_role
 from roboco.services.gateway.choreographer import findings as findings_lib
@@ -5901,6 +5905,297 @@ class ContentActions:
             task_id=str(t.id),
             next="use the returned creds for this session; call again anytime",
             evidence=filtered,
+            context_briefing={},
+        )
+
+    async def _sandbox_tests_nebius_key(self) -> tuple[str | None, Envelope | None]:
+        """run_sandbox_tests' key guard: the stored Nebius API key (Fernet-
+        decrypted server-side), or a clean invalid_state rejection. The
+        Sandboxes API authenticates with the SAME key as the inference
+        provider - no second credential exists."""
+        from roboco.models.base import ModelProvider
+        from roboco.services.provider import get_provider_service
+        from roboco.utils.converters import require_uuid
+
+        provider_svc = get_provider_service(self.task.session)
+        providers = await provider_svc.list_providers(include_disabled=True)
+        nebius = next((p for p in providers if p.type == ModelProvider.NEBIUS), None)
+        if nebius is None or not nebius.auth_token_encrypted:
+            return None, Envelope.invalid_state(
+                message="no Nebius API key is saved - the Sandboxes API "
+                "authenticates with it",
+                remediate=(
+                    "save the Nebius (Token Factory) API key in the panel's "
+                    "Settings -> AI Routing first"
+                ),
+                context_briefing={},
+            )
+        api_key = await provider_svc.get_decrypted_token(require_uuid(nebius.id))
+        if not api_key:
+            return None, Envelope.invalid_state(
+                message="the stored Nebius key could not be decrypted",
+                remediate="re-save the Nebius API key in the panel",
+                context_briefing={},
+            )
+        return api_key, None
+
+    @staticmethod
+    async def _git_archive_workspace(root: Path, archive: Path) -> tuple[bool, str]:
+        """One ``git archive`` attempt of the committed HEAD; (ok, stderr)."""
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "archive",
+            "--format=tar.gz",
+            f"-o{archive}",
+            "HEAD",
+            cwd=root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        return proc.returncode == 0, stderr.decode(errors="replace").strip()[:300]
+
+    async def _sandbox_tests_root(
+        self, agent_id: UUID, agent_slug: str, task: Any, project: Any
+    ) -> tuple[Path | None, Envelope | None]:
+        """run_sandbox_tests' workspace resolution: the per-task worktree
+        when one exists on disk, else the clone root (mirroring
+        _render_dev_source's choice). An unresolved project row or agent
+        team rejects here too."""
+        from roboco.services.workspace import WorkspaceError
+
+        if project is None:
+            return None, Envelope.invalid_state(
+                message="the task's project could not be resolved",
+                remediate="retry; escalate to your PM if it persists",
+                context_briefing={},
+            )
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or not agent.team:
+            return None, Envelope.invalid_state(
+                message="your team could not be resolved",
+                remediate="ensure your agent record has a team, then retry",
+                context_briefing={},
+            )
+        try:
+            clone_root = self.workspace.get_clone_root_path(
+                project.slug, agent.team, agent_slug
+            )
+            worktree = self.workspace.get_worktree_path(
+                project.slug, agent.team, agent_slug, task.id.hex[:8]
+            )
+        except WorkspaceError as exc:
+            return None, Envelope.invalid_state(
+                message=f"could not resolve your workspace path: {exc}",
+                remediate=(
+                    "retry run_sandbox_tests; escalate to your PM if it persists"
+                ),
+                context_briefing={},
+            )
+        root = worktree if worktree.exists() else clone_root
+        if not root.exists():
+            return None, Envelope.invalid_state(
+                message="no workspace found on disk for this task",
+                remediate=(
+                    "call give_me_work() to provision the clone first, then "
+                    "retry run_sandbox_tests"
+                ),
+                context_briefing={},
+            )
+        return root, None
+
+    @staticmethod
+    async def _sandbox_tests_archive(
+        root: Path, task: Any
+    ) -> tuple[Path | None, Envelope | None]:
+        """Archive the committed HEAD of ``root`` into a temp tarball and
+        enforce the upload ceiling; the caller owns unlinking the path."""
+        archive = Path("/tmp") / f"roboco-sandbox-{task.id.hex[:12]}.tar.gz"
+        ok, stderr = await ContentActions._git_archive_workspace(root, archive)
+        if not ok:
+            with contextlib.suppress(OSError):
+                archive.unlink(missing_ok=True)
+            return None, Envelope.invalid_state(
+                message=f"git archive of the workspace failed: {stderr}",
+                remediate=(
+                    "commit your work first (an empty or unborn HEAD cannot "
+                    "be archived), then retry run_sandbox_tests"
+                ),
+                context_briefing={},
+            )
+        size = archive.stat().st_size
+        if size > settings.token_factory_sandboxes_max_archive_bytes:
+            with contextlib.suppress(OSError):
+                archive.unlink(missing_ok=True)
+            return None, Envelope.invalid_state(
+                message=(
+                    f"workspace archive is {size} bytes, above the "
+                    f"{settings.token_factory_sandboxes_max_archive_bytes} "
+                    "upload ceiling"
+                ),
+                remediate=(
+                    "prune large artifacts from the repo or raise "
+                    "ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES"
+                ),
+                context_briefing={},
+            )
+        return archive, None
+
+    async def _sandbox_tests_guards(
+        self, agent_id: UUID
+    ) -> tuple[Any, str | None, Envelope | None]:
+        """run_sandbox_tests' prelude guards, in order: flag off; no
+        claimed/active project-bound task; no stored Nebius key. Returns
+        (task, api_key, None) or (None, None, rejection)."""
+        if not settings.token_factory_sandboxes_enabled:
+            return (
+                None,
+                None,
+                Envelope.invalid_state(
+                    message="Token Factory Sandboxes are disabled",
+                    remediate=(
+                        "ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED is off - ask the "
+                        "CEO to arm it (Feature Flags card); until then run "
+                        "tests in your own container"
+                    ),
+                    context_briefing={},
+                ),
+            )
+        t, rejection = await self._sandbox_active_task(agent_id)
+        if rejection is not None:
+            return None, None, rejection
+        api_key, rejection = await self._sandbox_tests_nebius_key()
+        if rejection is not None:
+            return None, None, rejection
+        return t, api_key, None
+
+    async def run_sandbox_tests(
+        self,
+        *,
+        agent_id: UUID,
+        command: str,
+        image: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> Envelope:
+        """Run the caller's test command inside a Token Factory Sandbox
+        microVM (QA only, see role_config; default-off flag).
+
+        The hackathon-track workload: the "run and test code" leg of the
+        agent loop executes in Nebius's ephemeral Sandboxes service instead
+        of the agent container's own shell. The committed workspace HEAD is
+        git-archived server-side, uploaded to the Sandboxes API, extracted
+        inside a disposable microVM prebuilt from the requested image, and
+        ``command`` runs at the archive root; the microVM is destroyed after
+        the run. Nothing about the LOCAL path changes: the flag off, a
+        missing key, or any sandbox failure degrades to an envelope
+        rejection and QA keeps its container shell.
+
+        Guards, in order (the first three live in ``_sandbox_tests_guards``):
+        flag off; no claimed/active project-bound task; no stored Nebius
+        key (the Sandboxes API shares the inference key); then workspace/
+        project unresolvable, ``git archive`` failing, or the archive over
+        the upload ceiling. The
+        run's outcome rides in ``evidence`` (exit code, output tails, metered
+        cost/duration) and a journal entry records it; the caller's task is
+        heartbeated before and after the wait so a long suite never reads as
+        a stale claim.
+        """
+        t, api_key, rejection = await self._sandbox_tests_guards(agent_id)
+        if rejection is not None or t is None or api_key is None:
+            return rejection or Envelope.invalid_state(
+                message="run_sandbox_tests preconditions failed",
+                remediate="retry run_sandbox_tests",
+                context_briefing={},
+            )
+        from roboco.agents_config import _resolve_to_slug
+        from roboco.services.project import get_project_service
+
+        agent_slug = _resolve_to_slug(str(agent_id))
+        project = await get_project_service(self.task.session).get(t.project_id)
+        root, rejection = await self._sandbox_tests_root(
+            agent_id, agent_slug, t, project
+        )
+        if rejection is not None or root is None:
+            return rejection or Envelope.invalid_state(
+                message="workspace could not be resolved",
+                remediate="retry run_sandbox_tests",
+                context_briefing={},
+            )
+        archive, rejection = await self._sandbox_tests_archive(root, t)
+        if rejection is not None or archive is None:
+            return rejection or Envelope.invalid_state(
+                message="workspace archive could not be created",
+                remediate="retry run_sandbox_tests",
+                context_briefing={},
+            )
+        await self._touch_heartbeat(t.id)
+        try:
+            result, error = await run_sandbox_command(
+                api_key,
+                command=command,
+                image=image,
+                archive_path=archive,
+                timeout_seconds=timeout_seconds,
+            )
+        finally:
+            with contextlib.suppress(OSError):
+                archive.unlink(missing_ok=True)
+        await self._touch_heartbeat(t.id)
+        if error is not None or result is None:
+            return Envelope.invalid_state(
+                message=f"sandbox test run failed: {error}",
+                remediate=(
+                    "retry run_sandbox_tests; if it keeps failing run the "
+                    "suite in your own container and escalate the sandbox "
+                    "error to your PM"
+                ),
+                context_briefing={},
+            )
+        exit_code = result.get("exit_code")
+        outcome = "PASS" if exit_code == 0 else "FAIL"
+        stdout_tail = tail_for_evidence(result.get("stdout", ""))
+        stderr_tail = tail_for_evidence(result.get("stderr", ""))
+        with contextlib.suppress(Exception):
+            # The run already happened and must reach the agent even if the
+            # journal write fails - hence suppressed, unlike `note`.
+            await self.journal.write_entry(
+                agent_id=agent_id,
+                task_id=t.id,
+                scope="note",
+                title=f"Token Factory sandbox test run: {outcome} (exit {exit_code})",
+                content=(
+                    f"ran in a Token Factory Sandbox microVM "
+                    f"(image={image or settings.token_factory_sandboxes_image}, "
+                    f"cost={result.get('cost')}, "
+                    f"elapsed={result.get('elapsed_time')}s)\n\n"
+                    f"command: {command}\n\n"
+                    f"stdout (tail):\n{stdout_tail}\n\n"
+                    f"stderr (tail):\n{stderr_tail}"
+                ),
+            )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(t.id),
+            next=(
+                "tests passed in the Token Factory sandbox - continue the QA "
+                "flow (pr_pass)"
+                if exit_code == 0
+                else "tests failed in the Token Factory sandbox - record "
+                "findings via fail_review"
+            ),
+            evidence={
+                "sandbox": {
+                    "exit_code": exit_code,
+                    "timed_out": result.get("timed_out"),
+                    "image": image or settings.token_factory_sandboxes_image,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                    "cost": result.get("cost"),
+                    "elapsed_time": result.get("elapsed_time"),
+                    "instance_uuid": result.get("instance_uuid"),
+                    "operation_uuid": result.get("operation_uuid"),
+                }
+            },
             context_briefing={},
         )
 

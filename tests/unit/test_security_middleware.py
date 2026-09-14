@@ -543,6 +543,7 @@ _IDENTIFIER_FIELDS = frozenset(
         "blocker_type",
         "nature",
         "task_type",
+        "image",
     }
 )
 

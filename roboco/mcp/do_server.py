@@ -61,6 +61,12 @@ _SANDBOX_TIMEOUT = 1080
 # ceiling is video_render_timeout_seconds (default 600s) plus its request
 # timeout for uploading the tarball — 660s gives that headroom.
 _RENDER_TIMEOUT = 660
+# run_sandbox_tests waits for a Token Factory Sandbox microVM run: the
+# in-VM ceiling (settings, default 900s, schema-capped at 3600s) plus
+# upload + poll margin. The per-call timeout below floors at the default
+# and stretches when the agent asks for a longer run (the tool computes
+# max(this, timeout_seconds + 600)).
+_SANDBOX_TESTS_TIMEOUT = 1500
 # Tight timeout for SDK loopback — local sidecar; gateway path must not stall.
 _SDK_TIMEOUT = 2.0
 # FastAPI's default missing-route status. Every /api/v1/do/* route returns
@@ -1103,6 +1109,38 @@ def request_sandbox(
     )
 
 
+def run_sandbox_tests(
+    command: str,
+    image: str | None = None,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Run YOUR active task's tests inside a Token Factory Sandbox (Nebius).
+
+    QA-only (the developer tool manifest doesn't carry it), default-off:
+    rejected until the CEO arms ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED and a
+    Nebius API key is saved. The committed workspace HEAD is git-archived
+    server-side, uploaded to the Sandboxes API, extracted inside a
+    disposable microVM (millisecond boot, destroyed after the run), and
+    ``command`` executes at the archive root - e.g. ``pytest -q`` or
+    ``make test``. ``image`` (default ``tag:python:3.12``) and
+    ``timeout_seconds`` (default 900, cap 3600) override the settings. The
+    envelope's ``evidence.sandbox`` carries ``exit_code``, ``stdout_tail``/
+    ``stderr_tail``, metered ``cost``/``elapsed_time``, and the sandbox
+    instance/operation uuids; the run is also journaled to the task. A
+    sandbox failure is an invalid_state envelope - fall back to your own
+    container shell, nothing about it changes.
+    """
+    return _post(
+        "/api/v1/do/run_sandbox_tests",
+        {
+            "command": command,
+            "image": image,
+            "timeout_seconds": timeout_seconds,
+        },
+        timeout=max(_SANDBOX_TESTS_TIMEOUT, (timeout_seconds or 0) + 600),
+    )
+
+
 def request_render(
     composition_id: str | None = None,
     orientation: str = "vertical",
@@ -1373,6 +1411,7 @@ _TOOLS: dict[str, Any] = {
     "notify": notify,
     "evidence": evidence,
     "request_sandbox": request_sandbox,
+    "run_sandbox_tests": run_sandbox_tests,
     "request_render": request_render,
     "progress": progress,
     "notify_list": notify_list,

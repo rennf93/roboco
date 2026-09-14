@@ -100,6 +100,10 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("release_manager_enabled", "Gated release manager"),
     ("org_memory_enabled", "Organizational memory loop"),
     ("sandbox_db_enabled", "Sandboxed per-agent test DB/Redis"),
+    (
+        "token_factory_sandboxes_enabled",
+        "Token Factory Sandboxes (QA test runs in Nebius microVMs)",
+    ),
     ("routing_strict", "Strict model routing (fail-closed on a disabled provider)"),
     ("x_engine_enabled", "X (Twitter) engine"),
     ("x_replies_enabled", "X mention replies (needs a paid X API tier)"),

@@ -77,6 +77,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Close the learn→reuse loop: distill a lesson at task completion, index journal reflections, and auto-inject similar past lessons + approved playbooks into an agent's briefing on claim.",
   sandbox_db_enabled:
     "Provision a throwaway Postgres/Redis sibling container per agent spawn (per-project opt-in) instead of injecting RoboCo's own production DB credentials into the agent's gate.",
+  token_factory_sandboxes_enabled:
+    "Lets QA run a task's test suite inside a Token Factory Sandbox microVM on Nebius (millisecond boot, destroyed after the run) instead of the agent's own container. Needs a Nebius API key; when off, QA keeps its local shell.",
   routing_strict:
     "Fail-closed model routing: refuse to silently downgrade an agent to the legacy Anthropic path when its configured provider is disabled (raise instead). Off => graceful degradation with a warning.",
   x_engine_enabled:
@@ -128,8 +130,7 @@ const FLAG_TOOLTIPS: Record<string, string> = {
   conventions_enabled: "Enforces each project's architectural placement rules.",
   possibilities_matrix_enabled:
     "Fast-paths work that's already been done elsewhere.",
-  task_budgets_enabled:
-    "Caps agent spend per project (monthly) and per task.",
+  task_budgets_enabled: "Caps agent spend per project (monthly) and per task.",
   rag_auto_update_enabled:
     "Keeps the RAG knowledge index automatically refreshed.",
   transcript_prune_enabled:
@@ -149,6 +150,8 @@ const FLAG_TOOLTIPS: Record<string, string> = {
     "Captures task learnings and re-injects them into future briefings.",
   sandbox_db_enabled:
     "Gives agents on-demand disposable DB/Redis sandboxes for testing.",
+  token_factory_sandboxes_enabled:
+    "Runs QA test suites in Nebius Token Factory Sandbox microVMs.",
   routing_strict:
     "Fails closed instead of silently falling back on a disabled provider.",
   x_engine_enabled: "Drafts X posts for CEO review; nothing auto-posts.",

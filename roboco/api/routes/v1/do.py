@@ -47,6 +47,7 @@ from roboco.api.schemas.v1.do import (
     RejectPlaybookRequest,
     RequestRenderRequest,
     RequestSandboxRequest,
+    RunSandboxTestsRequest,
     TaskTimeRequest,
 )
 from roboco.security import (
@@ -570,6 +571,23 @@ async def do_request_sandbox(
 ) -> dict:
     env = await actions.request_sandbox(
         agent_id=x_agent_id, services=body.services, extensions=body.extensions
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/run_sandbox_tests")
+@mesh_scanned
+async def do_run_sandbox_tests(
+    request: Request,
+    body: RunSandboxTestsRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.run_sandbox_tests(
+        agent_id=x_agent_id,
+        command=body.command,
+        image=body.image,
+        timeout_seconds=body.timeout_seconds,
     )
     return envelope_to_response(env, request)
 

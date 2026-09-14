@@ -2391,6 +2391,63 @@ class Settings(BaseSettings):
             "via ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS"
         ),
     )
+    # Token Factory Sandboxes (the Contree service at
+    # api.tokenfactory.nebius.com/sandboxes): ephemeral microVMs that run a
+    # command and are destroyed, used by the QA-scoped run_sandbox_tests
+    # gateway verb to execute a task's test suite outside the agent
+    # container. Default-off like every autonomy surface; the sandbox calls
+    # authenticate with the SAME stored Nebius API key as the inference
+    # provider (bearer), plus an optional Project header
+    # (token_factory_sandboxes_project_id) when the account is scoped to a
+    # Nebius project id.
+    token_factory_sandboxes_enabled: bool = Field(
+        default=False,
+        description=(
+            "Arm the run_sandbox_tests gateway verb (QA test runs in Token "
+            "Factory Sandbox microVMs); default off, also toggleable from "
+            "the panel's Feature Flags card"
+        ),
+    )
+    token_factory_sandboxes_base_url: str = Field(
+        default="https://api.tokenfactory.nebius.com/sandboxes",
+        description=(
+            "Contree Sandboxes API base (the client appends /v1); override "
+            "via ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL"
+        ),
+    )
+    token_factory_sandboxes_project_id: str = Field(
+        default="",
+        description=(
+            "Optional Nebius project id sent as the Sandboxes API's "
+            "'Project' header; empty relies on the API key alone. Override "
+            "via ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID"
+        ),
+    )
+    token_factory_sandboxes_image: str = Field(
+        default="tag:python:3.12",
+        description=(
+            "Default sandbox image ref (the agent may override per call); "
+            "override via ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE"
+        ),
+    )
+    token_factory_sandboxes_timeout_seconds: int = Field(
+        default=900,
+        ge=30,
+        description=(
+            "Default per-run wall-clock ceiling inside the sandbox (the "
+            "sandbox kills the process at this); override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS"
+        ),
+    )
+    token_factory_sandboxes_max_archive_bytes: int = Field(
+        default=67108864,
+        ge=1048576,
+        description=(
+            "Max git-archive upload size for a sandbox test run (64 MiB "
+            "default); override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES"
+        ),
+    )
     # An interactive intake/secretary chat the human abandoned (closed the tab
     # without confirming/stopping) otherwise leaks its container until the
     # orchestrator restarts. The sweeper reaps a live session whose
