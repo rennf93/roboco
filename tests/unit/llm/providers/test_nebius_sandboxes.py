@@ -199,7 +199,7 @@ async def test_spawn_payload_and_location_extraction(
 
     spawn, error = await ns.spawn_sandbox_instance(
         _KEY,
-        shell="tar -xzf /tmp/roboco-ws.tar.gz -C /workspace && pytest -q",
+        shell_expression="tar -xzf /tmp/roboco-ws.tar.gz -C /workspace && pytest -q",
         image="tag:python:3.12",
         file_upload=upload,
         timeout_seconds=_TIMEOUT,
@@ -225,7 +225,7 @@ async def test_spawn_401_maps_to_auth_error(
     _patch_client(monkeypatch, fake)
 
     spawn, error = await ns.spawn_sandbox_instance(
-        _KEY, shell="true", image="tag:python:3.12"
+        _KEY, shell_expression="true", image="tag:python:3.12"
     )
 
     assert spawn is None
@@ -241,7 +241,7 @@ async def test_spawn_missing_location_is_an_error(
     _patch_client(monkeypatch, fake)
 
     spawn, error = await ns.spawn_sandbox_instance(
-        _KEY, shell="true", image="tag:python:3.12"
+        _KEY, shell_expression="true", image="tag:python:3.12"
     )
 
     assert spawn is None
@@ -386,7 +386,7 @@ async def test_client_never_raises_on_unexpected_errors(
     _patch_client(monkeypatch, fake)
 
     spawn, error = await ns.spawn_sandbox_instance(
-        _KEY, shell="true", image="tag:python:3.12"
+        _KEY, shell_expression="true", image="tag:python:3.12"
     )
 
     assert spawn is None

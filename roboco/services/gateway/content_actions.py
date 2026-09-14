@@ -14,9 +14,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import os
 import re
 import shutil
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6006,11 +6008,15 @@ class ContentActions:
 
     @staticmethod
     async def _sandbox_tests_archive(
-        root: Path, task: Any
+        root: Path,
     ) -> tuple[Path | None, Envelope | None]:
-        """Archive the committed HEAD of ``root`` into a temp tarball and
-        enforce the upload ceiling; the caller owns unlinking the path."""
-        archive = Path("/tmp") / f"roboco-sandbox-{task.id.hex[:12]}.tar.gz"
+        """Archive the committed HEAD of ``root`` into a random-named temp
+        tarball (mkstemp: unpredictable on the shared orchestrator host,
+        never cross-task colliding) and enforce the upload ceiling; the
+        caller owns unlinking the path."""
+        fd, archive_name = tempfile.mkstemp(prefix="roboco-sandbox-", suffix=".tar.gz")
+        os.close(fd)
+        archive = Path(archive_name)
         ok, stderr = await ContentActions._git_archive_workspace(root, archive)
         if not ok:
             with contextlib.suppress(OSError):
@@ -6120,7 +6126,7 @@ class ContentActions:
                 remediate="retry run_sandbox_tests",
                 context_briefing={},
             )
-        archive, rejection = await self._sandbox_tests_archive(root, t)
+        archive, rejection = await self._sandbox_tests_archive(root)
         if rejection is not None or archive is None:
             return rejection or Envelope.invalid_state(
                 message="workspace archive could not be created",

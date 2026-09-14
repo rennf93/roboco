@@ -8,6 +8,7 @@ scoping (QA's do_tools only).
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -93,16 +94,19 @@ def _stub_run(
     return run
 
 
-def _fake_archive_ok(monkeypatch: pytest.MonkeyPatch, task_id_hex: str) -> Path:
-    """Make the archive step succeed against a pre-created temp tarball."""
+def _stub_archive_write(
+    monkeypatch: pytest.MonkeyPatch, payload: bytes = b"tarball"
+) -> None:
+    """Make the archive step succeed, writing ``payload`` to whatever random
+    mkstemp path the verb chose (the real helper runs ``git archive -o``)."""
+
+    async def fake_git(_root: Path, archive: Path) -> tuple[bool, str]:
+        archive.write_bytes(payload)
+        return True, ""
+
     monkeypatch.setattr(
-        ContentActions,
-        "_git_archive_workspace",
-        AsyncMock(return_value=(True, "")),
+        ContentActions, "_git_archive_workspace", AsyncMock(side_effect=fake_git)
     )
-    archive = Path("/tmp") / f"roboco-sandbox-{task_id_hex[:12]}.tar.gz"
-    archive.write_bytes(b"tarball")
-    return archive
 
 
 # ---------------------------------------------------------------------------
@@ -214,15 +218,26 @@ async def test_oversize_archive_refused_and_cleaned(
         "_git_archive_workspace",
         AsyncMock(return_value=(True, "")),
     )
-    monkeypatch.setattr(settings, "token_factory_sandboxes_max_archive_bytes", 4)
-    archive = Path("/tmp") / f"roboco-sandbox-{t.id.hex[:12]}.tar.gz"
-    archive.write_bytes(b"way-more-than-four-bytes")
+    _OVERSIZE_CEILING = 4
+    monkeypatch.setattr(
+        settings,
+        "token_factory_sandboxes_max_archive_bytes",
+        _OVERSIZE_CEILING,
+    )
+    _stub_archive_write(monkeypatch, payload=b"way-more-than-four-bytes")
 
     env = await actions.run_sandbox_tests(agent_id=uuid4(), command="pytest -q")
 
     assert env.error == "invalid_state"
     assert "ceiling" in (env.message or "")
-    assert not archive.exists()  # the oversize archive is cleaned up
+    # Every file the verb's mkstemp created is cleaned up on the rejection
+    # path - nothing predictable or lingering is left in the shared tmp.
+    leftovers = [
+        p
+        for p in Path(tempfile.gettempdir()).glob("roboco-sandbox-*.tar.gz")
+        if p.stat().st_size > _OVERSIZE_CEILING
+    ]
+    assert leftovers == []
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +252,7 @@ async def test_success_returns_sandbox_evidence_and_journals(
     _arm(monkeypatch)
     t = _task()
     actions, task_svc = _make_actions(task_obj=t)
-    archive = _fake_archive_ok(monkeypatch, t.id.hex)
+    _stub_archive_write(monkeypatch)
     result = {
         "exit_code": 0,
         "timed_out": False,
@@ -263,10 +278,10 @@ async def test_success_returns_sandbox_evidence_and_journals(
     assert "fail_review" not in (env.next or "")
     run.assert_awaited_once()
     assert run.call_args.kwargs["command"] == "pytest -q"
-    assert run.call_args.kwargs["archive_path"] == archive
+    called_archive = run.call_args.kwargs["archive_path"]
+    assert called_archive.exists() is False  # temp archive cleaned up
     actions.journal.write_entry.assert_awaited_once()
     assert task_svc.heartbeat.await_count == _HEARTBEATS_PER_RUN
-    assert not archive.exists()  # temp archive cleaned up
 
 
 @pytest.mark.asyncio
@@ -276,7 +291,7 @@ async def test_failure_exit_code_points_at_fail_review(
     _arm(monkeypatch)
     t = _task()
     actions, _task_svc = _make_actions(task_obj=t)
-    _fake_archive_ok(monkeypatch, t.id.hex)
+    _stub_archive_write(monkeypatch)
     _stub_run(
         monkeypatch,
         {
@@ -306,7 +321,7 @@ async def test_sandbox_api_failure_is_retryable_envelope(
     _arm(monkeypatch)
     t = _task()
     actions, task_svc = _make_actions(task_obj=t)
-    _fake_archive_ok(monkeypatch, t.id.hex)
+    _stub_archive_write(monkeypatch)
     _stub_run(monkeypatch, None, "connection to Token Factory Sandboxes failed")
 
     env = await actions.run_sandbox_tests(agent_id=uuid4(), command="pytest -q")
