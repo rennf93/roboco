@@ -68,12 +68,8 @@ class _FakeClient:
             raise item
         return item
 
-    async def post(self, url: str, **kwargs: Any) -> Any:
-        self.calls.append(("POST", url, kwargs))
-        return self._next()
-
-    async def get(self, url: str, **kwargs: Any) -> Any:
-        self.calls.append(("GET", url, kwargs))
+    async def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        self.calls.append((method, url, kwargs))
         return self._next()
 
     async def delete(self, url: str, **kwargs: Any) -> Any:

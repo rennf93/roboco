@@ -6043,31 +6043,29 @@ class ContentActions:
 
     async def _sandbox_tests_guards(
         self, agent_id: UUID
-    ) -> tuple[Any, str | None, Envelope | None]:
+    ) -> tuple[tuple[Any, str] | None, Envelope | None]:
         """run_sandbox_tests' prelude guards, in order: flag off; no
         claimed/active project-bound task; no stored Nebius key. Returns
-        (task, api_key, None) or (None, None, rejection)."""
+        ((task, api_key), None) or (None, rejection) - the pairing is total,
+        so the caller needs a single None check."""
         if not settings.token_factory_sandboxes_enabled:
-            return (
-                None,
-                None,
-                Envelope.invalid_state(
-                    message="Token Factory Sandboxes are disabled",
-                    remediate=(
-                        "ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED is off - ask the "
-                        "CEO to arm it (Feature Flags card); until then run "
-                        "tests in your own container"
-                    ),
-                    context_briefing={},
+            return None, Envelope.invalid_state(
+                message="Token Factory Sandboxes are disabled",
+                remediate=(
+                    "ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED is off - ask the "
+                    "CEO to arm it (Feature Flags card); until then run "
+                    "tests in your own container"
                 ),
+                context_briefing={},
             )
         t, rejection = await self._sandbox_active_task(agent_id)
         if rejection is not None:
-            return None, None, rejection
+            return None, rejection
         api_key, rejection = await self._sandbox_tests_nebius_key()
         if rejection is not None:
-            return None, None, rejection
-        return t, api_key, None
+            return None, rejection
+        # The key helper's contract: a non-rejection return is a usable str.
+        return (t, cast("str", api_key)), None
 
     async def run_sandbox_tests(
         self,
@@ -6100,13 +6098,14 @@ class ContentActions:
         heartbeated before and after the wait so a long suite never reads as
         a stale claim.
         """
-        t, api_key, rejection = await self._sandbox_tests_guards(agent_id)
-        if rejection is not None or t is None or api_key is None:
+        pair, rejection = await self._sandbox_tests_guards(agent_id)
+        if pair is None:
             return rejection or Envelope.invalid_state(
                 message="run_sandbox_tests preconditions failed",
                 remediate="retry run_sandbox_tests",
                 context_briefing={},
             )
+        t, api_key = pair
         from roboco.agents_config import _resolve_to_slug
         from roboco.services.project import get_project_service
 
@@ -6141,6 +6140,25 @@ class ContentActions:
             with contextlib.suppress(OSError):
                 archive.unlink(missing_ok=True)
         await self._touch_heartbeat(t.id)
+        return await self._sandbox_tests_envelope(
+            t, agent_id, command, image, result=result, error=error
+        )
+
+    async def _sandbox_tests_envelope(
+        self,
+        t: Any,
+        agent_id: UUID,
+        command: str,
+        image: str | None,
+        *,
+        result: dict[str, Any] | None,
+        error: str | None,
+    ) -> Envelope:
+        """run_sandbox_tests' outcome half: a run failure is a retryable
+        invalid_state; a completed run journals (best-effort - the run
+        already happened and must reach the agent even if the write fails,
+        hence suppressed, unlike `note`) and returns the evidence payload
+        with a next hint that points back into the QA flow."""
         if error is not None or result is None:
             return Envelope.invalid_state(
                 message=f"sandbox test run failed: {error}",
@@ -6156,8 +6174,6 @@ class ContentActions:
         stdout_tail = tail_for_evidence(result.get("stdout", ""))
         stderr_tail = tail_for_evidence(result.get("stderr", ""))
         with contextlib.suppress(Exception):
-            # The run already happened and must reach the agent even if the
-            # journal write fails - hence suppressed, unlike `note`.
             await self.journal.write_entry(
                 agent_id=agent_id,
                 task_id=t.id,
