@@ -108,6 +108,8 @@ You need **Docker** + **Docker Compose** and a Claude Code auth directory on the
 
 **Optional — run agents on Moonshot Kimi K3 instead of Claude.** RoboCo can spawn agents on Moonshot's official `kimi` (kimi-code) CLI authenticated by a Kimi subscription (OAuth device-code login, no metered API key). Run `kimi login` once on the host; `ROBOCO_HOST_KIMI_DIR` points at the resulting `~/.kimi-code` (optional — defaults sensibly) and mounts read-write, since every Kimi agent shares the host's one rotating credential chain. See the Kimi block in `.env.example` (`ROBOCO_HOST_KIMI_DIR`, `ROBOCO_KIMI_CLI_MODEL` — default `kimi-code/k3`, `kimi-code/kimi-for-coding` is the cheaper lever).
 
+**Optional: run agents on Nebius Token Factory (NVIDIA Nemotron).** RoboCo can route the whole fleet through [Nebius Token Factory](https://tokenfactory.nebius.com), an OpenAI-compatible inference API serving 60+ open models (NVIDIA Nemotron, DeepSeek, Qwen, Llama) behind one metered API key. No host login or env var is needed: save the key in the panel under **Settings -> AI Routing -> Nebius API key** (stored Fernet-encrypted server-side), then click the **Nebius** mode button. The fleet-wide default model is NVIDIA's open-source **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b`); the searchable picker can narrow it to the rest of the Token Factory catalog. Agents spawn on the opencode CLI with rate-limit parking and per-agent token/cost metering. This is the path judged in the Nebius x NVIDIA hackathon; see [`HACKATHON.md`](./HACKATHON.md) for what was built for it.
+
 ### Option 1 — Run the pre-built images (quickest)
 
 Every release publishes all RoboCo images to both the GitHub Container Registry and Docker Hub, so you can run the full stack without building anything. One command brings it up:
@@ -399,6 +401,10 @@ uv run mypy roboco/
 **WebSocket streams.** Token enforcement is currently REST-only. The `/ws/*` endpoints authenticate by `agent_id` query param at most and do not yet validate `X-Agent-Token`, even in secure mode — nginx injects the token so the panel works, but a direct WebSocket connection that bypasses nginx is not rejected. In particular the operator stream `/ws/system` (rate-limit lifecycle + token-usage snapshots for the dashboard) is unauthenticated. These streams are read-only — no control surface, secrets, or task content — but treat the orchestrator port as trusted-network-only until WebSocket auth lands.
 
 **Secrets** (the Fernet `ROBOCO_ENCRYPTION_KEY`, GitHub PATs) live encrypted in the database and in gitignored env files — never in the repo. Per-project git tokens are Fernet-encrypted at rest and never returned by the API.
+
+## Nebius x NVIDIA hackathon
+
+RoboCo is entering the Nebius x NVIDIA hackathon (submission window August 26 to October 30, 2026): the whole agent fleet runs on Nebius Token Factory with NVIDIA's open-source Nemotron 3 Super as the default model. [`HACKATHON.md`](./HACKATHON.md) is the submission notes doc: it isolates exactly what was significantly updated during the window (the Nebius provider integration, the v0.30.0 platform release, the post-release panel fixes) for the Stage One review, and walks through the judge path from `make quickstart` to a Nemotron-routed fleet.
 
 ## License
 
