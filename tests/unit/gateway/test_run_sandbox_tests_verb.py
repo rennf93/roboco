@@ -334,7 +334,7 @@ def test_manifest_grants_run_sandbox_tests_to_dev_and_qa_only() -> None:
                 agent_id=uuid4(),
                 role=role,
                 team="qa",
-                workspace_path="/tmp/ws",
+                workspace_path=Path("/tmp/ws"),
                 agent_model="nvidia/nemotron-3-super-120b-a12b",
             )
         )
