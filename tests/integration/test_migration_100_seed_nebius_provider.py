@@ -1,4 +1,4 @@
-"""Migration 097/098 tests: modelprovider_nebius + seed_nebius_provider.
+"""Migration 099/100 tests: modelprovider_nebius + seed_nebius_provider.
 
 Verifies the post-upgrade state and exercises the downgrade SQL ordering,
 mirroring ``test_migration_096_seed_openrouter_provider.py``'s own shape with
@@ -9,7 +9,7 @@ set via PUT /providers/nebius-key, which encrypts + enables in the same
 transaction.
 
 NOT a real alembic round-trip: the suite builds the test DB via
-Base.metadata.create_all (see conftest). Migrations 097/098's
+Base.metadata.create_all (see conftest). Migrations 099/100's
 upgrade()/downgrade() bodies are reviewed here; the tests guard the resulting
 DB-level contract, in particular ``enabled=False`` at seed time and NULL
 base_url/auth_token (no stored secret until the operator sets a key). The
@@ -30,7 +30,7 @@ from sqlalchemy import text
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-# The exact INSERT from migration 098's upgrade() (seed enabled=false).
+# The exact INSERT from migration 100's upgrade() (seed enabled=false).
 _INSERT_SQL = text(
     """
     INSERT INTO provider_configs
@@ -51,7 +51,7 @@ _INSERT_SQL = text(
 
 
 @pytest.mark.asyncio
-async def test_migration_098_upgrade_insert_contract(
+async def test_migration_100_upgrade_insert_contract(
     db_session: AsyncSession,
 ) -> None:
     """The upgrade INSERT SQL seeds the Nebius row DISABLED with no stored
@@ -94,7 +94,7 @@ async def test_migration_098_upgrade_insert_contract(
 
 
 @pytest.mark.asyncio
-async def test_migration_098_downgrade_deletes_assignments_before_config(
+async def test_migration_100_downgrade_deletes_assignments_before_config(
     db_session: AsyncSession,
 ) -> None:
     """Downgrade SQL deletes model_assignments before provider_configs.
@@ -170,10 +170,10 @@ async def test_migration_098_downgrade_deletes_assignments_before_config(
 
 
 @pytest.mark.asyncio
-async def test_migration_097_nebius_enum_round_trip(
+async def test_migration_099_nebius_enum_round_trip(
     db_session: AsyncSession,
 ) -> None:
-    """The ``modelprovider`` PG enum carries ``nebius`` (migration 097)
+    """The ``modelprovider`` PG enum carries ``nebius`` (migration 099)
     and the value round-trips through the ORM."""
     # Raw PG-level check: the enum type itself contains the label.
     result = await db_session.execute(text("SELECT 'nebius'::modelprovider = 'nebius'"))

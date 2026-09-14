@@ -243,6 +243,15 @@ class ModelProvider(StrEnum):
     roles only - no interactive intake/secretary support). The default model
     is an NVIDIA Nemotron 3 id, and cost is attributed from the metered
     usage.cost field, not a static pricing table.
+
+    `ZAI` is Z.ai (https://z.ai) - the GLM family (GLM 5.3, GLM 5.3 Flash)
+    billed by a Z.ai subscription or API credits. Z.ai exposes an
+    Anthropic-compatible endpoint (https://api.z.ai/api/anthropic) that
+    speaks the Anthropic Messages API, so ZAI agents run through the
+    built-in Claude Code spawn with `ANTHROPIC_BASE_URL` /
+    `ANTHROPIC_AUTH_TOKEN` injected from the provider row at spawn (the
+    OLLAMA_CLOUD shape, not a dedicated provider class). The key is set via
+    PUT /providers/zai-key.
     """
 
     ANTHROPIC = "anthropic"
@@ -254,6 +263,7 @@ class ModelProvider(StrEnum):
     KIMI = "kimi"
     OPENROUTER = "openrouter"
     NEBIUS = "nebius"
+    ZAI = "zai"
 
 
 class AssignmentScope(StrEnum):

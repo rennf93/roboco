@@ -41,6 +41,7 @@ _PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
     ModelProvider.NEBIUS: (
         "Save the Nebius API key first (PUT /providers/nebius-key)."
     ),
+    ModelProvider.ZAI: ("Save the Z.ai API key first (PUT /providers/zai-key)."),
 }
 
 

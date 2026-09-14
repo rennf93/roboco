@@ -83,7 +83,7 @@ async def llm_setup(
         type=ModelProvider.OPENROUTER,
         enabled=False,
     )
-    # Mirrors migration 098_seed_nebius_provider's contract: enabled=False at
+    # Mirrors migration 100_seed_nebius_provider's contract: enabled=False at
     # seed time (key-gated, like GROK/OPENROUTER) - no base_url, no key until
     # the operator sets one via set_nebius_api_key.
     nebius = ProviderConfigTable(

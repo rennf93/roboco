@@ -18,8 +18,8 @@ Scope of this doc: the API surface (`roboco/api/routes/provider.py`, `roboco/api
 
 ## Data model & migrations
 
-- **`097_modelprovider_nebius`** - adds `'nebius'` to the PostgreSQL `modelprovider` enum via `ALTER TYPE ... ADD VALUE IF NOT EXISTS` inside an `autocommit_block()` (Postgres forbids using a freshly added enum value in the same transaction that added it, and 098 seeds a row that uses it in the next step). Mirrors migration 095 (openrouter); idempotent. Downgrade is intentionally a no-op.
-- **`098_seed_nebius_provider`** - idempotently seeds the single `provider_configs` row (`name='Nebius'`, `type='nebius'`, `enabled=false`, `base_url`/`auth_token_encrypted` NULL, `ON CONFLICT (name) DO NOTHING`). Seeded **disabled** because there is a key to gate on: `PUT /providers/nebius-key` encrypts the key and enables the row in the same transaction (the Grok/openrouter pattern). Downgrade deletes `model_assignments` pointing at the row first to avoid the FK RESTRICT.
+- **`099_modelprovider_nebius`** - adds `'nebius'` to the PostgreSQL `modelprovider` enum via `ALTER TYPE ... ADD VALUE IF NOT EXISTS` inside an `autocommit_block()` (Postgres forbids using a freshly added enum value in the same transaction that added it, and 098 seeds a row that uses it in the next step). Mirrors migration 095 (openrouter); idempotent. Downgrade is intentionally a no-op.
+- **`100_seed_nebius_provider`** - idempotently seeds the single `provider_configs` row (`name='Nebius'`, `type='nebius'`, `enabled=false`, `base_url`/`auth_token_encrypted` NULL, `ON CONFLICT (name) DO NOTHING`). Seeded **disabled** because there is a key to gate on: `PUT /providers/nebius-key` encrypts the key and enables the row in the same transaction (the Grok/openrouter pattern). Downgrade deletes `model_assignments` pointing at the row first to avoid the FK RESTRICT.
 
 The service layer operates on this single pre-seeded row - `_get_seeded_provider(ModelProvider.NEBIUS)`; no provider creation ever happens at runtime.
 

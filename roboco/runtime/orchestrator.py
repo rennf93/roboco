@@ -387,6 +387,9 @@ _RATE_LIMIT_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     ModelProvider.ANTHROPIC.value: _ANTHROPIC_RATE_LIMIT_MARKERS,
     ModelProvider.OLLAMA_CLOUD.value: _OLLAMA_RATE_LIMIT_MARKERS,
     ModelProvider.LOCAL.value: _LOCAL_RATE_LIMIT_MARKERS,
+    # ZAI rides the same Anthropic-protocol spawn as OLLAMA_CLOUD (Z.ai's
+    # Anthropic-compatible endpoint), so the same SDK retry lines apply.
+    ModelProvider.ZAI.value: _OLLAMA_RATE_LIMIT_MARKERS,
 }
 _OVERLOAD_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     ModelProvider.ANTHROPIC.value: _ANTHROPIC_OVERLOAD_MARKERS,

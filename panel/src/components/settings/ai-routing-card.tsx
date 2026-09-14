@@ -20,6 +20,7 @@ import {
   useSetComplexityOverride,
   useSetGrokKey,
   useSetOllamaKey,
+  useZaiKey,
   useSelfHostedModels,
 } from "@/hooks/use-providers";
 import {
@@ -72,6 +73,7 @@ import { SelfHostedSection } from "@/components/settings/self-hosted-section";
 import {
   NebiusProviderKeyRow,
   OpenRouterProviderKeyRow,
+  ZaiProviderKeyRow,
 } from "@/components/settings/provider-key-card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -337,6 +339,9 @@ export function AIRoutingCard() {
   // --- OpenRouter API key status + model search ---
   const { data: openRouterKeyStatus } = useOpenRouterKey();
   const hasOpenRouterKey = !!openRouterKeyStatus?.has_key;
+  // --- Z.ai API key status (key row lives in ZaiProviderKeyRow) ---
+  const { data: zaiKeyStatus } = useZaiKey();
+  const hasZaiKey = !!zaiKeyStatus?.has_key;
   const [openRouterModel, setOpenRouterModel] = useState("");
   const [openRouterSearch, setOpenRouterSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -576,6 +581,10 @@ export function AIRoutingCard() {
   const flipToNebius = async () => {
     if (!hasNebiusKey) {
       toast.error("Save the Nebius API key first");
+
+  const flipToZai = async () => {
+    if (!hasZaiKey) {
+      toast.error("Save the Z.ai API key first");
       return;
     }
     if (
@@ -583,6 +592,9 @@ export function AIRoutingCard() {
         "Switch every agent to Nebius? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
           "V1: delivery roles only, not Intake/Secretary.",
+
+        "Switch every agent to Z.ai GLM? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
       )
     )
       return;
@@ -593,6 +605,10 @@ export function AIRoutingCard() {
       });
       toast.success(
         "Role/global routing now on Nebius (per-agent pins and complexity overrides kept)",
+
+      await applyMode.mutateAsync({ mode: "zai" });
+      toast.success(
+        "Role/global routing now on Z.ai GLM — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -1021,9 +1037,8 @@ export function AIRoutingCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* -------- Key cards band: Grok+Ollama (left) / Self-Hosted (right) -------- */}
-        <div className="grid grid-cols-1 gap-10 lg:grid-cols-2 lg:gap-14">
-          <div className="space-y-8">
+        {/* -------- Key cards band: 2x2 provider keys, self-hosted full-width below -------- */}
+        <div className="grid grid-cols-1 items-start gap-x-10 gap-y-8 md:grid-cols-2">
             {/* -------- Grok (xAI) key -------- */}
             <section className="space-y-2">
               <div className="flex items-center justify-between">
@@ -1083,8 +1098,6 @@ export function AIRoutingCard() {
               )}
             </section>
 
-            <Separator />
-
             {/* -------- Ollama key -------- */}
             <section className="space-y-2">
               <div className="flex items-center justify-between">
@@ -1143,8 +1156,6 @@ export function AIRoutingCard() {
               )}
             </section>
 
-            <Separator />
-
             {/* -------- OpenRouter key -------- */}
             <OpenRouterProviderKeyRow />
 
@@ -1154,13 +1165,18 @@ export function AIRoutingCard() {
             <NebiusProviderKeyRow />
           </div>
 
-          {/* -------- Self-Hosted LLM -------- */}
-          <SelfHostedSection
-            testResult={selfHostedTestResult}
-            onTestResult={handleSelfHostedTestResult}
-            onTestSuccess={() => undefined}
-          />
+            {/* -------- Z.ai key -------- */}
+            <ZaiProviderKeyRow />
         </div>
+
+        <Separator />
+
+        {/* -------- Self-Hosted LLM (full width) -------- */}
+        <SelfHostedSection
+          testResult={selfHostedTestResult}
+          onTestResult={handleSelfHostedTestResult}
+          onTestSuccess={() => undefined}
+        />
 
         <Separator />
 
@@ -1169,7 +1185,7 @@ export function AIRoutingCard() {
           <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Nebius / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-11 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -1254,6 +1270,17 @@ export function AIRoutingCard() {
               onClick={flipToNebius}
               disabled={applyMode.isPending || !hasNebiusKey}
               labelHint="One key unlocks Nebius AI Studio's hosted open models (DeepSeek, Qwen, Llama and more). Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
+              icon={<Bot className="h-4 w-4" />}
+              label="Z.ai"
+              description={
+                hasZaiKey
+                  ? "Every agent uses Z.ai GLM (glm-5.3-flash)."
+                  : "Save the Z.ai key first."
+              }
+              active={currentMode === "zai"}
+              onClick={flipToZai}
+              disabled={applyMode.isPending || !hasZaiKey}
+              labelHint="Z.ai's Anthropic-compatible endpoint (api.z.ai/api/anthropic) rides the built-in Claude Code spawn — GLM 5.3 / 5.3 Flash injected as ANTHROPIC_BASE_URL at spawn. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Server className="h-4 w-4" />}

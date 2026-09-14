@@ -7,6 +7,7 @@ import {
   useOpenRouterKey,
   useSetOpenRouterKey,
 } from "@/hooks/use-providers";
+import { useOpenRouterKey, useSetOpenRouterKey, useZaiKey, useSetZaiKey } from "@/hooks/use-providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -129,6 +130,14 @@ export function OpenRouterProviderKeyRow() {
 export function NebiusProviderKeyRow() {
   const { data: keyStatus } = useNebiusKey();
   const setKeyMut = useSetNebiusKey();
+ * Z.ai key row - same shape as the OpenRouter row: password input, Save
+ * and Clear buttons, Saved badge only after the mutation succeeds.
+ * The key gates the ZAI provider row (GLM 5.3 / GLM 5.3 Flash via the
+ * Anthropic-compatible endpoint, injected as ANTHROPIC_BASE_URL at spawn).
+ */
+export function ZaiProviderKeyRow() {
+  const { data: keyStatus } = useZaiKey();
+  const setKeyMut = useSetZaiKey();
 
   const hasKey = !!keyStatus?.has_key;
   const [apiKey, setApiKey] = useState("");
@@ -141,6 +150,7 @@ export function NebiusProviderKeyRow() {
       if (clearKey) {
         await setKeyMut.mutateAsync("");
         toast.success("Nebius key cleared");
+        toast.success("Z.ai key cleared");
         setSaved(true);
       } else {
         if (!apiKey.trim()) {
@@ -149,6 +159,7 @@ export function NebiusProviderKeyRow() {
         }
         await setKeyMut.mutateAsync(apiKey);
         toast.success("Nebius key saved");
+        toast.success("Z.ai key saved");
         setSaved(true);
       }
       setApiKey("");
@@ -166,12 +177,17 @@ export function NebiusProviderKeyRow() {
         </HelpTip>
         {hasKey ? (
           <HelpTip label="Enables the Nebius mode button and the model picker below.">
+          <Label className="text-sm font-medium">Z.ai API key</Label>
+        </HelpTip>
+        {hasKey ? (
+          <HelpTip label="Enables the Z.ai mode button and the GLM entries in the model picker below.">
             <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
               <KeyRound className="h-3 w-3" /> key set
             </Badge>
           </HelpTip>
         ) : (
           <HelpTip label="Required before any agent can route to a Nebius model.">
+          <HelpTip label="Required before any agent can route to a Z.ai GLM model.">
             <Badge className="bg-amber-500/10 text-amber-600 border-0">
               <Key className="h-3 w-3" /> not set
             </Badge>
@@ -189,6 +205,7 @@ export function NebiusProviderKeyRow() {
           placeholder={
             hasKey ? "•••••••••••• (leave blank to keep)" : "Nebius API key…"
           }
+          placeholder={hasKey ? "Replace key" : "sk-..."}
           disabled={clearKey || setKeyMut.isPending}
         />
         <Button onClick={handleSave} disabled={setKeyMut.isPending}>
@@ -218,6 +235,9 @@ export function NebiusProviderKeyRow() {
           One key unlocks Nebius AI Studio&apos;s hosted open models (DeepSeek,
           Qwen, Llama and more). Stored Fernet-encrypted server-side; never
           returned by the API.
+          Unlocks the GLM 5.3 family via Z.ai&apos;s Anthropic-compatible
+          endpoint, billed by your Z.ai subscription or API credits. Stored
+          Fernet-encrypted server-side; never returned by the API.
         </p>
       )}
     </section>

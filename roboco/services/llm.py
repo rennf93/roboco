@@ -55,14 +55,32 @@ Factory's OpenAI-compatible endpoint):
   GLOBAL assignment pointing to the NEBIUS provider.
 - apply_mode('nebius', ...) enables the NEBIUS provider and
   sets a GLOBAL assignment to the given model id via
-  provider_type_override (Token Factory models are NOT in the static
-  MODEL_CATALOG - the catalog is live, searched on demand via
-  GET /providers/nebius/models).
+  provider_type_override (Token Factory ids are also static-catalog
+  members now - see the levels-parity batch - while the full catalog
+  stays live, searched on demand via GET /providers/nebius/models).
 - set_nebius_api_key() Fernet-encrypts the API key on the
   provider row (mirrors set_openrouter_api_key). Empty string clears +
   disables; non-empty encrypts + enables.
 - Same cost-tier limitation as OpenRouter: no _PRICING rows, metered
   usage.cost attribution, 0.0 list price - see _apply_nebius.
+
+ZAI provider support (Z.ai GLM family):
+- Z.ai speaks the Anthropic Messages API at
+  https://api.z.ai/api/anthropic, so ZAI agents run through the built-in
+  Claude Code spawn with ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
+  injected from the provider row (the OLLAMA_CLOUD shape, no dedicated
+  provider class).
+- derive_mode() returns 'zai' when there is exactly one GLOBAL
+  assignment pointing to the ZAI provider.
+- apply_mode('zai', ...) refuses to run without a saved key, then
+  enables the ZAI provider and sets a GLOBAL assignment to the given
+  model (default glm-5.3-flash).
+- set_zai_api_key() Fernet-encrypts the API key on the provider row
+  (mirrors set_ollama_api_key). Empty string clears + disables;
+  non-empty encrypts + enables.
+- Cost-tier limitation mirrors OpenRouter: no _PRICING rows, so
+  input_price_per_million returns 0.0 for any ZAI model.
+>>>>>>> origin/slave
 """
 
 from __future__ import annotations
@@ -130,6 +148,7 @@ _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
         "kimi",
         "openrouter",
         "nebius",
+        "zai",
         "ollama",
         "self_hosted",
     ],
@@ -140,6 +159,7 @@ _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
     ModelProvider.KIMI: "kimi",
     ModelProvider.OPENROUTER: "openrouter",
     ModelProvider.NEBIUS: "nebius",
+    ModelProvider.ZAI: "zai",
     ModelProvider.OLLAMA_CLOUD: "ollama",
     ModelProvider.LOCAL: "self_hosted",
 }
@@ -723,6 +743,7 @@ class ModelRoutingService(BaseService):
         "kimi",
         "openrouter",
         "nebius",
+        "zai",
         "ollama",
         "mix",
         "self_hosted",
@@ -834,6 +855,28 @@ class ModelRoutingService(BaseService):
         )
         # Re-fetch for the caller.
         return await self._get_seeded_provider(ModelProvider.NEBIUS)
+
+    async def set_zai_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the Z.ai provider's API key.
+
+        Empty string clears + disables; a real key Fernet-encrypts + enables.
+        Operates on the single pre-seeded Z.ai row (no provider creation
+        happens here. The key is a standard Z.ai API key used against the
+        Anthropic-compatible endpoint https://api.z.ai/api/anthropic
+        (injected as ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN at spawn).
+        """
+        provider = await self._get_seeded_provider(ModelProvider.ZAI)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(provider.id),
+            ProviderUpdate(
+                auth_token=api_key if api_key else None,
+                clear_auth_token=not api_key,
+                enabled=bool(api_key),
+            ),
+        )
+        # Re-fetch for the caller.
+        return await self._get_seeded_provider(ModelProvider.ZAI)
 
     async def resolve_provider_for_model(
         self, model_name: str
@@ -956,6 +999,7 @@ class ModelRoutingService(BaseService):
             "kimi": lambda: self._apply_kimi(default_model),
             "openrouter": lambda: self._apply_openrouter(default_model),
             "nebius": lambda: self._apply_nebius(default_model),
+            "zai": lambda: self._apply_zai(default_model),
             "ollama": lambda: self._apply_ollama(default_model),
             "self_hosted": lambda: self._apply_self_hosted(default_model),
             "mix": lambda: self._apply_mix(per_agent),
@@ -966,7 +1010,8 @@ class ModelRoutingService(BaseService):
             raise ValueError(
                 f"Unknown mode '{mode}'."
                 " Use 'anthropic', 'grok', 'codex', 'gemini', 'kimi', 'openrouter',"
-                " 'nebius', 'ollama', 'self_hosted', 'mix', or 'cost_tiered'."
+                " 'nebius', 'zai', 'ollama', 'self_hosted', 'mix', or"
+                " 'cost_tiered'."
             )
         await handler()
 
@@ -1158,12 +1203,11 @@ class ModelRoutingService(BaseService):
         """Wipe assignments, set the GLOBAL default to a Nebius Token Factory
         model.
 
-        The ``_apply_openrouter`` twin: Token Factory models are NOT in the
-        static ``MODEL_CATALOG`` - the catalog is live (operator searches via
-        GET /providers/nebius/models). The assignment is upserted with
-        ``provider_type_override=ModelProvider.NEBIUS`` so the catalog lookup
-        is skipped and the model id is stored directly against the Nebius
-        provider row.
+        The ``_apply_openrouter`` twin: the operator may search the live
+        catalog (GET /providers/nebius/models) and the four Nemotron ids are
+        also static-catalog members (levels-parity batch), but a picked id
+        is upserted with ``provider_type_override=ModelProvider.NEBIUS``
+        regardless so it stores directly against the Nebius provider row.
 
         Cost-tier limitation: identical to OpenRouter's - no ``_PRICING``
         rows (cost is attributed from the metered ``usage.cost`` at the
@@ -1195,6 +1239,43 @@ class ModelRoutingService(BaseService):
             provider_type_override=ModelProvider.NEBIUS,
         )
         self.log.info("Mode applied: nebius", default_model=model_name)
+
+    async def _apply_zai(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a Z.ai GLM model.
+
+        ZAI models ARE in the static ``MODEL_CATALOG`` (glm-5.3,
+        glm-5.3-flash), so the upsert needs no ``provider_type_override``
+        - the catalog resolves straight to the ZAI provider row. Unlike
+        the subscription-CLI modes, the ZAI row authenticates with a
+        stored key, so this REFUSES to apply when the operator has not
+        saved one (a force-enable here would route every spawn to a dead
+        endpoint; the OLLAMA_CLOUD row has the same gate).
+
+        ZAI models have no rows in the ``_PRICING`` table (Z.ai bills via
+        subscription + API credits, not a static per-token table), so
+        ``input_price_per_million`` returns ``0.0`` for any ZAI model: the
+        cost-tiered comparator treats them as the cheapest tier, same
+        known ceiling as OpenRouter: an operator pinning a costlier GLM
+        model is making a deliberate choice.
+
+        AGENT_SLUG pins and complexity overrides are preserved (see
+        ``_wipe_mode_switch_assignments``).
+        """
+        zai = await self._get_seeded_provider(ModelProvider.ZAI)
+        if not zai.auth_token_encrypted:
+            raise ValueError("Save the Z.ai API key first (PUT /providers/zai-key).")
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(zai.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or "glm-5.3-flash"
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+        )
+        self.log.info("Mode applied: zai", default_model=model_name)
 
     async def _apply_ollama(self, default_model: str | None) -> None:
         """Wipe role/global assignments, set GLOBAL to an Ollama Cloud model.

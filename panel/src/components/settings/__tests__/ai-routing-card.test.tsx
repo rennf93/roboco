@@ -26,6 +26,8 @@ const {
   setGrokKey,
   getOpenRouterKey,
   setOpenRouterKey,
+  getZaiKey,
+  setZaiKey,
   searchOpenRouterModels,
   getNebiusKey,
   setNebiusKey,
@@ -77,6 +79,11 @@ const {
   setGrokKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   getOpenRouterKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setOpenRouterKey: vi.fn(async () => ({ has_key: true, enabled: true })),
+  getOpenRouterKey: vi.fn(async () => ({ has_key: false })),
+  setOpenRouterKey: vi.fn(async () => ({ has_key: true })),
+  // Mirrors the backend ZaiKeyStatus schema (has_key + enabled).
+  getZaiKey: vi.fn(async () => ({ has_key: false, enabled: false })),
+  setZaiKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   searchOpenRouterModels: vi.fn(async (): Promise<OpenRouterModel[]> => []),
   getNebiusKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setNebiusKey: vi.fn(async () => ({ has_key: true, enabled: true })),
@@ -130,6 +137,8 @@ vi.mock("@/lib/api/providers", () => ({
     setGrokKey,
     getOpenRouterKey,
     setOpenRouterKey,
+    getZaiKey,
+    setZaiKey,
     searchOpenRouterModels,
     getNebiusKey,
     setNebiusKey,
@@ -437,6 +446,8 @@ describe("AIRoutingCard", () => {
     setGrokKey.mockClear();
     getOpenRouterKey.mockClear();
     setOpenRouterKey.mockClear();
+    getZaiKey.mockClear();
+    setZaiKey.mockClear();
     searchOpenRouterModels.mockClear();
     getNebiusKey.mockClear();
     setNebiusKey.mockClear();
@@ -463,7 +474,7 @@ describe("AIRoutingCard", () => {
     vi.clearAllMocks();
   });
 
-  it("renders both key cards and the self-hosted section as one two-column band, Grok+Ollama stacked left", async () => {
+  it("renders all four provider keys as one 2x2 band with self-hosted full-width below", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
 
@@ -476,23 +487,29 @@ describe("AIRoutingCard", () => {
     expect(grokSection).toBeInTheDocument();
     expect(ollamaSection).toBeInTheDocument();
 
-    // Grok + Ollama share the same left-column container.
-    const leftColumn = grokSection?.parentElement;
-    expect(leftColumn).toContainElement(ollamaSection as HTMLElement);
-
-    // That left column and the Self-Hosted section are the two children of
-    // one responsive two-column grid band.
-    const selfHostedHeading = screen.getByText("Self-Hosted LLM");
-    const band = leftColumn?.parentElement;
-    expect(band).toContainElement(selfHostedHeading);
+    // All four key sections are direct children of one responsive two-column
+    // grid band (2x2 on lg): Grok, Ollama, OpenRouter, Z.ai.
+    const band = grokSection?.parentElement;
+    expect(band).toContainElement(ollamaSection as HTMLElement);
+    expect(band).toContainElement(
+      screen.getByText("OpenRouter API key").closest("section") as HTMLElement,
+    );
+    expect(band).toContainElement(
+      screen.getByText("Z.ai API key").closest("section") as HTMLElement,
+    );
     expect(band?.className).toContain("grid");
-    expect(band?.className).toContain("lg:grid-cols-2");
+    expect(band?.className).toContain("md:grid-cols-2");
+
+    // Self-Hosted sits full-width BELOW the band, outside the key grid.
+    const selfHostedHeading = screen.getByText("Self-Hosted LLM");
+    expect(band).not.toContainElement(selfHostedHeading);
   });
 
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
     expect(screen.getAllByText("not set")).toHaveLength(4); // Grok + Ollama + OpenRouter + Nebius
+    expect(screen.getAllByText("not set")).toHaveLength(4); // Grok + Ollama + OpenRouter + Z.ai
 
     const grokInput = screen.getByPlaceholderText("xai-…");
     fireEvent.change(grokInput, { target: { value: "xai-secret" } });
@@ -627,6 +644,7 @@ describe("AIRoutingCard", () => {
 
     const notSetBadges = screen.getAllByText("not set");
     expect(notSetBadges).toHaveLength(4); // Grok + Ollama + OpenRouter + Nebius
+    expect(notSetBadges).toHaveLength(4); // Grok + Ollama + OpenRouter + Z.ai
     for (const badge of notSetBadges) {
       expect(badge.getAttribute("data-state")).toBe("closed");
     }

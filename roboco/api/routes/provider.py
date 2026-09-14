@@ -37,6 +37,8 @@ from roboco.api.schemas.provider import (
     SetNebiusKeyRequest,
     SetOllamaKeyRequest,
     SetOpenRouterKeyRequest,
+    SetZaiKeyRequest,
+    ZaiKeyStatus,
     assignment_to_response,
     routing_preset_to_summary,
 )
@@ -271,6 +273,63 @@ async def set_openrouter_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     await db.commit()
     return OpenRouterKeyStatus(
+        has_key=bool(provider.auth_token_encrypted),
+        enabled=provider.enabled,
+    )
+
+
+# =============================================================================
+# ZAI API KEY
+# =============================================================================
+
+
+@router.get("/zai-key", response_model=ZaiKeyStatus)
+async def get_zai_key_status(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ZaiKeyStatus:
+    """Return whether the Z.ai key is set + enabled."""
+    require_pm_or_above(agent.role, "view the Z.ai key status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    zai = next((p for p in providers if p.type == ModelProvider.ZAI), None)
+    if zai is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Z.ai provider not seeded. Run alembic upgrade head.",
+        )
+    return ZaiKeyStatus(
+        has_key=bool(zai.auth_token_encrypted),
+        enabled=zai.enabled,
+    )
+
+
+@router.put("/zai-key", response_model=ZaiKeyStatus)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
+async def set_zai_key(
+    data: SetZaiKeyRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ZaiKeyStatus:
+    """Set or clear the Z.ai API key.
+
+    Empty string → clears and disables the provider. Any other value →
+    Fernet-encrypts + marks enabled. Used against the Anthropic-compatible
+    endpoint https://api.z.ai/api/anthropic.
+    """
+    require_pm_or_above(agent.role, "set the Z.ai key")
+    routing = get_model_routing_service(db)
+    try:
+        provider = await routing.set_zai_api_key(data.api_key)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+    return ZaiKeyStatus(
         has_key=bool(provider.auth_token_encrypted),
         enabled=provider.enabled,
     )

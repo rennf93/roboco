@@ -141,6 +141,14 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
         ModelProvider.NEBIUS,
         "Nemotron 3.5 Lightning",
     ),
+    # --- ZAI (Z.ai, Anthropic-protocol) ---
+    # Routes to the ZAI provider row → built-in Claude Code spawn with
+    # ANTHROPIC_BASE_URL/AUTH_TOKEN injected at spawn (the OLLAMA_CLOUD
+    # shape). Endpoint: https://api.z.ai/api/anthropic. The key is set via
+    # PUT /providers/zai-key. No _PRICING rows (Z.ai bills via subscription
+    # + API credits) - same cost-tier ceiling as OpenRouter.
+    CatalogEntry("glm-5.3", ModelProvider.ZAI, "GLM 5.3"),
+    CatalogEntry("glm-5.3-flash", ModelProvider.ZAI, "GLM 5.3 Flash"),
 )
 
 

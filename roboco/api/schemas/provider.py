@@ -106,6 +106,24 @@ class SetOpenRouterKeyRequest(BaseModel):
     api_key: str = Field(default="")
 
 
+class ZaiKeyStatus(BaseModel):
+    """Whether the Z.ai provider has a stored key."""
+
+    has_key: bool
+    enabled: bool
+
+
+class SetZaiKeyRequest(BaseModel):
+    """Set or clear the Z.ai API key.
+
+    Pass an empty string to clear. Pass a non-empty string to save
+    (encrypted with Fernet) and mark the Z.ai provider enabled.
+    Used against https://api.z.ai/api/anthropic.
+    """
+
+    api_key: str = Field(default="")
+
+
 class OpenRouterModelEntry(BaseModel):
     """One model available on OpenRouter's live catalog.
 
@@ -287,6 +305,7 @@ class ApplyModeRequest(BaseModel):
         "kimi",
         "openrouter",
         "nebius",
+        "zai",
         "ollama",
         "mix",
         "self_hosted",
@@ -307,6 +326,7 @@ class ModeResponse(BaseModel):
         "kimi",
         "openrouter",
         "nebius",
+        "zai",
         "ollama",
         "mix",
         "self_hosted",
@@ -383,6 +403,7 @@ class RoutingPresetApplyResponse(BaseModel):
         "kimi",
         "openrouter",
         "nebius",
+        "zai",
         "ollama",
         "mix",
         "self_hosted",

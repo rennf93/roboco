@@ -13,8 +13,8 @@ transaction (mirroring the GROK pattern). ``base_url``/
 ``auth_token_encrypted`` stay NULL until then.
 ON CONFLICT (name) DO NOTHING keeps this safe to re-run.
 
-Revision ID: 098_seed_nebius_provider
-Revises: 097_modelprovider_nebius
+Revision ID: 100_seed_nebius_provider
+Revises: 099_modelprovider_nebius
 Create Date: 2026-09-13
 """
 
@@ -23,8 +23,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "098_seed_nebius_provider"
-down_revision = "097_modelprovider_nebius"
+revision = "100_seed_nebius_provider"
+down_revision = "099_modelprovider_nebius"
 branch_labels = None
 depends_on = None
 
