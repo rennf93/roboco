@@ -39,6 +39,8 @@ The Sandboxes API authenticates with the SAME stored Nebius API key as the infer
 ## Live verification status (2026-09-14, hackathon key)
 
 - Bearer auth with the stored Nebius key: VERIFIED (GET /v1/models 200; the same key authenticates the Sandboxes endpoints).
-- `Project` header: REQUIRED (the API 400s "Missing Project header" without it). The service-account id embedded in the key resolves as the header value; set `ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID` accordingly on the NAS.
-- Image listing (`GET /v1/images`) and instance spawn (`POST /v1/instances`) with the hackathon static key: 403 "Insufficient permissions" - the key is inference-only. Sandboxes spawn must be granted to the key/service account in the Nebius console (or a sandbox-capable key stored) before `run_sandbox_tests` can execute; until then the verb degrades to a 403 error string and agents keep their local shell.
+- `Project` header: REQUIRED (the API 400s "Missing Project header" without it). The console's project id (the `aiproject-...` id from Project settings) is the correct header value - identities resolve with it; the service-account id embedded in the key also passes identity but is NOT the project.
+- Instance spawn with the trial key: still 403 "Insufficient permissions: spawn or spawn_disposable" WITH the correct project id - the key's service account lacks the Sandboxes spawn permission. Grant it console-side (Organization/Project settings -> Sandboxes, or an API key with sandbox scopes). Until then `run_sandbox_tests` degrades to a 403 error string and agents keep their local shells.
+- The regional inference host (`api.tokenfactory.<region>.nebius.com`) does NOT route the Sandboxes service (nginx 404) - the sandboxes base stays the global `api.tokenfactory.nebius.com/sandboxes` default.
+- Inference on the global host verified end-to-end separately (GLM-5.3-Flash chat completion, 200 + metered usage, 27 tokens).
 - Operation polling/result shape (`metadata.result`) remains spec-derived - the flattener degrades to an error string if the live shape drifts.
