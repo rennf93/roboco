@@ -25,15 +25,16 @@ Before this work, RoboCo's pluggable provider layer (`roboco/llm/providers/`, ke
 
 Two deliberate differences from the OpenRouter pattern: Token Factory's model list carries no capability metadata (so the search proxy has no tools-support filter, and `id` is the only substantive field), and there are no attribution-header settings (Nebius has no referer/title dashboard to feed).
 
-### 2. NVIDIA Nemotron is the default workload, by construction
+### 2. Workloads route through NVIDIA Nemotron, not just through a Nebius URL
 
-The submission requirement this is built around: the fleet must run on Nebius and use an NVIDIA open-source model. RoboCo satisfies this structurally, in `roboco/config.py`:
+The submission requirement this is built around: run on Nebius and use an NVIDIA open-source model. A generic OpenAI-compatible adapter with Nemotron merely selectable would not meet it, so the integration pins Nemotron as the routed workload at every layer of the stack, and each layer carries a test asserting it:
 
-```python
-nebius_cli_model: str = Field(default="nvidia/nemotron-3-super-120b", ...)
-```
+- **Routing state**: applying Nebius mode upserts a GLOBAL assignment for `nvidia/nemotron-3-super-120b` (the `nebius_cli_model` setting, `roboco/config.py`; resolved in `_apply_nebius`, `roboco/services/llm.py`, as `default_model or settings.nebius_cli_model`). Every agent inherits the Nemotron model id from the routing store itself, even if the operator never opens the picker. Pinned by `tests/integration/test_llm_routing.py` (the stored assignment's model_name) and `tests/integration/test_provider_routes.py` (the apply-mode API response carries the same id).
+- **Spawn payload**: the orchestrator launches each Nebius agent with `ROBOCO_AGENT_MODEL=nebius/nvidia/nemotron-3-super-120b` (asserted in `tests/unit/llm/providers/test_nebius_provider.py`), and the agent entrypoint falls back to the same ref if the variable were ever empty (`docker/scripts/nebius-agent-entrypoint.sh` passes `--model "${ROBOCO_AGENT_MODEL:-nebius/nvidia/nemotron-3-super-120b}"` to opencode). The vendor-prefixed ref is load-bearing: without the `nebius/` prefix opencode resolves the bare id against its built-in Anthropic provider and can never authenticate, so the prefix is what forces the call through the Token Factory provider block (asserted in `tests/unit/llm/providers/test_nebius_cli_config.py`).
+- **Execution**: the `roboco-agent-nebius` image runs the workload on the opencode CLI, whose `nebius` provider block (`@ai-sdk/openai-compatible`) points at `https://api.tokenfactory.nebius.com/v1` with the Nemotron model ref.
+- **Verification surface**: the entrypoint's usage capture records the exact model with each run (`usage.json`'s `model` field, asserted in `tests/unit/llm/providers/test_nebius_cli_usage.py`), the orchestrator's finalize stamps it onto the agent's spawn session (`tests/unit/runtime/test_nebius_usage_finalize.py`), and the usage API exposes it per session row and aggregates spend per model (`roboco/services/usage.py`, `get_by_model`). After any task, the panel's Usage view shows the workload executed on `nvidia/nemotron-3-super-120b`.
 
-`apply_mode("nebius")` resolves every agent's model as `default_model or settings.nebius_cli_model` (`roboco/services/llm.py`), so flipping the fleet to Nebius mode routes **all 26 agents** through Token Factory on **Nemotron 3 Super**, an NVIDIA open-source model, even if the operator never opens the model picker. The picker (Settings -> AI Routing -> Nebius default model) can of course narrow or change the choice within the Nemotron family and the rest of the catalog, and the panel's Nebius key card gates the mode button until a Token Factory API key is saved.
+The picker (Settings -> AI Routing -> Nebius default model) can still narrow or change the choice within the Nemotron family and the rest of the catalog, but operator inaction always lands on Nemotron.
 
 ### 3. v0.30.0: the largest platform release in the window (2026-09-13)
 
@@ -60,6 +61,7 @@ Three contract fixes in the panel's provider settings, each a real defect found 
 3. Go to **Settings -> AI Routing**, paste your Nebius Token Factory API key into the **Nebius API key** card, and save it (stored Fernet-encrypted server-side, never returned by the API).
 4. Click the **Nebius** mode button and confirm. The fleet-wide default model is `nvidia/nemotron-3-super-120b`; optionally narrow it in the **Nebius default model** search picker.
 5. Create a task for any cell. Every spawned agent runs on the opencode CLI against Token Factory on Nemotron; the per-agent usage readers meter tokens and cost, and rate-limited agents park and retry on Nebius's own backoff instead of failing.
+6. To see the NVIDIA-model requirement met with your own eyes, open the **Usage** page after the task completes: the per-session rows and the per-model aggregation name `nvidia/nemotron-3-super-120b` as the model that executed the work.
 
 ## License
 
