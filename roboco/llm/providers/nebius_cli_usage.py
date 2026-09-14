@@ -52,7 +52,7 @@ USAGE_OUT_PATH = Path(
     or Path(tempfile.gettempdir()) / "roboco-nebius-usage.json"
 )
 
-_DEFAULT_MODEL = "nvidia/nemotron-3-super-120b"
+_DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 _STEP_FINISH = "step_finish"
 
 

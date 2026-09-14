@@ -26,7 +26,7 @@ def _nebius_instance(provider_type: str = "nebius") -> AgentInstance:
         (),
         {
             "provider_type": provider_type,
-            "model": "nvidia/nemotron-3-super-120b",
+            "model": "nvidia/nemotron-3-super-120b-a12b",
         },
     )()
     inst = AgentInstance(agent_id="be-dev-1", state=AgentState.ACTIVE, config=cfg)

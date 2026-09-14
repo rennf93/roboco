@@ -24,10 +24,10 @@ from roboco.models.runtime import OrchestratorAgentConfig
 
 def test_nebius_cli_model_is_a_real_settings_field() -> None:
     assert settings.nebius_cli_model == nebius_module._NEBIUS_CLI_MODEL
-    assert settings.nebius_cli_model == "nvidia/nemotron-3-super-120b"
+    assert settings.nebius_cli_model == "nvidia/nemotron-3-super-120b-a12b"
 
 
-_NEBIUS_MODEL = "nvidia/nemotron-3-super-120b"
+_NEBIUS_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 
 
 def _config(
@@ -229,7 +229,7 @@ async def test_nebius_spawn_wires_gateway_env_and_image_last() -> None:
     # prefixing the bare catalog id) - the entrypoint passes it straight to
     # --model; unprefixed, opencode resolves it against its built-in
     # anthropic provider and the run cannot authenticate.
-    assert "ROBOCO_AGENT_MODEL=nebius/nvidia/nemotron-3-super-120b" in cmd
+    assert "ROBOCO_AGENT_MODEL=nebius/nvidia/nemotron-3-super-120b-a12b" in cmd
     # Usage capture: per-agent data dir mounted + the entrypoint's usage file.
     assert host.data_dirs_ensured == ["be-dev-1"]
     assert "/host/data/nebius-usage/be-dev-1:/home/agent/.opencode-usage" in cmd
@@ -242,7 +242,7 @@ async def test_nebius_spawn_wires_gateway_env_and_image_last() -> None:
     assert host.remove_stop_reasons == ["pre_spawn_stale_clear"]
     assert result == SpawnResult(
         instance_id="roboco-agent-be-dev-1",
-        extra={"container_id": "cid", "model": "nvidia/nemotron-3-super-120b"},
+        extra={"container_id": "cid", "model": "nvidia/nemotron-3-super-120b-a12b"},
     )
 
 

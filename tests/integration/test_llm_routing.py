@@ -589,7 +589,7 @@ async def test_apply_mode_nebius_sets_global(llm_setup: dict) -> None:
     assignments = await svc.list_assignments()
     assert len(assignments) == 1
     assert assignments[0].scope == AssignmentScope.GLOBAL
-    assert assignments[0].model_name == "nvidia/nemotron-3-super-120b"
+    assert assignments[0].model_name == "nvidia/nemotron-3-super-120b-a12b"
     assert assignments[0].provider.type == ModelProvider.NEBIUS
 
 
@@ -633,7 +633,7 @@ async def test_derive_mode_nebius_when_only_nebius_global(
     await svc.upsert_assignment(
         scope=AssignmentScope.GLOBAL,
         scope_value=None,
-        model_name="nvidia/nemotron-3-super-120b",
+        model_name="nvidia/nemotron-3-super-120b-a12b",
         provider_type_override=ModelProvider.NEBIUS,
     )
     assert await svc.derive_mode() == "nebius"

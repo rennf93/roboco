@@ -2361,7 +2361,7 @@ class Settings(BaseSettings):
     # picked model id is stored via provider_type_override - this is only
     # the floor.
     nebius_cli_model: str = Field(
-        default="nvidia/nemotron-3-super-120b",
+        default="nvidia/nemotron-3-super-120b-a12b",
         description=(
             "Default Nebius Token Factory model id (provider/model) passed to "
             "opencode when no per-assignment model is pinned. Override via "
@@ -2393,7 +2393,7 @@ class Settings(BaseSettings):
     )
     # Token Factory Sandboxes (the Contree service at
     # api.tokenfactory.nebius.com/sandboxes): ephemeral microVMs that run a
-    # command and are destroyed, used by the QA-scoped run_sandbox_tests
+    # command and are destroyed, used by the dev/QA-scoped run_sandbox_tests
     # gateway verb to execute a task's test suite outside the agent
     # container. Default-off like every autonomy surface; the sandbox calls
     # authenticate with the SAME stored Nebius API key as the inference
@@ -2403,7 +2403,7 @@ class Settings(BaseSettings):
     token_factory_sandboxes_enabled: bool = Field(
         default=False,
         description=(
-            "Arm the run_sandbox_tests gateway verb (QA test runs in Token "
+            "Arm the run_sandbox_tests gateway verb (dev/QA test runs in Token "
             "Factory Sandbox microVMs); default off, also toggleable from "
             "the panel's Feature Flags card"
         ),
@@ -2418,9 +2418,10 @@ class Settings(BaseSettings):
     token_factory_sandboxes_project_id: str = Field(
         default="",
         description=(
-            "Optional Nebius project id sent as the Sandboxes API's "
-            "'Project' header; empty relies on the API key alone. Override "
-            "via ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID"
+            "Nebius project id sent as the Sandboxes API's REQUIRED "
+            "'Project' header (the API 400s without it; the hackathon "
+            "service-account id resolves). Override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID"
         ),
     )
     token_factory_sandboxes_image: str = Field(

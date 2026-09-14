@@ -91,13 +91,13 @@ def test_unknown_role_gets_every_deny_category() -> None:
 
 def test_opencode_model_ref_prefixes_bare_catalog_id() -> None:
     assert (
-        oc.opencode_model_ref("nvidia/nemotron-3-super-120b")
-        == "nebius/nvidia/nemotron-3-super-120b"
+        oc.opencode_model_ref("nvidia/nemotron-3-super-120b-a12b")
+        == "nebius/nvidia/nemotron-3-super-120b-a12b"
     )
 
 
 def test_opencode_model_ref_is_idempotent() -> None:
-    ref = "nebius/nvidia/nemotron-3-super-120b"
+    ref = "nebius/nvidia/nemotron-3-super-120b-a12b"
     assert oc.opencode_model_ref(ref) == ref
 
 
@@ -107,11 +107,11 @@ def test_opencode_model_ref_tolerates_empty() -> None:
 
 
 def test_render_agent_block_carries_prompt_mode_model_permission() -> None:
-    block = oc.render_agent_block("developer", "nvidia/nemotron-3-super-120b")
+    block = oc.render_agent_block("developer", "nvidia/nemotron-3-super-120b-a12b")
     assert block["mode"] == "primary"
     # The block's model is the opencode REF (prefixed), matching the
     # entrypoint's --model value - both must route through Nebius.
-    assert block["model"] == "nebius/nvidia/nemotron-3-super-120b"
+    assert block["model"] == "nebius/nvidia/nemotron-3-super-120b-a12b"
     assert "permission" in block
     assert "tools" in block
     # The prompt is loaded from the system prompt path; empty string if absent.
@@ -119,8 +119,9 @@ def test_render_agent_block_carries_prompt_mode_model_permission() -> None:
 
 
 def test_render_agent_block_model_ref_is_idempotent_for_prefixed_input() -> None:
-    block = oc.render_agent_block("developer", "nebius/nvidia/nemotron-3-super-120b")
-    assert block["model"] == "nebius/nvidia/nemotron-3-super-120b"
+    prefixed = "nebius/nvidia/nemotron-3-super-120b-a12b"
+    block = oc.render_agent_block("developer", prefixed)
+    assert block["model"] == prefixed
 
 
 def test_render_agent_block_permission_varies_by_role() -> None:
@@ -265,7 +266,7 @@ def test_render_config_has_schema_agent_provider_mcp() -> None:
         mcp_path = f.name
     config = oc.render_config(
         "developer",
-        "nvidia/nemotron-3-super-120b",
+        "nvidia/nemotron-3-super-120b-a12b",
         "https://api.tokenfactory.nebius.com/v1",
         mcp_path,
     )
@@ -330,7 +331,7 @@ def test_main_writes_opencode_json(
     monkeypatch.setattr(oc, "SYSTEM_PROMPT_PATH", system_prompt)
     monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
     monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp_path))
-    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "nvidia/nemotron-3-super-120b")
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "nvidia/nemotron-3-super-120b-a12b")
     monkeypatch.setenv("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1")
 
     assert oc.main([]) == 0
@@ -339,7 +340,10 @@ def test_main_writes_opencode_json(
     assert rendered["$schema"] == "https://opencode.ai/config.json"
     # The agent block's model is the opencode REF - the same value the
     # entrypoint passes to --model (both route through Nebius).
-    assert rendered["agent"]["roboco"]["model"] == "nebius/nvidia/nemotron-3-super-120b"
+    assert (
+        rendered["agent"]["roboco"]["model"]
+        == "nebius/nvidia/nemotron-3-super-120b-a12b"
+    )
     assert rendered["agent"]["roboco"]["prompt"] == "blueprint"
     assert "nebius" in rendered["provider"]
     assert "roboco-flow" in rendered["mcp"]

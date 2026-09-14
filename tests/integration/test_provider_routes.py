@@ -1556,7 +1556,7 @@ async def test_nebius_models_returns_results_with_key(
     # actual query-filtering path instead of returning an unfiltered stub.
     fake_raw_models = [
         {
-            "id": "nvidia/nemotron-3-super-120b",
+            "id": "nvidia/nemotron-3-super-120b-a12b",
             "name": "NVIDIA Nemotron 3 Super 120B",
             "context_length": None,
         },
@@ -1584,7 +1584,7 @@ async def test_nebius_models_returns_results_with_key(
     assert response.status_code == HTTPStatus.OK
     body = response.json()
     assert len(body) == 1  # only nemotron matches the query
-    assert body[0]["id"] == "nvidia/nemotron-3-super-120b"
+    assert body[0]["id"] == "nvidia/nemotron-3-super-120b-a12b"
     assert body[0]["name"] == "NVIDIA Nemotron 3 Super 120B"
     assert body[0]["context_length"] is None
     assert body[0]["prompt_price"] is None
@@ -1634,7 +1634,7 @@ async def test_apply_mode_nebius_returns_200_and_reflects_mode(
     assert body["mode"] == "nebius"
     assert len(body["assignments"]) == 1
     assert body["assignments"][0]["provider_type"] == "nebius"
-    assert body["assignments"][0]["model_name"] == "nvidia/nemotron-3-super-120b"
+    assert body["assignments"][0]["model_name"] == "nvidia/nemotron-3-super-120b-a12b"
 
 
 @pytest.mark.asyncio

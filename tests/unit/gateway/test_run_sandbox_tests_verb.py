@@ -318,14 +318,15 @@ async def test_sandbox_api_failure_is_retryable_envelope(
 
 
 # ---------------------------------------------------------------------------
-# Role scoping — the manifest carries the verb for QA only
+# Role scoping — the manifest carries the verb for dev + QA only
 # ---------------------------------------------------------------------------
 
 
-def test_manifest_grants_run_sandbox_tests_to_qa_only() -> None:
-    """role_config -> spawn_manifest wiring: the verb reaches QA's manifest
-    and no other role's — the sandbox is the verification surface, not a
-    second dev runtime."""
+def test_manifest_grants_run_sandbox_tests_to_dev_and_qa_only() -> None:
+    """role_config -> spawn_manifest wiring: the verb reaches dev and QA
+    manifests (the two roles that run test suites) and no coordinator/
+    board role's — the sandbox is a verification surface, never a
+    coordinator credit surface."""
 
     def do_tools(role: str) -> list[str]:
         manifest = build_for_role(
@@ -334,14 +335,14 @@ def test_manifest_grants_run_sandbox_tests_to_qa_only() -> None:
                 role=role,
                 team="qa",
                 workspace_path="/tmp/ws",
-                agent_model="nvidia/nemotron-3-super-120b",
+                agent_model="nvidia/nemotron-3-super-120b-a12b",
             )
         )
         return list(manifest.do_tools)
 
     assert "run_sandbox_tests" in do_tools("qa")
+    assert "run_sandbox_tests" in do_tools("developer")
     for role in (
-        "developer",
         "documenter",
         "cell_pm",
         "main_pm",

@@ -78,7 +78,7 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   sandbox_db_enabled:
     "Provision a throwaway Postgres/Redis sibling container per agent spawn (per-project opt-in) instead of injecting RoboCo's own production DB credentials into the agent's gate.",
   token_factory_sandboxes_enabled:
-    "Lets QA run a task's test suite inside a Token Factory Sandbox microVM on Nebius (millisecond boot, destroyed after the run) instead of the agent's own container. Needs a Nebius API key; when off, QA keeps its local shell.",
+    "Lets developers and QA run a task's test suite inside a Token Factory Sandbox microVM on Nebius (millisecond boot, destroyed after the run) instead of the agent's own container. Needs a Nebius API key; when off, agents keep their local shells.",
   routing_strict:
     "Fail-closed model routing: refuse to silently downgrade an agent to the legacy Anthropic path when its configured provider is disabled (raise instead). Off => graceful degradation with a warning.",
   x_engine_enabled:

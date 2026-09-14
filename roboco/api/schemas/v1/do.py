@@ -435,7 +435,7 @@ class RequestSandboxRequest(BaseModel):
 
 class RunSandboxTestsRequest(BaseModel):
     """Run the caller's test command for the ACTIVE task inside a Token
-    Factory Sandbox microVM (QA-only verb, default-off flag). The workspace
+    Factory Sandbox microVM (dev + QA verb, default-off flag). The workspace
     archive is uploaded server-side; ``command`` runs at the archive root."""
 
     command: str = Field(

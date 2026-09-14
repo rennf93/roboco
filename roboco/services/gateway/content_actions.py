@@ -6078,7 +6078,7 @@ class ContentActions:
         timeout_seconds: int | None = None,
     ) -> Envelope:
         """Run the caller's test command inside a Token Factory Sandbox
-        microVM (QA only, see role_config; default-off flag).
+        microVM (dev + QA only, see role_config; default-off flag).
 
         The hackathon-track workload: the "run and test code" leg of the
         agent loop executes in Nebius's ephemeral Sandboxes service instead
@@ -6088,7 +6088,7 @@ class ContentActions:
         ``command`` runs at the archive root; the microVM is destroyed after
         the run. Nothing about the LOCAL path changes: the flag off, a
         missing key, or any sandbox failure degrades to an envelope
-        rejection and QA keeps its container shell.
+        rejection and dev/QA keep their container shells.
 
         Guards, in order (the first three live in ``_sandbox_tests_guards``):
         flag off; no claimed/active project-bound task; no stored Nebius

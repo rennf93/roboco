@@ -37,7 +37,7 @@ _METERED_COST = 0.137
 
 def _write_usage(path: Path, **fields: object) -> None:
     payload = {
-        "model": "nvidia/nemotron-3-super-120b",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
         "tokens_input": 0,
         "tokens_output": 0,
         "tokens_cache_read": 0,
@@ -50,7 +50,7 @@ def _write_usage(path: Path, **fields: object) -> None:
 
 def _usage_payload() -> dict[str, object]:
     return {
-        "model": "nvidia/nemotron-3-super-120b",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
         "tokens_input": _TIN,
         "tokens_output": _TOUT,
         "tokens_cache_read": _TCR,
@@ -60,9 +60,8 @@ def _usage_payload() -> dict[str, object]:
 
 
 def _nebius_instance(agent_id: str = "be-dev-1") -> AgentInstance:
-    cfg = type(
-        "C", (), {"provider_type": "nebius", "model": "nvidia/nemotron-3-super-120b"}
-    )()
+    model = "nvidia/nemotron-3-super-120b-a12b"
+    cfg = type("C", (), {"provider_type": "nebius", "model": model})()
     return AgentInstance(agent_id=agent_id, config=cfg)
 
 
@@ -201,7 +200,7 @@ def _nebius_session_instance(agent_id: str = "be-dev-1") -> AgentInstance:
         (),
         {
             "provider_type": "nebius",
-            "model": "nvidia/nemotron-3-super-120b",
+            "model": "nvidia/nemotron-3-super-120b-a12b",
             "blueprint_path": None,
         },
     )()

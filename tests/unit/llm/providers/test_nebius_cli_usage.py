@@ -212,12 +212,12 @@ def test_capture_run_usage_writes_usage_json(tmp_path: Path) -> None:
     out = tmp_path / "usage.json"
     tokens = ou.capture_run_usage(
         run_log=log,
-        model="nvidia/nemotron-3-super-120b",
+        model="nvidia/nemotron-3-super-120b-a12b",
         out_path=out,
     )
     assert tokens == (100, 50, 10, 0)
     data = json.loads(out.read_text())
-    assert data["model"] == "nvidia/nemotron-3-super-120b"
+    assert data["model"] == "nvidia/nemotron-3-super-120b-a12b"
     assert data["tokens_input"] == 100
     assert data["tokens_output"] == 50
     assert data["tokens_cache_read"] == 10
@@ -249,7 +249,7 @@ def test_main_writes_usage_file(
     out = tmp_path / "usage.json"
     monkeypatch.setattr(ou, "USAGE_OUT_PATH", out)
     monkeypatch.setenv("ROBOCO_NEBIUS_RUN_LOG", str(log))
-    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "nvidia/nemotron-3-super-120b")
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 
     assert ou.main() == 0
     data = json.loads(out.read_text())

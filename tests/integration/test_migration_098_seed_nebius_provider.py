@@ -115,7 +115,7 @@ async def test_migration_098_downgrade_deletes_assignments_before_config(
         scope=AssignmentScope.AGENT_SLUG,
         scope_value=f"test-agent-{suffix}",
         provider_config_id=nebius.id,
-        model_name="nvidia/nemotron-3-super-120b",
+        model_name="nvidia/nemotron-3-super-120b-a12b",
     )
     db_session.add(assignment)
     await db_session.flush()

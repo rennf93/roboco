@@ -35,7 +35,7 @@ Nebius-specific notes (where Token Factory differs from OpenRouter):
     generic ``@ai-sdk/openai-compatible`` package: ``api`` is the baseURL,
     ``env`` names the key var opencode reads (NEBIUS_API_KEY, injected at
     spawn). Model ids carry a vendor prefix on Token Factory
-    (``nvidia/nemotron-3-super-120b``), so the opencode model ref is
+    (``nvidia/nemotron-3-super-120b-a12b``), so the opencode model ref is
     ``nebius/<vendor>/<model>`` - opencode splits the ref at the FIRST
     slash (its provider id) and passes the rest to the provider block.
   * **auth preflight** - Nebius is the Ollama shape (static key, no
@@ -237,7 +237,7 @@ def opencode_model_ref(model: str) -> str:
     cannot authenticate (live-verified on the openrouter twin). Prefixing
     with opencode's own provider id from the rendered ``provider.nebius``
     block routes every call through Nebius:
-    ``nebius/nvidia/nemotron-3-super-120b``. Idempotent - an
+    ``nebius/nvidia/nemotron-3-super-120b-a12b``. Idempotent - an
     already-prefixed ref passes through untouched (the provider injects the
     prefixed ref into ``ROBOCO_AGENT_MODEL`` and the renderer re-derives it).
     """

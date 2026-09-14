@@ -4,7 +4,7 @@
 
 Nebius Token Factory (https://tokenfactory.nebius.com) is Nebius's OpenAI-compatible inference API serving 60+ open models (NVIDIA Nemotron, DeepSeek, Qwen, Llama) behind one metered API key at `https://api.tokenfactory.nebius.com/v1`. It is a first-class `ModelProvider` (`ModelProvider.NEBIUS`, `roboco/models/base.py`), built as the twin of the OpenRouter provider and mirroring the Grok key-management pattern: the key is a **metered API key stored Fernet-encrypted on the provider row**, never a subscription credential.
 
-The model catalog is **live and lazy**: Token Factory models are never preloaded into the static `MODEL_CATALOG`. The operator searches the live list on demand via a proxy endpoint, and a chosen model id (e.g. `nvidia/nemotron-3-super-120b`) is stored directly on the assignment row via `provider_type_override`, bypassing catalog validation like the self-hosted names do. The provider's default model is an NVIDIA Nemotron 3 id (settings.nebius_cli_model), so a Nebius-mode fleet runs an NVIDIA open model by construction.
+The model catalog is **live and lazy**: Token Factory models are never preloaded into the static `MODEL_CATALOG`. The operator searches the live list on demand via a proxy endpoint, and a chosen model id (e.g. `nvidia/nemotron-3-super-120b-a12b`) is stored directly on the assignment row via `provider_type_override`, bypassing catalog validation like the self-hosted names do. The provider's default model is an NVIDIA Nemotron 3 id (settings.nebius_cli_model), so a Nebius-mode fleet runs an NVIDIA open model by construction.
 
 Scope of this doc: the API surface (`roboco/api/routes/provider.py`, `roboco/api/schemas/provider.py`), the routing-service integration (`roboco/services/llm.py`), and the two Alembic migrations (097/098). The Nebius **runtime provider** (agent containers via the opencode CLI, `roboco.llm.providers.nebius`, the `roboco-agent-nebius` image, the exit 75/78 entrypoint preflight) is a line-for-line twin of the OpenRouter runtime documented in the openrouter-provider docs; every difference is called out below.
 
@@ -13,7 +13,7 @@ Scope of this doc: the API surface (`roboco/api/routes/provider.py`, `roboco/api
 - Endpoint: `https://api.tokenfactory.nebius.com/v1` (Bearer auth, standard OpenAI Chat Completions). No attribution headers (OpenRouter's `HTTP-Referer` / `X-Title` dashboard surface does not exist here).
 - Model search has **no tools filter**: Token Factory's `GET /v1/models` is the generic OpenAI list shape (`{"data": [{"id": ...}]}`) and carries no `supported_parameters` capability metadata, no pricing, and usually no context length. The only filter is the query substring; `name` falls back to the id when absent.
 - The model-search proxy reuses the `OpenRouterModelEntry` response schema (same nullable field shape), so the panel's model picker renders both identically.
-- Default model: `settings.nebius_cli_model` (`nvidia/nemotron-3-super-120b`), not a DeepSeek default.
+- Default model: `settings.nebius_cli_model` (`nvidia/nemotron-3-super-120b-a12b`), not a DeepSeek default.
 - Everything else - key management, mode machinery, park handlers, usage capture, interactive-role guard - is the openrouter pattern with `openrouter` renamed to `nebius` and env names `NEBIUS_API_KEY` / `NEBIUS_BASE_URL`.
 
 ## Data model & migrations

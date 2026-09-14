@@ -6,7 +6,7 @@ ephemeral, isolated microVM (Cloud Hypervisor) that is destroyed after the
 execution: the agent uploads files, the VM boots the requested image, runs
 one shell expression, and reports ``exit_code`` / ``stdout`` / ``stderr``
 plus metered resources. RoboCo uses it for exactly one workload - the
-QA-scoped ``run_sandbox_tests`` gateway verb executing a task's test suite
+dev/QA-scoped ``run_sandbox_tests`` gateway verb executing a task's test suite
 outside the agent container - so this client implements the minimal
 three-call flow and nothing more:
 
@@ -21,11 +21,14 @@ three-call flow and nothing more:
      ``metadata.result`` (an ``InstanceResult``: ``state.exit_code``,
      ``stdout``/``stderr`` streams, ``resources.cost``).
 
-Auth mirrors the Sandboxes OpenAPI contract: ``Authorization: Bearer`` with
-the SAME stored Nebius API key the inference provider uses, plus the
-optional ``Project`` header when ``settings.token_factory_sandboxes_project_id``
-is set (scoped accounts). Live-verification of both assumptions against a
-real key is a documented bring-up item (docs/backend/api/token-factory-sandboxes.md).
+Auth mirrors the Sandboxes OpenAPI contract, LIVE-VERIFIED 2026-09-14
+against the hackathon key: ``Authorization: Bearer`` with the SAME stored
+Nebius API key the inference provider uses (accepted), plus the REQUIRED
+``Project`` header from ``settings.token_factory_sandboxes_project_id``
+(the API 400s without it; the service-account id embedded in the key
+resolves as the value). Sandbox spawn additionally needs spawn
+permissions on the key/console side - a permission-less key degrades to
+a 403 error string here, never a crash.
 
 Shape discipline mirrors the probe functions in ``roboco.services.llm``:
 every function returns ``(data, None)`` on success or ``(None, error_str)``

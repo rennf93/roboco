@@ -91,7 +91,7 @@ fi
 # workspace-write + full-auto); `--agent roboco` selects the rendered agent
 # block; `--model` is the opencode model REF (opencode's own provider id
 # prefixing the bare Token Factory catalog id, e.g.
-# "nebius/nvidia/nemotron-3-super-120b" - unprefixed, opencode resolves the
+# "nebius/nvidia/nemotron-3-super-120b-a12b" - unprefixed, opencode resolves the
 # value against its built-in anthropic provider, which needs ANTHROPIC_API_KEY
 # and can never authenticate) the orchestrator passes via ROBOCO_AGENT_MODEL.
 RUN_LOG="/tmp/nebius-run.jsonl"
@@ -100,7 +100,7 @@ ERR_LOG="/tmp/nebius-run.err"
 set +e
 opencode run "${ROBOCO_INITIAL_PROMPT:-}" \
   --agent roboco \
-  --model "${ROBOCO_AGENT_MODEL:-nebius/nvidia/nemotron-3-super-120b}" \
+  --model "${ROBOCO_AGENT_MODEL:-nebius/nvidia/nemotron-3-super-120b-a12b}" \
   --auto \
   --format json \
   < /dev/null 2> "$ERR_LOG" | tee "$RUN_LOG"

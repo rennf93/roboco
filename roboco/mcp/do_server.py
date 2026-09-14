@@ -1116,7 +1116,7 @@ def run_sandbox_tests(
 ) -> dict[str, Any]:
     """Run YOUR active task's tests inside a Token Factory Sandbox (Nebius).
 
-    QA-only (the developer tool manifest doesn't carry it), default-off:
+    Dev + QA only (no coordinator/board manifest carries it), default-off:
     rejected until the CEO arms ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED and a
     Nebius API key is saved. The committed workspace HEAD is git-archived
     server-side, uploaded to the Sandboxes API, extracted inside a

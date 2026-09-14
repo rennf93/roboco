@@ -30,7 +30,7 @@ interface NebiusModel {
 }
 ```
 
-Token Factory's `GET /v1/models` is the generic OpenAI list shape: `name` falls back to the id when absent, and pricing/context fields are typically `null` (the backend reuses the `OpenRouterModelEntry` response schema, so the nullable shape matches). `id` (e.g. `nvidia/nemotron-3-super-120b`) is the value used as the routing `model_name`.
+Token Factory's `GET /v1/models` is the generic OpenAI list shape: `name` falls back to the id when absent, and pricing/context fields are typically `null` (the backend reuses the `OpenRouterModelEntry` response schema, so the nullable shape matches). `id` (e.g. `nvidia/nemotron-3-super-120b-a12b`) is the value used as the routing `model_name`.
 
 ## API client functions
 

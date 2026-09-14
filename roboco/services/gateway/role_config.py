@@ -59,6 +59,9 @@ _DEV_DO = (
     # On-demand sandbox DB/Redis/Mongo — carried unconditionally (declarative
     # manifest), gated for real by request_sandbox's project opt-in check.
     "request_sandbox",
+    # Token Factory Sandbox test run — devs verify their own suites before
+    # opening the PR (PR-before-QA), same runtime gates as QA's copy.
+    "run_sandbox_tests",
     # Render the video composition to preview frames (dev's own working
     # tree); manifest carries it unconditionally, gated for real by
     # request_render's active-video-task + flag checks.
@@ -73,11 +76,10 @@ _QA_DO = (
     "evidence",
     "draft_playbook",
     "request_sandbox",
-    # run_sandbox_tests is QA's alone: the "run and test code" leg of the
-    # loop executes in a Token Factory Sandbox microVM (Nebius), gated for
-    # real by the verb's own flag + Nebius-key checks. Developers keep
-    # their container shell - the sandbox is the verification surface, not
-    # a second dev runtime.
+    # Token Factory Sandbox test run — dev + QA are the two roles that run
+    # test suites (dev pre-PR, QA verification); gated for real by the
+    # verb's own flag + Nebius-key checks. Coordinators/board never get a
+    # credit-spending surface.
     "run_sandbox_tests",
     # QA's render source is a read-only branch export, never a working tree
     # (see request_render/_render_qa_source); gated the same way as above.

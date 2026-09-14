@@ -102,7 +102,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("sandbox_db_enabled", "Sandboxed per-agent test DB/Redis"),
     (
         "token_factory_sandboxes_enabled",
-        "Token Factory Sandboxes (QA test runs in Nebius microVMs)",
+        "Token Factory Sandboxes (dev/QA test runs in Nebius microVMs)",
     ),
     ("routing_strict", "Strict model routing (fail-closed on a disabled provider)"),
     ("x_engine_enabled", "X (Twitter) engine"),
