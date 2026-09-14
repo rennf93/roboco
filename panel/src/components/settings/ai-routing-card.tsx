@@ -172,16 +172,19 @@ const COMPLEXITY_ROLE_LABELS: Record<string, string> = {
 };
 
 // OpenRouter models come from the shared contract in @/lib/api/providers
-// (OpenRouterModel) — pricing / prompt / completion / context_length are all
-// nullable because OpenRouter's catalog genuinely contains unpriced models.
+// (OpenRouterModel, mirrored from the backend's OpenRouterModelEntry):
+// prompt_price / completion_price / context_length are all nullable because
+// OpenRouter's catalog genuinely contains unpriced models. The Nebius search
+// reuses the same shape (NebiusModel is an alias), mostly-null for Nebius.
 
 // Format a per-token price as human-readable per-million-token, e.g.
-// "0.000003" → "$3.00/1M". Zero/negative (OpenRouter's "-1" unknown-price
-// sentinel) → "—"; sub-cent per-million values keep a third decimal so they
-// don't render as "$0.00/1M".
-function formatPricePerMillion(price: string | number): string {
-  const perMillion =
-    (typeof price === "string" ? parseFloat(price) : price) * 1_000_000;
+// 0.000003 → "$3.00/1M". Null/undefined (both search endpoints leave prices
+// null when the catalog carries none) or zero/negative (OpenRouter's "-1"
+// unknown-price sentinel) → "—"; sub-cent per-million values keep a third
+// decimal so they don't render as "$0.00/1M".
+function formatPricePerMillion(price: number | null | undefined): string {
+  if (price == null) return "—";
+  const perMillion = price * 1_000_000;
   if (isNaN(perMillion) || perMillion <= 0) return "—";
   return perMillion < 0.01
     ? `$${perMillion.toFixed(3)}/1M`
@@ -1407,20 +1410,18 @@ export function AIRoutingCard() {
                 <div className="max-h-64 overflow-y-auto rounded-md border">
                   {openRouterModels.map((m: OpenRouterModel) => (
                     <button
-                      key={m.model_name}
+                      key={m.id}
                       type="button"
-                      onClick={() => setOpenRouterModel(m.model_name)}
+                      onClick={() => setOpenRouterModel(m.id)}
                       className={
                         "flex w-full items-center justify-between p-2 text-left text-xs hover:bg-muted/50 " +
-                        (openRouterModel === m.model_name ? "bg-primary/5" : "")
+                        (openRouterModel === m.id ? "bg-primary/5" : "")
                       }
                     >
                       <div className="min-w-0">
-                        <div className="font-medium truncate">
-                          {m.display_name}
-                        </div>
+                        <div className="font-medium truncate">{m.name}</div>
                         <div className="text-muted-foreground font-mono truncate">
-                          {m.model_name}
+                          {m.id}
                         </div>
                         {m.context_length != null && m.context_length > 0 && (
                           <div className="text-muted-foreground">
@@ -1429,17 +1430,9 @@ export function AIRoutingCard() {
                         )}
                       </div>
                       <div className="ml-2 shrink-0 text-right">
-                        <div>
-                          {m.pricing && m.pricing.prompt
-                            ? formatPricePerMillion(m.pricing.prompt)
-                            : "—"}{" "}
-                          in
-                        </div>
+                        <div>{formatPricePerMillion(m.prompt_price)} in</div>
                         <div className="text-muted-foreground">
-                          {m.pricing && m.pricing.completion
-                            ? formatPricePerMillion(m.pricing.completion)
-                            : "—"}{" "}
-                          out
+                          {formatPricePerMillion(m.completion_price)} out
                         </div>
                       </div>
                     </button>
@@ -1499,20 +1492,18 @@ export function AIRoutingCard() {
                 <div className="max-h-64 overflow-y-auto rounded-md border">
                   {nebiusModels.map((m: NebiusModel) => (
                     <button
-                      key={m.model_name}
+                      key={m.id}
                       type="button"
-                      onClick={() => setNebiusModel(m.model_name)}
+                      onClick={() => setNebiusModel(m.id)}
                       className={
                         "flex w-full items-center justify-between p-2 text-left text-xs hover:bg-muted/50 " +
-                        (nebiusModel === m.model_name ? "bg-primary/5" : "")
+                        (nebiusModel === m.id ? "bg-primary/5" : "")
                       }
                     >
                       <div className="min-w-0">
-                        <div className="font-medium truncate">
-                          {m.display_name}
-                        </div>
+                        <div className="font-medium truncate">{m.name}</div>
                         <div className="text-muted-foreground font-mono truncate">
-                          {m.model_name}
+                          {m.id}
                         </div>
                         {m.context_length != null && m.context_length > 0 && (
                           <div className="text-muted-foreground">
@@ -1521,17 +1512,9 @@ export function AIRoutingCard() {
                         )}
                       </div>
                       <div className="ml-2 shrink-0 text-right">
-                        <div>
-                          {m.pricing && m.pricing.prompt
-                            ? formatPricePerMillion(m.pricing.prompt)
-                            : "—"}{" "}
-                          in
-                        </div>
+                        <div>{formatPricePerMillion(m.prompt_price)} in</div>
                         <div className="text-muted-foreground">
-                          {m.pricing && m.pricing.completion
-                            ? formatPricePerMillion(m.pricing.completion)
-                            : "—"}{" "}
-                          out
+                          {formatPricePerMillion(m.completion_price)} out
                         </div>
                       </div>
                     </button>

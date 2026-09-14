@@ -28,27 +28,24 @@ export interface NebiusKeyStatus {
   enabled: boolean;
 }
 
-/** One model entry returned by the OpenRouter model search endpoint. */
+/** One model entry returned by the OpenRouter model search endpoint:
+ * mirrors the backend's OpenRouterModelEntry schema (roboco/api/schemas/
+ * provider.py). `id` is the OpenRouter slug (e.g. "deepseek/deepseek-chat")
+ * used as the routing model_name; `name` is the display name. Prices are
+ * per-token USD floats (OpenRouter's "-1" unknown-price sentinel included;
+ * the UI formatter maps non-positive values to "—"). */
 export interface OpenRouterModel {
-  model_name: string;
-  display_name: string;
+  id: string;
+  name: string;
   context_length: number | null;
-  pricing: {
-    prompt: string | null;
-    completion: string | null;
-  } | null;
+  prompt_price: number | null;
+  completion_price: number | null;
 }
 
-/** One model entry returned by the Nebius model search endpoint. */
-export interface NebiusModel {
-  model_name: string;
-  display_name: string;
-  context_length: number | null;
-  pricing: {
-    prompt: string | null;
-    completion: string | null;
-  } | null;
-}
+/** The Nebius search endpoint (GET /providers/nebius/models) reuses the
+ * backend's OpenRouterModelEntry schema verbatim; Token Factory's list
+ * carries the same fields, mostly null (name falls back to the id). */
+export type NebiusModel = OpenRouterModel;
 
 /** Payload for setting or clearing the OpenRouter API key. */
 export interface SetOpenRouterKeyRequest {
@@ -148,7 +145,11 @@ export interface ComplexityOverride {
  * pr_reviewer, and board/CEO-facing roles are never offered a row here; tier
  * pinning for those is deliberate — cell_pm especially, since the org's
  * documented weak-model incidents were precisely a cheap model on a PM role. */
-export const COMPLEXITY_OVERRIDE_ROLES = ["developer", "qa", "documenter"] as const;
+export const COMPLEXITY_OVERRIDE_ROLES = [
+  "developer",
+  "qa",
+  "documenter",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Routing presets (named, full snapshots of the routing state)
@@ -268,9 +269,7 @@ export const providersApi = {
     return data;
   },
 
-  searchOpenRouterModels: async (
-    query: string,
-  ): Promise<OpenRouterModel[]> => {
+  searchOpenRouterModels: async (query: string): Promise<OpenRouterModel[]> => {
     const { data } = await api.get<OpenRouterModel[]>(
       "/providers/openrouter/models",
       { params: { q: query } },

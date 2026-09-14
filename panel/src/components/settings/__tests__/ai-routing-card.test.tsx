@@ -1340,26 +1340,34 @@ describe("AIRoutingCard", () => {
     });
 
     it("renders null-safe pricing: missing pricing, the '-1' sentinel, and sub-cent values", async () => {
+      // Mock payloads mirror the backend's OpenRouterModelEntry schema
+      // ({id, name, context_length, prompt_price, completion_price}):
+      // NOT a re-derived shape; this suite once passed against an invented
+      // {model_name, display_name, pricing} shape while the real picker
+      // rendered blank rows.
       searchOpenRouterModels.mockResolvedValueOnce([
         {
-          model_name: "vendor/unpriced",
-          display_name: "Unpriced Model",
+          id: "vendor/unpriced",
+          name: "Unpriced Model",
           context_length: null,
-          pricing: null,
+          prompt_price: null,
+          completion_price: null,
         },
         {
-          model_name: "vendor/sentinel",
-          display_name: "Sentinel Model",
+          id: "vendor/sentinel",
+          name: "Sentinel Model",
           context_length: 32000,
           // "-1" is OpenRouter's unknown-price sentinel.
-          pricing: { prompt: "-1", completion: "0.0000014" },
+          prompt_price: -1,
+          completion_price: 0.0000014,
         },
         {
-          model_name: "vendor/tiny",
-          display_name: "Tiny Model",
+          id: "vendor/tiny",
+          name: "Tiny Model",
           context_length: null,
           // $0.003/1M — sub-cent must keep its third decimal, not "$0.00".
-          pricing: { prompt: "0.000000003", completion: null },
+          prompt_price: 0.000000003,
+          completion_price: null,
         },
       ]);
       await openPicker();
@@ -1407,6 +1415,42 @@ describe("AIRoutingCard", () => {
       // Coverage-run load stacks a 300ms real-timer debounce on top of the
       // async query — past the default 5s per-test ceiling in CI.
     }, 15_000);
+
+    it("selects a model on click and reports the picked id as the model that will be applied", async () => {
+      // Regression: the picker once stored m.model_name (undefined under the
+      // real contract), so clicking a row silently selected nothing.
+      searchOpenRouterModels.mockResolvedValueOnce([
+        {
+          id: "vendor/model-a",
+          name: "Model A",
+          context_length: 128000,
+          prompt_price: 0.000003,
+          completion_price: 0.000015,
+        },
+        {
+          id: "vendor/model-b",
+          name: "Model B",
+          context_length: null,
+          prompt_price: null,
+          completion_price: null,
+        },
+      ]);
+      const search = await openPicker();
+      fireEvent.change(search, { target: { value: "vendor" } });
+
+      fireEvent.click(
+        (await screen.findByText("Model B", {}, { timeout: 3000 })).closest(
+          "button",
+        )!,
+      );
+
+      const selected = await screen.findByText(/Selected:/);
+      expect(within(selected).getByText("vendor/model-b")).toBeInTheDocument();
+      // The picked row stays highlighted.
+      expect(screen.getByText("Model B").closest("button")!).toHaveClass(
+        "bg-primary/5",
+      );
+    });
 
     it("maps a failing models query to status-specific error copy (401 → auth failure)", async () => {
       searchOpenRouterModels.mockRejectedValueOnce({
