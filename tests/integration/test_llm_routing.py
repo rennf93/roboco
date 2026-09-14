@@ -711,6 +711,27 @@ async def test_apply_mode_mix_writes_overrides(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_mode_mix_pins_nebius_catalog_model(llm_setup: dict) -> None:
+    """The live-verified Nemotron ids are catalog members, so a Mix-mode
+    per-agent pin resolves to the NEBIUS provider row (auto-enabled, same
+    as the openrouter precedent) instead of being rejected as an unknown
+    model. This is the routing half of the Nebius levels-parity batch."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(
+        mode="mix",
+        per_agent={"be-dev-1": "nvidia/nemotron-3-super-120b-a12b"},
+    )
+    rows = await svc.list_assignments()
+    pin = next(
+        r
+        for r in rows
+        if r.scope == AssignmentScope.AGENT_SLUG and r.scope_value == "be-dev-1"
+    )
+    assert pin.model_name == "nvidia/nemotron-3-super-120b-a12b"
+    assert pin.provider.type == ModelProvider.NEBIUS
+
+
+@pytest.mark.asyncio
 async def test_apply_mode_unknown_raises(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     with pytest.raises(ValueError, match="Unknown mode"):

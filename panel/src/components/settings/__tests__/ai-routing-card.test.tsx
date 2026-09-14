@@ -1117,7 +1117,7 @@ describe("AIRoutingCard", () => {
       await screen.findByText("Per-agent override (mix mode)");
 
       expect(
-        screen.getByText(/Codex, Gemini, and Kimi are delivery-roles-only/i),
+        screen.getByText(/Codex, Gemini, Kimi, and Nebius are delivery-roles-only/i),
       ).toBeInTheDocument();
 
       // Wait for the catalog query to resolve (an unrelated row's groups)

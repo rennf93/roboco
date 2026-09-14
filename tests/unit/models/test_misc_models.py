@@ -11,6 +11,7 @@ from typing import Any, cast
 from unittest.mock import patch
 from uuid import uuid4
 
+from roboco.config import settings
 from roboco.models import AgentRole, Team
 from roboco.models.a2a import (
     A2AConversation,
@@ -244,3 +245,37 @@ def test_a2a_conversation_status_values() -> None:
 
 def test_model_provider_enum_has_anthropic() -> None:
     assert ModelProvider.ANTHROPIC == "anthropic"
+
+
+# ---------------------------------------------------------------------------
+# Nebius (Token Factory) catalog entries - the levels-parity batch
+# ---------------------------------------------------------------------------
+
+
+def test_nebius_catalog_entries_are_the_live_verified_ids() -> None:
+    """The four Nemotron ids added for the Mix/complexity levels-parity batch
+    are exactly the Nemotron family the live GET /v1/models returned with the
+    hackathon key (2026-09-14) - no invented ids, none missing."""
+    expected = {
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/Nemotron-3-Ultra-550b-a55b",
+        "nvidia/Nemotron-3_5-Lightning",
+    }
+    nebius = {
+        e.model_name
+        for e in MODEL_CATALOG
+        if e.provider_type is ModelProvider.NEBIUS
+    }
+    assert nebius == expected
+    for model_name in expected:
+        assert provider_type_for_model(model_name) is ModelProvider.NEBIUS
+
+
+def test_nebius_fleet_default_is_a_catalog_member() -> None:
+    """The fleet default (nebius_cli_model) must be a catalog member, or the
+    Mix picker and the complexity-override validator cannot see the model
+    the whole fleet runs on in Nebius mode."""
+    assert settings.nebius_cli_model in {
+        e.model_name for e in MODEL_CATALOG
+    }

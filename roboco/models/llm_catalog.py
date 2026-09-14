@@ -111,6 +111,36 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
         ModelProvider.KIMI,
         "Kimi for Coding HighSpeed (K2.7)",
     ),
+    # --- Nebius Token Factory (OpenAI-compatible inference, opencode CLI) ---
+    # Routes to the NEBIUS provider -> NebiusCliProvider spawn
+    # (api.tokenfactory.nebius.com/v1, metered key). Ids LIVE-VERIFIED
+    # against GET /v1/models with the hackathon key (2026-09-14, 24-model
+    # catalog); before this block the catalog carried no NEBIUS rows, which
+    # kept Nemotron out of the Mix-mode per-agent picker and the
+    # complexity-override validator. No _PRICING rows exist (no grounded
+    # published per-token rates yet), so the cost-tier comparator ranks
+    # these cheapest-tier (0.0) - the same documented ceiling as OpenRouter;
+    # the downgrade-only guard therefore does NOT order Nano < Super < Ultra.
+    CatalogEntry(
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+        ModelProvider.NEBIUS,
+        "Nemotron 3 Nano (30B-A3B)",
+    ),
+    CatalogEntry(
+        "nvidia/nemotron-3-super-120b-a12b",
+        ModelProvider.NEBIUS,
+        "Nemotron 3 Super (120B-A12B)",
+    ),
+    CatalogEntry(
+        "nvidia/Nemotron-3-Ultra-550b-a55b",
+        ModelProvider.NEBIUS,
+        "Nemotron 3 Ultra (550B-A55B)",
+    ),
+    CatalogEntry(
+        "nvidia/Nemotron-3_5-Lightning",
+        ModelProvider.NEBIUS,
+        "Nemotron 3.5 Lightning",
+    ),
 )
 
 

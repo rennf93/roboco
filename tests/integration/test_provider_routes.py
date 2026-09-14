@@ -926,6 +926,35 @@ async def test_put_complexity_override_warns_on_cross_family_once_provider_ready
 
 
 @pytest.mark.asyncio
+async def test_put_complexity_override_accepts_nebius_model_once_keyed(
+    app_client_with_nebius: AsyncClient,
+) -> None:
+    """Nebius catalog entries are complexity-override-eligible: the
+    downgrade-only comparator ranks the unpriced Nebius model cheapest-tier
+    (0.0 vs qa's sonnet baseline, same ceiling as OpenRouter), and once the
+    NEBIUS provider is keyed (the key PUT auto-enables it) the write-time
+    readiness guard passes. Cross-family -> non-null warning."""
+    await app_client_with_nebius.put(
+        "/api/providers/nebius-key",
+        json={"api_key": "test-key"},
+        headers=_HDR_PM,
+    )
+    response = await app_client_with_nebius.put(
+        "/api/providers/complexity-overrides",
+        json={
+            "role": "qa",
+            "complexity": "low",
+            "model_name": "nvidia/nemotron-3-super-120b-a12b",
+        },
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["warning"] is not None
+    assert "nebius" in body["warning"]
+
+
+@pytest.mark.asyncio
 async def test_put_complexity_override_developer_forbidden(
     db_session: AsyncSession,
 ) -> None:

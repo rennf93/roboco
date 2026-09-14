@@ -415,6 +415,10 @@ export function AIRoutingCard() {
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.KIMI,
   );
+  const catalogNebiusOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.NEBIUS,
+  );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.ANTHROPIC,
@@ -928,6 +932,25 @@ export function AIRoutingCard() {
             Kimi (Moonshot)
           </SelectLabel>
           {catalogKimiOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* Nebius (Token Factory) models - excluded for the interactive-only
+          group: Nebius is one-shot V1 (no interactive Intake/Secretary
+          image), and the server-side interactive guard rejects it anyway. */}
+      {!restrictInteractiveOnly && catalogNebiusOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="nebius" />
+            Nebius (Token Factory)
+          </SelectLabel>
+          {catalogNebiusOnly.map(
             (c: { model_name: string; display_name: string }) => (
               <SelectItem key={c.model_name} value={c.model_name}>
                 {c.display_name}
@@ -1697,8 +1720,8 @@ export function AIRoutingCard() {
                     </HelpTip>
                     {restrictInteractiveOnly ? (
                       <p className="mb-2 text-[11px] text-muted-foreground">
-                        Codex, Gemini, and Kimi are delivery-roles-only (V1) —
-                        not offered here (no interactive Intake/Secretary
+                        Codex, Gemini, Kimi, and Nebius are delivery-roles-only
+                        (V1) — not offered here (no interactive Intake/Secretary
                         support).
                       </p>
                     ) : null}
@@ -1891,6 +1914,7 @@ function ProviderBadge({
     | "openai"
     | "gemini"
     | "kimi"
+    | "nebius"
     | "ollama"
     | "self-hosted"
     | "openrouter";
@@ -1903,6 +1927,7 @@ function ProviderBadge({
     openai: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400",
     gemini: "bg-sky-500/20 text-sky-700 dark:text-sky-400",
     kimi: "bg-amber-500/20 text-amber-700 dark:text-amber-400",
+    nebius: "bg-lime-500/20 text-lime-700 dark:text-lime-400",
     openrouter: "bg-indigo-500/20 text-indigo-700 dark:text-indigo-400",
   };
   const labels: Record<string, string> = {
@@ -1913,6 +1938,7 @@ function ProviderBadge({
     openai: "C",
     gemini: "Ge",
     kimi: "K",
+    nebius: "N",
     openrouter: "OR",
   };
   return (
