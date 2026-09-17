@@ -77,6 +77,60 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
   "${COMPOSE[@]}" build "orchestrator-$COLOR" "panel-$COLOR"
 fi
 
+# Ensure ALL needed images exist BEFORE the new color comes up: the overlap
+# window (old color serving, new color starting) must never stretch into
+# 10-minute image builds, and spawns/first-ups must never discover a missing
+# image at runtime (the orchestrator/dispatcher containers have no source
+# tree, so a build they trigger fails with "unable to prepare context: path
+# /volume1/roboco not found" - 2026-09-17, secretary/prompter live chats
+# after the rebuild wiped the old agent images). Everything is ensured HERE,
+# on the host, where the context exists. Idempotent.
+echo "[deploy] ensuring images: pull pass (core + $COLOR)..."
+while IFS= read -r img; do
+  [ -z "$img" ] && continue
+  # The rollback color's app images are rebuilt by its own re-run.
+  case "$img" in *"-$OTHER") continue ;; esac
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    echo "[deploy] $img present, skipping"
+  elif docker pull -q "$img" >/dev/null 2>&1; then
+    echo "[deploy] $img pulled"
+  fi
+  # Not present and not pullable = locally built; the build pass below
+  # handles it (or the build step above already did).
+done < <("${COMPOSE[@]}" config --images)
+
+echo "[deploy] ensuring images: build pass (missing locally-built images)..."
+while IFS= read -r img; do
+  [ -z "$img" ] && continue
+  # The rollback color's app images are rebuilt by its own re-run.
+  case "$img" in *"-$OTHER") continue ;; esac
+  docker image inspect "$img" >/dev/null 2>&1 && continue
+  case "$img" in
+    roboco-*)
+      name="${img#roboco-}"
+      case "$name" in
+        # Per-color images are built by the compose build step above.
+        orchestrator|panel) continue ;;
+      esac
+      if [ -f "docker/$name.Dockerfile" ]; then
+        echo "[deploy] building $img ..."
+        docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" .
+      else
+        echo "[deploy] WARNING: $img missing and no docker/$name.Dockerfile to build it" >&2
+      fi
+      ;;
+  esac
+done < <("${COMPOSE[@]}" config --images)
+
+echo "[deploy] ensuring images: reconciliation..."
+while IFS= read -r img; do
+  [ -z "$img" ] && continue
+  case "$img" in *"-$OTHER") continue ;; esac
+  if ! docker image inspect "$img" >/dev/null 2>&1; then
+    echo "[deploy] WARNING: $img still missing after pull+build passes" >&2
+  fi
+done < <("${COMPOSE[@]}" config --images)
+
 echo "[deploy] bringing up $COLOR ..."
 # Named-service up: starts ONLY this generation (+ its dependencies: core,
 # agent builders). Blue (no-profile) is in every model, so a plain
@@ -93,39 +147,6 @@ wait_healthy "roboco-orchestrator-$COLOR"
 wait_healthy roboco-postgres
 wait_healthy roboco-ollama
 wait_healthy roboco-ollama-init exit0
-
-echo "[deploy] ensuring ALL needed images exist (blue/green set + agents)..."
-# Spawns and first-ups must never discover a missing image at runtime: the
-# orchestrator/dispatcher containers have no source tree, so a build they
-# trigger fails with "unable to prepare context: path /volume1/roboco not
-# found" (2026-09-17, secretary/prompter live chats after the rebuild wiped
-# the old agent images). Everything is ensured HERE, on the host, where the
-# context exists. Idempotent: present images are skipped by inspect.
-echo "[deploy] - compose-declared images (core + $COLOR)..."
-while IFS= read -r img; do
-  [ -z "$img" ] && continue
-  # The rollback color's app images are rebuilt by its own re-run; don't
-  # warn about them here (a green deploy legitimately leaves them absent).
-  case "$img" in *"-$OTHER") continue ;; esac
-  if docker image inspect "$img" >/dev/null 2>&1; then
-    echo "[deploy] $img present, skipping"
-  elif docker pull -q "$img" >/dev/null 2>&1; then
-    echo "[deploy] $img pulled"
-  else
-    echo "[deploy] WARNING: $img neither present nor pullable (built service? should have been built above)" >&2
-  fi
-done < <("${COMPOSE[@]}" config --images)
-
-echo "[deploy] - agent images (build any missing ON THE HOST)..."
-for df in docker/agent-*.Dockerfile; do
-  img="roboco-agent-$(basename "$df" .Dockerfile | sed 's/^agent-//')"
-  if docker image inspect "$img:latest" >/dev/null 2>&1; then
-    echo "[deploy] $img present, skipping"
-  else
-    echo "[deploy] building $img ..."
-    docker build -q -t "$img:latest" -f "$df" .
-  fi
-done
 
 echo "[deploy] schema migrations (idempotent)..."
 "${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head ||
