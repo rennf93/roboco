@@ -32,6 +32,7 @@ def test_glm_catalog_membership_is_hummin() -> None:
     # The high-thinking variant is the hummin_cli_model default, so it must
     # be catalog-routed too (otherwise apply_mode would refuse the upsert).
     assert provider_type_for_model("glm-5.3-flash:high") is ModelProvider.HUMMIN
+    assert provider_type_for_model("glm-5.3-flash:low") is ModelProvider.HUMMIN
     assert provider_type_for_model("glm-5.3-highspeed") is ModelProvider.HUMMIN
     # Neighbouring GLM tags belong to other providers (the Ollama cloud
     # tags carry the :cloud suffix; hummin ids do not).

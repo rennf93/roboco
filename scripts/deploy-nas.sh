@@ -94,6 +94,39 @@ wait_healthy roboco-postgres
 wait_healthy roboco-ollama
 wait_healthy roboco-ollama-init exit0
 
+echo "[deploy] ensuring ALL needed images exist (blue/green set + agents)..."
+# Spawns and first-ups must never discover a missing image at runtime: the
+# orchestrator/dispatcher containers have no source tree, so a build they
+# trigger fails with "unable to prepare context: path /volume1/roboco not
+# found" (2026-09-17, secretary/prompter live chats after the rebuild wiped
+# the old agent images). Everything is ensured HERE, on the host, where the
+# context exists. Idempotent: present images are skipped by inspect.
+echo "[deploy] - compose-declared images (core + $COLOR)..."
+while IFS= read -r img; do
+  [ -z "$img" ] && continue
+  # The rollback color's app images are rebuilt by its own re-run; don't
+  # warn about them here (a green deploy legitimately leaves them absent).
+  case "$img" in *"-$OTHER") continue ;; esac
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    echo "[deploy] $img present, skipping"
+  elif docker pull -q "$img" >/dev/null 2>&1; then
+    echo "[deploy] $img pulled"
+  else
+    echo "[deploy] WARNING: $img neither present nor pullable (built service? should have been built above)" >&2
+  fi
+done < <("${COMPOSE[@]}" config --images)
+
+echo "[deploy] - agent images (build any missing ON THE HOST)..."
+for df in docker/agent-*.Dockerfile; do
+  img="roboco-agent-$(basename "$df" .Dockerfile | sed 's/^agent-//')"
+  if docker image inspect "$img:latest" >/dev/null 2>&1; then
+    echo "[deploy] $img present, skipping"
+  else
+    echo "[deploy] building $img ..."
+    docker build -q -t "$img:latest" -f "$df" .
+  fi
+done
+
 echo "[deploy] schema migrations (idempotent)..."
 "${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head ||
   echo "[deploy] WARNING: alembic failed; traffic NOT flipped, investigate before flipping"

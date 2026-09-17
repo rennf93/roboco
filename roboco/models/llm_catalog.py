@@ -161,6 +161,11 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry(
         "glm-5.3-flash:high", ModelProvider.HUMMIN, "GLM 5.3 Flash (High Thinking)"
     ),
+    # The low-thinking flagship variant: the delivery-cell tier of the hummin
+    # role split (developers, QA, documenters, cell PMs).
+    CatalogEntry(
+        "glm-5.3-flash:low", ModelProvider.HUMMIN, "GLM 5.3 Flash (Low Thinking)"
+    ),
     CatalogEntry("glm-5.3-highspeed", ModelProvider.HUMMIN, "GLM 5.3 Highspeed"),
 )
 

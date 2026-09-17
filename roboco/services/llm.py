@@ -141,6 +141,26 @@ if TYPE_CHECKING:
 _OLLAMA_TAGS_TIMEOUT = 5.0  # seconds
 _log = structlog.get_logger(__name__)
 
+# Hummin (GLM) role tiers seeded by apply_mode('hummin') on top of the GLOBAL
+# default: (role, model_name). Thinking-heavy oversight roles ride the
+# high-thinking flash variant; mechanical delivery roles ride the low-thinking
+# flash variant. Roles not listed fall through to the GLOBAL default
+# (settings.hummin_cli_model). Prompter/secretary never land here, interactive
+# agents are exempt from the delivery-only provider (model_routing).
+_HUMMIN_ROLE_TIERS: tuple[tuple[str, str], ...] = (
+    # High-thinking tier: judgment / oversight
+    ("auditor", "glm-5.3-flash:high"),
+    ("product_owner", "glm-5.3-flash:high"),
+    ("head_marketing", "glm-5.3-flash:high"),
+    ("pr_reviewer", "glm-5.3-flash:high"),
+    ("main_pm", "glm-5.3-flash:high"),
+    # Low-thinking tier: mechanical delivery
+    ("developer", "glm-5.3-flash:low"),
+    ("qa", "glm-5.3-flash:low"),
+    ("documenter", "glm-5.3-flash:low"),
+    ("cell_pm", "glm-5.3-flash:low"),
+)
+
 # Cost-tiered seed applied by apply_mode('cost_tiered'): (role, complexity,
 # model_name). RETIRED to empty (2026-07-24): the one entry seeded
 # developer:low -> haiku, but haiku can't reliably emit the structured
@@ -1016,7 +1036,10 @@ class ModelRoutingService(BaseService):
             (~/.kimi-code), same shape as Codex/Gemini.
           - "hummin":      wipe role/global assignments, force-enable the
             HUMMIN provider, set the GLOBAL default to a GLM model (default
-            settings.hummin_cli_model). No key check at mode-apply time
+            settings.hummin_cli_model), then seed the oversight/delivery
+            role tiers (_HUMMIN_ROLE_TIERS: board/reviewer/main-PM roles on
+            the high-thinking flash variant, delivery roles on the
+            low-thinking flash variant). No key check at mode-apply time
             (the openrouter precedent — the spawn-time key check is the
             gate: a missing ZAI_API_KEY exits the container 78 and parks
             the provider), same shape as kimi.
@@ -1357,7 +1380,20 @@ class ModelRoutingService(BaseService):
             scope_value=None,
             model_name=model_name,
         )
-        self.log.info("Mode applied: hummin", default_model=model_name)
+        # Seed the role tiers AFTER the wipe (which already deleted plain ROLE
+        # rows): the oversight/delivery split is part of the mode, not
+        # per-operator state. Idempotent on re-apply.
+        for role, tier_model in _HUMMIN_ROLE_TIERS:
+            await self.upsert_assignment(
+                scope=AssignmentScope.ROLE,
+                scope_value=role,
+                model_name=tier_model,
+            )
+        self.log.info(
+            "Mode applied: hummin",
+            default_model=model_name,
+            role_tiers=len(_HUMMIN_ROLE_TIERS),
+        )
 
     async def _apply_ollama(self, default_model: str | None) -> None:
         """Wipe role/global assignments, set GLOBAL to an Ollama Cloud model.
