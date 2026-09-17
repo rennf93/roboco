@@ -56,6 +56,10 @@ wait_healthy() { # wait_healthy <container> [exit0]
     st=$(docker inspect -f '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null || echo missing)
     case "$st" in
       running/healthy) echo "[deploy] $c healthy"; return 0 ;;
+      # No healthcheck defined (nginx): running IS the bar. Treating this
+      # as success is what keeps the flip from "hanging" in a pointless
+      # 2x POLL_TIMEOUT loop (2026-09-17).
+      running/none) echo "[deploy] $c running (no healthcheck)"; return 0 ;;
       exited/none)
         if [ "$must_exit" = "exit0" ] &&
            [ "$(docker inspect -f '{{.State.ExitCode}}' "$c")" = "0" ]; then
