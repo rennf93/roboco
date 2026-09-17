@@ -59,6 +59,24 @@ else:
     _Base = object
 
 
+def _interactive_api_url() -> str:
+    """Base URL the live intake/secretary containers reach the backend on.
+
+    The relay sink and receiver POST/GET over the shared docker network, so a
+    blue-green NAS deploy MUST hand the containers the spawning dispatcher's
+    color-suffixed DNS name (settings.api_url, set per-color in compose) - the
+    old non-color "roboco-orchestrator" name died with the blue-green rename
+    (2026-09-17: "Name or service not known" on every relay POST). Local
+    in-container deployments keep the orchestrator DNS name; bare-process
+    deployments use loopback.
+    """
+    if settings.api_url:
+        return settings.api_url
+    if PROJECT_HOST_PATH:
+        return "http://roboco-orchestrator:8000"
+    return f"http://127.0.0.1:{settings.port}"
+
+
 class InteractiveSessionsEngine(_Base):
     """Mixin holding the "interactive_sessions" methods moved out of
     AgentOrchestrator."""
@@ -583,11 +601,7 @@ class InteractiveSessionsEngine(_Base):
             cli_model = _resolve_agent_cli_model(
                 route.provider_type.value, route.model_name
             )
-            api_url = (
-                "http://roboco-orchestrator:8000"
-                if PROJECT_HOST_PATH
-                else f"http://127.0.0.1:{settings.port}"
-            )
+            api_url = _interactive_api_url()
 
             # GROK runs the interactive driver on its own grok-CLI prompter image;
             # every other provider uses the Claude SDK-driver prompter image.
@@ -776,11 +790,7 @@ class InteractiveSessionsEngine(_Base):
             cli_model = _resolve_agent_cli_model(
                 route.provider_type.value, route.model_name
             )
-            api_url = (
-                "http://roboco-orchestrator:8000"
-                if PROJECT_HOST_PATH
-                else f"http://127.0.0.1:{settings.port}"
-            )
+            api_url = _interactive_api_url()
 
             is_grok = route.provider_type == ModelProvider.GROK
             image = (

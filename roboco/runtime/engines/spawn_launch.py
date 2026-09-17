@@ -965,7 +965,12 @@ class SpawnLaunchEngine(_Base):
             "-e",
             f"ROBOCO_AGENT_ROLE={role}",
             "-e",
-            "ROBOCO_API_URL=http://roboco-orchestrator:8000",
+            # Same resolution as _generate_mcp_config: the operator's
+            # settings.api_url override wins (blue-green NAS sets the
+            # color-suffixed dispatcher DNS name), else the orchestrator DNS
+            # name. Never hardcoded-only: the name died in the blue-green
+            # rename (2026-09-17).
+            f"ROBOCO_API_URL={settings.api_url or 'http://roboco-orchestrator:8000'}",
             "-e",
             "ROBOCO_SDK_PORT=9000",
             "-e",

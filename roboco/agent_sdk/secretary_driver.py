@@ -150,8 +150,8 @@ def build_secretary_options(
     """Build locked-down ``ClaudeAgentOptions`` for the Secretary session.
 
     Same isolation as Intake (``strict_mcp_config`` + ``setting_sources=[]`` +
-    a ``can_use_tool`` allowlist), but the MCP server exposes the Secretary's
-    read + directive tools, which call the backend.
+    the ``can_use_tool`` gate as the single allowlist), but the MCP server
+    exposes the Secretary's read + directive tools, which call the backend.
     """
     from claude_agent_sdk import (
         ClaudeAgentOptions,
@@ -242,15 +242,13 @@ def build_secretary_options(
         system_prompt=system_prompt,
         cwd=cwd,
         mcp_servers={"secretary": server},
-        allowed_tools=[
-            *_SECRETARY_BASE_TOOLS,
-            "mcp__secretary__read_company_state",
-            "mcp__secretary__read_task",
-            "mcp__secretary__search_tasks",
-            "mcp__secretary__submit_directive",
-        ],
-        # Fleet-wide subagent ban: `Task` is a default-permitted built-in that an
-        # allowlist omission + permission_mode="dontAsk" do NOT remove, so an
+        # NO allowed_tools: a whole-tool entry auto-approves the call BEFORE
+        # can_use_tool is consulted (the SDK's CanUseToolShadowedWarning,
+        # seen live 2026-09-17), so any entry here would shadow the gate
+        # below. Every tool call must flow through _gate, which allows
+        # exactly the secretary set.
+        # Fleet-wide subagent ban: `Task` is a default-permitted built-in that
+        # permission_mode="dontAsk" never routes through the gate, so an
         # explicit disallow is the only claude-code-level block (see the intake
         # driver for the full rationale).
         disallowed_tools=["Task"],
