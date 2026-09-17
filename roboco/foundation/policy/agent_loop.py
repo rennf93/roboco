@@ -5,7 +5,7 @@ Owns budget thresholds, loop-detection action, and per-verb circuit breakers.
 Replaces:
   - agent_sdk/server.py: 527-534 (hand-coded constants for warn/halt/loop thresholds)
   - runtime/orchestrator.py: 3807 (_PM_RESPAWN_MAX_UNPRODUCTIVE)
-  - docker/scripts/post-tool-budget-hook.sh exit-0-on-loop (now exit 1)
+  - docker/scripts/hooks/post-tool-budget-hook.sh exit-0-on-loop (now exit 1)
 
 The verb-level circuit breaker (VERB_RETRY_LIMITS) is NEW. The gateway had
 no per-verb retry cap — dogfooding showed i_am_done retried 5+ times in 2

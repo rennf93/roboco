@@ -14,7 +14,7 @@ Two postures on the same patterns:
     so instead the text is wrapped in an explicit untrusted-content envelope
     and any matched trigger LINE is flagged inline — nothing is ever removed.
 
-Patterns mirror ``docker/scripts/user-prompt-hook.sh`` exactly so every guard
+Patterns mirror ``docker/scripts/hooks/user-prompt-hook.sh`` exactly so every guard
 in the fleet agrees on what counts as an injection attempt.
 """
 

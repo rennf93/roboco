@@ -1,7 +1,8 @@
 """Prompt-injection guard — shared detector for incoming agent turns.
 
-RoboCo's prompt-injection guard is its OWN hook (``docker/scripts/user-prompt-hook.sh``,
-a Claude Code UserPromptSubmit hook), not a runtime built-in. The guard belongs
+RoboCo's prompt-injection guard is its OWN hook
+(``docker/scripts/hooks/user-prompt-hook.sh``, a Claude Code UserPromptSubmit
+hook), not a runtime built-in. The guard belongs
 at RoboCo's input boundary, in our own code, regardless of runtime. This ports
 the deny patterns to reusable Python so the same guard applies to:
 

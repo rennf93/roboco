@@ -573,7 +573,7 @@ _GROK_AUTH_RETRY_AFTER_S = 60.0
 
 # A one-shot Codex container exits with these SAME codes for the SAME reasons
 # (its entrypoint mirrors grok's exit-code convention — see
-# docker/scripts/codex-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# docker/scripts/entrypoints/codex-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
 # detected OpenAI rate-limit / quota error, 78 (EX_CONFIG) when the
 # codex_auth --check backstop finds the mounted ChatGPT-subscription token
 # missing/expired. Numeric reuse is fine — the checks are scoped by
@@ -622,7 +622,7 @@ KIMI_USAGE_DATA_DIR = os.environ.get("ROBOCO_KIMI_USAGE_DIR", "/data/kimi-usage"
 
 # A one-shot Kimi container exits with these SAME codes for the SAME reasons
 # (its entrypoint mirrors the codex/grok exit-code convention — see
-# docker/scripts/kimi-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# docker/scripts/entrypoints/kimi-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
 # detected Moonshot rate-limit/quota error, 78 (EX_CONFIG) when the
 # kimi_cli_config --check auth preflight finds the symlinked-in subscription
 # credential missing/expired. Numeric reuse is fine — the checks are scoped
@@ -646,7 +646,7 @@ OPENROUTER_USAGE_DATA_DIR = os.environ.get(
 
 # A one-shot OpenRouter container exits with these SAME codes for the SAME
 # reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -
-# see docker/scripts/openrouter-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# see docker/scripts/entrypoints/openrouter-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
 # detected OpenRouter rate-limit/quota error, 78 (EX_CONFIG) when the
 # openrouter_cli_config --check auth preflight finds OPENROUTER_API_KEY
 # missing (the Ollama shape - a static key, no expiry read). Scoped by
@@ -668,7 +668,7 @@ HUMMIN_USAGE_DATA_DIR = os.environ.get("ROBOCO_HUMMIN_USAGE_DIR", "/data/hummin-
 
 # A one-shot hummin container exits with these SAME codes for the SAME
 # reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -
-# see docker/scripts/hummin-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# see docker/scripts/entrypoints/hummin-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
 # detected Z.ai rate-limit/quota error, 78 (EX_CONFIG) when the auth
 # preflight (hummin auth check --provider zai --json) finds the ZAI_API_KEY
 # missing/invalid. NOTE the hummin-specific trap: --mode json exits 0 even
@@ -681,7 +681,7 @@ _HUMMIN_AUTH_EXIT_CODE = 78
 
 # A one-shot Nebius container exits with these SAME codes for the SAME
 # reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -
-# see docker/scripts/nebius-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# see docker/scripts/entrypoints/nebius-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
 # detected Nebius rate-limit/quota error, 78 (EX_CONFIG) when the
 # nebius_cli_config --check auth preflight finds NEBIUS_API_KEY
 # missing (the Ollama shape - a static key, no expiry read). Scoped by
