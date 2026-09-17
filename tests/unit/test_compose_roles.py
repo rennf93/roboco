@@ -41,16 +41,47 @@ def _role_services(compose: dict[str, Any], role: str) -> list[dict[str, Any]]:
     ]
 
 
-def test_dispatcher_services_never_set_a_loopback_api_url() -> None:
+def test_dispatcher_api_url_never_loopback_and_color_correct() -> None:
+    """2026-09-06 defect one, re-pinned 2026-09-17: setting ROBOCO_API_URL on
+    the dispatcher is now REQUIRED (blue-green) but has two hard invariants.
+    It must never be a loopback address (the original incident: loopback is
+    unreachable from spawned agent containers, so every gateway verb in
+    every agent died with httpx.ConnectError) and, in the blue-green
+    compose, it must name the service's OWN color's dispatcher (a spawned
+    container resolves its generation over the shared docker network; the
+    old non-color name died with the rename). The registry compose keeps
+    the singular name."""
+    own_dispatcher = {
+        "docker-compose.yml": {
+            "dispatcher-blue": "http://roboco-dispatcher-blue:8000",
+            "dispatcher-green": "http://roboco-dispatcher-green:8000",
+        },
+        "docker-compose.registry.yml": {
+            "dispatcher": "http://roboco-orchestrator:8000",
+        },
+    }
     for name in _COMPOSE_FILES:
         compose = yaml.safe_load((_REPO_ROOT / name).read_text())
         dispatchers = _role_services(compose, "dispatcher")
         assert dispatchers, f"{name}: no dispatcher service found"
-        for service in dispatchers:
+        expected_map = own_dispatcher[name]
+        for service_name in expected_map:
+            service = compose["services"][service_name]
             env = service.get("environment") or {}
-            assert "ROBOCO_API_URL" not in env, (
-                f"{name}: a dispatcher service must not set ROBOCO_API_URL - "
-                "_generate_mcp_config hands it to every spawned agent's MCP config"
+            value = str(env.get("ROBOCO_API_URL", ""))
+            assert value, (
+                f"{name}/{service_name}: ROBOCO_API_URL must be set - spawned "
+                "containers resolve their own generation's dispatcher through it"
+            )
+            for banned in ("127.0.0.1", "localhost", "0.0.0.0"):
+                assert banned not in value, (
+                    f"{name}/{service_name}: loopback ROBOCO_API_URL ({value}) - "
+                    "_generate_mcp_config hands it to every spawned agent's "
+                    "MCP config and agents cannot reach the dispatcher's loopback"
+                )
+            expected = expected_map[service_name]
+            assert value == expected, (
+                f"{name}/{service_name}: ROBOCO_API_URL must be {expected}, got {value}"
             )
 
 

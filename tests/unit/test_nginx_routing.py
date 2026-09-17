@@ -10,10 +10,13 @@ routing table so a future edit can't silently regress it back onto
 
 2026-09-17 (blue-green): the conf moved from docker/nginx.conf to
 deploy/nginx.conf and became a template that INCLUDES the color switch —
-front/active-upstreams.conf (host-written by scripts/deploy-nas.sh, mounted
-read-only) carries the color-suffixed `upstream` blocks (roboco_dispatcher /
-roboco_orchestrator / roboco_panel) for whichever color is active. The
-pinned invariants below follow the file.
+front/active-upstreams.conf (host-written atomically by scripts/deploy-nas.sh,
+mounted read-only via the front/ DIRECTORY) holds three `set` directives
+($active_panel / $active_orchestrator / $active_dispatcher) consumed by
+variable proxy_pass targets. With the pinned Docker resolver, names resolve
+at REQUEST time: nginx can never die on "host not found in upstream" when a
+named color is not running (the blue-deploy outage), and a flip is a
+graceful hot reload. The pinned invariants below follow the file.
 """
 
 from __future__ import annotations
@@ -21,30 +24,48 @@ from __future__ import annotations
 from pathlib import Path
 
 _NGINX_CONF = Path(__file__).parents[2] / "deploy" / "nginx.conf"
+_DEPLOY_SCRIPT = Path(__file__).parents[2] / "scripts" / "deploy-nas.sh"
 _DISPATCHER_LOCATIONS = (
     "location /api/orchestrator/",
     "location /api/secretary/live/",
     "location /api/prompter/live/",
 )
+_INCLUDE = "/etc/nginx/front/active-upstreams.conf"
 
 
 def _read_conf() -> str:
     return _NGINX_CONF.read_text()
 
 
-def test_dispatcher_upstream_comes_from_the_active_color_include() -> None:
-    """No inline `upstream roboco_dispatcher` block in the template: the
-    upstream is color-suffixed and lives in front/active-upstreams.conf,
-    which the deploy script writes ONLY for a color whose containers are
-    already up and healthy — so startup name resolution is guaranteed by
-    ordering, and a full host reboot converges via nginx's restart loop.
-    Docker's embedded DNS resolver stays pinned for any per-request
-    resolution the template still does."""
+def test_active_upstreams_come_from_the_front_directory_include() -> None:
+    """No inline `upstream` blocks at all: the active color travels as `set`
+    directives from the front/ directory include, resolved at request time
+    via Docker's embedded DNS resolver. A file bind or an http-level include
+    would regress either the inode trap or the `set` context."""
     conf = _read_conf()
-    assert "upstream roboco_dispatcher {" not in conf
-    assert "upstream roboco_orchestrator {" not in conf
-    assert "include /etc/nginx/active-upstreams.conf;" in conf
+    assert "\nupstream " not in conf, (
+        "no upstream blocks: active color comes from the set-directive include"
+    )
+    assert f"include {_INCLUDE};" in conf
+    # `set` is server-context only: the include must sit inside the server
+    # block (after `server {`, which is the file's only server).
+    assert conf.index("server {") < conf.index(f"include {_INCLUDE};")
     assert "resolver 127.0.0.11" in conf
+
+
+def test_deploy_script_writes_variable_include_atomically() -> None:
+    """The flip file the script writes must define the three variables the
+    template consumes, via an atomic tmp+mv swap (the directory mount only
+    propagates inode swaps, not in-place writes to a file-bound path)."""
+    script = _DEPLOY_SCRIPT.read_text()
+    for var in ("active_panel", "active_orchestrator", "active_dispatcher"):
+        assert f"set \\${var} " in script, f"missing set directive for {var}"
+    assert "mv -f" in script
+    # The flip reloads (graceful) instead of restarting nginx: a restart
+    # drops in-flight requests and is the outage shape that motivated the
+    # variable design.
+    assert "nginx -s reload" in script
+    assert "restart nginx" not in script
 
 
 def test_fleet_owning_locations_proxy_to_dispatcher() -> None:
@@ -54,8 +75,8 @@ def test_fleet_owning_locations_proxy_to_dispatcher() -> None:
         # The location's own block, up to its closing brace.
         block_end = conf.index("}", start)
         block = conf[start:block_end]
-        assert "proxy_pass http://roboco_dispatcher;" in block, (
-            f"{location} must proxy to the dispatcher upstream from the "
+        assert "proxy_pass http://$active_dispatcher;" in block, (
+            f"{location} must proxy to the dispatcher variable from the "
             "active-color include"
         )
 
@@ -71,10 +92,14 @@ def test_dispatcher_locations_precede_generic_api_location() -> None:
         )
 
 
-def test_generic_api_and_websocket_locations_still_proxy_to_orchestrator() -> None:
+def test_generic_api_websocket_and_panel_locations_pin_their_variables() -> None:
     conf = _read_conf()
-    for location in ("location /api/ {", "location /ws/ {"):
+    for location, var in (
+        ("location /api/ {", "proxy_pass http://$active_orchestrator;"),
+        ("location /ws/ {", "proxy_pass http://$active_orchestrator;"),
+        ("location / {", "proxy_pass http://$active_panel;"),
+    ):
         start = conf.index(location)
         block_end = conf.index("}", start)
         block = conf[start:block_end]
-        assert "proxy_pass http://roboco_orchestrator;" in block
+        assert var in block

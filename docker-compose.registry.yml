@@ -641,6 +641,10 @@ services:
       - render
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL handed to every spawned agent's MCP config and
+      # the interactive relay. The singular (non-blue-green) name here; NEVER
+      # loopback (2026-09-06 incident, see above).
+      ROBOCO_API_URL: http://roboco-orchestrator:8000
       ROBOCO_ROLE: dispatcher
     volumes: *orchestrator-volumes
     healthcheck:
