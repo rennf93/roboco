@@ -913,6 +913,12 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL for spawned containers (MCP servers + the live
+      # intake/secretary relay). Per-color: a spawned container must resolve
+      # ITS OWN generation's dispatcher over the shared network (the old
+      # non-color name died with the blue-green rename, 2026-09-17). Never
+      # loopback here (2026-09-06 incident: it flows to every agent).
+      ROBOCO_API_URL: http://roboco-dispatcher-blue:8000
       ROBOCO_ROLE: api
     volumes: *orchestrator-volumes
     healthcheck:
@@ -953,6 +959,8 @@ services:
       - "127.0.0.1:8001:8000"
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL, green's own dispatcher (see orchestrator-blue).
+      ROBOCO_API_URL: http://roboco-dispatcher-green:8000
       ROBOCO_ROLE: api
     volumes: *orchestrator-volumes
     healthcheck:
@@ -993,6 +1001,8 @@ services:
       - render
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL, blue's own dispatcher (see orchestrator-blue).
+      ROBOCO_API_URL: http://roboco-dispatcher-blue:8000
       ROBOCO_ROLE: dispatcher
     volumes: *orchestrator-volumes
     healthcheck:
@@ -1017,6 +1027,8 @@ services:
       - render
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL, green's own dispatcher (see orchestrator-blue).
+      ROBOCO_API_URL: http://roboco-dispatcher-green:8000
       ROBOCO_ROLE: dispatcher
     volumes: *orchestrator-volumes
     healthcheck:
@@ -1147,7 +1159,13 @@ services:
       NGINX_ENVSUBST_FILTER: "^ROBOCO_"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
-      - ./front/active-upstreams.conf:/etc/nginx/active-upstreams.conf:ro
+      # The active-color include is mounted via its DIRECTORY, not as a file
+      # bind: a file bind pins the inode, so a host-side rewrite (or the
+      # deploy script's atomic tmp+mv swap) never reaches the running
+      # container and nginx keeps testing/serving the PREVIOUS color
+      # (2026-09-17 green flip: "host not found in upstream
+      # roboco-panel-blue" after the include already said green).
+      - ./front:/etc/nginx/front:ro
     # NO depends_on: the blue/green services are profile-gated, and nginx
     # must run for BOTH colors. Startup ordering is the deploy script's job
     # (it writes the include and starts front last); on a cold host reboot
