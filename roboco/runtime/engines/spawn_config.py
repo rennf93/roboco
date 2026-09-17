@@ -208,7 +208,9 @@ class SpawnConfigEngine(_Base):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "/app/scripts/hooks/fable-stop-gate-hook.sh subagent",
+                            "command": (
+                                "/app/scripts/hooks/fable-stop-gate-hook.sh subagent"
+                            ),
                         }
                     ]
                 },
@@ -219,7 +221,9 @@ class SpawnConfigEngine(_Base):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "/app/scripts/hooks/fable-bash-discipline-hook.sh",
+                            "command": (
+                                "/app/scripts/hooks/fable-bash-discipline-hook.sh"
+                            ),
                         }
                     ],
                 },
@@ -431,7 +435,9 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/hooks/post-tool-budget-hook.sh",
+                                "command": (
+                                    "/app/scripts/hooks/post-tool-budget-hook.sh"
+                                ),
                             }
                         ],
                     },
