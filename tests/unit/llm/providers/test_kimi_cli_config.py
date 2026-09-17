@@ -89,12 +89,12 @@ def test_kimi_hooks_config_wires_bash_guard_wrapper_no_env_field() -> None:
     # A [[hooks]] entry with an `env` key gets the WHOLE hooks section
     # silently dropped by the CLI (live-verified) — env delivery must ride
     # the wrapper script's own export, never a rendered `env` field.
-    hooks = kc.kimi_hooks_config("/app/scripts/kimi-bash-guard-wrapper.sh")
+    hooks = kc.kimi_hooks_config("/app/scripts/hooks/kimi-bash-guard-wrapper.sh")
     assert len(hooks) == 1
     hook = hooks[0]
     assert hook["event"] == "PreToolUse"
     assert hook["matcher"] == "Bash"
-    assert hook["command"] == "/app/scripts/kimi-bash-guard-wrapper.sh"
+    assert hook["command"] == "/app/scripts/hooks/kimi-bash-guard-wrapper.sh"
     assert "env" not in hook
 
 

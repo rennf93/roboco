@@ -1039,16 +1039,19 @@ async def test_apply_mode_codex_end_to_end_reachable(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["codex", "gemini", "kimi"])
+@pytest.mark.parametrize(
+    "mode,provider_value",
+    [("codex", "openai"), ("gemini", "gemini"), ("kimi", "kimi")],
+)
 @pytest.mark.parametrize("interactive_slug", ["intake-1", "secretary-1"])
-async def test_interactive_agents_exempt_from_delivery_only_global_mode(
-    llm_setup: dict, mode: str, interactive_slug: str
+async def test_interactive_agents_follow_the_fleet_mode(
+    llm_setup: dict, mode: str, provider_value: str, interactive_slug: str
 ) -> None:
-    """A fleet-wide Codex/Gemini/Kimi mode must not capture Intake/Secretary —
-    they have no V1 support on those providers, so the resolver keeps them
-    on the legacy Anthropic path (the completeness-drill gap: previously
-    they resolved to the unsupported provider and the spawn guard left both
-    chats refusing to start after a one-click mode switch)."""
+    """2026-09-17, operator directive: the selected provider powers ALL
+    agents. A fleet-wide Codex/Gemini/Kimi mode now CAPTURES Intake/
+    Secretary (the provider-generic live driver serves them); the resolver
+    must route them onto the mode's provider, never exempt them back to
+    Anthropic."""
     svc = llm_setup["svc"]
     await svc.apply_mode(mode=mode)
 
@@ -1056,7 +1059,7 @@ async def test_interactive_agents_exempt_from_delivery_only_global_mode(
     assert await svc.derive_mode() == mode
 
     route = await svc.resolve_for_agent(interactive_slug)
-    assert route.provider_type == ModelProvider.ANTHROPIC
+    assert route.provider_type.value == provider_value
 
 
 @pytest.mark.asyncio

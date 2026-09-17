@@ -41,7 +41,7 @@ def test_flag_on_ships_doctrine_and_hooks_together() -> None:
     hooks = json.loads(settings_path.read_text())["hooks"]
     assert "# Fable Doctrine" in prompt
     stop_cmds = [h["command"] for g in hooks["Stop"] for h in g["hooks"]]
-    assert "/app/scripts/fable-stop-gate-hook.sh" in stop_cmds
+    assert "/app/scripts/hooks/fable-stop-gate-hook.sh" in stop_cmds
 
 
 def test_flag_off_ships_neither() -> None:

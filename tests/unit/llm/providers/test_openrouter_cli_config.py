@@ -177,12 +177,12 @@ def test_render_mcp_block_empty_servers() -> None:
 
 
 def test_render_bash_guard_plugin_wires_hook_and_blocks_on_deny() -> None:
-    plugin = oc.render_bash_guard_plugin("/app/scripts/bash-guard-hook.sh")
+    plugin = oc.render_bash_guard_plugin("/app/scripts/hooks/bash-guard-hook.sh")
     # The PreToolUse-equivalent hook opencode actually supports.
     assert "tool.execute.before" in plugin
     # The SAME hook script the Claude/grok/kimi paths install, fed the
     # Claude-schema stdin payload the hook parses.
-    assert "/app/scripts/bash-guard-hook.sh" in plugin
+    assert "/app/scripts/hooks/bash-guard-hook.sh" in plugin
     assert "tool_name" in plugin
     assert "tool_input" in plugin
     # Only bash calls reach the hook; a deny (exit 2) blocks via throw.

@@ -24,7 +24,7 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 if TYPE_CHECKING:
     import pytest
 
-_ENTRYPOINT = "/app/scripts/playwright-mcp-entrypoint.sh"
+_ENTRYPOINT = "/app/scripts/entrypoints/playwright-mcp-entrypoint.sh"
 
 
 async def _servers_for(agent_slug: str, task_id: str | None = None) -> dict[str, dict]:
