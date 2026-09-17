@@ -186,12 +186,23 @@ mv -f "front/.active-upstreams.conf.tmp" "$INCLUDE"
 # and abort with traffic untouched.
 if [ "$("${COMPOSE[@]}" ps -q nginx)" != "" ]; then
   if ! "${COMPOSE[@]}" exec -T nginx nginx -t; then
-    if [ -f "$INCLUDE.prev" ]; then
-      echo "[deploy] nginx config test FAILED for $COLOR include; restoring previous color's include" >&2
-      cp "$INCLUDE.prev" "$INCLUDE"
+    # The rendered config inside the container can predate a template update
+    # (envsubst runs only at container start), e.g. the one-time migration to
+    # the set-directive include (2026-09-17). Recreate ONCE to re-render,
+    # then test again before giving up.
+    echo "[deploy] config test failed; recreating nginx once to re-render the template..."
+    "${COMPOSE[@]}" up -d --force-recreate nginx
+    wait_healthy roboco-nginx || true
+    sleep 1
+    if ! "${COMPOSE[@]}" exec -T nginx nginx -t; then
+      if [ -f "$INCLUDE.prev" ]; then
+        echo "[deploy] nginx config test FAILED for $COLOR include; restoring previous color's include" >&2
+        cp "$INCLUDE.prev" "$INCLUDE"
+        "${COMPOSE[@]}" exec -T nginx nginx -s reload 2>/dev/null || true
+      fi
+      echo "[deploy] FATAL: traffic NOT switched. Previous color still serving; investigate the include above." >&2
+      exit 1
     fi
-    echo "[deploy] FATAL: traffic NOT switched. Previous color still serving; investigate the include above." >&2
-    exit 1
   fi
   # Hot reload: new workers pick up $COLOR immediately, old workers drain
   # their in-flight requests against the previous color. No restart, no
