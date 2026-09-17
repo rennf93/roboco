@@ -14,6 +14,7 @@ export const providerKeys = {
   grokKey: () => [...providerKeys.all, "grok-key"] as const,
   openRouterKey: () => [...providerKeys.all, "openrouter-key"] as const,
   zaiKey: () => [...providerKeys.all, "zai-key"] as const,
+  humminKey: () => [...providerKeys.all, "hummin-key"] as const,
   openRouterModels: (query: string) =>
     [...providerKeys.all, "openrouter-models", query] as const,
   nebiusKey: () => [...providerKeys.all, "nebius-key"] as const,
@@ -111,6 +112,14 @@ export function useZaiKey() {
   });
 }
 
+export function useHumminKey() {
+  return useQuery({
+    queryKey: providerKeys.humminKey(),
+    queryFn: () => providersApi.getHumminKey(),
+    staleTime: 60_000,
+  });
+}
+
 export function useSetNebiusKey() {
   const qc = useQueryClient();
   return useMutation({
@@ -129,6 +138,18 @@ export function useSetZaiKey() {
     mutationFn: (apiKey: string) => providersApi.setZaiKey(apiKey),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: providerKeys.zaiKey() });
+      // Applying a mode also reads this so refresh it too.
+      qc.invalidateQueries({ queryKey: providerKeys.mode() });
+    },
+  });
+}
+
+export function useSetHumminKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (apiKey: string) => providersApi.setHumminKey(apiKey),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.humminKey() });
       // Applying a mode also reads this so refresh it too.
       qc.invalidateQueries({ queryKey: providerKeys.mode() });
     },

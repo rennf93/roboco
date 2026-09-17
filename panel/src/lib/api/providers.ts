@@ -67,8 +67,14 @@ export interface SetZaiKeyRequest {
   api_key: string;
 }
 
-/** Payload for setting or clearing the Z.ai API key. */
-export interface SetZaiKeyRequest {
+export interface HumminKeyStatus {
+  has_key: boolean;
+  enabled: boolean;
+}
+
+/** Payload for setting or clearing the hummin provider's Z.ai key (the GLM
+ * Coding Plan credential injected as ZAI_API_KEY at spawn). */
+export interface SetHumminKeyRequest {
   api_key: string;
 }
 
@@ -95,6 +101,7 @@ export type RoutingMode =
   | "openrouter"
   | "nebius"
   | "zai"
+  | "hummin"
   | "mix"
   | "cost_tiered";
 
@@ -251,6 +258,18 @@ export const providersApi = {
     const { data } = await api.put<ZaiKeyStatus>("/providers/zai-key", {
       api_key: apiKey,
     } satisfies SetZaiKeyRequest);
+    return data;
+  },
+
+  getHumminKey: async (): Promise<HumminKeyStatus> => {
+    const { data } = await api.get<HumminKeyStatus>("/providers/hummin-key");
+    return data;
+  },
+
+  setHumminKey: async (apiKey: string): Promise<HumminKeyStatus> => {
+    const { data } = await api.put<HumminKeyStatus>("/providers/hummin-key", {
+      api_key: apiKey,
+    } satisfies SetHumminKeyRequest);
     return data;
   },
 

@@ -335,6 +335,7 @@ class SweepsEngine(_Base):
             ModelProvider.KIMI.value: self._kimi_usage_tokens,
             ModelProvider.OPENROUTER.value: self._openrouter_usage_tokens,
             ModelProvider.NEBIUS.value: self._nebius_usage_tokens,
+            ModelProvider.HUMMIN.value: self._hummin_usage_tokens,
         }
         read_usage_json = usage_json_readers.get(provider) if provider else None
         if read_usage_json is not None:

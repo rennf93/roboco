@@ -252,6 +252,18 @@ class ModelProvider(StrEnum):
     `ANTHROPIC_AUTH_TOKEN` injected from the provider row at spawn (the
     OLLAMA_CLOUD shape, not a dedicated provider class). The key is set via
     PUT /providers/zai-key.
+
+    `HUMMIN` is the GLM-native `hummin` CLI (a pi-harness fork) running
+    headless in Docker — the go-to for the GLM family. Auth is key-based
+    (OpenRouter shape): the operator's Z.ai key for the GLM Coding Plan is
+    stored Fernet-encrypted via PUT /providers/hummin-key and injected as
+    `ZAI_API_KEY` at spawn — no credential mount. Routes through a dedicated
+    provider (roboco.llm.providers.hummin.HumminCliProvider) speaking
+    hummin's native `--mode json` protocol, never ANTHROPIC_BASE_URL
+    injection. GLM catalog entries (glm-5.3, glm-5.3-flash,
+    glm-5.3-highspeed) route here; the ZAI Anthropic-protocol path stays
+    enabled as a manual fallback. One-shot delivery roles only — no
+    interactive intake/secretary support.
     """
 
     ANTHROPIC = "anthropic"
@@ -264,6 +276,7 @@ class ModelProvider(StrEnum):
     OPENROUTER = "openrouter"
     NEBIUS = "nebius"
     ZAI = "zai"
+    HUMMIN = "hummin"
 
 
 class AssignmentScope(StrEnum):

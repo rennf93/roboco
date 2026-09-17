@@ -141,14 +141,20 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
         ModelProvider.NEBIUS,
         "Nemotron 3.5 Lightning",
     ),
-    # --- ZAI (Z.ai, Anthropic-protocol) ---
-    # Routes to the ZAI provider row → built-in Claude Code spawn with
-    # ANTHROPIC_BASE_URL/AUTH_TOKEN injected at spawn (the OLLAMA_CLOUD
-    # shape). Endpoint: https://api.z.ai/api/anthropic. The key is set via
-    # PUT /providers/zai-key. No _PRICING rows (Z.ai bills via subscription
-    # + API credits) - same cost-tier ceiling as OpenRouter.
-    CatalogEntry("glm-5.3", ModelProvider.ZAI, "GLM 5.3"),
-    CatalogEntry("glm-5.3-flash", ModelProvider.ZAI, "GLM 5.3 Flash"),
+    # --- HUMMIN (GLM-native hummin CLI, the GLM go-to) ---
+    # Routes to the HUMMIN provider → HumminCliProvider spawn (the GLM
+    # Coding Plan endpoint inside hummin, key injected as ZAI_API_KEY). The
+    # key is set via PUT /providers/hummin-key. Re-pointed from ZAI
+    # (2026-09-17): the hummin CLI is the go-to GLM runtime, while the ZAI
+    # Anthropic-protocol path stays enabled as a manual fallback (no ZAI
+    # catalog entries remain). glm-5.3:cloud / glm-5.3-flash:cloud stay on
+    # OLLAMA_CLOUD (subscription-billed, different endpoint + billing).
+    # glm-5.3-highspeed is the latency-optimized tier. No _PRICING row for
+    # the highspeed id yet — calculate_cost falls back to the glm-5.3 rates
+    # (over-attribution, the safe direction) until a published rate lands.
+    CatalogEntry("glm-5.3", ModelProvider.HUMMIN, "GLM 5.3"),
+    CatalogEntry("glm-5.3-flash", ModelProvider.HUMMIN, "GLM 5.3 Flash"),
+    CatalogEntry("glm-5.3-highspeed", ModelProvider.HUMMIN, "GLM 5.3 Highspeed"),
 )
 
 

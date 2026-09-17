@@ -221,6 +221,37 @@ class InteractiveSessionsEngine(_Base):
             )
 
     @staticmethod
+    def _hummin_usage_dir(agent_id: str) -> Path:
+        """Per-agent hummin usage dir under :meth:`_hummin_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_hummin_usage_dir``) and the finalize read side
+        (``_hummin_usage_json``), mirroring ``_kimi_usage_dir``.
+        """
+        return AgentOrchestrator._hummin_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_hummin_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's hummin usage dir (world-writable) before the mount.
+
+        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._hummin_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create hummin usage dir; hummin agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
     def _openrouter_usage_root() -> Path:
         """The base dir all per-agent openrouter usage dirs live under (no agent id).
 

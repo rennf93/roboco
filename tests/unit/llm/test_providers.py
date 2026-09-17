@@ -21,6 +21,7 @@ from roboco.llm.providers import (
     ClaudeCodeProvider,
     CodexCliProvider,
     GrokCliProvider,
+    HumminCliProvider,
     KimiCliProvider,
     ProviderError,
     ProviderNotRegisteredError,
@@ -111,6 +112,9 @@ class _FakeHost:
     def _ensure_kimi_usage_dir(self, agent_id: str) -> None:
         self.data_dirs_ensured.append(agent_id)
 
+    def _ensure_hummin_usage_dir(self, agent_id: str) -> None:
+        self.data_dirs_ensured.append(agent_id)
+
     def _resolve_host_paths(
         self, config: OrchestratorAgentConfig, agent_settings_path: Path | None
     ) -> dict[str, str | None]:
@@ -122,6 +126,7 @@ class _FakeHost:
             "grok_usage": f"/host/data/grok-usage/{config.agent_id}",
             "codex_usage": f"/host/data/codex-usage/{config.agent_id}",
             "kimi_usage": f"/host/data/kimi-usage/{config.agent_id}",
+            "hummin_usage": f"/host/data/hummin-usage/{config.agent_id}",
         }
 
     def _build_mount_args(
@@ -713,6 +718,151 @@ async def test_kimi_spawn_raises_on_docker_failure() -> None:
         pytest.raises(ProviderError, match="boom"),
     ):
         await provider.spawn(_kimi_config())
+
+
+# ---------------------------------------------------------------------------
+# HumminCliProvider
+# ---------------------------------------------------------------------------
+
+
+def _hummin_config(
+    *,
+    agent_id: str = "be-dev-1",
+    provider_auth_token: str | None = "zk-stored-key",
+    mcp_config_path: Path | None = Path("/host/mcp-configs/be-dev-1.json"),
+) -> OrchestratorAgentConfig:
+    return OrchestratorAgentConfig(
+        agent_id=agent_id,
+        blueprint_path=Path("/app/system-prompt.md"),
+        model="glm-5.3",
+        mcp_config_path=mcp_config_path,
+        claude_session_id="sess-1",
+        provider_type="hummin",
+        provider_base_url=None,
+        provider_auth_token=provider_auth_token,
+    )
+
+
+async def test_hummin_spawn_requires_mcp_config() -> None:
+    provider = HumminCliProvider(_FakeHost())
+    with pytest.raises(ProviderError, match="MCP config"):
+        await provider.spawn(_hummin_config(mcp_config_path=None))
+
+
+async def test_hummin_spawn_injects_zai_key_and_no_anthropic_leak() -> None:
+    host = _FakeHost()
+    provider = HumminCliProvider(host, image="roboco-agent-hummin:test")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_hummin_config(), initial_prompt="do the work")
+    cmd = list(exec_mock.call_args.args)
+    # The stored provider key rides as ZAI_API_KEY (the GLM Coding Plan
+    # credential) — never as an Anthropic var.
+    assert "ZAI_API_KEY=zk-stored-key" in cmd
+    assert not any(c.startswith("ANTHROPIC_BASE_URL=") for c in cmd)
+    assert not any(c.startswith("ANTHROPIC_AUTH_TOKEN=") for c in cmd)
+    # The routing fields are blanked before the shared assembly so the
+    # endpoint never leaks as ANTHROPIC_*.
+    assert host.mount_config is not None
+    assert host.mount_config.provider_base_url is None
+    assert host.mount_config.provider_auth_token is None
+
+
+async def test_hummin_spawn_wires_gateway_env_and_image_last() -> None:
+    host = _FakeHost()
+    provider = HumminCliProvider(host, image="roboco-agent-hummin:test")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        result = await provider.spawn(_hummin_config())
+    cmd = list(exec_mock.call_args.args)
+    assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
+    assert "ROBOCO_AGENT_ID=be-dev-1" in cmd
+    # BARE zai-catalog model id — the entrypoint prefixes it as zai/<id>.
+    assert "ROBOCO_AGENT_MODEL=glm-5.3" in cmd
+    # Memory isolation: hummin's memory extension must never run in a
+    # RoboCo agent container.
+    assert "HUMMIN_MEMORY=0" in cmd
+    # Usage capture: per-agent data dir mounted + the entrypoint's usage file.
+    assert host.data_dirs_ensured == ["be-dev-1"]
+    assert "/host/data/hummin-usage/be-dev-1:/home/agent/.hummin-usage" in cmd
+    assert "ROBOCO_HUMMIN_USAGE_FILE=/home/agent/.hummin-usage/usage.json" in cmd
+    assert "ROBOCO_AGENT_TOKEN=hmac-be-dev-1" in cmd
+    assert cmd[-1] == "roboco-agent-hummin:test"
+    assert host.removed == ["roboco-agent-be-dev-1"]
+    assert host.remove_stop_reasons == ["pre_spawn_stale_clear"]
+    assert result == SpawnResult(
+        instance_id="roboco-agent-be-dev-1",
+        extra={"container_id": "cid", "model": "glm-5.3"},
+    )
+
+
+async def test_hummin_spawn_no_auth_mount() -> None:
+    # Key-based auth (the OpenRouter shape): NO ~/.hummin credential mount,
+    # unlike kimi's shared RW mount.
+    host = _FakeHost()
+    provider = HumminCliProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_hummin_config())
+    cmd = list(exec_mock.call_args.args)
+    assert not any("/home/agent/.hummin-auth" in c for c in cmd)
+    assert not any("/home/agent/.kimi-code-auth" in c for c in cmd)
+
+
+async def test_hummin_spawn_warns_when_no_key_anywhere(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    caplog.set_level("WARNING", logger="roboco.llm.providers.hummin")
+    host = _FakeHost()
+    provider = HumminCliProvider(host)
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())):
+        await provider.spawn(_hummin_config(provider_auth_token=None))
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "expected a spawn-time WARNING for the missing key"
+    assert "hummin-key" in warnings[0].getMessage()
+
+
+async def test_hummin_spawn_env_key_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ZAI_API_KEY", "zk-env-fallback")
+    host = _FakeHost()
+    provider = HumminCliProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_hummin_config(provider_auth_token=None))
+    cmd = list(exec_mock.call_args.args)
+    assert "ZAI_API_KEY=zk-env-fallback" in cmd
+
+
+async def test_hummin_spawn_prompt_is_injection_safe() -> None:
+    host = _FakeHost()
+    provider = HumminCliProvider(host)
+    nasty = "--model evil --session-id pwned"
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_hummin_config(), initial_prompt=nasty)
+    cmd = list(exec_mock.call_args.args)
+    assert f"ROBOCO_INITIAL_PROMPT={nasty}" in cmd
+    assert nasty not in cmd
+
+
+async def test_hummin_spawn_raises_on_docker_failure() -> None:
+    provider = HumminCliProvider(_FakeHost())
+    with (
+        patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(return_value=_proc(returncode=1, stderr=b"boom")),
+        ),
+        pytest.raises(ProviderError, match="boom"),
+    ):
+        await provider.spawn(_hummin_config())
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,8 @@ import {
   useSetOpenRouterKey,
   useZaiKey,
   useSetZaiKey,
+  useHumminKey,
+  useSetHumminKey,
 } from "@/hooks/use-providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -322,6 +324,103 @@ export function ZaiProviderKeyRow() {
           Unlocks the GLM 5.3 family via Z.ai&apos;s Anthropic-compatible
           endpoint, billed by your Z.ai subscription or API credits. Stored
           Fernet-encrypted server-side; never returned by the API.
+        </p>
+      )}
+    </section>
+  );
+}
+
+export function HumminProviderKeyRow() {
+  const { data: keyStatus } = useHumminKey();
+  const setKeyMut = useSetHumminKey();
+
+  const hasKey = !!keyStatus?.has_key;
+  const [apiKey, setApiKey] = useState("");
+  const [clearKey, setClearKey] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = async () => {
+    setSaved(false);
+    try {
+      if (clearKey) {
+        await setKeyMut.mutateAsync("");
+        toast.success("hummin key cleared");
+        setSaved(true);
+      } else {
+        if (!apiKey.trim()) {
+          toast.error("Enter a key first");
+          return;
+        }
+        await setKeyMut.mutateAsync(apiKey);
+        toast.success("hummin key saved");
+        setSaved(true);
+      }
+      setApiKey("");
+      setClearKey(false);
+    } catch (e) {
+      toast.error("Save failed: " + errMsg(e));
+    }
+  };
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between">
+        <HelpTip label="Stored encrypted server-side; never displayed once saved.">
+          <Label className="text-sm font-medium">hummin (GLM Coding Plan) key</Label>
+        </HelpTip>
+        {hasKey ? (
+          <HelpTip label="Enables the hummin mode button and the GLM entries in the model picker below.">
+            <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+              <KeyRound className="h-3 w-3" /> key set
+            </Badge>
+          </HelpTip>
+        ) : (
+          <HelpTip label="Required before any agent can route to a GLM model via the hummin CLI.">
+            <Badge className="bg-amber-500/10 text-amber-600 border-0">
+              <Key className="h-3 w-3" /> not set
+            </Badge>
+          </HelpTip>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Input
+          type="password"
+          value={apiKey}
+          onChange={(e) => {
+            setApiKey(e.target.value);
+            setSaved(false);
+          }}
+          placeholder={hasKey ? "Replace key" : "sk-..."}
+          disabled={clearKey || setKeyMut.isPending}
+        />
+        <Button onClick={handleSave} disabled={setKeyMut.isPending}>
+          {setKeyMut.isPending ? "Saving…" : "Save"}
+        </Button>
+        {saved && !setKeyMut.isPending && (
+          <Badge className="bg-emerald-500/10 text-emerald-600 border-0 self-center">
+            <Check className="h-3 w-3" /> Saved
+          </Badge>
+        )}
+      </div>
+      {hasKey ? (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+          <Checkbox
+            checked={clearKey}
+            onCheckedChange={(checked: boolean) => {
+              const next = checked === true;
+              setClearKey(next);
+              if (next) setApiKey("");
+              setSaved(false);
+            }}
+          />
+          Clear the stored key
+        </label>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Your Z.ai key for the GLM Coding Plan — the GLM go-to (the hummin
+          CLI injects it as ZAI_API_KEY at spawn). Independent of the ZAI
+          row&apos;s key on purpose. Stored Fernet-encrypted server-side;
+          never returned by the API.
         </p>
       )}
     </section>

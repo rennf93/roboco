@@ -437,6 +437,7 @@ _INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
     ModelProvider.KIMI,
     ModelProvider.OPENROUTER,
     ModelProvider.NEBIUS,
+    ModelProvider.HUMMIN,
 )
 
 
@@ -662,6 +663,25 @@ _OPENROUTER_AUTH_EXIT_CODE = 78
 # shape). Nebius usage is captured from the opencode --format json stream
 # (see roboco.llm.providers.nebius_cli_usage).
 NEBIUS_USAGE_DATA_DIR = os.environ.get("ROBOCO_NEBIUS_USAGE_DIR", "/data/nebius-usage")
+
+# In-orchestrator path where each HUMMIN agent's usage capture is visible
+# - the hummin analogue of KIMI_USAGE_DATA_DIR (see there for the mount
+# shape). Hummin usage is scraped from the tee'd `--mode json` run log
+# (see roboco.llm.providers.hummin_cli_usage).
+HUMMIN_USAGE_DATA_DIR = os.environ.get("ROBOCO_HUMMIN_USAGE_DIR", "/data/hummin-usage")
+
+# A one-shot hummin container exits with these SAME codes for the SAME
+# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -
+# see docker/scripts/hummin-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected Z.ai rate-limit/quota error, 78 (EX_CONFIG) when the auth
+# preflight (hummin auth check --provider zai --json) finds the ZAI_API_KEY
+# missing/invalid. NOTE the hummin-specific trap: --mode json exits 0 even
+# when the assistant errored - the entrypoint branches on the sniff result,
+# never the raw exit code alone (see hummin_cli_sniff). Numeric reuse of the
+# shared 75/78 codes is fine - the checks are scoped by provider_type
+# (ModelProvider.HUMMIN), never by exit code alone.
+_HUMMIN_RATE_LIMIT_EXIT_CODE = 75
+_HUMMIN_AUTH_EXIT_CODE = 78
 
 # A one-shot Nebius container exits with these SAME codes for the SAME
 # reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -
@@ -1654,6 +1674,14 @@ class AgentOrchestrator(
         )
         self._nebius_auth_retry_after_s: float = (
             settings.nebius_auth_retry_after_seconds
+        )
+        # Configurable retry_after base for HUMMIN parks (kimi's tunable
+        # pattern; the Settings fields land with the provider).
+        self._hummin_rate_limit_retry_after_s: float = (
+            settings.hummin_rate_limit_retry_after_seconds
+        )
+        self._hummin_auth_retry_after_s: float = (
+            settings.hummin_auth_retry_after_seconds
         )
 
     def _init_engine_loop_task_slots(self) -> None:

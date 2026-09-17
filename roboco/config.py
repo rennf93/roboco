@@ -2271,6 +2271,49 @@ class Settings(BaseSettings):
             "ROBOCO_KIMI_MAX_CONCURRENT only if you understand that risk"
         ),
     )
+    # The hummin CLI model id passed at spawn (`hummin --mode json --model
+    # zai/<id>`). Bare zai-catalog id — the entrypoint prefixes the provider.
+    # See roboco.llm.providers.hummin for the no-MCP V1 caveats.
+    hummin_cli_model: str = Field(
+        default="glm-5.3",
+        description=(
+            "hummin CLI model id passed to `hummin --mode json --model zai/<id>`; "
+            "override via ROBOCO_HUMMIN_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the HUMMIN provider (kimi's tunable
+    # Settings pattern). Flat retry_after (no repark backoff bookkeeping —
+    # add it only if hummin is observed re-parking in a tight cycle).
+    hummin_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the HUMMIN provider on a "
+            "Z.ai quota/rate-limit exit; override via "
+            "ROBOCO_HUMMIN_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    hummin_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the HUMMIN provider on a "
+            "missing/invalid Z.ai key (entrypoint preflight exit 78); "
+            "override via ROBOCO_HUMMIN_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
+    # No OAuth chain to protect (unlike kimi's shared refresh-token mount) —
+    # hummin auth is a static per-spawn env key. Uncapped by default; set a
+    # cap only if Z.ai throttles the GLM Coding Plan account in practice.
+    hummin_max_concurrent: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Max concurrent live HUMMIN agent containers (None = uncapped). "
+            "Override via ROBOCO_HUMMIN_MAX_CONCURRENT only if Z.ai throttles "
+            "the account in practice"
+        ),
+    )
     # OpenRouter — the Ollama shape, not Grok. A static metered API key
     # injected via env (OPENROUTER_API_KEY + OPENROUTER_BASE_URL), no ~/. auth
     # mount and no refresh loop (see roboco.llm.providers.openrouter). The

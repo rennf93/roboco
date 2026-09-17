@@ -124,6 +124,24 @@ class SetZaiKeyRequest(BaseModel):
     api_key: str = Field(default="")
 
 
+class HumminKeyStatus(BaseModel):
+    """Whether the hummin provider has a stored key."""
+
+    has_key: bool
+    enabled: bool
+
+
+class SetHumminKeyRequest(BaseModel):
+    """Set or clear the hummin provider's Z.ai key (the GLM Coding Plan
+    credential, injected as ZAI_API_KEY at spawn).
+
+    Pass an empty string to clear. Pass a non-empty string to save
+    (encrypted with Fernet) and mark the hummin provider enabled.
+    """
+
+    api_key: str = Field(default="")
+
+
 class OpenRouterModelEntry(BaseModel):
     """One model available on OpenRouter's live catalog.
 
@@ -283,6 +301,14 @@ class ApplyModeRequest(BaseModel):
       provider_type_override since OpenRouter models are not in the static
       catalog. Requires the OpenRouter API key to be set first (PUT
       /providers/openrouter-key).
+    - mode="zai": clear every assignment; force-enable the ZAI provider;
+      set GLOBAL default to `default_model` (default glm-5.3-flash).
+      Requires the Z.ai key (PUT /providers/zai-key).
+    - mode="hummin": clear every assignment; force-enable the HUMMIN
+      provider; set GLOBAL default to `default_model` (default
+      settings.hummin_cli_model, a GLM id). No key check at mode-apply time
+      (the openrouter precedent — the spawn-time preflight is the gate:
+      a missing ZAI_API_KEY exits the container 78 and parks the provider).
     - mode="mix": clear existing per-agent pins; upsert the `per_agent`
       map verbatim. Role + GLOBAL rows are left untouched so the user can
       layer with an existing partial setup. Self-hosted model names in
@@ -306,6 +332,7 @@ class ApplyModeRequest(BaseModel):
         "openrouter",
         "nebius",
         "zai",
+        "hummin",
         "ollama",
         "mix",
         "self_hosted",
@@ -327,6 +354,7 @@ class ModeResponse(BaseModel):
         "openrouter",
         "nebius",
         "zai",
+        "hummin",
         "ollama",
         "mix",
         "self_hosted",
@@ -404,6 +432,7 @@ class RoutingPresetApplyResponse(BaseModel):
         "openrouter",
         "nebius",
         "zai",
+        "hummin",
         "ollama",
         "mix",
         "self_hosted",

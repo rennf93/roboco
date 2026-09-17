@@ -830,6 +830,8 @@ class SpawnLaunchEngine(_Base):
                 ),
                 # Per-agent nebius usage dir (NEBIUS only); same shape.
                 "nebius_usage": f"{DATA_HOST_PATH}/nebius-usage/{config.agent_id}",
+                # Per-agent hummin usage dir (HUMMIN only); same shape.
+                "hummin_usage": f"{DATA_HOST_PATH}/hummin-usage/{config.agent_id}",
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -868,6 +870,9 @@ class SpawnLaunchEngine(_Base):
             ),
             "nebius_usage": str(
                 Path(tempfile.gettempdir()) / "roboco-nebius-usage" / config.agent_id
+            ),
+            "hummin_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-hummin-usage" / config.agent_id
             ),
             "prompt": str(
                 Path(tempfile.gettempdir())
@@ -1235,16 +1240,20 @@ class SpawnLaunchEngine(_Base):
         roboco.llm.providers.kimi for the V1 scope), OPENROUTER (any
         OpenRouter model via the opencode CLI, the Ollama shape — static key
         via env, no auth mount; one-shot delivery roles only — see
-        roboco.llm.providers.openrouter for the V1 scope), and NEBIUS
+        roboco.llm.providers.openrouter for the V1 scope), NEBIUS
         (Nebius Token Factory open models - NVIDIA Nemotron et al. - via the
         opencode CLI, the same Ollama shape; one-shot delivery roles only -
-        see roboco.llm.providers.nebius for the V1 scope).
+        see roboco.llm.providers.nebius for the V1 scope), and HUMMIN (the
+        GLM family via the GLM-native hummin CLI, key-injected as ZAI_API_KEY
+        - the OpenRouter auth shape on the kimi spawn flow; one-shot delivery
+        roles only - see roboco.llm.providers.hummin for the V1 scope).
         """
         if self._provider_registry is None:
             from roboco.llm.providers import (
                 CodexCliProvider,
                 GeminiCliProvider,
                 GrokCliProvider,
+                HumminCliProvider,
                 KimiCliProvider,
                 NebiusProvider,
                 OpenRouterProvider,
@@ -1285,6 +1294,12 @@ class SpawnLaunchEngine(_Base):
             registry.register(
                 ModelProvider.NEBIUS,
                 NebiusProvider(self, image=_qualify_agent_image("roboco-agent-nebius")),
+            )
+            registry.register(
+                ModelProvider.HUMMIN,
+                HumminCliProvider(
+                    self, image=_qualify_agent_image("roboco-agent-hummin")
+                ),
             )
             self._provider_registry = registry
         return self._provider_registry
@@ -1772,13 +1787,17 @@ class SpawnLaunchEngine(_Base):
     def _provider_concurrency_cap(provider_type: str | None) -> int | None:
         """Max concurrent live containers for *provider_type*, or None if uncapped.
 
-        Only KIMI is capped: every Kimi container shares one OAuth
+        KIMI is capped by default: every Kimi container shares one OAuth
         refresh-token chain (see ``settings.kimi_max_concurrent``) — a second
         concurrent container risks forking it and revoking fleet-wide Kimi
-        auth. No other provider has this constraint.
+        auth. HUMMIN defaults to uncapped (a static per-spawn env key — no
+        shared chain to protect); its Settings knob exists only for an
+        operator who observes Z.ai throttling the account.
         """
         if provider_type == ModelProvider.KIMI.value:
             return settings.kimi_max_concurrent
+        if provider_type == ModelProvider.HUMMIN.value:
+            return settings.hummin_max_concurrent
         return None
 
     def _live_provider_instance_count(

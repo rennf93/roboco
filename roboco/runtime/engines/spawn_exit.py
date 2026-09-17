@@ -43,6 +43,8 @@ from roboco.runtime.orchestrator import (
     _GROK_RATE_LIMIT_RETRY_AFTER_S,
     _GROK_REPARK_BACKOFF_CAP,
     _GROK_REPARK_EPISODE_GAP_S,
+    _HUMMIN_AUTH_EXIT_CODE,
+    _HUMMIN_RATE_LIMIT_EXIT_CODE,
     _KIMI_AUTH_EXIT_CODE,
     _KIMI_RATE_LIMIT_EXIT_CODE,
     _NEBIUS_AUTH_EXIT_CODE,
@@ -56,6 +58,7 @@ from roboco.runtime.orchestrator import (
     CODEX_USAGE_DATA_DIR,
     GEMINI_USAGE_DATA_DIR,
     GROK_USAGE_DATA_DIR,
+    HUMMIN_USAGE_DATA_DIR,
     KIMI_USAGE_DATA_DIR,
     PROJECT_HOST_PATH,
     SDK_PORT,
@@ -136,6 +139,16 @@ class SpawnExitEngine(_Base):
         if PROJECT_HOST_PATH:
             return Path(KIMI_USAGE_DATA_DIR)
         return Path(tempfile.gettempdir()) / "roboco-kimi-usage"
+
+    @staticmethod
+    def _hummin_usage_root() -> Path:
+        """The base dir all per-agent hummin usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_kimi_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(HUMMIN_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-hummin-usage"
 
     def _record_expected_stop(self, agent_id: str, reason: str) -> None:
         """Breadcrumb an orchestrator-initiated stop/kill for ``agent_id``.
@@ -554,6 +567,15 @@ class SpawnExitEngine(_Base):
         """
         return self._read_usage_json_contained(self._kimi_usage_root(), agent_id)
 
+    def _hummin_usage_json(self, agent_id: str) -> dict[str, Any] | None:
+        """Read a HUMMIN agent's ``usage.json`` (mirrors ``_kimi_usage_json``).
+
+        Written by the hummin-cli entrypoint (one-shot, post-run) to the
+        per-agent dir under ``_hummin_usage_root``. Returns ``None`` when
+        absent / unreadable.
+        """
+        return self._read_usage_json_contained(self._hummin_usage_root(), agent_id)
+
     def _openrouter_usage_json(self, agent_id: str) -> dict[str, Any] | None:
         """Read an OPENROUTER agent's ``usage.json`` (mirrors ``_kimi_usage_json``).
 
@@ -702,6 +724,51 @@ class SpawnExitEngine(_Base):
         except (TypeError, ValueError):
             return 0
 
+    def _hummin_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+        """A HUMMIN agent's token usage from its ``usage.json``.
+
+        hummin's ``--mode json`` run log carries a real, already-disjoint
+        4-bucket split summed per API call (see ``hummin_cli_usage``), so
+        this returns the genuine tuple instead of folding everything into
+        output (parity with ``_codex_usage_tokens``). A WARNING logs on a
+        missing/zero read (a silent mount/uid failure is otherwise
+        indistinguishable from a genuine zero-cost run).
+        """
+        data = self._hummin_usage_json(agent_id)
+        tokens = (0, 0, 0, 0)
+        if data:
+            try:
+                tokens = (
+                    int(data.get("tokens_input", 0)),
+                    int(data.get("tokens_output", 0)),
+                    int(data.get("tokens_cache_read", 0)),
+                    int(data.get("tokens_cache_write", 0)),
+                )
+            except (TypeError, ValueError):
+                tokens = (0, 0, 0, 0)
+        if not tokens[0] and not tokens[1]:
+            logger.warning(
+                "HUMMIN agent finalized with no readable usage "
+                "(0 tokens / $0) — check the usage dir mount",
+                agent_id=agent_id,
+            )
+        return tokens
+
+    def _hummin_usage_turns(self, agent_id: str) -> int:
+        """A HUMMIN agent's turn count from its ``usage.json`` (0 if none).
+
+        hummin's run log carries one assistant ``message_end`` per API call
+        (see ``hummin_cli_usage``), the same parity ``_codex_usage_turns``
+        has over grok's turn-less usage.json.
+        """
+        data = self._hummin_usage_json(agent_id)
+        if not data:
+            return 0
+        try:
+            return int(data.get("turns", 0))
+        except (TypeError, ValueError):
+            return 0
+
     def _openrouter_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
         """An OPENROUTER agent's token usage from its ``usage.json``.
 
@@ -792,9 +859,9 @@ class SpawnExitEngine(_Base):
     ) -> tuple[int, int, int, int]:
         """Resolve final token counts for a stopping agent.
 
-        For a GROK, OPENAI (codex), GEMINI, or KIMI agent, reads the captured
-        ``usage.json`` (no SDK server / Claude transcript exists for any of
-        them). Otherwise tries the live SDK ``/usage/status`` first; if that
+        For a GROK, OPENAI (codex), GEMINI, KIMI, or HUMMIN agent, reads the
+        captured ``usage.json`` (no SDK server / Claude transcript exists for
+        any of them). Otherwise tries the live SDK ``/usage/status`` first; if that
         misses — the SDK's in-memory counts race container teardown for
         short-lived agents — it falls back to the agent's Claude Code
         transcript, which is durable and mounted into this container. Returns
@@ -815,6 +882,7 @@ class SpawnExitEngine(_Base):
             ModelProvider.KIMI.value: self._kimi_usage_tokens,
             ModelProvider.OPENROUTER.value: self._openrouter_usage_tokens,
             ModelProvider.NEBIUS.value: self._nebius_usage_tokens,
+            ModelProvider.HUMMIN.value: self._hummin_usage_tokens,
         }
         read_usage_json = usage_json_readers.get(provider) if provider else None
         if read_usage_json is not None:
@@ -885,6 +953,8 @@ class SpawnExitEngine(_Base):
             return (self._codex_usage_turns(agent_id), 0)
         if provider == ModelProvider.KIMI.value:
             return (self._kimi_usage_turns(agent_id), 0)
+        if provider == ModelProvider.HUMMIN.value:
+            return (self._hummin_usage_turns(agent_id), 0)
 
         turns = tool_calls = 0
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
@@ -1258,6 +1328,8 @@ class SpawnExitEngine(_Base):
             (self._is_openrouter_auth_exit, self._park_openrouter_auth_unavailable),
             (self._is_nebius_rate_limit_exit, self._park_nebius_rate_limited),
             (self._is_nebius_auth_exit, self._park_nebius_auth_unavailable),
+            (self._is_hummin_rate_limit_exit, self._park_hummin_rate_limited),
+            (self._is_hummin_auth_exit, self._park_hummin_auth_unavailable),
         )
         for is_exit, park in checks:
             if is_exit(instance, exit_code):
@@ -1573,6 +1645,39 @@ class SpawnExitEngine(_Base):
             exit_code == _KIMI_AUTH_EXIT_CODE
             and instance.config is not None
             and instance.config.provider_type == ModelProvider.KIMI.value
+        )
+
+    @staticmethod
+    def _is_hummin_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot hummin container that exited 75 (Z.ai 429/quota).
+
+        hummin's JSON mode exits 0 even on an assistant error, so the
+        ENTRYPOINT sniffs the run log (``hummin_cli_sniff``) and exits 75
+        itself on a rate-limit classification — see
+        ``_HUMMIN_RATE_LIMIT_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _HUMMIN_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.HUMMIN.value
+        )
+
+    @staticmethod
+    def _is_hummin_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot hummin container that exited 78 (key missing/invalid).
+
+        The entrypoint's preflight (``hummin_cli_config --check``, i.e.
+        ``hummin auth check --provider zai --json``) exits 78-mapped on a
+        missing/invalid ZAI_API_KEY — see ``_HUMMIN_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _HUMMIN_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.HUMMIN.value
         )
 
     @staticmethod
@@ -2092,6 +2197,45 @@ class SpawnExitEngine(_Base):
             instance,
             provider=ModelProvider.NEBIUS.value,
             retry_after=getattr(self, "_nebius_auth_retry_after_s", 60.0),
+            kind="auth_missing",
+        )
+
+    async def _park_hummin_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park a hummin agent whose run hit a Z.ai 429/quota (entrypoint exit 75).
+
+        Flat retry_after (no exponential re-park backoff like grok's/gemini's,
+        the codex/kimi simplicity): add backoff bookkeeping if hummin is
+        observed re-parking in a tight cycle in practice. The base is a
+        tunable Setting (kimi's pattern) wired by the orchestrator init;
+        the getattr default keeps the mixin self-sufficient in tests.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.HUMMIN.value,
+            retry_after=getattr(self, "_hummin_rate_limit_retry_after_s", 60.0),
+            kind="rate_limited",
+        )
+
+    async def _park_hummin_auth_unavailable(self, agent_id: str, instance: Any) -> None:
+        """Park a hummin agent whose Z.ai key was missing/invalid (exit 78).
+
+        The Ollama shape: a static per-spawn env key (ZAI_API_KEY), no
+        mount, no refresh loop (see ``_HUMMIN_AUTH_EXIT_CODE`` and
+        ``roboco.llm.providers.hummin``'s module docstring), so a bad or
+        missing key re-parks flat until the operator sets one via the
+        provider-key endpoint - the same park-and-probe shape as the
+        openrouter/nebius auth path.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.HUMMIN.value,
+            retry_after=getattr(self, "_hummin_auth_retry_after_s", 60.0),
             kind="auth_missing",
         )
 

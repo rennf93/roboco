@@ -21,6 +21,7 @@ from roboco.api.schemas.provider import (
     ComplexityOverrideRequest,
     ComplexityOverrideResponse,
     GrokKeyStatus,
+    HumminKeyStatus,
     ModeResponse,
     NebiusKeyStatus,
     OllamaKeyStatus,
@@ -34,6 +35,7 @@ from roboco.api.schemas.provider import (
     SelfHostedModelEntry,
     SelfHostedTestResponse,
     SetGrokKeyRequest,
+    SetHumminKeyRequest,
     SetNebiusKeyRequest,
     SetOllamaKeyRequest,
     SetOpenRouterKeyRequest,
@@ -330,6 +332,64 @@ async def set_zai_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     await db.commit()
     return ZaiKeyStatus(
+        has_key=bool(provider.auth_token_encrypted),
+        enabled=provider.enabled,
+    )
+
+
+# =============================================================================
+# HUMMIN (GLM Coding Plan) API KEY
+# =============================================================================
+
+
+@router.get("/hummin-key", response_model=HumminKeyStatus)
+async def get_hummin_key_status(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> HumminKeyStatus:
+    """Return whether the hummin provider's Z.ai key is set + enabled."""
+    require_pm_or_above(agent.role, "view the hummin key status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    hummin = next((p for p in providers if p.type == ModelProvider.HUMMIN), None)
+    if hummin is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="hummin provider not seeded. Run alembic upgrade head.",
+        )
+    return HumminKeyStatus(
+        has_key=bool(hummin.auth_token_encrypted),
+        enabled=hummin.enabled,
+    )
+
+
+@router.put("/hummin-key", response_model=HumminKeyStatus)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
+async def set_hummin_key(
+    data: SetHumminKeyRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> HumminKeyStatus:
+    """Set or clear the hummin provider's Z.ai key.
+
+    Empty string → clears and disables the provider. Any other value →
+    Fernet-encrypts + marks enabled. The key is the operator's Z.ai key for
+    the GLM Coding Plan; it rides to the container as ZAI_API_KEY at spawn
+    (see roboco.llm.providers.hummin).
+    """
+    require_pm_or_above(agent.role, "set the hummin key")
+    routing = get_model_routing_service(db)
+    try:
+        provider = await routing.set_hummin_api_key(data.api_key)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+    return HumminKeyStatus(
         has_key=bool(provider.auth_token_encrypted),
         enabled=provider.enabled,
     )

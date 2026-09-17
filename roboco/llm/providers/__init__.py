@@ -28,6 +28,12 @@ Backends:
   Nemotron et al.) via the opencode CLI, behind one metered API key (the
   same Ollama shape; one-shot delivery roles only - see
   :mod:`roboco.llm.providers.nebius` for the V1 scope).
+- :class:`HumminCliProvider` — the GLM family via the GLM-native ``hummin``
+  CLI (pi-harness fork) headless in Docker, behind the operator's Z.ai GLM
+  Coding Plan key injected as ``ZAI_API_KEY`` (the OpenRouter shape — no
+  ``~/.`` auth mount; one-shot delivery roles only — see
+  :mod:`roboco.llm.providers.hummin` for the V1 scope, including the
+  no-MCP gap).
 """
 
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
@@ -35,6 +41,7 @@ from roboco.llm.providers.claude_code import ClaudeCodeProvider
 from roboco.llm.providers.codex import CodexCliProvider
 from roboco.llm.providers.gemini import GeminiCliProvider
 from roboco.llm.providers.grok import GrokCliProvider
+from roboco.llm.providers.hummin import HumminCliProvider
 from roboco.llm.providers.kimi import KimiCliProvider
 from roboco.llm.providers.nebius import NebiusProvider
 from roboco.llm.providers.openrouter import OpenRouterProvider
@@ -46,6 +53,7 @@ __all__ = [
     "CodexCliProvider",
     "GeminiCliProvider",
     "GrokCliProvider",
+    "HumminCliProvider",
     "KimiCliProvider",
     "NebiusProvider",
     "OpenRouterProvider",

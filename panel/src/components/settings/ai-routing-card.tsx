@@ -9,6 +9,7 @@ import {
   useDeleteComplexityOverride,
   useDeletePreset,
   useGrokKey,
+  useHumminKey,
   useNebiusKey,
   useOllamaKey,
   useOpenRouterKey,
@@ -71,6 +72,7 @@ import {
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
 import {
+  HumminProviderKeyRow,
   NebiusProviderKeyRow,
   OpenRouterProviderKeyRow,
   ZaiProviderKeyRow,
@@ -342,6 +344,11 @@ export function AIRoutingCard() {
   // --- Z.ai API key status (key row lives in ZaiProviderKeyRow) ---
   const { data: zaiKeyStatus } = useZaiKey();
   const hasZaiKey = !!zaiKeyStatus?.has_key;
+  // --- hummin (GLM Coding Plan) key status (row lives in
+  // HumminProviderKeyRow) — the ZAI row's key does NOT carry over; the
+  // providers stay independent.
+  const { data: humminKeyStatus } = useHumminKey();
+  const hasHumminKey = !!humminKeyStatus?.has_key;
   const [openRouterModel, setOpenRouterModel] = useState("");
   const [openRouterSearch, setOpenRouterSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -423,6 +430,10 @@ export function AIRoutingCard() {
   const catalogNebiusOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.NEBIUS,
+  );
+  const catalogHumminOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.HUMMIN,
   );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
@@ -620,6 +631,29 @@ export function AIRoutingCard() {
       await applyMode.mutateAsync({ mode: "zai" });
       toast.success(
         "Role/global routing now on Z.ai GLM — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToHummin = async () => {
+    if (!hasHumminKey) {
+      toast.error("Save the hummin (GLM Coding Plan) key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to GLM via the hummin CLI? Per-agent pins and " +
+          "complexity overrides are kept; other role/global assignments " +
+          "are replaced.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "hummin" });
+      toast.success(
+        "Role/global routing now on GLM (hummin) — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -987,6 +1021,26 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
+      {/* hummin (GLM via the GLM-native CLI) models — excluded for the
+          interactive-only group: hummin is one-shot V1 (no interactive
+          Intake/Secretary image), and the server-side interactive guard
+          rejects it anyway. */}
+      {!restrictInteractiveOnly && catalogHumminOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="hummin" />
+            GLM (hummin)
+          </SelectLabel>
+          {catalogHumminOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
       {/* Ollama Cloud models */}
       {catalogOllamaOnly.length > 0 && (
         <SelectGroup>
@@ -1173,6 +1227,10 @@ export function AIRoutingCard() {
 
           {/* -------- Z.ai key -------- */}
           <ZaiProviderKeyRow />
+
+          {/* -------- hummin (GLM Coding Plan) key — independent of the
+             ZAI row's key on purpose (separate providers, separate keys) */}
+          <HumminProviderKeyRow />
         </div>
 
         <Separator />
@@ -1289,6 +1347,19 @@ export function AIRoutingCard() {
               onClick={flipToZai}
               disabled={applyMode.isPending || !hasZaiKey}
               labelHint="Z.ai's Anthropic-compatible endpoint (api.z.ai/api/anthropic) rides the built-in Claude Code spawn — GLM 5.3 / 5.3 Flash injected as ANTHROPIC_BASE_URL at spawn. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
+              icon={<Sparkles className="h-4 w-4" />}
+              label="Hummin (GLM)"
+              description={
+                hasHumminKey
+                  ? "Every agent uses GLM via the hummin CLI."
+                  : "Save the hummin (GLM Coding Plan) key first."
+              }
+              active={currentMode === "hummin"}
+              onClick={flipToHummin}
+              disabled={applyMode.isPending || !hasHumminKey}
+              labelHint="The GLM go-to: the GLM-native hummin CLI headless in Docker, key injected as ZAI_API_KEY. GLM 5.3 / 5.3 Flash / 5.3 Highspeed in the Mix picker. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Server className="h-4 w-4" />}
@@ -1952,7 +2023,8 @@ function ProviderBadge({
     | "nebius"
     | "ollama"
     | "self-hosted"
-    | "openrouter";
+    | "openrouter"
+    | "hummin";
 }) {
   const styles: Record<string, string> = {
     anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
@@ -1964,6 +2036,7 @@ function ProviderBadge({
     kimi: "bg-amber-500/20 text-amber-700 dark:text-amber-400",
     nebius: "bg-lime-500/20 text-lime-700 dark:text-lime-400",
     openrouter: "bg-indigo-500/20 text-indigo-700 dark:text-indigo-400",
+    hummin: "bg-rose-500/20 text-rose-700 dark:text-rose-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
@@ -1975,6 +2048,7 @@ function ProviderBadge({
     kimi: "K",
     nebius: "N",
     openrouter: "OR",
+    hummin: "H",
   };
   return (
     <span

@@ -332,6 +332,8 @@ x-orchestrator-volumes: &orchestrator-volumes
   - ${ROBOCO_DATA_DIR:-./data}/gemini-usage:/data/gemini-usage
   # Per-agent KIMI usage capture — same shape as grok/codex/gemini-usage.
   - ${ROBOCO_DATA_DIR:-./data}/kimi-usage:/data/kimi-usage
+  # Per-agent HUMMIN usage capture — same shape as grok/codex/gemini/kimi-usage.
+  - ${ROBOCO_DATA_DIR:-./data}/hummin-usage:/data/hummin-usage
   # Persistent logs — survive `docker compose down/up`. Orchestrator and
   # each spawned agent write structured logs here so we can audit past
   # runs instead of relying on ephemeral `docker logs`.
@@ -842,6 +844,25 @@ services:
         roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-openrouter
     entrypoint: ["/bin/sh", "-c", 'echo "Agent OpenRouter image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
+  # Agent Hummin Image Builder (GLM family via the GLM-native hummin CLI).
+  # One-shot delivery roles only (V1) — no interactive prompter/secretary
+  # variant exists, contrast the Grok images above. hummin has no MCP client,
+  # so the RoboCo gateway is unreachable from this image in V1 (see
+  # roboco.llm.providers.hummin).
+  # ==========================================================================
+  agent-hummin-image:
+    build:
+      context: .
+      dockerfile: docker/agent-hummin.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
+    image: roboco-agent-hummin
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent hummin image built"']
     restart: "no"
     depends_on:
       - agent-base-image
