@@ -111,15 +111,22 @@ class TestRetiredInteractiveExemptions:
 # ---------------------------------------------------------------------------
 
 
-_ROUTE = SimpleNamespace(
-    provider_type=ModelProvider.HUMMIN,
-    model_name="whatever",
-    base_url=None,
-    auth_token=None,
-)
+_ROUTE_STATE: dict[str, ModelProvider] = {"provider": ModelProvider.HUMMIN}
 
 
-def _mock_live_spawn(orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+async def _route(_aid: str) -> Any:
+    """Route stub: resolves to whatever provider the test staged."""
+    return SimpleNamespace(
+        provider_type=_ROUTE_STATE["provider"],
+        model_name="whatever",
+        base_url=None,
+        auth_token=None,
+    )
+
+
+def _mock_live_spawn(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> list[list[str]]:
     run_calls: list[list[str]] = []
 
     async def _clone(*_a: Any, **_k: Any) -> tuple[str, list[str]]:
@@ -153,24 +160,36 @@ def _mock_live_spawn(orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch) -
     return run_calls
 
 
-async def _route(_aid: str) -> Any:
-    return _ROUTE
-
-
 class TestLiveChatsSpawnOnEveryProvider:
     @pytest.mark.parametrize(
         "provider,image,env_name",
         [
-            (ModelProvider.HUMMIN, "roboco-agent-hummin-live", "ROBOCO_LIVE_PROVIDER=hummin"),
-            (ModelProvider.OPENAI, "roboco-agent-codex-live", "ROBOCO_LIVE_PROVIDER=openai"),
-            (ModelProvider.GEMINI, "roboco-agent-gemini-live", "ROBOCO_LIVE_PROVIDER=gemini"),
+            (
+                ModelProvider.HUMMIN,
+                "roboco-agent-hummin-live",
+                "ROBOCO_LIVE_PROVIDER=hummin",
+            ),
+            (
+                ModelProvider.OPENAI,
+                "roboco-agent-codex-live",
+                "ROBOCO_LIVE_PROVIDER=openai",
+            ),
+            (
+                ModelProvider.GEMINI,
+                "roboco-agent-gemini-live",
+                "ROBOCO_LIVE_PROVIDER=gemini",
+            ),
             (ModelProvider.KIMI, "roboco-agent-kimi-live", "ROBOCO_LIVE_PROVIDER=kimi"),
             (
                 ModelProvider.OPENROUTER,
                 "roboco-agent-openrouter-live",
                 "ROBOCO_LIVE_PROVIDER=openrouter",
             ),
-            (ModelProvider.NEBIUS, "roboco-agent-nebius-live", "ROBOCO_LIVE_PROVIDER=nebius"),
+            (
+                ModelProvider.NEBIUS,
+                "roboco-agent-nebius-live",
+                "ROBOCO_LIVE_PROVIDER=nebius",
+            ),
         ],
     )
     @pytest.mark.asyncio
@@ -181,13 +200,7 @@ class TestLiveChatsSpawnOnEveryProvider:
         image: str,
         env_name: str,
     ) -> None:
-        global _ROUTE
-        _ROUTE = SimpleNamespace(
-            provider_type=provider,
-            model_name="whatever",
-            base_url=None,
-            auth_token=None,
-        )
+        _ROUTE_STATE["provider"] = provider
         orch = _make_minimal_orchestrator()
         run_calls = _mock_live_spawn(orch, monkeypatch)
         monkeypatch.setattr(orch, "_resolve_agent_route", _route)
@@ -195,7 +208,10 @@ class TestLiveChatsSpawnOnEveryProvider:
         registry = prompter_live.get_live_registry()
         registry.open("sess-live-intake", INTAKE_AGENT_ID)
         await orch._spawn_intake_container_guarded(
-            "sess-live-intake", project_slug="roboco", product_id=None, initial_message=None
+            "sess-live-intake",
+            project_slug="roboco",
+            product_id=None,
+            initial_message=None,
         )
 
         assert len(run_calls) == 1
@@ -218,13 +234,7 @@ class TestLiveChatsSpawnOnEveryProvider:
         provider: ModelProvider,
         image: str,
     ) -> None:
-        global _ROUTE
-        _ROUTE = SimpleNamespace(
-            provider_type=provider,
-            model_name="whatever",
-            base_url=None,
-            auth_token=None,
-        )
+        _ROUTE_STATE["provider"] = provider
         orch = _make_minimal_orchestrator()
         run_calls = _mock_live_spawn(orch, monkeypatch)
 
@@ -236,7 +246,9 @@ class TestLiveChatsSpawnOnEveryProvider:
 
         registry = prompter_live.get_live_registry()
         registry.open("sess-live-sec", SECRETARY_AGENT_ID)
-        await orch._spawn_secretary_container_guarded("sess-live-sec", initial_message=None)
+        await orch._spawn_secretary_container_guarded(
+            "sess-live-sec", initial_message=None
+        )
 
         assert len(run_calls) == 1
         cmd = run_calls[0]

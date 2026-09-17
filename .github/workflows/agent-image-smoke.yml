@@ -59,11 +59,13 @@ jobs:
 
       - name: Build "before" images (origin/master baseline)
         run: |
-          mkdir -p /tmp/before
-          git show origin/master:docker/agent-qa-fe.Dockerfile > /tmp/before/agent-qa-fe.Dockerfile
-          git show origin/master:docker/agent-ux.Dockerfile > /tmp/before/agent-ux.Dockerfile
-          docker build -f /tmp/before/agent-qa-fe.Dockerfile -t agent-qa-fe:before .
-          docker build -f /tmp/before/agent-ux.Dockerfile -t agent-ux:before .
+          # Build the baseline from a FULL origin/master checkout, not master
+          # Dockerfiles against this branch's context: a file the reorg moves
+          # (e.g. docker/scripts/ -> entrypoints//hooks/) breaks the checksum
+          # of master's COPY lines when contexts are mixed (2026-09-17).
+          git worktree add /tmp/before-src origin/master
+          docker build -f /tmp/before-src/docker/agent-qa-fe.Dockerfile -t agent-qa-fe:before /tmp/before-src
+          docker build -f /tmp/before-src/docker/agent-ux.Dockerfile -t agent-ux:before /tmp/before-src
 
       - name: Report real before/after image size delta
         run: |
