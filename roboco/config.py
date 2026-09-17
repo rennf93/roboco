@@ -2273,9 +2273,11 @@ class Settings(BaseSettings):
     )
     # The hummin CLI model id passed at spawn (`hummin --mode json --model
     # zai/<id>`). Bare zai-catalog id — the entrypoint prefixes the provider.
-    # See roboco.llm.providers.hummin for the no-MCP V1 caveats.
+    # The `:high` suffix (Z.ai's high-thinking variant) is the operator
+    # default: selecting the Hummin mode lands the fleet on it with no manual
+    # model pick. See roboco.llm.providers.hummin for the no-MCP V1 caveats.
     hummin_cli_model: str = Field(
-        default="glm-5.3",
+        default="glm-5.3-flash:high",
         description=(
             "hummin CLI model id passed to `hummin --mode json --model zai/<id>`; "
             "override via ROBOCO_HUMMIN_CLI_MODEL"

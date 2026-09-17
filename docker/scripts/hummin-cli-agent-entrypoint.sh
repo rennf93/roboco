@@ -81,7 +81,7 @@ ERR_LOG="/tmp/hummin-run.err"
 set +e
 if [ -s "$SYSTEM_PROMPT_FILE" ]; then
   hummin --mode json \
-    --model "zai/${ROBOCO_AGENT_MODEL:-glm-5.3}" \
+    --model "zai/${ROBOCO_AGENT_MODEL:-glm-5.3-flash:high}" \
     --system-prompt "$(cat "$SYSTEM_PROMPT_FILE")" \
     ${ROBOCO_HUMMIN_TOOLS:+--tools "$ROBOCO_HUMMIN_TOOLS"} \
     --no-extensions \
@@ -90,7 +90,7 @@ if [ -s "$SYSTEM_PROMPT_FILE" ]; then
 else
   echo "[hummin] system prompt file missing at ${SYSTEM_PROMPT_FILE} — running on the CLI default prompt." >&2
   hummin --mode json \
-    --model "zai/${ROBOCO_AGENT_MODEL:-glm-5.3}" \
+    --model "zai/${ROBOCO_AGENT_MODEL:-glm-5.3-flash:high}" \
     ${ROBOCO_HUMMIN_TOOLS:+--tools "$ROBOCO_HUMMIN_TOOLS"} \
     --no-extensions \
     -p "${ROBOCO_INITIAL_PROMPT:-}" \

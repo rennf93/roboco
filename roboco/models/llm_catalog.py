@@ -154,6 +154,13 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     # (over-attribution, the safe direction) until a published rate lands.
     CatalogEntry("glm-5.3", ModelProvider.HUMMIN, "GLM 5.3"),
     CatalogEntry("glm-5.3-flash", ModelProvider.HUMMIN, "GLM 5.3 Flash"),
+    # The high-thinking variant of flash: the hummin entrypoint passes the id
+    # verbatim as `--model zai/glm-5.3-flash:high` and Z.ai's catalog resolves
+    # the `:high` suffix server-side. The operator default (the fleet-wide
+    # Hummin mode lands here without any manual model pick).
+    CatalogEntry(
+        "glm-5.3-flash:high", ModelProvider.HUMMIN, "GLM 5.3 Flash (High Thinking)"
+    ),
     CatalogEntry("glm-5.3-highspeed", ModelProvider.HUMMIN, "GLM 5.3 Highspeed"),
 )
 
