@@ -134,11 +134,9 @@ const AGENT_GROUP_DEFS: {
   },
 ];
 
-// Codex/Gemini/Kimi are V1 delivery-roles-only — no interactive Intake/
-// Secretary support (see roboco.llm.providers.codex / .gemini / .kimi). This
-// group's per-agent picker excludes all three providers below instead of
-// offering a route that would silently misroute the persistent Intake/
-// Secretary session at spawn.
+// Every provider powers the interactive Intake/Secretary chats since
+// 2026-09-17 (the provider-generic live driver), so this group's per-agent
+// picker renders the FULL catalog - no exclusions.
 const INTERACTIVE_ONLY_GROUP_TITLE = "Intake / Secretary / PR Review";
 
 // Stable within-group ordering (PM/lead first, devs, QA, doc, reviewer last)
@@ -486,15 +484,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Codex? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Codex has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Codex too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "codex" });
       toast.success(
-        "Role/global routing now on Codex — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Codex, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -506,15 +503,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Gemini? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Gemini has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Gemini too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "gemini" });
       toast.success(
-        "Role/global routing now on Gemini — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Gemini, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -526,15 +522,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Kimi? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Kimi has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Kimi too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "kimi" });
       toast.success(
-        "Role/global routing now on Kimi — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Kimi, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -910,10 +905,10 @@ export function AIRoutingCard() {
   };
 
   // The full per-agent model-picker option list, shared by every group's
-  // Select — factored out so the Codex/Gemini exclusion for the interactive
-  // group (`restrictInteractiveOnly`) doesn't require duplicating the whole
-  // catalog-grouped SelectContent tree.
-  const renderMixSelectOptions = (restrictInteractiveOnly: boolean) => (
+  // Select. `restrictInteractiveOnly` no longer excludes any provider:
+  // since 2026-09-17 every provider powers the interactive chats via the
+  // provider-generic live driver, so every group renders the full catalog.
+  const renderMixSelectOptions = () => (
     <>
       <SelectItem value="__clear__">(inherit global)</SelectItem>
 
@@ -951,8 +946,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Codex (OpenAI) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogOpenaiOnly.length > 0 && (
+      {/* Codex (OpenAI) models */}
+      {catalogOpenaiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="openai" />
@@ -968,8 +963,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Gemini (Google) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogGeminiOnly.length > 0 && (
+      {/* Gemini (Google) models */}
+      {catalogGeminiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="gemini" />
@@ -985,8 +980,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Kimi (Moonshot) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogKimiOnly.length > 0 && (
+      {/* Kimi (Moonshot) models */}
+      {catalogKimiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="kimi" />
@@ -1002,10 +997,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Nebius (Token Factory) models - excluded for the interactive-only
-          group: Nebius is one-shot V1 (no interactive Intake/Secretary
-          image), and the server-side interactive guard rejects it anyway. */}
-      {!restrictInteractiveOnly && catalogNebiusOnly.length > 0 && (
+      {/* Nebius (Token Factory) models */}
+      {catalogNebiusOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="nebius" />
@@ -1021,11 +1014,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* hummin (GLM via the GLM-native CLI) models — excluded for the
-          interactive-only group: hummin is one-shot V1 (no interactive
-          Intake/Secretary image), and the server-side interactive guard
-          rejects it anyway. */}
-      {!restrictInteractiveOnly && catalogHumminOnly.length > 0 && (
+      {/* hummin (GLM via the GLM-native CLI) models */}
+      {catalogHumminOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="hummin" />
@@ -1800,8 +1790,6 @@ export function AIRoutingCard() {
           ) : (
             <div className="divide-y rounded-md border">
               {agentGroups.map((group) => {
-                const restrictInteractiveOnly =
-                  group.title === INTERACTIVE_ONLY_GROUP_TITLE;
                 return (
                   <div key={group.title} className="p-4">
                     <HelpTip label={group.titleHint}>
@@ -1809,13 +1797,6 @@ export function AIRoutingCard() {
                         {group.title}
                       </h4>
                     </HelpTip>
-                    {restrictInteractiveOnly ? (
-                      <p className="mb-2 text-[11px] text-muted-foreground">
-                        Codex, Gemini, Kimi, and Nebius are delivery-roles-only
-                        (V1) — not offered here (no interactive Intake/Secretary
-                        support).
-                      </p>
-                    ) : null}
                     <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
                       {group.agents.map((a) => (
                         <div
@@ -1843,7 +1824,7 @@ export function AIRoutingCard() {
                               <SelectValue placeholder="(inherit)" />
                             </SelectTrigger>
                             <SelectContent>
-                              {renderMixSelectOptions(restrictInteractiveOnly)}
+                              {renderMixSelectOptions()}
                             </SelectContent>
                           </Select>
                         </div>

@@ -1,9 +1,20 @@
-"""Codex (OPENAI), Gemini (GEMINI), Kimi (KIMI), OpenRouter (OPENROUTER), and
-Nebius (NEBIUS) are V1 delivery-roles-only - none has an interactive-session
-driver image (unlike GROK's dedicated GROK_PROMPTER_IMAGE /
-GROK_SECRETARY_IMAGE). Routing any of them to the persistent Intake/Secretary
-agent must refuse loudly instead of silently falling through to the plain
-Claude SDK-driver image with a mismatched provider env.
+"""Interactive intake/secretary honor WHATEVER provider the operator routed.
+
+2026-09-17, operator directive: the selected provider powers ALL agents, not
+just delivery roles. The V1 delivery-only refusal is retired - every provider
+now has an interactive path:
+
+  * anthropic          - the Claude SDK driver images (unchanged)
+  * grok               - the grok CLI session images (unchanged)
+  * hummin/codex/gemini/kimi/openrouter/nebius - the provider-generic live
+    driver (roboco.agent_sdk.live_main) on roboco-agent-<cli>-live images,
+    per-turn headless CLI runs with tools bridged via rendered mcpServers
+    (or the pi extension for hummin)
+
+The resolver's exemption list and the orchestrator's spawn guard are RETIRED
+to empty (parity-pinned below) so no GLOBAL/ROLE row ever bounces a chat
+back to Anthropic; the guard stays wired as the backstop for future
+delivery-only providers.
 """
 
 from __future__ import annotations
@@ -50,11 +61,11 @@ def _fresh_registry() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Unit-level: the pure guard function itself.
+# The retired lists + the pure guard function.
 # ---------------------------------------------------------------------------
 
 
-class TestRejectInteractiveUnsupportedProvider:
+class TestRetiredInteractiveExemptions:
     def test_guard_set_matches_the_resolver_exemption_set(self) -> None:
         """The orchestrator's literal must track the resolver's canonical
         tuple (kept separate to avoid a runtime import cycle)."""
@@ -62,25 +73,15 @@ class TestRejectInteractiveUnsupportedProvider:
             INTERACTIVE_UNSUPPORTED_PROVIDERS
         )
 
-    def test_resolver_slugs_match_the_orchestrator_agent_ids(self) -> None:
-        """The resolver's exemption must cover exactly the two interactive
-        agents the orchestrator spawns — a renamed id would silently
-        un-exempt a chat."""
-        assert set(INTERACTIVE_AGENT_SLUGS) == {INTAKE_AGENT_ID, SECRETARY_AGENT_ID}
+    def test_exemption_lists_are_empty(self) -> None:
+        """No provider is delivery-only anymore: a fleet-wide mode switch
+        must route the chats onto the selected provider, never exempt them
+        back to Anthropic."""
+        assert INTERACTIVE_UNSUPPORTED_PROVIDERS == ()
+        assert _INTERACTIVE_UNSUPPORTED_PROVIDERS == ()
 
-    @pytest.mark.parametrize(
-        "provider",
-        [
-            ModelProvider.OPENAI,
-            ModelProvider.GEMINI,
-            ModelProvider.KIMI,
-            ModelProvider.OPENROUTER,
-            ModelProvider.NEBIUS,
-        ],
-    )
-    def test_raises_for_delivery_only_providers(self, provider: ModelProvider) -> None:
-        with pytest.raises(RuntimeError, match="delivery-roles-only"):
-            _reject_interactive_unsupported_provider(INTAKE_AGENT_ID, provider)
+    def test_resolver_slugs_match_the_orchestrator_agent_ids(self) -> None:
+        assert set(INTERACTIVE_AGENT_SLUGS) == {INTAKE_AGENT_ID, SECRETARY_AGENT_ID}
 
     @pytest.mark.parametrize(
         "provider",
@@ -89,135 +90,156 @@ class TestRejectInteractiveUnsupportedProvider:
             ModelProvider.GROK,
             ModelProvider.OLLAMA_CLOUD,
             ModelProvider.LOCAL,
+            ModelProvider.OPENAI,
+            ModelProvider.GEMINI,
+            ModelProvider.KIMI,
+            ModelProvider.OPENROUTER,
+            ModelProvider.NEBIUS,
+            ModelProvider.HUMMIN,
         ],
     )
-    def test_passes_for_interactive_capable_providers(
+    def test_guard_passes_for_every_current_provider(
         self, provider: ModelProvider
     ) -> None:
+        """With the list retired the guard passes for every provider; it
+        stays wired for future delivery-only additions."""
         _reject_interactive_unsupported_provider(INTAKE_AGENT_ID, provider)  # no raise
 
 
 # ---------------------------------------------------------------------------
-# Intake spawn refusal — surfaces on the relay, container never launched.
+# Live-chat spawns go through on the formerly-refused providers.
 # ---------------------------------------------------------------------------
 
 
-class TestIntakeSpawnRefusesDeliveryOnlyProvider:
+_ROUTE = SimpleNamespace(
+    provider_type=ModelProvider.HUMMIN,
+    model_name="whatever",
+    base_url=None,
+    auth_token=None,
+)
+
+
+def _mock_live_spawn(orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    run_calls: list[list[str]] = []
+
+    async def _clone(*_a: Any, **_k: Any) -> tuple[str, list[str]]:
+        return "/data/workspaces/roboco/board/intake-1", ["/cwd"]
+
+    async def _run(cmd: list[str]) -> str:
+        run_calls.append(cmd)
+        return "containerid0123456789"
+
+    async def _remove(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def _labels(*_a: Any, **_k: Any) -> list[str]:
+        return []
+
+    async def _ensure_live(_image: str) -> None:
+        return None
+
+    monkeypatch.setattr(orch, "_clone_intake_scope", _clone)
+    monkeypatch.setattr(orch, "_run_container_cmd", _run)
+    monkeypatch.setattr(orch, "_remove_container", _remove)
+    monkeypatch.setattr(
+        orch,
+        "_generate_composed_prompt",
+        lambda *_a, **_k: Path("/tmp/p.md"),
+    )
+    monkeypatch.setattr(
+        "roboco.runtime.engines.interactive_sessions.compose_label_args", _labels
+    )
+    monkeypatch.setattr(orch, "_ensure_live_interactive_image", _ensure_live)
+    return run_calls
+
+
+async def _route(_aid: str) -> Any:
+    return _ROUTE
+
+
+class TestLiveChatsSpawnOnEveryProvider:
     @pytest.mark.parametrize(
-        "provider",
+        "provider,image,env_name",
         [
-            ModelProvider.OPENAI,
-            ModelProvider.GEMINI,
-            ModelProvider.KIMI,
-            ModelProvider.OPENROUTER,
-            ModelProvider.NEBIUS,
+            (ModelProvider.HUMMIN, "roboco-agent-hummin-live", "ROBOCO_LIVE_PROVIDER=hummin"),
+            (ModelProvider.OPENAI, "roboco-agent-codex-live", "ROBOCO_LIVE_PROVIDER=openai"),
+            (ModelProvider.GEMINI, "roboco-agent-gemini-live", "ROBOCO_LIVE_PROVIDER=gemini"),
+            (ModelProvider.KIMI, "roboco-agent-kimi-live", "ROBOCO_LIVE_PROVIDER=kimi"),
+            (
+                ModelProvider.OPENROUTER,
+                "roboco-agent-openrouter-live",
+                "ROBOCO_LIVE_PROVIDER=openrouter",
+            ),
+            (ModelProvider.NEBIUS, "roboco-agent-nebius-live", "ROBOCO_LIVE_PROVIDER=nebius"),
         ],
     )
     @pytest.mark.asyncio
-    async def test_refuses_before_any_container_work(
-        self, monkeypatch: pytest.MonkeyPatch, provider: ModelProvider
+    async def test_intake_spawns_the_live_image(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: ModelProvider,
+        image: str,
+        env_name: str,
     ) -> None:
-        orch = _make_minimal_orchestrator()
-
-        async def _clone(*_a: Any, **_k: Any) -> tuple[str, list[str]]:
-            return "/data/workspaces/roboco/board/intake-1", ["/cwd"]
-
-        async def _route(_aid: str) -> Any:
-            return SimpleNamespace(
-                provider_type=provider,
-                model_name="whatever",
-                base_url=None,
-                auth_token=None,
-            )
-
-        run_calls: list[list[str]] = []
-
-        async def _run(cmd: list[str]) -> str:
-            run_calls.append(cmd)
-            return "containerid0123456789"
-
-        monkeypatch.setattr(orch, "_clone_intake_scope", _clone)
-        monkeypatch.setattr(orch, "_resolve_agent_route", _route)
-        monkeypatch.setattr(
-            orch, "_generate_composed_prompt", lambda *_a, **_k: Path("/tmp/p.md")
+        global _ROUTE
+        _ROUTE = SimpleNamespace(
+            provider_type=provider,
+            model_name="whatever",
+            base_url=None,
+            auth_token=None,
         )
-        monkeypatch.setattr(orch, "_run_container_cmd", _run)
+        orch = _make_minimal_orchestrator()
+        run_calls = _mock_live_spawn(orch, monkeypatch)
+        monkeypatch.setattr(orch, "_resolve_agent_route", _route)
 
         registry = prompter_live.get_live_registry()
-        pushed: list[tuple[str, dict[str, Any]]] = []
-        closed: list[str] = []
-        monkeypatch.setattr(registry, "push", lambda sid, ev: pushed.append((sid, ev)))
-        monkeypatch.setattr(registry, "close", closed.append)
-        registry.open("sess-refuse", INTAKE_AGENT_ID)
-
+        registry.open("sess-live-intake", INTAKE_AGENT_ID)
         await orch._spawn_intake_container_guarded(
-            "sess-refuse", project_slug="roboco", product_id=None, initial_message=None
+            "sess-live-intake", project_slug="roboco", product_id=None, initial_message=None
         )
 
-        assert not run_calls  # no container was ever launched
-        assert len(pushed) == 1
-        assert pushed[0][1]["kind"] == "error"
-        assert "delivery-roles-only" in pushed[0][1]["text"]
-        assert closed == ["sess-refuse"]
-        assert INTAKE_AGENT_ID not in orch._instances
+        assert len(run_calls) == 1
+        cmd = run_calls[0]
+        assert cmd[-1] == image
+        assert env_name in cmd
 
-
-# ---------------------------------------------------------------------------
-# Secretary spawn refusal — same shape, same guard.
-# ---------------------------------------------------------------------------
-
-
-class TestSecretarySpawnRefusesDeliveryOnlyProvider:
     @pytest.mark.parametrize(
-        "provider",
+        "provider,image",
         [
-            ModelProvider.OPENAI,
-            ModelProvider.GEMINI,
-            ModelProvider.KIMI,
-            ModelProvider.OPENROUTER,
-            ModelProvider.NEBIUS,
+            (ModelProvider.HUMMIN, "roboco-agent-hummin-live"),
+            (ModelProvider.OPENAI, "roboco-agent-codex-live"),
+            (ModelProvider.OPENROUTER, "roboco-agent-openrouter-live"),
         ],
     )
     @pytest.mark.asyncio
-    async def test_refuses_before_any_container_work(
-        self, monkeypatch: pytest.MonkeyPatch, provider: ModelProvider
+    async def test_secretary_spawns_the_live_image(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: ModelProvider,
+        image: str,
     ) -> None:
+        global _ROUTE
+        _ROUTE = SimpleNamespace(
+            provider_type=provider,
+            model_name="whatever",
+            base_url=None,
+            auth_token=None,
+        )
         orch = _make_minimal_orchestrator()
+        run_calls = _mock_live_spawn(orch, monkeypatch)
 
-        async def _route(_aid: str) -> Any:
-            return SimpleNamespace(
-                provider_type=provider,
-                model_name="whatever",
-                base_url=None,
-                auth_token=None,
-            )
-
-        run_calls: list[list[str]] = []
-
-        async def _run(cmd: list[str]) -> str:
-            run_calls.append(cmd)
-            return "containerid0123456789"
+        async def _no_prompt(*_a: Any, **_k: Any) -> str:
+            return "prompt"
 
         monkeypatch.setattr(orch, "_resolve_agent_route", _route)
-        monkeypatch.setattr(
-            orch, "_generate_composed_prompt", lambda *_a, **_k: Path("/tmp/p.md")
-        )
-        monkeypatch.setattr(orch, "_run_container_cmd", _run)
+        monkeypatch.setattr(orch, "_generate_composed_prompt", _no_prompt)
 
         registry = prompter_live.get_live_registry()
-        pushed: list[tuple[str, dict[str, Any]]] = []
-        closed: list[str] = []
-        monkeypatch.setattr(registry, "push", lambda sid, ev: pushed.append((sid, ev)))
-        monkeypatch.setattr(registry, "close", closed.append)
-        registry.open("sess-sec-refuse", SECRETARY_AGENT_ID)
+        registry.open("sess-live-sec", SECRETARY_AGENT_ID)
+        await orch._spawn_secretary_container_guarded("sess-live-sec", initial_message=None)
 
-        await orch._spawn_secretary_container_guarded(
-            "sess-sec-refuse", initial_message=None
-        )
-
-        assert not run_calls  # no container was ever launched
-        assert len(pushed) == 1
-        assert pushed[0][1]["kind"] == "error"
-        assert "delivery-roles-only" in pushed[0][1]["text"]
-        assert closed == ["sess-sec-refuse"]
-        assert SECRETARY_AGENT_ID not in orch._instances
+        assert len(run_calls) == 1
+        cmd = run_calls[0]
+        assert cmd[-1] == image
+        assert "ROBOCO_LIVE_PROVIDER=" + provider.value in cmd
+        assert SECRETARY_AGENT_ID in orch._instances

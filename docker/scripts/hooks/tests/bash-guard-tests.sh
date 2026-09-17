@@ -5,13 +5,13 @@
 # Code uses) and asserts the expected exit code.
 #
 # Run:
-#   bash docker/scripts/tests/bash-guard-tests.sh
+#   bash docker/scripts/hooks/tests/bash-guard-tests.sh
 #
 # Exit 0 on full pass, 1 on any failure.
 
 set -u
 
-HOOK="$(cd "$(dirname "$0")/.." && pwd)/bash-guard-hook.sh"
+HOOK="$(cd "$(dirname "$0")/../.." && pwd)/hooks/bash-guard-hook.sh"
 if [[ ! -x "$HOOK" ]]; then
     # chmod may not have been applied in the dev checkout — run via bash.
     HOOK="bash $HOOK"

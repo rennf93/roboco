@@ -133,6 +133,14 @@ class SpawnLaunchEngine(_Base):
                     "roboco-agent-prompter": "agent-prompter.Dockerfile",
                     "roboco-agent-secretary": "agent-secretary.Dockerfile",
                     "roboco-agent-pr-reviewer": "agent-pr-reviewer.Dockerfile",
+                    # Provider-generic live-chat images (interactive
+                    # intake/secretary on every routed provider).
+                    "roboco-agent-hummin-live": "agent-hummin-live.Dockerfile",
+                    "roboco-agent-codex-live": "agent-codex-live.Dockerfile",
+                    "roboco-agent-gemini-live": "agent-gemini-live.Dockerfile",
+                    "roboco-agent-kimi-live": "agent-kimi-live.Dockerfile",
+                    "roboco-agent-openrouter-live": "agent-openrouter-live.Dockerfile",
+                    "roboco-agent-nebius-live": "agent-nebius-live.Dockerfile",
                 }
                 dockerfile = dockerfile_map.get(bare)
                 if dockerfile:

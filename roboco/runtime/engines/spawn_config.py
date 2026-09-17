@@ -198,7 +198,7 @@ class SpawnConfigEngine(_Base):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "/app/scripts/fable-stop-gate-hook.sh",
+                            "command": "/app/scripts/hooks/fable-stop-gate-hook.sh",
                         }
                     ]
                 },
@@ -208,7 +208,7 @@ class SpawnConfigEngine(_Base):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "/app/scripts/fable-stop-gate-hook.sh subagent",
+                            "command": "/app/scripts/hooks/fable-stop-gate-hook.sh subagent",
                         }
                     ]
                 },
@@ -219,7 +219,7 @@ class SpawnConfigEngine(_Base):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "/app/scripts/fable-bash-discipline-hook.sh",
+                            "command": "/app/scripts/hooks/fable-bash-discipline-hook.sh",
                         }
                     ],
                 },
@@ -230,7 +230,7 @@ class SpawnConfigEngine(_Base):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "/app/scripts/fable-honesty-nudge-hook.sh",
+                            "command": "/app/scripts/hooks/fable-honesty-nudge-hook.sh",
                         }
                     ],
                 },
@@ -240,7 +240,7 @@ class SpawnConfigEngine(_Base):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "/app/scripts/fable-prompt-nudge-hook.sh",
+                            "command": "/app/scripts/hooks/fable-prompt-nudge-hook.sh",
                         }
                     ]
                 },
@@ -251,7 +251,7 @@ class SpawnConfigEngine(_Base):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "/app/scripts/fable-precompact-hook.sh",
+                            "command": "/app/scripts/hooks/fable-precompact-hook.sh",
                         }
                     ],
                 },
@@ -392,7 +392,7 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/sdk-startup-hook.sh",
+                                "command": "/app/scripts/hooks/sdk-startup-hook.sh",
                             }
                         ]
                     }
@@ -407,7 +407,7 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/bash-guard-hook.sh",
+                                "command": "/app/scripts/hooks/bash-guard-hook.sh",
                             }
                         ],
                     },
@@ -419,7 +419,7 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/a2a-check-hook.sh",
+                                "command": "/app/scripts/hooks/a2a-check-hook.sh",
                             }
                         ],
                     },
@@ -431,7 +431,7 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/post-tool-budget-hook.sh",
+                                "command": "/app/scripts/hooks/post-tool-budget-hook.sh",
                             }
                         ],
                     },
@@ -444,7 +444,7 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/usage-report-hook.sh",
+                                "command": "/app/scripts/hooks/usage-report-hook.sh",
                             }
                         ],
                     },
@@ -457,14 +457,14 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/stop-hook.sh",
+                                "command": "/app/scripts/hooks/stop-hook.sh",
                             },
                             # Final token-usage sync at turn end — guarantees
                             # the session total is captured before the agent
                             # idles and the orchestrator finalizes the row.
                             {
                                 "type": "command",
-                                "command": "/app/scripts/usage-report-hook.sh",
+                                "command": "/app/scripts/hooks/usage-report-hook.sh",
                             },
                         ]
                     }
@@ -476,7 +476,7 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/user-prompt-hook.sh",
+                                "command": "/app/scripts/hooks/user-prompt-hook.sh",
                             }
                         ]
                     }
@@ -488,7 +488,7 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/pre-compact-hook.sh",
+                                "command": "/app/scripts/hooks/pre-compact-hook.sh",
                             }
                         ]
                     }
@@ -500,7 +500,7 @@ class SpawnConfigEngine(_Base):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/app/scripts/session-end-hook.sh",
+                                "command": "/app/scripts/hooks/session-end-hook.sh",
                             }
                         ]
                     }
@@ -808,7 +808,7 @@ class SpawnConfigEngine(_Base):
         )
         if browser_qa or video_authoring or dogfood_walk:
             mcp_servers["playwright"] = {
-                "command": "/app/scripts/playwright-mcp-entrypoint.sh",
+                "command": "/app/scripts/entrypoints/playwright-mcp-entrypoint.sh",
                 "args": [],
             }
 

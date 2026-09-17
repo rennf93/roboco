@@ -442,14 +442,13 @@ class _ResolvedAssignment:
 # silent override. The orchestrator imports these as the single source of
 # truth for that guard.
 INTERACTIVE_AGENT_SLUGS: tuple[str, ...] = ("intake-1", "secretary-1")
-INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
-    ModelProvider.OPENAI,
-    ModelProvider.GEMINI,
-    ModelProvider.KIMI,
-    ModelProvider.OPENROUTER,
-    ModelProvider.NEBIUS,
-    ModelProvider.HUMMIN,
-)
+# RETIRED to empty (2026-09-17, operator directive): the selected provider
+# powers ALL agents - interactive intake/secretary included. Every provider
+# now has an interactive path (anthropic SDK, grok CLI session, or the
+# provider-generic live driver via roboco.agent_sdk.live_main), so no
+# GLOBAL/ROLE row is ever exempted back to Anthropic. The constant stays so
+# the exemption machinery + parity guard remain wired for future providers.
+INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = ()
 
 
 # Capability floor: haiku-class models cannot reliably emit the structured

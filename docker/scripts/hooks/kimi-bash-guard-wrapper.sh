@@ -6,4 +6,4 @@
 # `command` is a plain path (unverified whether it shell-interprets the
 # string, so `env VAR=1 cmd` is not assumed safe).
 export ROBOCO_GUARD_SKIP_GIT=1
-exec /app/scripts/bash-guard-hook.sh "$@"
+exec /app/scripts/hooks/bash-guard-hook.sh "$@"

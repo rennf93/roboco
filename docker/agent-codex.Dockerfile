@@ -35,8 +35,8 @@ RUN npm install -g @openai/codex \
 # sandbox flag, then run codex headless (overrides the base image's `claude`
 # entrypoint). ~/.codex is already agent:agent-owned (installed above via
 # `su agent`), so no chown needed here.
-COPY docker/scripts/codex-cli-agent-entrypoint.sh /app/scripts/codex-cli-agent-entrypoint.sh
-RUN chmod 0755 /app/scripts/codex-cli-agent-entrypoint.sh
+COPY docker/scripts/entrypoints/codex-cli-agent-entrypoint.sh /app/scripts/entrypoints/codex-cli-agent-entrypoint.sh
+RUN chmod 0755 /app/scripts/entrypoints/codex-cli-agent-entrypoint.sh
 
 USER agent
 
@@ -49,4 +49,4 @@ LABEL role="codex-cli-runtime"
 LABEL description="Codex (OpenAI) agent runtime — Codex Build via the official codex CLI"
 LABEL codex.cli.pinned="false"
 
-ENTRYPOINT ["/app/scripts/codex-cli-agent-entrypoint.sh"]
+ENTRYPOINT ["/app/scripts/entrypoints/codex-cli-agent-entrypoint.sh"]

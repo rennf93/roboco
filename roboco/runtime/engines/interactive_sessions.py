@@ -4,11 +4,17 @@ moved verbatim from AgentOrchestrator (family: interactive_sessions)."""
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from roboco.agent_sdk.live_providers import (
+    LIVE_CLI_PROVIDERS,
+    LIVE_INTERACTIVE_DOCKERFILE,
+    LIVE_INTERACTIVE_IMAGE,
+)
 from roboco.agents_config import (
     get_agent_role,
     get_agent_team,
@@ -104,6 +110,136 @@ class InteractiveSessionsEngine(_Base):
             await self._ensure_image_present(
                 img, f"{docker_dir}/{dockerfile}", build_context
             )
+
+    async def _ensure_live_interactive_image(self, image: str) -> None:
+        """Ensure a provider-generic live-chat image (roboco-agent-<p>-live).
+
+        The live image builds FROM roboco-agent-<p> (the delivery runtime),
+        which builds FROM the agent base - same chain rule as the grok path.
+        """
+        if PROJECT_HOST_PATH:
+            build_context = PROJECT_HOST_PATH
+            docker_dir = f"{PROJECT_HOST_PATH}/docker"
+        else:
+            build_context = str(self.project_root)
+            docker_dir = str(self.project_root / "docker")
+        provider = next(p for p, img in LIVE_INTERACTIVE_IMAGE.items() if img == image)
+        chain = [
+            (AGENT_BASE_IMAGE, "agent-base.Dockerfile"),
+            (
+                f"roboco-agent-{provider if provider != 'openai' else 'codex'}",
+                f"agent-{'codex' if provider == 'openai' else provider}.Dockerfile",
+            ),
+            (image, LIVE_INTERACTIVE_DOCKERFILE[provider]),
+        ]
+        for img, dockerfile in chain:
+            await self._ensure_image_present(
+                img, f"{docker_dir}/{dockerfile}", build_context
+            )
+
+    # Metered-key live providers: provider value -> (key env, base-url env).
+    _LIVE_KEY_ENV: ClassVar[dict[str, tuple[str, str]]] = {
+        "hummin": ("ZAI_API_KEY", ""),
+        "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"),
+        "nebius": ("NEBIUS_API_KEY", "NEBIUS_BASE_URL"),
+    }
+
+    @classmethod
+    def _append_live_provider_auth(
+        cls,
+        cmd: list[str],
+        provider_type: str,
+        base_url: str | None,
+        auth_token: str | None,
+    ) -> None:
+        """Per-provider auth for a live-chat container: subscription CLIs
+        mount their host auth dir; metered-key providers take env."""
+        from roboco.models.base import ModelProvider
+
+        key_env = cls._LIVE_KEY_ENV.get(provider_type)
+        if key_env is not None:
+            key_name, base_name = key_env
+            cmd.extend(["-e", f"{key_name}={auth_token or ''}"])
+            if base_url and base_name:
+                cmd.extend(["-e", f"{base_name}={base_url}"])
+            return
+        mounts = {
+            ModelProvider.OPENAI.value: (
+                "roboco.llm.providers.codex",
+                "CodexCliProvider",
+                "_append_codex_auth_mount",
+            ),
+            ModelProvider.GEMINI.value: (
+                "roboco.llm.providers.gemini",
+                "GeminiCliProvider",
+                "_append_gemini_auth_mount",
+            ),
+            ModelProvider.KIMI.value: (
+                "roboco.llm.providers.kimi",
+                "KimiCliProvider",
+                "_append_kimi_auth_mount",
+            ),
+        }
+        mount = mounts.get(provider_type)
+        if mount is None:
+            return
+        module_name, class_name, method_name = mount
+        module = __import__(module_name, fromlist=[class_name])
+        getattr(getattr(module, class_name), method_name)(cmd)
+
+    @staticmethod
+    def _write_live_mcp_config(role: str, session_id: str, api_url: str) -> str:
+        """Write the LIVE mcp-config.json for an MCP-capable live chat.
+
+        The delivery renderers near-passthrough whatever mcp-config.json is
+        mounted at /app/mcp-config.json - so mounting a config that carries
+        ONLY the roboco-secretary / roboco-intake stdio server gives the live
+        chat the CEO-authority / intake tool surface with the delivery
+        render step untouched. Returns the HOST path for the -v mount.
+        """
+        import json as _json
+        import tempfile
+
+        server_name = "roboco-secretary" if role == "secretary" else "roboco-intake"
+        module = f"roboco.mcp.{server_name}"
+        env: dict[str, str] = {
+            "ROBOCO_API_URL": api_url,
+            "ROBOCO_AGENT_ID": os.environ.get("ROBOCO_AGENT_ID", ""),
+            "ROBOCO_AGENT_ROLE": role,
+            "UV_PROJECT_ENVIRONMENT": "/app/.venv",
+        }
+        token = os.environ.get("ROBOCO_AGENT_TOKEN", "")
+        if token:
+            env["ROBOCO_AGENT_TOKEN"] = token
+        if role == "secretary":
+            env["ROBOCO_SECRETARY_SESSION_ID"] = session_id
+        else:
+            env["ROBOCO_PROMPTER_SESSION_ID"] = session_id
+        config = {
+            "mcpServers": {
+                server_name: {
+                    "command": "uv",
+                    "args": [
+                        "run",
+                        "--directory",
+                        "/app",
+                        "--no-sync",
+                        "python",
+                        "-m",
+                        module,
+                    ],
+                    "env": env,
+                }
+            }
+        }
+        if PROJECT_HOST_PATH:
+            base = Path(DATA_HOST_PATH) / "mcp-configs"
+        else:
+            base = Path(tempfile.gettempdir()) / "roboco-mcp-configs"
+        base.mkdir(parents=True, exist_ok=True)
+        host_path = base / f"live-{role}-{session_id}.json"
+        host_path.write_text(_json.dumps(config), encoding="utf-8")
+        return str(host_path)
 
     @staticmethod
     def _grok_usage_dir(agent_id: str) -> Path:
@@ -603,13 +739,24 @@ class InteractiveSessionsEngine(_Base):
             )
             api_url = _interactive_api_url()
 
-            # GROK runs the interactive driver on its own grok-CLI prompter image;
-            # every other provider uses the Claude SDK-driver prompter image.
+            # GROK runs the interactive driver on its own grok-CLI prompter
+            # image; the LIVE_CLI_PROVIDERS set (hummin/codex/gemini/kimi/
+            # openrouter/nebius) runs the provider-generic live driver on its
+            # own roboco-agent-<p>-live image; every other provider uses the
+            # Claude SDK-driver prompter image.
             is_grok = route.provider_type == ModelProvider.GROK
-            image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
+            is_live = route.provider_type.value in LIVE_CLI_PROVIDERS
+            if is_grok:
+                image = GROK_PROMPTER_IMAGE
+            elif is_live:
+                image = LIVE_INTERACTIVE_IMAGE[route.provider_type.value]
+            else:
+                image = get_agent_image(INTAKE_AGENT_ID)
             if is_grok:
                 await self._ensure_grok_interactive_image(image)
                 self._ensure_grok_usage_dir(INTAKE_AGENT_ID)
+            elif is_live:
+                await self._ensure_live_interactive_image(image)
             else:
                 await self._ensure_agent_image(INTAKE_AGENT_ID)
             container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
@@ -793,12 +940,18 @@ class InteractiveSessionsEngine(_Base):
             api_url = _interactive_api_url()
 
             is_grok = route.provider_type == ModelProvider.GROK
-            image = (
-                GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
-            )
+            is_live = route.provider_type.value in LIVE_CLI_PROVIDERS
+            if is_grok:
+                image = GROK_SECRETARY_IMAGE
+            elif is_live:
+                image = LIVE_INTERACTIVE_IMAGE[route.provider_type.value]
+            else:
+                image = get_agent_image(SECRETARY_AGENT_ID)
             if is_grok:
                 await self._ensure_grok_interactive_image(image)
                 self._ensure_grok_usage_dir(SECRETARY_AGENT_ID)
+            elif is_live:
+                await self._ensure_live_interactive_image(image)
             else:
                 await self._ensure_agent_image(SECRETARY_AGENT_ID)
             container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
@@ -1116,6 +1269,25 @@ class InteractiveSessionsEngine(_Base):
 
         base_url = spec.provider_base_url
         auth_token = spec.provider_auth_token
+        provider_type = spec.provider_type
+        if provider_type in LIVE_CLI_PROVIDERS:
+            # Provider-generic live chats: per-provider auth (mount for the
+            # subscription CLIs, env for the metered-key ones), the live
+            # mcp-config.json mount (the delivery render step passthroughs
+            # its mcpServers - hummin instead rides its rendered pi
+            # extension), and the provider selector the driver reads.
+            role = "secretary" if hasattr(spec, "agent_uuid") else "prompter"
+            session_id = getattr(spec, "session_id", "")
+            AgentOrchestrator._append_live_provider_auth(
+                cmd, provider_type, base_url, auth_token
+            )
+            if provider_type != ModelProvider.HUMMIN.value:
+                mcp_host_path = AgentOrchestrator._write_live_mcp_config(
+                    role, session_id, spec.api_url
+                )
+                cmd.extend(["-v", f"{mcp_host_path}:/app/mcp-config.json:ro"])
+            cmd.extend(["-e", f"ROBOCO_LIVE_PROVIDER={provider_type}"])
+            return
         if spec.provider_type == ModelProvider.GROK.value:
             GrokCliProvider._append_grok_auth_mount(cmd)
             GrokCliProvider._append_usage_mount(cmd, spec.hosts)

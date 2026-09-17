@@ -551,6 +551,50 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-openrouter image present'"]
     restart: "no"
 
+  # Interactive live-chat images (intake/secretary on the routed provider).
+  # Build FROM the delivery images above (which is why hummin/nebius gained
+  # their own entries in this file in the same change - the live images' FROM
+  # must be published too).
+  agent-hummin-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-hummin:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-hummin image present'"]
+    restart: "no"
+
+  agent-nebius-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-nebius:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-nebius image present'"]
+    restart: "no"
+
+  agent-hummin-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-hummin-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-hummin-live image present'"]
+    restart: "no"
+
+  agent-codex-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-codex-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-codex-live image present'"]
+    restart: "no"
+
+  agent-gemini-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-gemini-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-gemini-live image present'"]
+    restart: "no"
+
+  agent-kimi-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-kimi-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-kimi-live image present'"]
+    restart: "no"
+
+  agent-openrouter-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-openrouter-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-openrouter-live image present'"]
+    restart: "no"
+
+  agent-nebius-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-nebius-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-nebius-live image present'"]
+    restart: "no"
+
   # Sandbox PG (kitchen-sink) — pulled by the provisioner when a venture opts
   # into pg extensions. Bare sandboxes use the upstream postgres image, so this
   # is only needed by extension-using projects.

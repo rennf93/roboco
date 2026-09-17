@@ -38,13 +38,13 @@ RUN npm install -g opencode-ai \
 # Entrypoint: render opencode's global config (opencode.json + the
 # bash-guard plugin under ~/.config/opencode/plugins/, wiring the
 # tool.execute.before hook — a genuine PreToolUse-equivalent — to
-# /app/scripts/bash-guard-hook.sh from the base image), then run opencode
+# /app/scripts/hooks/bash-guard-hook.sh from the base image), then run opencode
 # headless (overrides the base image's `claude` entrypoint). The
 # permission.bash deny-rules in the rendered opencode.json are the primary
 # gate; the plugin is defense-in-depth (see
 # roboco.llm.providers.openrouter_cli_config).
-COPY docker/scripts/openrouter-agent-entrypoint.sh /app/scripts/openrouter-agent-entrypoint.sh
-RUN chmod 0755 /app/scripts/openrouter-agent-entrypoint.sh
+COPY docker/scripts/entrypoints/openrouter-agent-entrypoint.sh /app/scripts/entrypoints/openrouter-agent-entrypoint.sh
+RUN chmod 0755 /app/scripts/entrypoints/openrouter-agent-entrypoint.sh
 
 USER agent
 
@@ -52,4 +52,4 @@ LABEL role="openrouter-cli-runtime"
 LABEL description="OpenRouter agent runtime — any OpenRouter model via the opencode CLI"
 LABEL opencode.cli.pinned="false"
 
-ENTRYPOINT ["/app/scripts/openrouter-agent-entrypoint.sh"]
+ENTRYPOINT ["/app/scripts/entrypoints/openrouter-agent-entrypoint.sh"]

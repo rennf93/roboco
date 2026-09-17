@@ -50,9 +50,9 @@ RUN curl -fsSL https://code.kimi.com/kimi-code/install.sh -o /tmp/kimi-install.s
 # AGENTS.md, then run kimi headless (overrides the base image's `claude`
 # entrypoint). Pre-create + chown ~/.kimi-code (mirrors the gemini image —
 # the entrypoint's own symlink/render steps then just write into it).
-COPY docker/scripts/kimi-cli-agent-entrypoint.sh /app/scripts/kimi-cli-agent-entrypoint.sh
-COPY docker/scripts/kimi-bash-guard-wrapper.sh /app/scripts/kimi-bash-guard-wrapper.sh
-RUN chmod 0755 /app/scripts/kimi-cli-agent-entrypoint.sh /app/scripts/kimi-bash-guard-wrapper.sh \
+COPY docker/scripts/entrypoints/kimi-cli-agent-entrypoint.sh /app/scripts/entrypoints/kimi-cli-agent-entrypoint.sh
+COPY docker/scripts/hooks/kimi-bash-guard-wrapper.sh /app/scripts/hooks/kimi-bash-guard-wrapper.sh
+RUN chmod 0755 /app/scripts/entrypoints/kimi-cli-agent-entrypoint.sh /app/scripts/hooks/kimi-bash-guard-wrapper.sh \
     && mkdir -p /home/agent/.kimi-code \
     && chown -R agent:agent /home/agent/.kimi-code
 
@@ -68,4 +68,4 @@ LABEL kimi.cli.pinned="false"
 # is the belt-and-suspenders config-level twin (roboco.llm.providers.kimi_cli_config).
 ENV KIMI_CODE_NO_AUTO_UPDATE=1
 
-ENTRYPOINT ["/app/scripts/kimi-cli-agent-entrypoint.sh"]
+ENTRYPOINT ["/app/scripts/entrypoints/kimi-cli-agent-entrypoint.sh"]

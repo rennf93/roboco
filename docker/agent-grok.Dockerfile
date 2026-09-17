@@ -36,8 +36,8 @@ RUN su agent -s /bin/bash -c "set -euo pipefail; export HOME=/home/agent; \
 # Entrypoint: render ~/.grok/config.toml + the per-role flags, then run grok
 # headless (overrides the base image's `claude` entrypoint). ~/.grok is already
 # agent:agent-owned (installed above via `su agent`), so no chown needed here.
-COPY docker/scripts/grok-cli-agent-entrypoint.sh /app/scripts/grok-cli-agent-entrypoint.sh
-RUN chmod 0755 /app/scripts/grok-cli-agent-entrypoint.sh
+COPY docker/scripts/entrypoints/grok-cli-agent-entrypoint.sh /app/scripts/entrypoints/grok-cli-agent-entrypoint.sh
+RUN chmod 0755 /app/scripts/entrypoints/grok-cli-agent-entrypoint.sh
 
 USER agent
 
@@ -49,4 +49,4 @@ LABEL role="grok-cli-runtime"
 LABEL description="Grok (xAI) agent runtime — Grok Build via the official grok CLI"
 LABEL grok.cli.pinned="false"
 
-ENTRYPOINT ["/app/scripts/grok-cli-agent-entrypoint.sh"]
+ENTRYPOINT ["/app/scripts/entrypoints/grok-cli-agent-entrypoint.sh"]

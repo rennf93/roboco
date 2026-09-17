@@ -431,14 +431,10 @@ SECRETARY_AGENT_ID = "secretary-1"
 # providers (a fleet-wide mode switch keeps the chats on Anthropic); this
 # guard is the backstop for an EXPLICIT AGENT_SLUG pin, which is refused
 # loudly rather than silently overridden.
-_INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
-    ModelProvider.OPENAI,
-    ModelProvider.GEMINI,
-    ModelProvider.KIMI,
-    ModelProvider.OPENROUTER,
-    ModelProvider.NEBIUS,
-    ModelProvider.HUMMIN,
-)
+# RETIRED to empty (2026-09-17): every provider has an interactive path now
+# (see roboco/services/llm.py INTERACTIVE_UNSUPPORTED_PROVIDERS). The guard
+# below stays wired as the backstop for future delivery-only providers.
+_INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = ()
 
 
 def _reject_interactive_unsupported_provider(

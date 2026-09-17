@@ -95,7 +95,7 @@ OPENCODE_PLUGIN_PATH = Path(
 # the SAME script the Claude/grok/kimi paths install (accepts the Claude
 # snake_case stdin payload unmodified; exit 0 = allow, exit 2 = deny).
 BASH_GUARD_HOOK = os.environ.get(
-    "ROBOCO_BASH_GUARD_HOOK", "/app/scripts/bash-guard-hook.sh"
+    "ROBOCO_BASH_GUARD_HOOK", "/app/scripts/hooks/bash-guard-hook.sh"
 )
 
 # The composed role blueprint the orchestrator mounts into every container.

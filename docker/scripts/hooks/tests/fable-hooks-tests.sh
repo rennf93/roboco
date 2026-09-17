@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test harness for docker/scripts/fable-*.sh (mirrors bash-guard-tests.sh).
+# Test harness for docker/scripts/hooks/fable-*.sh (mirrors bash-guard-tests.sh).
 #
 # Feeds each hook synthetic Claude Code JSON via stdin and asserts the
 # expected output shape. Deny/block decisions on these ported hooks are
@@ -16,7 +16,7 @@
 
 set -u
 
-SCRIPTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPTS_DIR="$(cd "$(dirname "$0")/../.." && pwd)/hooks"
 BASH_DISCIPLINE="$SCRIPTS_DIR/fable-bash-discipline-hook.sh"
 HONESTY_NUDGE="$SCRIPTS_DIR/fable-honesty-nudge-hook.sh"
 STOP_GATE="$SCRIPTS_DIR/fable-stop-gate-hook.sh"

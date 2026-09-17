@@ -1086,28 +1086,24 @@ describe("AIRoutingCard", () => {
       ).toBeInTheDocument();
     });
 
-    it("excludes Kimi from the Intake/Secretary/PR Review group", async () => {
+    it("offers Kimi to the Intake/Secretary/PR Review group too (2026-09-17: every provider powers the interactive chats)", async () => {
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Per-agent override (mix mode)");
 
-      // Wait for the catalog query to resolve (an unrelated row's groups)
-      // before asserting absence on this group's rows below.
       await within(mixRowFor("be-dev-1")).findByText("Kimi (Moonshot)");
 
       const secretaryRow = mixRowFor("secretary-1");
       expect(
-        within(secretaryRow).queryByText("Kimi (Moonshot)"),
-      ).not.toBeInTheDocument();
+        await within(secretaryRow).findByText("Kimi (Moonshot)"),
+      ).toBeInTheDocument();
 
       const intakeRow = mixRowFor("intake-1");
-      expect(
-        within(intakeRow).queryByText("Kimi (Moonshot)"),
-      ).not.toBeInTheDocument();
+      expect(within(intakeRow).getByText("Kimi (Moonshot)")).toBeInTheDocument();
 
       const prReviewerRow = mixRowFor("pr-reviewer-1");
       expect(
-        within(prReviewerRow).queryByText("Kimi (Moonshot)"),
-      ).not.toBeInTheDocument();
+        within(prReviewerRow).getByText("Kimi (Moonshot)"),
+      ).toBeInTheDocument();
     });
   });
 
@@ -1126,42 +1122,36 @@ describe("AIRoutingCard", () => {
       expect(within(beDevRow).getByText("Gemini (Google)")).toBeInTheDocument();
     });
 
-    it("excludes Codex and Gemini from the Intake/Secretary/PR Review group, with an inline note", async () => {
+    it("offers Codex and Gemini to the Intake/Secretary/PR Review group too, with no inline note (2026-09-17)", async () => {
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Per-agent override (mix mode)");
 
+      // The delivery-roles-only inline note is retired along with the
+      // server-side refusal.
       expect(
-        screen.getByText(
+        screen.queryByText(
           /Codex, Gemini, Kimi, and Nebius are delivery-roles-only/i,
         ),
-      ).toBeInTheDocument();
+      ).not.toBeInTheDocument();
 
-      // Wait for the catalog query to resolve (an unrelated row's groups)
-      // before asserting absence on this group's rows below.
       await within(mixRowFor("be-dev-1")).findByText("Codex (OpenAI)");
 
       const secretaryRow = mixRowFor("secretary-1");
       expect(
-        within(secretaryRow).queryByText("Codex (OpenAI)"),
-      ).not.toBeInTheDocument();
+        within(secretaryRow).getByText("Codex (OpenAI)"),
+      ).toBeInTheDocument();
       expect(
-        within(secretaryRow).queryByText("Gemini (Google)"),
-      ).not.toBeInTheDocument();
+        within(secretaryRow).getByText("Gemini (Google)"),
+      ).toBeInTheDocument();
 
       const intakeRow = mixRowFor("intake-1");
-      expect(
-        within(intakeRow).queryByText("Codex (OpenAI)"),
-      ).not.toBeInTheDocument();
-      expect(
-        within(intakeRow).queryByText("Gemini (Google)"),
-      ).not.toBeInTheDocument();
+      expect(within(intakeRow).getByText("Codex (OpenAI)")).toBeInTheDocument();
+      expect(within(intakeRow).getByText("Gemini (Google)")).toBeInTheDocument();
 
-      // The root PR reviewer shares the same group/note, even though it is
-      // technically one-shot-capable — the panel restricts the whole group.
       const prReviewerRow = mixRowFor("pr-reviewer-1");
       expect(
-        within(prReviewerRow).queryByText("Codex (OpenAI)"),
-      ).not.toBeInTheDocument();
+        within(prReviewerRow).getByText("Codex (OpenAI)"),
+      ).toBeInTheDocument();
     });
   });
 

@@ -133,10 +133,30 @@ jobs:
             # FROM agent-base. Missing from this map on v0.30.0 shipped the
             # release without the image — the same class as kimi on v0.28.0.
             [roboco-agent-openrouter]=docker/agent-openrouter.Dockerfile
+            [roboco-agent-hummin]=docker/agent-hummin.Dockerfile
+            [roboco-agent-nebius]=docker/agent-nebius.Dockerfile
           )
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"
             docker build -f "${IMAGES[$name]}" $(regtags "${name}") .
+            echo "::endgroup::"
+          done
+
+          # Interactive live-chat images (hummin/codex/gemini/kimi/
+          # openrouter/nebius). They build FROM the delivery provider images
+          # above, so they build in a SECOND pass after that loop, never
+          # inside it (array iteration order is undefined).
+          declare -A LIVE_IMAGES=(
+            [roboco-agent-hummin-live]=docker/agent-hummin-live.Dockerfile
+            [roboco-agent-codex-live]=docker/agent-codex-live.Dockerfile
+            [roboco-agent-gemini-live]=docker/agent-gemini-live.Dockerfile
+            [roboco-agent-kimi-live]=docker/agent-kimi-live.Dockerfile
+            [roboco-agent-openrouter-live]=docker/agent-openrouter-live.Dockerfile
+            [roboco-agent-nebius-live]=docker/agent-nebius-live.Dockerfile
+          )
+          for name in "${!LIVE_IMAGES[@]}"; do
+            echo "::group::build ${name}"
+            docker build -f "${LIVE_IMAGES[$name]}" $(regtags "${name}") .
             echo "::endgroup::"
           done
 
@@ -149,6 +169,11 @@ jobs:
           pushall roboco-agent-grok
           echo "::endgroup::"
           for name in "${!IMAGES[@]}"; do
+            echo "::group::push ${name}"
+            pushall "${name}"
+            echo "::endgroup::"
+          done
+          for name in "${!LIVE_IMAGES[@]}"; do
             echo "::group::push ${name}"
             pushall "${name}"
             echo "::endgroup::"

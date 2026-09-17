@@ -42,8 +42,8 @@ RUN npm install -g hummin-cli \
 # run the CLI headless (overrides the base image's `claude` entrypoint).
 # Pre-create + chown ~/.hummin/agent (mirrors the kimi image — the
 # entrypoint's own render steps then just write into it).
-COPY docker/scripts/hummin-cli-agent-entrypoint.sh /app/scripts/hummin-cli-agent-entrypoint.sh
-RUN chmod 0755 /app/scripts/hummin-cli-agent-entrypoint.sh \
+COPY docker/scripts/entrypoints/hummin-cli-agent-entrypoint.sh /app/scripts/entrypoints/hummin-cli-agent-entrypoint.sh
+RUN chmod 0755 /app/scripts/entrypoints/hummin-cli-agent-entrypoint.sh \
     && mkdir -p /home/agent/.hummin/agent \
     && chown -R agent:agent /home/agent/.hummin
 
@@ -53,4 +53,4 @@ LABEL role="hummin-cli-runtime"
 LABEL description="GLM agent runtime — GLM 5.3 family via the GLM-native hummin CLI"
 LABEL hummin.cli.pinned="false"
 
-ENTRYPOINT ["/app/scripts/hummin-cli-agent-entrypoint.sh"]
+ENTRYPOINT ["/app/scripts/entrypoints/hummin-cli-agent-entrypoint.sh"]

@@ -38,13 +38,13 @@ RUN npm install -g opencode-ai \
 # Entrypoint: render opencode's global config (opencode.json + the
 # bash-guard plugin under ~/.config/opencode/plugins/, wiring the
 # tool.execute.before hook - a genuine PreToolUse-equivalent - to
-# /app/scripts/bash-guard-hook.sh from the base image), then run opencode
+# /app/scripts/hooks/bash-guard-hook.sh from the base image), then run opencode
 # headless (overrides the base image's `claude` entrypoint). The
 # permission.bash deny-rules in the rendered opencode.json are the primary
 # gate; the plugin is defense-in-depth (see
 # roboco.llm.providers.nebius_cli_config).
-COPY docker/scripts/nebius-agent-entrypoint.sh /app/scripts/nebius-agent-entrypoint.sh
-RUN chmod 0755 /app/scripts/nebius-agent-entrypoint.sh
+COPY docker/scripts/entrypoints/nebius-agent-entrypoint.sh /app/scripts/entrypoints/nebius-agent-entrypoint.sh
+RUN chmod 0755 /app/scripts/entrypoints/nebius-agent-entrypoint.sh
 
 USER agent
 
@@ -52,4 +52,4 @@ LABEL role="nebius-cli-runtime"
 LABEL description="Nebius Token Factory agent runtime - Nemotron + 60 open models via the opencode CLI"
 LABEL opencode.cli.pinned="false"
 
-ENTRYPOINT ["/app/scripts/nebius-agent-entrypoint.sh"]
+ENTRYPOINT ["/app/scripts/entrypoints/nebius-agent-entrypoint.sh"]
