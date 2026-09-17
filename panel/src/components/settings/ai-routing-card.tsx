@@ -1220,13 +1220,11 @@ export function AIRoutingCard() {
           {/* -------- OpenRouter key -------- */}
           <OpenRouterProviderKeyRow />
 
-          <Separator />
+          {/* -------- Z.ai key -------- */}
+          <ZaiProviderKeyRow />
 
           {/* -------- Nebius key -------- */}
           <NebiusProviderKeyRow />
-
-          {/* -------- Z.ai key -------- */}
-          <ZaiProviderKeyRow />
 
           {/* -------- hummin (GLM Coding Plan) key — independent of the
              ZAI row's key on purpose (separate providers, separate keys) */}
@@ -1334,19 +1332,6 @@ export function AIRoutingCard() {
               onClick={flipToNebius}
               disabled={applyMode.isPending || !hasNebiusKey}
               labelHint="One key unlocks Nebius AI Studio's hosted open models (DeepSeek, Qwen, Llama and more). Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
-            />
-            <ModeButton
-              icon={<Bot className="h-4 w-4" />}
-              label="Z.ai"
-              description={
-                hasZaiKey
-                  ? "Every agent uses Z.ai GLM (glm-5.3-flash)."
-                  : "Save the Z.ai key first."
-              }
-              active={currentMode === "zai"}
-              onClick={flipToZai}
-              disabled={applyMode.isPending || !hasZaiKey}
-              labelHint="Z.ai's Anthropic-compatible endpoint (api.z.ai/api/anthropic) rides the built-in Claude Code spawn — GLM 5.3 / 5.3 Flash injected as ANTHROPIC_BASE_URL at spawn. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Sparkles className="h-4 w-4" />}
