@@ -54,7 +54,7 @@ async def shipped_work_digest(session: AsyncSession, roboco_project_slug: str) -
 
 async def _shipped_this_week(session: AsyncSession) -> list[str]:
     """Formatted bullet lines for COMPLETED tasks in the last 7 days, capped."""
-    from roboco.db.tables import ProjectTable, TaskTable  # noqa: PLC0415
+    from roboco.db.tables import ProjectTable, TaskTable
 
     cutoff = datetime.now(UTC) - timedelta(days=7)
     result = await session.execute(
@@ -79,11 +79,11 @@ async def _unreleased_changelog(session: AsyncSession, roboco_project_slug: str)
     clone; ``""`` when the file/section is absent, blank, or unreadable —
     never raises (caller renders the empty case explicitly)."""
     try:
-        from roboco.services.release_readiness import (  # noqa: PLC0415
+        from roboco.services.release_readiness import (
             _read_changelog,
             _unreleased_body,
         )
-        from roboco.services.workspace import get_workspace_service  # noqa: PLC0415
+        from roboco.services.workspace import get_workspace_service
 
         root = await get_workspace_service(session).ensure_read_clone(
             roboco_project_slug
