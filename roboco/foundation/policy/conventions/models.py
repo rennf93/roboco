@@ -40,6 +40,23 @@ BUILTIN_RULES: dict[str, RuleLevel] = {
     "no_inline_comments": "warn",
 }
 
+# Shipped default infra globs (DevOps-agent review gate, spec 4.1): broad
+# coverage for container / CI / IaC / proxy / deploy paths. The orchestrator
+# encodes nobody's stack: a project narrows these (or opts out with an empty
+# list) via its committed ``.roboco/conventions.yml``.
+DEFAULT_INFRA_GLOBS: list[str] = [
+    "Dockerfile*",
+    "docker/**",
+    "compose*.y*ml",
+    ".github/workflows/**",
+    "nginx/**",
+    "deploy/**",
+    "k8s/**",
+    "terraform/**",
+    "argocd/**",
+    ".gitlab-ci.yml",
+]
+
 
 class _Base(BaseModel):
     """Shared config: ignore unknown keys for forward-compatibility."""
@@ -89,6 +106,12 @@ class ConventionsStandard(_Base):
     rules: dict[str, Rule] = Field(default_factory=dict)
     custom: list[CustomRule] = Field(default_factory=list)
     waivers: list[Waiver] = Field(default_factory=list)
+    # Declared infra paths for the DevOps-agent review gate. ``None`` = not
+    # declared (the effective map falls back to DEFAULT_INFRA_GLOBS), ``[]`` =
+    # explicit opt-out (the gate never fires), non-empty = the project's globs
+    # replace the defaults. Routing metadata only: the tree-sitter validator
+    # and the author-facing renderers never consume it.
+    infra: list[str] | None = None
 
     @field_validator("rules", mode="before")
     @classmethod

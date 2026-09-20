@@ -514,14 +514,18 @@ class Settings(BaseSettings):
     # A repo-canonical .roboco/conventions.yml plus the roboco-conventions
     # validator gate i_am_done / pr_pass on block-level placement and hygiene
     # violations. Default-off; every hook (scaffold, ambient injection, baseline
-    # constraints, the gates) is inert when off.
+    # constraints, the gates) is inert when off. NOT inert when off: the
+    # effective-map READ (GET /api/projects/{id}/conventions, and the infra
+    # declaration consumed by the DevOps review gate) is per-project content,
+    # not enforcement, so it works regardless of this flag.
     conventions_enabled: bool = Field(
         default=False,
         description=(
             "Master switch for the architectural-conventions standard: "
             "auto-scaffold .roboco/conventions.yml, inject the architecture map, "
             "attach baseline constraints, and block gates on violations. Off => "
-            "fully inert."
+            "enforcement fully inert; the effective-map read (conventions API, "
+            "infra declaration) stays available."
         ),
     )
     possibilities_matrix_enabled: bool = Field(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import yaml
 from roboco.conventions.scan import derive_from_scan, render_yaml
 from roboco.foundation.policy.conventions.models import ConventionsStandard
 
@@ -90,3 +91,24 @@ def test_render_yaml_round_trips_through_parse(tmp_path: Path) -> None:
 def test_render_yaml_round_trips_empty_standard() -> None:
     std = ConventionsStandard()
     assert ConventionsStandard.parse_yaml(render_yaml(std)) == std
+
+
+def test_render_yaml_omits_undeclared_infra() -> None:
+    # infra=None (not declared) must not emit the key: scaffolded and
+    # panel-saved files stay clean and keep the shipped-defaults fallback.
+    rendered = render_yaml(ConventionsStandard())
+    assert "infra" not in yaml.safe_load(rendered)
+
+
+def test_render_yaml_round_trips_declared_infra() -> None:
+    std = ConventionsStandard(infra=["Dockerfile*", "gitops/**"])
+    reparsed = ConventionsStandard.parse_yaml(render_yaml(std))
+    assert reparsed.infra == ["Dockerfile*", "gitops/**"]
+
+
+def test_render_yaml_round_trips_empty_infra_optout() -> None:
+    # The empty list is a real opt-out declaration; a save/scaffold that
+    # silently dropped it would re-arm the gate on the shipped defaults.
+    std = ConventionsStandard(infra=[])
+    reparsed = ConventionsStandard.parse_yaml(render_yaml(std))
+    assert reparsed.infra == []

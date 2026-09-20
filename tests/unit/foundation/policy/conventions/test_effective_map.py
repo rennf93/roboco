@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from roboco.foundation.policy.conventions.effective_map import effective_map
 from roboco.foundation.policy.conventions.models import (
+    DEFAULT_INFRA_GLOBS,
     ConventionsStandard,
     CustomRule,
     Module,
@@ -89,3 +90,32 @@ def test_file_none_keeps_derived_custom_and_waivers() -> None:
     )
     eff = effective_map(derived, None)
     assert [c.id for c in eff.custom] == ["d"]
+
+
+def test_missing_file_gives_default_infra_globs() -> None:
+    eff = effective_map(ConventionsStandard(), None)
+    assert eff.infra == DEFAULT_INFRA_GLOBS
+    # A fresh list, not the module constant aliased (callers may mutate).
+    assert eff.infra is not DEFAULT_INFRA_GLOBS
+
+
+def test_file_infra_replaces_defaults() -> None:
+    file = ConventionsStandard(infra=["gitops/**"])
+    eff = effective_map(ConventionsStandard(), file)
+    assert eff.infra == ["gitops/**"]
+
+
+def test_file_without_infra_key_gives_defaults() -> None:
+    # A committed file that does not declare infra (older file, infra=None)
+    # must not wipe the gate: defaults still apply.
+    file = ConventionsStandard.parse_yaml("languages: [python]\n")
+    eff = effective_map(ConventionsStandard(), file)
+    assert eff.infra == DEFAULT_INFRA_GLOBS
+
+
+def test_empty_infra_opts_out_of_the_gate() -> None:
+    file = ConventionsStandard.parse_yaml("infra: []\n")
+    eff = effective_map(ConventionsStandard(), file)
+    # Explicit empty survives as a real declaration (opt-out), it is not
+    # coerced back to the defaults.
+    assert eff.infra == []

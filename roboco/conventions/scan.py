@@ -276,7 +276,10 @@ def _slug(token: str) -> str:
 
 
 def _to_yaml_data(standard: ConventionsStandard) -> dict[str, object]:
-    return {
+    # The infra section is emitted only when declared: a ``None`` scaffolded
+    # or panel-saved file stays clean and keeps falling back to the shipped
+    # defaults, while an explicit ``[]`` (opt-out) must round-trip.
+    data: dict[str, object] = {
         "version": standard.version,
         "languages": list(standard.languages),
         "modules": [
@@ -299,6 +302,9 @@ def _to_yaml_data(standard: ConventionsStandard) -> dict[str, object]:
             for w in standard.waivers
         ],
     }
+    if standard.infra is not None:
+        data["infra"] = list(standard.infra)
+    return data
 
 
 def render_yaml(standard: ConventionsStandard) -> str:
