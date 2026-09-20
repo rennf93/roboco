@@ -487,6 +487,11 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-ux image present'"]
     restart: "no"
 
+  agent-devops-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-devops:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-devops image present'"]
+    restart: "no"
+
   agent-doc-image:
     image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-doc:${ROBOCO_VERSION:-latest}
     entrypoint: ["/bin/sh", "-c", "echo 'agent-doc image present'"]

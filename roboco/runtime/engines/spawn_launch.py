@@ -130,6 +130,7 @@ class SpawnLaunchEngine(_Base):
                     "roboco-agent-qa-fe": "agent-qa-fe.Dockerfile",
                     "roboco-agent-doc": "agent-doc.Dockerfile",
                     "roboco-agent-ux": "agent-ux.Dockerfile",
+                    "roboco-agent-devops": "agent-devops.Dockerfile",
                     "roboco-agent-prompter": "agent-prompter.Dockerfile",
                     "roboco-agent-secretary": "agent-secretary.Dockerfile",
                     "roboco-agent-pr-reviewer": "agent-pr-reviewer.Dockerfile",

@@ -489,10 +489,11 @@ AGENT_IMAGES: dict[str, str] = {
     "fe-pr-reviewer": "roboco-agent-pr-reviewer",
     "ux-pr-reviewer": "roboco-agent-pr-reviewer",
     "cell-pr-reviewer-2": "roboco-agent-pr-reviewer",
-    # DevOps: floating infra author + second gate reviewer. Needs a full
-    # authoring toolchain, so it reuses the backend dev image; the floater
-    # adds no new image, Dockerfile, or compose service.
-    "devops-1": "roboco-agent-dev-be",
+    # DevOps: floating infra author + second gate reviewer. Dedicated image
+    # with the infra authoring toolchain (docker/compose/kubectl/helm/
+    # terraform lints, docker/agent-devops.Dockerfile); wiring spans the
+    # compose services, the registry compose, and the release build list.
+    "devops-1": "roboco-agent-devops",
     # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
     INTAKE_AGENT_ID: "roboco-agent-prompter",
     # Secretary — persistent Agent-SDK driver with gated CEO authority.
