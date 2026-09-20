@@ -15,6 +15,7 @@
 | `open_pr` | `open_pr(task_id: UUID)` |
 | `pr_fail` | `pr_fail(task_id: UUID, issues: list[str] = PydanticUndefined, findings: list[str | Any] = PydanticUndefined)` |
 | `pr_pass` | `pr_pass(task_id: UUID, notes: str)` |
+| `record_devops_review` | `record_devops_review(task_id: UUID, notes: str)` |
 | `sync_branch` | `sync_branch(task_id: UUID, stash: bool = False)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
 

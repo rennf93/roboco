@@ -232,6 +232,15 @@ Hand a claimed/in_progress task to another developer in your own cell. The branc
 **Composes:** (no atomic actions)
 
 
+## record_devops_review
+
+Record the DevOps infra-review verdict (pass) on an assembled-PR gate task WITHOUT transitioning it: the primary reviewer's pr_pass then composes. Use pr_fail instead to reject the PR.
+
+**Allowed roles:** devops
+
+**Composes:** (no atomic actions)
+
+
 ## request_changes
 
 Reject the merge review with concrete issues. Transitions awaiting_pm_review -> needs_revision, routed back like a QA fail (original developer for a leaf, revision PM for an assembled task). Use this for an AC/scope violation caught at merge review — never i_am_blocked/escalate, which have no revision routing.

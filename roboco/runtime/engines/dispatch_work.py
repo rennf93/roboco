@@ -1671,6 +1671,96 @@ class DispatchWorkEngine(_Base):
                 git_context=self._task_git_context(task),
                 spawned_by="_dispatch_pr_gate_work",
             )
+        # DevOps second-reviewer slot (the infra review gate, Stage 3,
+        # flag-gated) - runs AFTER the primary pass above so the existing
+        # gate is never starved: devops-1 only ever joins a gate the primary
+        # reviewer has already been routed for. No pre-claim (the agent
+        # co-claims itself via claim_gate_review; the co-claim marker leaves
+        # the primary reviewer's ownership untouched) and one seat fleet-wide
+        # (``is_agent_active`` prevents double-spawn across ticks).
+        for task in tasks:
+            await self._dispatch_devops_gate_review(task)
+
+    async def _dispatch_devops_gate_review(self, task: dict[str, Any]) -> None:
+        """Spawn devops-1 for ONE awaiting_pr_review task whose diff hits the
+        project's declared infra globs and which still lacks a devops verdict
+        for the current PR head. Skips silently when the flag is off,
+        devops-1 is already active, the task was handled this tick, or the
+        predicate/verdict lookup fails (fail-closed: never spawn the second
+        reviewer on an unverifiable predicate - the primary reviewer's flow
+        is unaffected either way)."""
+        if not settings.devops_enabled:
+            return
+        reviewer = "devops-1"
+        if self._is_task_handled_this_tick(task.get("id")):
+            return
+        if self._is_agent_active(reviewer):
+            return
+        if not await self._devops_gate_verdict_missing(task):
+            return
+        # Respawn circuit breaker - parity with the primary gate dispatch.
+        if await self._pm_respawn_should_gate(reviewer, task):
+            return
+        await self.spawn_agent(
+            agent_id=reviewer,
+            task_id=task["id"],
+            initial_prompt=self._build_devops_gate_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_pr_gate_work",
+        )
+
+    async def _devops_gate_verdict_missing(self, task: dict[str, Any]) -> bool:
+        """Whether this gate task still needs a devops verdict for its
+        CURRENT head: the infra predicate applies AND no ``passed`` verdict
+        in ``notes_structured["devops_review"]`` matches the PR's head SHA.
+        False (skip) on any lookup failure - a transient DB/git error must
+        not spawn the second reviewer blind."""
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.gateway.choreographer import (
+            devops_gate as devops_gate_lib,
+        )
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+        from roboco.services.git import GitService
+        from roboco.services.task import TaskService
+
+        raw_id = task.get("id")
+        try:
+            task_id = UUID(str(raw_id))
+        except (TypeError, ValueError):
+            return False
+        try:
+            async with get_db_context() as db:
+                svc = TaskService(db)
+                t = await svc.get(task_id)
+                if t is None or not t.branch_name:
+                    return False
+                record = devops_gate_lib.devops_verdict_record(t)
+                if record is not None and record.get("verdict") == "passed":
+                    head_sha: str | None = None
+                    slug = task.get("project_slug")
+                    pr_number = task.get("pr_number")
+                    if slug and pr_number:
+                        head_sha = await GitService(db).get_pr_head_sha(
+                            str(slug), int(pr_number)
+                        )
+                    if devops_gate_lib.verdict_satisfies_head(record, head_sha):
+                        return False
+                parent = await resolve_parent_branch(t, svc)
+                changed = await GitService(db).list_changed_files(
+                    branch_name=t.branch_name, preferred_parent=parent
+                )
+                return await devops_gate_lib.infra_gate_applies(
+                    svc, t, changed_files=list(changed)
+                )
+        except Exception as exc:
+            logger.warning(
+                "devops gate predicate lookup failed; skipping spawn",
+                task_id=raw_id,
+                error=str(exc),
+            )
+            return False
 
     async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
         """

@@ -12489,6 +12489,67 @@ class TaskService(BaseService):
             enforce_competing_claimant=False,
         )
 
+    async def devops_gate_co_claim(
+        self, devops_agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """DevOps co-review claim on a gate task (no state transition).
+
+        The floating DevOps agent's second-reviewer claim (the infra review
+        gate, flag-gated): records ONLY the ``devops_gate_claimant`` marker.
+        Unlike ``pr_gate_claim`` it deliberately never touches ``assigned_to``
+        / ``claimed_by`` / ``active_claimant_id`` - the primary PR reviewer
+        keeps ownership and its single-claimant lock, and devops's later
+        pr_pass / pr_fail ride the co-claim marker instead of ownership.
+
+        Returns None (no write) when the flag is off (defense in depth -
+        nothing spawns devops-1 with the flag off anyway), the task is not in
+        awaiting_pr_review, or a DIFFERENT devops agent already co-claimed
+        (there is exactly one in the fleet, so this is a pure invariant).
+        Re-claim by the SAME agent is idempotent.
+        """
+        from roboco.config import settings
+
+        if not settings.devops_enabled:
+            return None
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
+        if task is None or task.status != TaskStatus.AWAITING_PR_REVIEW:
+            return None
+        existing = markers.get_devops_gate_claimant(task)
+        if existing is not None and existing != str(devops_agent_id):
+            self.log.warning(
+                "devops_gate_co_claim rejected - gate task already co-claimed",
+                task_id=str(task_id),
+                existing_claimant=existing,
+                requesting_agent=str(devops_agent_id),
+            )
+            return None
+        markers.set_devops_gate_claimant(task, devops_agent_id)
+        await self.session.flush()
+        return task
+
+    async def devops_gate_co_unclaim(
+        self, devops_agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """Release ONLY the devops co-claim marker (the co-reviewer's exit).
+
+        Never touches the primary reviewer's claim/ownership or the task
+        status - ``unclaim_for_agent``'s invariants stay intact for whoever
+        holds the real claim. Returns None when this agent holds no co-claim.
+        """
+        task = await self.get(task_id)
+        if task is None or not markers.get_devops_gate_claimant(task):
+            return None
+        if markers.get_devops_gate_claimant(task) != str(devops_agent_id):
+            return None
+        markers.clear_devops_gate_claimant(task)
+        await self.session.flush()
+        return task
+
     async def submit_for_review(
         self, agent_id: UUID, task_id: UUID, notes: str
     ) -> TaskTable | None:
@@ -12524,6 +12585,10 @@ class TaskService(BaseService):
         task.assigned_to = None
         task.claimed_by = None
         task.active_claimant_id = cast("Any", None)
+        # A fresh gate entry is a fresh review: drop any devops co-claim left
+        # over from an earlier round (pr_pass/pr_fail already clear it; this
+        # covers the out-of-band exits - cancel/escalate round trips).
+        markers.clear_devops_gate_claimant(task)
         self._validate_and_set_status(
             task,
             TaskStatus.AWAITING_PR_REVIEW,
@@ -12568,7 +12633,10 @@ class TaskService(BaseService):
         task.claimed_by = cast("Any", pm.id) if pm is not None else None
         task.active_claimant_id = cast("Any", None)
         # The gate reviewer's claim on THIS task ends here — release the
-        # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking).
+        # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking), and
+        # the devops co-claim with it: a verdict-bearing note + a fresh gate
+        # entry are the only ways it may be re-established.
+        markers.clear_devops_gate_claimant(task)
         await self._clear_agent_current_task(captured, task_id)
         self._validate_and_set_status(
             task,
@@ -12668,7 +12736,10 @@ class TaskService(BaseService):
         task.claimed_by = cast("Any", pm.id) if pm is not None else None
         task.active_claimant_id = cast("Any", None)
         # The gate reviewer's claim on THIS task ends here — release the
-        # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking).
+        # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking), and
+        # the devops co-claim with it (a needs_revision round must re-run the
+        # infra review from scratch on the new head).
+        markers.clear_devops_gate_claimant(task)
         await self._clear_agent_current_task(captured, task_id)
         self._validate_and_set_status(
             task,

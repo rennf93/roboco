@@ -321,6 +321,35 @@ def pr_review_conflict(
     return None
 
 
+class DevopsReviewContent(_Content):
+    """The floating DevOps agent's infra-review verdict on a gate task.
+
+    Stored under ``notes_structured["devops_review"]`` (structured-only: no
+    legacy TEXT mirror column, so it is absent from ``_MIRROR_COLUMN``). Kept
+    in its OWN slot rather than ``pr_review`` so a DevOps verdict can never
+    overwrite the primary PR reviewer's note. ``head_sha`` is the assembled
+    PR's head SHA at verdict time: the pr_pass precondition requires a
+    ``passed`` verdict whose ``head_sha`` matches the PR's CURRENT head, so a
+    verdict auto-expires the moment new commits advance the PR (the re-arm).
+    """
+
+    summary: str
+    verdict: Verdict
+    head_sha: str | None = None
+
+    @field_validator("summary")
+    @classmethod
+    def _nontrivial_summary(cls, v: str) -> str:
+        return reject_trivial(v, field="summary", min_chars=_SUMMARY_MIN)
+
+    def render_markdown(self) -> str:
+        parts = [
+            _section("Summary", self.summary),
+            _section("Verdict", self.verdict.value.replace("_", " ")),
+        ]
+        return _join(parts)
+
+
 class TaskDescription(_Content):
     """A well-formed task description (shared by PM delegate + Intake draft)."""
 
@@ -569,6 +598,7 @@ class AuditorNote(_Content):
 
 CONTENT_MODELS: dict[str, type[_Content]] = {
     "pr_review": PrReviewContent,
+    "devops_review": DevopsReviewContent,
     "task_description": TaskDescription,
     "resumption": ResumptionNote,
     "developer": DeveloperNote,

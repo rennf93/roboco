@@ -66,6 +66,7 @@ from roboco.api.routes.v1 import flow_auditor as flow_auditor_module
 from roboco.api.routes.v1 import flow_board as flow_board_module
 from roboco.api.routes.v1 import flow_cell_pm as flow_cell_pm_module
 from roboco.api.routes.v1 import flow_dev as flow_dev_module
+from roboco.api.routes.v1 import flow_devops as flow_devops_module
 from roboco.api.routes.v1 import flow_doc as flow_doc_module
 from roboco.api.routes.v1 import flow_main_pm as flow_main_pm_module
 from roboco.api.routes.v1 import flow_pr_reviewer as flow_pr_reviewer_module
@@ -272,6 +273,7 @@ def _mount_v1_routers(app: FastAPI) -> None:
     app.include_router(flow_board_module.router)
     app.include_router(flow_auditor_module.router)
     app.include_router(flow_pr_reviewer_module.router)
+    app.include_router(flow_devops_module.router)
     app.include_router(do_module.router)
 
 

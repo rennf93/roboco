@@ -344,6 +344,16 @@
     },
     {
       "allowed_roles": [
+        "devops"
+      ],
+      "composes": [],
+      "description": "Record the DevOps infra-review verdict (pass) on an assembled-PR gate task WITHOUT transitioning it: the primary reviewer's pr_pass then composes. Use pr_fail instead to reject the PR.",
+      "name": "record_devops_review",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
         "cell_pm",
         "main_pm"
       ],

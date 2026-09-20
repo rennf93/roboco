@@ -1510,6 +1510,19 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         next_hint=_next_hint_pr_fail,
     ),
+    "record_devops_review": IntentSpec(
+        name="record_devops_review",
+        allowed_roles=frozenset({Role.DEVOPS}),
+        description=(
+            "Record the DevOps infra-review verdict (pass) on an assembled-PR"
+            " gate task WITHOUT transitioning it: the primary reviewer's"
+            " pr_pass then composes. Use pr_fail instead to reject the PR."
+        ),
+        composes=(),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
+    ),
     # Phase 3: documenter verbs
     "claim_doc_task": IntentSpec(
         name="claim_doc_task",
