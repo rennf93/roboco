@@ -547,6 +547,23 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # DevOps agent (floating infra role)
+    # ==========================================================================
+    # devops-1 (Role.DEVOPS, board-team floater) authors infra changes in any
+    # project's clone through the same claim-based delegation every other
+    # agent uses. Default-off: the agent exists on the panel but nothing
+    # spawns it and no materialization routes to it.
+    devops_enabled: bool = Field(
+        default=False,
+        description=(
+            "Routes infra tasks to the floating DevOps agent (devops-1): PM "
+            "delegation + board materialization pre-assignment spawn it, and "
+            "it authors through the normal developer lifecycle (PR before "
+            "QA). Off => the agent is seeded but inert: nothing spawns it."
+        ),
+    )
+
+    # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)
     # ==========================================================================
     # Calls go agent -> roboco-search MCP -> /api/research/* -> ResearchService

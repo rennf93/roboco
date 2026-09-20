@@ -57,6 +57,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "When a task's work is already done (commits + open PR + all acceptance criteria addressed + no open findings), submit it for QA in one i_am_done call instead of 3-6 turns — skips the retroactive plan, journal tracing, and local quality (CI-green proxy) gates. Off by default: the standard path is unchanged until you arm this.",
   task_budgets_enabled:
     "Enforce per-project monthly and per-task cost caps (USD). A claim is refused once a project's monthly budget is reached; an active task whose own explicitly-set budget is breached is stopped and blocked, and you're notified. Set the caps on the project edit dialog and a task's detail page — a project/task with no cap set is never capped.",
+  devops_enabled:
+    "Routes infra tasks to the floating DevOps agent (devops-1): PM delegation + board materialization pre-assignment spawn it, and it authors through the normal developer lifecycle (PR before QA). Off by default: the agent is seeded but inert: nothing spawns it.",
   rag_auto_update_enabled:
     "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled:
@@ -131,6 +133,8 @@ const FLAG_TOOLTIPS: Record<string, string> = {
   possibilities_matrix_enabled:
     "Fast-paths work that's already been done elsewhere.",
   task_budgets_enabled: "Caps agent spend per project (monthly) and per task.",
+  devops_enabled:
+    "Spawns the floating DevOps agent (devops-1) for assigned infra work.",
   rag_auto_update_enabled:
     "Keeps the RAG knowledge index automatically refreshed.",
   transcript_prune_enabled:

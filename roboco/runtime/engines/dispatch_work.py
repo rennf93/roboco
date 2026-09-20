@@ -1410,6 +1410,39 @@ class DispatchWorkEngine(_Base):
             spawned_by="_spawn_pending_dev",
         )
 
+    def _dev_dispatch_assignee_ok(self, task: dict[str, Any], agent_slug: str) -> bool:
+        """The assignee role/task_type guard for `_dev_dispatch_one`, kept
+        out-of-line for the xenon budget.
+
+        The dispatcher previously trusted whatever ``assigned_to`` named, so
+        a documentation task accidentally assigned to a developer agent would
+        silently spawn the dev. QA/PM/board assignees belong to other
+        dispatchers (`_dispatch_pm_work`, the QA-pool path) and skip
+        silently; only an actual role/task_type mismatch is warned.
+
+        DevOps lane (Stage 1, flag-gated): the floating devops author's
+        assigned cell-team tasks ride this same generic assigned-work spawn
+        path (pending -> _spawn_pending_dev, rework ->
+        _handle_dev_existing_owner) only while the flag is armed; off means
+        byte-for-byte today (nothing spawns devops-1).
+        """
+        assignee_role = get_agent_role(agent_slug)
+        if assignee_role == "devops":
+            if not settings.devops_enabled:
+                return False
+        elif assignee_role not in ("developer", "documenter", "unknown"):
+            return False
+        if self._dev_dispatch_role_matches(task, agent_slug):
+            return True
+        logger.warning(
+            "dev dispatch: role/task_type mismatch — skipping spawn",
+            task_id=task.get("id"),
+            task_type=task.get("task_type"),
+            assignee_slug=agent_slug,
+            assignee_role=assignee_role,
+        )
+        return False
+
     async def _dev_dispatch_one(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
@@ -1438,19 +1471,8 @@ class DispatchWorkEngine(_Base):
         # Tasks owned by PM/board/QA roles aren't this dispatcher's lane;
         # `_dispatch_pm_work` and the QA-pool path own them. Silently skip
         # so the warning only fires on actual dev/doc misassignments.
-        if agent_slug:
-            assignee_role = get_agent_role(agent_slug)
-            if assignee_role not in ("developer", "documenter", "unknown"):
-                return
-            if not self._dev_dispatch_role_matches(task, agent_slug):
-                logger.warning(
-                    "dev dispatch: role/task_type mismatch — skipping spawn",
-                    task_id=task.get("id"),
-                    task_type=task.get("task_type"),
-                    assignee_slug=agent_slug,
-                    assignee_role=assignee_role,
-                )
-                return
+        if agent_slug and not self._dev_dispatch_assignee_ok(task, agent_slug):
+            return
 
         if agent_slug and status in (
             "needs_revision",

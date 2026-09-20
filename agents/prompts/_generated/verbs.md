@@ -321,8 +321,11 @@ real tools live in their agent_sdk drivers, not role_config.
 | `give_me_work` | `give_me_work()` |
 | `i_am_done` | `i_am_done(task_id: UUID, notes: str = '', resolved_findings: list[ResolvedFindingInput] = PydanticUndefined)` |
 | `i_am_idle` | `i_am_idle()` |
+| `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None, steps: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
+| `open_pr` | `open_pr(task_id: UUID)` |
 | `pr_fail` | `pr_fail(task_id: UUID, issues: list[str] = PydanticUndefined, findings: list[str | Any] = PydanticUndefined)` |
 | `pr_pass` | `pr_pass(task_id: UUID, notes: str)` |
+| `sync_branch` | `sync_branch(task_id: UUID, stash: bool = False)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
 
 ### Content (do) tools

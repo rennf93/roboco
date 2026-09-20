@@ -12,6 +12,7 @@
     ],
     "devops": [
       "awaiting_pr_review",
+      "needs_revision",
       "pending"
     ],
     "documenter": [
@@ -255,7 +256,8 @@
     },
     {
       "allowed_roles": [
-        "developer"
+        "developer",
+        "devops"
       ],
       "composes": [
         "claim",
@@ -268,7 +270,8 @@
     },
     {
       "allowed_roles": [
-        "developer"
+        "developer",
+        "devops"
       ],
       "composes": [],
       "description": "Push the branch and open a PR. Atomic - preconditions (assignee, >=1 commit, no prior PR) checked BEFORE any git operation. After success, call i_am_done.",
@@ -398,7 +401,8 @@
     },
     {
       "allowed_roles": [
-        "developer"
+        "developer",
+        "devops"
       ],
       "composes": [],
       "description": "Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base \u2014 e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned \u2014 resolve by hand, commit, then sync_branch again. Pass stash=True to auto-stash uncommitted changes instead of refusing DIRTY_WORKSPACE; they are restored after the rebase.",

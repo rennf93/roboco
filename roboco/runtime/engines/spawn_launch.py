@@ -1577,6 +1577,11 @@ class SpawnLaunchEngine(_Base):
             is_coordination or owner_is_pm
         ):
             required = set(required) | {"cell_pm", "main_pm"}
+        # DevOps lane (Stage 1, flag-gated): a floating devops author owns
+        # needs_revision rework and the transient verifying state on its own
+        # tasks exactly like a developer. Off => today's refusal.
+        if settings.devops_enabled and status in ("needs_revision", "verifying"):
+            required = set(required) | {"devops"}
         ok = role in required if isinstance(required, set) else role == required
         if ok:
             return None

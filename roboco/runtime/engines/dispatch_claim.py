@@ -1021,6 +1021,12 @@ class DispatchClaimEngine(_Base):
         task_type = task.get("task_type")
         if task_type == "documentation":
             return role == "documenter"
+        # DevOps authors infra work, which is code-typed like a developer's
+        # task; a doc-typed assignment is as much a mismatch for it as for a
+        # dev. The dispatcher's flag gate decides whether devops is spawnable
+        # at all: this matcher only answers the type question.
+        if role == "devops":
+            return settings.devops_enabled
         # `code` / `research` / `planning` / `administrative` / `design` all
         # route through dev or PM; only the doc-task case is unambiguous.
         return role == "developer"

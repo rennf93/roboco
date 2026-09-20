@@ -429,6 +429,12 @@ STATUS_GRAPH: dict[Status, frozenset[Status]] = _build_status_graph()
 
 _PM_ROLES: frozenset[Role] = frozenset({Role.CELL_PM, Role.MAIN_PM})
 _DEV_ROLES: frozenset[Role] = frozenset({Role.DEVELOPER})
+# Stage-1 authoring lane: the DevOps agent authors infra changes through the
+# SAME claim -> plan -> open_pr -> i_am_done lifecycle a developer rides (same
+# TaskType.code, same PR-before-QA rule, same gates). It gains no QA or
+# reviewer verbs here; its gate-review surface is claim_gate_review/pr_pass/
+# pr_fail, and the infra-matched precondition is Stage 3.
+_DEVOPS_AUTHOR_ROLES: frozenset[Role] = frozenset({Role.DEVOPS})
 _QA_ROLES: frozenset[Role] = frozenset({Role.QA})
 _DOC_ROLES: frozenset[Role] = frozenset({Role.DOCUMENTER})
 
@@ -481,7 +487,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "set_plan": ActionSpec(
         name="set_plan",
-        allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES),
+        allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES | _DEVOPS_AUTHOR_ROLES),
         source_statuses=frozenset({Status.CLAIMED}),
         target_status=None,
         allowed_task_types=None,
@@ -531,7 +537,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "submit_verification": ActionSpec(
         name="submit_verification",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         source_statuses=frozenset({Status.IN_PROGRESS}),
         target_status=Status.VERIFYING,
         allowed_task_types=None,
@@ -541,7 +547,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "submit_qa": ActionSpec(
         name="submit_qa",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         source_statuses=frozenset({Status.VERIFYING}),
         target_status=Status.AWAITING_QA,
         allowed_task_types=None,
@@ -766,10 +772,13 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     Role.HEAD_MARKETING: frozenset(),
     Role.AUDITOR: frozenset(),
     Role.PR_REVIEWER: frozenset({Status.PENDING, Status.AWAITING_PR_REVIEW}),
-    # DevOps mirrors the PR reviewer's claim edges: it picks up new review
-    # tasks (PENDING) and claims gate reviews without transitioning
-    # (AWAITING_PR_REVIEW via claim_gate_review).
-    Role.DEVOPS: frozenset({Status.PENDING, Status.AWAITING_PR_REVIEW}),
+    # DevOps claim edges: it authors through the developer lifecycle (PENDING
+    # for delegated/materialized work, NEEDS_REVISION to recover a QA-failed
+    # or bounced task, exactly the developer set) and claims gate reviews
+    # without transitioning (AWAITING_PR_REVIEW via claim_gate_review).
+    Role.DEVOPS: frozenset(
+        {Status.PENDING, Status.NEEDS_REVISION, Status.AWAITING_PR_REVIEW}
+    ),
     Role.CEO: frozenset(),
 }
 
@@ -1218,7 +1227,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "i_will_work_on": IntentSpec(
         name="i_will_work_on",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         description=(
             "Claim a task, set the plan, and transition to in_progress."
             " Atomic - preconditions checked before any state mutation."
@@ -1258,7 +1267,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "open_pr": IntentSpec(
         name="open_pr",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         description=(
             "Push the branch and open a PR. Atomic - preconditions"
             " (assignee, >=1 commit, no prior PR) checked BEFORE any git"
@@ -1289,7 +1298,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "sync_branch": IntentSpec(
         name="sync_branch",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         description=(
             "Rebase your task's branch onto its current base THROUGH the gate"
             " (raw git is denied). Use when your branch has fallen behind its"

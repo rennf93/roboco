@@ -167,7 +167,7 @@ PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_prog
 
 Claim a task, set the plan, and transition to in_progress. Atomic - preconditions checked before any state mutation.
 
-**Allowed roles:** developer
+**Allowed roles:** developer, devops
 
 **Composes:** claim → set_plan
 
@@ -178,7 +178,7 @@ Claim a task, set the plan, and transition to in_progress. Atomic - precondition
 
 Push the branch and open a PR. Atomic - preconditions (assignee, >=1 commit, no prior PR) checked BEFORE any git operation. After success, call i_am_done.
 
-**Allowed roles:** developer
+**Allowed roles:** developer, devops
 
 **Composes:** (no atomic actions)
 
@@ -278,7 +278,7 @@ Cell PM opens the cell→root PR and moves the cell task into the PR-review gate
 
 Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base — e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned — resolve by hand, commit, then sync_branch again. Pass stash=True to auto-stash uncommitted changes instead of refusing DIRTY_WORKSPACE; they are restored after the rebase.
 
-**Allowed roles:** developer
+**Allowed roles:** developer, devops
 
 **Composes:** (no atomic actions)
 

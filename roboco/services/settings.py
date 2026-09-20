@@ -90,6 +90,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
         "Possibilities matrix (work-already-done fast path)",
     ),
     ("task_budgets_enabled", "Task/project cost budgets"),
+    ("devops_enabled", "DevOps agent (floating infra role)"),
     ("rag_auto_update_enabled", "RAG auto-update"),
     ("transcript_prune_enabled", "Transcript pruning"),
     ("gateway_health_enabled", "Gateway-health recovery"),

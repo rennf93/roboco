@@ -129,6 +129,17 @@ _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
         TaskStatus.PENDING,
         TaskStatus.NEEDS_REVISION,
     },
+    # DevOps authoring lane: the floating devops agent claims delegated /
+    # materialized PENDING work and re-claims NEEDS_REVISION after a QA fail
+    # or pr-fail bounce: the same developer set the spec (CLAIM_RULES) grants
+    # for the author path. Its third spec edge, AWAITING_PR_REVIEW, is the
+    # no-transition gate-review claim and routes through pr_gate_claim ->
+    # _qa_or_doc_claim, which never consults this map (the same reason
+    # PR_REVIEWER has no entry here).
+    "devops": {
+        TaskStatus.PENDING,
+        TaskStatus.NEEDS_REVISION,
+    },
 }
 
 # Statuses a task may be escalated FROM into BLOCKED. The strict transition
@@ -4253,6 +4264,14 @@ class TaskService(BaseService):
 
         # Management roles can claim any task
         if agent_role in self._MANAGEMENT_ROLES:
+            return None
+
+        # DevOps lane (flag-gated): the floating devops author claims its
+        # assigned task in any cell, mirroring the spec's _ORG_WIDE_ROLES
+        # exemption. Off => today's team refusal (nothing spawns devops-1).
+        from roboco.config import settings
+
+        if agent_role == "devops" and settings.devops_enabled:
             return None
 
         # Regular agents must match team
