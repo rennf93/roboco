@@ -39,6 +39,7 @@ const ROLE_LABELS: Record<AgentRole, string> = {
   [AgentRole.HEAD_MARKETING]: "Head Marketing",
   [AgentRole.AUDITOR]: "Auditor",
   [AgentRole.PR_REVIEWER]: "PR Reviewer",
+  [AgentRole.DEVOPS]: "DevOps",
   [AgentRole.MAIN_PM]: "Main PM",
   [AgentRole.CELL_PM]: "Cell PM",
   [AgentRole.DEVELOPER]: "Developer",

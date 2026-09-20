@@ -10,6 +10,10 @@
       "needs_revision",
       "pending"
     ],
+    "devops": [
+      "awaiting_pr_review",
+      "pending"
+    ],
     "documenter": [
       "awaiting_documentation",
       "pending"
@@ -52,6 +56,7 @@
     },
     {
       "allowed_roles": [
+        "devops",
         "pr_reviewer"
       ],
       "composes": [],
@@ -161,6 +166,7 @@
       "allowed_roles": [
         "cell_pm",
         "developer",
+        "devops",
         "documenter",
         "main_pm",
         "pr_reviewer",
@@ -188,7 +194,8 @@
     },
     {
       "allowed_roles": [
-        "developer"
+        "developer",
+        "devops"
       ],
       "composes": [
         "submit_verification",
@@ -204,6 +211,7 @@
         "auditor",
         "cell_pm",
         "developer",
+        "devops",
         "documenter",
         "head_marketing",
         "main_pm",
@@ -297,6 +305,7 @@
     },
     {
       "allowed_roles": [
+        "devops",
         "pr_reviewer"
       ],
       "composes": [
@@ -309,6 +318,7 @@
     },
     {
       "allowed_roles": [
+        "devops",
         "pr_reviewer"
       ],
       "composes": [
@@ -437,6 +447,7 @@
       "allowed_roles": [
         "cell_pm",
         "developer",
+        "devops",
         "documenter",
         "main_pm",
         "pr_reviewer",
@@ -559,6 +570,7 @@
     {
       "action": "pr_pass",
       "roles": [
+        "devops",
         "pr_reviewer"
       ],
       "source": "awaiting_pr_review",
@@ -577,6 +589,7 @@
     {
       "action": "claim",
       "roles": [
+        "devops",
         "pr_reviewer"
       ],
       "source": "awaiting_pr_review",
@@ -585,6 +598,7 @@
     {
       "action": "pr_fail",
       "roles": [
+        "devops",
         "pr_reviewer"
       ],
       "source": "awaiting_pr_review",

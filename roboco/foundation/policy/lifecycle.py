@@ -229,6 +229,12 @@ class StatusTransition:
 # Status transitions (predecessor canon: STATUS_TRANSITIONS.md)
 # ---------------------------------------------------------------------------
 
+# The PR-review-gate reviewer set: the PR reviewer plus the DevOps floater
+# (a full second reviewer on infra-matched PRs). Inert at Stage 0: nothing
+# dispatches gate work to devops-1 yet. Defined here (above the transition
+# table) because the gate's StatusTransition rows reference it.
+_DEVOPS_ROLES: frozenset[Role] = frozenset({Role.PR_REVIEWER, Role.DEVOPS})
+
 _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
     # PM setup
     StatusTransition(Status.BACKLOG, Status.PENDING, "activate", None),
@@ -310,19 +316,19 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         Status.AWAITING_PR_REVIEW,
         Status.CLAIMED,
         "claim",
-        frozenset({Role.PR_REVIEWER}),
+        _DEVOPS_ROLES,
     ),
     StatusTransition(
         Status.AWAITING_PR_REVIEW,
         Status.AWAITING_PM_REVIEW,
         "pr_pass",
-        frozenset({Role.PR_REVIEWER}),
+        _DEVOPS_ROLES,
     ),
     StatusTransition(
         Status.AWAITING_PR_REVIEW,
         Status.NEEDS_REVISION,
         "pr_fail",
-        frozenset({Role.PR_REVIEWER}),
+        _DEVOPS_ROLES,
     ),
     # PM completes / escalates
     StatusTransition(
@@ -444,7 +450,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     "claim": ActionSpec(
         name="claim",
         allowed_roles=frozenset(
-            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | {Role.PR_REVIEWER}
+            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | _DEVOPS_ROLES
         ),
         source_statuses=frozenset(
             {
@@ -587,7 +593,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     # reviewer passes or fails it. pr_pass/pr_fail mirror qa_pass/qa_fail.
     "submit_for_review": ActionSpec(
         name="submit_for_review",
-        allowed_roles=_PM_ROLES,
+        allowed_roles=frozenset(_PM_ROLES | {Role.DEVOPS}),
         source_statuses=frozenset({Status.IN_PROGRESS}),
         target_status=Status.AWAITING_PR_REVIEW,
         allowed_task_types=None,
@@ -597,7 +603,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "pr_pass": ActionSpec(
         name="pr_pass",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         source_statuses=frozenset({Status.AWAITING_PR_REVIEW}),
         target_status=Status.AWAITING_PM_REVIEW,
         allowed_task_types=None,
@@ -607,7 +613,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "pr_fail": ActionSpec(
         name="pr_fail",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         source_statuses=frozenset({Status.AWAITING_PR_REVIEW}),
         target_status=Status.NEEDS_REVISION,
         allowed_task_types=None,
@@ -760,6 +766,10 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     Role.HEAD_MARKETING: frozenset(),
     Role.AUDITOR: frozenset(),
     Role.PR_REVIEWER: frozenset({Status.PENDING, Status.AWAITING_PR_REVIEW}),
+    # DevOps mirrors the PR reviewer's claim edges: it picks up new review
+    # tasks (PENDING) and claims gate reviews without transitioning
+    # (AWAITING_PR_REVIEW via claim_gate_review).
+    Role.DEVOPS: frozenset({Status.PENDING, Status.AWAITING_PR_REVIEW}),
     Role.CEO: frozenset(),
 }
 
@@ -794,6 +804,7 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "fe-pr-reviewer": "frontend",
     "ux-pr-reviewer": "ux_ui",
     "cell-pr-reviewer-2": None,  # shared cell-gate overflow, serves all cells
+    "devops-1": None,  # floating infra agent, serves any project
     "ceo": None,
 }
 
@@ -1196,6 +1207,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
                 Role.CELL_PM,
                 Role.MAIN_PM,
                 Role.PR_REVIEWER,
+                Role.DEVOPS,
             }
         ),
         description="Return your most-actionable task or signal idle.",
@@ -1264,7 +1276,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "i_am_done": IntentSpec(
         name="i_am_done",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | {Role.DEVOPS}),
         description=(
             "Submit work for QA. Auto-runs in_progress->verifying then"
             " verifying->awaiting_qa. Strict - PR must be open (call"
@@ -1309,7 +1321,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     "unclaim": IntentSpec(
         name="unclaim",
         allowed_roles=frozenset(
-            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | {Role.PR_REVIEWER}
+            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | _DEVOPS_ROLES
         ),
         description=(
             "Voluntarily release a claim back to pending. The"
@@ -1383,6 +1395,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
                 Role.PROMPTER,
                 Role.SECRETARY,
                 Role.PR_REVIEWER,
+                Role.DEVOPS,
             }
         ),
         description=(
@@ -1453,7 +1466,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     # internal delivery task between docs/submit and the PM merge.
     "claim_gate_review": IntentSpec(
         name="claim_gate_review",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         description=(
             "Claim an assembled-PR review task (awaiting_pr_review) WITHOUT"
             " transitioning it — mirrors QA's claim_review. The assembled diff"
@@ -1466,7 +1479,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "pr_pass": IntentSpec(
         name="pr_pass",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         description=(
             "Pass the assembled-PR review. Transitions awaiting_pr_review ->"
             " awaiting_pm_review so the PM can merge."
@@ -1478,7 +1491,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "pr_fail": IntentSpec(
         name="pr_fail",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         description=(
             "Fail the assembled-PR review with concrete issues. Transitions"
             " awaiting_pr_review -> needs_revision, routed back like a QA fail."
@@ -1910,6 +1923,7 @@ _ORG_WIDE_ROLES: frozenset[Role] = frozenset(
         Role.HEAD_MARKETING,
         Role.AUDITOR,
         Role.PR_REVIEWER,
+        Role.DEVOPS,
     }
 )
 

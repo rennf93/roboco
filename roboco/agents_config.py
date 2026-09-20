@@ -677,6 +677,20 @@ def _check_pr_reviewer_a2a(to_role: str) -> tuple[bool, str | None]:
     return False, f"PR reviewers only A2A the owning PM, not {to_role}s."
 
 
+def _check_devops_a2a(to_role: str) -> tuple[bool, str | None]:
+    """Check A2A permissions for the DevOps floater.
+
+    Same surface as the PR reviewer (it is a reviewer-adjacent floater with no
+    fixed cell): its one initiation target is the owning PM (cell PM / Main PM)
+    for verdict and blocker delivery on the infra work it authors or reviews.
+    Everything else rides the task itself. It never initiates to Board or CEO;
+    it replies inside CEO-opened DMs (statefully enforced in the reply budget).
+    """
+    if to_role in ("cell_pm", "main_pm"):
+        return True, None
+    return False, f"DevOps only A2As the owning PM, not {to_role}s."
+
+
 def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
     """
     Check if from_agent can send A2A directly to to_agent.
@@ -721,6 +735,7 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
         "main_pm": _check_main_pm_a2a(to_role, to_team),
         "cell_pm": _check_cell_pm_a2a(from_team, to_agent, to_role, to_team),
         "pr_reviewer": _check_pr_reviewer_a2a(to_role),
+        "devops": _check_devops_a2a(to_role),
         "auditor": _check_auditor_a2a(),
     }
     if from_role in handlers:
@@ -746,6 +761,10 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
     # PR reviewer only reaches the owning PM; everything else goes on the PR.
     if get_agent_role(from_agent) == "pr_reviewer":
         return "PR reviewers A2A only the owning PM; post other feedback on the PR."
+
+    # DevOps mirrors the PR reviewer's lateral reach (owning PM only).
+    if get_agent_role(from_agent) == "devops":
+        return "DevOps A2As only the owning PM; post other feedback on the task."
 
     # Cross-cell routing
     if from_team and to_team and from_team != to_team:

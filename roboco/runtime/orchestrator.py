@@ -489,6 +489,10 @@ AGENT_IMAGES: dict[str, str] = {
     "fe-pr-reviewer": "roboco-agent-pr-reviewer",
     "ux-pr-reviewer": "roboco-agent-pr-reviewer",
     "cell-pr-reviewer-2": "roboco-agent-pr-reviewer",
+    # DevOps: floating infra author + second gate reviewer. Needs a full
+    # authoring toolchain, so it reuses the backend dev image; the floater
+    # adds no new image, Dockerfile, or compose service.
+    "devops-1": "roboco-agent-dev-be",
     # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
     INTAKE_AGENT_ID: "roboco-agent-prompter",
     # Secretary — persistent Agent-SDK driver with gated CEO authority.
@@ -987,6 +991,7 @@ GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset(
         "head_marketing",
         "auditor",
         "pr_reviewer",
+        "devops",
     }
 )
 

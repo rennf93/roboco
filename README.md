@@ -1,6 +1,6 @@
 # RoboCo
 
-AI Agents Company - A virtual organization of 25 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
+AI Agents Company - A virtual organization of 26 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=qB5fXv5LeHc">
@@ -45,7 +45,7 @@ CEO (You, the human)
                    └── UX/UI Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
 ```
 
-The 25 agents = Intake + Secretary + PR Reviewer + the Board (3) + Main PM + the three 6-agent cells (18). Agents run on Anthropic Claude by default, or on xAI Grok, OpenAI Codex, Google Gemini, or Moonshot Kimi K3 (each on its own official CLI and subscription, no metered API key) — see the provider note under Configuration.
+The 26 agents = Intake + Secretary + PR Reviewer + DevOps + the Board (3) + Main PM + the three 6-agent cells (18). Agents run on Anthropic Claude by default, or on xAI Grok, OpenAI Codex, Google Gemini, or Moonshot Kimi K3 (each on its own official CLI and subscription, no metered API key) — see the provider note under Configuration.
 
 ## How it works
 
@@ -357,7 +357,7 @@ uv run mypy roboco/
 - [x] Database ORM (SQLAlchemy async)
 - [x] Task lifecycle state machine
 - [x] Multi-agent workspace management
-- [x] Agent prompts (25 agents)
+- [x] Agent prompts (26 agents)
 - [x] Messaging API
 - [x] Task API with full lifecycle
 - [x] Git operations API

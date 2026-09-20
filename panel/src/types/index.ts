@@ -36,6 +36,7 @@ export enum AgentRole {
   HEAD_MARKETING = "head_marketing",
   AUDITOR = "auditor",
   PR_REVIEWER = "pr_reviewer",
+  DEVOPS = "devops",
   MAIN_PM = "main_pm",
   CELL_PM = "cell_pm",
   DEVELOPER = "developer",

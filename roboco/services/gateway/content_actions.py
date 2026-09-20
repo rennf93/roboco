@@ -139,7 +139,7 @@ _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 # Notification sender + priority allowlists are canonical in
 # foundation.policy.communications. Derived as string frozensets here so
 # the existing call sites that compare strings keep working.
-_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
+_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter", "devops"})
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )

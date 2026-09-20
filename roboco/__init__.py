@@ -1,7 +1,7 @@
 """
 RoboCo - AI Agents Company
 
-A virtual organization of 25 AI agents + 1 human CEO,
+A virtual organization of 26 AI agents + 1 human CEO,
 designed to operate as a complete software development workforce.
 """
 

@@ -24,7 +24,7 @@ Claim awaiting_documentation. Returns evidence inline.
 
 Claim an assembled-PR review task (awaiting_pr_review) WITHOUT transitioning it — mirrors QA's claim_review. The assembled diff and the parent task's acceptance criteria are returned inline.
 
-**Allowed roles:** pr_reviewer
+**Allowed roles:** devops, pr_reviewer
 
 **Composes:** (no atomic actions)
 
@@ -109,7 +109,7 @@ Fail QA with concrete issues. Transitions to needs_revision.
 
 Return your most-actionable task or signal idle.
 
-**Allowed roles:** cell_pm, developer, documenter, main_pm, pr_reviewer, qa
+**Allowed roles:** cell_pm, developer, devops, documenter, main_pm, pr_reviewer, qa
 
 **Composes:** (no atomic actions)
 
@@ -127,7 +127,7 @@ Escalate to PM. Logs a struggle journal entry.
 
 Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa. Strict - PR must be open (call open_pr first) and >=1 commit.
 
-**Allowed roles:** developer
+**Allowed roles:** developer, devops
 
 **Composes:** submit_verification → submit_qa
 
@@ -138,7 +138,7 @@ Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa
 
 Signal you have no active work. PMs auto-pause owned in_progress tasks.
 
-**Allowed roles:** auditor, cell_pm, developer, documenter, head_marketing, main_pm, pr_reviewer, product_owner, prompter, qa, secretary
+**Allowed roles:** auditor, cell_pm, developer, devops, documenter, head_marketing, main_pm, pr_reviewer, product_owner, prompter, qa, secretary
 
 **Composes:** (no atomic actions)
 
@@ -209,7 +209,7 @@ Post one complete change-request to the external PR and finish the review task. 
 
 Fail the assembled-PR review with concrete issues. Transitions awaiting_pr_review -> needs_revision, routed back like a QA fail.
 
-**Allowed roles:** pr_reviewer
+**Allowed roles:** devops, pr_reviewer
 
 **Composes:** pr_fail
 
@@ -218,7 +218,7 @@ Fail the assembled-PR review with concrete issues. Transitions awaiting_pr_revie
 
 Pass the assembled-PR review. Transitions awaiting_pr_review -> awaiting_pm_review so the PM can merge.
 
-**Allowed roles:** pr_reviewer
+**Allowed roles:** devops, pr_reviewer
 
 **Composes:** pr_pass
 
@@ -316,7 +316,7 @@ PM unblocks a blocked task; restores pre-block state.
 
 Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) or a gate review (awaiting_pr_review) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper.
 
-**Allowed roles:** cell_pm, developer, documenter, main_pm, pr_reviewer, qa
+**Allowed roles:** cell_pm, developer, devops, documenter, main_pm, pr_reviewer, qa
 
 **Composes:** (no atomic actions)
 
