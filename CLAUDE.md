@@ -10,7 +10,7 @@ Contributions require a signed **Contributor License Agreement** (`CLA.md`), aut
 
 ## Project Overview
 
-**RoboCo** is an AI Agentic Company - a virtual organization of 25 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
+**RoboCo** is an AI Agentic Company - a virtual organization of 26 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
 
 ```
 CEO (Renzo - Human)
@@ -26,6 +26,7 @@ CEO (Renzo - Human)
               |
               +-- Main PM (coordinates all cells)
               (a second floating cell PR reviewer, cell-pr-reviewer-2, backs the four cell gates)
+              (a floating DevOps agent, devops-1, claims infra tasks on any project and co-reviews infra-file PRs at the gate, default-off via ROBOCO_DEVOPS_ENABLED)
                    |
                    +-- Backend Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
                    +-- Frontend Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
@@ -70,7 +71,7 @@ Git authentication is per-project: each project stores its own Fernet-encrypted 
 
 The lifecycle is defined in `roboco/foundation/policy/lifecycle.py` (`roboco/enforcement/task_lifecycle.py` is a backwards-compat shim over it). The non-obvious rules:
 
-- **PR before QA.** A developer opens the PR before `awaiting_qa` so QA and every later reviewer work off a real diff. Assembled cell->root and root->master PRs pass the in-path PR-review gate (`awaiting_pr_review`) before the PM merges; a zero-commit assembled branch waives the PR (`pr_waived` marker) instead of failing on GitHub's "No commits between".
+- **PR before QA.** A developer opens the PR before `awaiting_qa` so QA and every later reviewer work off a real diff. Assembled cell->root and root->master PRs pass the in-path PR-review gate (`awaiting_pr_review`) before the PM merges; when `ROBOCO_DEVOPS_ENABLED` is armed, a PR whose changed files hit the project's declared infra globs additionally requires the DevOps floater's verdict before `pr_pass` (full second reviewer, self-review excluded); a zero-commit assembled branch waives the PR (`pr_waived` marker) instead of failing on GitHub's "No commits between".
 - **Only the CEO merges master.** A root PR ends at `awaiting_ceo_approval`; the CEO approves (merge), requests changes, or cancels. Board roles never own a coordination root.
 - **Sequence is the bar.** A task cannot be claimed while a same-parent sibling with a strictly lower effective sequence is non-terminal (reachability-aware outside MegaTask batches). Cancelled siblings never block.
 - **Bounces are structured.** QA `fail_review`, `pr_fail`, PM `request_changes`, and `ceo_reject` write findings to `task_review_findings`; every open finding must be named in `resolved_findings` before `i_am_done` / `submit_up` / `submit_root` is accepted. Blocker/major findings are never waivable.
@@ -90,7 +91,7 @@ Agents never call the API or per-domain MCP tools directly. They go through two 
 
 ## Agent Providers
 
-Backends are pluggable (`roboco/llm/providers/`, `ProviderRegistry` keyed by `ModelProvider`): Claude Code (default), Grok, Gemini, Codex, Kimi. Routing resolves `(provider, model)` per agent at spawn with precedence `AGENT_SLUG > ROLE:complexity > ROLE > GLOBAL`, and a capability floor upgrades any below-floor Anthropic assignment to Sonnet because Haiku cannot emit the structured envelopes. Per-runtime auth and tool-scoping gotchas: `.claude/rules/agent-providers.md`.
+Backends are pluggable (`roboco/llm/providers/`, `ProviderRegistry` keyed by `ModelProvider`): Claude Code (default), Grok, Gemini, Codex, Kimi, OpenRouter, Nebius, Hummin. Routing resolves `(provider, model)` per agent at spawn with precedence `AGENT_SLUG > ROLE:complexity > ROLE > GLOBAL`, and a capability floor upgrades any below-floor Anthropic assignment to Sonnet because Haiku cannot emit the structured envelopes. Per-runtime auth and tool-scoping gotchas: `.claude/rules/agent-providers.md`.
 
 ## Feature Flags
 
@@ -98,7 +99,7 @@ Default-off subsystems are env-gated `ROBOCO_*_ENABLED` flags declared in `roboc
 
 ## Architectural Conventions Standard
 
-Each project can carry `.roboco/conventions.yml` (which definition kinds live in which modules, rules, waivers); RoboCo ships its own. When armed (`ROBOCO_CONVENTIONS_ENABLED`), a `block`-level finding from `python -m roboco.conventions check --root <repo> --files ...` refuses `i_am_done` and `pr_pass`; a false positive is relieved by a waiver committed in the branch, never by `# noqa` / `# type: ignore`. Details: `.claude/rules/conventions-standard.md`.
+Each project can carry `.roboco/conventions.yml` (which definition kinds live in which modules, rules, waivers, and which paths are infrastructure via the `infra:` globs the DevOps review gate reads); RoboCo ships its own. When armed (`ROBOCO_CONVENTIONS_ENABLED`), a `block`-level finding from `python -m roboco.conventions check --root <repo> --files ...` refuses `i_am_done` and `pr_pass`; a false positive is relieved by a waiver committed in the branch, never by `# noqa` / `# type: ignore`. Details: `.claude/rules/conventions-standard.md`.
 
 ## MegaTask
 
