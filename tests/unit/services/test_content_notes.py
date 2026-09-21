@@ -107,6 +107,10 @@ def test_content_type_for_role_maps_section_roles() -> None:
     assert content_type_for_role("auditor") == "auditor"
     assert content_type_for_role("cell_pm") == "resumption"
     assert content_type_for_role("main_pm") == "resumption"
+    # The floating devops author rides the DEVELOPER lifecycle (its i_am_done
+    # demands the dev_notes handoff), so it authors the developer section
+    # rather than getting one of its own (found by the e2e devops arc).
+    assert content_type_for_role("devops") == "developer"
 
 
 def test_content_type_for_role_none_for_sectionless_roles() -> None:

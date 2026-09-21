@@ -1010,3 +1010,74 @@ async def test_note_decision_omitted_narrative_still_records() -> None:
 
     assert env.as_dict()["error"] is None
     deps.journal.write_entry.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_devops_co_claimant_may_note_gate_task_held_by_reviewer() -> None:
+    """The devops gate co-claimant journals on the assembled-PR gate task it
+    does NOT own: the co-claim marker (not ownership) authorizes content.
+    Found by the e2e devops gate arc — record_devops_review demands a
+    learning note, and the note gate refused the marker-only co-claimant."""
+    agent_id = uuid4()
+    reviewer_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="devops")
+    task_svc.get_active_task_for_agent.return_value = None
+    task_obj = MagicMock(
+        id=task_id,
+        assigned_to=reviewer_id,
+        active_claimant_id=reviewer_id,
+        status="awaiting_pr_review",
+        orchestration_markers={"devops_gate_claimant": str(agent_id)},
+    )
+    task_svc.get.return_value = task_obj
+    journal_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text=(
+            "Infra review learning: the assembled docker/ change only adds a "
+            "declarative config file — no compose topology, no image, no "
+            "workflow wiring; the change is contained and reversible."
+        ),
+        scope="learning",
+        task_id=task_id,
+    )
+
+    assert env.error is None, env.as_dict()
+
+
+@pytest.mark.asyncio
+async def test_devops_without_co_claim_still_blocked_on_gate_task() -> None:
+    """Without the co-claim marker the exemption does not fire: a devops
+    agent (or anyone) posting to the reviewer-owned gate task is refused."""
+    agent_id = uuid4()
+    reviewer_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="devops")
+    task_svc.get_active_task_for_agent.return_value = None
+    task_svc.get.return_value = MagicMock(
+        id=task_id,
+        assigned_to=reviewer_id,
+        active_claimant_id=reviewer_id,
+        status="awaiting_pr_review",
+        notes_structured=None,
+    )
+    journal_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="Learning entry without any co-claim — must be refused.",
+        scope="learning",
+        task_id=task_id,
+    )
+
+    assert env.error == "not_authorized"

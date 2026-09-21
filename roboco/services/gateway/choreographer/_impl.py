@@ -1369,12 +1369,35 @@ class Choreographer:
         agent = await self.task.agent_for(agent_id)
         if agent is None or not isinstance(agent.team, str):
             return None
+        if self._devops_lane_exempt(agent):
+            return None
         try:
             team = Team(agent.team)
         except ValueError:
             return None
         has_access = await self.project.check_agent_access(project.id, agent.id, team)
         return agent_access_denied_guard(task, project.id, agent.id, has_access)
+
+    @staticmethod
+    def _devops_lane_exempt(agent: Any) -> bool:
+        """Flag-gated devops exemption from the project access rule.
+
+        The floating devops author works ANY project's clone, so the
+        project-level assigned-cell rule must exempt it exactly like
+        TaskService's team-level exemption does (found by the e2e devops
+        gate arc: the task-level carve-out alone wedged every
+        delegation-lane claim). Off => the cell rule applies — nothing
+        spawns devops-1 with the flag off anyway.
+        """
+        raw_role = getattr(agent, "role", None)
+        if raw_role is None:
+            return False
+        role = raw_role.value if hasattr(raw_role, "value") else raw_role
+        if role != spec_module.Role.DEVOPS.value:
+            return False
+        from roboco.config import settings
+
+        return settings.devops_enabled
 
     async def _sequencing_claim_guard(self, task: Any) -> Envelope | None:
         """Both halves of the claim-time sequencing bar in one call — an
@@ -3957,7 +3980,15 @@ class Choreographer:
         if t.branch_name:
             budget = LegBudget(_settings.evidence_assembly_timeout_seconds)
             files_changed = await run_bounded_leg(
-                self.git.list_changed_files(branch_name=t.branch_name),
+                # Forward the submitting agent so the workspace resolves from
+                # ITS clone (same rule as _do_push_branch): by this point the
+                # transition already reassigned the task to QA, and a
+                # no-actor fallback lands on the cleared assignee or a
+                # workspace that was never cloned (found by the e2e devops
+                # delegation arc).
+                self.git.list_changed_files(
+                    branch_name=t.branch_name, actor_agent_id=agent_id
+                ),
                 default=[],
                 budget=budget,
                 leg="files_changed",
