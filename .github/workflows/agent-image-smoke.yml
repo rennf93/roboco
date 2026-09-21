@@ -206,6 +206,11 @@ jobs:
   devops-toolchain-smoke:
     name: Build devops image, verify the pinned infra toolchain runs
     runs-on: ubuntu-latest
+    permissions:
+      # The PR-comment step below posts the smoke report on the PR — same
+      # grant the playwright job carries (403 "not accessible by
+      # integration" without it, 2026-09-21).
+      pull-requests: write
 
     steps:
       - name: Checkout code
@@ -247,7 +252,11 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync('/tmp/devops-smoke-report.md', 'utf8');
+            // A failed build never creates the report file; comment the
+            // failure instead of crashing on ENOENT.
+            const body = fs.existsSync('/tmp/devops-smoke-report.md')
+              ? fs.readFileSync('/tmp/devops-smoke-report.md', 'utf8')
+              : 'The devops toolchain smoke did not produce a report — a build or smoke step failed before it ran.';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
