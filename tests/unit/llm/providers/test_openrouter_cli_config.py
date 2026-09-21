@@ -347,6 +347,33 @@ def test_main_writes_opencode_json(
     assert "tool.execute.before" in plugin_path.read_text(encoding="utf-8")
 
 
+def test_main_creates_missing_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1110: the agent image does not pre-create opencode's global config
+    home, so the render step must mkdir the parent itself. Regression: every
+    OpenRouter-routed spawn exited 1 on FileNotFoundError before the CLI
+    started. The plugin write already mkdir'd its parents; the config write
+    did not."""
+    mcp_path = tmp_path / "mcp-config.json"
+    mcp_path.write_text(json.dumps(_SAMPLE_MCP), encoding="utf-8")
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    plugin_path = tmp_path / ".config" / "opencode" / "plugins" / "guard.js"
+    system_prompt = tmp_path / "system-prompt.md"
+    system_prompt.write_text("blueprint", encoding="utf-8")
+
+    monkeypatch.setattr(oc, "OPENCODE_CONFIG_PATH", config_path)
+    monkeypatch.setattr(oc, "OPENCODE_PLUGIN_PATH", plugin_path)
+    monkeypatch.setattr(oc, "SYSTEM_PROMPT_PATH", system_prompt)
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
+    monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp_path))
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "anthropic/claude-sonnet-4")
+
+    assert oc.main([]) == 0
+    assert config_path.exists()
+    json.loads(config_path.read_text(encoding="utf-8"))
+
+
 def test_main_check_flag_passes_when_key_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -468,6 +468,10 @@ def main(argv: list[str] | None = None) -> int:
     base_url = os.environ.get("OPENROUTER_BASE_URL", settings.openrouter_base_url)
 
     config = render_config(role, model, base_url, mcp_path)
+    # The image does not pre-create opencode's global config home (#1110):
+    # without this, every OpenRouter-routed spawn died on FileNotFoundError
+    # before the CLI ever started.
+    OPENCODE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     OPENCODE_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
     write_bash_guard_plugin()
     return 0
