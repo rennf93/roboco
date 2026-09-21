@@ -98,3 +98,33 @@ def test_indexer_services_have_no_http_healthcheck() -> None:
                 f"{name}: an indexer service serves no HTTP, a healthcheck "
                 "can never pass"
             )
+
+
+def test_nginx_mounts_front_include_dir_in_every_compose() -> None:
+    """#1111: deploy/nginx.conf includes /etc/nginx/front/active-upstreams.conf
+    (the blue-green color switch), so EVERY compose file must mount the repo's
+    ./front directory at /etc/nginx/front. 2026-09-21 the registry compose
+    shipped without it and fresh `make quickstart` crash-looped nginx on the
+    missing include. The mount must be the DIRECTORY, not a file bind: a file
+    bind pins the inode and the deploy script's atomic tmp+mv swap would never
+    reach the running container."""
+    for name in _COMPOSE_FILES:
+        compose = yaml.safe_load((_REPO_ROOT / name).read_text())
+        nginx = compose["services"].get("nginx")
+        assert nginx is not None, f"{name}: no nginx service found"
+        volumes = [str(v) for v in (nginx.get("volumes") or [])]
+        dir_mount = any(
+            v.startswith("./front:") and v.endswith(":/etc/nginx/front:ro")
+            for v in volumes
+        )
+        assert dir_mount, (
+            f"{name}: nginx must mount ./front:/etc/nginx/front:ro (directory "
+            "bind, not a file bind) or the active-upstreams include in "
+            "deploy/nginx.conf crash-loops the container on a fresh install"
+        )
+        # And the included file must actually exist in the repo, so the mount
+        # is never empty on a clean clone.
+        assert (_REPO_ROOT / "front" / "active-upstreams.conf").is_file(), (
+            "front/active-upstreams.conf is missing from the repo; the nginx "
+            "include would 404 it and crash-loop roboco-nginx"
+        )

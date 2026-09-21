@@ -775,6 +775,16 @@ services:
       NGINX_ENVSUBST_FILTER: "^ROBOCO_"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      # The active-color include is mounted via its DIRECTORY, not as a file
+      # bind: a file bind pins the inode, so a host-side rewrite (or the
+      # deploy script's atomic tmp+mv swap) never reaches the running
+      # container and nginx keeps testing/serving the PREVIOUS color
+      # (2026-09-17 green flip: "host not found in upstream
+      # roboco-panel-blue" after the include already said green).
+      # Registry installs clone the repo, so ./front ships with it; missing
+      # this mount made fresh `make quickstart` crash-loop nginx on the
+      # include (#1111).
+      - ./front:/etc/nginx/front:ro
     depends_on:
       - panel
       - orchestrator
