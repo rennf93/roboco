@@ -29,6 +29,7 @@ class Company:
     pr_reviewer_id: Any
     ceo_id: Any
     hom_id: Any  # Head of Marketing — Board role
+    devops_id: Any = None  # floating DevOps — only seeded on demand below
 
 
 _COMPANY_CACHE: dict[str, Company] = {}
@@ -82,6 +83,18 @@ def seed_company(stack: E2EStack) -> Company:
         reviewer = agent("pr-reviewer-1", AgentRole.PR_REVIEWER, None)
         ceo = agent("ceo", AgentRole.CEO, None)
         hom = agent("head-marketing", AgentRole.HEAD_MARKETING, Team.BOARD)
+        # The floating DevOps agent, same canonical-fixed-UUID rationale as
+        # main-pm: devops_gate.devops_agent_id() resolves the static seed
+        # UUID, and every co-claim/dispatch path keys on that identity. The
+        # row is inert by itself — spawn and gate enforcement stay
+        # ROBOCO_DEVOPS_ENABLED-gated — but it must exist for the gate arc's
+        # co-claim to have a real agent behind it.
+        devops = agent(
+            "devops-1",
+            AgentRole.DEVOPS,
+            Team.BOARD,
+            agent_id=_foundation.AGENTS["devops-1"].uuid,
+        )
         await session.flush()
         out.ceo_id = ceo.id
         out.dev_id = dev.id
@@ -91,6 +104,7 @@ def seed_company(stack: E2EStack) -> Company:
         out.main_pm_id = main_pm.id
         out.pr_reviewer_id = reviewer.id
         out.hom_id = hom.id
+        out.devops_id = devops.id
 
     stack.run_db(_run)
     _COMPANY_CACHE["company"] = out
@@ -398,6 +412,9 @@ def dev_arc(
     workspace = stack.workspace_of(project_slug, "backend", "be-dev-1")
     workdir = workspace / ".worktrees" / tid[:8]
     assert workdir.is_dir(), f"per-task worktree missing at {workdir}"
+    # Nested paths are legal work (the devops gate arc writes docker/*):
+    # create the parent dirs rather than assuming a flat repo root.
+    (workdir / filename).parent.mkdir(parents=True, exist_ok=True)
     (workdir / filename).write_text(content)
 
     expect_ok(

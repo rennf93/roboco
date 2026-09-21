@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.claim_guards import agent_access_denied_guard
 
@@ -220,5 +221,47 @@ async def test_run_claim_guards_opt_in_true_fires_the_guard() -> None:
     env = await c._run_claim_guards(
         agent_id=agent_id, task=task, check_agent_access=True
     )
+    assert env is not None
+    assert env.as_dict()["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_devops_lane_exempt_while_flag_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag-gated devops exemption at the PROJECT level (mirrors
+    TaskService's team-level exemption): a floating devops-1 assigned to a
+    cell project's task claims it without an access grant. Found by the
+    e2e devops gate arc — the task-level carve-out alone wedged every
+    delegation-lane claim behind the assigned-cell rule."""
+    monkeypatch.setattr(settings, "devops_enabled", True)
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="board", role="devops"
+    )
+
+    assert (
+        await c._agent_access_claim_guard(_task_with_project(uuid4()), agent_id) is None
+    )
+    deps.project.check_agent_access.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_devops_off_still_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag off: the devops role gets no exemption — the assigned-cell rule
+    applies to it exactly like any other role."""
+    monkeypatch.setattr(settings, "devops_enabled", False)
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="board", role="devops"
+    )
+
+    env = await c._agent_access_claim_guard(_task_with_project(uuid4()), agent_id)
     assert env is not None
     assert env.as_dict()["error"] == "not_authorized"
