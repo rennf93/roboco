@@ -31,6 +31,7 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.services import decisions as decisions_pilots
 from roboco.services.base import BaseService
 from roboco.services.notification import NotificationService
 from roboco.services.project import get_project_service
@@ -163,6 +164,32 @@ class SelfHealEngine(BaseService):
                 await self._originate(observations)
         return observations
 
+    async def _decisions_transient_gate(
+        self, obs: RegressionObservation
+    ) -> "decisions_pilots.SelfHealGate":
+        """Best-effort Decisions state for the 6.1 pilot from what the
+        telemetry sample carries (workflow from the configured signal scope;
+        attempt number 1 since the fingerprint dedup means a fresh breach is
+        a first attempt). Any failure resolves to NO_VERDICT: origination
+        proceeds exactly as today."""
+        try:
+            return await decisions_pilots.self_heal_transient(
+                self.session,
+                repo=obs.repo_hint,
+                workflow=settings.self_heal_ci_workflow,
+                error_excerpt=obs.detail,
+                recent_commit_subjects=[],
+                attempt_number=1,
+                run_id=obs.fingerprint,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-open, never block the loop
+            self.log.warning(
+                "self-heal decisions gate failed; proceeding as today",
+                fingerprint=obs.fingerprint,
+                error=str(exc),
+            )
+            return decisions_pilots.SelfHealGate.NO_VERDICT
+
     async def _open_self_heal_task_ids_by_fp(self) -> dict[str, UUID]:
         """Map each open self-heal task's fingerprint to its task id.
 
@@ -282,6 +309,19 @@ class SelfHealEngine(BaseService):
                 )
                 break
             if obs.fingerprint in open_fps:
+                continue
+            # Decisions pilot 6.1 (spec): a typed transient-vs-regression
+            # verdict gates origination. NO_VERDICT (flag off, no healthy
+            # tier, backend failure, shadow mode) originates exactly as
+            # today; only an explicit SKIP suppresses this sweep's task.
+            gate = await self._decisions_transient_gate(obs)
+            if gate is decisions_pilots.SelfHealGate.SKIP:
+                self.log.info(
+                    "self-heal: decisions verdict says transient; skipping "
+                    "origination this sweep",
+                    repo=obs.repo_hint,
+                    fingerprint=obs.fingerprint,
+                )
                 continue
             project = await project_svc.get_by_slug(obs.repo_hint)
             if project is None or project.id is None:

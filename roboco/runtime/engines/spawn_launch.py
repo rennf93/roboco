@@ -82,6 +82,12 @@ if TYPE_CHECKING:
 else:
     _Base = object
 
+# Decisions pilot 6.3 (complexity): only judge tasks whose description is
+# meaty enough for a routing verdict, and map the 0-2 score onto the
+# complexity vocabulary the routing resolver already speaks.
+_DECISIONS_COMPLEXITY_MIN_DESC_CHARS = 80
+_DECISIONS_COMPLEXITY_TIERS = ("low", "medium", "high")
+
 
 class SpawnLaunchEngine(_Base):
     """Mixin holding the "spawn_launch" methods moved out of AgentOrchestrator."""
@@ -1678,13 +1684,15 @@ class SpawnLaunchEngine(_Base):
                 if task_id:
                     try:
                         result = await db.execute(
-                            select(TaskTable.estimated_complexity).where(
-                                TaskTable.id == task_id
-                            )
+                            select(TaskTable).where(TaskTable.id == task_id)
                         )
-                        row = result.scalar_one_or_none()
-                        if row is not None:
-                            complexity = row.value.lower()
+                        task = result.scalar_one_or_none()
+                        if task is not None:
+                            if task.estimated_complexity is not None:
+                                complexity = task.estimated_complexity.value.lower()
+                            complexity = await self._decisions_complexity_override(
+                                db, task, static=complexity
+                            )
                     except Exception as e:
                         logger.debug(
                             "Task complexity lookup failed; using plain-role routing",
@@ -1709,6 +1717,44 @@ class SpawnLaunchEngine(_Base):
                 auth_token=None,
                 model_name=MODEL_MAP.get(short, short),
             )
+
+    async def _decisions_complexity_override(
+        self, db: Any, task: Any, *, static: str | None
+    ) -> str | None:
+        """Decisions pilot 6.3 (spec): a spawn-time complexity score for the
+        ``ROLE:complexity`` routing lookup. Applies only when the task
+        description is meaty enough to judge, the pilot mode is ON, and the
+        verdict clears the confidence floor; otherwise the static
+        ``estimated_complexity`` column stands (today's behavior). Worst
+        case is a slightly mismatched model tier on one agent session."""
+        from roboco.services import decisions
+
+        try:
+            description = task.description or ""
+            if len(description) < _DECISIONS_COMPLEXITY_MIN_DESC_CHARS:
+                return static
+            score, confident = await decisions.complexity_score(
+                db,
+                task_id=str(task.id),
+                task_title=task.title,
+                task_description=description,
+                acceptance_criteria=[
+                    str(entry.get("criterion"))
+                    for entry in (task.acceptance_criteria_status or [])
+                    if isinstance(entry, dict) and entry.get("criterion")
+                ],
+                parent_kind=None,
+            )
+            if not confident or score is None:
+                return static
+            return _DECISIONS_COMPLEXITY_TIERS[score]
+        except Exception as exc:  # noqa: BLE001 - fail-open to the static tier
+            logger.debug(
+                "decisions complexity override failed; using static tier",
+                task_id=str(getattr(task, "id", "")),
+                error=str(exc),
+            )
+            return static
 
     async def _record_spawn_session(
         self,

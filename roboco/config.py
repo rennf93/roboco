@@ -359,6 +359,78 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Decisions service (typed System One decisions, default-off)
+    # ==========================================================================
+    # A small orchestrator-side service that answers TYPED questions (choice /
+    # score / noul) with calibrated confidence at decision points that would
+    # otherwise be a full LLM call or a hardcoded heuristic. Two tiers behind
+    # one wire format: the self-hosted Laya sidecar (roboco-jev container,
+    # built-in default, no key, no spend) and the OpenRouter Decisions API
+    # (opt-in fallback). With the master flag off, every call site does exactly
+    # what it did before this service existed; decisions can only add
+    # behavior, never subtract, and nothing ever materializes on a verdict
+    # alone. See docs/internal/jev-decisions-spec.md.
+    decisions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the Decisions service. OFF = tier 3 everywhere "
+            "regardless of any other decisions setting: every pilot and verb "
+            "does exactly what it did before. ON = per-tier and per-pilot "
+            "settings decide what actually serves."
+        ),
+    )
+    decisions_model: str = Field(
+        default="convaiinnovations/laya",
+        description=(
+            "Checkpoint id reported to the Decisions backend. Vendor-neutral "
+            "by doctrine: the model slug appears only here, and swapping "
+            "checkpoint weights must never change anything above the client."
+        ),
+    )
+    decisions_base_url: str = Field(
+        default="http://roboco-jev:8100",
+        description=(
+            "Base URL of the self-hosted Decisions sidecar (the roboco-jev "
+            "container on the internal bridge). The sidecar mirrors the "
+            "OpenRouter Decisions wire shape at /api/alpha/decisions so the "
+            "client stays one implementation."
+        ),
+    )
+    decisions_tier_laya_enabled: bool = Field(
+        default=True,
+        description=(
+            "Serve decisions from the self-hosted sidecar when it is healthy. "
+            "The BUILT-IN default tier. Inert until the roboco-jev container "
+            "exists and the master flag is on."
+        ),
+    )
+    decisions_tier_openrouter_enabled: bool = Field(
+        default=False,
+        description=(
+            "OPT-IN fallback tier: serve decisions through the OpenRouter "
+            "Decisions API (typesafe/jev-1.13) when the sidecar is disabled "
+            "or unhealthy. Off by default - opting in is a deliberate spend "
+            "and requires an OpenRouter key on Settings -> AI Providers."
+        ),
+    )
+    decisions_timeout_s: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the local CPU sidecar (single attempt, no "
+            "retries; sweep cadence is the natural backoff)."
+        ),
+    )
+    decisions_openrouter_timeout_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the OpenRouter fallback tier (single "
+            "attempt, no retries)."
+        ),
+    )
+
+    # ==========================================================================
     # Agent runtime toolchain matching (default-off)
     # ==========================================================================
     # When enabled, an agent's workspace is provisioned with the Python the

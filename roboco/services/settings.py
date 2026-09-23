@@ -45,6 +45,12 @@ def _validate_bool(value: str) -> None:
         raise SettingValidationError("value must be 'true' or 'false'")
 
 
+def _validate_pilot_mode(value: str) -> None:
+    """``decisions.pilot.{slug}`` stores a tri-state: off | shadow | on."""
+    if value.strip().lower() not in ("off", "shadow", "on"):
+        raise SettingValidationError("value must be 'off', 'shadow', or 'on'")
+
+
 def _validate_maintenance_pause(value: str) -> None:
     """``maintenance_pause.{scope}`` stores a JSON payload (who/when/why/
     expiry), not a bare bool; shape enforced by the pure foundation
@@ -91,6 +97,9 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ),
     ("task_budgets_enabled", "Task/project cost budgets"),
     ("devops_enabled", "DevOps agent (floating infra role)"),
+    ("decisions_enabled", "Decisions service (typed System One verdicts)"),
+    ("decisions_tier_laya_enabled", "Decisions: self-hosted sidecar tier"),
+    ("decisions_tier_openrouter_enabled", "Decisions: OpenRouter fallback tier"),
     ("rag_auto_update_enabled", "RAG auto-update"),
     ("transcript_prune_enabled", "Transcript pruning"),
     ("gateway_health_enabled", "Gateway-health recovery"),
@@ -172,6 +181,24 @@ _VALIDATORS = {
     "board_program.war_room.enabled": _validate_bool,
     "board_program.barfly.enabled": _validate_bool,
     "board_program.dogfood.enabled": _validate_bool,
+    # Decisions service per-pilot mode (roboco.services.decisions). Dotted
+    # tri-state rows (off | shadow | on), not FEATURE_FLAGS (no roboco.config
+    # bool to fall back to): an unset key means off, which is exactly the
+    # pre-Decisions behavior for that pilot. The per-pilot chokepoint
+    # (decisions.pilot_mode) resolves these; keep the slug list in sync with
+    # roboco/services/decisions/pilots.py.
+    **dict.fromkeys(
+        (
+            "decisions.pilot.self_heal",
+            "decisions.pilot.parking",
+            "decisions.pilot.complexity",
+            "decisions.pilot.preflight_diff",
+            "decisions.pilot.triage_failure",
+            "decisions.pilot.steer_gate",
+            "decisions.pilot.transcript_notes",
+        ),
+        _validate_pilot_mode,
+    ),
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
     # Operator maintenance pause: one JSON payload per scope (see
     # roboco.services.maintenance_pause). Not a feature flag: it has no

@@ -19,6 +19,7 @@ import httpx
 from fastapi import status as http_status
 
 from roboco.config import settings
+from roboco.services import decisions
 from roboco.models.runtime import (
     AgentInstance,
     WaitingRecord,
@@ -80,6 +81,11 @@ if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
+
+# Decisions pilot 6.2 (parking): the retry_soon lane caps the park at this
+# window (a rolling limit that just reset should be re-probed quickly).
+# fail-open default is today's ladder via PARK_STANDARD.
+_DECISIONS_RETRY_SOON_RETRY_AFTER_S = 60.0
 
 
 class SpawnExitEngine(_Base):
@@ -1891,6 +1897,27 @@ class SpawnExitEngine(_Base):
         probe-resume loop clears it. The task stays claimed/in_progress and is
         retried when the provider recovers.
         """
+        # Decisions pilot 6.2 (spec): a typed routing choice over lanes that
+        # are all already legal behaviors. Below-threshold / no verdict /
+        # shadow resolves to park_standard (exactly today's behavior).
+        lane = await self._decisions_parking_lane(
+            agent_id, provider=provider, kind=kind, task_id=instance.current_task_id
+        )
+        if lane is decisions.ParkingLane.RETRY_SOON:
+            retry_after = min(retry_after, _DECISIONS_RETRY_SOON_RETRY_AFTER_S)
+            logger.info(
+                "decisions parking lane retry_soon: shortened retry-after",
+                agent_id=agent_id,
+                provider=provider,
+                retry_after=retry_after,
+            )
+        elif lane is decisions.ParkingLane.ESCALATE:
+            await self._notify_parking_escalation(
+                agent_id,
+                provider=provider,
+                kind=kind,
+                task_id=instance.current_task_id,
+            )
         await self._finalize_spawn_session(agent_id, exit_reason=kind)
         instance.state = AgentState.OFFLINE
         instance.container_id = None
@@ -1933,6 +1960,91 @@ class SpawnExitEngine(_Base):
             agent_id=agent_id,
             task_id=instance.current_task_id,
         )
+
+    async def _decisions_parking_lane(
+        self,
+        agent_id: str,
+        *,
+        provider: str,
+        kind: str,
+        task_id: Any,
+    ) -> "decisions.ParkingLane":
+        """Decisions pilot 6.2: pick the park lane from the recipient-free
+        state the parking path already holds (tracker probes, episode age,
+        fleet load). Opens its own short-lived DB session because the parking
+        path runs outside any request session; every failure inside is
+        fail-open (PARK_STANDARD)."""
+        try:
+            from roboco.db.base import get_session_factory
+
+            attempts = 1
+            minutes_since_first_attempt = 0.0
+            try:
+                state = await self._make_tracker(provider).get_state()
+                if isinstance(state, dict):
+                    attempts = max(int(state.get("probe_failures") or 0), 1)
+                    activated_at = state.get("activated_at")
+                    if activated_at:
+                        parsed = datetime.fromisoformat(str(activated_at))
+                        minutes_since_first_attempt = max(
+                            (datetime.now(UTC) - parsed).total_seconds() / 60,
+                            0.0,
+                        )
+            except Exception:  # noqa: BLE001 - tracker state is best-effort
+                pass
+
+            fleet_active_tasks = 0
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                from roboco.services.task import get_task_service
+
+                fleet_active_tasks = len(
+                    await get_task_service(db).list_in_progress_or_claimed()
+                )
+                return await decisions.parking_route(
+                    db,
+                    agent_slug=agent_id,
+                    verb="park",
+                    task_id=str(task_id) if task_id else None,
+                    upstream_status=None,
+                    attempts=attempts,
+                    minutes_since_first_attempt=minutes_since_first_attempt,
+                    fleet_active_tasks=fleet_active_tasks,
+                    run_id=f"{provider}:{kind}:{agent_id}",
+                )
+        except Exception as exc:  # noqa: BLE001 - fail-open to today's behavior
+            logger.debug(
+                "decisions parking lane unavailable; park_standard",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+            return decisions.ParkingLane.PARK_STANDARD
+
+    async def _notify_parking_escalation(
+        self, agent_id: str, *, provider: str, kind: str, task_id: Any
+    ) -> None:
+        """The escalate lane of pilot 6.2: a PM-facing ack-required note
+        about repeated park churn. Best-effort; never blocks the park."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            body = (
+                f"[decisions] Repeated {kind} parks on provider {provider} "
+                f"for agent {agent_id}"
+                + (f" (task {task_id})" if task_id else "")
+                + "; the parking router escalated instead of parking silently."
+            )
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent="main-pm",
+                body=body,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "failed to send parking escalation notification",
+                agent_id=agent_id,
+                error=str(exc),
+            )
 
     async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
         """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75).
