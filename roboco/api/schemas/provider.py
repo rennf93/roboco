@@ -95,6 +95,17 @@ class OpenRouterKeyStatus(BaseModel):
     enabled: bool
 
 
+class DecisionsStatus(BaseModel):
+    """Decisions-service tier status for the AI Providers warning banner.
+
+    Carries only booleans: the OpenRouter key itself never leaves the server.
+    """
+
+    decisions_enabled: bool
+    openrouter_opted_in: bool
+    openrouter_key_present: bool
+
+
 class SetOpenRouterKeyRequest(BaseModel):
     """Set or clear the OpenRouter API key.
 

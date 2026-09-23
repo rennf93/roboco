@@ -81,6 +81,15 @@ x-orchestrator-env: &orchestrator-env
   # itself is default-off (video_engine_enabled); this just points the
   # client at the sidecar for when it's armed.
   ROBOCO_VIDEO_RENDERER_BASE_URL: http://roboco-video-renderer:3001
+  # Decisions service (typed System One decisions). Carried at config
+  # defaults (master flag OFF, OpenRouter fallback tier OFF) so the
+  # published default stays conservative: the roboco-jev sidecar ships and
+  # runs healthy, but nothing resolves to Jev until the CEO arms it via
+  # .env / Settings -> Feature Flags.
+  ROBOCO_DECISIONS_ENABLED: ${ROBOCO_DECISIONS_ENABLED:-false}
+  ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-jev:8100}
+  ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
+  ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
   # Spawn the PRE-BUILT agent images from the same registry instead of
   # building them from source (the orchestrator pulls any it lacks).
   ROBOCO_AGENT_IMAGE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
@@ -446,6 +455,28 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # Jev sidecar (Laya tier of the Decisions service) - CPU-only typed
+  # decisions over the official onnxruntime path. Inert until
+  # ROBOCO_DECISIONS_ENABLED goes on; shipping it changes nothing by
+  # itself. No DB, no git, no credentials. NO `networks:` key: joins the
+  # implicit default network (roboco_default) next to ollama, NEVER
+  # roboco_data, and never exposed through nginx or on a host port.
+  # --------------------------------------------------------------------------
+  jev:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-jev:${ROBOCO_VERSION:-latest}
+    container_name: roboco-jev
+    restart: unless-stopped
+    mem_limit: "2g"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # Weights are baked into the image; the start period only covers
+      # checkpoint load from disk + the calibration check.
+      start_period: 60s
 
   # --------------------------------------------------------------------------
   # Agent image pre-pull (one-shot). Each pulls its published image then exits,
