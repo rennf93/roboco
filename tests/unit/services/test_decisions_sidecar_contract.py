@@ -12,7 +12,6 @@ a raw-temperature checkpoint would ship the published over-confident ECE
 
 import httpx
 import pytest
-
 from roboco.services.decisions.client import DecisionsClient, DecisionsEndpoint
 from roboco.services.decisions.schemas import parse_decisions_payload
 
@@ -54,7 +53,6 @@ def test_sidecar_response_parses_under_the_shared_schemas():
 async def test_sidecar_response_parses_through_the_real_client():
     """End-to-end through DecisionsClient with a transport that stands in
     for the container's HTTP surface."""
-    import httpx
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url).endswith("/api/alpha/decisions")
@@ -92,9 +90,7 @@ def test_calibration_fixture_known_probabilities():
             }
         }
     }
-    result = parse_decisions_payload(
-        fitted, tier="laya", session_id="calibration:1"
-    )
+    result = parse_decisions_payload(fitted, tier="laya", session_id="calibration:1")
     answer = result.answer("gate")
     assert answer.noul is not None
     # Fitted temperatures keep confidence in the calibrated band; the raw

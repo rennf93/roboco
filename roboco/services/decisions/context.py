@@ -64,7 +64,7 @@ async def recipient_work_context(session, recipient_slug: str) -> dict:
                 select(AgentTable).where(AgentTable.slug == recipient_slug)
             )
         ).scalar_one_or_none()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "recipient-context composer could not load the agent row",
             recipient=recipient_slug,
@@ -139,7 +139,7 @@ async def _sequence_position(session, task: TaskTable) -> int | None:
     try:
         earlier = (await session.execute(query)).scalar_one()
         return int(earlier) + 1
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("sequence position unavailable", error=str(exc))
         return None
 
@@ -161,7 +161,7 @@ async def _spawn_age_minutes(session, agent_id, task_id) -> float | None:
                 .limit(1)
             )
         ).scalar_one_or_none()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("spawn age unavailable", error=str(exc))
         return None
     if row is None:
@@ -186,7 +186,7 @@ async def _last_journal_scope(session, agent_id) -> str | None:
                 .limit(1)
             )
         ).scalar_one_or_none()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("last journal scope unavailable", error=str(exc))
         return None
     if row is None:

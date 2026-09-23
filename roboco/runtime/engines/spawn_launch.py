@@ -1748,7 +1748,7 @@ class SpawnLaunchEngine(_Base):
             if not confident or score is None:
                 return static
             return _DECISIONS_COMPLEXITY_TIERS[score]
-        except Exception as exc:  # noqa: BLE001 - fail-open to the static tier
+        except Exception as exc:
             logger.debug(
                 "decisions complexity override failed; using static tier",
                 task_id=str(getattr(task, "id", "")),

@@ -12,7 +12,7 @@ from typing import Any, Final, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
@@ -58,7 +58,59 @@ from roboco.models.a2a import (
 from roboco.models.base import Team
 from roboco.seeds.initial_data import AGENT_UUIDS
 
+# The Decisions service (steer gate + recipient-context composer). The
+# heavier submodules import lazily inside the gate methods; this module-level
+# import exists so the quoted annotations below resolve under get_type_hints().
+from roboco.services import decisions as decisions_pilots
+
 logger = structlog.get_logger()
+
+# Steering notes inject CONTEXT, never commands (spec 6.6 cognition
+# doctrine): the note names the message and the mode, and the
+# switch-consideration mode carries the recipient's own task list so the
+# agent can weigh the tradeoff instead of taking it on faith.
+_STEERING_TASK_LIST_CAP = 5
+
+
+def render_steering_note(
+    *,
+    mode: "decisions_pilots.SteerMode",
+    sender: str,
+    content: str,
+    recipient_context: dict,
+) -> str:
+    """Render a steering note for a context boundary (live turn queue or
+    spawn briefing). Pure function; the caller owns delivery."""
+    task_line = ""
+    current = recipient_context.get("current_task_id")
+    if current:
+        title = recipient_context.get("current_task_title", current)
+        status = recipient_context.get("current_task_status", "unknown")
+        task_line = f"Your current task: {title} ({status})."
+    others = (recipient_context.get("other_claimed_or_parked_tasks") or {}).get(
+        "titles", []
+    )[:_STEERING_TASK_LIST_CAP]
+    others_line = ""
+    if others:
+        others_line = "Other work you hold: " + "; ".join(others) + "."
+    if mode is decisions_pilots.SteerMode.STEER_SWITCH_CONSIDERATION:
+        header = (
+            "STEERING (weigh at this boundary): a peer message may change "
+            "your direction materially. Weigh switching tasks - the decision "
+            "stays yours and your PM's."
+        )
+    else:
+        header = (
+            "STEERING (apply within your current task): a peer message "
+            "changes what you should do next."
+        )
+    parts = [header, f"From `{sender}`: {content}"]
+    if task_line:
+        parts.append(task_line)
+    if others_line:
+        parts.append(others_line)
+    return "\n".join(parts)
+
 
 # The A2A_MESSAGE_SENT WS frame (operator live view) carries a briefing-sized
 # excerpt only — the full body remains readable via the existing REST message
@@ -1304,6 +1356,21 @@ class A2AService:
 
         await self._enforce_ceo_reply_budget(conv, conversation_id, from_agent)
 
+        # Decisions steer gate (spec 6.6): classify HOW the message should
+        # reach the recipient, against their actual work context. Runs after
+        # dedup (re-said messages are never re-classified) and before the
+        # row insert. CEO conversations are untouched: CEO-authored sends
+        # already wake the recipient through their own path.
+        to_agent = conv.agent_b if from_agent == conv.agent_a else conv.agent_a
+        steer_mode = await self._decisions_steer_mode(
+            conversation_id=conversation_id,
+            sender=from_agent,
+            recipient=to_agent,
+            content=content,
+            requires_response=requires_response,
+            purpose=skill or str(message_kind),
+        )
+
         # Create message
         msg = A2AMessageTable(
             conversation_id=conversation_id,
@@ -1313,6 +1380,7 @@ class A2AService:
             response_to_id=response_to_id,
             requires_response=requires_response,
             skill=skill,
+            steering=steer_mode.value if steer_mode is not None else None,
         )
         self.session.add(msg)
 
@@ -1342,14 +1410,157 @@ class A2AService:
         # (conversation-create + post-message) light up the /a2a view too, not
         # just the gateway send() wrapper. Suppressed duplicates return above
         # and deliberately don't re-emit.
-        to_agent = conv.agent_b if from_agent == conv.agent_a else conv.agent_a
         task_id = str(conv.task_id) if conv.task_id else None
         await self._publish_a2a_message_sent(
             model, task_id, from_agent, to_agent, skill
         )
         await self._materialize_vault_note(model, conv, from_agent, to_agent)
+        if steer_mode is not None:
+            await self._deliver_steering_live(
+                recipient=to_agent,
+                task_id=task_id,
+                mode=steer_mode,
+                message=model,
+            )
         await self._maybe_wake_ceo_recipient(from_agent, to_agent, task_id)
         return model
+
+    # =========================================================================
+    # DECISIONS STEER GATE (spec 6.6, cognition lane)
+    # =========================================================================
+
+    async def _decisions_steer_mode(
+        self,
+        *,
+        conversation_id: UUID,
+        sender: str,
+        recipient: str,
+        content: str,
+        requires_response: bool,
+        purpose: str | None,
+    ) -> "decisions_pilots.SteerMode | None":
+        """Run the steer gate for one peer DM. Returns the attached steering
+        mode, or ``None`` for ordinary pull-only delivery (gate off, no
+        verdict, below the confidence floor, CEO conversation, or any
+        failure). Steering injects CONTEXT, never commands; the who-may-
+        talk-to-whom validation already ran on this send path."""
+        if "ceo" in (sender, recipient):
+            return None
+        try:
+            from roboco.services.decisions.context import recipient_work_context
+
+            mode = await decisions_pilots.pilot_mode(self.session, "steer_gate")
+            if mode is decisions_pilots.PilotMode.OFF:
+                return None
+            recipient_context = await recipient_work_context(self.session, recipient)
+            gate = await decisions_pilots.steer_gate(
+                self.session,
+                message_id=str(conversation_id),
+                sender=sender,
+                purpose=purpose,
+                requires_response=requires_response,
+                message_body=content,
+                recipient_context=recipient_context,
+            )
+            if gate in (
+                decisions_pilots.SteerMode.STEER_SWITCH_CONSIDERATION,
+                decisions_pilots.SteerMode.STEER_NOW,
+            ):
+                return gate
+            return None
+        except Exception as exc:
+            logger.warning(
+                "steer gate unavailable; message stays pull-only",
+                conversation_id=str(conversation_id),
+                error=str(exc),
+            )
+            return None
+
+    async def _deliver_steering_live(
+        self,
+        *,
+        recipient: str,
+        task_id: str | None,
+        mode: "decisions_pilots.SteerMode",
+        message: A2AChatMessage,
+    ) -> None:
+        """Boundary (2) of the steering channel: when the recipient has a
+        live session (intake/secretary/parked), push the steering note into
+        its turn queue. No spawns are burned; a sessionless recipient picks
+        the message up at the next-spawn briefing instead. Best-effort."""
+        try:
+            from roboco.runtime.engines.dispatch_work import get_live_registry
+
+            session = None
+            if task_id:
+                session = get_live_registry().find_by_task(task_id)
+            if session is None:
+                return
+            from roboco.services.decisions.context import recipient_work_context
+
+            context = await recipient_work_context(self.session, recipient)
+            note = render_steering_note(
+                mode=mode,
+                sender=message.from_agent,
+                content=message.content,
+                recipient_context=context,
+            )
+            delivered = get_live_registry().deliver(session.session_id, note)
+            if delivered:
+                logger.info(
+                    "Steering note delivered into the recipient's live turn queue",
+                    recipient=recipient,
+                    mode=mode.value,
+                    session_id=session.session_id,
+                )
+        except Exception as exc:
+            logger.debug(
+                "steering live-delivery skipped",
+                recipient=recipient,
+                error=str(exc),
+            )
+
+    async def list_unread_steering_messages(self, agent_slug: str) -> list[dict]:
+        """Unread steering-marked messages for one agent, oldest first.
+
+        Rendered into the next-spawn briefing (boundary 1 of the steering
+        channel). Every message here is also still readable via read_a2a;
+        rendering never consumes it."""
+        rows = (
+            await self.session.execute(
+                select(A2AMessageTable, A2AConversationTable)
+                .join(
+                    A2AConversationTable,
+                    A2AMessageTable.conversation_id == A2AConversationTable.id,
+                )
+                .where(
+                    A2AConversationTable.status != A2AConversationStatus.CLOSED,
+                    A2AMessageTable.steering.isnot(None),
+                    A2AMessageTable.read_at.is_(None),
+                    or_(
+                        A2AConversationTable.agent_a == agent_slug,
+                        A2AConversationTable.agent_b == agent_slug,
+                    ),
+                )
+                .order_by(A2AMessageTable.created_at)
+                .limit(20)
+            )
+        ).all()
+        results = []
+        for msg, _conv in rows:
+            results.append(
+                {
+                    "message_id": str(msg.id),
+                    "conversation_id": str(msg.conversation_id),
+                    "from_agent": msg.from_agent,
+                    "content": msg.content or "",
+                    "steering": msg.steering,
+                    "created_at": msg.created_at.isoformat()
+                    if msg.created_at
+                    else None,
+                }
+            )
+        return results
 
     @staticmethod
     async def _materialize_vault_note(
@@ -1777,6 +1988,7 @@ class A2AService:
             content=msg.content or "(message content unavailable)",
             message_kind=msg.message_kind,
             skill=msg.skill,
+            steering=msg.steering,
             response_to_id=str(msg.response_to_id) if msg.response_to_id else None,
             requires_response=msg.requires_response,
             read_at=msg.read_at,

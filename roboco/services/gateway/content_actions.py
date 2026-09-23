@@ -7145,7 +7145,7 @@ class ContentActions:
                 diff, _files = await self.git.diff_and_files(
                     branch_name=t.branch_name, actor_agent_id=agent_id
                 )
-            except Exception as exc:  # noqa: BLE001 - a git failure is not a blocker
+            except Exception as exc:
                 diff = ""
                 logger.warning(
                     "preflight_diff could not read the working diff",
@@ -7155,7 +7155,10 @@ class ContentActions:
         if not diff.strip():
             return Envelope.invalid_state(
                 message="no working diff found on the task branch",
-                remediate="commit something to the task branch first, or use evidence to inspect state",
+                remediate=(
+                    "commit something to the task branch first, or use "
+                    "evidence to inspect state"
+                ),
             )
 
         from roboco.services import decisions
@@ -7177,11 +7180,7 @@ class ContentActions:
                 evidence={"advisory": True, "criteria": criteria},
                 context_briefing={},
             )
-        low = [
-            c["criterion"]
-            for c in result["criteria"]
-            if not c.get("addresses")
-        ]
+        low = [c["criterion"] for c in result["criteria"] if not c.get("addresses")]
         hints: list[str] = []
         if low:
             hints.append(
@@ -7233,7 +7232,7 @@ class ContentActions:
                 _diff, changed_files = await self.git.diff_and_files(
                     branch_name=t.branch_name, actor_agent_id=agent_id
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "triage_failure could not read changed files",
                     task_id=str(task_id),

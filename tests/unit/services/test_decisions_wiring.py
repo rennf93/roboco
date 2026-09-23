@@ -7,10 +7,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-import roboco.services.decisions as decisions
-import roboco.services.decisions.pilots as pilots
 from roboco.models.base import Complexity
+from roboco.services import decisions
+from roboco.services.decisions import pilots
 from roboco.services.self_heal_engine import SelfHealEngine
 
 

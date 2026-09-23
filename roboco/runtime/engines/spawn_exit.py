@@ -19,7 +19,6 @@ import httpx
 from fastapi import status as http_status
 
 from roboco.config import settings
-from roboco.services import decisions
 from roboco.models.runtime import (
     AgentInstance,
     WaitingRecord,
@@ -67,6 +66,7 @@ from roboco.runtime.orchestrator import (
     _system_api_headers,
     logger,
 )
+from roboco.services import decisions
 
 if TYPE_CHECKING:
     # Also bound into this module's real (non-TYPE_CHECKING) globals at
@@ -86,6 +86,9 @@ else:
 # window (a rolling limit that just reset should be re-probed quickly).
 # fail-open default is today's ladder via PARK_STANDARD.
 _DECISIONS_RETRY_SOON_RETRY_AFTER_S = 60.0
+# Decisions B28 (transcript auto-notes): an assistant text segment shorter
+# than this is chatter, never a durable note candidate.
+_TRANSCRIPT_NOTE_MIN_CHARS = 200
 
 
 class SpawnExitEngine(_Base):
@@ -1163,12 +1166,137 @@ class SpawnExitEngine(_Base):
                         estimated_cost_usd=cost,
                         doctrine_version=doctrine_version,
                     )
+
+            # Decisions B28 (spec 7.1 row B28 / rollout stage 4): the
+            # system-side transcript auto-notes pass. The transcript is
+            # already opened here for token sums; this classifies assistant
+            # segments for durable decisions/constraints. Off by default
+            # (decisions.pilot.transcript_notes); never blocks finalization.
+            await self._capture_transcript_notes(agent_id)
         except Exception as exc:
             logger.warning(
                 "Failed to finalize spawn session",
                 agent_id=agent_id,
                 error=str(exc),
             )
+
+    async def _capture_transcript_notes(self, agent_id: str) -> None:
+        """Persist journal entries for transcript segments the Decisions
+        B28 pilot marks as durable. Shadow mode logs verdicts only; ON mode
+        writes generalized journal entries tagged ``auto-note``. Fail-open
+        end to end: a finalization must never block on journaling."""
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.services.decisions.pilots import (
+                PilotMode,
+                pilot_mode,
+                transcript_note_worthy,
+            )
+
+            segments = self._assistant_segments_from_transcript(agent_id)
+            if not segments:
+                return
+            instance = self._instances.get(agent_id)
+            task_uuid = instance.current_task_id if instance else None
+            factory = get_session_factory()
+            async with factory() as db:
+                mode = await pilot_mode(db, "transcript_notes")
+                if mode is PilotMode.OFF:
+                    return
+                verdicts = await transcript_note_worthy(
+                    db,
+                    task_id=str(task_uuid) if task_uuid else "unattributed",
+                    segments=segments,
+                )
+                if verdicts is None or mode is not PilotMode.ON:
+                    return
+                from sqlalchemy import select as _select
+
+                from roboco.db.tables import AgentTable
+                from roboco.models.journal import GeneralEntryParams
+                from roboco.services.journal import get_journal_service
+
+                agent_uuid = (
+                    await db.execute(
+                        _select(AgentTable.id).where(AgentTable.slug == agent_id)
+                    )
+                ).scalar_one_or_none()
+                if agent_uuid is None:
+                    return
+                journal_svc = get_journal_service(db)
+                for segment, worthy in zip(segments, verdicts, strict=False):
+                    if not worthy:
+                        continue
+                    await journal_svc.add_general_entry(
+                        agent_uuid,
+                        GeneralEntryParams(
+                            title=f"Auto-note from {agent_id}: {segment[:80]}",
+                            content=segment,
+                            task_id=task_uuid,
+                            tags=["auto-note"],
+                        ),
+                    )
+                await db.commit()
+                logger.info(
+                    "Transcript auto-notes captured",
+                    agent_id=agent_id,
+                    worthy=sum(1 for v in verdicts if v),
+                    considered=len(verdicts),
+                )
+        except Exception as exc:
+            logger.debug(
+                "Transcript auto-notes pass skipped",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _assistant_segments_from_transcript(agent_id: str) -> list[str]:
+        """Assistant text segments (>= 200 chars) from the agent's newest
+        Claude Code transcript, oldest first. Mirrors the resolution of
+        _usage_from_transcript's durable fallback (newest .jsonl in the
+        agent's own projects dir)."""
+        import json as _json
+
+        projects = Path.home() / ".claude" / "projects"
+        try:
+            jsonl = [
+                f
+                for d in projects.glob(f"*-{agent_id}")
+                if d.is_dir()
+                for f in d.glob("*.jsonl")
+            ]
+            if not jsonl:
+                return []
+            newest = max(jsonl, key=lambda f: f.stat().st_mtime)
+            segments: list[str] = []
+            with newest.open() as fh:
+                for line in fh:
+                    try:
+                        entry = _json.loads(line)
+                    except ValueError:
+                        continue
+                    message = entry.get("message") if isinstance(entry, dict) else None
+                    if not isinstance(message, dict):
+                        continue
+                    if message.get("role") != "assistant":
+                        continue
+                    content = message.get("content")
+                    texts: list[str] = []
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text = block.get("text") or ""
+                                if text.strip():
+                                    texts.append(text)
+                    elif isinstance(content, str) and content.strip():
+                        texts.append(content)
+                    joined = "\n".join(texts).strip()
+                    if len(joined) >= _TRANSCRIPT_NOTE_MIN_CHARS:
+                        segments.append(joined)
+            return segments
+        except OSError:
+            return []
 
     @staticmethod
     def _doctrine_version_for_instance(instance: AgentInstance | None) -> str | None:
@@ -1990,7 +2118,7 @@ class SpawnExitEngine(_Base):
                             (datetime.now(UTC) - parsed).total_seconds() / 60,
                             0.0,
                         )
-            except Exception:  # noqa: BLE001 - tracker state is best-effort
+            except Exception:
                 pass
 
             fleet_active_tasks = 0
@@ -2012,7 +2140,7 @@ class SpawnExitEngine(_Base):
                     fleet_active_tasks=fleet_active_tasks,
                     run_id=f"{provider}:{kind}:{agent_id}",
                 )
-        except Exception as exc:  # noqa: BLE001 - fail-open to today's behavior
+        except Exception as exc:
             logger.debug(
                 "decisions parking lane unavailable; park_standard",
                 agent_id=agent_id,
@@ -2039,7 +2167,7 @@ class SpawnExitEngine(_Base):
                 to_agent="main-pm",
                 body=body,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "failed to send parking escalation notification",
                 agent_id=agent_id,

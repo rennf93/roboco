@@ -166,7 +166,7 @@ class SelfHealEngine(BaseService):
 
     async def _decisions_transient_gate(
         self, obs: RegressionObservation
-    ) -> "decisions_pilots.SelfHealGate":
+    ) -> decisions_pilots.SelfHealGate:
         """Best-effort Decisions state for the 6.1 pilot from what the
         telemetry sample carries (workflow from the configured signal scope;
         attempt number 1 since the fingerprint dedup means a fresh breach is
@@ -182,7 +182,7 @@ class SelfHealEngine(BaseService):
                 attempt_number=1,
                 run_id=obs.fingerprint,
             )
-        except Exception as exc:  # noqa: BLE001 - fail-open, never block the loop
+        except Exception as exc:
             self.log.warning(
                 "self-heal decisions gate failed; proceeding as today",
                 fingerprint=obs.fingerprint,

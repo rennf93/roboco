@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 import roboco.config as cfg
 from roboco.services.decisions import resolver
 from roboco.services.settings import SettingsService
@@ -23,9 +22,7 @@ def _mock_session() -> MagicMock:
 def _flag_stack(monkeypatch, *, enabled=True, laya=True, openrouter=False):
     monkeypatch.setattr(cfg.settings, "decisions_enabled", enabled)
     monkeypatch.setattr(cfg.settings, "decisions_tier_laya_enabled", laya)
-    monkeypatch.setattr(
-        cfg.settings, "decisions_tier_openrouter_enabled", openrouter
-    )
+    monkeypatch.setattr(cfg.settings, "decisions_tier_openrouter_enabled", openrouter)
 
 
 @pytest.mark.asyncio
@@ -178,9 +175,7 @@ async def test_pilot_mode_off_when_master_flag_off(monkeypatch):
     from roboco.services.decisions.pilots import PilotMode, pilot_mode
 
     monkeypatch.setattr(cfg.settings, "decisions_enabled", False)
-    monkeypatch.setattr(
-        SettingsService, "get", AsyncMock(return_value="on")
-    )
+    monkeypatch.setattr(SettingsService, "get", AsyncMock(return_value="on"))
     assert await pilot_mode(MagicMock(), "self_heal") is PilotMode.OFF
 
 

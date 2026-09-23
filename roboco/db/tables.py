@@ -1541,6 +1541,14 @@ class A2AMessageTable(Base):
     # unspecified messages. Migration 054.
     skill: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # Steering mode from the Decisions steer gate (spec 6.6): one of
+    # steer_switch_consideration | steer_now, or NULL for ordinary
+    # pull-only messages (queue_after_current / fyi_pull and every
+    # pre-Decisions row). A steering message is rendered into the
+    # recipient's NEXT context boundary (spawn briefing or live turn
+    # queue); it never interrupts a turn and never bypasses gates.
+    steering: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     # Threading
     response_to_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),

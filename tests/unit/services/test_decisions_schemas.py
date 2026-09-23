@@ -67,14 +67,14 @@ class TestParseLeniently:
         assert set(result.answers) == {"gate"}
 
     def test_missing_usage_and_model_tolerated(self):
-        result = parse_decisions_payload(
-            {"answers": {}}, tier="laya", session_id="s"
-        )
+        result = parse_decisions_payload({"answers": {}}, tier="laya", session_id="s")
         assert result.model is None
         assert result.usage.cost is None
 
     def test_non_numeric_confidence_becomes_none(self):
-        payload = {"answers": {"gate": {"type": "noul", "noul": "high", "confidence": "very"}}}
+        payload = {
+            "answers": {"gate": {"type": "noul", "noul": "high", "confidence": "very"}}
+        }
         result = parse_decisions_payload(payload, tier="laya", session_id="s")
         assert result.answer("gate").noul is None
         assert result.answer("gate").confidence is None

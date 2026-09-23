@@ -4,7 +4,6 @@ and the client-side token caps (spec section 9)."""
 
 import httpx
 import pytest
-
 import roboco.config as cfg
 from roboco.services.decisions.client import (
     DecisionsClient,
@@ -12,7 +11,7 @@ from roboco.services.decisions.client import (
     cap_state,
     cap_text,
 )
-from roboco.services.decisions.schemas import ChoiceQuestion, NoulQuestion
+from roboco.services.decisions.schemas import NoulQuestion
 
 _LAYA = DecisionsEndpoint(
     tier="laya",

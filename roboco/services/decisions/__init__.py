@@ -28,9 +28,9 @@ auto-pass any lifecycle gate.
 
 from roboco.services.decisions.client import DecisionsClient, DecisionsEndpoint
 from roboco.services.decisions.pilots import (
-    PilotMode,
     PILOT_SLUGS,
     ParkingLane,
+    PilotMode,
     SelfHealGate,
     SteerMode,
     TriageLane,
@@ -41,6 +41,7 @@ from roboco.services.decisions.pilots import (
     preflight_diff,
     self_heal_transient,
     steer_gate,
+    transcript_note_worthy,
     triage_failure,
 )
 from roboco.services.decisions.schemas import (
@@ -53,20 +54,20 @@ from roboco.services.decisions.schemas import (
 )
 
 __all__ = [
-    "DecisionsClient",
-    "DecisionsEndpoint",
-    "PilotMode",
     "PILOT_SLUGS",
-    "ParkingLane",
-    "SelfHealGate",
-    "SteerMode",
-    "TriageLane",
     "ChoiceQuestion",
     "DecisionAnswer",
     "DecisionQuestion",
     "DecisionResult",
+    "DecisionsClient",
+    "DecisionsEndpoint",
     "NoulQuestion",
+    "ParkingLane",
+    "PilotMode",
     "ScoreQuestion",
+    "SelfHealGate",
+    "SteerMode",
+    "TriageLane",
     "complexity_score",
     "decide_for_pilot",
     "parking_route",
@@ -74,5 +75,6 @@ __all__ = [
     "preflight_diff",
     "self_heal_transient",
     "steer_gate",
+    "transcript_note_worthy",
     "triage_failure",
 ]

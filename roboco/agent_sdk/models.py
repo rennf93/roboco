@@ -55,11 +55,9 @@ class SendResponse(BaseModel):
     delivery: str = Field(..., description="Delivery method: direct, notification")
 
 
-class InboxResponse(BaseModel):
-    """Response from polling the inbox."""
-
-    messages: list[A2AMessage] = Field(default_factory=list)
-    count: int = Field(default=0, description="Number of messages returned")
+# InboxResponse (the priority-inbox poll payload) was deleted with the dead
+# inbox scaffold: steering is orchestrator-composed and delivered at the
+# recipient's context boundaries, never queued in the container (spec 6.6).
 
 
 class HealthResponse(BaseModel):

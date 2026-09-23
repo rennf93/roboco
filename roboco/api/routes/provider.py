@@ -424,17 +424,13 @@ async def get_decisions_status(
         None,
     )
     return DecisionsStatus(
-        decisions_enabled=bool(
-            getattr(roboco_settings, "decisions_enabled", False)
-        ),
+        decisions_enabled=bool(getattr(roboco_settings, "decisions_enabled", False)),
         openrouter_opted_in=bool(
-            getattr(
-                roboco_settings, "decisions_tier_openrouter_enabled", False
-            )
+            getattr(roboco_settings, "decisions_tier_openrouter_enabled", False)
         ),
-        openrouter_key_present=bool(
-            openrouter.auth_token_encrypted
-        ) if openrouter is not None else False,
+        openrouter_key_present=bool(openrouter.auth_token_encrypted)
+        if openrouter is not None
+        else False,
     )
 
 

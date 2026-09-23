@@ -151,6 +151,31 @@ select = [
 # enum constraints. Bundling into a dataclass would hide enum hints from
 # the LLM and bring back invented values like nature='standard'.
 "roboco/mcp/**/*.py" = ["PLC0415", "PLR0913"]
+# The Decisions pilots carry the typed-state contract from the spec (each
+# pilot takes its caller's context as explicit named kwargs so the gate
+# state and the audit trail stay legible); bundling into a dataclass would
+# just relocate the same named fields behind one hop, same rationale as
+# roboco/mcp/** above.
+"roboco/services/decisions/**/*.py" = ["PLR0913"]
+# A2AService._decisions_steer_mode carries the steer-gate state contract
+# (conversation_id, sender, recipient, content, requires_response, purpose)
+# from the spec's question-state shape; bundling would hide the fields the
+# verdict is built from, same rationale as prompter.py above.
+"roboco/services/a2a.py" = ["PLR0913"]
+# The Decisions tests fake HTTP handlers that must accept (but not read)
+# the request object, fake session/service callables with unused args, and
+# assert against literal cap/threshold constants on purpose (the tests pin
+# the exact numbers); PLC0415 covers the call-time imports inside the bare
+# engine/mixin bodies under test.
+"tests/unit/services/test_decisions_*.py" = [
+    "ARG001",
+    "ARG005",
+    "ARG002",
+    "PLR2004",
+    "PLC0415",
+]
+"tests/unit/runtime/test_decisions_parking.py" = ["ARG001", "PLR2004", "PLC0415"]
+"tests/unit/gateway/test_content_actions_preflight_triage.py" = ["ARG001", "PLR2004"]
 # hummin_live_config embeds the pi-extension TypeScript source as a raw
 # string asset: the TS lines cannot be reflowed without changing the
 # generated extension, so E501 is ignored for exactly that file.

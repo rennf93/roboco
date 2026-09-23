@@ -35,15 +35,14 @@ logger = structlog.get_logger(__name__)
 _HEALTH_TTL_SECONDS = 30.0
 _health_cache: dict[str, tuple[float, bool]] = {}
 
-# Once-per-boot marker for the OpenRouter-key-missing CEO notification.
-_key_warning_sent = False
+# Once-per-boot marker for the OpenRouter-key-missing CEO notification
+# (dict, not a bare global, to keep mutation explicit).
+_BOOT_STATE = {"openrouter_key_warning_sent": False}
 
 
 async def resolve_endpoint(session) -> DecisionsEndpoint | None:
     """Pick the tier that should serve this call, or ``None`` for tier 3
     (every caller then does exactly what it did before Decisions existed)."""
-    global _key_warning_sent
-
     if not settings.decisions_enabled:
         return None
 
@@ -57,8 +56,11 @@ async def resolve_endpoint(session) -> DecisionsEndpoint | None:
     # The fallback is opted in but has no key (config, not an incident): one
     # ack-required CEO notification per boot naming the exact fix screen,
     # then resolve to Laya for the process lifetime if it is available.
-    if settings.decisions_tier_openrouter_enabled and not _key_warning_sent:
-        _key_warning_sent = True
+    if (
+        settings.decisions_tier_openrouter_enabled
+        and not _BOOT_STATE["openrouter_key_warning_sent"]
+    ):
+        _BOOT_STATE["openrouter_key_warning_sent"] = True
         await _notify_ceo_missing_openrouter_key(session)
 
     return None
@@ -104,7 +106,7 @@ async def _openrouter_api_key(session) -> str | None:
         return None
     try:
         return await get_provider_service(session).get_decrypted_token(row.id)
-    except Exception as exc:  # noqa: BLE001 - fail-open on any decrypt trouble
+    except Exception as exc:
         logger.warning(
             "could not decrypt OpenRouter key for the decisions fallback",
             error=str(exc),
@@ -124,7 +126,7 @@ async def _sidecar_healthy() -> bool:
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.get(f"{base}/health")
-            healthy = response.status_code == 200
+            healthy = response.status_code == httpx.codes.OK
     except (httpx.HTTPError, OSError) as exc:
         logger.debug("roboco-jev health probe failed", error=str(exc))
     _health_cache[base] = (now, healthy)
@@ -138,9 +140,8 @@ async def _sidecar_healthy() -> bool:
 
 def reset_health_cache() -> None:
     """Test hook: drop the cached probe and the boot warning marker."""
-    global _key_warning_sent
     _health_cache.clear()
-    _key_warning_sent = False
+    _BOOT_STATE["openrouter_key_warning_sent"] = False
 
 
 async def _notify_ceo_missing_openrouter_key(session) -> None:
@@ -168,7 +169,7 @@ async def _notify_ceo_missing_openrouter_key(session) -> None:
                 bypass_purpose_dedup=True,
             )
         )
-    except Exception as exc:  # noqa: BLE001 - the notification must never break resolution
+    except Exception as exc:
         logger.warning(
             "failed to send the OpenRouter-key-missing CEO notification",
             error=str(exc),

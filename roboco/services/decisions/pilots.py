@@ -231,7 +231,9 @@ async def self_heal_transient(
         "self_heal",
         mode,
         verdict.value,
-        "allow origination" if verdict is SelfHealGate.ORIGINATE else "skip origination",
+        "allow origination"
+        if verdict is SelfHealGate.ORIGINATE
+        else "skip origination",
         result,
     )
     return verdict
@@ -390,8 +392,7 @@ async def preflight_diff(
     for idx, criterion in enumerate(ordered):
         questions[f"criterion_{idx}"] = NoulQuestion(
             instructions=(
-                f"The diff plausibly addresses this acceptance criterion: "
-                f"{criterion}"
+                f"The diff plausibly addresses this acceptance criterion: {criterion}"
             )
         )
     questions["hygiene"] = NoulQuestion(
@@ -469,8 +470,7 @@ async def triage_failure(
                     "changed behavior connect to the failure."
                 ),
                 "flaky": (
-                    "Known or previously-flaky test failing independent of "
-                    "the diff."
+                    "Known or previously-flaky test failing independent of the diff."
                 ),
                 "environment": (
                     "Runner/environment failure such as timeout, network, or "
@@ -491,12 +491,72 @@ async def triage_failure(
         verdict = TriageLane(choice)
     except ValueError:
         verdict = TriageLane.UNKNOWN
-    if verdict is TriageLane.UNKNOWN or confidence is None or (
-        confidence < TRIAGE_CONFIDENCE_FLOOR
+    if (
+        verdict is TriageLane.UNKNOWN
+        or confidence is None
+        or (confidence < TRIAGE_CONFIDENCE_FLOOR)
     ):
         verdict = TriageLane.UNKNOWN
     log_action("triage_failure", mode, verdict.value, "advisory envelope", result)
     return verdict
+
+
+# ---------------------------------------------------------------------------
+# B28 transcript auto-notes (cognition lane, spec 7.1 row B28 / stage 4)
+# ---------------------------------------------------------------------------
+
+
+async def transcript_note_worthy(
+    session,
+    *,
+    task_id: str,
+    segments: list[str],
+) -> list[bool] | None:
+    """One noul per transcript segment: is this a durable decision or
+    constraint worth a journal entry? Returns a list aligned with
+    ``segments`` (True = worth persisting), or ``None`` when no verdict.
+    Durable knowledge is otherwise captured only if the agent self-reported
+    via `note`; this is the system-side capture pass at finalize. Advisory
+    to the journal: it never edits or gates anything."""
+    # Cap the batch: at most 20 segments per call, each head-capped.
+    capped = [s[:1500] for s in segments[:20]]
+    if not capped:
+        return []
+    questions = {
+        f"seg_{idx}": NoulQuestion(
+            instructions=(
+                "This session segment contains a durable decision, "
+                "constraint, or learning worth persisting to the agent's "
+                "journal."
+            )
+        )
+        for idx in range(len(capped))
+    }
+    mode, result = await decide_for_pilot(
+        session,
+        "transcript_notes",
+        {"task_id": task_id, "segments": capped},
+        questions,
+        session_id=f"notes:{task_id}",
+    )
+    if result is None:
+        return None
+    verdicts: list[bool] = []
+    for idx in range(len(capped)):
+        answer = result.answer(f"seg_{idx}")
+        noul = answer.noul if answer else None
+        verdicts.append(bool(noul is not None and noul >= TRANSCRIPT_NOTE_FLOOR))
+    log_action(
+        "transcript_notes",
+        mode,
+        f"{sum(verdicts)}/{len(verdicts)} worthy",
+        "journal entries" if mode is PilotMode.ON else "no-op (shadow)",
+        result,
+    )
+    return verdicts
+
+
+TRANSCRIPT_NOTE_FLOOR = 0.75
 
 
 # ---------------------------------------------------------------------------

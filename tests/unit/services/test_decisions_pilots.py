@@ -1,10 +1,10 @@
 """Verb/pilot-level tests for the Decisions pilots (spec section 6):
 gates, thresholds, shadow semantics, and the baked-in fail-open fallback."""
 
-import httpx
-import pytest
 from unittest.mock import AsyncMock
 
+import httpx
+import pytest
 import roboco.config as cfg
 from roboco.services.decisions import pilots
 from roboco.services.decisions.client import DecisionsClient, DecisionsEndpoint
@@ -42,12 +42,8 @@ def _arm(monkeypatch, *, mode=PilotMode.ON, payload=None, fail=False):
     """Arm the pilot stack: master flag on, chosen mode, laya endpoint, and a
     mocked transport returning ``payload`` (or failing)."""
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
-    monkeypatch.setattr(
-        pilots, "pilot_mode", AsyncMock(return_value=mode)
-    )
-    monkeypatch.setattr(
-        pilots, "resolve_endpoint", AsyncMock(return_value=_LAYA)
-    )
+    monkeypatch.setattr(pilots, "pilot_mode", AsyncMock(return_value=mode))
+    monkeypatch.setattr(pilots, "resolve_endpoint", AsyncMock(return_value=_LAYA))
 
     def handler(request: httpx.Request) -> httpx.Response:
         if fail:
@@ -123,9 +119,11 @@ async def test_self_heal_backend_failure_is_no_verdict(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_self_heal_shadow_behaves_as_off(monkeypatch):
-    _arm(monkeypatch, mode=PilotMode.SHADOW, payload=_payload(
-        {"gate": {"type": "noul", "noul": 0.9}}
-    ))
+    _arm(
+        monkeypatch,
+        mode=PilotMode.SHADOW,
+        payload=_payload({"gate": {"type": "noul", "noul": 0.9}}),
+    )
     verdict = await self_heal_transient(
         None,
         repo="r",
@@ -140,9 +138,12 @@ async def test_self_heal_shadow_behaves_as_off(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parking_confident_choice_is_used(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {"gate": {"type": "choice", "choice": "retry_soon", "confidence": 0.9}}
-    ))
+    _arm(
+        monkeypatch,
+        payload=_payload(
+            {"gate": {"type": "choice", "choice": "retry_soon", "confidence": 0.9}}
+        ),
+    )
     lane = await parking_route(
         None,
         agent_slug="backend-dev-1",
@@ -159,9 +160,12 @@ async def test_parking_confident_choice_is_used(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parking_low_confidence_falls_to_park_standard(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {"gate": {"type": "choice", "choice": "escalate", "confidence": 0.5}}
-    ))
+    _arm(
+        monkeypatch,
+        payload=_payload(
+            {"gate": {"type": "choice", "choice": "escalate", "confidence": 0.5}}
+        ),
+    )
     lane = await parking_route(
         None,
         agent_slug="a",
@@ -178,9 +182,12 @@ async def test_parking_low_confidence_falls_to_park_standard(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parking_unknown_choice_falls_to_park_standard(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {"gate": {"type": "choice", "choice": "warp_speed", "confidence": 0.99}}
-    ))
+    _arm(
+        monkeypatch,
+        payload=_payload(
+            {"gate": {"type": "choice", "choice": "warp_speed", "confidence": 0.99}}
+        ),
+    )
     lane = await parking_route(
         None,
         agent_slug="a",
@@ -197,9 +204,10 @@ async def test_parking_unknown_choice_falls_to_park_standard(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_complexity_confident_score_used(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {"gate": {"type": "score", "score": 2.0, "confidence": 0.9}}
-    ))
+    _arm(
+        monkeypatch,
+        payload=_payload({"gate": {"type": "score", "score": 2.0, "confidence": 0.9}}),
+    )
     score, confident = await complexity_score(
         None,
         task_id="T9",
@@ -213,9 +221,10 @@ async def test_complexity_confident_score_used(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_complexity_low_confidence_not_used(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {"gate": {"type": "score", "score": 2.0, "confidence": 0.4}}
-    ))
+    _arm(
+        monkeypatch,
+        payload=_payload({"gate": {"type": "score", "score": 2.0, "confidence": 0.4}}),
+    )
     score, confident = await complexity_score(
         None,
         task_id="T9",
@@ -229,9 +238,11 @@ async def test_complexity_low_confidence_not_used(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_complexity_shadow_returns_nothing_but_logs(monkeypatch):
-    _arm(monkeypatch, mode=PilotMode.SHADOW, payload=_payload(
-        {"gate": {"type": "score", "score": 1.0, "confidence": 0.9}}
-    ))
+    _arm(
+        monkeypatch,
+        mode=PilotMode.SHADOW,
+        payload=_payload({"gate": {"type": "score", "score": 1.0, "confidence": 0.9}}),
+    )
     score, confident = await complexity_score(
         None,
         task_id="T9",
@@ -267,9 +278,12 @@ async def test_preflight_diff_batched_verdicts(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_triage_confident_lane(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {"gate": {"type": "choice", "choice": "flaky", "confidence": 0.85}}
-    ))
+    _arm(
+        monkeypatch,
+        payload=_payload(
+            {"gate": {"type": "choice", "choice": "flaky", "confidence": 0.85}}
+        ),
+    )
     lane = await triage_failure(
         None,
         task_id="T1",
@@ -284,9 +298,12 @@ async def test_triage_confident_lane(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_triage_low_confidence_is_unknown(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {"gate": {"type": "choice", "choice": "flaky", "confidence": 0.6}}
-    ))
+    _arm(
+        monkeypatch,
+        payload=_payload(
+            {"gate": {"type": "choice", "choice": "flaky", "confidence": 0.6}}
+        ),
+    )
     lane = await triage_failure(
         None,
         task_id="T1",
@@ -301,15 +318,18 @@ async def test_triage_low_confidence_is_unknown(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_steer_gate_confident_steering_mode(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {
-            "gate": {
-                "type": "choice",
-                "choice": "steer_now",
-                "confidence": 0.9,
+    _arm(
+        monkeypatch,
+        payload=_payload(
+            {
+                "gate": {
+                    "type": "choice",
+                    "choice": "steer_now",
+                    "confidence": 0.9,
+                }
             }
-        }
-    ))
+        ),
+    )
     mode = await steer_gate(
         None,
         message_id="m1",
@@ -324,15 +344,18 @@ async def test_steer_gate_confident_steering_mode(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_steer_gate_below_floor_falls_to_queue_after_current(monkeypatch):
-    _arm(monkeypatch, payload=_payload(
-        {
-            "gate": {
-                "type": "choice",
-                "choice": "steer_switch_consideration",
-                "confidence": 0.7,
+    _arm(
+        monkeypatch,
+        payload=_payload(
+            {
+                "gate": {
+                    "type": "choice",
+                    "choice": "steer_switch_consideration",
+                    "confidence": 0.7,
+                }
             }
-        }
-    ))
+        ),
+    )
     mode = await steer_gate(
         None,
         message_id="m2",
@@ -347,9 +370,13 @@ async def test_steer_gate_below_floor_falls_to_queue_after_current(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_steer_gate_shadow_never_marks_steering(monkeypatch):
-    _arm(monkeypatch, mode=PilotMode.SHADOW, payload=_payload(
-        {"gate": {"type": "choice", "choice": "steer_now", "confidence": 0.95}}
-    ))
+    _arm(
+        monkeypatch,
+        mode=PilotMode.SHADOW,
+        payload=_payload(
+            {"gate": {"type": "choice", "choice": "steer_now", "confidence": 0.95}}
+        ),
+    )
     mode = await steer_gate(
         None,
         message_id="m3",
@@ -380,11 +407,7 @@ async def test_steer_gate_jev_down_is_pull_only(monkeypatch):
 @pytest.mark.asyncio
 async def test_flag_off_every_pilot_is_off(monkeypatch):
     monkeypatch.setattr(cfg.settings, "decisions_enabled", False)
-    monkeypatch.setattr(
-        pilots, "resolve_endpoint", AsyncMock(return_value=_LAYA)
-    )
-    mode, result = await pilots.decide_for_pilot(
-        None, "self_heal", {}, {}, "s"
-    )
+    monkeypatch.setattr(pilots, "resolve_endpoint", AsyncMock(return_value=_LAYA))
+    mode, result = await pilots.decide_for_pilot(None, "self_heal", {}, {}, "s")
     assert mode is PilotMode.OFF
     assert result is None

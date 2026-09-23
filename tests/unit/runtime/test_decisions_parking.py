@@ -4,12 +4,11 @@ fail-open to PARK_STANDARD when anything under the pilot fails."""
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-import roboco.services.decisions as decisions
 from roboco.runtime.engines.spawn_exit import (
     _DECISIONS_RETRY_SOON_RETRY_AFTER_S,
     SpawnExitEngine,
 )
+from roboco.services import decisions
 
 
 def _bare():
@@ -56,7 +55,9 @@ async def test_parking_lane_returns_pilot_verdict(monkeypatch):
         task_module, "get_task_service", MagicMock(return_value=task_svc)
     )
     monkeypatch.setattr(
-        decisions, "parking_route", AsyncMock(return_value=decisions.ParkingLane.RETRY_SOON)
+        decisions,
+        "parking_route",
+        AsyncMock(return_value=decisions.ParkingLane.RETRY_SOON),
     )
     engine._make_tracker = MagicMock(
         return_value=MagicMock(get_state=AsyncMock(return_value={}))

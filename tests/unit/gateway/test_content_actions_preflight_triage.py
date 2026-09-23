@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-import roboco.services.decisions as decisions
+from roboco.services import decisions
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 
 
@@ -58,10 +58,18 @@ async def test_preflight_diff_advisory_envelope(monkeypatch):
         AsyncMock(
             return_value={
                 "criteria": [
-                    {"criterion": "CI green", "addresses": False, "noul": 0.2,
-                     "confidence": 0.9},
-                    {"criterion": "docs updated", "addresses": True, "noul": 0.9,
-                     "confidence": 0.9},
+                    {
+                        "criterion": "CI green",
+                        "addresses": False,
+                        "noul": 0.2,
+                        "confidence": 0.9,
+                    },
+                    {
+                        "criterion": "docs updated",
+                        "addresses": True,
+                        "noul": 0.9,
+                        "confidence": 0.9,
+                    },
                 ],
                 "hygiene": {"flagged": True, "noul": 0.9, "confidence": 0.9},
             }

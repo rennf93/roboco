@@ -23,7 +23,6 @@ from functools import lru_cache
 import httpx
 import structlog
 
-from roboco.config import settings
 from roboco.services.decisions.schemas import (
     DecisionQuestion,
     DecisionResult,
@@ -80,7 +79,9 @@ def cap_state(state: object) -> object:
         capped: dict = {}
         for key, value in state.items():
             if isinstance(value, str):
-                capped[key] = cap_text(value, _cap_for_key(str(key)), keep_tail=_keeps_tail(str(key)))
+                capped[key] = cap_text(
+                    value, _cap_for_key(str(key)), keep_tail=_keeps_tail(str(key))
+                )
             else:
                 capped[key] = cap_state(value)
         return capped
@@ -113,10 +114,9 @@ class _Circuit:
     def allow(self) -> bool:
         if self.opened_at is None:
             return True
-        if time.monotonic() - self.opened_at >= _CIRCUIT_OPEN_SECONDS:
-            # Half-open: let one attempt through to probe recovery.
-            return True
-        return False
+        # Half-open: past the window, let one attempt through to probe
+        # recovery.
+        return time.monotonic() - self.opened_at >= _CIRCUIT_OPEN_SECONDS
 
     def record_success(self) -> None:
         self.consecutive_failures = 0
@@ -192,8 +192,37 @@ class DecisionsClient:
             )
             return None
 
-        latency_ms = int((time.monotonic() - started) * 1000)
-        if response.status_code != 200:
+        payload = self._validated_payload(response, circuit, endpoint, session_id)
+        if payload is None:
+            return None
+
+        circuit.record_success()
+        result = parse_decisions_payload(
+            payload, tier=endpoint.tier, session_id=session_id
+        )
+        logger.info(
+            "decision rendered",
+            tier=result.tier,
+            session_id=result.session_id,
+            model=result.model,
+            answers={key: ans.verdict() for key, ans in result.answers.items()},
+            confidence={key: ans.confidence for key, ans in result.answers.items()},
+            cost=result.usage.cost,
+            input_tokens=result.usage.input_tokens,
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
+        return result
+
+    def _validated_payload(
+        self,
+        response: httpx.Response,
+        circuit: _Circuit,
+        endpoint: DecisionsEndpoint,
+        session_id: str,
+    ) -> dict | None:
+        """Reject anything that is not a well-formed Decisions body. Every
+        rejection counts a circuit failure and logs once, fail-open."""
+        if response.status_code != httpx.codes.OK:
             circuit.record_failure()
             logger.warning(
                 "decisions backend returned an error; fail-open",
@@ -203,7 +232,6 @@ class DecisionsClient:
                 body_excerpt=cap_text(response.text, 500, keep_tail=True),
             )
             return None
-
         try:
             payload = response.json()
         except ValueError:
@@ -222,7 +250,6 @@ class DecisionsClient:
                 session_id=session_id,
             )
             return None
-
         # An error envelope inside a 200 (OpenRouter does this under load):
         # still a no-verdict, still fail-open, no retry.
         if isinstance(payload.get("error"), dict):
@@ -234,27 +261,7 @@ class DecisionsClient:
                 error=payload["error"],
             )
             return None
-
-        circuit.record_success()
-        result = parse_decisions_payload(
-            payload, tier=endpoint.tier, session_id=session_id
-        )
-        logger.info(
-            "decision rendered",
-            tier=result.tier,
-            session_id=result.session_id,
-            model=result.model,
-            answers={
-                key: ans.verdict() for key, ans in result.answers.items()
-            },
-            confidence={
-                key: ans.confidence for key, ans in result.answers.items()
-            },
-            cost=result.usage.cost,
-            input_tokens=result.usage.input_tokens,
-            latency_ms=latency_ms,
-        )
-        return result
+        return payload
 
 
 @lru_cache(maxsize=1)
