@@ -28,15 +28,23 @@ x-orchestrator-env: &orchestrator-env
   # itself is default-off (video_engine_enabled); this just points the
   # client at the sidecar for when it's armed.
   ROBOCO_VIDEO_RENDERER_BASE_URL: http://roboco-video-renderer:3001
-  # Decisions service (typed System One decisions). Master flag default-OFF:
-  # shipping the roboco-jev sidecar changes nothing by itself; nothing
-  # resolves to Jev until the CEO arms it (Settings -> Feature Flags). The
-  # Laya tier (self-hosted, $0, roboco-jev sidecar) is on-by-default once
-  # the master flag goes on; the OpenRouter fallback tier stays OPT-IN.
-  ROBOCO_DECISIONS_ENABLED: ${ROBOCO_DECISIONS_ENABLED:-false}
-  ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-jev:8100}
+  # Decisions service (typed System One decisions). Master flag armed ON for
+  # THIS (NAS/dev) deploy only - the registry compose ships it OFF: on the
+  # user-facing side nothing serves a verdict until the CEO arms it
+  # (Settings -> Feature Flags + Decisions Pilots). The Laya tier (self-hosted,
+  # $0, roboco-decisions sidecar) is on-by-default once the master flag goes
+  # on; the OpenRouter fallback tier stays OPT-IN (a deliberate spend).
+  # Pilot arming is a MIX per CEO decision 2026-09-23: cheap-failure /
+  # advisory / add-only pilots ON; anything with an expensive wrong answer
+  # (CEO-path routing, notification suppression, context dropping, lifecycle
+  # choices) SHADOW - verdicts logged against real outcomes, behavior
+  # unchanged. Per-pilot settings rows always win over these env defaults.
+  ROBOCO_DECISIONS_ENABLED: ${ROBOCO_DECISIONS_ENABLED:-true}
+  ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-decisions:8100}
   ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
+  ROBOCO_DECISIONS_PILOTS_ON: ${ROBOCO_DECISIONS_PILOTS_ON:-self_heal,parking,preflight_diff,triage_failure,tool_spotlight,x_mention_triage,heal_severity,external_pr_triage,dep_update_risk,release_readiness,commit_intent,changelog_highlights,proactive_domain,idle_reaping,decision_note_sufficiency,park_cause,pre_send_completeness,findings_mapping,delta_brief,idle_legitimacy,review_queue_priority,branch_staleness,pm_closure_confidence,assembled_coherence,silent_exit}
+  ROBOCO_DECISIONS_PILOTS_SHADOW: ${ROBOCO_DECISIONS_PILOTS_SHADOW:-complexity,steer_gate,transcript_notes,plan_quality,injection_screen,intake_preroute,collision_edge,ci_watch_route,release_worthy,second_review_eligibility,segment_classify,vault_prefilter,notify_dedup,board_due_early,stranded_response,coroner_gate,secretary_nl,tg_freetext_gate,memory_distill_gate,context_pruning,budget_wrapup,board_evidence_skip,respawn_verdict,submit_now_confidence,lesson_prune}
   # MinIO object storage for rendered videos (use container name). Empty
   # endpoint = disabled (FileResponse fallback); armed here for the NAS
   # deploy, left OFF in docker-compose.registry.yml.
@@ -589,7 +597,7 @@ services:
       start_period: 10s
 
   # ==========================================================================
-  # Jev sidecar (Laya tier of the Decisions service) - CPU-only typed
+  # Decisions sidecar (the built-in Laya tier of the Decisions service) - CPU-only typed
   # decisions over the official onnxruntime path. Mirrors the ollama sidecar
   # pattern: a plain HTTP service the orchestrator talks to, nothing more.
   # Inert until ROBOCO_DECISIONS_ENABLED goes on; shipping it changes
@@ -598,12 +606,12 @@ services:
   # network (roboco_default) next to ollama, NEVER roboco_data, and never
   # exposed through nginx or on a host port.
   # ==========================================================================
-  jev:
+  decisions:
     build:
       context: .
-      dockerfile: docker/jev.Dockerfile
-    image: roboco-jev
-    container_name: roboco-jev
+      dockerfile: docker/decisions.Dockerfile
+    image: roboco-decisions
+    container_name: roboco-decisions
     restart: unless-stopped
     mem_limit: "2g"
     healthcheck:

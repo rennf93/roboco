@@ -115,6 +115,57 @@ class CoronerEngine(BaseService):
         await self._record_cycle(task)
         return task
 
+    async def open_for_incident_on_verdict(
+        self,
+        incident_task_id: UUID,
+        *,
+        kind: str,
+        extra_context: dict[str, Any] | None = None,
+    ) -> TaskTable | None:
+        """B16 decisions-gated entry point for hooks the fixed triggers
+        MISS (the 3+ bounce, cancel-after-start, and budget hooks keep
+        calling ``open_for_incident`` directly, unchanged).
+
+        Consults the "postmortem warranted" score screen and opens through
+        ``open_for_incident`` ONLY on an ON-mode confident verdict; the
+        screen may ADD a postmortem but can never suppress one (the fixed
+        hooks never route through here). Off/shadow/below-floor/backend
+        failure/no verdict returns None without touching dedup or the
+        ledger. Arming, maintenance pause, and the one-open-autopsy dedup
+        are enforced inside ``open_for_incident`` either way."""
+        from roboco.services.decisions.pilots_infra import (
+            coroner_postmortem_warranted,
+        )
+        from roboco.services.task import get_task_service
+
+        try:
+            incident = await get_task_service(self.session).get(incident_task_id)
+            if incident is None:
+                return None
+            warranted = await coroner_postmortem_warranted(
+                self.session,
+                incident_title=str(incident.title),
+                kind=kind,
+                context=str(extra_context or {}),
+            )
+        except Exception as exc:
+            self.log.warning(
+                "coroner decisions gate failed; no postmortem",
+                incident_task_id=str(incident_task_id),
+                error=str(exc),
+            )
+            return None
+        if not warranted:
+            return None
+        self.log.info(
+            "coroner: decisions verdict opens a postmortem the hooks missed",
+            incident_task_id=str(incident_task_id),
+            kind=kind,
+        )
+        return await self.open_for_incident(
+            incident_task_id, kind=kind, extra_context=extra_context
+        )
+
     async def _originate(
         self,
         task_svc: TaskService,

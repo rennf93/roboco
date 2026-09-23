@@ -131,13 +131,15 @@ async def clear_dedup_key(
         logger.warning("notification dedup clear failed (redis): %s", exc)
 
 
-async def duplicate_unacked_notification_exists(
+async def duplicate_unacked_notification_exists(  # noqa: PLR0913
     db: AsyncSession,
     *,
     from_agent: UUID,
     notification_type: NotificationType,
     related_task_id: UUID | str | None,
     to_agents: Sequence[UUID],
+    subject: str | None = None,
+    body: str | None = None,
 ) -> bool:
     """True when an unacked same-purpose notification already exists.
 
@@ -155,12 +157,25 @@ async def duplicate_unacked_notification_exists(
     subset). Overlap is the SQL filter; the exact-set-equality check runs in
     Python against the fetched candidate rows.
 
+    B12 semantic-dedup screen (optional, default off): callers that pass
+    ``subject`` and ``body`` opt in to one extra Decisions noul screen when
+    the exact-set path found nothing - "is this a semantic duplicate of a
+    still-unacked candidate (reworded, same action)?" Suppression requires
+    the pilot ON AND both its noul verdict and confidence at/above 0.9; the
+    exact-duplicate path above runs first and is unchanged, and
+    off/shadow/below-floor delivers exactly as today. Only an ON-mode
+    verdict can suppress, so the screen may never subtract from today's
+    behavior either.
+
     Primitive-typed (db/from_agent/notification_type/related_task_id/
     to_agents) so both ``NotificationService._create_notification`` (which
     holds a ``CreateNotificationParams``) and
     ``NotificationDeliveryService._persist_and_deliver`` (which only holds a
     built ``NotificationTable``, no params object) can share the one query
-    instead of each growing a divergent copy.
+    instead of each growing a divergent copy. The extra ``subject``/``body``
+    opt-in kwargs keep this the one shared query for both existing callers
+    (positional-contract kwargs like the rest, hence the targeted PLR0913
+    noqa rather than bundling the probe into an object no caller asked for).
     """
     from roboco.db.tables import NotificationTable  # local: avoid import cycle
 
@@ -169,7 +184,12 @@ async def duplicate_unacked_notification_exists(
     to_agents_list = list(to_agents)
     new_set = set(to_agents_list)
     dup_q = (
-        select(NotificationTable.id, NotificationTable.to_agents)
+        select(
+            NotificationTable.id,
+            NotificationTable.to_agents,
+            NotificationTable.subject,
+            NotificationTable.body,
+        )
         .where(NotificationTable.from_agent == from_agent)
         .where(NotificationTable.type == notification_type)
         .where(NotificationTable.to_agents.overlap(to_agents_list))
@@ -181,7 +201,8 @@ async def duplicate_unacked_notification_exists(
         )
     )
     result = await db.execute(dup_q)
-    for row in result.all():
+    rows = result.all()
+    for row in rows:
         if set(row[1]) == new_set:
             logger.info(
                 "Suppressed duplicate notification (same purpose, unacked): "
@@ -190,6 +211,59 @@ async def duplicate_unacked_notification_exists(
                 notification_type.value,
                 related_task_id,
                 to_agents_list,
+            )
+            return True
+    if subject is not None and body is not None and rows:
+        return await _semantic_duplicate_exists(
+            db,
+            related_task_id=related_task_id,
+            rows=rows,
+            new_set=new_set,
+            content=(subject, body),
+        )
+    return False
+
+
+async def _semantic_duplicate_exists(
+    db: AsyncSession,
+    *,
+    related_task_id: UUID | str | None,
+    rows: Sequence[tuple],
+    new_set: set[UUID],
+    content: tuple[str, str],
+) -> bool:
+    """The B12 screen over the exact-dedup's candidate rows (already
+    filtered to the same sender/type/task/unacked-overlap view).
+    ``content`` is the (subject, body) of the notification being screened.
+    Best-effort fail-open: any decisions failure delivers as today."""
+    from roboco.services.decisions.pilots_infra import semantic_duplicate
+
+    subject, body = content
+    for row in rows:
+        prior_recipients = set(row[1])
+        if prior_recipients == new_set:
+            continue  # equal sets were already suppressed above
+        try:
+            duplicate = await semantic_duplicate(
+                db,
+                new_subject=subject,
+                new_body=body,
+                prior_subject=str(row[2] or ""),
+                prior_body=str(row[3] or ""),
+                recipients=[str(r) for r in new_set],
+                prior_recipients=[str(r) for r in prior_recipients],
+            )
+        except Exception as exc:
+            logger.warning(
+                "notification semantic-dedup probe failed (deliver): %s", exc
+            )
+            return False
+        if duplicate:
+            logger.info(
+                "Suppressed notification (semantic duplicate of unacked): "
+                "related_task_id=%s to_agents=%s",
+                related_task_id,
+                sorted(str(r) for r in new_set),
             )
             return True
     return False

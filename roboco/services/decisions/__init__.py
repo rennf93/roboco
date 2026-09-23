@@ -9,7 +9,7 @@ calling code accepts, rejects, or escalates on a confidence threshold -
 
 Two tiers behind one wire format, resolved per call (``resolver.py``):
 
-1. Laya (BUILT-IN default): the self-hosted ``roboco-jev`` sidecar
+1. Laya (BUILT-IN default): the self-hosted ``roboco-decisions`` sidecar
    (``settings.decisions_base_url``), no key, no spend, no egress.
 2. OpenRouter (OPT-IN fallback): the Decisions API with
    ``typesafe/jev-1.13``, serving only when the CEO opts in AND the AI
@@ -19,7 +19,7 @@ Tier 3 is the floor: master flag off, or no healthy tier, means every call
 site does exactly what it did before this package existed. Decisions can
 only add behavior, never subtract; nothing materializes on a verdict alone.
 
-Doctrine (docs/internal/jev-decisions-spec.md sections 5-6): fail-open
+Doctrine (docs/internal/decisions-spec.md sections 5-6): fail-open
 always (the single fail-CLOSED exception is a future injection screen),
 one attempt no retries, every verdict logged with its evidence, shadow
 mode before live mode per pilot, and no Jev verdict may satisfy, skip, or
@@ -41,6 +41,7 @@ from roboco.services.decisions.pilots import (
     preflight_diff,
     self_heal_transient,
     steer_gate,
+    tool_spotlight,
     transcript_note_worthy,
     triage_failure,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "preflight_diff",
     "self_heal_transient",
     "steer_gate",
+    "tool_spotlight",
     "transcript_note_worthy",
     "triage_failure",
 ]

@@ -162,20 +162,47 @@ class DepUpdateEngine(BaseService):
 
     async def _open_task(self, task_svc: TaskService, project: Any) -> TaskTable:
         slug = str(getattr(project, "slug", "") or "")
+        # B17 decisions screen (advisory only): an ON-mode confident
+        # upgrade-risk verdict adds a risk note to the description and, at
+        # the top of the scale, raises the complexity tier. Off/shadow/
+        # below-floor/failure leaves today's description + MEDIUM exactly.
+        description = (
+            "Dependency updates are available for this project.\n\n"
+            "This is a Main-PM coordination root: decompose the upgrade "
+            "and delegate the code work to a cell dev - the Main PM does "
+            "not run the upgrade itself. Plan the dependency upgrade, "
+            "refresh the lockfile(s), and make sure the full gate passes "
+            "with no behavioural breakage. This task was opened "
+            "automatically by the dependency-update bot and is READY TO "
+            "START NOW - no approval needed. It still ships through the "
+            "normal gates (QA, PR review, and the CEO's merge)."
+        )
+        complexity = Complexity.MEDIUM
+        try:
+            from roboco.services.decisions.pilots_infra import (
+                DEP_UPDATE_RISK_HIGH,
+                DEP_UPDATE_RISK_NOTES,
+                dep_update_risk,
+            )
+
+            score, confident = await dep_update_risk(
+                self.session,
+                project_slug=slug,
+                command=str(getattr(project, "dep_update_command", None) or ""),
+            )
+            if confident and score is not None:
+                description = f"{description}\n\n{DEP_UPDATE_RISK_NOTES[score]}"
+                if score >= DEP_UPDATE_RISK_HIGH:
+                    complexity = Complexity.HIGH
+        except Exception:
+            self.log.warning(
+                "dep-update decisions risk screen failed; advisory note skipped",
+                project=slug,
+            )
         return await task_svc.create(
             TaskCreateRequest(
                 title=f"Update dependencies on {slug}",
-                description=(
-                    "Dependency updates are available for this project.\n\n"
-                    "This is a Main-PM coordination root: decompose the upgrade "
-                    "and delegate the code work to a cell dev — the Main PM does "
-                    "not run the upgrade itself. Plan the dependency upgrade, "
-                    "refresh the lockfile(s), and make sure the full gate passes "
-                    "with no behavioural breakage. This task was opened "
-                    "automatically by the dependency-update bot and is READY TO "
-                    "START NOW — no approval needed. It still ships through the "
-                    "normal gates (QA, PR review, and the CEO's merge)."
-                ),
+                description=description,
                 acceptance_criteria=[
                     "The dependency upgrade is decomposed into a code-fix "
                     "subtask delegated to a cell developer",
@@ -188,7 +215,7 @@ class DepUpdateEngine(BaseService):
                 created_by=_foundation.AGENTS["system"].uuid,
                 task_type=TaskType.PLANNING,
                 nature=TaskNature.TECHNICAL,
-                estimated_complexity=Complexity.MEDIUM,
+                estimated_complexity=complexity,
                 project_id=cast("UUID", project.id),
                 status=TaskStatus.PENDING,
                 source=DEP_UPDATE_SOURCE,

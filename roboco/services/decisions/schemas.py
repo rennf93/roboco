@@ -3,13 +3,13 @@
 This is NOT the OpenAI-compatible chat endpoint: the Decisions API takes a
 ``state`` plus a map of typed ``questions`` and returns typed ``answers``
 (choice / score / noul) with calibrated confidence. Both tiers (the
-self-hosted roboco-jev sidecar and the OpenRouter fallback) speak this exact
+self-hosted roboco-decisions sidecar and the OpenRouter fallback) speak this exact
 shape, so one client serves both. Parsing is deliberately lenient: the
 endpoint is Alpha-tagged on OpenRouter's side, so unknown answer fields are
 ignored and a missing ``confidence`` surfaces as ``None`` (every caller
 treats ``None`` as below-threshold, which is the fail-open direction).
 
-See docs/internal/jev-decisions-spec.md sections 3 and 4.
+See docs/internal/decisions-spec.md sections 3 and 4.
 """
 
 from __future__ import annotations

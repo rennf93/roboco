@@ -1289,7 +1289,22 @@ class DispatchBreakerEngine(_Base):
         record["last_check"] = now
         self._schedule_respawn_persist(agent_slug, str(task_id), record)
         tripped: bool = record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
-        if tripped:
+        # B37 respawn_verdict: a confident "productive respawn" verdict
+        # overrides the trip (skipping the stall/notify below); None (hold,
+        # or below-floor/no verdict) falls through to today's trip behavior -
+        # the stall marker + one-shot overseer notification ARE the existing
+        # hold-for-human mechanics.
+        spawn_anyway = (
+            settings.decisions_enabled
+            and tripped
+            and (
+                await self._decisions_respawn_override(
+                    agent_slug, task_id, current_status, record
+                )
+                is False
+            )
+        )
+        if tripped and not spawn_anyway:
             logger.warning(
                 "PM respawn loop detected — skipping spawn",
                 agent_id=agent_slug,
@@ -1312,7 +1327,77 @@ class DispatchBreakerEngine(_Base):
                 self._schedule_respawn_persist(agent_slug, str(task_id), record)
                 await self._mark_task_stalled(task_id)
                 await self._notify_stuck_agent(agent_slug, task_id, current_status)
-        return tripped
+        return tripped and not spawn_anyway
+
+    async def _decisions_respawn_override(
+        self,
+        agent_slug: str,
+        task_id: str,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> bool | None:
+        """B37 respawn_verdict: refine the counters' approximate "wedged"
+        verdict at the trip point.
+
+        Returns False to override the trip with a spawn, None to keep
+        today's tripped behavior (the stall marker + overseer notification
+        are the existing hold-for-human mechanics). Mapping: ``spawn`` and
+        ``spawn-with-amended-prompt`` spawn (the breaker holds no amended-
+        prompt mechanic, so that verdict falls back to the spawn path per
+        the row's instruction); ``hold-task-for-human`` keeps the trip;
+        ``kill-task`` has NO existing kill-task mechanic here and also
+        falls back to the spawn path. Below floor / no verdict keeps the
+        trip (today exactly).
+        """
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            async with get_db_context() as db:
+                verdict = await pilots_dispatch.respawn_verdict(
+                    db,
+                    agent_slug=agent_slug,
+                    task_id=str(task_id),
+                    task_status=current_status,
+                    spawn_attempts=int(record.get("count") or 0),
+                    statuses_seen=[str(s) for s in record.get("seen_statuses") or []],
+                )
+            if verdict is pilots_dispatch.RespawnVerdict.SPAWN:
+                logger.info(
+                    "Respawn trip overridden to spawn by Decisions verdict",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return False
+            if verdict is pilots_dispatch.RespawnVerdict.SPAWN_WITH_AMENDED_PROMPT:
+                # No amended-prompt mechanic at the breaker: spawn fallback.
+                logger.info(
+                    "Respawn verdict spawn-with-amended-prompt has no breaker"
+                    " mechanic; falling back to spawn",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return False
+            if verdict is pilots_dispatch.RespawnVerdict.KILL_TASK:
+                # No existing kill-task mechanic in the breaker: spawn
+                # fallback (the row's instruction for missing mechanics).
+                logger.info(
+                    "Respawn verdict kill-task has no kill mechanic; falling"
+                    " back to spawn",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return False
+            # hold-task-for-human: the trip path IS the hold mechanic.
+            return None
+        except Exception as exc:
+            logger.warning(
+                "respawn verdict decisions pass failed (best-effort)",
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return None
 
     async def _mark_task_stalled(self, task_id: str) -> None:
         """Record a durable stalled marker on the task (breaker-tripped path).

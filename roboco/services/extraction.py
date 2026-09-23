@@ -163,12 +163,17 @@ class ExtractionService:
         self._compiled_patterns = self._compile_patterns()
         self._mention_pattern = re.compile(r"@(\w+)")
 
-    async def extract(self, ctx: ExtractionContext) -> ExtractionResult:
+    async def extract(
+        self, ctx: ExtractionContext, *, _pilot_verdicts: list | None = None
+    ) -> ExtractionResult:
         """
         Extract messages from raw content.
 
         Args:
             ctx: Extraction context with content and metadata
+            _pilot_verdicts: internal B10 seam - precomputed confident
+                Decisions verdicts (from ``extract_with_llm``, which must
+                not trigger a second Decisions call). None = compute here.
 
         Returns:
             ExtractionResult with extracted messages
@@ -189,12 +194,37 @@ class ExtractionService:
         pattern_matches: dict[str, list[str]] = {}
         confidence_scores: dict[UUID, float] = {}
 
-        for segment in segments[: self.config.max_segments_per_buffer]:
+        capped_segments = segments[: self.config.max_segments_per_buffer]
+        if _pilot_verdicts is None:
+            # B10 segment_classify: one batched Decisions classification
+            # for the whole buffer; None entries (and an empty list on any
+            # failure/off) keep the regex result per segment.
+            _pilot_verdicts = await self._decisions_segment_types(
+                [s for s in capped_segments if s.strip()]
+            )
+        pilot_verdicts = _pilot_verdicts
+        pilot_idx = 0
+
+        for segment in capped_segments:
             if not segment.strip():
                 continue
 
             # Classify segment
             msg_type, confidence, matches = self._classify_segment(segment)
+            verdict = (
+                pilot_verdicts[pilot_idx] if pilot_idx < len(pilot_verdicts) else None
+            )
+            pilot_idx += 1
+            if verdict is not None:
+                # Confident pilot verdict REPLACES the regex result (and
+                # lets the caller avoid the expensive full-LLM fallback).
+                pilot_type, pilot_confidence = verdict
+                try:
+                    msg_type = MessageType(pilot_type)
+                except ValueError:
+                    pass
+                else:
+                    confidence = pilot_confidence
 
             # Store pattern matches for debugging
             if matches:
@@ -313,6 +343,29 @@ class ExtractionService:
 
         return best_type, confidence, matches
 
+    async def _decisions_segment_types(
+        self, segments: list[str]
+    ) -> list[tuple[str, float]]:
+        """B10 segment_classify: the batched Decisions verdicts for a
+        buffer. Empty list = no verdict anywhere (off/shadow/error/below
+        floor), i.e. regex + fallback exactly as today."""
+        if not segments:
+            return []
+        from roboco.config import settings
+
+        if not settings.decisions_enabled:
+            return []
+        try:
+            from roboco.services.decisions import pilots_content
+
+            verdicts = await pilots_content.segment_classify(None, segments=segments)
+        except Exception as exc:
+            self.log.warning(
+                "Decisions segment classify failed (fail-open)", error=str(exc)
+            )
+            return []
+        return [v for v in (verdicts or []) if v is not None]
+
     async def _call_anthropic_with_retry(self, client: Any, prompt: str) -> Any:
         """Call Anthropic messages.create with up to MAX_RATE_LIMIT_RETRIES on 429.
 
@@ -375,6 +428,26 @@ class ExtractionService:
         from roboco.services.exceptions import RateLimitError
 
         toon = ToonAdapter()
+
+        # B10: when every segment gets a confident batched Decisions
+        # verdict, that classification REPLACES this method's expensive
+        # full-LLM fallback entirely (extract() applies the same verdicts
+        # without a second Decisions call). Any unconfident segment keeps
+        # today's path: the Anthropic call below.
+        pre_segments = [
+            s
+            for s in self._segment_content(ctx.content)[
+                : self.config.max_segments_per_buffer
+            ]
+            if s.strip()
+        ]
+        pre_verdicts = await self._decisions_segment_types(pre_segments)
+        if pre_segments and len(pre_verdicts) == len(pre_segments):
+            self.log.info(
+                "Decisions classified every segment; full-LLM fallback skipped",
+                segments=len(pre_segments),
+            )
+            return await self.extract(ctx, _pilot_verdicts=pre_verdicts)
 
         try:
             client = AsyncAnthropic(api_key=settings.anthropic_api_key)

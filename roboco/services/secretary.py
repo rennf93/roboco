@@ -154,9 +154,21 @@ class SecretaryService(BaseService):
         return list(result.scalars().all())
 
     async def submit_directive(
-        self, kind: DirectiveKind, payload: dict[str, Any], requested_by: UUID
+        self,
+        kind: DirectiveKind | None,
+        payload: dict[str, Any],
+        requested_by: UUID,
     ) -> SecretaryDirectiveTable:
-        """Queue a gated directive, or execute a direct one immediately."""
+        """Queue a gated directive, or execute a direct one immediately.
+
+        ``kind`` may be None when the caller holds only natural language;
+        the B18 secretary_nl pilot then fills it when confident (an
+        explicit, panel-picked kind is never overridden - the pilot never
+        even runs for one). Unset + unconfident raises the same
+        ValidationError an invalid kind would.
+        """
+        if kind is None:
+            kind = await self._decisions_directive_kind(payload)
         self._validate_payload(kind, payload)
         row = SecretaryDirectiveTable(
             kind=kind.value,
@@ -225,6 +237,31 @@ class SecretaryService(BaseService):
         missing = [k for k in _REQUIRED_PAYLOAD[kind] if k not in payload]
         if missing:
             raise ValidationError(f"{kind.value} requires payload keys: {missing}")
+
+    async def _decisions_directive_kind(self, payload: dict[str, Any]) -> DirectiveKind:
+        """B18 secretary_nl (kind half): fill the directive kind from the
+        natural-language payload when the caller left it unset. Fails open
+        to the same ValidationError today's required-kind path raises."""
+        from roboco.config import settings
+        from roboco.services.decisions import pilots_content
+
+        utterance = " ".join(
+            str(v).strip() for v in (payload or {}).values() if isinstance(v, str)
+        ).strip()
+        choice: str | None = None
+        if utterance and settings.decisions_enabled:
+            try:
+                choice = await pilots_content.secretary_directive_kind(
+                    self.session, utterance=utterance
+                )
+            except Exception:
+                choice = None
+        if choice is None:
+            raise ValidationError("directive kind is required")
+        try:
+            return DirectiveKind(choice)
+        except ValueError as exc:
+            raise ValidationError(f"unknown directive kind {choice!r}") from exc
 
     async def _run(self, row: SecretaryDirectiveTable) -> None:
         try:
@@ -380,9 +417,13 @@ class SecretaryService(BaseService):
     async def _resolve_assignee(self, raw: Any) -> UUID | None:
         """Resolve an edit's ``assigned_to`` value to an agent UUID.
 
-        Accepts ``None`` (explicit unassign), a UUID string, or an agent slug
-        (e.g. ``"be-dev-1"``) — the same slug convention the REST PATCH path
-        resolves for the CEO's chat, which refers to agents by name.
+        Accepts ``None`` (explicit unassign), a UUID string, or an agent
+        slug (e.g. ``"be-dev-1"``) - the same slug convention the REST
+        PATCH path resolves for the CEO's chat, which refers to agents by
+        name. On a slug/UUID MISS the B18 secretary_nl pilot gets one
+        chance to resolve the natural language to a slug: it can only
+        FILL a match the string resolver could not find, never override
+        one.
         """
         if raw is None:
             return None
@@ -393,8 +434,45 @@ class SecretaryService(BaseService):
             pass
         agent_row = await get_agent_by_slug(self.session, candidate)
         if agent_row is None:
-            raise ValidationError(f"no agent with slug or UUID {candidate!r}")
+            resolved = await self._decisions_assignee_slug(candidate)
+            if resolved is None:
+                raise ValidationError(f"no agent with slug or UUID {candidate!r}")
+            agent_row = await get_agent_by_slug(self.session, resolved)
+            if agent_row is None:
+                raise ValidationError(f"no agent with slug or UUID {candidate!r}")
         return require_uuid(agent_row.id)
+
+    async def _decisions_assignee_slug(self, utterance: str) -> str | None:
+        """B18 secretary_nl (assignee half): natural language -> agent
+        slug, consulted only where the exact slug/UUID match failed."""
+        from roboco.config import settings
+        from roboco.services.decisions import pilots_content
+
+        if not settings.decisions_enabled:
+            return None
+        try:
+            slugs = await self._agent_slugs()
+        except Exception as exc:
+            self_log = getattr(self, "log", None)
+            if self_log is not None:
+                self_log.warning("secretary: agent roster read failed", error=str(exc))
+            return None
+        if not slugs:
+            return None
+        try:
+            return await pilots_content.secretary_assignee(
+                self.session, utterance=utterance, candidate_slugs=slugs
+            )
+        except Exception:
+            return None
+
+    async def _agent_slugs(self) -> list[str]:
+        from roboco.db.tables import AgentTable
+
+        result = await self.session.execute(
+            select(AgentTable.slug).where(AgentTable.slug.isnot(None))
+        )
+        return [str(s) for s in result.scalars().all()]
 
     async def _notify_ceo_pending(self, row: SecretaryDirectiveTable) -> None:
         from roboco.services.notification import NotificationService

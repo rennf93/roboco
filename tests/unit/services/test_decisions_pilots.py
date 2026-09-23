@@ -24,7 +24,7 @@ from roboco.services.decisions.pilots import (
 
 _LAYA = DecisionsEndpoint(
     tier="laya",
-    base_url="http://roboco-jev:8100",
+    base_url="http://roboco-decisions:8100",
     model="convaiinnovations/laya",
     timeout_s=5.0,
 )
@@ -390,7 +390,7 @@ async def test_steer_gate_shadow_never_marks_steering(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_steer_gate_jev_down_is_pull_only(monkeypatch):
+async def test_steer_gate_down_is_pull_only(monkeypatch):
     _arm(monkeypatch, fail=True)
     mode = await steer_gate(
         None,
@@ -411,3 +411,129 @@ async def test_flag_off_every_pilot_is_off(monkeypatch):
     mode, result = await pilots.decide_for_pilot(None, "self_heal", {}, {}, "s")
     assert mode is PilotMode.OFF
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# B27 tool_spotlight (spawn-briefing verb highlight)
+# ---------------------------------------------------------------------------
+
+_SPOTLIGHT_VERBS = [
+    "claim",
+    "evidence",
+    "note",
+    "dm",
+    "pass",
+    "read_a2a",
+    "notify",
+    "unclaim",
+    "submit",
+    "fail",
+]
+
+
+def _spotlight_payload(confidence: float, probabilities: dict) -> dict:
+    return _payload(
+        {
+            "gate": {
+                "type": "choice",
+                "choice": "claim",
+                "confidence": confidence,
+                "probabilities": probabilities,
+            }
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_spotlight_picks_top_verbs_from_probabilities(monkeypatch):
+    _arm(
+        monkeypatch,
+        payload=_spotlight_payload(
+            0.8,
+            {
+                "claim": 0.9,
+                "evidence": 0.8,
+                "note": 0.7,
+                "dm": 0.6,
+                "pass": 0.5,
+                "read_a2a": 0.4,
+                "notify": 0.3,
+                "unclaim": 0.2,
+                "submit": 0.0,
+                "fail": 0.1,
+            },
+        ),
+    )
+    verdict = await pilots.tool_spotlight(
+        None,
+        agent_slug="dev-backend-1",
+        task_title="Add endpoint",
+        task_description="POST /widgets",
+        verbs=list(_SPOTLIGHT_VERBS),
+    )
+    assert verdict == [
+        "claim",
+        "evidence",
+        "note",
+        "dm",
+        "pass",
+        "read_a2a",
+        "notify",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tool_spotlight_returns_none_below_confidence_floor(monkeypatch):
+    _arm(monkeypatch, payload=_spotlight_payload(0.5, {"claim": 0.9}))
+    verdict = await pilots.tool_spotlight(
+        None,
+        agent_slug="dev-backend-1",
+        task_title="Add endpoint",
+        task_description="POST /widgets",
+        verbs=list(_SPOTLIGHT_VERBS),
+    )
+    assert verdict is None
+
+
+@pytest.mark.asyncio
+async def test_tool_spotlight_returns_none_outside_the_option_band(monkeypatch):
+    # 5 verbs: too few to be worth a call; 25 verbs: past the ~20-option
+    # degradation limit (spec 10 limit 3). Both return None before any call.
+    _arm(monkeypatch, payload=_spotlight_payload(0.9, {}))
+    for verbs in ([f"v{i}" for i in range(5)], [f"v{i}" for i in range(25)]):
+        verdict = await pilots.tool_spotlight(
+            None,
+            agent_slug="dev-backend-1",
+            task_title="Add endpoint",
+            task_description="POST /widgets",
+            verbs=verbs,
+        )
+        assert verdict is None
+
+
+@pytest.mark.asyncio
+async def test_tool_spotlight_shadow_logs_but_renders_nothing(monkeypatch):
+    _arm(
+        monkeypatch,
+        mode=PilotMode.SHADOW,
+        payload=_spotlight_payload(
+            0.9,
+            {
+                "claim": 0.9,
+                "evidence": 0.8,
+                "note": 0.7,
+                "dm": 0.6,
+                "pass": 0.5,
+                "read_a2a": 0.4,
+                "notify": 0.3,
+            },
+        ),
+    )
+    verdict = await pilots.tool_spotlight(
+        None,
+        agent_slug="dev-backend-1",
+        task_title="Add endpoint",
+        task_description="POST /widgets",
+        verbs=list(_SPOTLIGHT_VERBS),
+    )
+    assert verdict is None

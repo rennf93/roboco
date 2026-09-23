@@ -1,10 +1,10 @@
-"""roboco-jev sidecar: the Laya tier of the Decisions service.
+"""roboco-decisions sidecar: the Laya tier of the Decisions service.
 
 Serves the OpenRouter Decisions wire shape (POST /api/alpha/decisions) over
 the laya library's OFFICIAL onnxruntime path (laya.onnx_agent.ONNXAgent), so
 roboco/services/decisions/client.py speaks ONE implementation against the
 self-hosted Laya tier and the OpenRouter fallback tier
-(docs/internal/jev-decisions-spec.md sections 8 Stage 0.5 and 10).
+(docs/internal/decisions-spec.md sections 8 Stage 0.5 and 10).
 
 Dependency-light on purpose: import time needs only fastapi + stdlib. The
 laya library is imported lazily inside the startup hook so this file
@@ -44,7 +44,7 @@ CHECKPOINT = f"{MODEL_ID}:{SUBFOLDER}"
 
 _VALID_TYPES = ("noul", "choice", "score")
 
-app = FastAPI(title="roboco-jev", version="0.1.0")
+app = FastAPI(title="roboco-decisions", version="0.1.0")
 
 # Populated by the startup hook; read by the routes.
 _state: dict[str, Any] = {
@@ -237,7 +237,7 @@ async def decisions(request: Request) -> dict[str, Any]:
     # session_id is accepted but unused: the sidecar is stateless and the
     # client owns session bookkeeping (spec section 4).
     return {
-        "id": f"jev-{uuid.uuid4().hex}",
+        "id": f"dec-{uuid.uuid4().hex}",
         "model": body.get("model") or CHECKPOINT,
         "answers": answers,
         "usage": {

@@ -190,6 +190,34 @@ class SelfHealEngine(BaseService):
             )
             return decisions_pilots.SelfHealGate.NO_VERDICT
 
+    async def _decisions_severity(self, obs: RegressionObservation) -> Complexity:
+        """B7 decisions screen (spec 7.1): severity/fix-size score for this
+        breach, mapped 0-2 -> LOW/MEDIUM/HIGH. Separate from the Tier A
+        transient gate above and never alters it. Anything other than an
+        ON-mode confident verdict (off, shadow, below floor, backend
+        failure) keeps the hardcoded MEDIUM of today."""
+        try:
+            from roboco.services.decisions.pilots_infra import (
+                SEVERITY_COMPLEXITY_TIERS,
+                heal_severity,
+            )
+
+            score = await heal_severity(
+                self.session,
+                repo=obs.repo_hint,
+                workflow=settings.self_heal_ci_workflow,
+                error_excerpt=obs.detail,
+            )
+            if score is not None:
+                return Complexity(SEVERITY_COMPLEXITY_TIERS[score])
+        except Exception as exc:
+            self.log.warning(
+                "self-heal decisions severity failed; MEDIUM as today",
+                fingerprint=obs.fingerprint,
+                error=str(exc),
+            )
+        return Complexity.MEDIUM
+
     async def _open_self_heal_task_ids_by_fp(self) -> dict[str, UUID]:
         """Map each open self-heal task's fingerprint to its task id.
 
@@ -330,6 +358,7 @@ class SelfHealEngine(BaseService):
                     repo=obs.repo_hint,
                 )
                 continue
+            severity = await self._decisions_severity(obs)
             task = await task_svc.create(
                 TaskCreateRequest(
                     title=f"Self-heal: fix the CI regression on {obs.repo_hint}",
@@ -356,7 +385,7 @@ class SelfHealEngine(BaseService):
                     created_by=_foundation.AGENTS["system"].uuid,
                     task_type=TaskType.PLANNING,
                     nature=TaskNature.TECHNICAL,
-                    estimated_complexity=Complexity.MEDIUM,
+                    estimated_complexity=severity,
                     project_id=cast("UUID", project.id),
                     status=TaskStatus.PENDING,
                     source=SELF_HEAL_SOURCE,

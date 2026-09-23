@@ -144,6 +144,14 @@ _BLOCK_FLIP_NOTIFY_THRESHOLD = 3
 _OSCILLATION_TRIP_THRESHOLD = 5
 
 
+def _touch_globs(t: Any) -> list[str]:
+    """``t.intends_to_touch`` defensively coerced to ``list[str]`` (the
+    decisions pilots use the declared scope globs as best-effort state; a
+    missing or malformed field degrades to no scope, never a crash)."""
+    val = getattr(t, "intends_to_touch", None)
+    return [str(f) for f in val] if isinstance(val, list) else []
+
+
 def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
     """Return a hint if any PM sub_task is title-only / thin / over-long.
 
@@ -672,7 +680,14 @@ class Choreographer:
                 "of one giant plan."
             )
         if not missing:
-            return None
+            return await self._plan_quality_gate(
+                role_str=role_str,
+                rich_plan=rich_plan,
+                task=task,
+                agent_id=agent_id,
+                task_id=task_id,
+                briefing=briefing,
+            )
         return await self._emit_rejection(
             Envelope.incomplete_input(
                 missing=missing,
@@ -685,6 +700,81 @@ class Choreographer:
                     f"{_PM_SUBTASK_DESC_MIN_LEN} and <= "
                     f"{_PM_SUBTASK_DESC_MAX_LEN} chars, and at most "
                     f"{_PM_SUBTASKS_MAX} sub_tasks."
+                ),
+                context_briefing=briefing,
+            ).with_introspection(task=task, role=role_str),
+            agent_id=agent_id,
+            task_id=task_id,
+            verb="i_will_plan",
+        )
+
+    async def _plan_quality_gate(
+        self,
+        *,
+        role_str: str,
+        rich_plan: dict[str, Any] | None,
+        task: Any,
+        agent_id: UUID,
+        task_id: UUID,
+        briefing: dict[str, Any],
+    ) -> Envelope | None:
+        """B1 plan_quality scoring lane (decisions pilot, default-off).
+
+        Runs ONLY after the structural counts passed: the pilot scores
+        whether the decomposition is actually adequate (garbage padded to
+        the 150-char minimum is invisible to counts). STRICTER-ONLY by
+        construction - a LOW confident score may reject a plan the
+        structural check accepted, but no verdict can ever accept a plan
+        the structural check rejected (that path already returned above).
+        Fail-open: pilot off/shadow/below-floor/down returns None and the
+        gate behaves exactly as before.
+        """
+        try:
+            from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+            mode = await pilot_mode(self.task.session, "plan_quality")
+        except Exception as exc:
+            logger.warning("plan_quality_skip", task_id=str(task_id), error=str(exc))
+            return None
+        if mode is PilotMode.OFF:
+            return None
+        from roboco.services.decisions.pilots_gateway import plan_quality
+
+        approach = str((rich_plan or {}).get("approach") or "").strip()
+        sub_tasks = list((rich_plan or {}).get("sub_tasks") or [])
+        try:
+            verdict = await plan_quality(
+                self.task.session,
+                task_id=str(task_id),
+                task_title=str(getattr(task, "title", "") or ""),
+                approach=approach,
+                sub_tasks=sub_tasks,
+            )
+        except Exception as exc:
+            logger.warning("plan_quality_skip", task_id=str(task_id), error=str(exc))
+            return None
+        if not verdict or not verdict.get("inadequate"):
+            return None
+        score = verdict.get("score")
+        confidence = verdict.get("confidence")
+        return await self._emit_rejection(
+            Envelope.incomplete_input(
+                missing=["plan_quality"],
+                field_hints={
+                    "plan_quality": (
+                        "the plan passed the structural minimums but the "
+                        f"plan-quality rubric scored it inadequate "
+                        f"(score {score}/2, confidence {confidence}): the "
+                        "approach reads as padded prose and the sub_tasks do "
+                        "not decompose the work into real, distinct steps."
+                    )
+                },
+                remediate=(
+                    "rewrite the approach to describe HOW you will decompose "
+                    "and route this work (no filler prose) and give every "
+                    "sub_task a substantive, distinct description, then "
+                    "re-issue i_will_plan(task_id, plan, approach, "
+                    "sub_tasks=[{'title': '...', 'description': '...'}, ...])."
                 ),
                 context_briefing=briefing,
             ).with_introspection(task=task, role=role_str),
@@ -984,6 +1074,11 @@ class Choreographer:
             return await self._work_envelope(agent_id, pre_assigned[0], role)
         assigned = await self._drop_dependency_held(assigned_rows)
         if assigned:
+            # B39 mid-work staleness advisory (default-off): the dev just
+            # re-surfaceed its in-progress branch; this is the natural
+            # touchpoint to warn about a moved base. Best-effort, may only
+            # add a notification, never blocks the work envelope.
+            await self._branch_staleness_advisory(agent_id, assigned[0])
             return await self._work_envelope(agent_id, assigned[0], role)
         paused = await self._deps.task.list_paused_for_agent(agent_id)
         if paused:
@@ -1238,10 +1333,71 @@ class Choreographer:
                 task_id=str(getattr(task, "id", "")),
             )
             return {"status": "timeout", "lessons": []}
+        items = list(result.get("items", []))
+        status = str(result.get("status", "error"))
+        if status == "ok":
+            # B41 lesson_prune (decisions pilot, default-off): score each
+            # retrieved lesson's applicability and prune the inapplicable
+            # ones from the INJECTED list only. The retrieval query, the
+            # floor, and the add path are untouched; off/shadow/below-
+            # floor injects every lesson exactly as before.
+            items = await self._prune_institutional_memory(task, items)
         return {
-            "status": str(result.get("status", "error")),
-            "lessons": list(result.get("items", [])),
+            "status": status,
+            "lessons": items,
         }
+
+    async def _prune_institutional_memory(
+        self, task: Any, items: list[Any]
+    ) -> list[Any]:
+        """B41 lesson_prune scoring lane (decisions pilot, default-off).
+
+        Title-shape retrieval injected wholesale misses file-scoped
+        lessons and injects noise; this scores each lesson against
+        (task description + plan + files-touched) and drops the ones
+        below ``LESSON_PRUNE_KEEP_FLOOR`` from the injected list. MAY
+        ONLY PRUNE: the search that fed it is never changed and lessons
+        are never added. Fail-open in the safe direction: any pilot
+        absence (off, shadow, no verdict, error) returns the full list.
+        """
+        if not items:
+            return items
+        try:
+            from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+            mode = await pilot_mode(self.task.session, "lesson_prune")
+        except Exception as exc:
+            logger.warning(
+                "lesson_prune_skip",
+                task_id=str(getattr(task, "id", "")),
+                error=str(exc),
+            )
+            return items
+        if mode is PilotMode.OFF:
+            return items
+        from roboco.services.decisions.pilots_gateway import lesson_prune
+
+        plan_text = str(getattr(task, "plan", "") or "")
+        rich_plan = getattr(task, "rich_plan", None)
+        if not plan_text and isinstance(rich_plan, dict):
+            plan_text = str(rich_plan.get("approach") or "")
+        try:
+            kept = await lesson_prune(
+                self.task.session,
+                task_id=str(getattr(task, "id", "")),
+                lessons=items,
+                task_description=str(getattr(task, "description", "") or ""),
+                plan=plan_text,
+                files_touched=_touch_globs(task),
+            )
+        except Exception as exc:
+            logger.warning(
+                "lesson_prune_skip",
+                task_id=str(getattr(task, "id", "")),
+                error=str(exc),
+            )
+            return items
+        return kept if kept is not None else items
 
     # PM coordinator roles plan + delegate many roots in parallel; the actual
     # work then runs in the delegated children/cells, not in the PM's own hands.
@@ -2589,15 +2745,100 @@ class Choreographer:
         if not resolved_findings:
             return
         repo = ReviewFindingsRepository(self.task.session)
+        addressed_rows: list[Any] = []
         for item in resolved_findings:
             ref = str(item.get("finding_id") or "").strip()
             if not ref:
                 continue
-            await repo.mark_addressed(
+            row = await repo.mark_addressed(
                 task_id,
                 ref,
                 commit=item.get("commit"),
                 note=item.get("note"),
+            )
+            if row is not None:
+                addressed_rows.append(row)
+        await self._findings_mapping_advisory(task_id, addressed_rows)
+
+    async def _findings_mapping_advisory(self, task_id: UUID, rows: list[Any]) -> None:
+        """B31 findings_mapping advisory (decisions pilot, default-off).
+
+        After findings are marked addressed by id (historically with ZERO
+        diff verification), batch one decisions call per finding ("this
+        diff plausibly addresses finding F") and log a warning for every
+        resolved finding with no plausible diff overlap. ADVISORY ONLY:
+        the ledger rows stay addressed, nothing is closed, waived, or
+        re-opened here - the warning is the audit trail QA/calibration
+        reads. Fail-open: pilot off/unreachable/error changes nothing.
+        """
+        if not rows:
+            return
+        try:
+            from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+            mode = await pilot_mode(self.task.session, "findings_mapping")
+        except Exception as exc:
+            logger.warning(
+                "findings_mapping_skip", task_id=str(task_id), error=str(exc)
+            )
+            return
+        if mode is PilotMode.OFF:
+            return
+        t = await self.task.get(task_id)
+        if t is None or not getattr(t, "branch_name", None):
+            return
+        from roboco.config import settings as _settings
+
+        diff, files_changed = "", []
+        if _settings.decisions_enabled:
+            evidence_gaps: list[str] = []
+            budget = LegBudget(_settings.evidence_assembly_timeout_seconds)
+            diff, files_changed = await run_bounded_leg(
+                self.git.diff_and_files(branch_name=t.branch_name),
+                default=("", []),
+                budget=budget,
+                leg="findings-mapping diff + files",
+                hint="overlap checks degraded; run the diff manually",
+                task_id=task_id,
+                gaps=evidence_gaps,
+            )
+        from roboco.services.decisions.pilots_gateway import findings_mapping
+
+        findings = [
+            {
+                "id": str(row.id),
+                "file": getattr(row, "file", None),
+                "line": getattr(row, "line", None),
+                "expected": getattr(row, "expected", None),
+                "actual": getattr(row, "actual", None),
+            }
+            for row in rows
+        ]
+        try:
+            mapping = await findings_mapping(
+                self.task.session,
+                task_id=str(task_id),
+                findings=findings,
+                diff=diff,
+                files_changed=list(files_changed),
+            )
+        except Exception as exc:
+            logger.warning(
+                "findings_mapping_skip", task_id=str(task_id), error=str(exc)
+            )
+            return
+        if mapping is None:
+            return
+        mapped_ids = {entry.get("finding_id") for entry in mapping}
+        for row in rows:
+            if str(row.id) in mapped_ids:
+                continue
+            logger.warning(
+                "resolved_finding_zero_diff_overlap",
+                task_id=str(task_id),
+                finding_id=str(row.id)[:8],
+                file=getattr(row, "file", None),
+                note="advisory only; the ledger row stays addressed",
             )
 
     async def _i_am_done_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
@@ -3157,6 +3398,114 @@ class Choreographer:
                 context_briefing=ctx.briefing,
             )
         return None
+
+    async def _branch_staleness_advisory(self, agent_id: UUID, t: Any) -> None:
+        """B39 branch_staleness mid-work advisory (decisions pilot,
+        default-off).
+
+        ``_behind_base_gate`` only fires at submit, fail-open; the
+        2026-06-27 incident class (a sibling's merge leaving the branch
+        N behind) otherwise surfaces hours later. This mid-work path
+        reuses the gate's exact behind-count/base-resolution data and
+        asks the pilot whether the developer should hear about it NOW.
+        MAY ONLY ADD a notification to the dev: it never blocks, never
+        rebases, and below confidence it does nothing. Fail-open on any
+        git/base error (the submit gate remains the backstop).
+        """
+        if not getattr(t, "branch_name", None):
+            return
+        state = await self._branch_staleness_state(agent_id, t)
+        if state is None:
+            return
+        base_branch, behind, ahead = state
+        from roboco.services.decisions.pilots_gateway import branch_staleness
+
+        try:
+            verdict = await branch_staleness(
+                self.task.session,
+                task_id=str(t.id),
+                base_branch=base_branch,
+                behind=behind,
+                ahead=ahead,
+                changed_files=_touch_globs(t),
+            )
+        except Exception as exc:
+            logger.warning("branch_staleness_skip", task_id=str(t.id), error=str(exc))
+            return
+        if verdict is None:
+            return
+        await self._notify_branch_stale(agent_id, t, base_branch, behind, verdict)
+
+    async def _branch_staleness_state(
+        self, agent_id: UUID, t: Any
+    ) -> tuple[str, int, int] | None:
+        """The gate's behind-count data for the B39 advisory: a resolved
+        non-protected base plus ``(behind, ahead)``, or None when the
+        branch is fresh, the base is protected, resolution fails, or the
+        pilot mode gate says stay out (fail-open, mirrors
+        ``_behind_base_gate``'s skip posture)."""
+        try:
+            from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+            mode = await pilot_mode(self.task.session, "branch_staleness")
+        except Exception:
+            return None
+        if mode is PilotMode.OFF:
+            return None
+        try:
+            base_branch = await resolve_parent_branch(t, self.task)
+            protected = (
+                not base_branch
+                or base_branch.startswith("-")
+                or base_branch in ("master", "main")
+            )
+            if not protected:
+                behind, ahead = await self.git.is_behind_base(
+                    t, base_branch=base_branch, actor_agent_id=agent_id
+                )
+                if behind > 0:
+                    return base_branch, int(behind), int(ahead)
+        except Exception as exc:
+            logger.warning("branch_staleness_skip", task_id=str(t.id), error=str(exc))
+        return None
+
+    async def _notify_branch_stale(
+        self,
+        agent_id: UUID,
+        t: Any,
+        base_branch: str,
+        behind: int,
+        verdict: dict[str, Any],
+    ) -> None:
+        """The additive action of B39: an ack-required note TO THE DEV
+        about the moved base. Best-effort; never blocks give_me_work."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            agent = await self.task.agent_for(agent_id)
+            to_slug = str(getattr(agent, "slug", "") or "") or str(agent_id)
+            risk = verdict.get("risk_score")
+            confidence = verdict.get("confidence")
+            body = (
+                f"[decisions] Branch staleness: your branch on task "
+                f"{str(t.id)[:8]} is {behind} commit(s) behind its base "
+                f"'{base_branch}' and the new base commits carry conflict "
+                f"risk (risk {risk}/2, confidence {confidence}). Consider "
+                "sync_branch(task_id=...) mid-work instead of discovering "
+                "it at the submit gate."
+            )
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent=to_slug,
+                body=body,
+                task_id=str(t.id),
+            )
+        except Exception as exc:
+            logger.warning(
+                "failed to send branch-staleness notification",
+                task_id=str(getattr(t, "id", "")),
+                error=str(exc),
+            )
 
     @staticmethod
     def _extract_first_commit_sha(t: Any) -> str | None:
@@ -5653,6 +6002,7 @@ class Choreographer:
                 return await self._emit_rejection(
                     guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
                 )
+        idle_hint = await self._idle_legitimacy_hint(agent_id)
         paused_ids = await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
         if paused_ids:
@@ -5666,6 +6016,8 @@ class Choreographer:
             )
         else:
             next_msg = "container will shut down"
+        if idle_hint:
+            next_msg = f"{next_msg}; {idle_hint}"
         # The agent truly disengages here (container shuts down) — unlike
         # the idle_with_unread early return above, which sends it right
         # back to work, so no teardown fires there.
@@ -6013,6 +6365,129 @@ class Choreographer:
                 "auto_pause_checkpoint_failed",
                 task_id=str(task.id),
                 agent_id=str(agent_id),
+            )
+
+    async def _idle_legitimacy_hint(self, agent_id: UUID) -> str | None:
+        """B34 idle_legitimacy advisory (decisions pilot, default-off).
+
+        Structural idle guards cannot see "finished but never opened a
+        PR": that dev idles cleanly and the task rots until the reaper.
+        When the pilot is ON, classify the idle from owned-task state
+        (commits? PR? recency). MAY ONLY ESCALATE or hint: a stranded
+        verdict sends a best-effort PM notification, a likely-done
+        verdict becomes a ``next`` hint naming the unsubmitted task, and
+        a legit idle is NEVER blocked. Off/shadow/below-floor/unreachable
+        returns None (exactly today's idle).
+        """
+        owned_state = await self._idle_owned_state(agent_id)
+        if owned_state is None:
+            return None
+        from roboco.services.decisions.pilots_gateway import (
+            IdleLegitimacy,
+            idle_legitimacy,
+        )
+
+        try:
+            verdict = await idle_legitimacy(
+                self.task.session,
+                agent_slug=str(agent_id),
+                owned_tasks=owned_state,
+            )
+        except Exception as exc:
+            logger.warning(
+                "idle_legitimacy_skip", agent_id=str(agent_id), error=str(exc)
+            )
+            return None
+        if verdict is IdleLegitimacy.LIKELY_STRANDED_ESCALATE:
+            await self._notify_idle_stranded(agent_id, owned_state)
+            return None
+        if verdict is IdleLegitimacy.LIKELY_DONE_SUBMIT_NOW:
+            first = owned_state[0]
+            return (
+                f"decisions hint: task {first['task_id'][:8]} "
+                f"('{first['title'][:60]}') looks finished but was never "
+                f"submitted - call i_am_done(task_id='{first['task_id']}') "
+                "before idling"
+            )
+        return None
+
+    async def _idle_owned_state(self, agent_id: UUID) -> list[dict[str, Any]] | None:
+        """Owned-task state for the B34 verdict (commits, PR, recency),
+        composed best-effort from what ``i_am_idle`` already holds in
+        scope. ``None`` means "stay out" (pilot off / no owned tasks /
+        any fetch error)."""
+        try:
+            from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+            mode = await pilot_mode(self.task.session, "idle_legitimacy")
+        except Exception:
+            return None
+        if mode is PilotMode.OFF:
+            return None
+        try:
+            owned = await self.task.list_in_progress_for_agent(agent_id)
+        except Exception as exc:
+            logger.warning(
+                "idle_legitimacy_skip", agent_id=str(agent_id), error=str(exc)
+            )
+            return None
+        if not owned:
+            return None
+        now = datetime.now(UTC)
+        owned_state: list[dict[str, Any]] = []
+        for t in owned[:5]:
+            minutes: float | None = None
+            updated = getattr(t, "updated_at", None)
+            if updated is not None:
+                try:
+                    minutes = max(0.0, (now - updated).total_seconds() / 60)
+                except (TypeError, ValueError):
+                    minutes = None
+            owned_state.append(
+                {
+                    "task_id": str(t.id),
+                    "title": str(getattr(t, "title", "") or ""),
+                    "status": str(getattr(t, "status", "") or ""),
+                    "commit_count": len(list(getattr(t, "commits", None) or [])),
+                    "has_pr": bool(getattr(t, "pr_number", None)),
+                    "minutes_since_last_activity": (
+                        round(minutes, 1) if minutes is not None else None
+                    ),
+                }
+            )
+        return owned_state
+
+    async def _notify_idle_stranded(
+        self, agent_id: UUID, owned_state: list[dict[str, Any]]
+    ) -> None:
+        """The escalate lane of B34: a PM-facing ack-required note that a
+        dev idled over work that looks stranded. Best-effort; never
+        blocks the idle (pattern mirrors spawn_exit's parking escalation)."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            first = owned_state[0] if owned_state else None
+            body = (
+                f"[decisions] Idle-legitimacy: agent {agent_id} idled while its "
+                "in-progress task(s) look stranded (commits without a PR or "
+                "submission path); the task may rot until the reaper."
+                + (
+                    f" First: {first['task_id'][:8]} '{first['title'][:60]}'."
+                    if first
+                    else ""
+                )
+            )
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent="main-pm",
+                body=body,
+                task_id=first["task_id"] if first else None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "failed to send idle-stranded notification",
+                agent_id=str(agent_id),
+                error=str(exc),
             )
 
     # --- QA verbs moved to ``qa.py``. ---

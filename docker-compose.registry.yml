@@ -83,11 +83,11 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_VIDEO_RENDERER_BASE_URL: http://roboco-video-renderer:3001
   # Decisions service (typed System One decisions). Carried at config
   # defaults (master flag OFF, OpenRouter fallback tier OFF) so the
-  # published default stays conservative: the roboco-jev sidecar ships and
-  # runs healthy, but nothing resolves to Jev until the CEO arms it via
+  # published default stays conservative: the roboco-decisions sidecar ships and
+  # runs healthy, but nothing serves a verdict until the CEO arms it via
   # .env / Settings -> Feature Flags.
   ROBOCO_DECISIONS_ENABLED: ${ROBOCO_DECISIONS_ENABLED:-false}
-  ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-jev:8100}
+  ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-decisions:8100}
   ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
   # Spawn the PRE-BUILT agent images from the same registry instead of
@@ -457,16 +457,16 @@ services:
       start_period: 10s
 
   # --------------------------------------------------------------------------
-  # Jev sidecar (Laya tier of the Decisions service) - CPU-only typed
+  # Decisions sidecar (the built-in Laya tier of the Decisions service) - CPU-only typed
   # decisions over the official onnxruntime path. Inert until
   # ROBOCO_DECISIONS_ENABLED goes on; shipping it changes nothing by
   # itself. No DB, no git, no credentials. NO `networks:` key: joins the
   # implicit default network (roboco_default) next to ollama, NEVER
   # roboco_data, and never exposed through nginx or on a host port.
   # --------------------------------------------------------------------------
-  jev:
-    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-jev:${ROBOCO_VERSION:-latest}
-    container_name: roboco-jev
+  decisions:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-decisions:${ROBOCO_VERSION:-latest}
+    container_name: roboco-decisions
     restart: unless-stopped
     mem_limit: "2g"
     healthcheck:

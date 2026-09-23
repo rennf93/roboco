@@ -30,6 +30,7 @@ _EVIDENCE_OMIT_WHEN_EMPTY = (
     "collision_context",
     "video_context",
     "evidence_gaps",
+    "suggested_findings_mapping",
 )
 
 
@@ -77,6 +78,12 @@ class EvidencePayload:
     # hanging the verb — claim_review / claim_doc_task / claim_gate_review
     # only. Empty (and omitted) on the normal path.
     evidence_gaps: list[str] = field(default_factory=list)
+    # B31 findings_mapping (decisions pilot, default-off): the suggested
+    # finding-to-diff map (finding id -> plausible files/hunks +
+    # confidence) handed to the reviewer as a STARTING map. ADVISORY
+    # ONLY: it never closes, waives, or re-opens a finding. Empty (and
+    # omitted) when the pilot is off/below-floor/unavailable.
+    suggested_findings_mapping: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -182,6 +189,7 @@ def build_evidence_for_task(
     collision_context: list[dict[str, Any]] | None = None,
     video_context: dict[str, Any] | None = None,
     evidence_gaps: list[str] | None = None,
+    suggested_findings_mapping: list[dict[str, Any]] | None = None,
 ) -> EvidencePayload:
     """Compose an EvidencePayload from a Task model + supplemental data.
 
@@ -216,6 +224,7 @@ def build_evidence_for_task(
         collision_context=list(collision_context or []),
         video_context=video_context,
         evidence_gaps=list(evidence_gaps or []),
+        suggested_findings_mapping=list(suggested_findings_mapping or []),
     )
 
 

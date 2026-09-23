@@ -2,7 +2,7 @@
 
 The resolution chain (spec section 1), evaluated cheaply and in-process on
 every call: master flag off -> tier 3 (no verdict, the pre-Decisions
-floor). Laya tier enabled (default) and the ``roboco-jev`` sidecar healthy
+floor). Laya tier enabled (default) and the ``roboco-decisions`` sidecar healthy
 -> tier 1. Laya disabled by config or unhealthy -> OpenRouter IF opted in
 AND the AI Provider screen has a key -> tier 2. OpenRouter opted in but the
 key MISSING -> ONE ack-required CEO notification per boot (a missing key is
@@ -64,6 +64,28 @@ async def resolve_endpoint(session) -> DecisionsEndpoint | None:
         await _notify_ceo_missing_openrouter_key(session)
 
     return None
+
+
+async def check_openrouter_fallback_at_startup(session) -> None:
+    """Spec 4 startup key check: if the OpenRouter fallback is OPTED IN but
+    the AI Provider screen has no OpenRouter key, fire the ONE ack-required
+    CEO notification at boot, naming the exact fix screen, and resolve to
+    the Laya tier for the process lifetime. Shares the lazy path's
+    once-per-boot marker, so the two can never double-fire. Never raises
+    (callers still wrap it: startup must never fail because of it)."""
+    if not settings.decisions_enabled or not settings.decisions_tier_openrouter_enabled:
+        return
+    if _BOOT_STATE["openrouter_key_warning_sent"]:
+        return
+    api_key = await _openrouter_api_key(session)
+    if api_key:
+        return
+    _BOOT_STATE["openrouter_key_warning_sent"] = True
+    logger.warning(
+        "decisions OpenRouter fallback opted in with no key at startup; "
+        "resolving to the Laya tier for the process lifetime"
+    )
+    await _notify_ceo_missing_openrouter_key(session)
 
 
 def _laya_endpoint() -> DecisionsEndpoint:
@@ -128,11 +150,11 @@ async def _sidecar_healthy() -> bool:
             response = await client.get(f"{base}/health")
             healthy = response.status_code == httpx.codes.OK
     except (httpx.HTTPError, OSError) as exc:
-        logger.debug("roboco-jev health probe failed", error=str(exc))
+        logger.debug("roboco-decisions health probe failed", error=str(exc))
     _health_cache[base] = (now, healthy)
     if not healthy:
         logger.warning(
-            "roboco-jev sidecar unhealthy; decisions resolve past the Laya tier",
+            "roboco-decisions sidecar unhealthy; decisions resolve past the Laya tier",
             base_url=base,
         )
     return healthy

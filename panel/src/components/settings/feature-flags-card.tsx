@@ -42,7 +42,7 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   decisions_enabled:
     "Master switch for the Decisions service (typed System One verdicts: choice / score / noul with calibrated confidence). Off = every decision point does exactly what it did before this service existed; nothing else decisions-related has any effect until this is on.",
   decisions_tier_laya_enabled:
-    "Serve decisions from the self-hosted Laya sidecar (roboco-jev container) when it is healthy: the built-in default tier, no key, no spend. Inert until that container exists and decisions_enabled above is on.",
+    "Serve decisions from the self-hosted Laya sidecar (roboco-decisions container) when it is healthy: the built-in default tier, no key, no spend. Inert until that container exists and decisions_enabled above is on.",
   decisions_tier_openrouter_enabled:
     "Opt-in fallback tier: serve decisions through the OpenRouter Decisions API when the sidecar is disabled or unhealthy. Opting in is deliberate spend and requires an OpenRouter key on the AI Providers screen (a warning banner appears there while the key is missing).",
   external_pr_enabled:

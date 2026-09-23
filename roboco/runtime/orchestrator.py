@@ -74,6 +74,7 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
     BARFLY_SOURCE,
     CORONER_SOURCE,
+    DECISIONS_AUDIT_SOURCE,
     DOGFOOD_SOURCE,
     LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
@@ -1154,6 +1155,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         MIRROR_SOURCE,
         MEGAPHONE_SOURCE,
         LIBRARIAN_SOURCE,
+        DECISIONS_AUDIT_SOURCE,
         WAR_ROOM_SOURCE,
         BARFLY_SOURCE,
         DOGFOOD_SOURCE,
@@ -1197,6 +1199,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         MIRROR_SOURCE: orch._dispatch_mirror_exploration,
         MEGAPHONE_SOURCE: orch._dispatch_megaphone_exploration,
         LIBRARIAN_SOURCE: orch._dispatch_librarian_exploration,
+        DECISIONS_AUDIT_SOURCE: orch._dispatch_decisions_audit_exploration,
         WAR_ROOM_SOURCE: orch._dispatch_war_room_exploration,
         BARFLY_SOURCE: orch._dispatch_barfly_exploration,
         DOGFOOD_SOURCE: orch._dispatch_dogfood_exploration,

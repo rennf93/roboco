@@ -174,6 +174,17 @@ select = [
     "PLR2004",
     "PLC0415",
 ]
+# Same rationale as the decisions tests above: the B-row dispatch wiring
+# tests monkeypatch pilot entry points with fakes that accept (but do not
+# read) session/state kwargs, and pin exact floor constants.
+"tests/unit/runtime/test_decisions_b_dispatch.py" = [
+    "ARG001",
+    "ARG005",
+    "PLR2004",
+    "PLC0415",
+    "PLW0108",
+    "RUF059",
+]
 "tests/unit/runtime/test_decisions_parking.py" = ["ARG001", "PLR2004", "PLC0415"]
 "tests/unit/gateway/test_content_actions_preflight_triage.py" = ["ARG001", "PLR2004"]
 # hummin_live_config embeds the pi-extension TypeScript source as a raw

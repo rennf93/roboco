@@ -1071,6 +1071,7 @@ MEGAPHONE_SOURCE = "board_megaphone"
 # already a real PlaybookTable row riding the normal pending-playbook
 # curation queue, so there is no separate materialized-item source.
 LIBRARIAN_SOURCE = "board_librarian"
+DECISIONS_AUDIT_SOURCE = "board_decisions_audit"
 
 # Source tag for a Barfly (Board Program) conversation-reply exploration
 # cycle: a PENDING task the barfly engine opens for the Head of Marketing,

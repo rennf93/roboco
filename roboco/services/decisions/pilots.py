@@ -46,6 +46,7 @@ PILOT_SLUGS = (
     "triage_failure",
     "steer_gate",
     "transcript_notes",
+    "tool_spotlight",
 )
 
 
@@ -95,21 +96,33 @@ STEER_CONFIDENCE_FLOOR = 0.8
 PREFLIGHT_ADVISORY_CONFIDENCE_FLOOR = 0.7
 
 
+def _env_slug_set(raw: str) -> frozenset[str]:
+    """Parse a comma-separated env slug list (empty -> empty set)."""
+    return frozenset(s.strip() for s in raw.split(",") if s.strip())
+
+
 async def pilot_mode(session, pilot: str) -> PilotMode:
     """THE single chokepoint every pilot mode read routes through. The
-    master flag off forces OFF regardless of any per-pilot row; an unset
-    row means off, which is exactly the pre-Decisions behavior."""
+    master flag off forces OFF regardless of anything else. Resolution:
+    settings-store row (set from the panel) > env slug lists
+    (``decisions_pilots_on`` / ``decisions_pilots_shadow``, the operator
+    deploy arming path) > OFF, which is exactly the pre-Decisions
+    behavior."""
     if not settings.decisions_enabled:
         return PilotMode.OFF
     from roboco.services.settings import get_settings_service
 
     raw = await get_settings_service(session).get(f"decisions.pilot.{pilot}")
-    if raw is None:
-        return PilotMode.OFF
-    try:
-        return PilotMode(raw.strip().lower())
-    except ValueError:
-        return PilotMode.OFF
+    if raw is not None:
+        try:
+            return PilotMode(raw.strip().lower())
+        except ValueError:
+            return PilotMode.OFF
+    if pilot in _env_slug_set(settings.decisions_pilots_on):
+        return PilotMode.ON
+    if pilot in _env_slug_set(settings.decisions_pilots_shadow):
+        return PilotMode.SHADOW
+    return PilotMode.OFF
 
 
 async def decide_for_pilot(
@@ -158,7 +171,9 @@ def log_action(
     result: DecisionResult | None,
 ) -> None:
     """The audit-trail line: pilot, verdict, confidence, action taken (or
-    would-have-taken in shadow), cost, active tier."""
+    would-have-taken in shadow), cost, active tier. Also the single
+    persistence chokepoint: every pilot's verdict lands in decision_log
+    (fire-and-forget; the Auditor's daily review reads it)."""
     logger.info(
         "decision action",
         pilot=pilot,
@@ -170,6 +185,18 @@ def log_action(
         cost=result.usage.cost if result else None,
         session_id=result.session_id if result else None,
     )
+    try:
+        from roboco.services.decisions.persist import record_decision
+
+        record_decision(
+            pilot=pilot,
+            mode=mode.value,
+            verdict=verdict,
+            action=action,
+            result=result,
+        )
+    except Exception:  # evidence must never break a decision
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -639,4 +666,89 @@ async def steer_gate(
         log_action("steer_gate", mode, verdict.value, "no-op (shadow)", result)
         return SteerMode.QUEUE_AFTER_CURRENT
     log_action("steer_gate", mode, verdict.value, f"mode={verdict.value}", result)
+    return verdict
+
+
+# ---------------------------------------------------------------------------
+# B27 tool_spotlight: spawn-briefing verb highlight (cognition lane, spec
+# 7.1 row B27 / stage 4)
+# ---------------------------------------------------------------------------
+
+
+# Input band (spec 10 limit 3: many-option choice degrades past ~20
+# options) and output shape: fewer than 8 verbs is not worth a call,
+# more than 20 is outside the model's reliable verdict range, and the
+# highlight is always 5-7 verbs.
+TOOL_SPOTLIGHT_MIN_VERBS = 8
+TOOL_SPOTLIGHT_MAX_VERBS = 20
+TOOL_SPOTLIGHT_MIN_HIGHLIGHTS = 5
+TOOL_SPOTLIGHT_MAX_HIGHLIGHTS = 7
+TOOL_SPOTLIGHT_CONFIDENCE_FLOOR = 0.6
+
+
+async def tool_spotlight(
+    session,
+    *,
+    agent_slug: str,
+    task_title: str,
+    task_description: str,
+    verbs: list[str],
+) -> list[str] | None:
+    """Pick which 5-7 verbs of the agent's per-role surface matter most for
+    THIS task (B27: action-space navigation). Purely additive: the caller
+    renders a highlight line into the spawn briefing and the full surface
+    stays available no matter what this returns. ``None`` (below floor, out
+    of the option band, no verdict, Jev down) means render nothing, exactly
+    the pre-spotlight briefing."""
+    if not (TOOL_SPOTLIGHT_MIN_VERBS <= len(verbs) <= TOOL_SPOTLIGHT_MAX_VERBS):
+        return None
+    questions = {
+        "gate": ChoiceQuestion(
+            instructions=(
+                "Which of this agent's verbs matter most for the current "
+                "task? Pick the ones this task should lean on first."
+            ),
+            criteria=dict.fromkeys(
+                verbs, "This verb matters most for the current task."
+            ),
+        ),
+    }
+    state = {
+        "agent_slug": agent_slug,
+        "task_title": task_title,
+        "task_description": task_description,
+        "verbs": verbs,
+    }
+    mode, result = await decide_for_pilot(
+        session,
+        "tool_spotlight",
+        state,
+        questions,
+        session_id=f"spotlight:{agent_slug}",
+    )
+    if result is None:
+        return None
+    answer = result.answer("gate")
+    confidence = answer.confidence if answer else None
+    probabilities = answer.probabilities if answer else {}
+    if confidence is None or confidence < TOOL_SPOTLIGHT_CONFIDENCE_FLOOR:
+        return None
+    ranked = sorted(
+        ((verb, p) for verb, p in probabilities.items() if p > 0.0),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    verdict = [verb for verb, _ in ranked[:TOOL_SPOTLIGHT_MAX_HIGHLIGHTS]]
+    if len(verdict) < TOOL_SPOTLIGHT_MIN_HIGHLIGHTS:
+        return None
+    if mode is PilotMode.SHADOW:
+        log_action("tool_spotlight", mode, verdict, "no-op (shadow)", result)
+        return None
+    log_action(
+        "tool_spotlight",
+        mode,
+        verdict,
+        f"spotlight {len(verdict)} verbs",
+        result,
+    )
     return verdict

@@ -342,6 +342,11 @@ class SpawnExitEngine(_Base):
         The record is mirrored to `waiting_records` in Postgres so a later
         orchestrator restart can still resolve the wait.
         """
+        # B40 park_cause: attach the Decisions exit-cause line when one was
+        # stashed for this agent (additive context field only).
+        cause = getattr(self, "_decisions_exit_causes", {}).pop(agent_id, None)
+        if cause:
+            context = {**(context or {}), "decisions_park_cause": cause}
         record = WaitingRecord(
             agent_id=agent_id,
             task_id=task_id,
@@ -1498,6 +1503,13 @@ class SpawnExitEngine(_Base):
         # probe-resume loop revives the task when the limit lifts / overload clears.
         if await self._maybe_park_for_exit_error(agent_id, instance, graceful):
             return
+        # B40 park_cause: when the deterministic park ladders declined and the
+        # exit was a crash, ask the classifier for the one-line cause that the
+        # stranded/waiting notification will carry (additive only - the
+        # ladders keep first refusal on parking, so the verdict never changes
+        # today's classification).
+        if not graceful:
+            await self._decisions_record_exit_cause(agent_id, instance, exit_code)
         if graceful:
             logger.info(
                 "Agent container exited gracefully",
@@ -1605,6 +1617,46 @@ class SpawnExitEngine(_Base):
                 task_id=instance.current_task_id,
             )
 
+    async def _decisions_record_exit_cause(
+        self, agent_id: str, instance: Any, exit_code: int | None
+    ) -> None:
+        """B40 park_cause: classify the exit cause and stash the one-line
+        cause for the stranded/waiting notification (fail-open: any failure
+        leaves today's classification and notification exactly as they were)."""
+        if not settings.decisions_enabled:
+            return
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.services.decisions import pilots_dispatch
+
+            transcript_tail = None
+            segments = self._assistant_segments_from_transcript(agent_id)
+            if segments:
+                transcript_tail = segments[-1]
+            task_id = getattr(instance, "current_task_id", None)
+            factory = get_session_factory()
+            async with factory() as db:
+                verdict = await pilots_dispatch.park_cause(
+                    db,
+                    agent_id=agent_id,
+                    task_id=str(task_id) if task_id else None,
+                    exit_code=exit_code,
+                    parked_kind=None,
+                    transcript_tail=transcript_tail,
+                )
+            if verdict is None:
+                return
+            _cause, line = verdict
+            causes: dict[str, str] = getattr(self, "_decisions_exit_causes", {})
+            self._decisions_exit_causes = causes
+            causes[agent_id] = line
+        except Exception as exc:
+            logger.debug(
+                "park-cause decisions pass failed (best-effort)",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
     async def _notify_agent_stranded(
         self,
         agent_id: str,
@@ -1647,17 +1699,23 @@ class SpawnExitEngine(_Base):
                 # same value as `auditor.id if auditor else ceo.id`, without the
                 # union-narrowing mypy can't prove.
                 from_agent = recipients[0]
+                # B40 park_cause: append the Decisions one-line cause when the
+                # exit classifier produced one (additive only).
+                cause = getattr(self, "_decisions_exit_causes", {}).pop(agent_id, "")
+                body = (
+                    f"Agent '{agent_id}' exceeded max restart attempts "
+                    f"({error_count}) and will not auto-recover. "
+                    f"Task: {task_id or 'none'}. Manual intervention needed."
+                )
+                if cause:
+                    body = f"{body} {cause}."
                 notification = NotificationTable(
                     type=NotificationType.ALERT,
                     priority=NotificationPriority.HIGH,
                     from_agent=from_agent,
                     to_agents=recipients,
                     subject=f"Agent stranded: {agent_id}",
-                    body=(
-                        f"Agent '{agent_id}' exceeded max restart attempts "
-                        f"({error_count}) and will not auto-recover. "
-                        f"Task: {task_id or 'none'}. Manual intervention needed."
-                    ),
+                    body=body,
                     requires_ack=True,
                 )
                 db.add(notification)

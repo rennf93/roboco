@@ -2734,3 +2734,61 @@ class VerbLatencySampleTable(Base):
     __table_args__ = (
         Index("ix_verb_latency_samples_verb_created", "verb", "created_at"),
     )
+
+
+# =============================================================================
+# DECISIONS SERVICE - PERSISTED DECISION LOG
+# =============================================================================
+
+
+class DecisionLogTable(Base):
+    """Persisted record of one Decisions verdict (spec section 4: "if audit
+    needs persistence later, add a decision_log table in a dedicated
+    migration" - the Auditor's daily decisions-audit review is that
+    consumer).
+
+    Written fire-and-forget from the log_action chokepoint every pilot
+    routes through, so on, shadow, and future pilots are all captured with
+    no per-pilot wiring. This table is the baseline history the daily
+    board-program aggregates read: verdict distributions, mean confidence,
+    action counts, and spend per pilot over time.
+
+    Retention: pruned by the decisions-audit board cycle past
+    settings.decisions_log_retention_days.
+    """
+
+    __tablename__ = "decision_log"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    # Which pilot spoke, on which backend tier, in which mode. mode is
+    # "on" or "shadow" (OFF pilots never reach the log).
+    pilot: Mapped[str] = mapped_column(String(60), nullable=False)
+    tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False)
+
+    # Correlation with the orchestrator log line (carries the pilot and
+    # the originating run/task id the caller composed).
+    session_id: Mapped[str | None] = mapped_column(String(280), nullable=True)
+
+    # Typed answers: {"gate": "flaky", ...} keyed per question; confidence
+    # mirrors the keys. JSON so noul floats, choice slugs, and scores all
+    # fit one shape.
+    answers: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    # The action the caller took (or would have taken, in shadow).
+    action: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+    # Fallback-tier spend (Laya is 0 by construction).
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (Index("ix_decision_log_pilot_created", "pilot", "created_at"),)

@@ -79,7 +79,7 @@ vi.mock("@/components/ui/select", () => {
   };
 });
 
-import { DecisionsPilotsCard } from "../decisions-pilots-card";
+import { DecisionsPilotsCard, PILOT_SECTIONS } from "../decisions-pilots-card";
 
 function withQueryClient(ui: ReactNode) {
   const client = new QueryClient({
@@ -88,15 +88,13 @@ function withQueryClient(ui: ReactNode) {
   return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
 }
 
-const PILOT_ROWS = [
-  "Self-heal (transient-CI gate)",
-  "Parking (rate-limit routing)",
-  "Complexity (spawn-time routing)",
-  "Preflight diff (agent lane)",
-  "Triage failure (agent lane)",
-  "Steer gate (A2A steering)",
-  "Transcript notes (at finalize)",
+const SECTION_HEADINGS = [
+  "Tier A pilots",
+  "Cognition lane",
+  "Tier B (second wave)",
 ];
+
+const ALL_PILOTS = PILOT_SECTIONS.flatMap((s) => s.pilots);
 
 describe("DecisionsPilotsCard", () => {
   beforeEach(() => {
@@ -108,17 +106,41 @@ describe("DecisionsPilotsCard", () => {
     vi.clearAllMocks();
   });
 
-  it("renders one tri-state row per pilot (7 rows), all defaulting to off when unset", async () => {
+  it("renders three section headers in order", async () => {
     render(withQueryClient(<DecisionsPilotsCard />));
 
-    for (const label of PILOT_ROWS) {
-      expect(await screen.findByText(label)).toBeInTheDocument();
+    const sections = await screen.findAllByRole("region");
+    expect(sections).toHaveLength(3);
+    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual(
+      SECTION_HEADINGS,
+    );
+  });
+
+  it("renders one tri-state row per pilot (50 rows), all defaulting to off when unset", async () => {
+    render(withQueryClient(<DecisionsPilotsCard />));
+
+    expect(ALL_PILOTS).toHaveLength(50);
+    for (const pilot of ALL_PILOTS) {
+      expect(await screen.findByText(pilot.label)).toBeInTheDocument();
+      expect(
+        screen.getByTestId(`pilot-row-${pilot.slug}`),
+      ).toBeInTheDocument();
     }
-    const triggers = await screen.findAllByRole("combobox");
-    expect(triggers).toHaveLength(7);
+    const triggers = screen.getAllByRole("combobox");
+    expect(triggers).toHaveLength(50);
     for (const trigger of triggers) {
       expect(trigger.getAttribute("data-value")).toBe("off");
     }
+  });
+
+  it("renders each section with its own pilots under the right header", () => {
+    // Static data check: every slug appears exactly once across sections and
+    // the per-section counts match the spec (8 Tier A, 9 cognition, 33 Tier B).
+    const slugs = ALL_PILOTS.map((p) => p.slug);
+    expect(new Set(slugs).size).toBe(50);
+    expect(
+      PILOT_SECTIONS.map((s) => s.pilots.length),
+    ).toEqual([8, 9, 33]);
   });
 
   it("shows stored values from the settings map for dotted pilot keys", async () => {
@@ -133,7 +155,7 @@ describe("DecisionsPilotsCard", () => {
       const values = rows.map((r) => r.getAttribute("data-value"));
       expect(values.filter((v) => v === "shadow")).toHaveLength(1);
       expect(values.filter((v) => v === "on")).toHaveLength(1);
-      expect(values.filter((v) => v === "off")).toHaveLength(5);
+      expect(values.filter((v) => v === "off")).toHaveLength(48);
     });
   });
 

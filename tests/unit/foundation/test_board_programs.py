@@ -213,7 +213,7 @@ def test_registry_carries_barfly() -> None:
     assert b.default_interval_seconds == 2 * 24 * 3600
 
 
-def test_registry_carries_fourteen_programs() -> None:
+def test_registry_carries_fifteen_programs() -> None:
     """Locks the union so a future addition/removal is deliberate — matches
     the count-whatever-your-base-has-plus-war_room shape the other
     registry-parity tests already exercise per-key."""
@@ -232,6 +232,7 @@ def test_registry_carries_fourteen_programs() -> None:
         "war_room",
         "barfly",
         "dogfood",
+        "decisions_audit",
     }
 
 

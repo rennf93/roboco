@@ -1,4 +1,4 @@
-"""Contract test: the roboco-jev sidecar's responses must parse under the
+"""Contract test: the roboco-decisions sidecar's responses must parse under the
 same schemas.py as OpenRouter's (spec sections 4 and 10). The sidecar
 mirrors the OpenRouter Decisions wire shape, so this fixture pins that
 contract offline: if the container's adapter ever drifts from the wire
@@ -18,7 +18,7 @@ from roboco.services.decisions.schemas import parse_decisions_payload
 # A canned sidecar response body, byte-for-byte the shape the adapter
 # returns for a batched two-question request.
 _SIDECAR_RESPONSE = {
-    "id": "jev-local-018f3c",
+    "id": "dec-local-018f3c",
     "model": "convaiinnovations/laya",
     "answers": {
         "gate": {"type": "noul", "noul": 0.93, "confidence": 0.93},
@@ -60,7 +60,7 @@ async def test_sidecar_response_parses_through_the_real_client():
 
     endpoint = DecisionsEndpoint(
         tier="laya",
-        base_url="http://roboco-jev:8100",
+        base_url="http://roboco-decisions:8100",
         model="convaiinnovations/laya",
         timeout_s=5.0,
     )

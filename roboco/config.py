@@ -364,12 +364,12 @@ class Settings(BaseSettings):
     # A small orchestrator-side service that answers TYPED questions (choice /
     # score / noul) with calibrated confidence at decision points that would
     # otherwise be a full LLM call or a hardcoded heuristic. Two tiers behind
-    # one wire format: the self-hosted Laya sidecar (roboco-jev container,
+    # one wire format: the self-hosted Laya sidecar (roboco-decisions container,
     # built-in default, no key, no spend) and the OpenRouter Decisions API
     # (opt-in fallback). With the master flag off, every call site does exactly
     # what it did before this service existed; decisions can only add
     # behavior, never subtract, and nothing ever materializes on a verdict
-    # alone. See docs/internal/jev-decisions-spec.md.
+    # alone. See docs/internal/decisions-spec.md.
     decisions_enabled: bool = Field(
         default=False,
         description=(
@@ -388,9 +388,9 @@ class Settings(BaseSettings):
         ),
     )
     decisions_base_url: str = Field(
-        default="http://roboco-jev:8100",
+        default="http://roboco-decisions:8100",
         description=(
-            "Base URL of the self-hosted Decisions sidecar (the roboco-jev "
+            "Base URL of the self-hosted Decisions sidecar (the roboco-decisions "
             "container on the internal bridge). The sidecar mirrors the "
             "OpenRouter Decisions wire shape at /api/alpha/decisions so the "
             "client stays one implementation."
@@ -400,7 +400,7 @@ class Settings(BaseSettings):
         default=True,
         description=(
             "Serve decisions from the self-hosted sidecar when it is healthy. "
-            "The BUILT-IN default tier. Inert until the roboco-jev container "
+            "The BUILT-IN default tier. Inert until the roboco-decisions container "
             "exists and the master flag is on."
         ),
     )
@@ -427,6 +427,44 @@ class Settings(BaseSettings):
         description=(
             "Per-call timeout for the OpenRouter fallback tier (single "
             "attempt, no retries)."
+        ),
+    )
+    decisions_cost_alert_usd: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Cumulative daily OpenRouter-fallback Decisions spend (USD, "
+            "summed from per-call usage.cost per UTC day) above which the "
+            "CEO gets one ack-required alert per day. The 402-twice-in-"
+            "an-hour alert is independent of this threshold."
+        ),
+    )
+    decisions_pilots_on: str = Field(
+        default="",
+        description=(
+            "Comma-separated pilot slugs armed ON via env (operator deploys "
+            "like the NAS). A settings-store row always wins over this "
+            "default; slugs in neither list stay OFF. Empty on user-facing "
+            "deploys: nothing acts until the CEO arms pilots from "
+            "Settings -> Decisions Pilots."
+        ),
+    )
+    decisions_pilots_shadow: str = Field(
+        default="",
+        description=(
+            "Comma-separated pilot slugs running in SHADOW via env "
+            "(verdicts logged, behavior unchanged). Settings-store rows "
+            "win; empty default keeps user-facing deploys fully off."
+        ),
+    )
+    decisions_log_retention_days: int = Field(
+        default=90,
+        ge=1,
+        description=(
+            "How long decision_log rows feed the Auditor's baseline history "
+            "before the decisions-audit board cycle prunes them. The daily "
+            "aggregates (verdict distributions, confidence, spend per "
+            "pilot) are computed from this window."
         ),
     )
 

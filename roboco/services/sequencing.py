@@ -401,6 +401,95 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
 
 
 # ---------------------------------------------------------------------------
+# B5 semantic collision edges (Decisions pilot): the documented blind spot
+# of the pure file-path analysis above - two drafts whose globs do not
+# overlap can still logically conflict (same feature, contract, schema,
+# behavior). Optional, purely ADDITIVE, async because the screen is.
+# ---------------------------------------------------------------------------
+
+# At most one batched decisions call per wiring, 12 pairs max (spec 10:
+# bounded inputs; the deterministic rules cover the common cases already).
+_SEMANTIC_PAIR_CAP = 12
+
+
+async def semantic_collision_edges(
+    session, siblings: list
+) -> list[tuple[object, object]]:
+    """The dev-task collision DAG of :func:`dev_task_collision_edges`, PLUS
+    semantic edges the file-path rules cannot see.
+
+    Only NEW/updated callers reach for this; ``dev_task_collision_edges``
+    stays the sync baseline untouched. The deterministic result is computed
+    FIRST and is authoritative; the decisions noul screen is consulted only
+    for same-project surfaced pairs that have no edge yet, and its verdicts
+    may only ADD edges (never remove or reorder an existing one), merged
+    through ``_extend_acyclic`` so the returned list stays acyclic and safe
+    for ``TaskService.add_dependency``. Pilot off/shadow/below-floor (the
+    0.8 floors: an added edge stalls work, so the gate is tight) or any
+    backend failure yields exactly ``dev_task_collision_edges``'s result -
+    this function is a superset, never a divergence.
+    """
+    base = dev_task_collision_edges(siblings)
+    surfaced = _surfaced_siblings(siblings)
+    if len(surfaced) < _MIN_COLLISION_PAIR:
+        return base
+    surfaced.sort(
+        key=lambda s: (
+            int(getattr(s, "priority", 2)),
+            int(getattr(s, "sequence", 0)),
+        )
+    )
+    covered = {frozenset((a, b)) for a, b in base}
+    pairs: list[tuple[object, object]] = []
+    for i, a in enumerate(surfaced):
+        for b in surfaced[i + 1 :]:
+            if len(pairs) >= _SEMANTIC_PAIR_CAP:
+                break
+            if a.project_id != b.project_id:
+                continue
+            if frozenset((a.id, b.id)) in covered:
+                continue
+            pairs.append((a, b))
+        if len(pairs) >= _SEMANTIC_PAIR_CAP:
+            break
+    if not pairs:
+        return base
+
+    from roboco.services.decisions.pilots_infra import collision_edges
+
+    verdicts = await collision_edges(
+        session,
+        pairs=[
+            (
+                {
+                    "title": getattr(a, "title", ""),
+                    "description": getattr(a, "description", ""),
+                    "intends_to_touch": ", ".join(
+                        getattr(a, "intends_to_touch", None) or []
+                    ),
+                },
+                {
+                    "title": getattr(b, "title", ""),
+                    "description": getattr(b, "description", ""),
+                    "intends_to_touch": ", ".join(
+                        getattr(b, "intends_to_touch", None) or []
+                    ),
+                },
+            )
+            for a, b in pairs
+        ],
+    )
+    # Edge direction follows the stable (priority, sequence) order above:
+    # the earlier sibling is the dependency. _extend_acyclic drops any
+    # candidate that duplicates an ordered pair or would close a cycle,
+    # so the returned DAG is base EXACTLY plus (at most) the flagged edges.
+    added = [
+        (a.id, b.id) for (a, b), flagged in zip(pairs, verdicts, strict=True) if flagged
+    ]
+    return _extend_acyclic(base, added)
+
+
+# ---------------------------------------------------------------------------
 # Multi-level sequencing — edge kinds 2 + 4 (cell-task wave chain + by-osmosis).
 # Pure glue (no DB): the choreographer's TaskService wrappers walk the tree and
 # hand the gathered objects to these helpers, which return the IDs to

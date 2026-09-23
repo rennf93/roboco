@@ -1,6 +1,6 @@
 """The one Decisions HTTP client, serving both tiers.
 
-``roboco-jev`` (the self-hosted sidecar) mirrors the OpenRouter Decisions
+``roboco-decisions`` (the self-hosted sidecar) mirrors the OpenRouter Decisions
 wire shape at ``/api/alpha/decisions``, so a single ``DecisionsClient``
 covers the Laya tier (no auth, internal bridge) and the OpenRouter fallback
 (bearer key, alpha endpoint). The resolver (``resolver.py``) picks the
@@ -28,6 +28,7 @@ from roboco.services.decisions.schemas import (
     DecisionResult,
     parse_decisions_payload,
 )
+from roboco.services.decisions.spend_guard import record_402, record_spend
 
 logger = structlog.get_logger(__name__)
 
@@ -200,6 +201,10 @@ class DecisionsClient:
         result = parse_decisions_payload(
             payload, tier=endpoint.tier, session_id=session_id
         )
+        # Observe-only spend tracking (spec 3.1): usage.cost is summed per
+        # tier per UTC day and alerts once the daily threshold is crossed.
+        # Never affects the verdict or the fail-open behavior.
+        record_spend(result.tier, result.usage.cost)
         logger.info(
             "decision rendered",
             tier=result.tier,
@@ -224,6 +229,11 @@ class DecisionsClient:
         rejection counts a circuit failure and logs once, fail-open."""
         if response.status_code != httpx.codes.OK:
             circuit.record_failure()
+            # A 402 (payment required / credits exhausted) is observed-only
+            # spend-guard input (spec 3.1); two within an hour alert the CEO.
+            # The fail-open behavior below is unchanged.
+            if response.status_code == httpx.codes.PAYMENT_REQUIRED:
+                record_402(endpoint.tier)
             logger.warning(
                 "decisions backend returned an error; fail-open",
                 tier=endpoint.tier,

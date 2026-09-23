@@ -1134,6 +1134,7 @@ class SpawnConfigEngine(_Base):
         escalate_to = get_escalation_target(agent_id) or "main-pm"
 
         tool_load_block = self._build_tool_load_block(role)
+        spotlight_line = await self._tool_spotlight_line(agent_id, task_id)
         task_block = ""
         if task_id:
             task = await self._fetch_task_for_briefing(agent_id, task_id)
@@ -1151,6 +1152,7 @@ class SpawnConfigEngine(_Base):
             f"# Session briefing — {agent_id}\n"
             "\n"
             f"{tool_load_block}"
+            f"{spotlight_line}"
             "## You are\n"
             f"- **Agent:** `{agent_id}`\n"
             f"- **Role:** {role}\n"
@@ -1236,6 +1238,62 @@ class SpawnConfigEngine(_Base):
             logger.debug(
                 "Steering briefing block unavailable",
                 agent_id=agent_id,
+                error=str(exc),
+            )
+            return ""
+
+    async def _tool_spotlight_line(self, agent_id: str, task_id: str | None) -> str:
+        """Tool spotlight (B27, cognition lane): one briefing line naming the
+        5-7 verbs that matter most for THIS task. Purely additive navigation
+        over the action space: the full per-role surface stays in the manifest
+        unchanged, and the highlight is only ever ADDED to the briefing. No
+        task, no verdict, or the pilot off/failing renders nothing at all.
+        Best-effort fail-open throughout."""
+        if not task_id:
+            return ""
+        try:
+            from uuid import UUID
+
+            from roboco.db.base import get_session_factory
+            from roboco.services.decisions import tool_spotlight
+            from roboco.services.decisions.pilots import TOOL_SPOTLIGHT_MIN_VERBS
+            from roboco.services.gateway.role_config import get_role_config
+            from roboco.services.task import get_task_service
+
+            role = get_agent_role(agent_id) or ""
+            try:
+                do_tools = list(get_role_config(role).do_tools)
+            except KeyError:
+                return ""
+            if len(do_tools) < TOOL_SPOTLIGHT_MIN_VERBS:  # below the option band
+                return ""
+            title = ""
+            description = ""
+            factory = get_session_factory()
+            async with factory() as db:
+                task = await get_task_service(db).get(UUID(task_id))
+                if task is not None:
+                    title = task.title or ""
+                    description = task.description or ""
+                verbs = await tool_spotlight(
+                    db,
+                    agent_slug=agent_id,
+                    task_title=title,
+                    task_description=description,
+                    verbs=do_tools,
+                )
+            if not verbs:
+                return ""
+            verb_list = ", ".join(f"`{verb}`" for verb in verbs)
+            return (
+                f"\n**Spotlight for this task:** {verb_list} (the full "
+                "surface stays available; these matter most right now)\n"
+            )
+        except Exception as exc:
+            logger.debug(
+                "Tool spotlight line unavailable",
+                agent_id=agent_id,
+                task_id=task_id,
                 error=str(exc),
             )
             return ""

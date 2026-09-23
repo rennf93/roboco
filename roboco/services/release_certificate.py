@@ -108,7 +108,12 @@ class FindingsSummary:
 
 @dataclass(frozen=True)
 class ReleaseCertificate:
-    """The assembled certificate payload (serialized by the response schema)."""
+    """The assembled certificate payload (serialized by the response schema).
+
+    ``risk_advisory`` is the B19 Decisions advisory line (None when the
+    pilot is off/shadow/below-floor): pure information for the CEO, never a
+    verdict, gate, or block.
+    """
 
     version: str
     generated_at: datetime
@@ -118,6 +123,7 @@ class ReleaseCertificate:
     changelog_excerpt: str
     task_states: list[CertificateTaskState]
     findings_summary: FindingsSummary
+    risk_advisory: str | None = None
 
 
 def normalized_version(raw: str) -> str:
@@ -199,6 +205,15 @@ class ReleaseCertificateService(BaseService):
             proposal=target, after=previous_completed_at
         )
         approved_at_iso = markers.get_release_approved_at(target)
+        risk_advisory: str | None = None
+        try:
+            from roboco.services.release_readiness import decisions_risk_advisory
+
+            risk_advisory = await decisions_risk_advisory(self.session, report)
+        except Exception:
+            # Advisory only: a screen failure renders the certificate
+            # without the line rather than failing the build.
+            self.log.warning("release-certificate risk advisory failed; line omitted")
         return ReleaseCertificate(
             version=version,
             generated_at=datetime.now(UTC),
@@ -212,6 +227,7 @@ class ReleaseCertificateService(BaseService):
             changelog_excerpt=report.drafted_changelog,
             task_states=[self._task_state(t) for t in tasks],
             findings_summary=await self._findings_summary(tasks),
+            risk_advisory=risk_advisory,
         )
 
     async def _conventions_clean(self, tasks: list[TaskTable]) -> bool:

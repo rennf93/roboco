@@ -42,6 +42,13 @@ else:
     _Base = object
 
 
+# B35 review_queue_priority banding constants: unscored tasks sit at the
+# neutral priority band; depth 3 renders the forensic directive.
+_QA_PRIORITY_NEUTRAL = 1
+_QA_DEPTH_FORENSIC = 3
+_QA_QUEUE_MIN_TO_RANK = 2
+
+
 class DispatchWorkEngine(_Base):
     """Mixin holding the "dispatch_work" methods moved out of AgentOrchestrator."""
 
@@ -315,6 +322,33 @@ class DispatchWorkEngine(_Base):
             )
             return ""
 
+    async def _decisions_board_evidence_skip(
+        self, program: str, evidence_context: str
+    ) -> bool:
+        """B36 board_evidence_skip: True = this cycle's evidence dump is
+        confidently a no-op, so the spawn is skipped entirely (saves a whole
+        container per no-op cycle). Empty evidence never skips; a below-floor
+        verdict, shadow mode, off, or any failure spawns as today. Self-
+        correcting: a wrong skip delays the cycle one tick and the next tick
+        re-judges."""
+        if not settings.decisions_enabled:
+            return False
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            async with get_db_context() as db:
+                return await pilots_dispatch.board_evidence_skip(
+                    db, program=program, evidence_context=evidence_context
+                )
+        except Exception as exc:
+            logger.warning(
+                "board evidence-skip check failed (best-effort)",
+                program=program,
+                error=str(exc),
+            )
+            return False
+
     async def _dispatch_pest_control_exploration(self, task: dict[str, Any]) -> None:
         """One-shot Product-Owner spawn to author a Pest Control bug hunt.
 
@@ -340,6 +374,15 @@ class DispatchWorkEngine(_Base):
         prior_context = await self._board_program_prior_context("pest_control")
         evidence_context = await self._pest_control_evidence_context()
         digest_context = await self._shipped_work_digest_context()
+        if await self._decisions_board_evidence_skip(
+            "pest_control",
+            "\n\n".join(filter(None, [evidence_context, digest_context])),
+        ):
+            logger.info(
+                "Skipping pest-control cycle: evidence confidently below threshold",
+                task_id=task_id,
+            )
+            return
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
@@ -387,6 +430,12 @@ class DispatchWorkEngine(_Base):
         logger.info("Spawning Product Owner for scales exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("scales")
         evidence_context = await self._scales_evidence_context()
+        if await self._decisions_board_evidence_skip("scales", evidence_context):
+            logger.info(
+                "Skipping scales cycle: evidence confidently below threshold",
+                task_id=task_id,
+            )
+            return
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
@@ -433,6 +482,12 @@ class DispatchWorkEngine(_Base):
             return
         logger.info("Spawning Auditor for Coroner postmortem", task_id=task_id)
         incident_context = await self._coroner_incident_context(task)
+        if await self._decisions_board_evidence_skip("coroner", incident_context):
+            logger.info(
+                "Skipping coroner cycle: incident evidence confidently below threshold",
+                task_id=task_id,
+            )
+            return
         await self.spawn_agent(
             agent_id=auditor_slug,
             task_id=task["id"],
@@ -680,6 +735,13 @@ class DispatchWorkEngine(_Base):
             "Spawning Head of Marketing for barfly exploration", task_id=task_id
         )
         prior_context = await self._board_program_prior_context("barfly")
+        if await self._decisions_board_evidence_skip("barfly", prior_context):
+            logger.info(
+                "Skipping barfly cycle: screened conversations "
+                "confidently below threshold",
+                task_id=task_id,
+            )
+            return
         await self.spawn_agent(
             agent_id=hom_slug,
             task_id=task["id"],
@@ -727,6 +789,15 @@ class DispatchWorkEngine(_Base):
         logger.info("Spawning Auditor for sentinel exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("sentinel")
         evidence_context = await self._sentinel_evidence_context()
+        if await self._decisions_board_evidence_skip(
+            "sentinel",
+            "\n\n".join(filter(None, [prior_context, evidence_context])),
+        ):
+            logger.info(
+                "Skipping sentinel cycle: evidence confidently below threshold",
+                task_id=task_id,
+            )
+            return
         await self.spawn_agent(
             agent_id=auditor_slug,
             task_id=task["id"],
@@ -846,6 +917,15 @@ class DispatchWorkEngine(_Base):
         logger.info("Spawning Auditor for librarian exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("librarian")
         mining_context = await self._librarian_mining_context()
+        if await self._decisions_board_evidence_skip(
+            "librarian",
+            "\n\n".join(filter(None, [prior_context, mining_context])),
+        ):
+            logger.info(
+                "Skipping librarian cycle: mining evidence confidently below threshold",
+                task_id=task_id,
+            )
+            return
         await self.spawn_agent(
             agent_id=auditor_slug,
             task_id=task["id"],
@@ -854,6 +934,55 @@ class DispatchWorkEngine(_Base):
             ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_librarian_exploration",
+        )
+
+    async def _decisions_audit_evidence_context(self) -> str:
+        """Best-effort evidence read for the decisions-audit prompt (mirrors
+        ``_librarian_mining_context``'s degrade-to-empty-string posture)."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions_audit_engine import (
+                get_decisions_audit_engine,
+            )
+
+            async with get_db_context() as db:
+                return await get_decisions_audit_engine(db).evidence_context()
+        except Exception:
+            logger.warning("decisions-audit: evidence read failed (best-effort)")
+            return ""
+
+    async def _dispatch_decisions_audit_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn for the daily decisions-audit review
+        (Board Program #15): review the persisted decision_log aggregates
+        injected as evidence and record per-pilot health assessments via
+        note(). Complete-at-note (no propose verb): the breaker marker the
+        respawn gate uses is the same shape as every board dispatch."""
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        logger.info("Spawning Auditor for decisions-audit review", task_id=task_id)
+        prior_context = await self._board_program_prior_context("decisions_audit")
+        evidence_context = await self._decisions_audit_evidence_context()
+        if await self._decisions_board_evidence_skip(
+            "decisions_audit", evidence_context
+        ):
+            logger.info(
+                "Skipping decisions-audit cycle: verdict volume confidently "
+                "a no-op this window",
+                task_id=task_id,
+            )
+            return
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_decisions_audit_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_decisions_audit_exploration",
         )
 
     async def _librarian_mining_context(self) -> str:
@@ -1196,8 +1325,16 @@ class DispatchWorkEngine(_Base):
 
         pm_id = await self._closure_review_pm(client, task, pm_id)
 
+        # B42 pm_closure_confidence: pop the advisory line stashed by the
+        # auto-submit attempt (empty unless the pilot is ON and confident).
+        advisory_line = getattr(self, "_decisions_closure_advisories", {}).pop(
+            str(task_id), ""
+        )
         prompt = self._build_pm_closure_prompt(
-            task, descendants, auto_submit_reason=auto_submit_reason
+            task,
+            descendants,
+            auto_submit_reason=auto_submit_reason,
+            advisory_line=advisory_line,
         )
         await self.spawn_agent(
             agent_id=pm_id,
@@ -1531,14 +1668,21 @@ class DispatchWorkEngine(_Base):
         tasks = await self._fetch_tasks(
             client, "awaiting_qa", limit=_PM_DISPATCH_FETCH_LIMIT
         )
-
+        candidates = []
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
                 continue
             team = task.get("team")
             if team not in ["backend", "frontend", "ux_ui"]:
                 continue
-
+            candidates.append(task)
+        # B35 review_queue_priority: score the queue (risk x staleness x
+        # blast radius) and review depth, then order and inform. Reorders
+        # and informs only - it never decides verdicts and never touches
+        # gate lockout. Off / no verdict keeps fetch order exactly.
+        ordered, depth_directives = await self._decisions_order_qa_queue(candidates)
+        for task in ordered:
+            team = task.get("team")
             assigned_to = task.get("assigned_to")
             if assigned_to and await self._spawn_assigned_qa(task, assigned_to):
                 continue
@@ -1565,12 +1709,86 @@ class DispatchWorkEngine(_Base):
             await self.spawn_agent(
                 agent_id=agent_id,
                 task_id=task["id"],
-                initial_prompt=self._build_qa_prompt(task),
+                initial_prompt=self._build_qa_prompt(task)
+                + self._decisions_qa_depth_directive(task, depth_directives),
                 git_context=self._task_git_context(task),
                 spawned_by="_dispatch_qa_work",
             )
             # Only spawn one QA at a time per cell
             break
+
+    async def _decisions_order_qa_queue(
+        self, candidates: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """B35 review_queue_priority: order the QA queue + per-task depth.
+
+        Returns ``(ordered_tasks, depth_by_task_id)``. Tasks with a
+        confident high-priority score sort first, confident low-priority
+        last, everything else (including unscored) keeps fetch order via
+        the stable sort. Any failure returns the candidates unchanged.
+        """
+        if len(candidates) < _QA_QUEUE_MIN_TO_RANK or not settings.decisions_enabled:
+            return candidates, {}
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            async with get_db_context() as db:
+                verdicts = await pilots_dispatch.review_queue_verdicts(
+                    db, tasks=candidates
+                )
+            if not verdicts:
+                return candidates, {}
+            depths: dict[str, int] = {}
+            scored: list[tuple[int, int, dict[str, Any]]] = []
+            for fetch_order, (task, (priority, depth)) in enumerate(
+                zip(candidates, verdicts, strict=False)
+            ):
+                if depth is not None:
+                    depths[str(task.get("id"))] = depth
+                # Unscored sits at the neutral band (1); the stable sort
+                # preserves fetch order inside each band.
+                scored.append(
+                    (priority if priority is not None else 1, fetch_order, task)
+                )
+            scored.sort(key=lambda item: -item[0])
+            ordered = [task for _p, _o, task in scored]
+            logger.info(
+                "QA review queue prioritized by Decisions verdicts",
+                considered=len(candidates),
+                scored=sum(1 for p, _o, _t in scored if p != _QA_PRIORITY_NEUTRAL),
+            )
+            return ordered, depths
+        except Exception as exc:
+            logger.warning(
+                "QA queue prioritization failed (best-effort)", error=str(exc)
+            )
+            return candidates, {}
+
+    @staticmethod
+    def _decisions_qa_depth_directive(
+        task: dict[str, Any], depth_directives: dict[str, int]
+    ) -> str:
+        """B35: the depth directive line injected into the QA prompt.
+
+        Depth 1 (standard) is today's review, so only depth 2-3 render a
+        directive; depth 0 renders "light" only when explicitly scored so.
+        """
+        depth = depth_directives.get(str(task.get("id")))
+        if depth is None or depth <= _QA_PRIORITY_NEUTRAL:
+            return ""
+        if depth >= _QA_DEPTH_FORENSIC:
+            line = (
+                "forensic: this task has bounced repeatedly or is high "
+                "stakes - sweep everything (diff, tests, regressions, scope "
+                "creep, sibling collisions)"
+            )
+        else:
+            line = (
+                "thorough: run the tests and explicitly check regressions "
+                "and scope creep"
+            )
+        return f"\n\nREVIEW DEPTH DIRECTIVE (system-scored): {line}.\n"
 
     async def _dispatch_pr_review_work(self, client: httpx.AsyncClient) -> None:
         """Dispatch inbound external-PR review tasks to the PR reviewer.
@@ -1590,13 +1808,19 @@ class DispatchWorkEngine(_Base):
         tasks = await self._fetch_tasks(
             client, "pending", limit=_PM_DISPATCH_FETCH_LIMIT
         )
-        for task in tasks:
-            if task.get("source") not in PR_REVIEW_SOURCES:
-                continue
-            if self._is_task_handled_this_tick(task.get("id")):
-                continue
-            if task.get("assigned_to"):
-                continue
+        # B14 external_pr_triage: the poll stamps a confident review-priority
+        # ordinal onto the task's priority column (and a fail-closed injection
+        # flag bumps it to the top). Ordering here is a stable sort, so with
+        # the pilot off (all priorities equal) the fetch order is unchanged.
+        candidates = [
+            task
+            for task in tasks
+            if task.get("source") in PR_REVIEW_SOURCES
+            and not self._is_task_handled_this_tick(task.get("id"))
+            and not task.get("assigned_to")
+        ]
+        candidates.sort(key=lambda t: -int(t.get("priority") or 2))
+        for task in candidates:
             # Respawn circuit breaker — parity with the in-path gate dispatcher.
             if await self._pm_respawn_should_gate(reviewer, task):
                 continue

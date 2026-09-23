@@ -15,7 +15,7 @@ from roboco.services.decisions.schemas import NoulQuestion
 
 _LAYA = DecisionsEndpoint(
     tier="laya",
-    base_url="http://roboco-jev:8100",
+    base_url="http://roboco-decisions:8100",
     model="convaiinnovations/laya",
     timeout_s=5.0,
 )
@@ -233,3 +233,87 @@ def test_flag_off_client_still_parses_but_resolver_gates(monkeypatch):
     # The client itself never checks the flag (the resolver owns the chain);
     # this assertion documents that split.
     assert cfg.settings.decisions_enabled is False
+
+
+_OPENROUTER = DecisionsEndpoint(
+    tier="openrouter",
+    base_url="https://openrouter.ai",
+    model="typesafe/jev-1.13",
+    timeout_s=2.0,
+    api_key="sk-or-test",
+)
+
+
+@pytest.mark.asyncio
+async def test_http_402_is_observed_by_spend_guard(monkeypatch):
+    """A 402 (credits exhausted) counts into the spend guard while the
+    fail-open behavior stays exactly the same (spec 3.1)."""
+    recorded = []
+
+    def note_402(tier: str) -> None:
+        recorded.append(tier)
+
+    monkeypatch.setattr("roboco.services.decisions.client.record_402", note_402)
+    monkeypatch.setattr(
+        "roboco.services.decisions.client.record_spend", lambda tier, cost: None
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            402, json={"error": {"code": 402, "message": "insufficient credits"}}
+        )
+
+    client = _client_with(handler)
+    result = await client.decide(_OPENROUTER, {}, {}, "s")
+    await client.aclose()
+    assert result is None  # fail-open, unchanged
+    assert recorded == ["openrouter"]
+
+
+@pytest.mark.asyncio
+async def test_non_402_errors_do_not_touch_spend_guard(monkeypatch):
+    recorded = []
+
+    def note_402(tier: str) -> None:
+        recorded.append(tier)
+
+    monkeypatch.setattr("roboco.services.decisions.client.record_402", note_402)
+    monkeypatch.setattr(
+        "roboco.services.decisions.client.record_spend", lambda tier, cost: None
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": {"code": 429, "message": "rate"}})
+
+    client = _client_with(handler)
+    result = await client.decide(_OPENROUTER, {}, {}, "s")
+    await client.aclose()
+    assert result is None
+    assert recorded == []
+
+
+@pytest.mark.asyncio
+async def test_successful_call_records_spend(monkeypatch):
+    recorded = []
+
+    def note_spend(tier: str, cost: float | None) -> None:
+        recorded.append((tier, cost))
+
+    monkeypatch.setattr(
+        "roboco.services.decisions.client.record_402", lambda tier: None
+    )
+    monkeypatch.setattr("roboco.services.decisions.client.record_spend", note_spend)
+
+    payload = {
+        **_OK_PAYLOAD,
+        "usage": {"input_tokens": 100, "output_tokens": 5, "cost": 0.021},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = _client_with(handler)
+    result = await client.decide(_LAYA, {}, {}, "s")
+    await client.aclose()
+    assert result is not None
+    assert recorded == [("laya", 0.021)]

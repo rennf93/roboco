@@ -199,3 +199,111 @@ async def test_pilot_mode_reads_shadow_row(monkeypatch):
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     monkeypatch.setattr(SettingsService, "get", AsyncMock(return_value="shadow"))
     assert await pilot_mode(MagicMock(), "steer_gate") is PilotMode.SHADOW
+
+
+@pytest.mark.asyncio
+async def test_pilot_mode_reads_tool_spotlight_row_as_on(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from roboco.services.decisions.pilots import PilotMode, pilot_mode
+    from roboco.services.settings import validate_setting
+
+    validate_setting("decisions.pilot.tool_spotlight", "on")
+    monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
+    monkeypatch.setattr(SettingsService, "get", AsyncMock(return_value="on"))
+    assert await pilot_mode(MagicMock(), "tool_spotlight") is PilotMode.ON
+
+
+@pytest.mark.asyncio
+async def test_startup_check_fires_when_opted_in_without_key(monkeypatch):
+    _flag_stack(monkeypatch, laya=True, openrouter=True)
+    monkeypatch.setattr(resolver, "_openrouter_api_key", AsyncMock(return_value=None))
+    notify = AsyncMock()
+    monkeypatch.setattr(resolver, "_notify_ceo_missing_openrouter_key", notify)
+
+    await resolver.check_openrouter_fallback_at_startup(_mock_session())
+    assert notify.await_count == 1
+    # The boot marker is consumed: the lazy per-call path can never
+    # double-fire after the startup check has spoken.
+    assert resolver._BOOT_STATE["openrouter_key_warning_sent"] is True
+
+    await resolver.check_openrouter_fallback_at_startup(_mock_session())
+    assert notify.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_check_silent_when_key_present(monkeypatch):
+    _flag_stack(monkeypatch, laya=False, openrouter=True)
+    monkeypatch.setattr(
+        resolver, "_openrouter_api_key", AsyncMock(return_value="sk-or-key")
+    )
+    notify = AsyncMock()
+    monkeypatch.setattr(resolver, "_notify_ceo_missing_openrouter_key", notify)
+
+    await resolver.check_openrouter_fallback_at_startup(_mock_session())
+    notify.assert_not_awaited()
+    # No key warning fired, so the marker stays available to the lazy path.
+    assert resolver._BOOT_STATE["openrouter_key_warning_sent"] is False
+
+
+@pytest.mark.asyncio
+async def test_startup_check_noop_when_master_flag_off(monkeypatch):
+    _flag_stack(monkeypatch, enabled=False, openrouter=True)
+    key = AsyncMock(return_value=None)
+    monkeypatch.setattr(resolver, "_openrouter_api_key", key)
+
+    await resolver.check_openrouter_fallback_at_startup(_mock_session())
+    key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_startup_check_noop_when_fallback_not_opted_in(monkeypatch):
+    _flag_stack(monkeypatch, laya=True, openrouter=False)
+    key = AsyncMock(return_value=None)
+    monkeypatch.setattr(resolver, "_openrouter_api_key", key)
+
+    await resolver.check_openrouter_fallback_at_startup(_mock_session())
+    key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pilot_mode_env_on_list_arms_when_row_unset(monkeypatch):
+    """Operator-deploy arming: an env slug list arms a pilot ON when the
+    settings store has no row for it (NAS deploy posture)."""
+    from unittest.mock import MagicMock
+
+    from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+    monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
+    monkeypatch.setattr(cfg.settings, "decisions_pilots_on", "self_heal,parking")
+    monkeypatch.setattr(cfg.settings, "decisions_pilots_shadow", "")
+    monkeypatch.setattr(SettingsService, "get", AsyncMock(return_value=None))
+    assert await pilot_mode(MagicMock(), "self_heal") is PilotMode.ON
+    assert await pilot_mode(MagicMock(), "parking") is PilotMode.ON
+
+
+@pytest.mark.asyncio
+async def test_pilot_mode_env_shadow_list_and_unset_fallback(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+    monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
+    monkeypatch.setattr(cfg.settings, "decisions_pilots_on", "self_heal")
+    monkeypatch.setattr(cfg.settings, "decisions_pilots_shadow", "steer_gate")
+    monkeypatch.setattr(SettingsService, "get", AsyncMock(return_value=None))
+    assert await pilot_mode(MagicMock(), "steer_gate") is PilotMode.SHADOW
+    assert await pilot_mode(MagicMock(), "never_heard_of_it") is PilotMode.OFF
+
+
+@pytest.mark.asyncio
+async def test_pilot_mode_settings_row_beats_env_list(monkeypatch):
+    """The panel row is the finer control: it wins over the env arming."""
+    from unittest.mock import MagicMock
+
+    from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+    monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
+    monkeypatch.setattr(cfg.settings, "decisions_pilots_on", "self_heal")
+    monkeypatch.setattr(SettingsService, "get", AsyncMock(return_value="shadow"))
+    assert await pilot_mode(MagicMock(), "self_heal") is PilotMode.SHADOW

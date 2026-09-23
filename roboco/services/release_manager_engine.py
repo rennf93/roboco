@@ -162,7 +162,12 @@ class ReleaseManagerEngine(BaseService):
         """Assess and return a report only when a release is actually warranted.
 
         Returns None (propose nothing) when the assessor can't assess, the gate
-        is not green, or the change set is below the threshold.
+        is not green, or the change set is below the threshold. B8 decisions
+        screen: on the WOULD-SKIP branch only, an ON-mode confident
+        release-urgency verdict may mark the change set worth proposing EARLY
+        (pure acceleration; the proposal is still HELD for the CEO). The
+        threshold-passing branch is untouched, so the screen can never delay
+        or skip a release the threshold already passes.
         """
         report = await self._assessor()
         if report is None:
@@ -174,18 +179,58 @@ class ReleaseManagerEngine(BaseService):
             )
             return None
         if not _past_threshold(report):
-            return None
+            if not await self._decisions_worthy_early(report):
+                return None
+            self.log.info(
+                "release-manager: decisions verdict proposes early "
+                "(below deterministic threshold)",
+                commits=len(report.change_summary),
+                bump=report.bump_kind,
+            )
         return report
+
+    async def _decisions_worthy_early(self, report: ReleaseReadinessReport) -> bool:
+        """B8 release-worthiness screen; best-effort fail-open (False = the
+        threshold verdict of today stands)."""
+        try:
+            from roboco.services.decisions.pilots_infra import release_worthy_urgent
+
+            return await release_worthy_urgent(
+                self.session,
+                change_summary=report.change_summary,
+                bump_kind=report.bump_kind,
+                commit_floor=settings.release_min_commits,
+            )
+        except Exception as exc:
+            self.log.warning(
+                "release-manager decisions screen failed; threshold as today",
+                error=str(exc),
+            )
+            return False
 
     async def _originate(
         self, report: ReleaseReadinessReport, project_id: UUID
     ) -> TaskTable:
         """Open ONE PENDING, HELD release proposal owned by the Secretary."""
         task_svc = get_task_service(self.session)
+        # B19 advisory risk line (best-effort, purely informational: the
+        # CEO decides; the line never blocks or gates the proposal).
+        risk_line = ""
+        try:
+            from roboco.services.release_readiness import decisions_risk_advisory
+
+            advisory = await decisions_risk_advisory(self.session, report)
+            if advisory:
+                risk_line = f"\n\n{advisory}"
+        except Exception as exc:
+            self.log.warning(
+                "release-manager risk advisory failed; line omitted",
+                error=str(exc),
+            )
         task = await task_svc.create(
             TaskCreateRequest(
                 title=f"Release proposal: v{report.proposed_version}",
-                description=_proposal_description(report),
+                description=f"{_proposal_description(report)}{risk_line}",
                 acceptance_criteria=[
                     f"CEO approves cutting v{report.proposed_version}",
                     "All flagged gaps are resolved or accepted before publish",

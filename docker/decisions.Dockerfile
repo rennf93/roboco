@@ -1,5 +1,5 @@
 # =============================================================================
-# Jev sidecar (Laya tier of the Decisions service) - CPU-only
+# Decisions sidecar (the built-in Laya tier of the Decisions service) - CPU-only
 # =============================================================================
 # Runs Laya (Convai Innovations' typed-decision models, Apache-2.0: library
 # github.com/NandhaKishorM/laya, weights convaiinnovations/laya, the
@@ -7,7 +7,7 @@
 # path (laya.onnx_agent.ONNXAgent; onnxruntime, no torch at runtime) and
 # mirrors the OpenRouter Decisions wire shape at POST /api/alpha/decisions so
 # roboco/services/decisions/client.py speaks ONE implementation against both
-# tiers (docs/internal/jev-decisions-spec.md sections 8 Stage 0.5 and 10).
+# tiers (docs/internal/decisions-spec.md sections 8 Stage 0.5 and 10).
 #
 # The laya install comes from the upstream GitHub repo (the PyPI extra story
 # for the ONNXAgent path is still settling upstream; the git install with the
@@ -28,7 +28,7 @@ FROM python:3.13-slim-bookworm
 # checkpoint baked into the image below. PRODUCTION BUILDS MUST PIN THE FULL
 # COMMIT HASH: the default "main" tracks the moving branch, so two builds of
 # this Dockerfile can bake different weights. Build with e.g.
-#   docker build -f docker/jev.Dockerfile --build-arg LAYA_HF_REVISION=<hash> .
+#   docker build -f docker/decisions.Dockerfile --build-arg LAYA_HF_REVISION=<hash> .
 ARG LAYA_HF_REVISION=main
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -76,7 +76,7 @@ ENV LAYA_MODEL_ID=convaiinnovations/laya \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
-COPY docker/jev/server.py /app/server.py
+COPY docker/decisions/server.py /app/server.py
 
 EXPOSE 8100
 
