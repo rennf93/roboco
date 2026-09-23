@@ -768,6 +768,55 @@ ACCEPTANCE CRITERIA (the assembled work must satisfy ALL of these):
 5. i_am_idle() when done.
 """
 
+    def _build_devops_gate_prompt(self, task: dict[str, Any]) -> str:
+        """Prompt for the DevOps agent co-reviewing an infra-flagged gate task.
+
+        The assembled PR touches the project's declared infra paths (the
+        ``infra:`` section of its .roboco/conventions.yml), so the DevOps
+        agent is the required second reviewer: the primary reviewer's
+        pr_pass is blocked until a devops verdict exists for the current PR
+        head. The co-claim leaves the primary reviewer's ownership intact.
+        """
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        team = task.get("team", "unknown")
+        pr_number = task.get("pr_number", "?")
+        pr_url = task.get("pr_url", "")
+        return f"""\
+An assembled pull request touches this project's declared INFRA paths
+(container / CI / deploy / proxy surfaces from its .roboco/conventions.yml).
+You are the required second reviewer on its gate.
+
+TASK ID: {task_id}
+TITLE: {title}
+TEAM: {team}
+ASSEMBLED PR: #{pr_number}  {pr_url}
+
+== YOUR ROLE ON THIS GATE ==
+You co-review; you do NOT take over the gate. A primary PR reviewer owns the
+task: your co-claim must not disturb it. Review the assembled diff with an
+infra eye: compose/runtime topology, workflow triggers and permissions,
+secret handling, image/deploy chain, env handling. Read-only: you never push
+or merge.
+
+== REVIEW WORKFLOW ==
+
+1. claim_gate_review(task_id="{task_id}")
+   - co-claims the review (the primary reviewer keeps ownership); returns
+   the assembled diff + acceptance criteria inline.
+2. note(scope="learning", task_id="{task_id}", text="<what the review surfaced>")
+   - required before you decide.
+3a. record_devops_review(task_id="{task_id}",
+        notes="<what you verified on the infra surface>")
+    - if the infra surface is sound: records your verdict for the current PR
+    head; the primary reviewer's pr_pass then composes. Do NOT call pr_pass
+    unless you intend to decide the gate yourself.
+3b. pr_fail(task_id="{task_id}", issues=["<concrete, actionable gap>", ...])
+    - if the infra surface is wrong: sends the PR back for revision; your
+    findings are ledgered under the devops_review origin.
+4. i_am_idle() when done.
+"""
+
     def _build_doc_prompt(self, task: dict[str, Any]) -> str:
         """Build initial prompt for a documenter."""
         task_id = task.get("id", "unknown")

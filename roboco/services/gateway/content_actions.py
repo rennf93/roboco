@@ -139,7 +139,7 @@ _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 # Notification sender + priority allowlists are canonical in
 # foundation.policy.communications. Derived as string frozensets here so
 # the existing call sites that compare strings keep working.
-_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
+_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter", "devops"})
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
@@ -1074,6 +1074,14 @@ class ContentActions:
             return Envelope.not_found(message=f"task {task_id} not found")
         if t.assigned_to is not None and t.assigned_to != agent_id:
             if await self._board_may_co_review(agent_id, t):
+                return None
+            # DevOps gate co-claimant: devops-1 co-claims the assembled-PR
+            # gate task via the devops_gate_claimant marker (never ownership)
+            # and must still journal its review — the verdict verbs demand a
+            # learning entry. Found by the e2e devops gate arc.
+            from roboco.foundation.policy.content import markers
+
+            if markers.get_devops_gate_claimant(t) == str(agent_id):
                 return None
             return _ownership_violation(task_id)
         # assigned_to is stale across a reap/handoff (persists until

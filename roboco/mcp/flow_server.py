@@ -1104,6 +1104,17 @@ def pr_pass(task_id: str, notes: str) -> dict[str, Any]:
     return _post(_role_path("pr_pass"), {"task_id": task_id, "notes": notes})
 
 
+def record_devops_review(task_id: str, notes: str) -> dict[str, Any]:
+    """DevOps: record the infra-gate pass verdict WITHOUT transitioning (the
+    co-claim must exist first; pr_fail is the defect half). Found missing by
+    the e2e devops gate arc: the manifest advertised the verb but the MCP
+    server never exposed it, so a real devops-1 could not record a verdict."""
+    return _post(
+        _role_path("record_devops_review"),
+        {"task_id": task_id, "notes": notes},
+    )
+
+
 def pr_fail(
     task_id: str,
     issues: StrList | None = None,
@@ -1155,6 +1166,8 @@ _TOOLS: dict[str, Any] = {
     "claim_gate_review": claim_gate_review,
     "pr_pass": pr_pass,
     "pr_fail": pr_fail,
+    # devops (floating infra author + second PR-gate reviewer)
+    "record_devops_review": record_devops_review,
     # doc
     "claim_doc_task": claim_doc_task,
     "i_documented": i_documented,

@@ -9,6 +9,7 @@ from __future__ import annotations
 from .effective_map import effective_map
 from .models import (
     BUILTIN_RULES,
+    DEFAULT_INFRA_GLOBS,
     ConventionsParseError,
     ConventionsStandard,
     CustomRule,
@@ -21,6 +22,7 @@ from .models import (
 
 __all__ = [
     "BUILTIN_RULES",
+    "DEFAULT_INFRA_GLOBS",
     "ConventionsParseError",
     "ConventionsStandard",
     "CustomRule",

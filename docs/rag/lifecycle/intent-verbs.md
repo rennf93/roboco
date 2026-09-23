@@ -24,7 +24,7 @@ Claim awaiting_documentation. Returns evidence inline.
 
 Claim an assembled-PR review task (awaiting_pr_review) WITHOUT transitioning it — mirrors QA's claim_review. The assembled diff and the parent task's acceptance criteria are returned inline.
 
-**Allowed roles:** pr_reviewer
+**Allowed roles:** devops, pr_reviewer
 
 **Composes:** (no atomic actions)
 
@@ -109,7 +109,7 @@ Fail QA with concrete issues. Transitions to needs_revision.
 
 Return your most-actionable task or signal idle.
 
-**Allowed roles:** cell_pm, developer, documenter, main_pm, pr_reviewer, qa
+**Allowed roles:** cell_pm, developer, devops, documenter, main_pm, pr_reviewer, qa
 
 **Composes:** (no atomic actions)
 
@@ -127,7 +127,7 @@ Escalate to PM. Logs a struggle journal entry.
 
 Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa. Strict - PR must be open (call open_pr first) and >=1 commit.
 
-**Allowed roles:** developer
+**Allowed roles:** developer, devops
 
 **Composes:** submit_verification → submit_qa
 
@@ -138,7 +138,7 @@ Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa
 
 Signal you have no active work. PMs auto-pause owned in_progress tasks.
 
-**Allowed roles:** auditor, cell_pm, developer, documenter, head_marketing, main_pm, pr_reviewer, product_owner, prompter, qa, secretary
+**Allowed roles:** auditor, cell_pm, developer, devops, documenter, head_marketing, main_pm, pr_reviewer, product_owner, prompter, qa, secretary
 
 **Composes:** (no atomic actions)
 
@@ -167,7 +167,7 @@ PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_prog
 
 Claim a task, set the plan, and transition to in_progress. Atomic - preconditions checked before any state mutation.
 
-**Allowed roles:** developer
+**Allowed roles:** developer, devops
 
 **Composes:** claim → set_plan
 
@@ -178,7 +178,7 @@ Claim a task, set the plan, and transition to in_progress. Atomic - precondition
 
 Push the branch and open a PR. Atomic - preconditions (assignee, >=1 commit, no prior PR) checked BEFORE any git operation. After success, call i_am_done.
 
-**Allowed roles:** developer
+**Allowed roles:** developer, devops
 
 **Composes:** (no atomic actions)
 
@@ -209,7 +209,7 @@ Post one complete change-request to the external PR and finish the review task. 
 
 Fail the assembled-PR review with concrete issues. Transitions awaiting_pr_review -> needs_revision, routed back like a QA fail.
 
-**Allowed roles:** pr_reviewer
+**Allowed roles:** devops, pr_reviewer
 
 **Composes:** pr_fail
 
@@ -218,7 +218,7 @@ Fail the assembled-PR review with concrete issues. Transitions awaiting_pr_revie
 
 Pass the assembled-PR review. Transitions awaiting_pr_review -> awaiting_pm_review so the PM can merge.
 
-**Allowed roles:** pr_reviewer
+**Allowed roles:** devops, pr_reviewer
 
 **Composes:** pr_pass
 
@@ -228,6 +228,15 @@ Pass the assembled-PR review. Transitions awaiting_pr_review -> awaiting_pm_revi
 Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved — the new developer continues the work-in-progress. No status change.
 
 **Allowed roles:** cell_pm
+
+**Composes:** (no atomic actions)
+
+
+## record_devops_review
+
+Record the DevOps infra-review verdict (pass) on an assembled-PR gate task WITHOUT transitioning it: the primary reviewer's pr_pass then composes. Use pr_fail instead to reject the PR.
+
+**Allowed roles:** devops
 
 **Composes:** (no atomic actions)
 
@@ -278,7 +287,7 @@ Cell PM opens the cell→root PR and moves the cell task into the PR-review gate
 
 Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base — e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned — resolve by hand, commit, then sync_branch again. Pass stash=True to auto-stash uncommitted changes instead of refusing DIRTY_WORKSPACE; they are restored after the rebase.
 
-**Allowed roles:** developer
+**Allowed roles:** developer, devops
 
 **Composes:** (no atomic actions)
 
@@ -316,7 +325,7 @@ PM unblocks a blocked task; restores pre-block state.
 
 Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) or a gate review (awaiting_pr_review) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper.
 
-**Allowed roles:** cell_pm, developer, documenter, main_pm, pr_reviewer, qa
+**Allowed roles:** cell_pm, developer, devops, documenter, main_pm, pr_reviewer, qa
 
 **Composes:** (no atomic actions)
 

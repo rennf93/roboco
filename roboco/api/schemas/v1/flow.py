@@ -396,6 +396,14 @@ class PrFailRequest(BaseModel):
     )
 
 
+class RecordDevopsReviewRequest(BaseModel):
+    """The DevOps second reviewer's PASS verdict on an assembled-PR gate task
+    (no transition: the primary reviewer's pr_pass composes off it)."""
+
+    task_id: UUID
+    notes: str = Field(..., min_length=1)
+
+
 class ClaimDocTaskRequest(BaseModel):
     task_id: UUID
 

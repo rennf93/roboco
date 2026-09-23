@@ -35,6 +35,10 @@ _MIRROR_COLUMN: dict[str, str] = {
 # a handoff from them is rejected with guidance to use a journal scope instead.
 _ROLE_TO_CONTENT_TYPE: dict[str, str] = {
     "developer": "developer",
+    # DevOps authors through the developer lifecycle (WORKTREE_AUTHOR_ROLES),
+    # and its i_am_done demands the same dev_notes handoff — so it authors the
+    # developer section; it gets no section of its own.
+    "devops": "developer",
     "qa": "qa",
     "documenter": "doc",
     "pr_reviewer": "pr_review",

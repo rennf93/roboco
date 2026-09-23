@@ -167,6 +167,18 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
   const removeWaiver = (index: number) =>
     edit({ waivers: standard.waivers.filter((_, i) => i !== index) });
 
+  // infra === null means "not declared" (shipped defaults apply) and must be
+  // preserved as null through saves; [] is a real opt-out the gate honors.
+  const updateInfraPath = (index: number, glob: string) =>
+    edit({
+      infra: (standard.infra ?? []).map((g, i) => (i === index ? glob : g)),
+    });
+  const addInfraPath = () =>
+    edit({ infra: [...(standard.infra ?? []), ""] });
+  const removeInfraPath = (index: number) =>
+    edit({ infra: (standard.infra ?? []).filter((_, i) => i !== index) });
+  const resetInfra = () => edit({ infra: null });
+
   const status = data.health.status;
   // "degraded" is the only problem state: a committed file that won't parse.
   // "missing"/"unknown" is the normal starting point — no file yet, defaults
@@ -437,6 +449,74 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
     </Card>
   );
 
+  const infraPaths = (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">Infrastructure paths</CardTitle>
+        <CardDescription>
+          Globs for infra files (Dockerfiles, compose, CI workflows, deploy
+          and IaC manifests). PRs touching these paths require review by the
+          DevOps agent. An empty list opts out; remove all rows to use the
+          shipped defaults.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {standard.infra === null && (
+          <p className="text-sm text-muted-foreground">
+            Not declared: the shipped defaults apply (Dockerfile*, docker/**,
+            compose files, GitHub / GitLab CI, nginx, deploy, k8s, terraform,
+            argocd).
+          </p>
+        )}
+        {standard.infra !== null && standard.infra.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            Opted out: no path requires the DevOps reviewer.
+          </p>
+        )}
+        {(standard.infra ?? []).map((glob, index) => (
+          <div key={index} className="flex items-center gap-2">
+            <HelpTip label="Repo-relative glob (e.g. docker/**, .github/workflows/**)">
+              <Input
+                value={glob}
+                placeholder="infra/glob"
+                onChange={(e) => updateInfraPath(index, e.target.value)}
+              />
+            </HelpTip>
+            <HelpTip label="Deletes this row locally, nothing changes until Save to repo">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => removeInfraPath(index)}
+              >
+                Remove
+              </Button>
+            </HelpTip>
+          </div>
+        ))}
+        <div className="flex gap-2">
+          <HelpTip
+            label={
+              standard.infra === null
+                ? "Declares the section with one blank path, overriding the shipped defaults"
+                : "Adds a blank infra path row"
+            }
+          >
+            <Button variant="outline" size="sm" onClick={addInfraPath}>
+              Add path
+            </Button>
+          </HelpTip>
+          {standard.infra !== null && (
+            <HelpTip label="Clears the declaration, the shipped defaults apply again">
+              <Button variant="ghost" size="sm" onClick={resetInfra}>
+                Use shipped defaults
+              </Button>
+            </HelpTip>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+
   const recentViolations = (
     <Card>
       <CardHeader>
@@ -516,12 +596,13 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
           Module boundaries | Rules, then Waivers | Custom rules. items-stretch
           makes each row's two cards equal height; Module boundaries scrolls
           internally (below) so it matches Rules instead of running long. Stacks
-          to one column on mobile. */}
+          to one column on mobile. Infrastructure paths wraps onto its own row. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-stretch">
         {moduleBoundaries}
         {rules}
         {waivers}
         {customRules}
+        {infraPaths}
       </div>
 
       {/* Recent violations spans the full width on its own row. */}
@@ -543,7 +624,7 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
             save.isPending
               ? "Saving…"
               : draft == null && !usingDefaults
-                ? "Edit a module, rule, waiver, or custom rule above to enable saving."
+                ? "Edit a module, rule, waiver, custom rule, or infra path above to enable saving."
                 : null
           }
         >

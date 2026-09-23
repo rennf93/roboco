@@ -120,6 +120,11 @@ jobs:
             [roboco-agent-qa-be]=docker/agent-qa-be.Dockerfile
             [roboco-agent-qa-fe]=docker/agent-qa-fe.Dockerfile
             [roboco-agent-ux]=docker/agent-ux.Dockerfile
+            # DevOps (infra authoring toolchain), plain FROM agent-base,
+            # same tier as the other role images above. Missing from this
+            # map would ship the release without the image (the
+            # kimi/openrouter class of failure below).
+            [roboco-agent-devops]=docker/agent-devops.Dockerfile
             [roboco-agent-doc]=docker/agent-doc.Dockerfile
             [roboco-agent-prompter]=docker/agent-prompter.Dockerfile
             [roboco-agent-secretary]=docker/agent-secretary.Dockerfile

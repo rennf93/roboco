@@ -180,3 +180,21 @@ waivers:
       `BoardProgramResponse` staying colocated with the route handlers is
       what trips this file's mixed-concern (model + route) finding. Tracked
       as the same pre-existing, explicitly out-of-scope item.
+
+# Declared infrastructure paths: PRs whose changed files match these globs
+# require review by the DevOps agent (devops-1) before pr_pass composes.
+# Declared explicitly (matching the shipped defaults) so RoboCo's own repo
+# exercises the declaration surface it serves to every other project; an
+# empty list would opt out of the gate, and omitting the section entirely
+# falls back to the shipped defaults.
+infra:
+  - "Dockerfile*"
+  - "docker/**"
+  - "compose*.y*ml"
+  - ".github/workflows/**"
+  - "nginx/**"
+  - "deploy/**"
+  - "k8s/**"
+  - "terraform/**"
+  - "argocd/**"
+  - ".gitlab-ci.yml"

@@ -682,6 +682,21 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent DevOps Image Builder (specialized image built on-demand by orchestrator)
+  # ==========================================================================
+  agent-devops-image:
+    build:
+      context: .
+      dockerfile: docker/agent-devops.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
+    image: roboco-agent-devops
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent DevOps image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Agent Documenter Image Builder (specialized image built on-demand by orchestrator)
   # ==========================================================================
   agent-doc-image:

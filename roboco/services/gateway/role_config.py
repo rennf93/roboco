@@ -243,6 +243,26 @@ _PR_REVIEWER_DO = (
     "task_time",
 )
 
+# DevOps: the floating infra author + second PR-gate reviewer. Unlike the
+# read-only pr_reviewer it AUTHORS infra changes in clones (commit; RBAC in
+# content_actions._COMMIT_ALLOWED_ROLES), and it carries the full notify
+# receiver set INCLUDING notify_ack: it is a delivery author who must be able
+# to clear ack-required notification gates, which the silent observer roles
+# (auditor, pr_reviewer) can never satisfy (see role_carries_notify_ack).
+_DEVOPS_FLOW = spec.intents_for_role(spec.Role.DEVOPS)
+_DEVOPS_DO = (
+    "commit",
+    "note",
+    "evidence",
+    "dm",
+    "read_messages",
+    "read_a2a",
+    "notify_list",
+    "notify_get",
+    "notify_ack",
+    "task_time",
+)
+
 _PROMPTER_FLOW = spec.intents_for_role(
     spec.Role.PROMPTER
 )  # none — not a lifecycle role
@@ -334,6 +354,17 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         description=(
             "Reviews inbound external/fork PRs and posts one change-request. "
             "Read-only; never writes code or merges."
+        ),
+    ),
+    "devops": RoleConfig(
+        role="devops",
+        flow_tools=_DEVOPS_FLOW,
+        do_tools=_DEVOPS_DO,
+        allows_write=True,
+        allows_subagent=False,
+        description=(
+            "Floating infra author + second PR-gate reviewer. Authors infra "
+            "changes in any project's clone; never merges or deploys."
         ),
     ),
     "prompter": RoleConfig(

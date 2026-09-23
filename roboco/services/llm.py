@@ -153,6 +153,7 @@ _HUMMIN_ROLE_TIERS: tuple[tuple[str, str], ...] = (
     ("product_owner", "glm-5.3-flash:high"),
     ("head_marketing", "glm-5.3-flash:high"),
     ("pr_reviewer", "glm-5.3-flash:high"),
+    ("devops", "glm-5.3-flash:high"),
     ("main_pm", "glm-5.3-flash:high"),
     # Low-thinking tier: mechanical delivery
     ("developer", "glm-5.3-flash:low"),

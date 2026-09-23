@@ -26,6 +26,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+import structlog
 from sqlalchemy import func, select
 
 from roboco.config import settings
@@ -56,6 +57,8 @@ if TYPE_CHECKING:
     from roboco.foundation.policy.board_programs import BoardProgram
 
 _TERMINAL_STATUSES = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+
+logger = structlog.get_logger()
 
 
 async def _originate_roadmap(session: AsyncSession) -> TaskTable | None:
@@ -306,6 +309,9 @@ _SNAPSHOT_FIELDS = (
     "status",
     "reject_reason",
     "materialized_task_id",
+    # Stage-1 devops routing hint: the decision snapshot keeps the item's
+    # target_agent so history shows where the materialized task was sent.
+    "target_agent",
 )
 
 
@@ -436,6 +442,42 @@ def _legacy_enabled(key: str) -> bool:
     if key == "x_feature":
         return settings.x_engine_enabled and settings.x_feature_spotlight_enabled
     return False
+
+
+# ---------------------------------------------------------------------------
+# Stage-1 devops routing: a materializable item may carry an optional
+# ``target_agent`` hint pre-assigning the materialized delivery task to the
+# floating DevOps agent instead of the Main PM. Flag-gated and strictly scoped
+# to the one devops slug so a typo'd or hostile payload can never redirect
+# materialization away from the CEO-gated default.
+# ---------------------------------------------------------------------------
+
+_DEVOPS_AGENT_SLUG = "devops-1"
+
+
+def resolve_materialize_target(item: dict[str, Any]) -> str | None:
+    """The agent slug a materializer should pre-assign its task to, or None
+    to keep the default Main-PM assignment.
+
+    Reads the item's optional ``target_agent`` hint, ONLY when
+    ``ROBOCO_DEVOPS_ENABLED`` is on. Anything other than the devops-1 slug
+    (or the flag off) resolves to None; the caller materializes exactly as
+    it did before this lane existed.
+    """
+    if not settings.devops_enabled:
+        return None
+    slug = str(item.get("target_agent") or "").strip()
+    if not slug:
+        return None
+    from roboco.foundation.identity import role_for_slug_or_none
+
+    if slug != _DEVOPS_AGENT_SLUG or role_for_slug_or_none(slug) is None:
+        logger.warning(
+            "board-program: ignoring unknown target_agent on materializable item",
+            target_agent=slug,
+        )
+        return None
+    return slug
 
 
 def _interval_override(key: str) -> int | None:

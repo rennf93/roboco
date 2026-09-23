@@ -17,6 +17,7 @@ on:
       - 'docker/agent-base.Dockerfile'
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
+      - 'docker/agent-devops.Dockerfile'
       - 'docker/scripts/playwright-mcp-entrypoint.sh'
       - '.github/workflows/agent-image-smoke.yml'
   pull_request:
@@ -30,6 +31,7 @@ on:
       - 'docker/agent-base.Dockerfile'
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
+      - 'docker/agent-devops.Dockerfile'
       - 'docker/scripts/playwright-mcp-entrypoint.sh'
       - '.github/workflows/agent-image-smoke.yml'
   workflow_dispatch:
@@ -200,4 +202,64 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body: `## Agent Image Smoke (Playwright) results\n\n${body}`,
+            });
+  devops-toolchain-smoke:
+    name: Build devops image, verify the pinned infra toolchain runs
+    runs-on: ubuntu-latest
+    permissions:
+      # The PR-comment step below posts the smoke report on the PR — same
+      # grant the playwright job carries (403 "not accessible by
+      # integration" without it, 2026-09-21).
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Build agent-base (devops FROM target)
+        run: docker build -f docker/agent-base.Dockerfile -t roboco-agent-base .
+
+      - name: Build agent-devops (this branch)
+        run: docker build -f docker/agent-devops.Dockerfile -t agent-devops:smoke .
+
+      - name: Infra toolchain smoke check
+        # Every binary the devops role's review/authoring lane shells out to
+        # must exist, execute, and print a version inside the image — the
+        # compose-level registry pins check STRINGS, this checks reality.
+        # docker CLI is present for `docker compose config` validation only:
+        # no daemon is mounted, so anything needing a socket must fail here.
+        run: |
+          {
+            echo
+            echo "### DevOps toolchain smoke check (agent-devops)"
+            echo
+          } | tee -a /tmp/devops-smoke-report.md
+          docker run --rm --entrypoint /bin/sh agent-devops:smoke -c '
+            docker version --format "docker-cli {{.Client.Version}}" || exit 1
+            docker compose version || exit 1
+            kubectl version --client=true --output=yaml | head -2 || exit 1
+            helm version --short || exit 1
+            terraform version | head -1 || exit 1
+            hadolint --version || exit 1
+            shellcheck --version | sed -n 2p || exit 1
+            yamllint --version || exit 1
+            echo "DEVOPS_TOOLCHAIN_SMOKE_OK"
+          ' | tee -a /tmp/devops-smoke-report.md
+
+      - name: Post results as a PR comment
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            // A failed build never creates the report file; comment the
+            // failure instead of crashing on ENOENT.
+            const body = fs.existsSync('/tmp/devops-smoke-report.md')
+              ? fs.readFileSync('/tmp/devops-smoke-report.md', 'utf8')
+              : 'The devops toolchain smoke did not produce a report — a build or smoke step failed before it ran.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## DevOps image toolchain smoke results\n\n${body}`,
             });

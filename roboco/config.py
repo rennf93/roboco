@@ -514,14 +514,18 @@ class Settings(BaseSettings):
     # A repo-canonical .roboco/conventions.yml plus the roboco-conventions
     # validator gate i_am_done / pr_pass on block-level placement and hygiene
     # violations. Default-off; every hook (scaffold, ambient injection, baseline
-    # constraints, the gates) is inert when off.
+    # constraints, the gates) is inert when off. NOT inert when off: the
+    # effective-map READ (GET /api/projects/{id}/conventions, and the infra
+    # declaration consumed by the DevOps review gate) is per-project content,
+    # not enforcement, so it works regardless of this flag.
     conventions_enabled: bool = Field(
         default=False,
         description=(
             "Master switch for the architectural-conventions standard: "
             "auto-scaffold .roboco/conventions.yml, inject the architecture map, "
             "attach baseline constraints, and block gates on violations. Off => "
-            "fully inert."
+            "enforcement fully inert; the effective-map read (conventions API, "
+            "infra declaration) stays available."
         ),
     )
     possibilities_matrix_enabled: bool = Field(
@@ -543,6 +547,23 @@ class Settings(BaseSettings):
             "budget sweep blocks an active task whose own explicitly-set "
             "budget_usd is breached, notifying the CEO. Off => neither "
             "cap is ever consulted, regardless of project/task field values."
+        ),
+    )
+
+    # ==========================================================================
+    # DevOps agent (floating infra role)
+    # ==========================================================================
+    # devops-1 (Role.DEVOPS, board-team floater) authors infra changes in any
+    # project's clone through the same claim-based delegation every other
+    # agent uses. Default-off: the agent exists on the panel but nothing
+    # spawns it and no materialization routes to it.
+    devops_enabled: bool = Field(
+        default=False,
+        description=(
+            "Routes infra tasks to the floating DevOps agent (devops-1): PM "
+            "delegation + board materialization pre-assignment spawn it, and "
+            "it authors through the normal developer lifecycle (PR before "
+            "QA). Off => the agent is seeded but inert: nothing spawns it."
         ),
     )
 

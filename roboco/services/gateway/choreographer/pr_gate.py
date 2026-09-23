@@ -31,7 +31,12 @@ from roboco.foundation.policy.content import (
     Severity,
     markers,
 )
-from roboco.services.gateway.choreographer import findings as findings_lib
+from roboco.services.gateway.choreographer import (
+    devops_gate as devops_gate_lib,
+)
+from roboco.services.gateway.choreographer import (
+    findings as findings_lib,
+)
 from roboco.services.gateway.choreographer.collision import (
     _drift,
     build_collision_context,
@@ -154,7 +159,34 @@ class PRGateMixin(_Base):
         # assembly begins — see claim_review (qa.py) for the full rationale.
         # Same-agent retry: if the task is already claimed by THIS reviewer,
         # skip the re-claim and go straight to evidence rebuild.
-        if to_python_uuid(t.active_claimant_id) != reviewer_agent_id:
+        #
+        # DevOps co-review lane (the infra review gate): the devops agent
+        # co-claims WITHOUT touching the primary reviewer's claim/ownership
+        # (a marker-based co-claim, see ``devops_gate_co_claim``); the
+        # flag-off rejection inside the service method is defense in depth,
+        # since nothing spawns devops-1 with the flag off anyway.
+        if role_str == spec_module.Role.DEVOPS.value:
+            claimed = await self.task.devops_gate_co_claim(reviewer_agent_id, task_id)
+            if claimed is None:
+                return await self._emit_rejection(
+                    Envelope.invalid_state(
+                        message=(
+                            "this assembled-PR review task is no longer co-claimable"
+                        ),
+                        remediate=(
+                            "the gate may have moved on, or another DevOps"
+                            " review already holds the co-claim; re-fetch with"
+                            " evidence(task_id) and retry"
+                        ),
+                        context_briefing=briefing,
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=reviewer_agent_id,
+                    task_id=task_id,
+                    verb="claim_gate_review",
+                )
+            t = claimed
+            await self.task.session.commit()
+        elif to_python_uuid(t.active_claimant_id) != reviewer_agent_id:
             claimed = await self.task.pr_gate_claim(reviewer_agent_id, task_id)
             if claimed is None:
                 return await self._emit_rejection(
@@ -369,6 +401,12 @@ class PRGateMixin(_Base):
 
         Returns the task on success, or a ``not_found`` / ``not_authorized``
         rejection ``Envelope`` on failure.
+
+        Additive devops carve-out (the infra review gate, flag-gated): the
+        DevOps co-reviewer is accepted too - it holds the ``devops_gate_claimant``
+        marker instead of ownership, and must never steal the primary
+        reviewer's ``assigned_to``. Flag off => the check below is byte-for-byte
+        today (the helper returns False before any DB work).
         """
         t = await self.task.get(task_id)
         if t is None:
@@ -378,7 +416,9 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb=verb,
             )
-        if t.assigned_to != reviewer_agent_id:
+        if t.assigned_to != reviewer_agent_id and not await self._devops_gate_actor(
+            t, reviewer_agent_id
+        ):
             return await self._emit_rejection(
                 Envelope.not_authorized(
                     message="not assigned to you",
@@ -392,6 +432,20 @@ class PRGateMixin(_Base):
                 verb=verb,
             )
         return t
+
+    async def _devops_gate_actor(self, t: Any, reviewer_agent_id: UUID) -> bool:
+        """Whether ``reviewer_agent_id`` is a flag-armed DevOps co-reviewer
+        holding the co-claim on ``t``. Kept as its own helper so the
+        ownership guard's rejection path stays byte-for-byte when the flag
+        is off (short-circuit before the agent lookup)."""
+        from roboco.config import settings
+
+        if not settings.devops_enabled:
+            return False
+        agent = await self.task.agent_for(reviewer_agent_id)
+        if agent is None or str(agent.role) != spec_module.Role.DEVOPS.value:
+            return False
+        return devops_gate_lib.is_devops_co_claimant(t, reviewer_agent_id)
 
     @staticmethod
     def _gate_preflight_spec_ctx(
@@ -430,6 +484,7 @@ class PRGateMixin(_Base):
         issues: tuple[str, ...],
         ci_note: str | None = None,
         findings: list[Any] | None = None,
+        reviewer_role: str = "pr_reviewer",
     ) -> str | None:
         """Author the canonical pr_review verdict note before the transition.
 
@@ -451,11 +506,23 @@ class PRGateMixin(_Base):
         if verb == "pr_fail":
             head_sha = await self._capture_pr_head_sha(t)
             self._record_gate_verdict(
-                t, verb, notes, issues=issues, head_sha=head_sha, findings=findings
+                t,
+                verb,
+                notes,
+                issues=issues,
+                head_sha=head_sha,
+                findings=findings,
+                reviewer_role=reviewer_role,
             )
             return head_sha
         self._record_gate_verdict(
-            t, verb, notes, issues=issues, ci_note=ci_note, findings=findings
+            t,
+            verb,
+            notes,
+            issues=issues,
+            ci_note=ci_note,
+            findings=findings,
+            reviewer_role=reviewer_role,
         )
         return None
 
@@ -467,6 +534,7 @@ class PRGateMixin(_Base):
         issues: tuple[str, ...],
         pre_sha: str | None,
         findings: list[Any] | None = None,
+        reviewer_role: str = "pr_reviewer",
     ) -> None:
         """Re-capture the PR head SHA after the transition commits and re-stamp
         the verdict note when it advanced past the pre-transition capture (#189).
@@ -492,7 +560,13 @@ class PRGateMixin(_Base):
             return
         if post_sha is not None and post_sha != pre_sha:
             self._record_gate_verdict(
-                t, "pr_fail", notes, issues=issues, head_sha=post_sha, findings=findings
+                t,
+                "pr_fail",
+                notes,
+                issues=issues,
+                head_sha=post_sha,
+                findings=findings,
+                reviewer_role=reviewer_role,
             )
 
     async def _post_gate_review(
@@ -551,10 +625,19 @@ class PRGateMixin(_Base):
         # GatewayAgentView carries no slug field — falls back to the role
         # string (mirrors _post_gate_review's reviewer_slug fallback).
         author_slug = getattr(agent, "slug", None) or role_str
+        # The DevOps second reviewer's rejections ledger under their own
+        # origin (devops_review) so the primary pr_gate ledger stays the
+        # primary reviewer's - same free-form-origin ledger, dedicated row
+        # attribution (the ``second_review`` precedent).
+        origin = (
+            devops_gate_lib.DEVOPS_REVIEW_ORIGIN
+            if role_str == spec_module.Role.DEVOPS.value
+            else "pr_gate"
+        )
         _, summary = await findings_lib.insert_and_render(
             self.task.session,
             task_id=t.id,
-            origin="pr_gate",
+            origin=origin,
             round=findings_lib.next_round(t),
             author_slug=author_slug,
             findings=findings,
@@ -648,9 +731,19 @@ class PRGateMixin(_Base):
         """
         if verb == "pr_fail":
             await self._re_stamp_pr_fail_head_sha_if_advanced(
-                t, notes, issues=issues, pre_sha=pre_sha, findings=findings
+                t,
+                notes,
+                issues=issues,
+                pre_sha=pre_sha,
+                findings=findings,
+                reviewer_role=role_str,
             )
-        await self._post_gate_review(t, agent, role_str, verb, notes)
+        # Stage 3: a DEVOPS verdict does NOT post to GitHub - the DB note is
+        # the authoritative record, and a second bot review (an APPROVE on a
+        # cell→root PR from the shared project bot) adds approval noise
+        # without any consumer. The primary reviewer's post path is unchanged.
+        if role_str != spec_module.Role.DEVOPS.value:
+            await self._post_gate_review(t, agent, role_str, verb, notes)
         if verb == "pr_fail":
             await self._deliver_pr_fail_to_owner(t, reviewer_agent_id, task_id, notes)
 
@@ -699,7 +792,13 @@ class PRGateMixin(_Base):
         # is persisted by the same commit (mirrors post_pr_review) and stays in
         # lock-step with the decision (pr_fail overwrites an earlier pr_pass).
         pre_sha = await self._record_gate_verdict_for(
-            verb, t, notes, issues=issues, ci_note=ci_note, findings=list(findings)
+            verb,
+            t,
+            notes,
+            issues=issues,
+            ci_note=ci_note,
+            findings=list(findings),
+            reviewer_role=role_str,
         )
         result = await self._run_gate_verb(
             verb,
@@ -756,6 +855,11 @@ class PRGateMixin(_Base):
         )
         if blocked is not None:
             return blocked, None
+        devops_rejection = await self._devops_verdict_precondition(
+            reviewer_agent_id, task_id, t, role_str, briefing
+        )
+        if devops_rejection is not None:
+            return devops_rejection, None
         stamp_rejection = await self._stamp_gate_findings_verified_or_rejection(
             t,
             reviewer_agent_id=reviewer_agent_id,
@@ -766,6 +870,149 @@ class PRGateMixin(_Base):
         if stamp_rejection is not None:
             return stamp_rejection, None
         return None, ci_note
+
+    async def _devops_verdict_precondition(
+        self,
+        reviewer_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> Envelope | None:
+        """pr_pass's DevOps infra-review precondition (the Stage-3 gate).
+
+        When the predicate applies (``infra_gate_applies``: flag on + the
+        assembled diff intersects the project's effective infra globs + the
+        PR is not devops-authored), pr_pass composes only once a devops pass
+        verdict exists for the PR's CURRENT head - a ``passed`` record in
+        ``notes_structured["devops_review"]`` whose ``head_sha`` matches (the
+        re-arm: new commits expire the verdict). The DevOps caller itself is
+        exempt - its own pr_pass IS its verdict, so requiring a prior record
+        would wedge it in a circular block. Flag off => returns None before
+        any git/conventions work (byte-for-byte today).
+        """
+        from roboco.config import settings as _settings
+
+        if not _settings.devops_enabled:
+            return None
+        if role_str == spec_module.Role.DEVOPS.value:
+            return None
+        if not await self._devops_gate_applies(t):
+            return None
+        record = devops_gate_lib.devops_verdict_record(t)
+        if record is not None:
+            head_sha = await self._capture_pr_head_sha(t)
+            if devops_gate_lib.verdict_satisfies_head(record, head_sha):
+                return None
+        return await self._emit_rejection(
+            Envelope.invalid_state(
+                message=(
+                    "this assembled PR touches the project's declared infra "
+                    "paths and still needs the DevOps infra review"
+                ),
+                remediate=(
+                    "wait for the DevOps agent (devops-1) to review and record "
+                    "its verdict for the current PR head - the dispatcher routes "
+                    "it to this gate automatically - then call pr_pass again. "
+                    "do NOT pr_fail over the missing verdict; a missing review "
+                    "is not a diff defect"
+                ),
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str),
+            agent_id=reviewer_agent_id,
+            task_id=task_id,
+            verb="pr_pass",
+        )
+
+    async def _devops_gate_applies(self, t: Any) -> bool:
+        """The infra-gate predicate for one gate task, fed by the same diff
+        base the gate's evidence uses. Best-effort end to end: a changed-file
+        fetch failure yields ``[]`` and the predicate fails open."""
+        gate_parent = await self._gate_diff_parent(t)
+        changed_files = await self._gate_changed_files(t, gate_parent)
+        return await devops_gate_lib.infra_gate_applies(
+            self.task, t, changed_files=changed_files
+        )
+
+    async def record_devops_review(
+        self, devops_agent_id: UUID, task_id: UUID, notes: str
+    ) -> Envelope:
+        """Record the DevOps infra-review pass verdict WITHOUT transitioning.
+
+        The pass half of the second-reviewer surface (``pr_fail`` is the fail
+        half): devops-1 co-claims via ``claim_gate_review``, reviews the diff,
+        then records a ``passed`` verdict note (stamped with the PR's current
+        head SHA) so the primary reviewer's ``pr_pass`` composes. Devops may
+        instead call ``pr_pass`` itself - that IS its verdict and transitions
+        the gate. Requires the co-claim marker (claim first, then decide) and
+        rejects cleanly on an invalid payload rather than silently recording
+        nothing: the verb's whole product is the note.
+        """
+        pre = await self._claim_gate_preflight(devops_agent_id, task_id)
+        if isinstance(pre, Envelope):
+            return pre
+        t, role_str, briefing = pre
+        if role_str != spec_module.Role.DEVOPS.value or not (
+            devops_gate_lib.is_devops_co_claimant(t, devops_agent_id)
+        ):
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=(
+                        "record_devops_review requires a DevOps co-claim "
+                        "on this gate task"
+                    ),
+                    remediate=(
+                        "claim the review via claim_gate_review(task_id) first, "
+                        "then record your verdict"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=devops_agent_id,
+                task_id=task_id,
+                verb="record_devops_review",
+            )
+        gate = await self._gate_tracing(
+            devops_agent_id, task_id, t, role_str, "record_devops_review", notes=notes
+        )
+        if gate is not None:
+            return gate
+        head_sha = await self._capture_pr_head_sha(t)
+        payload: dict[str, Any] = {
+            "summary": notes,
+            "verdict": "passed",
+        }
+        if head_sha:
+            payload["head_sha"] = head_sha
+        from roboco.services.content_notes import apply_structured_note
+
+        try:
+            apply_structured_note(t, devops_gate_lib.DEVOPS_REVIEW_ORIGIN, payload)
+        except ContentValidationError:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        "the devops verdict note was rejected by content validation"
+                    ),
+                    remediate=(
+                        "re-issue record_devops_review with a substantive "
+                        "summary (>= 10 chars) describing what you verified "
+                        "about the infra surface"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=devops_agent_id,
+                task_id=task_id,
+                verb="record_devops_review",
+            )
+        # Durability boundary: the note IS the verb's deliverable - commit it
+        # before returning (mirrors claim_gate_review's claim commit).
+        await self.task.session.commit()
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["record_devops_review"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
 
     async def _gate_second_review_diff(self, t: Any) -> str:
         """The assembled PR's diff for the second-review pass, same base as
@@ -962,6 +1209,20 @@ class PRGateMixin(_Base):
                 await findings_lib.stamp_addressed_verified(
                     self.task.session, t.id, origin="pr_gate"
                 )
+                # The devops_review ledger rows (a devops pr_fail's findings)
+                # bind the author exactly like gate findings; verify their
+                # addressed rows in the same stamp on the way through. Rows of
+                # that origin cannot exist with the devops flag off, so the
+                # extra bulk-verify is a no-op then - gated anyway to keep the
+                # flag-off stamp call byte-for-byte singular.
+                from roboco.config import settings as _settings
+
+                if _settings.devops_enabled:
+                    await findings_lib.stamp_addressed_verified(
+                        self.task.session,
+                        t.id,
+                        origin=devops_gate_lib.DEVOPS_REVIEW_ORIGIN,
+                    )
         except Exception as exc:
             return await self._emit_rejection(
                 Envelope.invalid_state(
@@ -1238,6 +1499,7 @@ class PRGateMixin(_Base):
         head_sha: str | None = None,
         ci_note: str | None = None,
         findings: list[Any] | None = None,
+        reviewer_role: str = "pr_reviewer",
     ) -> None:
         """Persist the gate verdict as the canonical ``pr_review`` note.
 
@@ -1263,9 +1525,16 @@ class PRGateMixin(_Base):
         through a project with no CI configured) is stamped into the slot's
         ``ci_status`` field — the evidence that the guard ran and deliberately
         did not block, rather than silently never having checked at all.
+
+        The DevOps second reviewer (``reviewer_role="devops"``) writes its OWN
+        ``devops_review`` slot instead - a devops verdict must never overwrite
+        the primary reviewer's ``pr_review`` note - and stamps ``head_sha`` on
+        BOTH verbs: the pr_pass precondition matches the verdict against the
+        PR's current head, so the stamp is what makes the verdict re-arm.
         """
         from roboco.services.content_notes import apply_structured_note
 
+        is_devops = reviewer_role == spec_module.Role.DEVOPS.value
         verdict = "passed" if verb == "pr_pass" else "failed"
         summary = self._gate_verdict_summary(verb, notes, issues, findings)
         payload = self._gate_verdict_payload(
@@ -1277,8 +1546,14 @@ class PRGateMixin(_Base):
             ci_note=ci_note,
             findings=findings,
         )
+        if is_devops and head_sha:
+            payload["head_sha"] = head_sha
         try:
-            apply_structured_note(t, "pr_review", payload)
+            apply_structured_note(
+                t,
+                devops_gate_lib.DEVOPS_REVIEW_ORIGIN if is_devops else "pr_review",
+                payload,
+            )
         except ContentValidationError:
             logger.warning(
                 "gate verdict note skipped (invalid content)",

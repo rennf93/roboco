@@ -70,6 +70,11 @@ WAR_ROOM_BRIEF = "war_room_brief"
 BARFLY_CANDIDATES = "barfly_candidates"
 BARFLY_REPLY_REF = "barfly_reply_ref"
 PR_WAIVED = "pr_waived"
+# The floating DevOps agent's co-review claim on an awaiting_pr_review gate
+# task (the agent UUID string). Deliberately a marker, not active_claimant_id:
+# the primary reviewer owns that single-claimant slot, and the co-claim must
+# never disturb it. See TaskService.devops_gate_co_claim.
+DEVOPS_GATE_CLAIMANT = "devops_gate_claimant"
 BRANCH_PENDING = "branch_pending"
 SUPERSEDE_COMMENT_POSTED = "supersede_comment_posted"
 BRANCH_CUT_FAILED = "branch_cut_failed"
@@ -872,6 +877,28 @@ def clear_pr_waived(task: HasMarkers) -> None:
     round is NOT itself waiving PR creation.
     """
     clear_marker(task, PR_WAIVED)
+
+
+# --- devops gate co-claim ----------------------------------------------------
+# The floating DevOps agent's co-review claim on an awaiting_pr_review gate
+# task. A marker, not active_claimant_id: the primary PR reviewer owns that
+# single-claimant slot, and the co-claim must never disturb it (the primary
+# keeps ownership and keeps calling pr_pass / pr_fail). Cleared by the gate
+# decisions (pr_pass / pr_fail) and at gate re-entry (submit_for_review) so a
+# stale co-claim can never survive into a later review round.
+
+
+def get_devops_gate_claimant(task: HasMarkers) -> str | None:
+    val = get_marker(task, DEVOPS_GATE_CLAIMANT)
+    return str(val) if val else None
+
+
+def set_devops_gate_claimant(task: HasMarkers, agent_id: Any) -> None:
+    set_marker(task, DEVOPS_GATE_CLAIMANT, str(agent_id))
+
+
+def clear_devops_gate_claimant(task: HasMarkers) -> None:
+    clear_marker(task, DEVOPS_GATE_CLAIMANT)
 
 
 # --- supersede branch-pending (async branch cut) --------------------------- #

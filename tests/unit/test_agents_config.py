@@ -550,14 +550,16 @@ def test_get_a2a_route_hint_unknown_from_agent_falls_through() -> None:
 # A2A_ALLOWED_PAIRS — the switchboard's static org-chart pair matrix
 # ---------------------------------------------------------------------------
 
-_EXPECTED_PAIR_COUNT = 98
+# devops-1 mirrors pr-reviewer-1's lateral reach: one pair per owning PM
+# (be/fe/ux cell PM + main-pm, group ``cross``) plus its ``ceo`` pair.
+_EXPECTED_PAIR_COUNT = 103
 _EXPECTED_GROUP_COUNTS = {
     "board": 3,
-    "ceo": 24,
+    "ceo": 25,
     "cell-backend": 15,
     "cell-frontend": 15,
     "cell-ux_ui": 15,
-    "cross": 20,
+    "cross": 24,
     "pm-chain": 6,
 }
 

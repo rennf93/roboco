@@ -43,6 +43,10 @@ export interface ConventionsStandard {
   rules: Record<string, ConventionsRule>;
   custom: ConventionsCustomRule[];
   waivers: ConventionsWaiver[];
+  // Declared infra paths for the DevOps-agent review gate. null = not
+  // declared (shipped defaults apply); [] = explicit opt-out; non-empty =
+  // the project's globs replace the defaults. Must survive save round-trips.
+  infra: string[] | null;
 }
 
 export interface ConventionsHealth {

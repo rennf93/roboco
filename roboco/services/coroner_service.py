@@ -45,7 +45,7 @@ from roboco.config import settings
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus, Team
 from roboco.services.base import BaseService
-from roboco.services.board_programs import learn_ref
+from roboco.services.board_programs import learn_ref, resolve_materialize_target
 from roboco.services.task import CORONER_ITEM_SOURCE, CORONER_SOURCE
 
 if TYPE_CHECKING:
@@ -253,6 +253,21 @@ class CoronerService(BaseService):
             "priority": 2,
             "source": CORONER_ITEM_SOURCE,
         }
+        # DevOps lane (flag-gated): see RoadmapService._materialize: the
+        # process_change's target_agent hint (the Auditor decides per
+        # postmortem whether the follow-up is infra-shaped) pre-assigns a
+        # normal delivery task to devops-1, dropping the Main-PM
+        # coordination-root shape.
+        target_slug = resolve_materialize_target(process_change)
+        if target_slug is not None:
+            from roboco.seeds.initial_data import AGENT_UUIDS as _ALL_UUIDS
+
+            return await get_prompter_service(self.session).create_task_from_draft(
+                draft,
+                created_by,
+                status=TaskStatus.PENDING,
+                assigned_to=UUID(_ALL_UUIDS[target_slug]),
+            )
         return await get_prompter_service(self.session).create_task_from_draft(
             draft,
             created_by,

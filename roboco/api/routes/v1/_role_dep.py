@@ -30,6 +30,7 @@ __all__ = [
     "require_board",
     "require_cell_pm",
     "require_dev",
+    "require_devops",
     "require_doc",
     "require_main_pm",
     "require_pr_reviewer",
@@ -47,6 +48,7 @@ require_main_pm = _require_roles(frozenset({Role.MAIN_PM}))
 require_board = _require_roles(frozenset({Role.PRODUCT_OWNER, Role.HEAD_MARKETING}))
 require_auditor = _require_roles(frozenset({Role.AUDITOR}))
 require_pr_reviewer = _require_roles(frozenset({Role.PR_REVIEWER}))
+require_devops = _require_roles(frozenset({Role.DEVOPS}))
 
 # The do router serves all roles, so this is token-only (no role assertion).
 require_any_authenticated_agent = _require_authenticated_agent()

@@ -29,6 +29,7 @@ from roboco.db.tables import (
 )
 from roboco.foundation.policy.conventions.effective_map import effective_map
 from roboco.foundation.policy.conventions.models import (
+    DEFAULT_INFRA_GLOBS,
     ConventionsParseError,
     ConventionsStandard,
 )
@@ -43,6 +44,13 @@ if TYPE_CHECKING:
 
 _SCAFFOLD_BRANCH = CONVENTIONS_SCAFFOLD_BRANCH
 _AMBIENT_CHAR_CAP = 2000
+# Bumped when the effective-map payload shape changes in a way older rows
+# cannot satisfy: rows stamped with an earlier (or no) version are treated
+# as stale and recomputed, instead of serving e.g. ``infra=None`` for a HEAD
+# that never moved (migration 043 keyed the cache on (project_id, commit_sha)
+# alone). The stamp rides INSIDE the JSONB payload (extra="ignore" on the
+# model makes reads tolerant), so no column or backfill is needed.
+_CACHE_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,27 @@ def _is_unique_violation(exc: IntegrityError) -> bool:
     if code == "23505":
         return True
     return "UniqueViolation" in type(orig).__name__
+
+
+def _cache_payload(mapping: ConventionsStandard) -> dict[str, Any]:
+    """Serialize an effective map with the cache schema stamp embedded.
+
+    The stamp rides inside the JSONB payload rather than a dedicated column:
+    ``ConventionsStandard`` ignores unknown keys on read, so old binaries and
+    the ``_latest_ok_map`` path tolerate it, and no migration or backfill is
+    needed. Pre-stamp rows simply lack the key and read as stale.
+    """
+    payload = mapping.model_dump(mode="json")
+    payload["cache_schema"] = _CACHE_SCHEMA_VERSION
+    return payload
+
+
+def _cache_row_current(row: ProjectConventionsCacheTable) -> bool:
+    """Whether a cached row was written under the current payload schema."""
+    payload = row.effective_map
+    return isinstance(payload, dict) and (
+        payload.get("cache_schema") == _CACHE_SCHEMA_VERSION
+    )
 
 
 class ConventionsService(BaseService):
@@ -121,6 +150,26 @@ class ConventionsService(BaseService):
         if status != "degraded":
             await self._cache_put(pid, head, mapping, status)
         return mapping
+
+    async def effective_infra_globs(
+        self, project: ProjectTable, *, workspace: Path | None = None
+    ) -> list[str]:
+        """Return the project's effective infra globs at its current HEAD.
+
+        Contract: this read works REGARDLESS of ``ROBOCO_CONVENTIONS_ENABLED``.
+        The flag gates author-facing enforcement (scaffold, ambient block,
+        ``i_am_done`` / ``pr_pass`` conventions guards), not the declaration
+        read: the infra declaration is per-project content, exactly like
+        ``GET /api/projects/{id}/conventions``, which already calls
+        ``get_map`` unflagged. The infra review gate consumes this.
+        """
+        mapping = await self.get_map(project, workspace=workspace)
+        # The effective map always merges infra (the merge fills the defaults),
+        # but a pre-stamp last-good row parsed back without the field carries
+        # None, fall back to the shipped defaults rather than an empty gate.
+        if mapping.infra is not None:
+            return list(mapping.infra)
+        return list(DEFAULT_INFRA_GLOBS)
 
     async def baseline_constraints(
         self, project: ProjectTable, *, workspace: Path | None = None
@@ -437,7 +486,29 @@ class ConventionsService(BaseService):
                 ProjectConventionsCacheTable.commit_sha == commit_sha,
             )
         )
-        return result.scalar_one_or_none()
+        row = result.scalar_one_or_none()
+        if row is not None and not _cache_row_current(row):
+            # Pre-stamp row (written before _CACHE_SCHEMA_VERSION existed): its
+            # payload predates fields like ``infra``, so serving it would mask
+            # the declaration until HEAD moves. Treat it as absent and drop it
+            # so the next ``_cache_put`` can repopulate; a stale row left in
+            # place would otherwise swallow every fresh insert as a benign
+            # concurrent duplicate and force a re-derive on every read.
+            from sqlalchemy.exc import IntegrityError
+
+            try:
+                async with self.session.begin_nested():
+                    await self.session.delete(row)
+            except IntegrityError:
+                # Lost a purge race (another reader dropped it first): the
+                # savepoint contained the failure, the row is gone either way.
+                self.log.debug(
+                    "conventions cache stale-row purge raced",
+                    project_id=str(project_id),
+                    commit_sha=commit_sha,
+                )
+            return None
+        return row
 
     async def _cache_put(
         self,
@@ -464,7 +535,7 @@ class ConventionsService(BaseService):
                     ProjectConventionsCacheTable(
                         project_id=project_id,
                         commit_sha=commit_sha,
-                        effective_map=mapping.model_dump(mode="json"),
+                        effective_map=_cache_payload(mapping),
                         status=status,
                     )
                 )

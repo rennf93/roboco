@@ -34,6 +34,7 @@ def test_role_enum_has_every_pre_gateway_role() -> None:
         "head_marketing",
         "auditor",
         "pr_reviewer",  # reviews inbound external/fork PRs (read-only)
+        "devops",  # floating infra author + second PR-gate reviewer
         "prompter",  # post-gateway intake role (human-only, drafts tasks)
         "secretary",  # CEO's chief-of-staff (human-only, gated CEO authority)
         "ceo",

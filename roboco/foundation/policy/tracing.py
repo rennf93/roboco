@@ -365,6 +365,12 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
     "pr_fail": frozenset(
         {Requirement.JOURNAL_LEARNING, Requirement.PR_REVIEWER_NOTES_MIN_CHARS}
     ),
+    # DevOps second reviewer's pass verdict on the infra gate: same
+    # accountability set as pr_pass (learning entry + the notes argument,
+    # shimmed): the recorded verdict IS the verb's product.
+    "record_devops_review": frozenset(
+        {Requirement.JOURNAL_LEARNING, Requirement.PR_REVIEWER_NOTES_MIN_CHARS}
+    ),
     # Doc submit.
     "i_documented": frozenset(
         {
