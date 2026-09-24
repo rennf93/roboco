@@ -116,12 +116,12 @@ def _calibration_error() -> str:
     except (OSError, ValueError):
         cfg = getattr(_state.get("agent"), "cfg", None) or {}
     temps = cfg.get("temperature")
-    if not isinstance(temps, (list, tuple)) or len(temps) != len(_VALID_TYPES):
+    if not isinstance(temps, list | tuple) or len(temps) != len(_VALID_TYPES):
         return (
             f"{cfg_path} carries no fitted temperature vector "
             "(choice/score/noul); refusing to serve raw-logit confidences"
         )
-    if any(not isinstance(t, (int, float)) or math.isnan(t) or t <= 0 for t in temps):
+    if any(not isinstance(t, int | float) or math.isnan(t) or t <= 0 for t in temps):
         return f"{cfg_path} fitted temperature vector is not finite/positive: {temps!r}"
     return ""
 

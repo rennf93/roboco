@@ -11,9 +11,9 @@ import httpx
 import pytest
 import roboco.config as cfg
 from roboco.services.decisions.client import (
+    _LAYA_STATE_BUDGET_CHARS,
     DecisionsClient,
     DecisionsEndpoint,
-    _LAYA_STATE_BUDGET_CHARS,
     cap_state,
     cap_state_to_budget,
     cap_text,

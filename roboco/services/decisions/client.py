@@ -177,15 +177,11 @@ def cap_state_to_budget(state: object, budget: int) -> object:
         )
         if _keeps_tail(str(key)):
             truncated = (
-                _BUDGET_TAIL_PREFIX + value[-room:]
-                if room
-                else _BUDGET_BARE_SUFFIX
+                _BUDGET_TAIL_PREFIX + value[-room:] if room else _BUDGET_BARE_SUFFIX
             )
         else:
             truncated = (
-                value[:room] + _BUDGET_HEAD_SUFFIX
-                if room
-                else _BUDGET_BARE_SUFFIX
+                value[:room] + _BUDGET_HEAD_SUFFIX if room else _BUDGET_BARE_SUFFIX
             )
         if truncated == value:  # nothing shrinkable remains
             return capped
@@ -266,26 +262,8 @@ class DecisionsClient:
             headers["Authorization"] = f"Bearer {endpoint.api_key}"
 
         started = time.monotonic()
-        try:
-            client = self.http_client or httpx.AsyncClient()
-            try:
-                response = await client.post(
-                    f"{endpoint.base_url.rstrip('/')}/api/alpha/decisions",
-                    json=body,
-                    headers=headers,
-                    timeout=endpoint.timeout_s,
-                )
-            finally:
-                if self.http_client is None:
-                    await client.aclose()
-        except (httpx.HTTPError, OSError) as exc:
-            circuit.record_failure()
-            logger.warning(
-                "decisions call failed; fail-open",
-                tier=endpoint.tier,
-                session_id=session_id,
-                error=str(exc),
-            )
+        response = await self._post(endpoint, body, headers, circuit, session_id)
+        if response is None:
             return None
 
         payload = self._validated_payload(response, circuit, endpoint, session_id)
@@ -313,6 +291,38 @@ class DecisionsClient:
             latency_ms=int((time.monotonic() - started) * 1000),
         )
         return result
+
+    async def _post(
+        self,
+        endpoint: DecisionsEndpoint,
+        body: dict,
+        headers: dict[str, str],
+        circuit: _Circuit,
+        session_id: str,
+    ) -> httpx.Response | None:
+        """POST one decisions batch. ``None`` = transport failure (the circuit
+        is charged and the fail-open warning is logged here)."""
+        try:
+            client = self.http_client or httpx.AsyncClient()
+            try:
+                return await client.post(
+                    f"{endpoint.base_url.rstrip('/')}/api/alpha/decisions",
+                    json=body,
+                    headers=headers,
+                    timeout=endpoint.timeout_s,
+                )
+            finally:
+                if self.http_client is None:
+                    await client.aclose()
+        except (httpx.HTTPError, OSError) as exc:
+            circuit.record_failure()
+            logger.warning(
+                "decisions call failed; fail-open",
+                tier=endpoint.tier,
+                session_id=session_id,
+                error=str(exc),
+            )
+            return None
 
     def _validated_payload(
         self,

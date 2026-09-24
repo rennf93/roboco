@@ -145,7 +145,13 @@ def _mock_live_spawn(
     async def _ensure_live(_image: str) -> None:
         return None
 
+    async def _noop_uuid(*_a: Any, **_k: Any) -> str:
+        # _scoped_project_uuid hits the DB for the live draft bridge; keep the
+        # spawn-path mocks hermetic.
+        return ""
+
     monkeypatch.setattr(orch, "_clone_intake_scope", _clone)
+    monkeypatch.setattr(orch, "_scoped_project_uuid", _noop_uuid)
     monkeypatch.setattr(orch, "_run_container_cmd", _run)
     monkeypatch.setattr(orch, "_remove_container", _remove)
     monkeypatch.setattr(

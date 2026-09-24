@@ -109,7 +109,7 @@ def _parse_answer(key: str, body: dict[str, Any]) -> DecisionAnswer:
         probabilities={
             str(k): float(v)
             for k, v in (body.get("probabilities") or {}).items()
-            if isinstance(v, (int, float))
+            if isinstance(v, int | float)
         },
         raw_payload=body,
     )
@@ -158,6 +158,6 @@ def parse_decisions_payload(
 def _as_float(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return float(value)
     return None

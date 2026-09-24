@@ -162,9 +162,7 @@ class TestOpenRouterKeyResolution:
         assert await resolver._openrouter_api_key(session) is None
 
     @pytest.mark.asyncio
-    async def test_key_cached_within_ttl(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_key_cached_within_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Inside the 60s TTL window a repeat call pays neither the
         ProviderConfigTable read nor the Fernet decrypt (the unhealthy-
         sidecar fallback path resolves per call)."""

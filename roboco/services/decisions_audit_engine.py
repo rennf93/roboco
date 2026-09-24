@@ -268,7 +268,7 @@ class DecisionsAuditEngine(BaseService):
 
 def _gate_confidences(row: DecisionLogTable) -> list[float | None]:
     conf = row.confidence or {}
-    return [v for v in conf.values() if isinstance(v, (int, float))]
+    return [v for v in conf.values() if isinstance(v, int | float)]
 
 
 def get_decisions_audit_engine(session: AsyncSession) -> DecisionsAuditEngine:
