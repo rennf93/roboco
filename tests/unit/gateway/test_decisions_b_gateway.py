@@ -11,6 +11,11 @@ client, per tests/unit/services/test_decisions_wiring.py.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from roboco.services.gateway.envelope import Envelope
+
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -117,7 +122,9 @@ _DONE = {
 # ---------------------------------------------------------------------------
 
 
-async def _call_plan_quality_gate(choreo: Choreographer):
+async def _call_plan_quality_gate(
+    choreo: Choreographer,
+) -> Envelope | None:
     return await choreo._plan_quality_gate(
         role_str="cell_pm",
         rich_plan={
@@ -132,7 +139,9 @@ async def _call_plan_quality_gate(choreo: Choreographer):
 
 
 @pytest.mark.asyncio
-async def test_b1_plan_quality_postures(monkeypatch: pytest.MonkeyPatch):
+async def test_b1_plan_quality_postures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     choreo = _choreographer()
 
     # OFF: the gate passes without any decisions call.
@@ -176,7 +185,9 @@ async def test_b1_plan_quality_postures(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_b20_commit_intent_postures(monkeypatch: pytest.MonkeyPatch):
+async def test_b20_commit_intent_postures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # OFF: structural result unchanged, no decisions call.
     decide = _pin_verdict(monkeypatch, pilots.PilotMode.OFF, None)
     res = await validate_commit_message_with_intent(
@@ -254,7 +265,9 @@ def _finding() -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_b31_findings_mapping_postures(monkeypatch: pytest.MonkeyPatch):
+async def test_b31_findings_mapping_postures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # OFF: no decisions call at all.
     decide = _pin_verdict(monkeypatch, pilots.PilotMode.OFF, None)
     assert (
@@ -333,7 +346,9 @@ async def test_b31_findings_mapping_postures(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_b34_idle_legitimacy_postures(monkeypatch: pytest.MonkeyPatch):
+async def test_b34_idle_legitimacy_postures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     choreo = _choreographer()
     choreo._deps.task.list_in_progress_for_agent.return_value = [_owned_task()]
     notify = MagicMock()
@@ -356,6 +371,7 @@ async def test_b34_idle_legitimacy_postures(monkeypatch: pytest.MonkeyPatch):
     _pin_verdict(monkeypatch, pilots.PilotMode.ON, _result(gate=_STRANDED))
     assert await choreo._idle_legitimacy_hint(uuid4()) is None
     sent.assert_awaited_once()
+    assert sent.await_args is not None
     assert "Idle-legitimacy" in sent.await_args.kwargs["body"]
 
     # ON + confident likely-done: a `next` hint naming i_am_done.
@@ -393,7 +409,9 @@ async def test_b34_idle_legitimacy_postures(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_b39_branch_staleness_postures(monkeypatch: pytest.MonkeyPatch):
+async def test_b39_branch_staleness_postures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     choreo = _choreographer()
     t = _owned_task()
     choreo._deps.git.is_behind_base.return_value = (3, 2)
@@ -432,6 +450,7 @@ async def test_b39_branch_staleness_postures(monkeypatch: pytest.MonkeyPatch):
     _pin_verdict(monkeypatch, pilots.PilotMode.ON, _verdict(0.95, 0.9))
     await choreo._branch_staleness_advisory(uuid4(), t)
     sent.assert_awaited_once()
+    assert sent.await_args is not None
     assert sent.await_args.kwargs["to_agent"] == "be-dev-1"
 
     # ON + low noul: nothing further.
@@ -451,7 +470,9 @@ async def test_b39_branch_staleness_postures(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_b41_lesson_prune_postures(monkeypatch: pytest.MonkeyPatch):
+async def test_b41_lesson_prune_postures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     choreo = _choreographer()
     t = _owned_task()
     items = [{"title": "lesson-a"}, {"title": "lesson-b"}]
@@ -507,7 +528,9 @@ async def test_b41_lesson_prune_postures(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_b43_assembled_coherence_postures(monkeypatch: pytest.MonkeyPatch):
+async def test_b43_assembled_coherence_postures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     choreo = _choreographer()
 
     # OFF: omitted, no decisions call.

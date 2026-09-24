@@ -1294,7 +1294,28 @@ class DispatchBreakerEngine(_Base):
         # or below-floor/no verdict) falls through to today's trip behavior -
         # the stall marker + one-shot overseer notification ARE the existing
         # hold-for-human mechanics.
-        spawn_anyway = (
+        spawn_anyway = await self._pm_respawn_spawn_anyway(
+            agent_slug, task_id, current_status, record, tripped
+        )
+        if tripped and not spawn_anyway:
+            await self._pm_trip_stall_notice(
+                agent_slug, task_id, current_status, record
+            )
+        return tripped and not spawn_anyway
+
+    async def _pm_respawn_spawn_anyway(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+        tripped: bool,
+    ) -> bool:
+        """B37 respawn_verdict: True when a confident "productive respawn"
+        verdict overrides the trip. Short-circuits exactly as before: the
+        classifier is only consulted when decisions are enabled and the
+        counter actually tripped."""
+        return bool(
             settings.decisions_enabled
             and tripped
             and (
@@ -1304,30 +1325,37 @@ class DispatchBreakerEngine(_Base):
                 is False
             )
         )
-        if tripped and not spawn_anyway:
-            logger.warning(
-                "PM respawn loop detected — skipping spawn",
-                agent_id=agent_slug,
-                task_id=task_id,
-                task_status=current_status,
-                spawn_attempts=record["count"],
-                threshold=self._PM_RESPAWN_MAX_UNPRODUCTIVE,
-                hint=(
-                    "Agent repeatedly spawned without advancing task state. "
-                    "Investigate prompt/schema drift or escalate manually."
-                ),
-            )
-            # A skipped spawn pauses the loop but can't advance the task; alert
-            # an overseer once so a wedged agent isn't silently stranded, and
-            # record a durable marker on the task itself (readable without
-            # container logs) alongside that one-shot notification. Both are
-            # one-shot per trip, gated by the same `notified` flag.
-            if not record.get("notified"):
-                record["notified"] = True
-                self._schedule_respawn_persist(agent_slug, str(task_id), record)
-                await self._mark_task_stalled(task_id)
-                await self._notify_stuck_agent(agent_slug, task_id, current_status)
-        return tripped and not spawn_anyway
+
+    async def _pm_trip_stall_notice(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> None:
+        """Log the trip and fire the one-shot stall marker + overseer
+        notification. A skipped spawn pauses the loop but can't advance the
+        task; alert an overseer once so a wedged agent isn't silently
+        stranded, and record a durable marker on the task itself (readable
+        without container logs) alongside that one-shot notification. Both
+        are one-shot per trip, gated by the same `notified` flag."""
+        logger.warning(
+            "PM respawn loop detected — skipping spawn",
+            agent_id=agent_slug,
+            task_id=task_id,
+            task_status=current_status,
+            spawn_attempts=record["count"],
+            threshold=self._PM_RESPAWN_MAX_UNPRODUCTIVE,
+            hint=(
+                "Agent repeatedly spawned without advancing task state. "
+                "Investigate prompt/schema drift or escalate manually."
+            ),
+        )
+        if not record.get("notified"):
+            record["notified"] = True
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            await self._mark_task_stalled(task_id)
+            await self._notify_stuck_agent(agent_slug, task_id, current_status)
 
     async def _decisions_respawn_override(
         self,

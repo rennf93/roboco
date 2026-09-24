@@ -4,6 +4,7 @@ tests/unit/runtime) the parking path. Focus: fail-open semantics and the
 shadow/off behavior at the seam."""
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,9 +14,9 @@ from roboco.services.decisions import pilots
 from roboco.services.self_heal_engine import SelfHealEngine
 
 
-def _bare(engine_cls):
+def _bare(engine_cls: type[Any]) -> Any:
     """Instantiate a mixin/engine without __init__ (no DB needed)."""
-    engine = engine_cls.__new__(engine_cls)
+    engine = object.__new__(engine_cls)
     engine.session = MagicMock()
     import structlog
 
@@ -29,11 +30,13 @@ def _bare(engine_cls):
 
 
 @pytest.mark.asyncio
-async def test_self_heal_gate_passes_sample_state_to_pilot(monkeypatch):
+async def test_self_heal_gate_passes_sample_state_to_pilot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(SelfHealEngine)
     captured = {}
 
-    async def fake_transient(session, **kwargs):
+    async def fake_transient(session: Any, **kwargs: Any) -> Any:
         captured.update(kwargs)
         return pilots.SelfHealGate.NO_VERDICT
 
@@ -52,10 +55,12 @@ async def test_self_heal_gate_passes_sample_state_to_pilot(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_self_heal_pilot_failure_is_no_verdict(monkeypatch):
+async def test_self_heal_pilot_failure_is_no_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(SelfHealEngine)
 
-    async def boom(session, **kwargs):
+    async def boom(session: Any, **kwargs: Any) -> Any:
         raise RuntimeError("down")
 
     monkeypatch.setattr(decisions, "self_heal_transient", boom)
@@ -70,7 +75,9 @@ async def test_self_heal_pilot_failure_is_no_verdict(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _task(description: str, criteria: list | None = None):
+def _task(
+    description: str, criteria: list[dict[str, Any]] | None = None
+) -> SimpleNamespace:
     return SimpleNamespace(
         id="00000000-0000-0000-0000-000000000009",
         title="Wide refactor",
@@ -80,7 +87,9 @@ def _task(description: str, criteria: list | None = None):
 
 
 @pytest.mark.asyncio
-async def test_complexity_confident_score_overrides_static(monkeypatch):
+async def test_complexity_confident_score_overrides_static(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
 
     engine = _bare(SpawnLaunchEngine)
@@ -96,7 +105,9 @@ async def test_complexity_confident_score_overrides_static(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_complexity_low_confidence_keeps_static(monkeypatch):
+async def test_complexity_low_confidence_keeps_static(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
 
     engine = _bare(SpawnLaunchEngine)
@@ -110,7 +121,9 @@ async def test_complexity_low_confidence_keeps_static(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_complexity_short_description_skips_pilot(monkeypatch):
+async def test_complexity_short_description_skips_pilot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
 
     engine = _bare(SpawnLaunchEngine)
@@ -124,7 +137,9 @@ async def test_complexity_short_description_skips_pilot(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_complexity_criteria_passed_longest_form(monkeypatch):
+async def test_complexity_criteria_passed_longest_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
 
     engine = _bare(SpawnLaunchEngine)
@@ -136,17 +151,20 @@ async def test_complexity_criteria_passed_longest_form(monkeypatch):
     )
     result = await engine._decisions_complexity_override(MagicMock(), task, static=None)
     assert result == "medium"
+    assert mock.await_args is not None
     kwargs = mock.await_args.kwargs
     assert sorted(kwargs["acceptance_criteria"]) == ["CI green", "docs updated"]
 
 
 @pytest.mark.asyncio
-async def test_complexity_pilot_error_keeps_static(monkeypatch):
+async def test_complexity_pilot_error_keeps_static(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
 
     engine = _bare(SpawnLaunchEngine)
 
-    async def boom(*a, **kw):
+    async def boom(*a: Any, **kw: Any) -> Any:
         raise RuntimeError("down")
 
     monkeypatch.setattr(decisions, "complexity_score", boom)
@@ -156,7 +174,7 @@ async def test_complexity_pilot_error_keeps_static(monkeypatch):
     assert result == "high"
 
 
-def test_complexity_score_bounds_are_clamped_in_pilot():
+def test_complexity_score_bounds_are_clamped_in_pilot() -> None:
     """The pilot clamps the 0-2 score: out-of-band floats cannot produce a
     tier KeyError at the call site, and the routing vocabulary matches."""
     from roboco.runtime.engines.spawn_launch import _DECISIONS_COMPLEXITY_TIERS

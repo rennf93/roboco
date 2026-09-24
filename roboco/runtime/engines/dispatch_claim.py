@@ -858,18 +858,7 @@ class DispatchClaimEngine(_Base):
         if not settings.decisions_enabled:
             return ""
         try:
-            from roboco.db import get_db_context
-            from roboco.services.decisions import pilots_dispatch
-
-            async with get_db_context() as db:
-                _score, line = await pilots_dispatch.closure_safety(
-                    db,
-                    task_id=str(task.get("id") or ""),
-                    team=str(task.get("team") or "") or None,
-                    branch=str(task.get("branch_name") or "") or None,
-                    child_count=int(task.get("children_count") or 0),
-                )
-            return line or ""
+            return await self._closure_safety_verdict(task)
         except Exception as exc:
             logger.warning(
                 "closure-safety advisory failed (best-effort)",
@@ -877,6 +866,23 @@ class DispatchClaimEngine(_Base):
                 error=str(exc),
             )
             return ""
+
+    async def _closure_safety_verdict(self, task: dict[str, Any]) -> str:
+        """The B42 closure-safety advisory line from the classifier ('' when
+        none). The ask is logged inside the pilot on EVERY call while the
+        pilot is ON - that log is the point; the injection is advisory."""
+        from roboco.db import get_db_context
+        from roboco.services.decisions import pilots_dispatch
+
+        async with get_db_context() as db:
+            _score, line = await pilots_dispatch.closure_safety(
+                db,
+                task_id=str(task.get("id") or ""),
+                team=str(task.get("team") or "") or None,
+                branch=str(task.get("branch_name") or "") or None,
+                child_count=int(task.get("children_count") or 0),
+            )
+        return line or ""
 
     async def _try_auto_submit(
         self, client: httpx.AsyncClient, task: dict[str, Any], pm_slug: str

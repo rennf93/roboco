@@ -19,7 +19,7 @@ resolved through the shared ``pilot_mode`` chokepoint.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from roboco.services.decisions.pilots import (
     PilotMode,
@@ -28,9 +28,15 @@ from roboco.services.decisions.pilots import (
 )
 from roboco.services.decisions.schemas import (
     ChoiceQuestion,
+    DecisionAnswer,
+    DecisionQuestion,
+    DecisionResult,
     NoulQuestion,
     ScoreQuestion,
 )
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # Thresholds (spec 7.1 rows + the wiring decisions). Calibrate from
 # logged shadow data, never vibes.
@@ -56,8 +62,30 @@ class IdleLegitimacy(StrEnum):
     LIKELY_STRANDED_ESCALATE = "likely-stranded-escalate"
 
 
-def _answer(result, key: str):
+def _answer(result: DecisionResult, key: str) -> DecisionAnswer | None:
     return result.answer(key)
+
+
+def _score_confidence(
+    result: DecisionResult, key: str
+) -> tuple[float | None, float | None]:
+    """(score, confidence) off one answer; both None without an answer."""
+    answer = _answer(result, key)
+    return (
+        answer.score if answer else None,
+        answer.confidence if answer else None,
+    )
+
+
+def _chosen_confidence(
+    result: DecisionResult, key: str
+) -> tuple[str | None, float | None]:
+    """(choice, confidence) off one answer; both None without an answer."""
+    answer = _answer(result, key)
+    return (
+        answer.choice if answer else None,
+        answer.confidence if answer else None,
+    )
 
 
 def _clip(text: Any, cap: int = 2000) -> str:
@@ -72,8 +100,23 @@ def _clip(text: Any, cap: int = 2000) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _plan_quality_subtasks(
+    sub_tasks: list[dict[str, Any]],
+) -> list[dict[str, str | None]]:
+    """Head-capped sub-task view for the state payload."""
+    return [
+        {
+            "title": _clip(st.get("title") if isinstance(st, dict) else st),
+            "description": _clip(
+                st.get("description") if isinstance(st, dict) else None
+            ),
+        }
+        for st in sub_tasks[:FINDINGS_MAP_MAX_BATCH]
+    ]
+
+
 async def plan_quality(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     task_title: str,
@@ -94,15 +137,7 @@ async def plan_quality(
         "task_id": task_id,
         "task_title": _clip(task_title),
         "approach": _clip(approach, 4000),
-        "sub_tasks": [
-            {
-                "title": _clip(st.get("title") if isinstance(st, dict) else st),
-                "description": _clip(
-                    st.get("description") if isinstance(st, dict) else None
-                ),
-            }
-            for st in sub_tasks[:FINDINGS_MAP_MAX_BATCH]
-        ],
+        "sub_tasks": _plan_quality_subtasks(sub_tasks),
     }
     questions = {
         "gate": ScoreQuestion(
@@ -125,9 +160,7 @@ async def plan_quality(
     )
     if result is None:
         return None
-    answer = _answer(result, "gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
+    score, confidence = _score_confidence(result, "gate")
     if score is None or confidence is None or confidence < PLAN_QUALITY_FLOOR:
         if mode is PilotMode.SHADOW:
             log_action("plan_quality", mode, score, "no-op (shadow)", result)
@@ -153,7 +186,7 @@ async def plan_quality(
 
 
 async def commit_intent_hint(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     message: str,
@@ -224,8 +257,49 @@ def _overlap_files(finding: dict[str, Any], files_changed: list[str]) -> list[st
     return hits if hits else ([] if target else list(files_changed))
 
 
+def _findings_questions(ordered: list[dict[str, Any]]) -> dict[str, NoulQuestion]:
+    """One noul question per ordered finding."""
+    return {
+        f"finding_{idx}": NoulQuestion(
+            instructions=(
+                "This diff plausibly addresses this finding (file/line "
+                f"overlap plus semantics): {_clip(f.get('expected'), 400)} | "
+                f"actual: {_clip(f.get('actual'), 400)} | file: "
+                f"{_clip(f.get('file'), 200)}"
+            )
+        )
+        for idx, f in enumerate(ordered)
+    }
+
+
+def _findings_map(
+    result: DecisionResult,
+    ordered: list[dict[str, Any]],
+    files_changed: list[str],
+) -> list[dict[str, Any]]:
+    """Collect the at-or-above-floor suggested file maps per finding."""
+    mapping: list[dict[str, Any]] = []
+    for idx, f in enumerate(ordered):
+        answer = result.answer(f"finding_{idx}")
+        noul = answer.noul if answer else None
+        if noul is None or noul < FINDINGS_MAP_FLOOR:
+            continue
+        # noul above the floor implies the answer exists.
+        assert answer is not None
+        mapping.append(
+            {
+                "finding_id": str(f.get("id") or ""),
+                "files": _overlap_files(f, list(files_changed)),
+                "line": f.get("line"),
+                "noul": noul,
+                "confidence": answer.confidence,
+            }
+        )
+    return mapping
+
+
 async def findings_mapping(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     findings: list[dict[str, Any]],
@@ -250,17 +324,7 @@ async def findings_mapping(
     )[:FINDINGS_MAP_MAX_BATCH]
     if not ordered:
         return []
-    questions = {
-        f"finding_{idx}": NoulQuestion(
-            instructions=(
-                "This diff plausibly addresses this finding (file/line "
-                f"overlap plus semantics): {_clip(f.get('expected'), 400)} | "
-                f"actual: {_clip(f.get('actual'), 400)} | file: "
-                f"{_clip(f.get('file'), 200)}"
-            )
-        )
-        for idx, f in enumerate(ordered)
-    }
+    questions = _findings_questions(ordered)
     state = {
         "task_id": task_id,
         "diff": _clip(diff, 20_000),
@@ -271,21 +335,7 @@ async def findings_mapping(
     )
     if result is None:
         return None
-    mapping: list[dict[str, Any]] = []
-    for idx, f in enumerate(ordered):
-        answer = result.answer(f"finding_{idx}")
-        noul = answer.noul if answer else None
-        if noul is None or noul < FINDINGS_MAP_FLOOR:
-            continue
-        mapping.append(
-            {
-                "finding_id": str(f.get("id") or ""),
-                "files": _overlap_files(f, list(files_changed)),
-                "line": f.get("line"),
-                "noul": noul,
-                "confidence": answer.confidence,
-            }
-        )
+    mapping = _findings_map(result, ordered, list(files_changed))
     log_action(
         "findings_mapping",
         mode,
@@ -303,8 +353,33 @@ async def findings_mapping(
 # ---------------------------------------------------------------------------
 
 
+def _idle_state(owned_tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Head-capped owned-task view for the state payload."""
+    return [
+        {
+            "task_id": _clip(t.get("task_id")),
+            "title": _clip(t.get("title"), 300),
+            "status": _clip(t.get("status"), 60),
+            "commit_count": t.get("commit_count"),
+            "has_pr": bool(t.get("has_pr")),
+            "minutes_since_last_activity": t.get("minutes_since_last_activity"),
+        }
+        for t in owned_tasks[:5]
+    ]
+
+
+def _idle_verdict(choice: str | None) -> IdleLegitimacy | None:
+    """The parsed choice, or None when absent/unparseable."""
+    if choice is None:
+        return None
+    try:
+        return IdleLegitimacy(choice)
+    except ValueError:
+        return None
+
+
 async def idle_legitimacy(
-    session,
+    session: AsyncSession,
     *,
     agent_slug: str,
     owned_tasks: list[dict[str, Any]],
@@ -319,17 +394,7 @@ async def idle_legitimacy(
     """
     state = {
         "agent_slug": agent_slug,
-        "owned_tasks": [
-            {
-                "task_id": _clip(t.get("task_id")),
-                "title": _clip(t.get("title"), 300),
-                "status": _clip(t.get("status"), 60),
-                "commit_count": t.get("commit_count"),
-                "has_pr": bool(t.get("has_pr")),
-                "minutes_since_last_activity": t.get("minutes_since_last_activity"),
-            }
-            for t in owned_tasks[:5]
-        ],
+        "owned_tasks": _idle_state(owned_tasks),
     }
     questions = {
         "gate": ChoiceQuestion(
@@ -364,14 +429,8 @@ async def idle_legitimacy(
     )
     if result is None:
         return None
-    answer = _answer(result, "gate")
-    choice = answer.choice if answer else None
-    confidence = answer.confidence if answer else None
-    verdict: IdleLegitimacy | None
-    try:
-        verdict = IdleLegitimacy(choice)
-    except ValueError:
-        verdict = None
+    choice, confidence = _chosen_confidence(result, "gate")
+    verdict = _idle_verdict(choice)
     if verdict is None or confidence is None or confidence < IDLE_LEGITIMACY_FLOOR:
         if mode is PilotMode.SHADOW:
             log_action("idle_legitimacy", mode, choice, "no-op (shadow)", result)
@@ -390,8 +449,44 @@ async def idle_legitimacy(
 # ---------------------------------------------------------------------------
 
 
+def _staleness_answers(
+    result: DecisionResult,
+) -> tuple[float | None, float | None, float | None]:
+    """(noul, confidence, risk_score) off the risk + severity answers."""
+    risk_answer = result.answer("risk")
+    sev_answer = result.answer("severity")
+    return (
+        risk_answer.noul if risk_answer else None,
+        risk_answer.confidence if risk_answer else None,
+        sev_answer.score if sev_answer else None,
+    )
+
+
+def _staleness_hit(noul: float | None, confidence: float | None) -> bool:
+    """True when both the risk noul and its calibration clear the floor."""
+    return (
+        noul is not None
+        and confidence is not None
+        and noul >= BRANCH_STALENESS_FLOOR
+        and confidence >= BRANCH_STALENESS_FLOOR
+    )
+
+
+def _staleness_payload(
+    noul: float | None,
+    confidence: float | None,
+    risk_score: float | None,
+) -> dict[str, Any]:
+    """The advisory envelope the caller may notify the developer with."""
+    return {
+        "noul": noul,
+        "risk_score": round(risk_score) if risk_score is not None else None,
+        "confidence": confidence,
+    }
+
+
 async def branch_staleness(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     base_branch: str,
@@ -414,7 +509,7 @@ async def branch_staleness(
         "ahead": ahead,
         "changed_files": [str(f) for f in changed_files[:20]],
     }
-    questions = {
+    questions: dict[str, DecisionQuestion] = {
         "risk": NoulQuestion(
             instructions=(
                 "The base branch has moved and the new base commits carry "
@@ -441,17 +536,8 @@ async def branch_staleness(
     )
     if result is None:
         return None
-    risk_answer = result.answer("risk")
-    sev_answer = result.answer("severity")
-    noul = risk_answer.noul if risk_answer else None
-    confidence = risk_answer.confidence if risk_answer else None
-    risk_score = sev_answer.score if sev_answer else None
-    confident_hit = (
-        noul is not None
-        and confidence is not None
-        and noul >= BRANCH_STALENESS_FLOOR
-        and confidence >= BRANCH_STALENESS_FLOOR
-    )
+    noul, confidence, risk_score = _staleness_answers(result)
+    confident_hit = _staleness_hit(noul, confidence)
     if mode is PilotMode.SHADOW:
         log_action("branch_staleness", mode, noul, "no-op (shadow)", result)
         return None
@@ -464,11 +550,7 @@ async def branch_staleness(
     )
     if not confident_hit:
         return None
-    return {
-        "noul": noul,
-        "risk_score": round(risk_score) if risk_score is not None else None,
-        "confidence": confidence,
-    }
+    return _staleness_payload(noul, confidence, risk_score)
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +569,41 @@ def _lesson_text(lesson: Any) -> str:
     return str(lesson)
 
 
+def _lesson_questions(capped: list[Any]) -> dict[str, ScoreQuestion]:
+    """One applicability score question per capped lesson."""
+    return {
+        f"lesson_{idx}": ScoreQuestion(
+            instructions=("How applicable is this stored lesson to the task at hand?"),
+            criteria=[
+                "Not applicable: unrelated surface, domain, or failure mode",
+                "Partially applicable: adjacent domain but different context",
+                "Directly applicable: same surface, domain, or failure mode",
+            ],
+        )
+        for idx in range(len(capped))
+    }
+
+
+def _kept_lessons(result: DecisionResult, capped: list[Any]) -> tuple[list[Any], int]:
+    """Split the batch into (kept, pruned) on the applicability floor.
+
+    Normalized 0-1 applicability; below the keep floor (or an unreadable
+    answer never prunes - fail-open keeps the lesson)."""
+    kept: list[Any] = []
+    pruned = 0
+    for idx, lesson in enumerate(capped):
+        answer = result.answer(f"lesson_{idx}")
+        score = answer.score if answer else None
+        applicable = score is not None and (score / 2) >= LESSON_PRUNE_KEEP_FLOOR
+        if applicable:
+            kept.append(lesson)
+        else:
+            pruned += 1
+    return kept, pruned
+
+
 async def lesson_prune(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     lessons: list[Any],
@@ -508,17 +623,7 @@ async def lesson_prune(
     if not capped:
         return None
     texts = [_clip(_lesson_text(lesson), 1200) for lesson in capped]
-    questions = {
-        f"lesson_{idx}": ScoreQuestion(
-            instructions=("How applicable is this stored lesson to the task at hand?"),
-            criteria=[
-                "Not applicable: unrelated surface, domain, or failure mode",
-                "Partially applicable: adjacent domain but different context",
-                "Directly applicable: same surface, domain, or failure mode",
-            ],
-        )
-        for idx in range(len(capped))
-    }
+    questions = _lesson_questions(capped)
     state = {
         "task_id": task_id,
         "task_description": _clip(task_description, 4000),
@@ -531,18 +636,7 @@ async def lesson_prune(
     )
     if result is None:
         return None
-    kept: list[Any] = []
-    pruned = 0
-    for idx, lesson in enumerate(capped):
-        answer = result.answer(f"lesson_{idx}")
-        score = answer.score if answer else None
-        # Normalized 0-1 applicability; below the keep floor (or an
-        # unreadable answer never prunes - fail-open keeps the lesson).
-        applicable = score is not None and (score / 2) >= LESSON_PRUNE_KEEP_FLOOR
-        if applicable:
-            kept.append(lesson)
-        else:
-            pruned += 1
+    kept, pruned = _kept_lessons(result, capped)
     log_action(
         "lesson_prune",
         mode,
@@ -561,7 +655,7 @@ async def lesson_prune(
 
 
 async def assembled_coherence(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     diff: str,
@@ -606,9 +700,7 @@ async def assembled_coherence(
     )
     if result is None:
         return None
-    answer = _answer(result, "gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
+    score, confidence = _score_confidence(result, "gate")
     if score is None or confidence is None or confidence < COHERENCE_SCAFFOLD_FLOOR:
         if mode is PilotMode.SHADOW:
             log_action("assembled_coherence", mode, score, "no-op (shadow)", result)

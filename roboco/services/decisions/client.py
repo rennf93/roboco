@@ -19,9 +19,13 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 import httpx
 import structlog
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from roboco.services.decisions.schemas import (
     DecisionQuestion,
@@ -144,7 +148,7 @@ class DecisionsClient:
         self,
         endpoint: DecisionsEndpoint,
         state: object,
-        questions: dict[str, DecisionQuestion],
+        questions: Mapping[str, DecisionQuestion],
         session_id: str,
     ) -> DecisionResult | None:
         """Ask one batched Decisions question set. ``None`` = no verdict

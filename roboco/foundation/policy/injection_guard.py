@@ -22,8 +22,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # The B2 decisions screen (spec 7.1) is the one deliberate service-layer
 # import in this foundation module: it is fail-CLOSED (a guardrail may
@@ -81,7 +85,9 @@ def detect_injection(text: str) -> str | None:
     return None
 
 
-async def decisions_injection_screen(session, text: str, *, source: str) -> bool:
+async def decisions_injection_screen(
+    session: AsyncSession, text: str, *, source: str
+) -> bool:
     """The Decisions (noul) injection screen the regex-only consumers can
     additionally consult (spec 7.1 row B2, fail-CLOSED posture).
 

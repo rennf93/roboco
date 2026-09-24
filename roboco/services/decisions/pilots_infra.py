@@ -41,6 +41,7 @@ from roboco.services.decisions.pilots import (
 from roboco.services.decisions.schemas import (
     ChoiceQuestion,
     DecisionAnswer,
+    DecisionQuestion,
     DecisionResult,
     NoulQuestion,
     ScoreQuestion,
@@ -48,6 +49,8 @@ from roboco.services.decisions.schemas import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger(__name__)
 
@@ -121,13 +124,71 @@ def _answer(result: DecisionResult, key: str) -> DecisionAnswer | None:
     return result.answer(key)
 
 
+def _chosen(result: DecisionResult, key: str) -> tuple[str | None, float | None]:
+    """(choice, confidence) off one answer; both None without an answer."""
+    answer = _answer(result, key)
+    return (
+        answer.choice if answer else None,
+        answer.confidence if answer else None,
+    )
+
+
+def _noul_confidence(
+    result: DecisionResult, key: str
+) -> tuple[float | None, float | None]:
+    """(noul, confidence) off one answer; both None without an answer."""
+    answer = _answer(result, key)
+    return (
+        answer.noul if answer else None,
+        answer.confidence if answer else None,
+    )
+
+
+def _score_confidence(
+    result: DecisionResult, key: str
+) -> tuple[float | None, float | None]:
+    """(score, confidence) off one answer; both None without an answer."""
+    answer = _answer(result, key)
+    return (
+        answer.score if answer else None,
+        answer.confidence if answer else None,
+    )
+
+
+def _on_confident_gate(
+    mode: PilotMode,
+    verdict: float | None,
+    verdict_floor: float,
+    confidence: float | None,
+    confidence_floor: float,
+) -> bool:
+    """ON-mode gate: both the verdict and its calibration clear their floors."""
+    return bool(
+        mode is PilotMode.ON
+        and verdict is not None
+        and verdict >= verdict_floor
+        and confidence is not None
+        and confidence >= confidence_floor
+    )
+
+
 # ---------------------------------------------------------------------------
 # B2 injection_screen (fail-CLOSED): the noul screen the regex-only
 # consumers can additionally consult.
 # ---------------------------------------------------------------------------
 
 
-async def injection_screen(session, *, text: str, source: str) -> bool:
+def _injection_flagged(noul: float | None, confidence: float | None) -> bool:
+    """ON-mode screen direction: only a confident benign verdict clears.
+
+    A high risk noul flags outright; otherwise the fail-closed posture
+    (spec 5) flags whenever no confident benign verdict exists."""
+    if noul is not None and noul >= INJECTION_NOUL_FLOOR:
+        return True
+    return confidence is None or confidence < INJECTION_CONFIDENCE_FLOOR
+
+
+async def injection_screen(session: AsyncSession, *, text: str, source: str) -> bool:
     """Noul screen: does this external text carry injection or
     social-engineering risk beyond the five regexes?
 
@@ -158,20 +219,12 @@ async def injection_screen(session, *, text: str, source: str) -> bool:
     )
     if result is None:
         return False
-    answer = _answer(result, "gate")
-    noul = answer.noul if answer else None
-    confidence = answer.confidence if answer else None
+    noul, confidence = _noul_confidence(result, "gate")
     if mode is PilotMode.SHADOW:
         flagged = noul is not None and noul >= INJECTION_NOUL_FLOOR
         log_action("injection_screen", mode, flagged, "no-op (shadow)", result)
         return False
-    if noul is not None and noul >= INJECTION_NOUL_FLOOR:
-        flagged = True
-    elif confidence is None or confidence < INJECTION_CONFIDENCE_FLOOR:
-        # Fail-closed: no confident benign verdict means flagged.
-        flagged = True
-    else:
-        flagged = False
+    flagged = _injection_flagged(noul, confidence)
     log_action(
         "injection_screen",
         mode,
@@ -187,16 +240,9 @@ async def injection_screen(session, *, text: str, source: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def collision_edges(session, *, pairs: list[tuple[dict, dict]]) -> list[bool]:
-    """One noul per draft pair: do these two logically conflict beyond
-    file-path overlap? Returns a list of booleans aligned with ``pairs``;
-    True = the caller MAY add an edge (never remove/reorder one). Only an
-    ON-mode verdict clearing both floors yields True; off/shadow/below-floor
-    yields False (no edge). Batched in one call, capped by the caller."""
-    capped = pairs[:12]
-    if not capped:
-        return []
-    questions = {
+def _collision_questions(capped: list[tuple[dict, dict]]) -> dict[str, NoulQuestion]:
+    """One conflict noul per capped draft pair."""
+    return {
         f"pair_{idx}": NoulQuestion(
             instructions=(
                 "These two task drafts logically conflict beyond file-path "
@@ -208,7 +254,11 @@ async def collision_edges(session, *, pairs: list[tuple[dict, dict]]) -> list[bo
         )
         for idx in range(len(capped))
     }
-    state = {
+
+
+def _collision_state(capped: list[tuple[dict, dict]]) -> dict[str, list[dict]]:
+    """Head-capped draft-pair view for the state payload."""
+    return {
         "pairs": [
             {
                 "left": {k: _cap(str(v)) for k, v in left.items() if v},
@@ -217,25 +267,48 @@ async def collision_edges(session, *, pairs: list[tuple[dict, dict]]) -> list[bo
             for left, right in capped
         ]
     }
-    mode, result = await decide_for_pilot(
-        session, "collision_edge", state, questions, session_id="collision:pairs"
-    )
-    if result is None:
-        return [False] * len(capped)
+
+
+def _edge_verdicts(
+    result: DecisionResult, capped: list[tuple[dict, dict]], mode: PilotMode
+) -> list[bool]:
+    """True per pair only when the ON-mode verdict clears both floors."""
     verdicts: list[bool] = []
     for idx in range(len(capped)):
         answer = _answer(result, f"pair_{idx}")
         noul = answer.noul if answer else None
         confidence = answer.confidence if answer else None
         verdicts.append(
-            bool(
-                mode is PilotMode.ON
-                and noul is not None
-                and noul >= COLLISION_EDGE_NOUL_FLOOR
-                and confidence is not None
-                and confidence >= COLLISION_EDGE_CONFIDENCE_FLOOR
+            _on_confident_gate(
+                mode,
+                noul,
+                COLLISION_EDGE_NOUL_FLOOR,
+                confidence,
+                COLLISION_EDGE_CONFIDENCE_FLOOR,
             )
         )
+    return verdicts
+
+
+async def collision_edges(
+    session: AsyncSession, *, pairs: list[tuple[dict, dict]]
+) -> list[bool]:
+    """One noul per draft pair: do these two logically conflict beyond
+    file-path overlap? Returns a list of booleans aligned with ``pairs``;
+    True = the caller MAY add an edge (never remove/reorder one). Only an
+    ON-mode verdict clearing both floors yields True; off/shadow/below-floor
+    yields False (no edge). Batched in one call, capped by the caller."""
+    capped = pairs[:12]
+    if not capped:
+        return []
+    questions = _collision_questions(capped)
+    state = _collision_state(capped)
+    mode, result = await decide_for_pilot(
+        session, "collision_edge", state, questions, session_id="collision:pairs"
+    )
+    if result is None:
+        return [False] * len(capped)
+    verdicts = _edge_verdicts(result, capped, mode)
     log_action(
         "collision_edge",
         mode,
@@ -251,8 +324,43 @@ async def collision_edges(session, *, pairs: list[tuple[dict, dict]]) -> list[bo
 # ---------------------------------------------------------------------------
 
 
+def _ci_answers(
+    result: DecisionResult,
+) -> tuple[str | None, float | None, float | None, float | None]:
+    """(choice, route_confidence, urgency, urgency_confidence), raw."""
+    route_answer = _answer(result, "route")
+    urgency_answer = _answer(result, "urgency")
+    return (
+        route_answer.choice if route_answer else None,
+        route_answer.confidence if route_answer else None,
+        urgency_answer.score if urgency_answer else None,
+        urgency_answer.confidence if urgency_answer else None,
+    )
+
+
+def _confident_route(choice: str | None, route_conf: float | None) -> bool:
+    """The route pick is a known lane at/above the confidence floor."""
+    return (
+        choice in ("project_cell_pm", "main_pm")
+        and route_conf is not None
+        and route_conf >= CI_WATCH_ROUTE_CONFIDENCE_FLOOR
+    )
+
+
+def _urgency_score(urgency: float | None, urgency_conf: float | None) -> int | None:
+    """The clamped 0-2 urgency, only when it cleared the floor."""
+    urgency_ok = (
+        urgency is not None
+        and urgency_conf is not None
+        and urgency_conf >= CI_WATCH_ROUTE_CONFIDENCE_FLOOR
+    )
+    if urgency_ok and urgency is not None:
+        return max(0, min(2, round(urgency)))
+    return None
+
+
 async def ci_watch_route(
-    session, *, project_slug: str, workflow: str, detail: str
+    session: AsyncSession, *, project_slug: str, workflow: str, detail: str
 ) -> tuple[str | None, int | None, bool]:
     """Route one red-CI fix task: ``(choice, urgency_score, confident)``.
 
@@ -267,7 +375,7 @@ async def ci_watch_route(
         "workflow": workflow,
         "ci_failure_detail": _cap(detail),
     }
-    questions = {
+    questions: dict[str, DecisionQuestion] = {
         "route": ChoiceQuestion(
             instructions=(
                 "Who should own the fix task for this red CI run? The "
@@ -306,26 +414,12 @@ async def ci_watch_route(
     )
     if result is None:
         return None, None, False
-    route_answer = _answer(result, "route")
-    urgency_answer = _answer(result, "urgency")
-    choice = route_answer.choice if route_answer else None
-    route_conf = route_answer.confidence if route_answer else None
-    urgency = urgency_answer.score if urgency_answer else None
-    urgency_conf = urgency_answer.confidence if urgency_answer else None
-    confident_route = (
-        choice in ("project_cell_pm", "main_pm")
-        and route_conf is not None
-        and route_conf >= CI_WATCH_ROUTE_CONFIDENCE_FLOOR
-    )
-    urgency_ok = (
-        urgency is not None
-        and urgency_conf is not None
-        and urgency_conf >= CI_WATCH_ROUTE_CONFIDENCE_FLOOR
-    )
-    score = max(0, min(2, round(urgency))) if urgency_ok else None
+    choice, route_conf, urgency, urgency_conf = _ci_answers(result)
+    score = _urgency_score(urgency, urgency_conf)
     if mode is PilotMode.SHADOW:
         log_action("ci_watch_route", mode, (choice, score), "no-op (shadow)", result)
         return None, None, False
+    confident_route = _confident_route(choice, route_conf)
     log_action(
         "ci_watch_route",
         mode,
@@ -347,7 +441,7 @@ SEVERITY_COMPLEXITY_TIERS = ("low", "medium", "high")
 
 
 async def heal_severity(
-    session, *, repo: str, workflow: str, error_excerpt: str
+    session: AsyncSession, *, repo: str, workflow: str, error_excerpt: str
 ) -> int | None:
     """Score the severity/fix-size of one self-heal breach, 0-2, or None
     when off/shadow/below-floor (the caller then keeps MEDIUM as today)."""
@@ -372,9 +466,7 @@ async def heal_severity(
     )
     if result is None:
         return None
-    answer = _answer(result, "gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
+    score, confidence = _score_confidence(result, "gate")
     if (
         score is None
         or confidence is None
@@ -402,8 +494,25 @@ async def heal_severity(
 # ---------------------------------------------------------------------------
 
 
+def _worthy_verdict(
+    mode: PilotMode, score: float | None, confidence: float | None
+) -> bool:
+    """ON-mode acceleration gate: score at/above 1 plus calibration."""
+    return bool(
+        mode is PilotMode.ON
+        and score is not None
+        and round(score) >= RELEASE_WORTHY_MIN_SCORE
+        and confidence is not None
+        and confidence >= RELEASE_WORTHY_CONFIDENCE_FLOOR
+    )
+
+
 async def release_worthy_urgent(
-    session, *, change_summary: Sequence[str], bump_kind: str, commit_floor: int
+    session: AsyncSession,
+    *,
+    change_summary: Sequence[str],
+    bump_kind: str,
+    commit_floor: int,
 ) -> bool:
     """True only when an ON-mode confident verdict says the change set is
     release-worthy despite sitting below the deterministic threshold. The
@@ -436,16 +545,8 @@ async def release_worthy_urgent(
     )
     if result is None:
         return False
-    answer = _answer(result, "gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
-    verdict = bool(
-        mode is PilotMode.ON
-        and score is not None
-        and round(score) >= RELEASE_WORTHY_MIN_SCORE
-        and confidence is not None
-        and confidence >= RELEASE_WORTHY_CONFIDENCE_FLOOR
-    )
+    score, confidence = _score_confidence(result, "gate")
+    verdict = _worthy_verdict(mode, score, confidence)
     log_action(
         "release_worthy",
         mode,
@@ -462,7 +563,7 @@ async def release_worthy_urgent(
 
 
 async def second_review_high_stakes(
-    session,
+    session: AsyncSession,
     *,
     title: str,
     description: str,
@@ -503,15 +604,13 @@ async def second_review_high_stakes(
     )
     if result is None:
         return False
-    answer = _answer(result, "gate")
-    noul = answer.noul if answer else None
-    confidence = answer.confidence if answer else None
-    verdict = bool(
-        mode is PilotMode.ON
-        and noul is not None
-        and noul >= SECOND_REVIEW_NOUL_FLOOR
-        and confidence is not None
-        and confidence >= SECOND_REVIEW_CONFIDENCE_FLOOR
+    noul, confidence = _noul_confidence(result, "gate")
+    verdict = _on_confident_gate(
+        mode,
+        noul,
+        SECOND_REVIEW_NOUL_FLOOR,
+        confidence,
+        SECOND_REVIEW_CONFIDENCE_FLOOR,
     )
     log_action(
         "second_review_eligibility",
@@ -529,7 +628,7 @@ async def second_review_high_stakes(
 
 
 async def semantic_duplicate(
-    session,
+    session: AsyncSession,
     *,
     new_subject: str,
     new_body: str,
@@ -567,15 +666,13 @@ async def semantic_duplicate(
     )
     if result is None:
         return False
-    answer = _answer(result, "gate")
-    noul = answer.noul if answer else None
-    confidence = answer.confidence if answer else None
-    verdict = bool(
-        mode is PilotMode.ON
-        and noul is not None
-        and noul >= NOTIFY_DEDUP_NOUL_FLOOR
-        and confidence is not None
-        and confidence >= NOTIFY_DEDUP_CONFIDENCE_FLOOR
+    noul, confidence = _noul_confidence(result, "gate")
+    verdict = _on_confident_gate(
+        mode,
+        noul,
+        NOTIFY_DEDUP_NOUL_FLOOR,
+        confidence,
+        NOTIFY_DEDUP_CONFIDENCE_FLOOR,
     )
     log_action(
         "notify_dedup",
@@ -593,7 +690,11 @@ async def semantic_duplicate(
 
 
 async def board_due_early(
-    session, *, program_key: str, last_opened_at: str | None, cron_seconds: int | None
+    session: AsyncSession,
+    *,
+    program_key: str,
+    last_opened_at: str | None,
+    cron_seconds: int | None,
 ) -> bool:
     """Noul: is this program due early this tick? True = the caller may
     open a cycle off-schedule (never later than its cron would). Only an
@@ -617,15 +718,13 @@ async def board_due_early(
     )
     if result is None:
         return False
-    answer = _answer(result, "gate")
-    noul = answer.noul if answer else None
-    confidence = answer.confidence if answer else None
-    verdict = bool(
-        mode is PilotMode.ON
-        and noul is not None
-        and noul >= BOARD_DUE_EARLY_NOUL_FLOOR
-        and confidence is not None
-        and confidence >= BOARD_DUE_EARLY_CONFIDENCE_FLOOR
+    noul, confidence = _noul_confidence(result, "gate")
+    verdict = _on_confident_gate(
+        mode,
+        noul,
+        BOARD_DUE_EARLY_NOUL_FLOOR,
+        confidence,
+        BOARD_DUE_EARLY_CONFIDENCE_FLOOR,
     )
     log_action(
         "board_due_early",
@@ -637,8 +736,26 @@ async def board_due_early(
     return verdict
 
 
+def _rotation_verdict(
+    mode: PilotMode,
+    choice: str | None,
+    confidence: float | None,
+    project_slugs: Sequence[str],
+) -> int | None:
+    """The chosen index only for an ON-mode confident, valid pick."""
+    if (
+        mode is PilotMode.ON
+        and choice is not None
+        and choice in project_slugs
+        and confidence is not None
+        and confidence >= BOARD_ROTATION_CONFIDENCE_FLOOR
+    ):
+        return list(project_slugs).index(choice)
+    return None
+
+
 async def board_rotation_target(
-    session,
+    session: AsyncSession,
     *,
     program_key: str,
     project_slugs: Sequence[str],
@@ -676,14 +793,7 @@ async def board_rotation_target(
     answer = _answer(result, "gate")
     choice = answer.choice if answer else None
     confidence = answer.confidence if answer else None
-    verdict: int | None = None
-    if (
-        mode is PilotMode.ON
-        and choice in project_slugs
-        and confidence is not None
-        and confidence >= BOARD_ROTATION_CONFIDENCE_FLOOR
-    ):
-        verdict = list(project_slugs).index(choice)
+    verdict = _rotation_verdict(mode, choice, confidence, project_slugs)
     action = (
         f"rotation target index {verdict}"
         if verdict is not None
@@ -704,8 +814,35 @@ async def board_rotation_target(
 # ---------------------------------------------------------------------------
 
 
+def _stranded_verdict(
+    mode: PilotMode, choice: str | None, confidence: float | None
+) -> str | None:
+    """The lane only when ON and the pick is a known lane at/above the floor."""
+    return (
+        choice
+        if mode is PilotMode.ON
+        and choice in ("escalate", "respawn", "wait")
+        and confidence is not None
+        and confidence >= STRANDED_LANE_CONFIDENCE_FLOOR
+        else None
+    )
+
+
+def _coroner_verdict(
+    mode: PilotMode, score: float | None, confidence: float | None
+) -> bool:
+    """ON-mode postmortem gate: score at/above 1 plus calibration."""
+    return bool(
+        mode is PilotMode.ON
+        and score is not None
+        and round(score) >= CORONER_GATE_MIN_SCORE
+        and confidence is not None
+        and confidence >= CORONER_GATE_CONFIDENCE_FLOOR
+    )
+
+
 async def stranded_lane(
-    session, *, task_titles: Sequence[str], threshold_minutes: int
+    session: AsyncSession, *, task_titles: Sequence[str], threshold_minutes: int
 ) -> str | None:
     """ChoiceQuestion: escalate / respawn / wait for the stranded batch.
     Returns the lane only when ON + confident; None = observation as
@@ -743,17 +880,8 @@ async def stranded_lane(
     )
     if result is None:
         return None
-    answer = _answer(result, "gate")
-    choice = answer.choice if answer else None
-    confidence = answer.confidence if answer else None
-    verdict = (
-        choice
-        if mode is PilotMode.ON
-        and choice in ("escalate", "respawn", "wait")
-        and confidence is not None
-        and confidence >= STRANDED_LANE_CONFIDENCE_FLOOR
-        else None
-    )
+    choice, confidence = _chosen(result, "gate")
+    verdict = _stranded_verdict(mode, choice, confidence)
     log_action(
         "stranded_response",
         mode,
@@ -770,7 +898,7 @@ async def stranded_lane(
 
 
 async def coroner_postmortem_warranted(
-    session, *, incident_title: str, kind: str, context: str
+    session: AsyncSession, *, incident_title: str, kind: str, context: str
 ) -> bool:
     """Score: is a postmortem warranted for this incident even though the
     fixed hooks (3+ bounces, cancel-after-start, budget breach) did not
@@ -796,16 +924,8 @@ async def coroner_postmortem_warranted(
     )
     if result is None:
         return False
-    answer = _answer(result, "gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
-    verdict = bool(
-        mode is PilotMode.ON
-        and score is not None
-        and round(score) >= CORONER_GATE_MIN_SCORE
-        and confidence is not None
-        and confidence >= CORONER_GATE_CONFIDENCE_FLOOR
-    )
+    score, confidence = _score_confidence(result, "gate")
+    verdict = _coroner_verdict(mode, score, confidence)
     log_action(
         "coroner_gate",
         mode,
@@ -833,7 +953,7 @@ DEP_UPDATE_RISK_NOTES = (
 
 
 async def dep_update_risk(
-    session, *, project_slug: str, command: str
+    session: AsyncSession, *, project_slug: str, command: str
 ) -> tuple[int | None, bool]:
     """Score the upgrade risk 0-2 for one dep-update task, plus whether
     the verdict is applicable. ``(None, False)`` = today exactly. Purely
@@ -862,9 +982,7 @@ async def dep_update_risk(
     )
     if result is None:
         return None, False
-    answer = _answer(result, "gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
+    score, confidence = _score_confidence(result, "gate")
     if mode is PilotMode.SHADOW and score is not None:
         log_action("dep_update_risk", mode, score, "no-op (shadow)", result)
     if (
@@ -890,7 +1008,11 @@ RELEASE_RISK_LABELS = ("low", "elevated", "high")
 
 
 async def release_risk_advisory(
-    session, *, change_summary: Sequence[str], bump_kind: str, gap_count: int
+    session: AsyncSession,
+    *,
+    change_summary: Sequence[str],
+    bump_kind: str,
+    gap_count: int,
 ) -> str | None:
     """Score the overall release risk 0-2 and render the advisory line,
     or None when off/shadow/below-floor (output unchanged). ADVISORY ONLY:
@@ -921,9 +1043,7 @@ async def release_risk_advisory(
     )
     if result is None:
         return None
-    answer = _answer(result, "gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
+    score, confidence = _score_confidence(result, "gate")
     if mode is PilotMode.SHADOW and score is not None:
         log_action("release_readiness", mode, score, "no-op (shadow)", result)
     if (

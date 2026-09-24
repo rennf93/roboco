@@ -16,6 +16,7 @@ settings rows read ``decisions.pilot.<slug>``.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -26,11 +27,35 @@ from roboco.services.decisions.pilots import (
 )
 from roboco.services.decisions.schemas import (
     ChoiceQuestion,
+    DecisionAnswer,
+    DecisionQuestion,
+    DecisionResult,
     NoulQuestion,
     ScoreQuestion,
 )
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 logger = structlog.get_logger(__name__)
+
+
+def _chosen(result: DecisionResult, key: str) -> tuple[str | None, float | None]:
+    """(choice, confidence) off one answer; both None without an answer."""
+    answer = result.answer(key)
+    return (
+        answer.choice if answer else None,
+        answer.confidence if answer else None,
+    )
+
+
+def _scored(result: DecisionResult, key: str) -> tuple[float | None, float | None]:
+    """(score, confidence) off one answer; both None without an answer."""
+    answer = result.answer(key)
+    return (
+        answer.score if answer else None,
+        answer.confidence if answer else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -51,8 +76,58 @@ EXTERNAL_PR_INJECTION_CONFIDENCE_FLOOR = 0.7
 EXTERNAL_PR_INJECTION_NOUL = 0.5
 
 
+def _extpr_state(project_slug: str, pr: dict, review_kind: str) -> dict:
+    """Head-capped PR view for the state payload."""
+    return {
+        "project_slug": project_slug,
+        "review_kind": review_kind,
+        "title": str(pr.get("title") or ""),
+        "body_excerpt": str(pr.get("body") or "")[:1500],
+        "author": str(pr.get("user_login") or ""),
+        "author_association": str(pr.get("author_association") or ""),
+        "is_fork": bool(pr.get("is_fork")),
+    }
+
+
+def _extpr_injection_on(answer: DecisionAnswer | None) -> bool:
+    """FAIL-CLOSED: no answer, no confidence, or below-floor confidence
+    is a flag. Only a confident, above-floor noul can speak."""
+    if (
+        answer is None
+        or answer.confidence is None
+        or answer.confidence < EXTERNAL_PR_INJECTION_CONFIDENCE_FLOOR
+    ):
+        return True
+    return (answer.noul or 0.0) >= EXTERNAL_PR_INJECTION_NOUL
+
+
+def _extpr_injection_off(answer: DecisionAnswer | None) -> bool:
+    """Baseline direction: flag only on a confident above-floor noul."""
+    noul = answer.noul if answer else None
+    confidence = answer.confidence if answer else None
+    return bool(
+        noul is not None
+        and noul >= EXTERNAL_PR_INJECTION_NOUL
+        and confidence is not None
+        and confidence >= EXTERNAL_PR_INJECTION_CONFIDENCE_FLOOR
+    )
+
+
+def _extpr_priority(answer: DecisionAnswer | None) -> int | None:
+    """The clamped 0-2 priority, None below the confidence floor."""
+    priority = answer.score if answer else None
+    p_confidence = answer.confidence if answer else None
+    if (
+        priority is None
+        or p_confidence is None
+        or p_confidence < EXTERNAL_PR_PRIORITY_FLOOR
+    ):
+        return None
+    return max(0, min(2, round(priority)))
+
+
 async def external_pr_triage(
-    session,
+    session: AsyncSession,
     *,
     project_slug: str,
     pr: dict,
@@ -69,16 +144,8 @@ async def external_pr_triage(
     ON, a missing answer, missing confidence, or below-floor confidence
     all count as flagged. Shadow mode flags nothing (acts as off).
     """
-    state = {
-        "project_slug": project_slug,
-        "review_kind": review_kind,
-        "title": str(pr.get("title") or ""),
-        "body_excerpt": str(pr.get("body") or "")[:1500],
-        "author": str(pr.get("user_login") or ""),
-        "author_association": str(pr.get("author_association") or ""),
-        "is_fork": bool(pr.get("is_fork")),
-    }
-    questions = {
+    state = _extpr_state(project_slug, pr, review_kind)
+    questions: dict[str, DecisionQuestion] = {
         "priority": ScoreQuestion(
             instructions=(
                 "How high should this inbound PR sit in the review queue "
@@ -110,37 +177,12 @@ async def external_pr_triage(
         # unreachable classifier is the fail-closed direction: flag.
         return None, mode is PilotMode.ON
     answer = result.answer("injection")
-    if mode is PilotMode.ON:
-        # FAIL-CLOSED: no answer, no confidence, or below-floor confidence
-        # is a flag. Only a confident, above-floor noul can speak.
-        if (
-            answer is None
-            or answer.confidence is None
-            or answer.confidence < EXTERNAL_PR_INJECTION_CONFIDENCE_FLOOR
-        ):
-            flagged = True
-        else:
-            flagged = (answer.noul or 0.0) >= EXTERNAL_PR_INJECTION_NOUL
-    else:
-        noul = answer.noul if answer else None
-        confidence = answer.confidence if answer else None
-        flagged = bool(
-            noul is not None
-            and noul >= EXTERNAL_PR_INJECTION_NOUL
-            and confidence is not None
-            and confidence >= EXTERNAL_PR_INJECTION_CONFIDENCE_FLOOR
-        )
-    p_answer = result.answer("priority")
-    priority = p_answer.score if p_answer else None
-    p_confidence = p_answer.confidence if p_answer else None
-    if (
-        priority is None
-        or p_confidence is None
-        or p_confidence < EXTERNAL_PR_PRIORITY_FLOOR
-    ):
-        priority_verdict: int | None = None
-    else:
-        priority_verdict = max(0, min(2, round(priority)))
+    flagged = (
+        _extpr_injection_on(answer)
+        if mode is PilotMode.ON
+        else _extpr_injection_off(answer)
+    )
+    priority_verdict = _extpr_priority(result.answer("priority"))
     if mode is PilotMode.SHADOW:
         log_action(
             EXTERNAL_PR_SLUG,
@@ -173,7 +215,7 @@ IDLE_REAP_MAX_ASKS_PER_TICK = 8
 
 
 async def idle_abandonment_verdicts(
-    session,
+    session: AsyncSession,
     *,
     sessions: list[dict],
 ) -> list[bool] | None:
@@ -239,8 +281,45 @@ CONTEXT_PRUNE_IRRELEVANT_NOUL = 0.3
 CONTEXT_PRUNE_MAX_ENTRIES = 20
 
 
+def _context_questions(
+    capped: list[str], workflow_state: str
+) -> dict[str, NoulQuestion]:
+    """One relevance noul per capped task-detail entry."""
+    return {
+        f"entry_{idx}": NoulQuestion(
+            instructions=(
+                "This task-detail entry is still relevant to the agent's "
+                "CURRENT step (the workflow state is "
+                f"{workflow_state}) and its loss would mislead the agent."
+            )
+        )
+        for idx in range(len(capped))
+    }
+
+
+def _context_keeps(result: DecisionResult, capped: list[str]) -> list[bool]:
+    """True per entry unless it is a confidently-irrelevant drop."""
+    keeps: list[bool] = []
+    for idx in range(len(capped)):
+        answer = result.answer(f"entry_{idx}")
+        noul = answer.noul if answer else None
+        confidence = answer.confidence if answer else None
+        drop = bool(
+            noul is not None
+            and noul <= CONTEXT_PRUNE_IRRELEVANT_NOUL
+            and confidence is not None
+            and confidence >= CONTEXT_PRUNE_DROP_CONFIDENCE_FLOOR
+        )
+        keeps.append(not drop)
+    return keeps
+
+
+def _dropped_count(keeps: list[bool]) -> int:
+    return sum(1 for k in keeps if not k)
+
+
 async def context_relevance_verdicts(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     entries: list[str],
@@ -258,16 +337,7 @@ async def context_relevance_verdicts(
     capped = entries[:CONTEXT_PRUNE_MAX_ENTRIES]
     if not capped:
         return []
-    questions = {
-        f"entry_{idx}": NoulQuestion(
-            instructions=(
-                "This task-detail entry is still relevant to the agent's "
-                "CURRENT step (the workflow state is "
-                f"{workflow_state}) and its loss would mislead the agent."
-            )
-        )
-        for idx in range(len(capped))
-    }
+    questions = _context_questions(capped, workflow_state)
     mode, result = await decide_for_pilot(
         session,
         CONTEXT_PRUNING_SLUG,
@@ -277,22 +347,11 @@ async def context_relevance_verdicts(
     )
     if result is None:
         return None
-    keeps: list[bool] = []
-    for idx in range(len(capped)):
-        answer = result.answer(f"entry_{idx}")
-        noul = answer.noul if answer else None
-        confidence = answer.confidence if answer else None
-        drop = bool(
-            noul is not None
-            and noul <= CONTEXT_PRUNE_IRRELEVANT_NOUL
-            and confidence is not None
-            and confidence >= CONTEXT_PRUNE_DROP_CONFIDENCE_FLOOR
-        )
-        keeps.append(not drop)
+    keeps = _context_keeps(result, capped)
     log_action(
         CONTEXT_PRUNING_SLUG,
         mode,
-        f"{sum(1 for k in keeps if not k)}/{len(keeps)} dropped",
+        f"{_dropped_count(keeps)}/{len(keeps)} dropped",
         "prune low-value context" if mode is PilotMode.ON else "no-op (shadow)",
         result,
     )
@@ -320,7 +379,7 @@ class BudgetWrapup(StrEnum):
 
 
 async def budget_wrapup_choice(
-    session,
+    session: AsyncSession,
     *,
     agent_id: str,
     task_id: str | None,
@@ -383,7 +442,9 @@ async def budget_wrapup_choice(
     choice = answer.choice if answer else None
     confidence = answer.confidence if answer else None
     try:
-        verdict = BudgetWrapup(choice)
+        verdict = (
+            BudgetWrapup(choice) if choice is not None else BudgetWrapup.PUSH_TO_FINISH
+        )
     except ValueError:
         verdict = BudgetWrapup.PUSH_TO_FINISH
     if verdict is not BudgetWrapup.PUSH_TO_FINISH and (
@@ -416,8 +477,34 @@ class DeltaBriefMode(StrEnum):
     WORK_ALREADY_DONE_BRIEF = "work-already-done-brief"
 
 
+def _delta_verdict(choice: str | None) -> DeltaBriefMode:
+    """The parsed briefing shape, fresh-start when absent/unparseable."""
+    try:
+        return (
+            DeltaBriefMode(choice)
+            if choice is not None
+            else DeltaBriefMode.FRESH_START_BRIEF
+        )
+    except ValueError:
+        return DeltaBriefMode.FRESH_START_BRIEF
+
+
+def _delta_depth(result: DecisionResult) -> int | None:
+    """The clamped 0-3 depth, only when it cleared the floor."""
+    depth_answer = result.answer("depth")
+    depth = depth_answer.score if depth_answer else None
+    depth_confidence = depth_answer.confidence if depth_answer else None
+    if (
+        depth is not None
+        and depth_confidence is not None
+        and depth_confidence >= (DELTA_BRIEF_CONFIDENCE_FLOOR)
+    ):
+        return max(0, min(3, round(depth)))
+    return None
+
+
 async def delta_brief(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     trigger: str,
@@ -433,7 +520,7 @@ async def delta_brief(
     (caller renders today's briefing exactly).
     """
     state = {"task_id": task_id, "trigger": trigger, **task_state}
-    questions = {
+    questions: dict[str, DecisionQuestion] = {
         "gate": ChoiceQuestion(
             instructions=(
                 "This agent was respawned/resumed onto work it (or a prior "
@@ -474,23 +561,9 @@ async def delta_brief(
     )
     if result is None:
         return None
-    answer = result.answer("gate")
-    choice = answer.choice if answer else None
-    confidence = answer.confidence if answer else None
-    try:
-        verdict = DeltaBriefMode(choice)
-    except ValueError:
-        verdict = DeltaBriefMode.FRESH_START_BRIEF
-    depth_answer = result.answer("depth")
-    depth = depth_answer.score if depth_answer else None
-    depth_confidence = depth_answer.confidence if depth_answer else None
-    depth_verdict: int | None = None
-    if (
-        depth is not None
-        and depth_confidence is not None
-        and depth_confidence >= (DELTA_BRIEF_CONFIDENCE_FLOOR)
-    ):
-        depth_verdict = max(0, min(3, round(depth)))
+    choice, confidence = _chosen(result, "gate")
+    verdict = _delta_verdict(choice)
+    depth_verdict = _delta_depth(result)
     if confidence is None or confidence < DELTA_BRIEF_CONFIDENCE_FLOOR:
         if mode is PilotMode.SHADOW:
             log_action(DELTA_BRIEF_SLUG, mode, choice, "no-op (shadow)", result)
@@ -519,23 +592,8 @@ REVIEW_DEPTH_FLOOR = 0.7
 REVIEW_QUEUE_MAX_BATCH = 12
 
 
-async def review_queue_verdicts(
-    session,
-    *,
-    tasks: list[dict],
-) -> list[tuple[int | None, int | None]] | None:
-    """Batched review-priority + review-depth verdicts for the QA queue.
-
-    Returns a list aligned with ``tasks`` of ``(priority, depth)`` -
-    priority is the 0-2 risk x staleness x blast radius ordinal used to
-    ORDER the queue, depth the 0-3 review-depth directive injected into
-    the QA prompt. Either is ``None`` below its confidence floor.
-    ``None`` overall when no verdict. Reorders and informs only: it never
-    decides verdicts and never touches gate lockout.
-    """
-    capped = tasks[:REVIEW_QUEUE_MAX_BATCH]
-    if not capped:
-        return []
+def _review_questions(capped: list[dict]) -> dict:
+    """One priority + one depth score question per capped task."""
     questions: dict = {}
     for idx, _task in enumerate(capped):
         questions[f"t{idx}_priority"] = ScoreQuestion(
@@ -558,21 +616,73 @@ async def review_queue_verdicts(
                 "Forensic: bounced repeatedly / high stakes - full sweep",
             ],
         )
+    return questions
+
+
+def _review_state(capped: list[dict]) -> dict:
+    """Head-capped task view for the state payload."""
+    return {
+        "tasks": [
+            {
+                "id": str(t.get("id") or ""),
+                "title": t.get("title"),
+                "team": t.get("team"),
+                "status": t.get("status"),
+                "updated_at": str(t.get("updated_at") or ""),
+            }
+            for t in capped
+        ]
+    }
+
+
+def _review_directive(
+    answer: DecisionAnswer | None,
+    floor: float,
+    cap: int,
+) -> int | None:
+    """The clamped score, only when the answer cleared the floor."""
+    if (
+        answer
+        and answer.score is not None
+        and answer.confidence is not None
+        and answer.confidence >= floor
+    ):
+        return max(0, min(cap, round(answer.score)))
+    return None
+
+
+def _review_pair(result: DecisionResult, idx: int) -> tuple[int | None, int | None]:
+    """(priority, depth) directives for one capped task."""
+    p_answer = result.answer(f"t{idx}_priority")
+    d_answer = result.answer(f"t{idx}_depth")
+    return (
+        _review_directive(p_answer, REVIEW_PRIORITY_FLOOR, 2),
+        _review_directive(d_answer, REVIEW_DEPTH_FLOOR, 3),
+    )
+
+
+async def review_queue_verdicts(
+    session: AsyncSession,
+    *,
+    tasks: list[dict],
+) -> list[tuple[int | None, int | None]] | None:
+    """Batched review-priority + review-depth verdicts for the QA queue.
+
+    Returns a list aligned with ``tasks`` of ``(priority, depth)`` -
+    priority is the 0-2 risk x staleness x blast radius ordinal used to
+    ORDER the queue, depth the 0-3 review-depth directive injected into
+    the QA prompt. Either is ``None`` below its confidence floor.
+    ``None`` overall when no verdict. Reorders and informs only: it never
+    decides verdicts and never touches gate lockout.
+    """
+    capped = tasks[:REVIEW_QUEUE_MAX_BATCH]
+    if not capped:
+        return []
+    questions = _review_questions(capped)
     mode, result = await decide_for_pilot(
         session,
         REVIEW_QUEUE_SLUG,
-        {
-            "tasks": [
-                {
-                    "id": str(t.get("id") or ""),
-                    "title": t.get("title"),
-                    "team": t.get("team"),
-                    "status": t.get("status"),
-                    "updated_at": str(t.get("updated_at") or ""),
-                }
-                for t in capped
-            ]
-        },
+        _review_state(capped),
         questions,
         session_id=f"qapri:{len(capped)}",
     )
@@ -580,25 +690,7 @@ async def review_queue_verdicts(
         return None
     verdicts: list[tuple[int | None, int | None]] = []
     for idx, _task in enumerate(capped):
-        p_answer = result.answer(f"t{idx}_priority")
-        d_answer = result.answer(f"t{idx}_depth")
-        priority: int | None = None
-        depth: int | None = None
-        if (
-            p_answer
-            and p_answer.score is not None
-            and p_answer.confidence is not None
-            and p_answer.confidence >= REVIEW_PRIORITY_FLOOR
-        ):
-            priority = max(0, min(2, round(p_answer.score)))
-        if (
-            d_answer
-            and d_answer.score is not None
-            and d_answer.confidence is not None
-            and d_answer.confidence >= REVIEW_DEPTH_FLOOR
-        ):
-            depth = max(0, min(3, round(d_answer.score)))
-        verdicts.append((priority, depth))
+        verdicts.append(_review_pair(result, idx))
     log_action(
         REVIEW_QUEUE_SLUG,
         mode,
@@ -624,7 +716,7 @@ BOARD_EVIDENCE_SKIP_NOUL_FLOOR = 0.85
 
 
 async def board_evidence_skip(
-    session,
+    session: AsyncSession,
     *,
     program: str,
     evidence_context: str,
@@ -692,7 +784,7 @@ class RespawnVerdict(StrEnum):
 
 
 async def respawn_verdict(
-    session,
+    session: AsyncSession,
     *,
     agent_slug: str,
     task_id: str,
@@ -754,7 +846,7 @@ async def respawn_verdict(
     choice = answer.choice if answer else None
     confidence = answer.confidence if answer else None
     try:
-        verdict = RespawnVerdict(choice)
+        verdict = RespawnVerdict(choice) if choice is not None else RespawnVerdict.SPAWN
     except ValueError:
         verdict = RespawnVerdict.SPAWN
     if verdict is not RespawnVerdict.SPAWN and (
@@ -784,7 +876,7 @@ SUBMIT_NOW_CONFIDENCE_FLOOR = 0.8
 
 
 async def submit_now_confidence(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     task_state: dict,
@@ -869,8 +961,16 @@ _CAUSE_LINES = {
 }
 
 
+def _park_verdict(choice: str) -> ParkCause | None:
+    """The parsed cause, None when the choice names no known cause."""
+    try:
+        return ParkCause(choice)
+    except ValueError:
+        return None
+
+
 async def park_cause(
-    session,
+    session: AsyncSession,
     *,
     agent_id: str,
     task_id: str | None,
@@ -919,12 +1019,11 @@ async def park_cause(
     )
     if result is None:
         return None
-    answer = result.answer("gate")
-    choice = answer.choice if answer else None
-    confidence = answer.confidence if answer else None
-    try:
-        verdict = ParkCause(choice)
-    except ValueError:
+    choice, confidence = _chosen(result, "gate")
+    if choice is None:
+        return None
+    verdict = _park_verdict(choice)
+    if verdict is None:
         return None
     if confidence is None or confidence < PARK_CAUSE_CONFIDENCE_FLOOR:
         if mode is PilotMode.SHADOW:
@@ -947,8 +1046,23 @@ PM_CLOSURE_SLUG = "pm_closure_confidence"
 PM_CLOSURE_CONFIDENCE_FLOOR = 0.7
 
 
+def _closure_line(verdict: int | None, confidence: float | None) -> str | None:
+    """The advisory injection line, only at/above the confidence floor."""
+    if (
+        verdict is not None
+        and confidence is not None
+        and confidence >= (PM_CLOSURE_CONFIDENCE_FLOOR)
+    ):
+        return (
+            f"System advisory: closure-safety signal scores this closure "
+            f"{verdict}/2 (0 risky, 2 safe). The submit gates below are "
+            "unchanged and remain authoritative."
+        )
+    return None
+
+
 async def closure_safety(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     team: str | None,
@@ -991,23 +1105,11 @@ async def closure_safety(
     )
     if result is None:
         return None, None
-    answer = result.answer("gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
+    score, confidence = _scored(result, "gate")
     verdict: int | None = None
     if score is not None:
         verdict = max(0, min(2, round(score)))
-    line: str | None = None
-    if (
-        verdict is not None
-        and confidence is not None
-        and confidence >= (PM_CLOSURE_CONFIDENCE_FLOOR)
-    ):
-        line = (
-            f"System advisory: closure-safety signal scores this closure "
-            f"{verdict}/2 (0 risky, 2 safe). The submit gates below are "
-            "unchanged and remain authoritative."
-        )
+    line = _closure_line(verdict, confidence)
     # Logged ALWAYS while ON (and in shadow): the shadow data is the point.
     log_action(
         PM_CLOSURE_SLUG,
@@ -1044,7 +1146,7 @@ class SilentExitPickup(StrEnum):
 
 
 async def silent_exit_pickup(
-    session,
+    session: AsyncSession,
     *,
     agent_id: str,
     task_id: str | None,

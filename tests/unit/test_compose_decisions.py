@@ -45,15 +45,17 @@ _DECISIONS_ENV_KEYS = (
 
 
 def _load(name: str) -> dict[str, Any]:
-    return yaml.safe_load((_REPO_ROOT / name).read_text())
+    data: dict[str, Any] = yaml.safe_load((_REPO_ROOT / name).read_text())
+    return data
 
 
 def _sidecar_service(compose: dict[str, Any], name: str) -> dict[str, Any]:
     """Find the decisions service by container_name (the service key may differ
     from the container name, like video-renderer/roboco-video-renderer)."""
     for service in compose["services"].values():
-        if service.get("container_name") == _SIDECAR_CONTAINER:
-            return service
+        svc: dict[str, Any] = service
+        if svc.get("container_name") == _SIDECAR_CONTAINER:
+            return svc
     raise AssertionError(f"{name}: no service with container_name {_SIDECAR_CONTAINER}")
 
 

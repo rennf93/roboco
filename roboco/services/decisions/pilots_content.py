@@ -343,34 +343,21 @@ def _segment_criteria() -> dict[str, str]:
     }
 
 
-async def segment_classify(
-    session: Any, *, segments: list[str]
-) -> list[tuple[str, float] | None]:
-    """Batched segment classification: one ChoiceQuestion per segment,
-    one Decisions request for the whole buffer. Returns a list aligned
-    with ``segments``; a ``None`` entry (or a ``None`` list) means that
-    segment keeps today's regex result. The caller skips its full-LLM
-    fallback only when every segment came back confident."""
-    if not segments:
-        return []
-    capped = [s[:1500] for s in segments[:_MAX_BATCHED_QUESTIONS]]
-    questions: dict[str, DecisionQuestion] = {
+def _segment_questions(capped: list[str]) -> dict[str, DecisionQuestion]:
+    """One type-choice question per capped segment."""
+    return {
         f"seg_{idx}": ChoiceQuestion(
             instructions="What type of message is this segment?",
             criteria=_segment_criteria(),
         )
         for idx in range(len(capped))
     }
-    state = {"segments": capped}
-    mode, result = await decide_for_pilot(
-        session,
-        "segment_classify",
-        state,
-        questions,
-        session_id=f"segments:{len(capped)}",
-    )
-    if result is None:
-        return []
+
+
+def _segment_verdicts(
+    result: DecisionResult, capped: list[str]
+) -> tuple[list[tuple[str, float] | None], int]:
+    """(verdicts, confident count) over the capped segment batch."""
     verdicts: list[tuple[str, float] | None] = []
     confident = 0
     for idx in range(len(capped)):
@@ -386,17 +373,50 @@ async def segment_classify(
             verdicts.append((str(choice), confidence))
         else:
             verdicts.append(None)
+    return verdicts, confident
+
+
+def _segment_action(mode: PilotMode, confident: int, total: int) -> str:
+    """The audit action line for the batch."""
+    return (
+        (
+            "replace regex, skip full-LLM fallback"
+            if confident == total
+            else "partial; regex + fallback as today"
+        )
+        if mode is PilotMode.ON
+        else "no-op (shadow)"
+    )
+
+
+async def segment_classify(
+    session: Any, *, segments: list[str]
+) -> list[tuple[str, float] | None]:
+    """Batched segment classification: one ChoiceQuestion per segment,
+    one Decisions request for the whole buffer. Returns a list aligned
+    with ``segments``; a ``None`` entry (or a ``None`` list) means that
+    segment keeps today's regex result. The caller skips its full-LLM
+    fallback only when every segment came back confident."""
+    if not segments:
+        return []
+    capped = [s[:1500] for s in segments[:_MAX_BATCHED_QUESTIONS]]
+    questions = _segment_questions(capped)
+    state = {"segments": capped}
+    mode, result = await decide_for_pilot(
+        session,
+        "segment_classify",
+        state,
+        questions,
+        session_id=f"segments:{len(capped)}",
+    )
+    if result is None:
+        return []
+    verdicts, confident = _segment_verdicts(result, capped)
     log_action(
         "segment_classify",
         mode,
         f"{confident}/{len(capped)} confident",
-        (
-            "replace regex, skip full-LLM fallback"
-            if confident == len(capped)
-            else "partial; regex + fallback as today"
-        )
-        if mode is PilotMode.ON
-        else "no-op (shadow)",
+        _segment_action(mode, confident, len(capped)),
         result,
     )
     if mode is not PilotMode.ON:

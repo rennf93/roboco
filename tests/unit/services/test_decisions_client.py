@@ -2,6 +2,9 @@
 error envelope, timeout, malformed payload, low confidence, circuit open,
 and the client-side token caps (spec section 9)."""
 
+from collections.abc import Callable
+from typing import cast
+
 import httpx
 import pytest
 import roboco.config as cfg
@@ -11,7 +14,12 @@ from roboco.services.decisions.client import (
     cap_state,
     cap_text,
 )
-from roboco.services.decisions.schemas import NoulQuestion
+from roboco.services.decisions.schemas import DecisionResult, NoulQuestion
+
+
+def _note_spend_noop(tier: str, cost: float | None) -> None:
+    return None
+
 
 _LAYA = DecisionsEndpoint(
     tier="laya",
@@ -29,15 +37,15 @@ _OK_PAYLOAD = {
 }
 
 
-def _client_with(handler) -> DecisionsClient:
+def _client_with(handler: Callable[[httpx.Request], httpx.Response]) -> DecisionsClient:
     return DecisionsClient(
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
     )
 
 
 @pytest.mark.asyncio
-async def test_success_returns_parsed_result():
-    async def run():
+async def test_success_returns_parsed_result() -> None:
+    async def run() -> tuple[DecisionResult | None, list[httpx.Request]]:
         calls = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -57,14 +65,16 @@ async def test_success_returns_parsed_result():
     result, calls = await run()
     assert result is not None
     assert result.tier == "laya"
-    assert result.answer("gate").noul == 0.9
+    gate = result.answer("gate")
+    assert gate is not None
+    assert gate.noul == 0.9
     body = calls[0].read().decode()
     assert "/api/alpha/decisions" in str(calls[0].url)
     assert "selfheal:run-1" in body
 
 
 @pytest.mark.asyncio
-async def test_session_id_capped_at_256_chars():
+async def test_session_id_capped_at_256_chars() -> None:
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -80,7 +90,7 @@ async def test_session_id_capped_at_256_chars():
 
 
 @pytest.mark.asyncio
-async def test_error_envelope_is_no_verdict():
+async def test_error_envelope_is_no_verdict() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200, json={"error": {"code": 429, "message": "rate limited"}}
@@ -93,7 +103,7 @@ async def test_error_envelope_is_no_verdict():
 
 
 @pytest.mark.asyncio
-async def test_http_error_status_is_no_verdict():
+async def test_http_error_status_is_no_verdict() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(413, json={"error": {"code": 413, "message": "too big"}})
 
@@ -104,7 +114,7 @@ async def test_http_error_status_is_no_verdict():
 
 
 @pytest.mark.asyncio
-async def test_timeout_is_no_verdict():
+async def test_timeout_is_no_verdict() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("timed out")
 
@@ -115,7 +125,7 @@ async def test_timeout_is_no_verdict():
 
 
 @pytest.mark.asyncio
-async def test_malformed_payload_is_no_verdict():
+async def test_malformed_payload_is_no_verdict() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"not-json{{{")
 
@@ -126,7 +136,7 @@ async def test_malformed_payload_is_no_verdict():
 
 
 @pytest.mark.asyncio
-async def test_circuit_opens_after_three_consecutive_failures():
+async def test_circuit_opens_after_three_consecutive_failures() -> None:
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -144,7 +154,7 @@ async def test_circuit_opens_after_three_consecutive_failures():
 
 
 @pytest.mark.asyncio
-async def test_success_resets_circuit():
+async def test_success_resets_circuit() -> None:
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -162,7 +172,7 @@ async def test_success_resets_circuit():
 
 
 @pytest.mark.asyncio
-async def test_bearer_key_sent_for_openrouter_tier():
+async def test_bearer_key_sent_for_openrouter_tier() -> None:
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -180,11 +190,12 @@ async def test_bearer_key_sent_for_openrouter_tier():
     result = await client.decide(endpoint, {}, {}, "s")
     await client.aclose()
     assert captured["auth"] == "Bearer sk-or-test"
+    assert result is not None
     assert result.tier == "openrouter"
 
 
 @pytest.mark.asyncio
-async def test_no_auth_header_for_laya_tier():
+async def test_no_auth_header_for_laya_tier() -> None:
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -198,37 +209,44 @@ async def test_no_auth_header_for_laya_tier():
 
 
 class TestTokenCaps:
-    def test_diff_capped_head(self):
+    def test_diff_capped_head(self) -> None:
         state = {"diff": "x" * 20_000}
-        capped = cap_state(state)["diff"]
+        capped = cast("dict[str, str]", cap_state(state))["diff"]
         assert len(capped) <= 8_100
         assert "truncated" in capped
 
-    def test_error_excerpt_keeps_tail(self):
+    def test_error_excerpt_keeps_tail(self) -> None:
         state = {"error_excerpt": "head-junk" + "y" * 5_000 + "FATAL: at end"}
-        capped = cap_state(state)["error_excerpt"]
+        capped = cast("dict[str, str]", cap_state(state))["error_excerpt"]
         assert len(capped) <= 2_100
         assert capped.endswith("FATAL: at end")
 
-    def test_task_description_capped(self):
+    def test_task_description_capped(self) -> None:
         state = {"task_description": "z" * 10_000}
-        assert len(cap_state(state)["task_description"]) <= 4_100
+        assert (
+            len(cast("dict[str, str]", cap_state(state))["task_description"]) <= 4_100
+        )
 
-    def test_nested_structures_capped(self):
+    def test_nested_structures_capped(self) -> None:
         state = {"repo": {"diff": "x" * 20_000}, "files": [{"log": "e" * 9_999}]}
-        capped = cap_state(state)
-        assert len(capped["repo"]["diff"]) <= 8_100
-        assert len(capped["files"][0]["log"]) <= 2_100
+        capped = cast("dict[str, object]", cap_state(state))
+        repo = cast("dict[str, object]", capped["repo"])
+        files = cast("list[object]", capped["files"])
+        first_file = cast("dict[str, object]", files[0])
+        assert len(cast("str", repo["diff"])) <= 8_100
+        assert len(cast("str", first_file["log"])) <= 2_100
 
-    def test_cap_text_tail(self):
+    def test_cap_text_tail(self) -> None:
         assert cap_text("abcdef", 4, keep_tail=True).endswith("f")
 
-    def test_short_values_untouched(self):
+    def test_short_values_untouched(self) -> None:
         state = {"diff": "small diff"}
         assert cap_state(state) == state
 
 
-def test_flag_off_client_still_parses_but_resolver_gates(monkeypatch):
+def test_flag_off_client_still_parses_but_resolver_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", False)
     # The client itself never checks the flag (the resolver owns the chain);
     # this assertion documents that split.
@@ -245,7 +263,9 @@ _OPENROUTER = DecisionsEndpoint(
 
 
 @pytest.mark.asyncio
-async def test_http_402_is_observed_by_spend_guard(monkeypatch):
+async def test_http_402_is_observed_by_spend_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A 402 (credits exhausted) counts into the spend guard while the
     fail-open behavior stays exactly the same (spec 3.1)."""
     recorded = []
@@ -255,7 +275,7 @@ async def test_http_402_is_observed_by_spend_guard(monkeypatch):
 
     monkeypatch.setattr("roboco.services.decisions.client.record_402", note_402)
     monkeypatch.setattr(
-        "roboco.services.decisions.client.record_spend", lambda tier, cost: None
+        "roboco.services.decisions.client.record_spend", _note_spend_noop
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -271,7 +291,9 @@ async def test_http_402_is_observed_by_spend_guard(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_non_402_errors_do_not_touch_spend_guard(monkeypatch):
+async def test_non_402_errors_do_not_touch_spend_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     recorded = []
 
     def note_402(tier: str) -> None:
@@ -279,7 +301,7 @@ async def test_non_402_errors_do_not_touch_spend_guard(monkeypatch):
 
     monkeypatch.setattr("roboco.services.decisions.client.record_402", note_402)
     monkeypatch.setattr(
-        "roboco.services.decisions.client.record_spend", lambda tier, cost: None
+        "roboco.services.decisions.client.record_spend", _note_spend_noop
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -293,7 +315,7 @@ async def test_non_402_errors_do_not_touch_spend_guard(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_successful_call_records_spend(monkeypatch):
+async def test_successful_call_records_spend(monkeypatch: pytest.MonkeyPatch) -> None:
     recorded = []
 
     def note_spend(tier: str, cost: float | None) -> None:

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 import structlog
 
@@ -110,7 +113,7 @@ def _intent_diff_fallback(
 
 
 async def validate_commit_message_with_intent(
-    session,
+    session: AsyncSession,
     message: str,
     *,
     task_id: str | None = None,

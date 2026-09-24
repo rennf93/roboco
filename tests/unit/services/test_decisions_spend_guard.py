@@ -2,6 +2,8 @@
 an-hour alert, the cumulative daily fallback-spend threshold, and the
 fail-open notification posture."""
 
+from collections.abc import Iterator
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,7 +12,7 @@ from roboco.services.decisions import spend_guard
 
 
 @pytest.fixture(autouse=True)
-def _reset_spend_state():
+def _reset_spend_state() -> Iterator[None]:
     spend_guard.reset_spend_guard()
     yield
     spend_guard.reset_spend_guard()
@@ -18,8 +20,8 @@ def _reset_spend_state():
 
 @pytest.mark.asyncio
 async def test_two_402s_within_an_hour_fire_exactly_one_notification(
-    monkeypatch,
-):
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     alert = AsyncMock()
     monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)
 
@@ -33,7 +35,9 @@ async def test_two_402s_within_an_hour_fire_exactly_one_notification(
 
 
 @pytest.mark.asyncio
-async def test_402_counter_resets_after_alerting(monkeypatch):
+async def test_402_counter_resets_after_alerting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     alert = AsyncMock()
     monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)
 
@@ -50,7 +54,9 @@ async def test_402_counter_resets_after_alerting(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_single_402_then_one_402_after_reset_window(monkeypatch):
+async def test_single_402_then_one_402_after_reset_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A single 402 never alerts; the counter decays, so one 402 now plus
     one 402 past the window (simulated by clearing state) is still silent."""
     alert = AsyncMock()
@@ -67,7 +73,7 @@ async def test_single_402_then_one_402_after_reset_window(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_402_alerts_are_per_tier(monkeypatch):
+async def test_402_alerts_are_per_tier(monkeypatch: pytest.MonkeyPatch) -> None:
     alert = AsyncMock()
     monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)
 
@@ -78,7 +84,9 @@ async def test_402_alerts_are_per_tier(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_spend_threshold_crossing_fires_one_notification(monkeypatch):
+async def test_spend_threshold_crossing_fires_one_notification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_cost_alert_usd", 0.5)
     alert = AsyncMock()
     monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)
@@ -93,7 +101,9 @@ async def test_spend_threshold_crossing_fires_one_notification(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_second_threshold_notification_suppressed_same_day(monkeypatch):
+async def test_second_threshold_notification_suppressed_same_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_cost_alert_usd", 0.1)
     alert = AsyncMock()
     monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)
@@ -106,7 +116,7 @@ async def test_second_threshold_notification_suppressed_same_day(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_threshold_state_tracks_per_day(monkeypatch):
+async def test_threshold_state_tracks_per_day(monkeypatch: pytest.MonkeyPatch) -> None:
     """A new UTC day re-arms the alert (simulated by moving the marker)."""
     monkeypatch.setattr(cfg.settings, "decisions_cost_alert_usd", 0.1)
     alert = AsyncMock()
@@ -123,7 +133,7 @@ async def test_threshold_state_tracks_per_day(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_laya_tier_never_alerts(monkeypatch):
+async def test_laya_tier_never_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_cost_alert_usd", 0.01)
     alert = AsyncMock()
     monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)
@@ -135,7 +145,7 @@ async def test_laya_tier_never_alerts(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_none_cost_recorded_as_zero(monkeypatch):
+async def test_none_cost_recorded_as_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     alert = AsyncMock()
     monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)
 
@@ -147,23 +157,23 @@ async def test_none_cost_recorded_as_zero(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notification_failure_swallowed(monkeypatch):
+async def test_notification_failure_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A notification failure must never break the decision flow (spec 3.1):
     _send_ceo_alert swallows everything."""
     import roboco.services.notification as notification_module
 
     class _BoomNotificationService:
-        def __init__(self, session):
+        def __init__(self) -> None:
             pass
 
-        async def _create_notification(self, params):
+        async def _create_notification(self, params: object, **kwargs: object) -> None:
             raise RuntimeError("db down")
 
     class _FakeSession:
-        async def __aenter__(self):
+        async def __aenter__(self) -> "_FakeSession":
             return self
 
-        async def __aexit__(self, *exc):
+        async def __aexit__(self, *exc: object) -> bool:
             return False
 
     monkeypatch.setattr(
@@ -174,21 +184,23 @@ async def test_notification_failure_swallowed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_alert_is_ceo_facing_ack_required(monkeypatch):
+async def test_alert_is_ceo_facing_ack_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured = {}
 
     class _FakeNotificationService:
-        def __init__(self, session):
+        def __init__(self) -> None:
             pass
 
-        async def _create_notification(self, params):
+        async def _create_notification(self, params: Any, **kwargs: object) -> None:
             captured["params"] = params
 
     class _FakeSession:
-        async def __aenter__(self):
+        async def __aenter__(self) -> "_FakeSession":
             return self
 
-        async def __aexit__(self, *exc):
+        async def __aexit__(self, *exc: object) -> bool:
             return False
 
     import roboco.services.notification as notification_module

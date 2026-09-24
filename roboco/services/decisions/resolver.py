@@ -16,6 +16,7 @@ baseline; the OpenRouter fallback is stamped separately).
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING, cast
 
 import httpx
 import structlog
@@ -26,6 +27,11 @@ from roboco.db.tables import ProviderConfigTable
 from roboco.models.base import ModelProvider
 from roboco.models.notification import CreateNotificationParams
 from roboco.services.decisions.client import DecisionsEndpoint
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger(__name__)
 
@@ -40,7 +46,7 @@ _health_cache: dict[str, tuple[float, bool]] = {}
 _BOOT_STATE = {"openrouter_key_warning_sent": False}
 
 
-async def resolve_endpoint(session) -> DecisionsEndpoint | None:
+async def resolve_endpoint(session: AsyncSession) -> DecisionsEndpoint | None:
     """Pick the tier that should serve this call, or ``None`` for tier 3
     (every caller then does exactly what it did before Decisions existed)."""
     if not settings.decisions_enabled:
@@ -66,7 +72,7 @@ async def resolve_endpoint(session) -> DecisionsEndpoint | None:
     return None
 
 
-async def check_openrouter_fallback_at_startup(session) -> None:
+async def check_openrouter_fallback_at_startup(session: AsyncSession) -> None:
     """Spec 4 startup key check: if the OpenRouter fallback is OPTED IN but
     the AI Provider screen has no OpenRouter key, fire the ONE ack-required
     CEO notification at boot, naming the exact fix screen, and resolve to
@@ -98,7 +104,7 @@ def _laya_endpoint() -> DecisionsEndpoint:
     )
 
 
-async def _openrouter_endpoint(session) -> DecisionsEndpoint | None:
+async def _openrouter_endpoint(session: AsyncSession) -> DecisionsEndpoint | None:
     if not settings.decisions_tier_openrouter_enabled:
         return None
     api_key = await _openrouter_api_key(session)
@@ -113,7 +119,7 @@ async def _openrouter_endpoint(session) -> DecisionsEndpoint | None:
     )
 
 
-async def _openrouter_api_key(session) -> str | None:
+async def _openrouter_api_key(session: AsyncSession) -> str | None:
     """Resolve the OpenRouter key exactly like the existing provider: the
     single seeded OPENROUTER row, Fernet-decrypted (spec 4)."""
     from roboco.services.provider import get_provider_service
@@ -127,7 +133,9 @@ async def _openrouter_api_key(session) -> str | None:
     if row is None:
         return None
     try:
-        return await get_provider_service(session).get_decrypted_token(row.id)
+        return await get_provider_service(session).get_decrypted_token(
+            cast("UUID", row.id)
+        )
     except Exception as exc:
         logger.warning(
             "could not decrypt OpenRouter key for the decisions fallback",
@@ -166,14 +174,14 @@ def reset_health_cache() -> None:
     _BOOT_STATE["openrouter_key_warning_sent"] = False
 
 
-async def _notify_ceo_missing_openrouter_key(session) -> None:
+async def _notify_ceo_missing_openrouter_key(session: AsyncSession) -> None:
     """One ack-required CEO notification per boot (spec 4/5). Deduped by the
     once-per-boot marker, never per call."""
     from roboco.models.base import NotificationPriority, NotificationType
     from roboco.services.notification import NotificationService
 
     try:
-        await NotificationService(session)._create_notification(
+        await NotificationService()._create_notification(
             CreateNotificationParams(
                 notification_type=NotificationType.ALERT,
                 priority=NotificationPriority.HIGH,
@@ -189,7 +197,8 @@ async def _notify_ceo_missing_openrouter_key(session) -> None:
                 ),
                 requires_ack=True,
                 bypass_purpose_dedup=True,
-            )
+            ),
+            db_session=session,
         )
     except Exception as exc:
         logger.warning(

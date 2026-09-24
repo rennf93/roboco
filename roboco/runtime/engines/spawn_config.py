@@ -1252,13 +1252,8 @@ class SpawnConfigEngine(_Base):
         if not task_id:
             return ""
         try:
-            from uuid import UUID
-
-            from roboco.db.base import get_session_factory
-            from roboco.services.decisions import tool_spotlight
             from roboco.services.decisions.pilots import TOOL_SPOTLIGHT_MIN_VERBS
             from roboco.services.gateway.role_config import get_role_config
-            from roboco.services.task import get_task_service
 
             role = get_agent_role(agent_id) or ""
             try:
@@ -1267,21 +1262,7 @@ class SpawnConfigEngine(_Base):
                 return ""
             if len(do_tools) < TOOL_SPOTLIGHT_MIN_VERBS:  # below the option band
                 return ""
-            title = ""
-            description = ""
-            factory = get_session_factory()
-            async with factory() as db:
-                task = await get_task_service(db).get(UUID(task_id))
-                if task is not None:
-                    title = task.title or ""
-                    description = task.description or ""
-                verbs = await tool_spotlight(
-                    db,
-                    agent_slug=agent_id,
-                    task_title=title,
-                    task_description=description,
-                    verbs=do_tools,
-                )
+            verbs = await self._tool_spotlight_verbs(agent_id, task_id, do_tools)
             if not verbs:
                 return ""
             verb_list = ", ".join(f"`{verb}`" for verb in verbs)
@@ -1297,6 +1278,33 @@ class SpawnConfigEngine(_Base):
                 error=str(exc),
             )
             return ""
+
+    async def _tool_spotlight_verbs(
+        self, agent_id: str, task_id: str, do_tools: list[str]
+    ) -> list[str] | None:
+        """Classifier spotlight verbs for this task; [] when the task row or
+        the verdict is missing. Caller owns the fail-open except."""
+        from uuid import UUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.services.decisions import tool_spotlight
+        from roboco.services.task import get_task_service
+
+        title = ""
+        description = ""
+        factory = get_session_factory()
+        async with factory() as db:
+            task = await get_task_service(db).get(UUID(task_id))
+            if task is not None:
+                title = task.title or ""
+                description = task.description or ""
+            return await tool_spotlight(
+                db,
+                agent_slug=agent_id,
+                task_title=title,
+                task_description=description,
+                verbs=do_tools,
+            )
 
     def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
         """Resolve agent UUID to slug. Returns input if already a slug."""

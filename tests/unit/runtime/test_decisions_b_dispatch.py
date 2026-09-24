@@ -7,8 +7,14 @@ Decisions endpoint is ever touched."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -28,7 +34,7 @@ from roboco.services.decisions.schemas import DecisionAnswer, DecisionResult
 # ---------------------------------------------------------------------------
 
 
-def _bare(engine_cls):
+def _bare(engine_cls: Any) -> Any:
     """Instantiate an engine mixin without __init__ (no DB needed)."""
     engine = engine_cls.__new__(engine_cls)
     engine.log = structlog.get_logger("test")
@@ -53,11 +59,21 @@ def _result(answers: dict[str, dict]) -> DecisionResult:
     )
 
 
-def _patch_decide(monkeypatch, mode, result=None):
+def _patch_decide(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: pilots_dispatch.PilotMode,
+    result: DecisionResult | None = None,
+) -> dict[str, Any]:
     """Monkeypatch pilots_dispatch.decide_for_pilot (the single seam)."""
-    seen: dict = {}
+    seen: dict[str, Any] = {}
 
-    async def fake_decide(session, pilot, state, questions, session_id):
+    async def fake_decide(
+        session: object,
+        pilot: object,
+        state: object,
+        questions: object,
+        session_id: object,
+    ) -> tuple[pilots_dispatch.PilotMode, DecisionResult | None]:
         seen["pilot"] = pilot
         seen["state"] = state
         seen["questions"] = questions
@@ -67,7 +83,7 @@ def _patch_decide(monkeypatch, mode, result=None):
     return seen
 
 
-def _flag_on(monkeypatch, enabled=True):
+def _flag_on(monkeypatch: pytest.MonkeyPatch, enabled: bool = True) -> None:
     import roboco.config as cfg
 
     monkeypatch.setattr(cfg.settings, "decisions_enabled", enabled)
@@ -79,7 +95,7 @@ def _flag_on(monkeypatch, enabled=True):
 
 
 @pytest.mark.asyncio
-async def test_b14_off_flags_nothing(monkeypatch):
+async def test_b14_off_flags_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
     _patch_decide(monkeypatch, pilots_dispatch.PilotMode.OFF)
     priority, flagged = await pilots_dispatch.external_pr_triage(
@@ -90,7 +106,9 @@ async def test_b14_off_flags_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b14_confident_priority_and_flag_apply(monkeypatch):
+async def test_b14_confident_priority_and_flag_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     _patch_decide(
         monkeypatch,
@@ -110,7 +128,9 @@ async def test_b14_confident_priority_and_flag_apply(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b14_below_confidence_counts_as_flagged(monkeypatch):
+async def test_b14_below_confidence_counts_as_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """FAIL-CLOSED: a below-floor-confidence injection answer is a flag."""
     _flag_on(monkeypatch)
     _patch_decide(
@@ -129,7 +149,9 @@ async def test_b14_below_confidence_counts_as_flagged(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b14_unreachable_classifier_flags_while_on(monkeypatch):
+async def test_b14_unreachable_classifier_flags_while_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     _patch_decide(monkeypatch, pilots_dispatch.PilotMode.ON, None)
     _priority, flagged = await pilots_dispatch.external_pr_triage(
@@ -139,7 +161,7 @@ async def test_b14_unreachable_classifier_flags_while_on(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b14_shadow_flags_nothing(monkeypatch):
+async def test_b14_shadow_flags_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch)
     _patch_decide(
         monkeypatch,
@@ -157,11 +179,13 @@ async def test_b14_shadow_flags_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b14_engine_flags_marker_and_top_priority(monkeypatch):
+async def test_b14_engine_flags_marker_and_top_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(SweepsEngine)
 
-    async def fake_triage(session, **kwargs):
+    async def fake_triage(session: object, **kwargs: object) -> tuple[int | None, bool]:
         return 1, True
 
     monkeypatch.setattr(pilots_dispatch, "external_pr_triage", fake_triage)
@@ -180,7 +204,7 @@ async def test_b14_engine_flags_marker_and_top_priority(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b14_engine_off_touches_nothing(monkeypatch):
+async def test_b14_engine_off_touches_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
     engine = _bare(SweepsEngine)
     mock = AsyncMock()
@@ -196,7 +220,9 @@ async def test_b14_engine_off_touches_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b14_queue_order_falls_back_to_fetch_order(monkeypatch):
+async def test_b14_queue_order_falls_back_to_fetch_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch, False)
     engine = _bare(DispatchWorkEngine)
     low = {"id": "low", "priority": 0}
@@ -207,7 +233,9 @@ async def test_b14_queue_order_falls_back_to_fetch_order(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b14_review_dispatch_sorts_by_priority(monkeypatch):
+async def test_b14_review_dispatch_sorts_by_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(DispatchWorkEngine)
     engine._is_agent_active = lambda _slug: False
     engine._fetch_tasks = AsyncMock(
@@ -223,6 +251,7 @@ async def test_b14_review_dispatch_sorts_by_priority(monkeypatch):
     spawn = AsyncMock()
     engine.spawn_agent = spawn
     await engine._dispatch_pr_review_work(MagicMock())
+    assert spawn.await_args is not None
     assert spawn.await_args.kwargs["task_id"] == "high"
 
 
@@ -232,7 +261,9 @@ async def test_b14_review_dispatch_sorts_by_priority(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b25_pilot_off_and_shadow_act_as_off(monkeypatch):
+async def test_b25_pilot_off_and_shadow_act_as_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_decide(monkeypatch, pilots_dispatch.PilotMode.OFF)
     assert (
         await pilots_dispatch.idle_abandonment_verdicts(
@@ -254,7 +285,9 @@ async def test_b25_pilot_off_and_shadow_act_as_off(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b25_confident_still_active_extends(monkeypatch):
+async def test_b25_confident_still_active_extends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -267,7 +300,7 @@ async def test_b25_confident_still_active_extends(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b25_below_floor_reaps_as_today(monkeypatch):
+async def test_b25_below_floor_reaps_as_today(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -280,7 +313,9 @@ async def test_b25_below_floor_reaps_as_today(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b25_engine_spares_only_confident_band(monkeypatch):
+async def test_b25_engine_spares_only_confident_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(SweepsEngine)
 
@@ -296,14 +331,16 @@ async def test_b25_engine_spares_only_confident_band(monkeypatch):
 
     monkeypatch.setattr(pl, "get_live_registry", lambda: fake_registry)
 
-    async def fake_verdicts(session, *, sessions):
+    async def fake_verdicts(
+        session: object, *, sessions: list[dict[str, str]]
+    ) -> list[bool]:
         ids = [s["session_id"] for s in sessions]
         return [sid == "a" for sid in ids]
 
     monkeypatch.setattr(pilots_dispatch, "idle_abandonment_verdicts", fake_verdicts)
 
     @asynccontextmanager
-    async def fake_db_ctx():
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
@@ -313,7 +350,9 @@ async def test_b25_engine_spares_only_confident_band(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b25_engine_failure_reaps_as_today(monkeypatch):
+async def test_b25_engine_failure_reaps_as_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(SweepsEngine)
     due = [("a", "intake-1")]
@@ -324,13 +363,13 @@ async def test_b25_engine_failure_reaps_as_today(monkeypatch):
 
     monkeypatch.setattr(pl, "get_live_registry", lambda: fake_registry)
 
-    async def boom(*a, **kw):
+    async def boom(*a: object, **kw: object) -> list[bool]:
         raise RuntimeError("down")
 
     monkeypatch.setattr(pilots_dispatch, "idle_abandonment_verdicts", boom)
 
     @asynccontextmanager
-    async def fake_db_ctx():
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
@@ -343,7 +382,9 @@ async def test_b25_engine_failure_reaps_as_today(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b30_off_and_shadow_inject_everything(monkeypatch):
+async def test_b30_off_and_shadow_inject_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     entries = ["a", "b", "c"]
     _patch_decide(monkeypatch, pilots_dispatch.PilotMode.OFF)
     assert (
@@ -371,7 +412,7 @@ async def test_b30_off_and_shadow_inject_everything(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b30_confident_irrelevant_drops(monkeypatch):
+async def test_b30_confident_irrelevant_drops(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -390,7 +431,7 @@ async def test_b30_confident_irrelevant_drops(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b30_below_floor_keeps_entry(monkeypatch):
+async def test_b30_below_floor_keeps_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -403,7 +444,9 @@ async def test_b30_below_floor_keeps_entry(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b30_engine_never_offers_protected_entries(monkeypatch):
+async def test_b30_engine_never_offers_protected_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchPromptsEngine)
     engine._description_body = staticmethod(lambda text, **kw: text)
@@ -417,7 +460,13 @@ async def test_b30_engine_never_offers_protected_entries(monkeypatch):
     )
     seen: dict = {}
 
-    async def fake_verdicts(session, *, task_id, entries, workflow_state):
+    async def fake_verdicts(
+        session: object,
+        *,
+        task_id: object,
+        entries: list[str],
+        workflow_state: object,
+    ) -> list[bool]:
         seen["entries"] = list(entries)
         return [True] * len(entries)
 
@@ -435,7 +484,9 @@ async def test_b30_engine_never_offers_protected_entries(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b30_engine_drops_only_offered_entries(monkeypatch):
+async def test_b30_engine_drops_only_offered_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchPromptsEngine)
     engine._description_body = staticmethod(lambda text, **kw: text)
@@ -449,7 +500,13 @@ async def test_b30_engine_drops_only_offered_entries(monkeypatch):
     )
     seen: dict = {}
 
-    async def fake_verdicts(session, *, task_id, entries, workflow_state):
+    async def fake_verdicts(
+        session: object,
+        *,
+        task_id: object,
+        entries: list[str],
+        workflow_state: object,
+    ) -> list[bool]:
         seen["entries"] = list(entries)
         # Confidently irrelevant: drop every offered (unprotected) entry.
         return [False] * len(entries)
@@ -467,7 +524,9 @@ async def test_b30_engine_drops_only_offered_entries(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b30_engine_short_description_bypasses_pilot(monkeypatch):
+async def test_b30_engine_short_description_bypasses_pilot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchPromptsEngine)
     mock = AsyncMock()
@@ -488,7 +547,9 @@ async def test_b30_engine_short_description_bypasses_pilot(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b32_off_shadow_and_below_floor_push_to_finish(monkeypatch):
+async def test_b32_off_shadow_and_below_floor_push_to_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for mode, result in [
         (pilots_dispatch.PilotMode.OFF, None),
         (pilots_dispatch.PilotMode.SHADOW, None),
@@ -518,7 +579,7 @@ async def test_b32_off_shadow_and_below_floor_push_to_finish(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b32_confident_wrap_up_applies(monkeypatch):
+async def test_b32_confident_wrap_up_applies(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -544,17 +605,21 @@ async def test_b32_confident_wrap_up_applies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b32_engine_abort_clean_stops_gracefully(monkeypatch):
+async def test_b32_engine_abort_clean_stops_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(SweepsEngine)
 
-    async def fake_choice(session, **kwargs):
+    async def fake_choice(
+        session: object, **kwargs: object
+    ) -> pilots_dispatch.BudgetWrapup:
         return pilots_dispatch.BudgetWrapup.ABORT_CLEAN
 
     monkeypatch.setattr(pilots_dispatch, "budget_wrapup_choice", fake_choice)
 
     @asynccontextmanager
-    async def fake_db_ctx():
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
@@ -565,11 +630,12 @@ async def test_b32_engine_abort_clean_stops_gracefully(monkeypatch):
         "be-dev-1", instance, {"total": 120, "halt_threshold": 150, "warn": True}
     )
     stop.assert_awaited_once()
+    assert stop.await_args is not None
     assert stop.await_args.kwargs["stop_reason"] == "budget_wrapup_abort"
 
 
 @pytest.mark.asyncio
-async def test_b32_engine_off_is_noop(monkeypatch):
+async def test_b32_engine_off_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
     engine = _bare(SweepsEngine)
     mock = AsyncMock()
@@ -581,13 +647,17 @@ async def test_b32_engine_off_is_noop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b32_engine_wrapup_fires_once_per_task(monkeypatch):
+async def test_b32_engine_wrapup_fires_once_per_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(SweepsEngine)
 
-    calls: list = []
+    calls: list[dict[str, Any]] = []
 
-    async def fake_choice(session, **kwargs):
+    async def fake_choice(
+        session: object, **kwargs: object
+    ) -> pilots_dispatch.BudgetWrapup:
         calls.append(kwargs)
         return pilots_dispatch.BudgetWrapup.WRAP_UP_AND_HANDOFF_NOTE
 
@@ -596,10 +666,10 @@ async def test_b32_engine_wrapup_fires_once_per_task(monkeypatch):
     task_id = "00000000-0000-0000-0000-000000000001"
 
     class _TaskService:
-        def __init__(self, db):
+        def __init__(self, db: object) -> None:
             pass
 
-        async def get(self, _tid):
+        async def get(self, _tid: object) -> SimpleNamespace:
             return SimpleNamespace(
                 commits=[],
                 pr_created=False,
@@ -612,7 +682,7 @@ async def test_b32_engine_wrapup_fires_once_per_task(monkeypatch):
     monkeypatch.setattr(task_mod, "get_task_service", lambda db: _TaskService(db))
 
     @asynccontextmanager
-    async def fake_db_ctx():
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
@@ -634,7 +704,9 @@ async def test_b32_engine_wrapup_fires_once_per_task(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b33_off_shadow_below_floor_render_nothing(monkeypatch):
+async def test_b33_off_shadow_below_floor_render_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for mode, result in [
         (pilots_dispatch.PilotMode.OFF, None),
         (pilots_dispatch.PilotMode.SHADOW, None),
@@ -663,7 +735,9 @@ async def test_b33_off_shadow_below_floor_render_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b33_confident_delta_applies_with_depth(monkeypatch):
+async def test_b33_confident_delta_applies_with_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen = _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -674,19 +748,21 @@ async def test_b33_confident_delta_applies_with_depth(monkeypatch):
             }
         ),
     )
-    mode, depth = await pilots_dispatch.delta_brief(
+    verdict = await pilots_dispatch.delta_brief(
         MagicMock(),
         task_id="t",
         trigger="revision_respawn",
         task_state={"commit_count": 3},
     )
+    assert verdict is not None
+    mode, depth = verdict
     assert mode is pilots_dispatch.DeltaBriefMode.DELTA_BRIEF
     assert depth == 3
     assert seen["state"]["trigger"] == "revision_respawn"
 
 
 @pytest.mark.asyncio
-async def test_b33_engine_off_renders_nothing(monkeypatch):
+async def test_b33_engine_off_renders_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
     engine = _bare(DispatchPromptsEngine)
     mock = AsyncMock()
@@ -696,12 +772,16 @@ async def test_b33_engine_off_renders_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b33_engine_delta_renders_prior_attempt(monkeypatch):
+async def test_b33_engine_delta_renders_prior_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchPromptsEngine)
     engine._parse_iso_dt = staticmethod(lambda _v: None)
 
-    async def fake_delta(session, *, task_id, trigger, task_state):
+    async def fake_delta(
+        session: object, *, task_id: object, trigger: object, task_state: object
+    ) -> tuple[pilots_dispatch.DeltaBriefMode, int | None]:
         return pilots_dispatch.DeltaBriefMode.DELTA_BRIEF, 2
 
     monkeypatch.setattr(pilots_dispatch, "delta_brief", fake_delta)
@@ -717,12 +797,16 @@ async def test_b33_engine_delta_renders_prior_attempt(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b33_engine_fresh_start_renders_nothing(monkeypatch):
+async def test_b33_engine_fresh_start_renders_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchPromptsEngine)
     engine._parse_iso_dt = staticmethod(lambda _v: None)
 
-    async def fake_delta(session, **kwargs):
+    async def fake_delta(
+        session: object, **kwargs: object
+    ) -> tuple[pilots_dispatch.DeltaBriefMode, int | None]:
         return pilots_dispatch.DeltaBriefMode.FRESH_START_BRIEF, 0
 
     monkeypatch.setattr(pilots_dispatch, "delta_brief", fake_delta)
@@ -735,7 +819,9 @@ async def test_b33_engine_fresh_start_renders_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b35_off_and_shadow_keep_fetch_order(monkeypatch):
+async def test_b35_off_and_shadow_keep_fetch_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tasks = [{"id": "1"}, {"id": "2"}]
     _patch_decide(monkeypatch, pilots_dispatch.PilotMode.OFF)
     assert await pilots_dispatch.review_queue_verdicts(MagicMock(), tasks=tasks) is None
@@ -748,7 +834,7 @@ async def test_b35_off_and_shadow_keep_fetch_order(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b35_confident_scores_apply(monkeypatch):
+async def test_b35_confident_scores_apply(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -768,19 +854,23 @@ async def test_b35_confident_scores_apply(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b35_engine_orders_and_injects_depth(monkeypatch):
+async def test_b35_engine_orders_and_injects_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchWorkEngine)
     low = {"id": "low", "team": "backend"}
     high = {"id": "high", "team": "backend"}
 
-    async def fake_verdicts(session, *, tasks):
+    async def fake_verdicts(
+        session: object, *, tasks: list[dict[str, str]]
+    ) -> list[tuple[int | None, int | None]]:
         return [(0, 1), (2, 3)]
 
     monkeypatch.setattr(pilots_dispatch, "review_queue_verdicts", fake_verdicts)
 
     @asynccontextmanager
-    async def fake_db_ctx():
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
@@ -798,7 +888,9 @@ async def test_b35_engine_orders_and_injects_depth(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b36_off_shadow_and_below_floor_spawn(monkeypatch):
+async def test_b36_off_shadow_and_below_floor_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for mode, result in [
         (pilots_dispatch.PilotMode.OFF, None),
         (pilots_dispatch.PilotMode.SHADOW, None),
@@ -817,7 +909,7 @@ async def test_b36_off_shadow_and_below_floor_spawn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b36_confident_no_op_skips(monkeypatch):
+async def test_b36_confident_no_op_skips(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -832,7 +924,7 @@ async def test_b36_confident_no_op_skips(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b36_empty_evidence_never_skips(monkeypatch):
+async def test_b36_empty_evidence_never_skips(monkeypatch: pytest.MonkeyPatch) -> None:
     seen = _patch_decide(monkeypatch, pilots_dispatch.PilotMode.ON)
     assert (
         await pilots_dispatch.board_evidence_skip(
@@ -845,7 +937,7 @@ async def test_b36_empty_evidence_never_skips(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b36_engine_off_spawns(monkeypatch):
+async def test_b36_engine_off_spawns(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
     engine = _bare(DispatchWorkEngine)
     mock = AsyncMock()
@@ -860,7 +952,9 @@ async def test_b36_engine_off_spawns(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b37_off_shadow_below_floor_spawn(monkeypatch):
+async def test_b37_off_shadow_below_floor_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for mode, result in [
         (pilots_dispatch.PilotMode.OFF, None),
         (pilots_dispatch.PilotMode.SHADOW, None),
@@ -892,7 +986,7 @@ async def test_b37_off_shadow_below_floor_spawn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b37_confident_hold_applies(monkeypatch):
+async def test_b37_confident_hold_applies(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -918,17 +1012,21 @@ async def test_b37_confident_hold_applies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b37_breaker_kill_and_amended_fall_back_to_spawn(monkeypatch):
+async def test_b37_breaker_kill_and_amended_fall_back_to_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchBreakerEngine)
 
-    async def fake_verdict(session, **kwargs):
+    async def fake_verdict(
+        session: object, **kwargs: object
+    ) -> pilots_dispatch.RespawnVerdict:
         return pilots_dispatch.RespawnVerdict.KILL_TASK
 
     monkeypatch.setattr(pilots_dispatch, "respawn_verdict", fake_verdict)
 
     @asynccontextmanager
-    async def fake_db_ctx():
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
@@ -942,17 +1040,21 @@ async def test_b37_breaker_kill_and_amended_fall_back_to_spawn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b37_breaker_hold_keeps_trip_mechanics(monkeypatch):
+async def test_b37_breaker_hold_keeps_trip_mechanics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchBreakerEngine)
 
-    async def fake_verdict(session, **kwargs):
+    async def fake_verdict(
+        session: object, **kwargs: object
+    ) -> pilots_dispatch.RespawnVerdict:
         return pilots_dispatch.RespawnVerdict.HOLD_TASK_FOR_HUMAN
 
     monkeypatch.setattr(pilots_dispatch, "respawn_verdict", fake_verdict)
 
     @asynccontextmanager
-    async def fake_db_ctx():
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
@@ -970,7 +1072,9 @@ async def test_b37_breaker_hold_keeps_trip_mechanics(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b38_off_and_below_floor_leave_proxy_in_charge(monkeypatch):
+async def test_b38_off_and_below_floor_leave_proxy_in_charge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for mode, result in [
         (pilots_dispatch.PilotMode.OFF, None),
         (pilots_dispatch.PilotMode.SHADOW, None),
@@ -986,7 +1090,7 @@ async def test_b38_off_and_below_floor_leave_proxy_in_charge(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b38_confident_zero_applies(monkeypatch):
+async def test_b38_confident_zero_applies(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -998,23 +1102,25 @@ async def test_b38_confident_zero_applies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b38_engine_veto_only_on_confident_work_remains(monkeypatch):
+async def test_b38_engine_veto_only_on_confident_work_remains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(DispatchPromptsEngine)
 
     @asynccontextmanager
-    async def fake_db_ctx():
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
 
-    async def confident_work(session, **kw):
+    async def confident_work(session: object, **kw: object) -> tuple[int | None, bool]:
         return 0, True
 
-    async def confident_zero(session, **kw):
+    async def confident_zero(session: object, **kw: object) -> tuple[int | None, bool]:
         return 2, True
 
-    async def unconfident(session, **kw):
+    async def unconfident(session: object, **kw: object) -> tuple[int | None, bool]:
         return None, False
 
     monkeypatch.setattr(pilots_dispatch, "submit_now_confidence", confident_work)
@@ -1031,7 +1137,9 @@ async def test_b38_engine_veto_only_on_confident_work_remains(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b40_off_shadow_and_below_floor_return_none(monkeypatch):
+async def test_b40_off_shadow_and_below_floor_return_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for mode, result in [
         (pilots_dispatch.PilotMode.OFF, None),
         (pilots_dispatch.PilotMode.SHADOW, None),
@@ -1057,7 +1165,9 @@ async def test_b40_off_shadow_and_below_floor_return_none(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b40_confident_cause_line_applies(monkeypatch):
+async def test_b40_confident_cause_line_applies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -1078,7 +1188,7 @@ async def test_b40_confident_cause_line_applies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b40_engine_off_records_nothing(monkeypatch):
+async def test_b40_engine_off_records_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
     engine = _bare(SpawnExitEngine)
     engine._assistant_segments_from_transcript = staticmethod(lambda _a: [])
@@ -1089,21 +1199,25 @@ async def test_b40_engine_off_records_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b40_engine_stashes_cause_for_notification(monkeypatch):
+async def test_b40_engine_stashes_cause_for_notification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag_on(monkeypatch)
     engine = _bare(SpawnExitEngine)
     engine._assistant_segments_from_transcript = staticmethod(lambda _a: ["tail"])
 
-    async def fake_cause(session, **kwargs):
+    async def fake_cause(
+        session: object, **kwargs: object
+    ) -> tuple[pilots_dispatch.ParkCause, str]:
         return pilots_dispatch.ParkCause.CRASH_RETRY, "Decisions cause: crash"
 
     monkeypatch.setattr(pilots_dispatch, "park_cause", fake_cause)
 
     class _Factory:
-        async def __aenter__(self):
+        async def __aenter__(self) -> MagicMock:
             return MagicMock()
 
-        async def __aexit__(self, *exc):
+        async def __aexit__(self, *exc: object) -> bool:
             return False
 
     import roboco.db.base as db_base
@@ -1121,7 +1235,9 @@ async def test_b40_engine_stashes_cause_for_notification(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b42_off_and_below_floor_no_injection(monkeypatch):
+async def test_b42_off_and_below_floor_no_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for mode, result in [
         (pilots_dispatch.PilotMode.OFF, None),
         (pilots_dispatch.PilotMode.SHADOW, None),
@@ -1138,7 +1254,9 @@ async def test_b42_off_and_below_floor_no_injection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b42_confident_line_logged_and_returned(monkeypatch):
+async def test_b42_confident_line_logged_and_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -1152,7 +1270,7 @@ async def test_b42_confident_line_logged_and_returned(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b42_engine_off_skips_ask(monkeypatch):
+async def test_b42_engine_off_skips_ask(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
     engine = _bare(DispatchClaimEngine)
     mock = AsyncMock()
@@ -1161,7 +1279,7 @@ async def test_b42_engine_off_skips_ask(monkeypatch):
     mock.assert_not_awaited()
 
 
-def test_b42_closure_prompt_renders_advisory_line():
+def test_b42_closure_prompt_renders_advisory_line() -> None:
     engine = _bare(DispatchPromptsEngine)
     prompt = engine._build_pm_closure_prompt(
         {"id": "t", "title": "T", "team": "backend"},
@@ -1181,7 +1299,9 @@ def test_b42_closure_prompt_renders_advisory_line():
 
 
 @pytest.mark.asyncio
-async def test_b44_off_shadow_and_no_verdict_clean_substitute(monkeypatch):
+async def test_b44_off_shadow_and_no_verdict_clean_substitute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for mode, result in [
         (pilots_dispatch.PilotMode.OFF, None),
         (pilots_dispatch.PilotMode.SHADOW, None),
@@ -1202,7 +1322,9 @@ async def test_b44_off_shadow_and_no_verdict_clean_substitute(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b44_confident_not_clean_writes_handoff_note(monkeypatch):
+async def test_b44_confident_not_clean_writes_handoff_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -1220,7 +1342,7 @@ async def test_b44_confident_not_clean_writes_handoff_note(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b44_confident_clean_substitutes(monkeypatch):
+async def test_b44_confident_clean_substitutes(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_decide(
         monkeypatch,
         pilots_dispatch.PilotMode.ON,
@@ -1242,7 +1364,7 @@ async def test_b44_confident_clean_substitutes(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_b_settings_flag_defaults_off():
+def test_b_settings_flag_defaults_off() -> None:
     import roboco.config as cfg
 
     assert cfg.settings.decisions_enabled is False or isinstance(

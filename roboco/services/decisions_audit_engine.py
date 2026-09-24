@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from sqlalchemy import delete, select
@@ -32,6 +32,9 @@ from roboco.services.task import DECISIONS_AUDIT_SOURCE, get_task_service
 
 if TYPE_CHECKING:
     from uuid import UUID
+
+    from sqlalchemy import CursorResult
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import ProjectTable
     from roboco.services.task import TaskService
@@ -104,6 +107,27 @@ class DecisionsAuditEngine(BaseService):
         yesterday = [r for r in rows if r.created_at >= cutoff]
         if not yesterday:
             return ""
+        baseline, baseline_days = self._baseline_totals(rows, cutoff)
+        by_pilot: dict[str, list[DecisionLogTable]] = defaultdict(list)
+        for r in yesterday:
+            by_pilot[r.pilot].append(r)
+
+        lines = [
+            f"Decisions audit brief (last 24h; baseline = prior {baseline_days}d):"
+        ]
+        top_pilots = sorted(by_pilot, key=lambda p: -len(by_pilot[p]))[:_PILOT_LINE_CAP]
+        for pilot in top_pilots:
+            lines.append(
+                self._pilot_line(pilot, by_pilot[pilot], baseline, baseline_days)
+            )
+        return "\n".join(lines)
+
+    def _baseline_totals(
+        self, rows: list[DecisionLogTable], cutoff: datetime
+    ) -> tuple[dict[str, dict[str, float]], int]:
+        """Per-pilot count/cost totals over the trailing baseline window
+        (everything strictly before the last-24h cutoff), and the window's
+        day count."""
         baseline_rows = [r for r in rows if r.created_at < cutoff]
         baseline_days = max(_BASELINE_DAYS - 1, 1)
         baseline: dict[str, dict[str, float]] = defaultdict(
@@ -112,34 +136,30 @@ class DecisionsAuditEngine(BaseService):
         for r in baseline_rows:
             baseline[r.pilot]["count"] += 1
             baseline[r.pilot]["cost"] += r.cost or 0.0
+        return baseline, baseline_days
 
-        by_pilot: dict[str, list[DecisionLogTable]] = defaultdict(list)
-        for r in yesterday:
-            by_pilot[r.pilot].append(r)
-
-        lines = [
-            f"Decisions audit brief (last 24h; baseline = prior {baseline_days}d):"
-        ]
-        for pilot in sorted(by_pilot, key=lambda p: -len(by_pilot[p]))[
-            :_PILOT_LINE_CAP
-        ]:
-            rows_p = by_pilot[pilot]
-            on_count = sum(1 for r in rows_p if r.mode == "on")
-            confs = [c for r in rows_p for c in _gate_confidences(r) if c is not None]
-            mean_conf = (
-                round(sum(confs) / len(confs), _MEAN_CONF_DIGITS) if confs else None
-            )
-            spend = sum(r.cost or 0.0 for r in rows_p)
-            line = (
-                f"- {pilot}: {len(rows_p)} verdicts "
-                f"(on={on_count}/shadow={len(rows_p) - on_count}), "
-                f"mean confidence {mean_conf}, spend ${spend:.4f}"
-            )
-            per_day = baseline[pilot]["count"] / baseline_days
-            if per_day:
-                line += f", baseline {round(per_day, 1)}/day"
-            lines.append(line)
-        return "\n".join(lines)
+    def _pilot_line(
+        self,
+        pilot: str,
+        rows_p: list[DecisionLogTable],
+        baseline: dict[str, dict[str, float]],
+        baseline_days: int,
+    ) -> str:
+        """One brief line for a single pilot: verdict mix, mean confidence,
+        spend, and the per-day baseline when non-zero."""
+        on_count = sum(1 for r in rows_p if r.mode == "on")
+        confs = [c for r in rows_p for c in _gate_confidences(r) if c is not None]
+        mean_conf = round(sum(confs) / len(confs), _MEAN_CONF_DIGITS) if confs else None
+        spend = sum(r.cost or 0.0 for r in rows_p)
+        line = (
+            f"- {pilot}: {len(rows_p)} verdicts "
+            f"(on={on_count}/shadow={len(rows_p) - on_count}), "
+            f"mean confidence {mean_conf}, spend ${spend:.4f}"
+        )
+        per_day = baseline[pilot]["count"] / baseline_days
+        if per_day:
+            line += f", baseline {round(per_day, 1)}/day"
+        return line
 
     # ------------------------------------------------------------------
     # Cycle plumbing (mirrors LibrarianEngine)
@@ -155,7 +175,7 @@ class DecisionsAuditEngine(BaseService):
             delete(DecisionLogTable).where(DecisionLogTable.created_at < cutoff)
         )
         await self.session.flush()
-        removed = int(result.rowcount or 0)
+        removed = int(cast("CursorResult[Any]", result).rowcount or 0)
         if removed:
             self.log.info(
                 "decision_log retention prune",
@@ -251,5 +271,5 @@ def _gate_confidences(row: DecisionLogTable) -> list[float | None]:
     return [v for v in conf.values() if isinstance(v, (int, float))]
 
 
-def get_decisions_audit_engine(session) -> DecisionsAuditEngine:
+def get_decisions_audit_engine(session: AsyncSession) -> DecisionsAuditEngine:
     return DecisionsAuditEngine(session)

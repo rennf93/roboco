@@ -1,6 +1,7 @@
 """Verb/pilot-level tests for the Decisions pilots (spec section 6):
 gates, thresholds, shadow semantics, and the baked-in fail-open fallback."""
 
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
 import httpx
@@ -22,6 +23,9 @@ from roboco.services.decisions.pilots import (
     triage_failure,
 )
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 _LAYA = DecisionsEndpoint(
     tier="laya",
     base_url="http://roboco-decisions:8100",
@@ -38,7 +42,13 @@ def _payload(answers: dict) -> dict:
     }
 
 
-def _arm(monkeypatch, *, mode=PilotMode.ON, payload=None, fail=False):
+def _arm(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mode: PilotMode = PilotMode.ON,
+    payload: dict | None = None,
+    fail: bool = False,
+) -> DecisionsClient:
     """Arm the pilot stack: master flag on, chosen mode, laya endpoint, and a
     mocked transport returning ``payload`` (or failing)."""
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
@@ -58,10 +68,12 @@ def _arm(monkeypatch, *, mode=PilotMode.ON, payload=None, fail=False):
 
 
 @pytest.mark.asyncio
-async def test_self_heal_high_noul_allows_origination(monkeypatch):
+async def test_self_heal_high_noul_allows_origination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.9}}))
     verdict = await self_heal_transient(
-        None,
+        cast("AsyncSession", None),
         repo="roboco",
         workflow="ci.yml",
         error_excerpt="Network timeout",
@@ -73,10 +85,10 @@ async def test_self_heal_high_noul_allows_origination(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_self_heal_low_noul_skips(monkeypatch):
+async def test_self_heal_low_noul_skips(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.3}}))
     verdict = await self_heal_transient(
-        None,
+        cast("AsyncSession", None),
         repo="roboco",
         workflow="ci.yml",
         error_excerpt="AssertionError",
@@ -88,10 +100,12 @@ async def test_self_heal_low_noul_skips(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_self_heal_high_attempt_number_skips_even_when_confident(monkeypatch):
+async def test_self_heal_high_attempt_number_skips_even_when_confident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.95}}))
     verdict = await self_heal_transient(
-        None,
+        cast("AsyncSession", None),
         repo="roboco",
         workflow="ci.yml",
         error_excerpt="timeout",
@@ -103,10 +117,12 @@ async def test_self_heal_high_attempt_number_skips_even_when_confident(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_self_heal_backend_failure_is_no_verdict(monkeypatch):
+async def test_self_heal_backend_failure_is_no_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(monkeypatch, fail=True)
     verdict = await self_heal_transient(
-        None,
+        cast("AsyncSession", None),
         repo="r",
         workflow="ci.yml",
         error_excerpt="e",
@@ -118,14 +134,14 @@ async def test_self_heal_backend_failure_is_no_verdict(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_self_heal_shadow_behaves_as_off(monkeypatch):
+async def test_self_heal_shadow_behaves_as_off(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
         payload=_payload({"gate": {"type": "noul", "noul": 0.9}}),
     )
     verdict = await self_heal_transient(
-        None,
+        cast("AsyncSession", None),
         repo="r",
         workflow="ci.yml",
         error_excerpt="e",
@@ -137,7 +153,9 @@ async def test_self_heal_shadow_behaves_as_off(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_parking_confident_choice_is_used(monkeypatch):
+async def test_parking_confident_choice_is_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -145,7 +163,7 @@ async def test_parking_confident_choice_is_used(monkeypatch):
         ),
     )
     lane = await parking_route(
-        None,
+        cast("AsyncSession", None),
         agent_slug="backend-dev-1",
         verb="claim",
         task_id="T1",
@@ -159,7 +177,9 @@ async def test_parking_confident_choice_is_used(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_parking_low_confidence_falls_to_park_standard(monkeypatch):
+async def test_parking_low_confidence_falls_to_park_standard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -167,7 +187,7 @@ async def test_parking_low_confidence_falls_to_park_standard(monkeypatch):
         ),
     )
     lane = await parking_route(
-        None,
+        cast("AsyncSession", None),
         agent_slug="a",
         verb="claim",
         task_id=None,
@@ -181,7 +201,9 @@ async def test_parking_low_confidence_falls_to_park_standard(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_parking_unknown_choice_falls_to_park_standard(monkeypatch):
+async def test_parking_unknown_choice_falls_to_park_standard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -189,7 +211,7 @@ async def test_parking_unknown_choice_falls_to_park_standard(monkeypatch):
         ),
     )
     lane = await parking_route(
-        None,
+        cast("AsyncSession", None),
         agent_slug="a",
         verb="claim",
         task_id=None,
@@ -203,13 +225,13 @@ async def test_parking_unknown_choice_falls_to_park_standard(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_complexity_confident_score_used(monkeypatch):
+async def test_complexity_confident_score_used(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload({"gate": {"type": "score", "score": 2.0, "confidence": 0.9}}),
     )
     score, confident = await complexity_score(
-        None,
+        cast("AsyncSession", None),
         task_id="T9",
         task_title="Span three modules",
         task_description="A wide refactor",
@@ -220,13 +242,15 @@ async def test_complexity_confident_score_used(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_complexity_low_confidence_not_used(monkeypatch):
+async def test_complexity_low_confidence_not_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload({"gate": {"type": "score", "score": 2.0, "confidence": 0.4}}),
     )
     score, confident = await complexity_score(
-        None,
+        cast("AsyncSession", None),
         task_id="T9",
         task_title="t",
         task_description="d",
@@ -237,14 +261,16 @@ async def test_complexity_low_confidence_not_used(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_complexity_shadow_returns_nothing_but_logs(monkeypatch):
+async def test_complexity_shadow_returns_nothing_but_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
         payload=_payload({"gate": {"type": "score", "score": 1.0, "confidence": 0.9}}),
     )
     score, confident = await complexity_score(
-        None,
+        cast("AsyncSession", None),
         task_id="T9",
         task_title="t",
         task_description="d",
@@ -255,7 +281,7 @@ async def test_complexity_shadow_returns_nothing_but_logs(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_preflight_diff_batched_verdicts(monkeypatch):
+async def test_preflight_diff_batched_verdicts(monkeypatch: pytest.MonkeyPatch) -> None:
     answers = {
         "criterion_0": {"type": "noul", "noul": 0.9, "confidence": 0.9},
         "criterion_1": {"type": "noul", "noul": 0.2, "confidence": 0.8},
@@ -263,7 +289,7 @@ async def test_preflight_diff_batched_verdicts(monkeypatch):
     }
     _arm(monkeypatch, payload=_payload(answers))
     result = await preflight_diff(
-        None,
+        cast("AsyncSession", None),
         task_id="T1",
         criteria=["b" * 100, "a" * 10],
         diff="diff --git ...",
@@ -277,7 +303,7 @@ async def test_preflight_diff_batched_verdicts(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_triage_confident_lane(monkeypatch):
+async def test_triage_confident_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -285,7 +311,7 @@ async def test_triage_confident_lane(monkeypatch):
         ),
     )
     lane = await triage_failure(
-        None,
+        cast("AsyncSession", None),
         task_id="T1",
         test_name="test_flaky_thing",
         error_excerpt="TimeoutError",
@@ -297,7 +323,9 @@ async def test_triage_confident_lane(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_triage_low_confidence_is_unknown(monkeypatch):
+async def test_triage_low_confidence_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -305,7 +333,7 @@ async def test_triage_low_confidence_is_unknown(monkeypatch):
         ),
     )
     lane = await triage_failure(
-        None,
+        cast("AsyncSession", None),
         task_id="T1",
         test_name="t",
         error_excerpt="e",
@@ -317,7 +345,9 @@ async def test_triage_low_confidence_is_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_steer_gate_confident_steering_mode(monkeypatch):
+async def test_steer_gate_confident_steering_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -331,7 +361,7 @@ async def test_steer_gate_confident_steering_mode(monkeypatch):
         ),
     )
     mode = await steer_gate(
-        None,
+        cast("AsyncSession", None),
         message_id="m1",
         sender="backend-pm-1",
         purpose="correction",
@@ -343,7 +373,9 @@ async def test_steer_gate_confident_steering_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_steer_gate_below_floor_falls_to_queue_after_current(monkeypatch):
+async def test_steer_gate_below_floor_falls_to_queue_after_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -357,7 +389,7 @@ async def test_steer_gate_below_floor_falls_to_queue_after_current(monkeypatch):
         ),
     )
     mode = await steer_gate(
-        None,
+        cast("AsyncSession", None),
         message_id="m2",
         sender="a",
         purpose=None,
@@ -369,7 +401,9 @@ async def test_steer_gate_below_floor_falls_to_queue_after_current(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_steer_gate_shadow_never_marks_steering(monkeypatch):
+async def test_steer_gate_shadow_never_marks_steering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -378,7 +412,7 @@ async def test_steer_gate_shadow_never_marks_steering(monkeypatch):
         ),
     )
     mode = await steer_gate(
-        None,
+        cast("AsyncSession", None),
         message_id="m3",
         sender="a",
         purpose=None,
@@ -390,10 +424,10 @@ async def test_steer_gate_shadow_never_marks_steering(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_steer_gate_down_is_pull_only(monkeypatch):
+async def test_steer_gate_down_is_pull_only(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(monkeypatch, fail=True)
     mode = await steer_gate(
-        None,
+        cast("AsyncSession", None),
         message_id="m4",
         sender="a",
         purpose=None,
@@ -405,10 +439,12 @@ async def test_steer_gate_down_is_pull_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_flag_off_every_pilot_is_off(monkeypatch):
+async def test_flag_off_every_pilot_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", False)
     monkeypatch.setattr(pilots, "resolve_endpoint", AsyncMock(return_value=_LAYA))
-    mode, result = await pilots.decide_for_pilot(None, "self_heal", {}, {}, "s")
+    mode, result = await pilots.decide_for_pilot(
+        cast("AsyncSession", None), "self_heal", {}, {}, "s"
+    )
     assert mode is PilotMode.OFF
     assert result is None
 
@@ -445,7 +481,9 @@ def _spotlight_payload(confidence: float, probabilities: dict) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_tool_spotlight_picks_top_verbs_from_probabilities(monkeypatch):
+async def test_tool_spotlight_picks_top_verbs_from_probabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_spotlight_payload(
@@ -465,7 +503,7 @@ async def test_tool_spotlight_picks_top_verbs_from_probabilities(monkeypatch):
         ),
     )
     verdict = await pilots.tool_spotlight(
-        None,
+        cast("AsyncSession", None),
         agent_slug="dev-backend-1",
         task_title="Add endpoint",
         task_description="POST /widgets",
@@ -483,10 +521,12 @@ async def test_tool_spotlight_picks_top_verbs_from_probabilities(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_spotlight_returns_none_below_confidence_floor(monkeypatch):
+async def test_tool_spotlight_returns_none_below_confidence_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(monkeypatch, payload=_spotlight_payload(0.5, {"claim": 0.9}))
     verdict = await pilots.tool_spotlight(
-        None,
+        cast("AsyncSession", None),
         agent_slug="dev-backend-1",
         task_title="Add endpoint",
         task_description="POST /widgets",
@@ -496,13 +536,15 @@ async def test_tool_spotlight_returns_none_below_confidence_floor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_spotlight_returns_none_outside_the_option_band(monkeypatch):
+async def test_tool_spotlight_returns_none_outside_the_option_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # 5 verbs: too few to be worth a call; 25 verbs: past the ~20-option
     # degradation limit (spec 10 limit 3). Both return None before any call.
     _arm(monkeypatch, payload=_spotlight_payload(0.9, {}))
     for verbs in ([f"v{i}" for i in range(5)], [f"v{i}" for i in range(25)]):
         verdict = await pilots.tool_spotlight(
-            None,
+            cast("AsyncSession", None),
             agent_slug="dev-backend-1",
             task_title="Add endpoint",
             task_description="POST /widgets",
@@ -512,7 +554,9 @@ async def test_tool_spotlight_returns_none_outside_the_option_band(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_spotlight_shadow_logs_but_renders_nothing(monkeypatch):
+async def test_tool_spotlight_shadow_logs_but_renders_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -530,7 +574,7 @@ async def test_tool_spotlight_shadow_logs_but_renders_nothing(monkeypatch):
         ),
     )
     verdict = await pilots.tool_spotlight(
-        None,
+        cast("AsyncSession", None),
         agent_slug="dev-backend-1",
         task_title="Add endpoint",
         task_description="POST /widgets",

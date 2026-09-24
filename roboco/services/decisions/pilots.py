@@ -15,8 +15,14 @@ enablement pattern.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.config import settings
 from roboco.services.decisions.client import get_decisions_client
@@ -101,7 +107,7 @@ def _env_slug_set(raw: str) -> frozenset[str]:
     return frozenset(s.strip() for s in raw.split(",") if s.strip())
 
 
-async def pilot_mode(session, pilot: str) -> PilotMode:
+async def pilot_mode(session: AsyncSession, pilot: str) -> PilotMode:
     """THE single chokepoint every pilot mode read routes through. The
     master flag off forces OFF regardless of anything else. Resolution:
     settings-store row (set from the panel) > env slug lists
@@ -126,10 +132,10 @@ async def pilot_mode(session, pilot: str) -> PilotMode:
 
 
 async def decide_for_pilot(
-    session,
+    session: AsyncSession,
     pilot: str,
     state: object,
-    questions: dict[str, DecisionQuestion],
+    questions: Mapping[str, DecisionQuestion],
     session_id: str,
 ) -> tuple[PilotMode, DecisionResult | None]:
     """Resolve mode + tier, ask one batched question set, log the verdict.
@@ -161,6 +167,24 @@ def _confidence(result: DecisionResult, key: str) -> float | None:
     if answer is None:
         return None
     return answer.confidence
+
+
+def _gate_choice(result: DecisionResult) -> tuple[str | None, float | None]:
+    """(choice, confidence) off the single "gate" answer."""
+    answer = result.answer("gate")
+    return (
+        answer.choice if answer else None,
+        answer.confidence if answer else None,
+    )
+
+
+def _gate_score(result: DecisionResult) -> tuple[float | None, float | None]:
+    """(score, confidence) off the single "gate" answer."""
+    answer = result.answer("gate")
+    return (
+        answer.score if answer else None,
+        answer.confidence if answer else None,
+    )
 
 
 def log_action(
@@ -205,7 +229,7 @@ def log_action(
 
 
 async def self_heal_transient(
-    session,
+    session: AsyncSession,
     *,
     repo: str,
     workflow: str,
@@ -271,8 +295,23 @@ async def self_heal_transient(
 # ---------------------------------------------------------------------------
 
 
+def _parking_verdict(choice: str | None, confidence: float | None) -> ParkingLane:
+    """The parsed lane, dropped to park_standard when below the floor."""
+    try:
+        verdict = (
+            ParkingLane(choice) if choice is not None else ParkingLane.PARK_STANDARD
+        )
+    except ValueError:
+        verdict = ParkingLane.PARK_STANDARD
+    if verdict is not ParkingLane.PARK_STANDARD and (
+        confidence is None or confidence < PARKING_CONFIDENCE_FLOOR
+    ):
+        verdict = ParkingLane.PARK_STANDARD
+    return verdict
+
+
 async def parking_route(
-    session,
+    session: AsyncSession,
     *,
     agent_slug: str,
     verb: str,
@@ -319,17 +358,8 @@ async def parking_route(
     )
     if result is None:
         return ParkingLane.PARK_STANDARD
-    answer = result.answer("gate")
-    choice = answer.choice if answer else None
-    confidence = answer.confidence if answer else None
-    try:
-        verdict = ParkingLane(choice)
-    except ValueError:
-        verdict = ParkingLane.PARK_STANDARD
-    if verdict is not ParkingLane.PARK_STANDARD and (
-        confidence is None or confidence < PARKING_CONFIDENCE_FLOOR
-    ):
-        verdict = ParkingLane.PARK_STANDARD
+    choice, confidence = _gate_choice(result)
+    verdict = _parking_verdict(choice, confidence)
     if mode is PilotMode.SHADOW:
         log_action("parking", mode, verdict.value, "no-op (shadow)", result)
         return ParkingLane.PARK_STANDARD
@@ -343,7 +373,7 @@ async def parking_route(
 
 
 async def complexity_score(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     task_title: str,
@@ -378,9 +408,7 @@ async def complexity_score(
     )
     if result is None:
         return None, False
-    answer = result.answer("gate")
-    score = answer.score if answer else None
-    confidence = answer.confidence if answer else None
+    score, confidence = _gate_score(result)
     if score is None or confidence is None or confidence < COMPLEXITY_CONFIDENCE_FLOOR:
         if mode is PilotMode.SHADOW:
             log_action("complexity", mode, score, "no-op (shadow)", result)
@@ -399,7 +427,7 @@ async def complexity_score(
 
 
 async def preflight_diff(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     criteria: list[str],
@@ -468,8 +496,23 @@ async def preflight_diff(
 # ---------------------------------------------------------------------------
 
 
+def _triage_verdict(choice: str | None, confidence: float | None) -> TriageLane:
+    """The parsed lane, unknown unless the choice cleared the floor."""
+    try:
+        verdict = TriageLane(choice) if choice is not None else TriageLane.UNKNOWN
+    except ValueError:
+        verdict = TriageLane.UNKNOWN
+    if (
+        verdict is TriageLane.UNKNOWN
+        or confidence is None
+        or (confidence < TRIAGE_CONFIDENCE_FLOOR)
+    ):
+        verdict = TriageLane.UNKNOWN
+    return verdict
+
+
 async def triage_failure(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     test_name: str,
@@ -511,19 +554,8 @@ async def triage_failure(
     )
     if result is None:
         return TriageLane.UNKNOWN
-    answer = result.answer("gate")
-    choice = answer.choice if answer else None
-    confidence = answer.confidence if answer else None
-    try:
-        verdict = TriageLane(choice)
-    except ValueError:
-        verdict = TriageLane.UNKNOWN
-    if (
-        verdict is TriageLane.UNKNOWN
-        or confidence is None
-        or (confidence < TRIAGE_CONFIDENCE_FLOOR)
-    ):
-        verdict = TriageLane.UNKNOWN
+    choice, confidence = _gate_choice(result)
+    verdict = _triage_verdict(choice, confidence)
     log_action("triage_failure", mode, verdict.value, "advisory envelope", result)
     return verdict
 
@@ -534,7 +566,7 @@ async def triage_failure(
 
 
 async def transcript_note_worthy(
-    session,
+    session: AsyncSession,
     *,
     task_id: str,
     segments: list[str],
@@ -591,8 +623,25 @@ TRANSCRIPT_NOTE_FLOOR = 0.75
 # ---------------------------------------------------------------------------
 
 
+def _steer_verdict(choice: str | None, confidence: float | None) -> SteerMode:
+    """The parsed steering mode; steering needs confidence at/above 0.8."""
+    try:
+        verdict = (
+            SteerMode(choice) if choice is not None else SteerMode.QUEUE_AFTER_CURRENT
+        )
+    except ValueError:
+        verdict = SteerMode.QUEUE_AFTER_CURRENT
+    steering = verdict in (
+        SteerMode.STEER_SWITCH_CONSIDERATION,
+        SteerMode.STEER_NOW,
+    )
+    if steering and (confidence is None or confidence < STEER_CONFIDENCE_FLOOR):
+        verdict = SteerMode.QUEUE_AFTER_CURRENT
+    return verdict
+
+
 async def steer_gate(
-    session,
+    session: AsyncSession,
     *,
     message_id: str,
     sender: str,
@@ -649,19 +698,8 @@ async def steer_gate(
     )
     if result is None:
         return SteerMode.QUEUE_AFTER_CURRENT
-    answer = result.answer("gate")
-    choice = answer.choice if answer else None
-    confidence = answer.confidence if answer else None
-    try:
-        verdict = SteerMode(choice)
-    except ValueError:
-        verdict = SteerMode.QUEUE_AFTER_CURRENT
-    steering = verdict in (
-        SteerMode.STEER_SWITCH_CONSIDERATION,
-        SteerMode.STEER_NOW,
-    )
-    if steering and (confidence is None or confidence < STEER_CONFIDENCE_FLOOR):
-        verdict = SteerMode.QUEUE_AFTER_CURRENT
+    choice, confidence = _gate_choice(result)
+    verdict = _steer_verdict(choice, confidence)
     if mode is PilotMode.SHADOW:
         log_action("steer_gate", mode, verdict.value, "no-op (shadow)", result)
         return SteerMode.QUEUE_AFTER_CURRENT
@@ -686,8 +724,21 @@ TOOL_SPOTLIGHT_MAX_HIGHLIGHTS = 7
 TOOL_SPOTLIGHT_CONFIDENCE_FLOOR = 0.6
 
 
+def _spotlight_ranking(probabilities: dict[str, float]) -> list[str] | None:
+    """Rank the positively-scored verbs; None below the highlight minimum."""
+    ranked = sorted(
+        ((verb, p) for verb, p in probabilities.items() if p > 0.0),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    verdict = [verb for verb, _ in ranked[:TOOL_SPOTLIGHT_MAX_HIGHLIGHTS]]
+    if len(verdict) < TOOL_SPOTLIGHT_MIN_HIGHLIGHTS:
+        return None
+    return verdict
+
+
 async def tool_spotlight(
-    session,
+    session: AsyncSession,
     *,
     agent_slug: str,
     task_title: str,
@@ -733,13 +784,8 @@ async def tool_spotlight(
     probabilities = answer.probabilities if answer else {}
     if confidence is None or confidence < TOOL_SPOTLIGHT_CONFIDENCE_FLOOR:
         return None
-    ranked = sorted(
-        ((verb, p) for verb, p in probabilities.items() if p > 0.0),
-        key=lambda item: item[1],
-        reverse=True,
-    )
-    verdict = [verb for verb, _ in ranked[:TOOL_SPOTLIGHT_MAX_HIGHLIGHTS]]
-    if len(verdict) < TOOL_SPOTLIGHT_MIN_HIGHLIGHTS:
+    verdict = _spotlight_ranking(probabilities)
+    if verdict is None:
         return None
     if mode is PilotMode.SHADOW:
         log_action("tool_spotlight", mode, verdict, "no-op (shadow)", result)

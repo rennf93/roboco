@@ -738,21 +738,7 @@ class Choreographer:
             return None
         if mode is PilotMode.OFF:
             return None
-        from roboco.services.decisions.pilots_gateway import plan_quality
-
-        approach = str((rich_plan or {}).get("approach") or "").strip()
-        sub_tasks = list((rich_plan or {}).get("sub_tasks") or [])
-        try:
-            verdict = await plan_quality(
-                self.task.session,
-                task_id=str(task_id),
-                task_title=str(getattr(task, "title", "") or ""),
-                approach=approach,
-                sub_tasks=sub_tasks,
-            )
-        except Exception as exc:
-            logger.warning("plan_quality_skip", task_id=str(task_id), error=str(exc))
-            return None
+        verdict = await self._plan_quality_verdict(rich_plan, task, task_id)
         if not verdict or not verdict.get("inadequate"):
             return None
         score = verdict.get("score")
@@ -782,6 +768,27 @@ class Choreographer:
             task_id=task_id,
             verb="i_will_plan",
         )
+
+    async def _plan_quality_verdict(
+        self, rich_plan: dict[str, Any] | None, task: Any, task_id: UUID
+    ) -> Any:
+        """One plan_quality rubric call over the plan's approach and
+        sub_tasks. None on failure (fail-open: the gate passes)."""
+        from roboco.services.decisions.pilots_gateway import plan_quality
+
+        approach = str((rich_plan or {}).get("approach") or "").strip()
+        sub_tasks = list((rich_plan or {}).get("sub_tasks") or [])
+        try:
+            return await plan_quality(
+                self.task.session,
+                task_id=str(task_id),
+                task_title=str(getattr(task, "title", "") or ""),
+                approach=approach,
+                sub_tasks=sub_tasks,
+            )
+        except Exception as exc:
+            logger.warning("plan_quality_skip", task_id=str(task_id), error=str(exc))
+            return None
 
     async def _emit_rejection(
         self,
@@ -1362,6 +1369,15 @@ class Choreographer:
         """
         if not items:
             return items
+        kept = await self._lesson_prune_verdict(task, items)
+        return kept if kept is not None else items
+
+    async def _lesson_prune_verdict(
+        self, task: Any, items: list[Any]
+    ) -> list[Any] | None:
+        """One lesson_prune scoring call over (description, plan, files).
+        None means keep the full list (pilot off/shadow/error/no verdict):
+        fail-open in the safe direction."""
         try:
             from roboco.services.decisions.pilots import PilotMode, pilot_mode
 
@@ -1372,9 +1388,9 @@ class Choreographer:
                 task_id=str(getattr(task, "id", "")),
                 error=str(exc),
             )
-            return items
+            return None
         if mode is PilotMode.OFF:
-            return items
+            return None
         from roboco.services.decisions.pilots_gateway import lesson_prune
 
         plan_text = str(getattr(task, "plan", "") or "")
@@ -1382,7 +1398,7 @@ class Choreographer:
         if not plan_text and isinstance(rich_plan, dict):
             plan_text = str(rich_plan.get("approach") or "")
         try:
-            kept = await lesson_prune(
+            return await lesson_prune(
                 self.task.session,
                 task_id=str(getattr(task, "id", "")),
                 lessons=items,
@@ -1396,8 +1412,7 @@ class Choreographer:
                 task_id=str(getattr(task, "id", "")),
                 error=str(exc),
             )
-            return items
-        return kept if kept is not None else items
+            return None
 
     # PM coordinator roles plan + delegate many roots in parallel; the actual
     # work then runs in the delegated children/cells, not in the PM's own hands.
@@ -2773,6 +2788,21 @@ class Choreographer:
         """
         if not rows:
             return
+        if not await self._findings_mapping_pilot_active(task_id):
+            return
+        t = await self.task.get(task_id)
+        if t is None or not getattr(t, "branch_name", None):
+            return
+        diff, files_changed = await self._findings_mapping_diff_files(t, task_id)
+        mapping = await self._findings_mapping_verdict(
+            task_id, rows, diff, files_changed
+        )
+        if mapping is None:
+            return
+        self._warn_unmapped_findings(task_id, rows, mapping)
+
+    async def _findings_mapping_pilot_active(self, task_id: UUID) -> bool:
+        """The B31 pilot's on/off gate; fail-open (False) on error."""
         try:
             from roboco.services.decisions.pilots import PilotMode, pilot_mode
 
@@ -2781,27 +2811,39 @@ class Choreographer:
             logger.warning(
                 "findings_mapping_skip", task_id=str(task_id), error=str(exc)
             )
-            return
-        if mode is PilotMode.OFF:
-            return
-        t = await self.task.get(task_id)
-        if t is None or not getattr(t, "branch_name", None):
-            return
+            return False
+        return mode is not PilotMode.OFF
+
+    async def _findings_mapping_diff_files(
+        self, t: Any, task_id: UUID
+    ) -> tuple[str, list[str]]:
+        """Bounded diff + changed-files leg for the overlap screen; empty
+        defaults when Decisions is disabled."""
         from roboco.config import settings as _settings
 
-        diff, files_changed = "", []
-        if _settings.decisions_enabled:
-            evidence_gaps: list[str] = []
-            budget = LegBudget(_settings.evidence_assembly_timeout_seconds)
-            diff, files_changed = await run_bounded_leg(
-                self.git.diff_and_files(branch_name=t.branch_name),
-                default=("", []),
-                budget=budget,
-                leg="findings-mapping diff + files",
-                hint="overlap checks degraded; run the diff manually",
-                task_id=task_id,
-                gaps=evidence_gaps,
-            )
+        if not _settings.decisions_enabled:
+            return "", []
+        evidence_gaps: list[str] = []
+        budget = LegBudget(_settings.evidence_assembly_timeout_seconds)
+        return await run_bounded_leg(
+            self.git.diff_and_files(branch_name=t.branch_name),
+            default=("", []),
+            budget=budget,
+            leg="findings-mapping diff + files",
+            hint="overlap checks degraded; run the diff manually",
+            task_id=task_id,
+            gaps=evidence_gaps,
+        )
+
+    async def _findings_mapping_verdict(
+        self,
+        task_id: UUID,
+        rows: list[Any],
+        diff: str,
+        files_changed: list[str],
+    ) -> Any:
+        """One batched findings_mapping call; None = no verdict (fail-open:
+        the ledger rows stay addressed and nothing is logged)."""
         from roboco.services.decisions.pilots_gateway import findings_mapping
 
         findings = [
@@ -2815,7 +2857,7 @@ class Choreographer:
             for row in rows
         ]
         try:
-            mapping = await findings_mapping(
+            return await findings_mapping(
                 self.task.session,
                 task_id=str(task_id),
                 findings=findings,
@@ -2826,9 +2868,13 @@ class Choreographer:
             logger.warning(
                 "findings_mapping_skip", task_id=str(task_id), error=str(exc)
             )
-            return
-        if mapping is None:
-            return
+            return None
+
+    def _warn_unmapped_findings(
+        self, task_id: UUID, rows: list[Any], mapping: Any
+    ) -> None:
+        """The advisory audit trail: one warning per resolved finding the
+        diff plausibly does not touch. Nothing is closed or re-opened."""
         mapped_ids = {entry.get("finding_id") for entry in mapping}
         for row in rows:
             if str(row.id) in mapped_ids:
@@ -6434,28 +6480,29 @@ class Choreographer:
         if not owned:
             return None
         now = datetime.now(UTC)
-        owned_state: list[dict[str, Any]] = []
-        for t in owned[:5]:
-            minutes: float | None = None
-            updated = getattr(t, "updated_at", None)
-            if updated is not None:
-                try:
-                    minutes = max(0.0, (now - updated).total_seconds() / 60)
-                except (TypeError, ValueError):
-                    minutes = None
-            owned_state.append(
-                {
-                    "task_id": str(t.id),
-                    "title": str(getattr(t, "title", "") or ""),
-                    "status": str(getattr(t, "status", "") or ""),
-                    "commit_count": len(list(getattr(t, "commits", None) or [])),
-                    "has_pr": bool(getattr(t, "pr_number", None)),
-                    "minutes_since_last_activity": (
-                        round(minutes, 1) if minutes is not None else None
-                    ),
-                }
-            )
-        return owned_state
+        return [self._idle_task_state(t, now) for t in owned[:5]]
+
+    @staticmethod
+    def _idle_task_state(t: Any, now: datetime) -> dict[str, Any]:
+        """One owned task's B34 state row (commit count, PR presence,
+        recency) composed best-effort from what i_am_idle holds in scope."""
+        minutes: float | None = None
+        updated = getattr(t, "updated_at", None)
+        if updated is not None:
+            try:
+                minutes = max(0.0, (now - updated).total_seconds() / 60)
+            except (TypeError, ValueError):
+                minutes = None
+        return {
+            "task_id": str(t.id),
+            "title": str(getattr(t, "title", "") or ""),
+            "status": str(getattr(t, "status", "") or ""),
+            "commit_count": len(list(getattr(t, "commits", None) or [])),
+            "has_pr": bool(getattr(t, "pr_number", None)),
+            "minutes_since_last_activity": (
+                round(minutes, 1) if minutes is not None else None
+            ),
+        }
 
     async def _notify_idle_stranded(
         self, agent_id: UUID, owned_state: list[dict[str, Any]]

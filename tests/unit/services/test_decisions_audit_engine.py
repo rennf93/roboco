@@ -3,6 +3,7 @@ daily aggregates brief, the armed/dedup gates, and retention pruning."""
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,7 +21,13 @@ def _engine() -> DecisionsAuditEngine:
     return e
 
 
-def _row(pilot="self_heal", mode="on", conf=0.9, cost=0.0001, hours_ago=2):
+def _row(
+    pilot: str = "self_heal",
+    mode: str = "on",
+    conf: float = 0.9,
+    cost: float = 0.0001,
+    hours_ago: float = 2,
+) -> DecisionLogTable:
     return DecisionLogTable(
         pilot=pilot,
         tier="laya",
@@ -33,7 +40,7 @@ def _row(pilot="self_heal", mode="on", conf=0.9, cost=0.0001, hours_ago=2):
     )
 
 
-def _session_returning(rows):
+def _session_returning(rows: list[Any]) -> MagicMock:
     s = MagicMock()
     result = MagicMock()
     result.scalars.return_value.all.return_value = rows
@@ -42,14 +49,14 @@ def _session_returning(rows):
 
 
 @pytest.mark.asyncio
-async def test_daily_brief_empty_when_no_rows():
+async def test_daily_brief_empty_when_no_rows() -> None:
     e = _engine()
     e.session = _session_returning([])
     assert await e.daily_brief() == ""
 
 
 @pytest.mark.asyncio
-async def test_daily_brief_carries_pilot_aggregates():
+async def test_daily_brief_carries_pilot_aggregates() -> None:
     e = _engine()
     rows = [
         _row(pilot="self_heal", mode="on", conf=0.88, hours_ago=1),
@@ -67,8 +74,11 @@ async def test_daily_brief_carries_pilot_aggregates():
 
 
 @pytest.mark.asyncio
-async def test_run_cycle_noop_when_not_armed(monkeypatch):
+async def test_run_cycle_noop_when_not_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     e = _engine()
+    e.session = MagicMock()
     e.session.execute = AsyncMock()
     monkeypatch.setattr(engine_mod, "program_armed", AsyncMock(return_value=False))
     monkeypatch.setattr(e, "prune_retention", AsyncMock(return_value=0))
@@ -77,7 +87,9 @@ async def test_run_cycle_noop_when_not_armed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_cycle_noop_when_open_cycle_exists(monkeypatch):
+async def test_run_cycle_noop_when_open_cycle_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     e = _engine()
     monkeypatch.setattr(engine_mod, "program_armed", AsyncMock(return_value=True))
     monkeypatch.setattr(e, "prune_retention", AsyncMock(return_value=0))
@@ -86,7 +98,9 @@ async def test_run_cycle_noop_when_open_cycle_exists(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_cycle_originates_and_notifies(monkeypatch):
+async def test_run_cycle_originates_and_notifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     e = _engine()
     e.session = MagicMock()
     e.session.flush = AsyncMock()
@@ -109,9 +123,9 @@ async def test_run_cycle_originates_and_notifies(monkeypatch):
         "program_armed",
         AsyncMock(return_value=True),
     )
-    briefs = []
+    briefs: list[str] = []
 
-    async def _capture(brief):
+    async def _capture(brief: str) -> None:
         briefs.append(brief)
 
     monkeypatch.setattr(e, "_notify_ceo", _capture)
@@ -128,7 +142,9 @@ async def test_run_cycle_originates_and_notifies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_prune_retention_deletes_past_window(monkeypatch):
+async def test_prune_retention_deletes_past_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     e = _engine()
     result = MagicMock()
     result.rowcount = 7
@@ -139,7 +155,7 @@ async def test_prune_retention_deletes_past_window(monkeypatch):
     assert removed == 7
 
 
-def test_arming_falls_back_to_nas_signature():
+def test_arming_falls_back_to_nas_signature() -> None:
     """program_armed's legacy fallback: the audit loop arms wherever the
     Decisions master is on AND pilots are env-armed (the NAS deploy
     signature), and stays off on user-facing deploys (both lists empty)."""

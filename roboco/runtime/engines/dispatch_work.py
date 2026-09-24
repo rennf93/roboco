@@ -1739,18 +1739,7 @@ class DispatchWorkEngine(_Base):
                 )
             if not verdicts:
                 return candidates, {}
-            depths: dict[str, int] = {}
-            scored: list[tuple[int, int, dict[str, Any]]] = []
-            for fetch_order, (task, (priority, depth)) in enumerate(
-                zip(candidates, verdicts, strict=False)
-            ):
-                if depth is not None:
-                    depths[str(task.get("id"))] = depth
-                # Unscored sits at the neutral band (1); the stable sort
-                # preserves fetch order inside each band.
-                scored.append(
-                    (priority if priority is not None else 1, fetch_order, task)
-                )
+            scored, depths = self._qa_queue_scored_pairs(candidates, verdicts)
             scored.sort(key=lambda item: -item[0])
             ordered = [task for _p, _o, task in scored]
             logger.info(
@@ -1764,6 +1753,24 @@ class DispatchWorkEngine(_Base):
                 "QA queue prioritization failed (best-effort)", error=str(exc)
             )
             return candidates, {}
+
+    @staticmethod
+    def _qa_queue_scored_pairs(
+        candidates: list[dict[str, Any]], verdicts: list[Any]
+    ) -> tuple[list[tuple[int, int, dict[str, Any]]], dict[str, int]]:
+        """Pair each task with its priority ordinal (neutral when unscored)
+        and collect the confident depths."""
+        depths: dict[str, int] = {}
+        scored: list[tuple[int, int, dict[str, Any]]] = []
+        for fetch_order, (task, (priority, depth)) in enumerate(
+            zip(candidates, verdicts, strict=False)
+        ):
+            if depth is not None:
+                depths[str(task.get("id"))] = depth
+            # Unscored sits at the neutral band (1); the stable sort
+            # preserves fetch order inside each band.
+            scored.append((priority if priority is not None else 1, fetch_order, task))
+        return scored, depths
 
     @staticmethod
     def _decisions_qa_depth_directive(

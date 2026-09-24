@@ -110,7 +110,7 @@ def task_is_high_stakes(task: Task) -> bool:
     )
 
 
-async def task_is_high_stakes_with_decisions(session, task: Task) -> bool:
+async def task_is_high_stakes_with_decisions(session: AsyncSession, task: Task) -> bool:
     """B9 decisions screen (spec 7.1): a noul "high-stakes" verdict layered
     ON TOP of the weak threshold + keyword classifier above (explicitly a
     weak classifier per the survey). MAY ONLY ADD reviews, never subtract:

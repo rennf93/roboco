@@ -215,47 +215,16 @@ class ExtractionService:
                 pilot_verdicts[pilot_idx] if pilot_idx < len(pilot_verdicts) else None
             )
             pilot_idx += 1
-            if verdict is not None:
-                # Confident pilot verdict REPLACES the regex result (and
-                # lets the caller avoid the expensive full-LLM fallback).
-                pilot_type, pilot_confidence = verdict
-                try:
-                    msg_type = MessageType(pilot_type)
-                except ValueError:
-                    pass
-                else:
-                    confidence = pilot_confidence
+            msg_type, confidence = self._resolved_segment_type(
+                verdict, msg_type, confidence
+            )
 
             # Store pattern matches for debugging
             if matches:
                 pattern_matches[segment[:50]] = matches
 
-            # Extract mentions
-            mentions: list[UUID] = []
-            if self.config.extract_mentions:
-                mention_names = self._mention_pattern.findall(segment)
-                # In production, resolve names to agent UUIDs
-                # For now, just log them
-                if mention_names:
-                    self.log.debug("Found mentions", mentions=mention_names)
-
             # Create message
-            message = ExtractedMessage(
-                id=uuid4(),
-                agent_id=ctx.agent_id,
-                channel_id=ctx.channel_id,
-                group_id=ctx.group_id,
-                session_id=ctx.session_id,
-                type=msg_type,
-                content=segment.strip(),
-                content_length=len(segment.strip()),
-                mentions=mentions,
-                task_id=ctx.task_id,
-                confidence=confidence,
-                raw_excerpt=segment[:MAX_EXCERPT_LENGTH]
-                if len(segment) > MAX_EXCERPT_LENGTH
-                else segment,
-            )
+            message = self._build_segment_message(ctx, segment, msg_type, confidence)
 
             messages.append(message)
             confidence_scores[message.id] = confidence
@@ -278,6 +247,64 @@ class ExtractionService:
         )
 
         return result
+
+    def _resolved_segment_type(
+        self,
+        verdict: tuple[str, float] | None,
+        msg_type: MessageType,
+        confidence: float,
+    ) -> tuple[MessageType, float]:
+        """Apply one confident Decisions pilot verdict on top of the regex
+        classification. A confident verdict REPLACES the regex result (and
+        lets the caller avoid the expensive full-LLM fallback); an unknown
+        type string keeps the regex classification unchanged."""
+        if verdict is None:
+            return msg_type, confidence
+        pilot_type, pilot_confidence = verdict
+        try:
+            resolved = MessageType(pilot_type)
+        except ValueError:
+            return msg_type, confidence
+        return resolved, pilot_confidence
+
+    def _collect_mentions(self, segment: str) -> list[UUID]:
+        """Extract mention names when configured.
+
+        In production, resolve names to agent UUIDs
+        For now, just log them
+        """
+        mentions: list[UUID] = []
+        if not self.config.extract_mentions:
+            return mentions
+        mention_names = self._mention_pattern.findall(segment)
+        if mention_names:
+            self.log.debug("Found mentions", mentions=mention_names)
+        return mentions
+
+    def _build_segment_message(
+        self,
+        ctx: ExtractionContext,
+        segment: str,
+        msg_type: MessageType,
+        confidence: float,
+    ) -> ExtractedMessage:
+        """Create one ExtractedMessage from a classified segment."""
+        return ExtractedMessage(
+            id=uuid4(),
+            agent_id=ctx.agent_id,
+            channel_id=ctx.channel_id,
+            group_id=ctx.group_id,
+            session_id=ctx.session_id,
+            type=msg_type,
+            content=segment.strip(),
+            content_length=len(segment.strip()),
+            mentions=self._collect_mentions(segment),
+            task_id=ctx.task_id,
+            confidence=confidence,
+            raw_excerpt=segment[:MAX_EXCERPT_LENGTH]
+            if len(segment) > MAX_EXCERPT_LENGTH
+            else segment,
+        )
 
     def _segment_content(self, content: str) -> list[str]:
         """
@@ -474,39 +501,10 @@ Output only valid TOON, no other text."""
 
             # Parse response using TOON (falls back to JSON)
             # Extract text from first TextBlock content
-            response_text = ""
-            for block in response.content:
-                if hasattr(block, "text"):
-                    response_text = block.text
-                    break
+            response_text = self._llm_response_text(response)
             segments = toon.decode(response_text)
 
-            messages: list[ExtractedMessage] = []
-            for segment in segments:
-                if isinstance(segment, dict):
-                    msg_type_str = segment.get("type", "reasoning")
-                    msg_content = segment.get("content", "")
-                    confidence = segment.get("confidence", 0.8)
-                else:
-                    msg_type_str = "reasoning"
-                    msg_content = str(segment)
-                    confidence = 0.8
-                msg_type = MessageType(msg_type_str)
-
-                messages.append(
-                    ExtractedMessage(
-                        id=uuid4(),
-                        content=msg_content,
-                        content_length=len(msg_content),
-                        type=msg_type,
-                        agent_id=ctx.agent_id,
-                        channel_id=ctx.channel_id,
-                        session_id=ctx.session_id,
-                        group_id=ctx.group_id,
-                        task_id=ctx.task_id,
-                        confidence=confidence,
-                    )
-                )
+            messages = self._messages_from_toon_segments(segments, ctx)
 
             return ExtractionResult(
                 messages=messages,
@@ -522,6 +520,47 @@ Output only valid TOON, no other text."""
             # Fall back to pattern matching
             self.log.warning("LLM extraction failed, using patterns", error=str(e))
             return await self.extract(ctx)
+
+    def _llm_response_text(self, response: Any) -> str:
+        """Extract the first text block from an Anthropic response."""
+        response_text = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                response_text = block.text
+                break
+        return response_text
+
+    def _messages_from_toon_segments(
+        self, segments: list[Any] | dict[str, Any], ctx: ExtractionContext
+    ) -> list[ExtractedMessage]:
+        """Turn decoded TOON segments into ExtractedMessage rows."""
+        messages: list[ExtractedMessage] = []
+        for segment in segments:
+            if isinstance(segment, dict):
+                msg_type_str = segment.get("type", "reasoning")
+                msg_content = segment.get("content", "")
+                confidence = segment.get("confidence", 0.8)
+            else:
+                msg_type_str = "reasoning"
+                msg_content = str(segment)
+                confidence = 0.8
+            msg_type = MessageType(msg_type_str)
+
+            messages.append(
+                ExtractedMessage(
+                    id=uuid4(),
+                    content=msg_content,
+                    content_length=len(msg_content),
+                    type=msg_type,
+                    agent_id=ctx.agent_id,
+                    channel_id=ctx.channel_id,
+                    session_id=ctx.session_id,
+                    group_id=ctx.group_id,
+                    task_id=ctx.task_id,
+                    confidence=confidence,
+                )
+            )
+        return messages
 
 
 # =============================================================================

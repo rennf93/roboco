@@ -11,6 +11,7 @@ delivery, never gates it.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast
 
 import structlog
 from sqlalchemy import func, select
@@ -23,6 +24,11 @@ from roboco.db.tables import (
     WorkSessionTable,
 )
 from roboco.models.base import TaskStatus
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger(__name__)
 
@@ -50,7 +56,7 @@ _OTHER_ACTIVE_STATUSES = (
 _OTHER_TASK_TITLE_CAP = 5
 
 
-async def recipient_work_context(session, recipient_slug: str) -> dict:
+async def recipient_work_context(session: AsyncSession, recipient_slug: str) -> dict:
     """Compose the recipient's work context for a steer-gate verdict.
 
     Returns a flat JSON-safe dict; on any internal failure the affected
@@ -94,7 +100,7 @@ async def recipient_work_context(session, recipient_slug: str) -> dict:
             session, current_task
         )
         context["spawn_age_minutes"] = await _spawn_age_minutes(
-            session, agent.id, current_task.id
+            session, cast("UUID", agent.id), cast("UUID", current_task.id)
         )
 
     others = (
@@ -118,13 +124,13 @@ async def recipient_work_context(session, recipient_slug: str) -> dict:
         "titles": [t.title for t in others[:_OTHER_TASK_TITLE_CAP]],
     }
 
-    last_scope = await _last_journal_scope(session, agent.id)
+    last_scope = await _last_journal_scope(session, cast("UUID", agent.id))
     if last_scope is not None:
         context["last_journal_scope"] = last_scope
     return context
 
 
-async def _sequence_position(session, task: TaskTable) -> int | None:
+async def _sequence_position(session: AsyncSession, task: TaskTable) -> int | None:
     """The task's 1-based position among its non-terminal same-parent
     siblings (lower sequence = earlier in the queue)."""
     query = (
@@ -144,7 +150,9 @@ async def _sequence_position(session, task: TaskTable) -> int | None:
         return None
 
 
-async def _spawn_age_minutes(session, agent_id, task_id) -> float | None:
+async def _spawn_age_minutes(
+    session: AsyncSession, agent_id: UUID, task_id: UUID
+) -> float | None:
     """Age of the recipient's active work session on the current task, in
     minutes (best available proxy for spawn age without the runtime
     registry)."""
@@ -166,15 +174,16 @@ async def _spawn_age_minutes(session, agent_id, task_id) -> float | None:
         return None
     if row is None:
         return None
-    started = row.started_at
+    started: datetime | None = row.started_at
     if started is None:
         return None
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
-    return round((datetime.now(UTC) - started).total_seconds() / 60, 1)
+    elapsed_minutes: float = (datetime.now(UTC) - started).total_seconds() / 60
+    return round(elapsed_minutes, 1)
 
 
-async def _last_journal_scope(session, agent_id) -> str | None:
+async def _last_journal_scope(session: AsyncSession, agent_id: UUID) -> str | None:
     """A one-line scope of the recipient's most recent journal entry."""
     try:
         row = (

@@ -65,17 +65,14 @@ def record_decision(
         # No typed answers came back (defensive): record the caller's
         # verdict summary so the row still says what the pilot decided.
         answers["verdict"] = verdict
+    result_session_id: Any = getattr(result, "session_id", None)
     _pending.append(
         {
             "created_at": datetime.now(UTC),
             "pilot": pilot[:60],
             "tier": getattr(result, "tier", None),
             "mode": mode,
-            "session_id": (
-                getattr(result, "session_id", None)[:280]
-                if getattr(result, "session_id", None)
-                else None
-            ),
+            "session_id": result_session_id[:280] if result_session_id else None,
             "answers": answers or None,
             "confidence": confidence or None,
             "action": str(action)[:160] if action is not None else None,

@@ -97,6 +97,38 @@ class DecisionResult(BaseModel):
         return self.answers.get(key)
 
 
+def _parse_answer(key: str, body: dict[str, Any]) -> DecisionAnswer:
+    """Leniently flatten one answer entry (malformed fields stay None)."""
+    return DecisionAnswer(
+        key=str(key),
+        type=str(body.get("type", "unknown")),
+        noul=_as_float(body.get("noul")),
+        choice=(str(body["choice"]) if body.get("choice") is not None else None),
+        score=_as_float(body.get("score")),
+        confidence=_as_float(body.get("confidence")),
+        probabilities={
+            str(k): float(v)
+            for k, v in (body.get("probabilities") or {}).items()
+            if isinstance(v, (int, float))
+        },
+        raw_payload=body,
+    )
+
+
+def _parse_usage(payload: dict[str, Any]) -> DecisionUsage:
+    """Leniently parse the usage block (non-dict shapes stay empty)."""
+    usage_raw = payload.get("usage") or {}
+    return DecisionUsage(
+        input_tokens=usage_raw.get("input_tokens")
+        if isinstance(usage_raw, dict)
+        else None,
+        output_tokens=usage_raw.get("output_tokens")
+        if isinstance(usage_raw, dict)
+        else None,
+        cost=_as_float(usage_raw.get("cost")) if isinstance(usage_raw, dict) else None,
+    )
+
+
 def parse_decisions_payload(
     payload: dict[str, Any], *, tier: str, session_id: str
 ) -> DecisionResult:
@@ -112,36 +144,11 @@ def parse_decisions_payload(
         for key, body in answers_raw.items():
             if not isinstance(body, dict):
                 continue
-            answers[str(key)] = DecisionAnswer(
-                key=str(key),
-                type=str(body.get("type", "unknown")),
-                noul=_as_float(body.get("noul")),
-                choice=(
-                    str(body["choice"]) if body.get("choice") is not None else None
-                ),
-                score=_as_float(body.get("score")),
-                confidence=_as_float(body.get("confidence")),
-                probabilities={
-                    str(k): float(v)
-                    for k, v in (body.get("probabilities") or {}).items()
-                    if isinstance(v, (int, float))
-                },
-                raw_payload=body,
-            )
-    usage_raw = payload.get("usage") or {}
-    usage = DecisionUsage(
-        input_tokens=usage_raw.get("input_tokens")
-        if isinstance(usage_raw, dict)
-        else None,
-        output_tokens=usage_raw.get("output_tokens")
-        if isinstance(usage_raw, dict)
-        else None,
-        cost=_as_float(usage_raw.get("cost")) if isinstance(usage_raw, dict) else None,
-    )
+            answers[str(key)] = _parse_answer(str(key), body)
     return DecisionResult(
         answers=answers,
         model=str(payload["model"]) if payload.get("model") is not None else None,
-        usage=usage,
+        usage=_parse_usage(payload),
         tier=tier,
         session_id=session_id,
         raw=payload,

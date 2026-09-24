@@ -156,7 +156,7 @@ async def _send_ceo_alert(subject: str, body: str, **context: object) -> None:
 
     try:
         async with get_session_factory()() as session:
-            await NotificationService(session)._create_notification(
+            await NotificationService()._create_notification(
                 CreateNotificationParams(
                     notification_type=NotificationType.ALERT,
                     priority=NotificationPriority.HIGH,
@@ -166,7 +166,8 @@ async def _send_ceo_alert(subject: str, body: str, **context: object) -> None:
                     body=body,
                     requires_ack=True,
                     bypass_purpose_dedup=True,
-                )
+                ),
+                db_session=session,
             )
         logger.warning("decisions spend alert sent", subject=subject, **context)
     except Exception as exc:

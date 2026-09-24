@@ -2,6 +2,8 @@
 the briefing block, and the B28 transcript auto-notes pass."""
 
 import json
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,12 +16,22 @@ def _svc() -> A2AService:
     return A2AService(MagicMock())
 
 
+def _bare_engine() -> Any:
+    """A SpawnExitEngine without __init__ (no DB). The class carries a
+    TYPE_CHECKING-only Protocol base (abstract at type-check time), so the
+    class object is routed through a type[Any] intermediate."""
+    from roboco.runtime.engines.spawn_exit import SpawnExitEngine
+
+    cls: type[Any] = SpawnExitEngine
+    return object.__new__(cls)
+
+
 # ---------------------------------------------------------------------------
 # Steering note rendering
 # ---------------------------------------------------------------------------
 
 
-def test_switch_consideration_note_carries_the_task_list():
+def test_switch_consideration_note_carries_the_task_list() -> None:
     note = render_steering_note(
         mode=SteerMode.STEER_SWITCH_CONSIDERATION,
         sender="backend-pm-1",
@@ -41,7 +53,7 @@ def test_switch_consideration_note_carries_the_task_list():
     assert "your PM's" in note  # the switch decision is not the verdict's
 
 
-def test_steer_now_note_is_task_scoped():
+def test_steer_now_note_is_task_scoped() -> None:
     note = render_steering_note(
         mode=SteerMode.STEER_NOW,
         sender="qa-1",
@@ -58,7 +70,7 @@ def test_steer_now_note_is_task_scoped():
 
 
 @pytest.mark.asyncio
-async def test_steer_mode_skips_ceo_conversations():
+async def test_steer_mode_skips_ceo_conversations() -> None:
     assert (
         await _svc()._decisions_steer_mode(
             conversation_id=MagicMock(),
@@ -84,7 +96,9 @@ async def test_steer_mode_skips_ceo_conversations():
 
 
 @pytest.mark.asyncio
-async def test_steer_mode_off_when_pilot_off(monkeypatch):
+async def test_steer_mode_off_when_pilot_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         decisions, "pilot_mode", AsyncMock(return_value=decisions.PilotMode.OFF)
     )
@@ -102,7 +116,9 @@ async def test_steer_mode_off_when_pilot_off(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_steer_mode_attaches_confident_steering_verdict(monkeypatch):
+async def test_steer_mode_attaches_confident_steering_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     svc = _svc()
     monkeypatch.setattr(
         decisions, "pilot_mode", AsyncMock(return_value=decisions.PilotMode.ON)
@@ -128,7 +144,9 @@ async def test_steer_mode_attaches_confident_steering_verdict(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_steer_mode_fail_open_on_internal_error(monkeypatch):
+async def test_steer_mode_fail_open_on_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     svc = _svc()
     monkeypatch.setattr(
         decisions, "pilot_mode", AsyncMock(side_effect=RuntimeError("db down"))
@@ -149,7 +167,7 @@ async def test_steer_mode_fail_open_on_internal_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _write_fake_transcript(home, agent_id, segments):
+def _write_fake_transcript(home: Path, agent_id: str, segments: list[str]) -> Path:
     project_dir = home / ".claude" / "projects" / f"-app-{agent_id}"
     project_dir.mkdir(parents=True)
     lines = []
@@ -168,7 +186,9 @@ def _write_fake_transcript(home, agent_id, segments):
     return project_dir / "session-abc.jsonl"
 
 
-def test_assistant_segments_extraction(monkeypatch, tmp_path):
+def test_assistant_segments_extraction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from roboco.runtime.engines.spawn_exit import SpawnExitEngine
 
     _write_fake_transcript(
@@ -186,17 +206,17 @@ def test_assistant_segments_extraction(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_capture_transcript_notes_off_is_noop(monkeypatch, tmp_path):
-    from roboco.runtime.engines.spawn_exit import SpawnExitEngine
-
-    engine = SpawnExitEngine.__new__(SpawnExitEngine)
+async def test_capture_transcript_notes_off_is_noop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _bare_engine()
     engine._instances = {}
     _write_fake_transcript(tmp_path, "backend-dev-1", ["x" * 250])
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
 
     import roboco.db.base as db_base
 
-    def boom():
+    def boom() -> None:
         raise RuntimeError("should not open a session when off")
 
     monkeypatch.setattr(db_base, "get_session_factory", boom)
@@ -205,10 +225,10 @@ async def test_capture_transcript_notes_off_is_noop(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_capture_transcript_notes_writes_journal_entries(monkeypatch, tmp_path):
-    from roboco.runtime.engines.spawn_exit import SpawnExitEngine
-
-    engine = SpawnExitEngine.__new__(SpawnExitEngine)
+async def test_capture_transcript_notes_writes_journal_entries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _bare_engine()
     instance = MagicMock()
     instance.current_task_id = None
     engine._instances = {"backend-dev-1": instance}
@@ -230,17 +250,17 @@ async def test_capture_transcript_notes_writes_journal_entries(monkeypatch, tmp_
     db.execute = AsyncMock(
         return_value=MagicMock(scalar_one_or_none=MagicMock(return_value="agent-uuid"))
     )
-    written = []
+    written: list[Any] = []
 
     class _FakeJournalSvc:
-        async def add_general_entry(self, agent_uuid, params):
+        async def add_general_entry(self, agent_uuid: Any, params: Any) -> None:
             written.append(params)
 
         # get_or_create_journal is called inside add_general_entry; bypass by
         # having add_general_entry fully fake above.
 
     class _FakeFactory:
-        def __call__(self):
+        def __call__(self) -> MagicMock:
             cm = MagicMock()
             cm.__aenter__ = AsyncMock(return_value=db)
             cm.__aexit__ = AsyncMock(return_value=False)

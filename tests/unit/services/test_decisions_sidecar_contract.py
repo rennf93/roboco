@@ -37,20 +37,23 @@ _SIDECAR_RESPONSE = {
 }
 
 
-def test_sidecar_response_parses_under_the_shared_schemas():
+def test_sidecar_response_parses_under_the_shared_schemas() -> None:
     result = parse_decisions_payload(
         _SIDECAR_RESPONSE, tier="laya", session_id="selfheal:contract"
     )
     assert result.tier == "laya"
-    assert result.answer("gate").noul == pytest.approx(0.93)
+    gate = result.answer("gate")
+    assert gate is not None
+    assert gate.noul == pytest.approx(0.93)
     choice = result.answer("routing")
+    assert choice is not None
     assert choice.choice == "park_standard"
     assert choice.confidence == pytest.approx(0.81)
     assert abs(sum(choice.probabilities.values()) - 1.0) < 1e-6
 
 
 @pytest.mark.asyncio
-async def test_sidecar_response_parses_through_the_real_client():
+async def test_sidecar_response_parses_through_the_real_client() -> None:
     """End-to-end through DecisionsClient with a transport that stands in
     for the container's HTTP surface."""
 
@@ -74,7 +77,7 @@ async def test_sidecar_response_parses_through_the_real_client():
     assert result.usage.cost == 0.0
 
 
-def test_calibration_fixture_known_probabilities():
+def test_calibration_fixture_known_probabilities() -> None:
     """A fitted-temperature fixture: the probabilities below are what the
     container's temperature-fitted adapter must produce (within tolerance)
     for a known mid-entropy input. Raw checkpoints run hotter; if the
@@ -92,6 +95,7 @@ def test_calibration_fixture_known_probabilities():
     }
     result = parse_decisions_payload(fitted, tier="laya", session_id="calibration:1")
     answer = result.answer("gate")
+    assert answer is not None
     assert answer.noul is not None
     # Fitted temperatures keep confidence in the calibrated band; the raw
     # checkpoint's over-confident profile (>= 0.95 on mid-entropy inputs)

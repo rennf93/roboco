@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 BumpKind = Literal["major", "minor", "patch"]
 
 # Kinds that must carry a CHANGELOG line; pure chore/docs/test noise is exempt
@@ -736,7 +738,7 @@ def report_from_dict(data: dict[str, Any]) -> ReleaseReadinessReport:
 
 
 async def decisions_risk_advisory(
-    session, report: ReleaseReadinessReport
+    session: AsyncSession, report: ReleaseReadinessReport
 ) -> str | None:
     """The advisory release-risk line for ``report``, or None (output
     unchanged). Async only because the screen is; ``assess`` above stays

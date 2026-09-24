@@ -2,7 +2,9 @@
 B18, B21, B22, B23, B24, B26): gates, thresholds, shadow/off semantics,
 and the fail-open seams at each call site."""
 
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -45,7 +47,13 @@ def _payload(answers: dict) -> dict:
     }
 
 
-def _arm(monkeypatch, *, mode=PilotMode.ON, payload=None, fail=False):
+def _arm(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mode: PilotMode = PilotMode.ON,
+    payload: dict | None = None,
+    fail: bool = False,
+) -> None:
     """Arm the pilot stack: master flag on, chosen mode, laya endpoint, and
     a mocked transport returning ``payload`` (or failing)."""
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
@@ -63,11 +71,11 @@ def _arm(monkeypatch, *, mode=PilotMode.ON, payload=None, fail=False):
     monkeypatch.setattr(pilots_mod, "get_decisions_client", lambda: client)
 
 
-def _off(monkeypatch):
+def _off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", False)
 
 
-def _bare(engine_cls, **attrs):
+def _bare(engine_cls: Any, **attrs: Any) -> Any:
     engine = engine_cls.__new__(engine_cls)
     engine.session = MagicMock()
     engine.session.flush = AsyncMock()
@@ -83,7 +91,7 @@ def _bare(engine_cls, **attrs):
 
 
 @pytest.mark.asyncio
-async def test_b3_off_is_none_without_call(monkeypatch):
+async def test_b3_off_is_none_without_call(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     mock = AsyncMock(return_value=(PilotMode.OFF, None))
     monkeypatch.setattr(pc, "decide_for_pilot", mock)
@@ -91,7 +99,7 @@ async def test_b3_off_is_none_without_call(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b3_shadow_acts_as_off(monkeypatch):
+async def test_b3_shadow_acts_as_off(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -103,7 +111,9 @@ async def test_b3_shadow_acts_as_off(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b3_confident_routes_to_secretary(monkeypatch):
+async def test_b3_confident_routes_to_secretary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -121,7 +131,7 @@ async def test_b3_confident_routes_to_secretary(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b3_below_floor_falls_back(monkeypatch):
+async def test_b3_below_floor_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -132,21 +142,26 @@ async def test_b3_below_floor_falls_back(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b3_telegram_off_keeps_silent_drop(monkeypatch):
+async def test_b3_telegram_off_keeps_silent_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _off(monkeypatch)
     engine = _bare(TelegramInboundEngine)
     client = SimpleNamespace(send_message=AsyncMock())
     monkeypatch.setattr(bridge, "deliver_text", AsyncMock(return_value=None))
-    monkeypatch.setattr(bridge, "start_secretary", AsyncMock())
+    start_secretary = AsyncMock()
+    monkeypatch.setattr(bridge, "start_secretary", start_secretary)
     monkeypatch.setattr(pc, "intake_preroute", AsyncMock(return_value=None))
     monkeypatch.setattr(pc, "tg_freetext_gate", AsyncMock(return_value=False))
     await engine._route_free_text("1", "hello", client, object())
     client.send_message.assert_not_awaited()
-    bridge.start_secretary.assert_not_awaited()
+    start_secretary.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_b3_telegram_confident_intake_route_mirrors_newtask(monkeypatch):
+async def test_b3_telegram_confident_intake_route_mirrors_newtask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(TelegramInboundEngine)
     client = SimpleNamespace(send_message=AsyncMock())
     creds = object()
@@ -162,7 +177,9 @@ async def test_b3_telegram_confident_intake_route_mirrors_newtask(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b3_telegram_confident_secretary_route_starts_session(monkeypatch):
+async def test_b3_telegram_confident_secretary_route_starts_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(TelegramInboundEngine)
     client = SimpleNamespace(send_message=AsyncMock())
     creds = object()
@@ -172,14 +189,17 @@ async def test_b3_telegram_confident_secretary_route_starts_session(monkeypatch)
         "intake_preroute",
         AsyncMock(return_value=pc.IntakeRoute.SECRETARY_DIRECTIVE),
     )
-    monkeypatch.setattr(bridge, "start_secretary", AsyncMock(return_value="On it."))
+    start_secretary = AsyncMock(return_value="On it.")
+    monkeypatch.setattr(bridge, "start_secretary", start_secretary)
     await engine._route_free_text("1", "status of the fleet", client, creds)
-    bridge.start_secretary.assert_awaited_once_with("1", "status of the fleet", creds)
+    start_secretary.assert_awaited_once_with("1", "status of the fleet", creds)
     client.send_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_b3_telegram_noise_suppresses_and_skips_b21(monkeypatch):
+async def test_b3_telegram_noise_suppresses_and_skips_b21(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(TelegramInboundEngine)
     client = SimpleNamespace(send_message=AsyncMock())
     monkeypatch.setattr(bridge, "deliver_text", AsyncMock(return_value=None))
@@ -194,33 +214,36 @@ async def test_b3_telegram_noise_suppresses_and_skips_b21(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b3_prompter_advisory_never_blocks_the_record(monkeypatch):
+async def test_b3_prompter_advisory_never_blocks_the_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _off(monkeypatch)
-    svc = PrompterService.__new__(PrompterService)
+    svc: Any = PrompterService.__new__(PrompterService)
     svc.log = structlog.get_logger("test")
     svc._db = MagicMock()
     svc._db.commit = AsyncMock()
     svc._db.rollback = AsyncMock()
     monkeypatch.setattr(svc, "get_or_create_live_session", AsyncMock())
-    monkeypatch.setattr(
-        pc, "intake_preroute", AsyncMock(return_value=pc.IntakeRoute.NOISE)
-    )
+    intake_mock = AsyncMock(return_value=pc.IntakeRoute.NOISE)
+    monkeypatch.setattr(pc, "intake_preroute", intake_mock)
     sid = uuid4().hex
     row = await svc.record_live_message(sid, "user", "hello there")
     assert row.content == "hello there"
-    pc.intake_preroute.assert_awaited_once()
+    intake_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_b3_prompter_advisory_survives_pilot_failure(monkeypatch):
-    svc = PrompterService.__new__(PrompterService)
+async def test_b3_prompter_advisory_survives_pilot_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc: Any = PrompterService.__new__(PrompterService)
     svc.log = structlog.get_logger("test")
     svc._db = MagicMock()
     svc._db.commit = AsyncMock()
     svc._db.rollback = AsyncMock()
     monkeypatch.setattr(svc, "get_or_create_live_session", AsyncMock())
 
-    async def boom(*a, **kw):
+    async def boom(*a: object, **kw: object) -> None:
         raise RuntimeError("down")
 
     monkeypatch.setattr(pc, "intake_preroute", boom)
@@ -235,13 +258,13 @@ async def test_b3_prompter_advisory_survives_pilot_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b4_off_is_none(monkeypatch):
+async def test_b4_off_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     assert await pc.x_mention_triage(None, mention_id="m1", text="hi") is None
 
 
 @pytest.mark.asyncio
-async def test_b4_shadow_acts_as_off(monkeypatch):
+async def test_b4_shadow_acts_as_off(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -253,7 +276,7 @@ async def test_b4_shadow_acts_as_off(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b4_confident_spam_suppresses(monkeypatch):
+async def test_b4_confident_spam_suppresses(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -267,7 +290,7 @@ async def test_b4_confident_spam_suppresses(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b4_bug_report_proceeds(monkeypatch):
+async def test_b4_bug_report_proceeds(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -292,7 +315,7 @@ def _mention() -> XMention:
 
 
 @pytest.mark.asyncio
-async def test_b4_wiring_spam_suppresses_skip(monkeypatch):
+async def test_b4_wiring_spam_suppresses_skip(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _bare(XEngine)
     monkeypatch.setattr(engine, "_already_seen", AsyncMock(return_value=False))
     monkeypatch.setattr(
@@ -302,7 +325,9 @@ async def test_b4_wiring_spam_suppresses_skip(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b4_wiring_question_proceeds_as_today(monkeypatch):
+async def test_b4_wiring_question_proceeds_as_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(XEngine)
     monkeypatch.setattr(engine, "_already_seen", AsyncMock(return_value=False))
     monkeypatch.setattr(
@@ -314,11 +339,13 @@ async def test_b4_wiring_question_proceeds_as_today(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b4_wiring_pilot_failure_proceeds(monkeypatch):
+async def test_b4_wiring_pilot_failure_proceeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(XEngine)
     monkeypatch.setattr(engine, "_already_seen", AsyncMock(return_value=False))
 
-    async def boom(*a, **kw):
+    async def boom(*a: object, **kw: object) -> bool:
         raise RuntimeError("down")
 
     monkeypatch.setattr(pc, "x_mention_triage", boom)
@@ -331,13 +358,13 @@ async def test_b4_wiring_pilot_failure_proceeds(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b10_off_returns_empty(monkeypatch):
+async def test_b10_off_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     assert await pc.segment_classify(None, segments=["Decision: use X"]) == []
 
 
 @pytest.mark.asyncio
-async def test_b10_shadow_returns_empty(monkeypatch):
+async def test_b10_shadow_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -349,7 +376,7 @@ async def test_b10_shadow_returns_empty(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b10_confident_verdicts_aligned(monkeypatch):
+async def test_b10_confident_verdicts_aligned(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -366,7 +393,7 @@ async def test_b10_confident_verdicts_aligned(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b10_below_floor_entry_is_none(monkeypatch):
+async def test_b10_below_floor_entry_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -377,7 +404,9 @@ async def test_b10_below_floor_entry_is_none(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b10_wiring_off_keeps_regex_without_pilot_call(monkeypatch):
+async def test_b10_wiring_off_keeps_regex_without_pilot_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _off(monkeypatch)
     service = ExtractionService()
     mock = AsyncMock()
@@ -395,7 +424,9 @@ async def test_b10_wiring_off_keeps_regex_without_pilot_call(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b10_wiring_confident_verdict_replaces_regex(monkeypatch):
+async def test_b10_wiring_confident_verdict_replaces_regex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     service = ExtractionService()
     monkeypatch.setattr(
@@ -414,7 +445,9 @@ async def test_b10_wiring_confident_verdict_replaces_regex(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b10_wiring_all_confident_skips_full_llm_fallback(monkeypatch):
+async def test_b10_wiring_all_confident_skips_full_llm_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     service = ExtractionService()
     monkeypatch.setattr(
@@ -442,13 +475,13 @@ async def test_b10_wiring_all_confident_skips_full_llm_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b11_off_returns_none(monkeypatch):
+async def test_b11_off_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     assert await pc.vault_prefilter(None, note_path="n.md", body="body") is None
 
 
 @pytest.mark.asyncio
-async def test_b11_shadow_returns_none(monkeypatch):
+async def test_b11_shadow_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -467,7 +500,9 @@ async def test_b11_shadow_returns_none(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b11_confidently_not_worthy_skips(monkeypatch):
+async def test_b11_confidently_not_worthy_skips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -486,7 +521,9 @@ async def test_b11_confidently_not_worthy_skips(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b11_worthy_or_below_floor_runs_extraction(monkeypatch):
+async def test_b11_worthy_or_below_floor_runs_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -505,7 +542,9 @@ async def test_b11_worthy_or_below_floor_runs_extraction(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b11_wiring_confident_skip_avoids_extraction(monkeypatch, tmp_path):
+async def test_b11_wiring_confident_skip_avoids_extraction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     engine = _bare(VaultIntakeEngine)
     note = tmp_path / "note.md"
     note.write_text("#roboco just an idea, maybe", encoding="utf-8")
@@ -531,13 +570,13 @@ async def test_b11_wiring_confident_skip_avoids_extraction(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_b18_kind_off_is_none(monkeypatch):
+async def test_b18_kind_off_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     assert await pc.secretary_directive_kind(None, utterance="relay this") is None
 
 
 @pytest.mark.asyncio
-async def test_b18_kind_confident_fill(monkeypatch):
+async def test_b18_kind_confident_fill(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -551,7 +590,7 @@ async def test_b18_kind_confident_fill(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b18_kind_below_floor_is_none(monkeypatch):
+async def test_b18_kind_below_floor_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -562,7 +601,9 @@ async def test_b18_kind_below_floor_is_none(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b18_assignee_out_of_band_roster_fails_open(monkeypatch):
+async def test_b18_assignee_out_of_band_roster_fails_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     mock = AsyncMock()
     monkeypatch.setattr(pc, "decide_for_pilot", mock)
@@ -574,7 +615,7 @@ async def test_b18_assignee_out_of_band_roster_fails_open(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b18_assignee_confident_fill(monkeypatch):
+async def test_b18_assignee_confident_fill(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -592,7 +633,9 @@ async def test_b18_assignee_confident_fill(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b18_wiring_kind_filled_when_unset(monkeypatch):
+async def test_b18_wiring_kind_filled_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     svc = _bare(SecretaryService)
     monkeypatch.setattr(
@@ -606,7 +649,9 @@ async def test_b18_wiring_kind_filled_when_unset(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b18_wiring_kind_unset_unconfident_raises(monkeypatch):
+async def test_b18_wiring_kind_unset_unconfident_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     svc = _bare(SecretaryService)
     monkeypatch.setattr(pc, "secretary_directive_kind", AsyncMock(return_value=None))
@@ -615,7 +660,9 @@ async def test_b18_wiring_kind_unset_unconfident_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b18_wiring_explicit_kind_never_calls_pilot(monkeypatch):
+async def test_b18_wiring_explicit_kind_never_calls_pilot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     svc = _bare(SecretaryService)
     mock = AsyncMock()
@@ -632,7 +679,9 @@ async def test_b18_wiring_explicit_kind_never_calls_pilot(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b18_wiring_assignee_filled_on_slug_miss(monkeypatch):
+async def test_b18_wiring_assignee_filled_on_slug_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     svc = _bare(SecretaryService)
     agent_id = uuid4()
@@ -643,9 +692,11 @@ async def test_b18_wiring_assignee_filled_on_slug_miss(monkeypatch):
 
     import roboco.services.secretary as secretary_mod
 
-    calls = []
+    calls: list[str] = []
 
-    async def fake_get_agent_by_slug(session, slug):
+    async def fake_get_agent_by_slug(
+        session: object, slug: str
+    ) -> SimpleNamespace | None:
         calls.append(slug)
         if len(calls) == 1:
             return None
@@ -657,7 +708,9 @@ async def test_b18_wiring_assignee_filled_on_slug_miss(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b18_wiring_assignee_off_raises_as_today(monkeypatch):
+async def test_b18_wiring_assignee_off_raises_as_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _off(monkeypatch)
     svc = _bare(SecretaryService)
     mock = AsyncMock()
@@ -679,13 +732,13 @@ async def test_b18_wiring_assignee_off_raises_as_today(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b21_off_is_false(monkeypatch):
+async def test_b21_off_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     assert await pc.tg_freetext_gate(None, chat_id="1", text="hello") is False
 
 
 @pytest.mark.asyncio
-async def test_b21_shadow_is_false(monkeypatch):
+async def test_b21_shadow_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -695,19 +748,19 @@ async def test_b21_shadow_is_false(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b21_confident_deserves_delivery(monkeypatch):
+async def test_b21_confident_deserves_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.95}}))
     assert await pc.tg_freetext_gate(None, chat_id="1", text="please fix X") is True
 
 
 @pytest.mark.asyncio
-async def test_b21_below_floor_is_false(monkeypatch):
+async def test_b21_below_floor_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.5}}))
     assert await pc.tg_freetext_gate(None, chat_id="1", text="hey") is False
 
 
 @pytest.mark.asyncio
-async def test_b21_wiring_gate_adds_delivery(monkeypatch):
+async def test_b21_wiring_gate_adds_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _bare(TelegramInboundEngine)
     client = SimpleNamespace(send_message=AsyncMock())
     monkeypatch.setattr(bridge, "deliver_text", AsyncMock(return_value=None))
@@ -723,7 +776,9 @@ async def test_b21_wiring_gate_adds_delivery(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b21_wiring_gate_below_floor_stays_silent(monkeypatch):
+async def test_b21_wiring_gate_below_floor_stays_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(TelegramInboundEngine)
     client = SimpleNamespace(send_message=AsyncMock())
     monkeypatch.setattr(bridge, "deliver_text", AsyncMock(return_value=None))
@@ -739,7 +794,7 @@ async def test_b21_wiring_gate_below_floor_stays_silent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b22_off_is_false(monkeypatch):
+async def test_b22_off_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     assert (
         await pc.memory_distill_gate(
@@ -755,7 +810,7 @@ async def test_b22_off_is_false(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b22_shadow_is_false(monkeypatch):
+async def test_b22_shadow_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -775,7 +830,7 @@ async def test_b22_shadow_is_false(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b22_confidently_not_worth_skips(monkeypatch):
+async def test_b22_confidently_not_worth_skips(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.05}}))
     assert (
         await pc.memory_distill_gate(
@@ -791,7 +846,9 @@ async def test_b22_confidently_not_worth_skips(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b22_worth_or_below_floor_persists(monkeypatch):
+async def test_b22_worth_or_below_floor_persists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.6}}))
     assert (
         await pc.memory_distill_gate(
@@ -807,7 +864,9 @@ async def test_b22_worth_or_below_floor_persists(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b22_wiring_gate_skips_llm_and_persist(monkeypatch):
+async def test_b22_wiring_gate_skips_llm_and_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     monkeypatch.setattr(pc, "memory_distill_gate", AsyncMock(return_value=True))
     chat = AsyncMock()
@@ -818,7 +877,7 @@ async def test_b22_wiring_gate_skips_llm_and_persist(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b22_wiring_gate_open_distills(monkeypatch):
+async def test_b22_wiring_gate_open_distills(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     monkeypatch.setattr(pc, "memory_distill_gate", AsyncMock(return_value=False))
     monkeypatch.setattr(
@@ -836,7 +895,7 @@ async def test_b22_wiring_gate_open_distills(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b23_off_keeps_first_bullet(monkeypatch):
+async def test_b23_off_keeps_first_bullet(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     highlights = ["Added: dashboard", "Fixed: login", "Security: patch"]
     assert (
@@ -848,7 +907,7 @@ async def test_b23_off_keeps_first_bullet(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b23_shadow_keeps_order(monkeypatch):
+async def test_b23_shadow_keeps_order(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -866,7 +925,7 @@ async def test_b23_shadow_keeps_order(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b23_confident_pick_leads(monkeypatch):
+async def test_b23_confident_pick_leads(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -880,7 +939,9 @@ async def test_b23_confident_pick_leads(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b23_below_floor_and_single_entry_keep_order(monkeypatch):
+async def test_b23_below_floor_and_single_entry_keep_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -896,7 +957,7 @@ async def test_b23_below_floor_and_single_entry_keep_order(monkeypatch):
     )
 
 
-def test_b23_x_and_video_share_one_pilot():
+def test_b23_x_and_video_share_one_pilot() -> None:
     """Both call sites resolve to the same pilots_content function."""
     import inspect
 
@@ -912,7 +973,7 @@ def test_b23_x_and_video_share_one_pilot():
 
 
 @pytest.mark.asyncio
-async def test_b23_x_wiring_pilot_reorders(monkeypatch):
+async def test_b23_x_wiring_pilot_reorders(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _bare(XEngine)
     monkeypatch.setattr(
         pc,
@@ -926,10 +987,12 @@ async def test_b23_x_wiring_pilot_reorders(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b23_video_wiring_pilot_failure_falls_back(monkeypatch):
+async def test_b23_video_wiring_pilot_failure_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(VideoEngine)
 
-    async def boom(*a, **kw):
+    async def boom(*a: object, **kw: object) -> list[str]:
         raise RuntimeError("down")
 
     monkeypatch.setattr(pc, "changelog_highlights_pick", boom)
@@ -940,7 +1003,7 @@ async def test_b23_video_wiring_pilot_failure_falls_back(monkeypatch):
     )
 
 
-def test_b23_x_changelog_highlights_regex_unchanged():
+def test_b23_x_changelog_highlights_regex_unchanged() -> None:
     """The pure regex parser keeps its contract; the pilot only reorders."""
     body = "- **Dashboard (#1).**\n- **Login fix (#2).**"
     assert changelog_highlights(body) == ["Dashboard", "Login fix"]
@@ -952,7 +1015,7 @@ def test_b23_x_changelog_highlights_regex_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_b24_off_is_none(monkeypatch):
+async def test_b24_off_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     assert (
         await pc.proactive_domain(
@@ -963,7 +1026,7 @@ async def test_b24_off_is_none(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b24_confident_overrides_keyword(monkeypatch):
+async def test_b24_confident_overrides_keyword(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -979,7 +1042,7 @@ async def test_b24_confident_overrides_keyword(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b24_below_floor_returns_none(monkeypatch):
+async def test_b24_below_floor_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload(
@@ -995,7 +1058,9 @@ async def test_b24_below_floor_returns_none(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b24_wiring_off_keeps_keyword_domain(monkeypatch):
+async def test_b24_wiring_off_keeps_keyword_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _off(monkeypatch)
     svc = ProactiveKnowledgeService()
     mock = AsyncMock()
@@ -1005,7 +1070,7 @@ async def test_b24_wiring_off_keeps_keyword_domain(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b24_wiring_confident_overrides(monkeypatch):
+async def test_b24_wiring_confident_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
     svc = ProactiveKnowledgeService()
     monkeypatch.setattr(pc, "proactive_domain", AsyncMock(return_value="security"))
@@ -1018,7 +1083,7 @@ async def test_b24_wiring_confident_overrides(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b26_off_is_false(monkeypatch):
+async def test_b26_off_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
     _off(monkeypatch)
     assert (
         await pc.decision_note_sufficiency(None, kind="release", reason="ok") is False
@@ -1026,7 +1091,7 @@ async def test_b26_off_is_false(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b26_shadow_is_false(monkeypatch):
+async def test_b26_shadow_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         mode=PilotMode.SHADOW,
@@ -1038,7 +1103,7 @@ async def test_b26_shadow_is_false(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b26_substantive_score_2_relaxes(monkeypatch):
+async def test_b26_substantive_score_2_relaxes(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload({"gate": {"type": "score", "score": 2.0, "confidence": 0.95}}),
@@ -1047,7 +1112,7 @@ async def test_b26_substantive_score_2_relaxes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b26_low_score_keeps_floor(monkeypatch):
+async def test_b26_low_score_keeps_floor(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
         payload=_payload({"gate": {"type": "score", "score": 1.0, "confidence": 0.95}}),
@@ -1058,7 +1123,9 @@ async def test_b26_low_score_keeps_floor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b26_wiring_substantive_note_accepted(monkeypatch):
+async def test_b26_wiring_substantive_note_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(TelegramInboundEngine)
     monkeypatch.setattr(pc, "decision_note_sufficiency", AsyncMock(return_value=True))
     monkeypatch.setattr(engine, "_resolve_task", AsyncMock(return_value=None))
@@ -1068,7 +1135,9 @@ async def test_b26_wiring_substantive_note_accepted(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b26_wiring_unsubstantive_note_keeps_char_floor(monkeypatch):
+async def test_b26_wiring_unsubstantive_note_keeps_char_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(TelegramInboundEngine)
     monkeypatch.setattr(pc, "decision_note_sufficiency", AsyncMock(return_value=False))
     ok, message = await engine._dispatch_reject("release", "abcd1234", "", "ok")
@@ -1077,7 +1146,9 @@ async def test_b26_wiring_unsubstantive_note_keeps_char_floor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_b26_wiring_long_note_never_consults_pilot(monkeypatch):
+async def test_b26_wiring_long_note_never_consults_pilot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = _bare(TelegramInboundEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pc, "decision_note_sufficiency", mock)

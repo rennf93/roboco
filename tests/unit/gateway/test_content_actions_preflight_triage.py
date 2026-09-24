@@ -4,6 +4,7 @@ graceful no-verdict path when Decisions is off/unreachable."""
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -12,7 +13,7 @@ from roboco.services import decisions
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 
 
-def _deps(**overrides) -> ContentActionsDeps:
+def _deps(**overrides: Any) -> ContentActionsDeps:
     task = overrides.get("task", AsyncMock())
     git = overrides.get("git", AsyncMock())
     git.diff_and_files.return_value = ("", [])
@@ -29,7 +30,7 @@ def _deps(**overrides) -> ContentActionsDeps:
     )
 
 
-def _task(**kwargs):
+def _task(**kwargs: Any) -> MagicMock:
     t = MagicMock()
     t.id = uuid4()
     t.branch_name = "feature/backend/ABC12345--DEF67890"
@@ -43,7 +44,9 @@ def _task(**kwargs):
 
 
 @pytest.mark.asyncio
-async def test_preflight_diff_advisory_envelope(monkeypatch):
+async def test_preflight_diff_advisory_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     t = _task(assigned_to=agent_id)
     deps = _deps(task=AsyncMock())
@@ -87,7 +90,9 @@ async def test_preflight_diff_advisory_envelope(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_preflight_diff_no_verdict_is_graceful(monkeypatch):
+async def test_preflight_diff_no_verdict_is_graceful(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     t = _task(assigned_to=agent_id)
     deps = _deps(task=AsyncMock())
@@ -102,7 +107,7 @@ async def test_preflight_diff_no_verdict_is_graceful(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_preflight_diff_requires_ownership():
+async def test_preflight_diff_requires_ownership() -> None:
     t = _task(assigned_to=uuid4())  # someone else's task
     deps = _deps(task=AsyncMock())
     deps.task.get.return_value = t
@@ -112,7 +117,9 @@ async def test_preflight_diff_requires_ownership():
 
 
 @pytest.mark.asyncio
-async def test_preflight_diff_empty_diff_is_invalid_state(monkeypatch):
+async def test_preflight_diff_empty_diff_is_invalid_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     t = _task(assigned_to=agent_id)
     deps = _deps(task=AsyncMock())
@@ -124,7 +131,9 @@ async def test_preflight_diff_empty_diff_is_invalid_state(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_triage_failure_lane_envelope(monkeypatch):
+async def test_triage_failure_lane_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     t = _task()
     deps = _deps(task=AsyncMock())
     deps.task.get.return_value = t
@@ -146,7 +155,9 @@ async def test_triage_failure_lane_envelope(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_triage_failure_unknown_lane_tells_agent_to_debug(monkeypatch):
+async def test_triage_failure_unknown_lane_tells_agent_to_debug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     t = _task()
     deps = _deps(task=AsyncMock())
     deps.task.get.return_value = t
@@ -165,7 +176,9 @@ async def test_triage_failure_unknown_lane_tells_agent_to_debug(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_triage_failure_git_failure_still_triages(monkeypatch):
+async def test_triage_failure_git_failure_still_triages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A git leg failure degrades changed_files to [] instead of failing
     the verb: the triage lane is advisory and must not hard-fail."""
     t = _task()
@@ -174,7 +187,7 @@ async def test_triage_failure_git_failure_still_triages(monkeypatch):
     deps.git.diff_and_files.side_effect = RuntimeError("git down")
     captured = {}
 
-    async def fake_triage(session, **kwargs):
+    async def fake_triage(session: Any, **kwargs: Any) -> Any:
         captured.update(kwargs)
         return decisions.TriageLane.ENVIRONMENT
 

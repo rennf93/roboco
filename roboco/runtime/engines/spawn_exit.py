@@ -91,6 +91,32 @@ _DECISIONS_RETRY_SOON_RETRY_AFTER_S = 60.0
 _TRANSCRIPT_NOTE_MIN_CHARS = 200
 
 
+def _assistant_block_texts(content: object) -> list[str]:
+    """Text pieces of one assistant message content payload: per-block text
+    for a content list, the whole string for a plain-string payload."""
+    texts: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text") or ""
+                if text.strip():
+                    texts.append(text)
+    elif isinstance(content, str) and content.strip():
+        texts.append(content)
+    return texts
+
+
+def _assistant_texts_from_transcript_entry(entry: object) -> str:
+    """Joined assistant text of one transcript .jsonl line, '' when the line
+    is not an assistant message with text content."""
+    message = entry.get("message") if isinstance(entry, dict) else None
+    if not isinstance(message, dict):
+        return ""
+    if message.get("role") != "assistant":
+        return ""
+    return "\n".join(_assistant_block_texts(message.get("content"))).strip()
+
+
 class SpawnExitEngine(_Base):
     """Mixin holding the "spawn_exit" methods moved out of AgentOrchestrator."""
 
@@ -1191,68 +1217,101 @@ class SpawnExitEngine(_Base):
         writes generalized journal entries tagged ``auto-note``. Fail-open
         end to end: a finalization must never block on journaling."""
         try:
-            from roboco.db.base import get_session_factory
-            from roboco.services.decisions.pilots import (
-                PilotMode,
-                pilot_mode,
-                transcript_note_worthy,
-            )
-
             segments = self._assistant_segments_from_transcript(agent_id)
             if not segments:
                 return
             instance = self._instances.get(agent_id)
             task_uuid = instance.current_task_id if instance else None
+            from roboco.db.base import get_session_factory
+
             factory = get_session_factory()
             async with factory() as db:
-                mode = await pilot_mode(db, "transcript_notes")
-                if mode is PilotMode.OFF:
-                    return
-                verdicts = await transcript_note_worthy(
-                    db,
-                    task_id=str(task_uuid) if task_uuid else "unattributed",
-                    segments=segments,
-                )
-                if verdicts is None or mode is not PilotMode.ON:
-                    return
-                from sqlalchemy import select as _select
-
-                from roboco.db.tables import AgentTable
-                from roboco.models.journal import GeneralEntryParams
-                from roboco.services.journal import get_journal_service
-
-                agent_uuid = (
-                    await db.execute(
-                        _select(AgentTable.id).where(AgentTable.slug == agent_id)
-                    )
-                ).scalar_one_or_none()
-                if agent_uuid is None:
-                    return
-                journal_svc = get_journal_service(db)
-                for segment, worthy in zip(segments, verdicts, strict=False):
-                    if not worthy:
-                        continue
-                    await journal_svc.add_general_entry(
-                        agent_uuid,
-                        GeneralEntryParams(
-                            title=f"Auto-note from {agent_id}: {segment[:80]}",
-                            content=segment,
-                            task_id=task_uuid,
-                            tags=["auto-note"],
-                        ),
-                    )
-                await db.commit()
-                logger.info(
-                    "Transcript auto-notes captured",
-                    agent_id=agent_id,
-                    worthy=sum(1 for v in verdicts if v),
-                    considered=len(verdicts),
+                await self._write_transcript_auto_notes(
+                    db, agent_id, task_uuid, segments
                 )
         except Exception as exc:
             logger.debug(
                 "Transcript auto-notes pass skipped",
                 agent_id=agent_id,
                 error=str(exc),
+            )
+
+    async def _write_transcript_auto_notes(
+        self,
+        db: Any,
+        agent_id: str,
+        task_uuid: Any,
+        segments: list[str],
+    ) -> None:
+        """Gate the B28 auto-notes pass on the pilot mode, then persist one
+        journal entry per transcript-note-worthy segment. Caller owns the
+        session and the fail-open except."""
+        from roboco.services.decisions.pilots import (
+            PilotMode,
+            pilot_mode,
+            transcript_note_worthy,
+        )
+
+        mode = await pilot_mode(db, "transcript_notes")
+        if mode is PilotMode.OFF:
+            return
+        verdicts = await transcript_note_worthy(
+            db,
+            task_id=str(task_uuid) if task_uuid else "unattributed",
+            segments=segments,
+        )
+        if verdicts is None or mode is not PilotMode.ON:
+            return
+        from sqlalchemy import select as _select
+
+        from roboco.db.tables import AgentTable
+        from roboco.services.journal import get_journal_service
+
+        agent_uuid = (
+            await db.execute(_select(AgentTable.id).where(AgentTable.slug == agent_id))
+        ).scalar_one_or_none()
+        if agent_uuid is None:
+            return
+        journal_svc = get_journal_service(db)
+        await self._persist_worthy_auto_notes(
+            journal_svc,
+            agent_id,
+            task_uuid,
+            agent_uuid,
+            list(zip(segments, verdicts, strict=False)),
+        )
+        await db.commit()
+        logger.info(
+            "Transcript auto-notes captured",
+            agent_id=agent_id,
+            worthy=sum(1 for v in verdicts if v),
+            considered=len(verdicts),
+        )
+
+    @staticmethod
+    async def _persist_worthy_auto_notes(
+        journal_svc: Any,
+        agent_id: str,
+        task_uuid: Any,
+        agent_uuid: Any,
+        pairs: list[tuple[str, bool]],
+    ) -> None:
+        """Write one journal entry per transcript-note-worthy segment."""
+        from uuid import UUID as _UUID
+
+        from roboco.models.journal import GeneralEntryParams
+
+        for segment, worthy in pairs:
+            if not worthy:
+                continue
+            await journal_svc.add_general_entry(
+                agent_uuid,
+                GeneralEntryParams(
+                    title=f"Auto-note from {agent_id}: {segment[:80]}",
+                    content=segment,
+                    task_id=_UUID(task_uuid) if task_uuid else None,
+                    tags=["auto-note"],
+                ),
             )
 
     @staticmethod
@@ -1281,22 +1340,7 @@ class SpawnExitEngine(_Base):
                         entry = _json.loads(line)
                     except ValueError:
                         continue
-                    message = entry.get("message") if isinstance(entry, dict) else None
-                    if not isinstance(message, dict):
-                        continue
-                    if message.get("role") != "assistant":
-                        continue
-                    content = message.get("content")
-                    texts: list[str] = []
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text = block.get("text") or ""
-                                if text.strip():
-                                    texts.append(text)
-                    elif isinstance(content, str) and content.strip():
-                        texts.append(content)
-                    joined = "\n".join(texts).strip()
+                    joined = _assistant_texts_from_transcript_entry(entry)
                     if len(joined) >= _TRANSCRIPT_NOTE_MIN_CHARS:
                         segments.append(joined)
             return segments
@@ -1530,21 +1574,21 @@ class SpawnExitEngine(_Base):
         instance.container_id = None
         if graceful:
             instance.error_count = 0
-            # Re-arm the auth-missing CEO notification only when THIS agent
-            # was itself auth-parked and has now exited gracefully - proof
-            # the credential is back. An unrelated agent of the same
-            # provider finishing normally mid-outage must not clear the
-            # flag, or the next auth crash pages the CEO again for the same
-            # still-dead credential.
-            if agent_id in self._auth_parked_agents:
-                self._auth_parked_agents.discard(agent_id)
-                provider_type = (
-                    instance.config.provider_type if instance.config else None
-                )
-                if provider_type is not None:
-                    self._auth_ceo_notified.discard(provider_type)
+            self._rearm_auth_ceo_notify(agent_id, instance)
             return
         await self._crash_retry_or_escalate(agent_id, instance)
+
+    def _rearm_auth_ceo_notify(self, agent_id: str, instance: Any) -> None:
+        """Re-arm the auth-missing CEO notification only when THIS agent was
+        itself auth-parked and has now exited gracefully - proof the
+        credential is back. An unrelated agent of the same provider finishing
+        normally mid-outage must not clear the flag, or the next auth crash
+        pages the CEO again for the same still-dead credential."""
+        if agent_id in self._auth_parked_agents:
+            self._auth_parked_agents.discard(agent_id)
+            provider_type = instance.config.provider_type if instance.config else None
+            if provider_type is not None:
+                self._auth_ceo_notified.discard(provider_type)
 
     async def _log_stopped_container(
         self, agent_id: str, container_id: str | None, exit_code: int | None

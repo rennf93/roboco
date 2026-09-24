@@ -1301,13 +1301,7 @@ class A2AService:
             ValueError: If conversation_id is nil, conversation not found,
                 or sender not participant
         """
-        if conversation_id.int == 0:
-            raise ValueError(
-                "conversation_id must not be the nil UUID; "
-                "call get_or_create_conversation() first"
-            )
-
-        from datetime import UTC, datetime
+        conv = await self._resolve_chat_conversation(conversation_id, from_agent)
 
         opts = options or {}
         message_kind = opts.get("message_kind", A2AMessageKind.MESSAGE)
@@ -1315,35 +1309,8 @@ class A2AService:
         requires_response = opts.get("requires_response", False)
         skill = opts.get("skill")
 
-        result = await self.session.execute(
-            select(A2AConversationTable).where(
-                A2AConversationTable.id == conversation_id
-            )
-        )
-        conv = result.scalar_one_or_none()
-
-        if conv is None:
-            raise ValueError(f"Conversation not found: {conversation_id}")
-
-        if from_agent not in (conv.agent_a, conv.agent_b):
-            raise ValueError("Not a participant in this conversation")
-
-        # Purpose-dedup: if an identical message from this sender is still
-        # unread in this conversation, the sender is re-saying the same thing
-        # (a respawn re-emitting, or a retry) — don't stack another copy on the
-        # recipient's inbox or re-bump the unread count. Keyed on
-        # (conversation, sender, kind, content) while unread, so genuinely
-        # different messages are never collapsed.
-        dup = await self.session.scalar(
-            select(A2AMessageTable)
-            .where(
-                A2AMessageTable.conversation_id == conversation_id,
-                A2AMessageTable.from_agent == from_agent,
-                A2AMessageTable.message_kind == message_kind,
-                A2AMessageTable.content == content,
-                A2AMessageTable.read_at.is_(None),
-            )
-            .limit(1)
+        dup = await self._find_duplicate_unread(
+            conversation_id, from_agent, content, message_kind
         )
         if dup is not None:
             logger.info(
@@ -1371,8 +1338,7 @@ class A2AService:
             purpose=skill or str(message_kind),
         )
 
-        # Create message
-        msg = A2AMessageTable(
+        msg = self._build_chat_message(
             conversation_id=conversation_id,
             from_agent=from_agent,
             content=content,
@@ -1380,19 +1346,13 @@ class A2AService:
             response_to_id=response_to_id,
             requires_response=requires_response,
             skill=skill,
-            steering=steer_mode.value if steer_mode is not None else None,
+            steer_mode=steer_mode,
         )
         self.session.add(msg)
 
-        # Update conversation stats
-        conv.message_count += 1
-        conv.last_message_at = datetime.now(UTC)
-
-        # Update unread count for the OTHER agent
-        if from_agent == conv.agent_a:
-            conv.unread_by_b += 1
-        else:
-            conv.unread_by_a += 1
+        # Update conversation stats (message count, last-message timestamp,
+        # unread count for the OTHER agent)
+        self._bump_conversation_stats(conv, from_agent)
 
         await self.session.flush()
         await self.session.refresh(msg)
@@ -1405,12 +1365,129 @@ class A2AService:
         )
 
         model = self._msg_to_model(msg)
-        # Single chokepoint for the operator live view: every persisted A2A
-        # message emits A2A_MESSAGE_SENT here, so the direct REST send paths
-        # (conversation-create + post-message) light up the /a2a view too, not
-        # just the gateway send() wrapper. Suppressed duplicates return above
-        # and deliberately don't re-emit.
         task_id = str(conv.task_id) if conv.task_id else None
+        await self._finalize_chat_delivery(
+            model=model,
+            conv=conv,
+            task_id=task_id,
+            from_agent=from_agent,
+            to_agent=to_agent,
+            skill=skill,
+            steer_mode=steer_mode,
+        )
+        return model
+
+    async def _resolve_chat_conversation(
+        self, conversation_id: UUID, from_agent: str
+    ) -> A2AConversationTable:
+        """Validate a send target and load its conversation row.
+
+        Raises:
+            ValueError: If conversation_id is nil, conversation not found,
+                or sender not participant
+        """
+        if conversation_id.int == 0:
+            raise ValueError(
+                "conversation_id must not be the nil UUID; "
+                "call get_or_create_conversation() first"
+            )
+
+        result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.id == conversation_id
+            )
+        )
+        conv = result.scalar_one_or_none()
+
+        if conv is None:
+            raise ValueError(f"Conversation not found: {conversation_id}")
+
+        if from_agent not in (conv.agent_a, conv.agent_b):
+            raise ValueError("Not a participant in this conversation")
+        return conv
+
+    async def _find_duplicate_unread(
+        self,
+        conversation_id: UUID,
+        from_agent: str,
+        content: str,
+        message_kind: Any,
+    ) -> A2AMessageTable | None:
+        """Purpose-dedup lookup: an identical message from this sender that is
+        still unread in this conversation means the sender is re-saying the
+        same thing (a respawn re-emitting, or a retry); a hit suppresses the
+        new copy. Keyed on (conversation, sender, kind, content) while unread,
+        so genuinely different messages are never collapsed."""
+        dup: A2AMessageTable | None = await self.session.scalar(
+            select(A2AMessageTable)
+            .where(
+                A2AMessageTable.conversation_id == conversation_id,
+                A2AMessageTable.from_agent == from_agent,
+                A2AMessageTable.message_kind == message_kind,
+                A2AMessageTable.content == content,
+                A2AMessageTable.read_at.is_(None),
+            )
+            .limit(1)
+        )
+        return dup
+
+    def _build_chat_message(
+        self,
+        *,
+        conversation_id: UUID,
+        from_agent: str,
+        content: str,
+        message_kind: Any,
+        response_to_id: Any,
+        requires_response: Any,
+        skill: Any,
+        steer_mode: "decisions_pilots.SteerMode | None",
+    ) -> A2AMessageTable:
+        """Create the (unadded) message row for a chat send."""
+        return A2AMessageTable(
+            conversation_id=conversation_id,
+            from_agent=from_agent,
+            content=content,
+            message_kind=message_kind,
+            response_to_id=response_to_id,
+            requires_response=requires_response,
+            skill=skill,
+            steering=steer_mode.value if steer_mode is not None else None,
+        )
+
+    def _bump_conversation_stats(
+        self, conv: A2AConversationTable, from_agent: str
+    ) -> None:
+        """Update conversation stats after a message insert."""
+        from datetime import UTC, datetime
+
+        conv.message_count += 1
+        conv.last_message_at = datetime.now(UTC)
+
+        if from_agent == conv.agent_a:
+            conv.unread_by_b += 1
+        else:
+            conv.unread_by_a += 1
+
+    async def _finalize_chat_delivery(
+        self,
+        *,
+        model: A2AChatMessage,
+        conv: A2AConversationTable,
+        task_id: str | None,
+        from_agent: str,
+        to_agent: str,
+        skill: Any,
+        steer_mode: "decisions_pilots.SteerMode | None",
+    ) -> None:
+        """Post-persist fan-out for a chat message.
+
+        Single chokepoint for the operator live view: every persisted A2A
+        message emits A2A_MESSAGE_SENT here, so the direct REST send paths
+        (conversation-create + post-message) light up the /a2a view too, not
+        just the gateway send() wrapper. Suppressed duplicates return earlier
+        and deliberately don't re-emit.
+        """
         await self._publish_a2a_message_sent(
             model, task_id, from_agent, to_agent, skill
         )
@@ -1423,7 +1500,6 @@ class A2AService:
                 message=model,
             )
         await self._maybe_wake_ceo_recipient(from_agent, to_agent, task_id)
-        return model
 
     # =========================================================================
     # DECISIONS STEER GATE (spec 6.6, cognition lane)
@@ -1489,7 +1565,7 @@ class A2AService:
         its turn queue. No spawns are burned; a sessionless recipient picks
         the message up at the next-spawn briefing instead. Best-effort."""
         try:
-            from roboco.runtime.engines.dispatch_work import get_live_registry
+            from roboco.services.prompter_live import get_live_registry
 
             session = None
             if task_id:
@@ -1505,7 +1581,7 @@ class A2AService:
                 content=message.content,
                 recipient_context=context,
             )
-            delivered = get_live_registry().deliver(session.session_id, note)
+            delivered = await get_live_registry().deliver(session.session_id, note)
             if delivered:
                 logger.info(
                     "Steering note delivered into the recipient's live turn queue",

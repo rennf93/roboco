@@ -306,6 +306,21 @@ def _ownership_violation(task_id: UUID) -> Envelope:
     )
 
 
+def _preflight_ownership_violation(
+    t: Any, agent_id: UUID, task_id: UUID
+) -> Envelope | None:
+    """The ownership-violation envelope for a preflight caller who is not
+    the task's assignee, or None when the caller may preflight the task."""
+    if t.assigned_to is not None and t.assigned_to != agent_id:
+        return _ownership_violation(task_id)
+    return None
+
+
+def _preflight_criteria(t: Any) -> list[str]:
+    """The task's non-empty acceptance criteria as strings."""
+    return [str(c) for c in (t.acceptance_criteria or []) if str(c).strip()]
+
+
 def _not_active_claimant(task_id: UUID) -> Envelope:
     """Envelope for a caller who holds no active claim on ``task_id``.
 
@@ -7122,9 +7137,10 @@ class ContentActions:
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
-        if t.assigned_to is not None and t.assigned_to != agent_id:
-            return _ownership_violation(task_id)
-        criteria = [str(c) for c in (t.acceptance_criteria or []) if str(c).strip()]
+        violation = _preflight_ownership_violation(t, agent_id, task_id)
+        if violation is not None:
+            return violation
+        criteria = _preflight_criteria(t)
         if not criteria:
             return Envelope.invalid_state(
                 message="the task has no acceptance criteria to pre-flight",
@@ -7133,25 +7149,9 @@ class ContentActions:
 
         # Release the request transaction before the git work (pool-exhaustion
         # guard, mirrors evidence()).
-        from sqlalchemy.exc import PendingRollbackError
+        await self._release_task_session_before_git()
 
-        try:
-            await self.task.session.commit()
-        except PendingRollbackError:
-            await self.task.session.rollback()
-        diff = ""
-        if t.branch_name:
-            try:
-                diff, _files = await self.git.diff_and_files(
-                    branch_name=t.branch_name, actor_agent_id=agent_id
-                )
-            except Exception as exc:
-                diff = ""
-                logger.warning(
-                    "preflight_diff could not read the working diff",
-                    task_id=str(task_id),
-                    error=str(exc),
-                )
+        diff = await self._preflight_working_diff(t, agent_id, task_id)
         if not diff.strip():
             return Envelope.invalid_state(
                 message="no working diff found on the task branch",
@@ -7161,6 +7161,44 @@ class ContentActions:
                 ),
             )
 
+        return await self._preflight_verdict_envelope(task_id, criteria, diff)
+
+    async def _release_task_session_before_git(self) -> None:
+        """Commit (or roll back) the request transaction so the git work
+        below runs off the request's DB session (pool-exhaustion guard)."""
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.task.session.commit()
+        except PendingRollbackError:
+            await self.task.session.rollback()
+
+    async def _preflight_working_diff(
+        self, t: Any, agent_id: UUID, task_id: UUID
+    ) -> str:
+        """The working diff on the task branch; empty when the branch is
+        unset or the diff cannot be read."""
+        if not t.branch_name:
+            return ""
+        diff: str
+        try:
+            diff, _files = await self.git.diff_and_files(
+                branch_name=t.branch_name, actor_agent_id=agent_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "preflight_diff could not read the working diff",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return ""
+        return diff
+
+    async def _preflight_verdict_envelope(
+        self, task_id: UUID, criteria: list[str], diff: str
+    ) -> Envelope:
+        """Run the decisions preflight screen and wrap its verdict into the
+        advisory envelope (no_verdict pass-through when unavailable)."""
         from roboco.services import decisions
 
         result = await decisions.preflight_diff(

@@ -19,7 +19,7 @@ same semantics instead of each growing its own query.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as redis
 from sqlalchemy import select
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from uuid import UUID
 
+    from sqlalchemy import Select
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,37 @@ async def clear_dedup_key(
         logger.warning("notification dedup clear failed (redis): %s", exc)
 
 
+def _unacked_overlap_query(
+    *,
+    from_agent: UUID,
+    notification_type: NotificationType,
+    related_task_id: UUID | str | None,
+    to_agents_list: list[UUID],
+) -> Select[tuple[Any, Any, Any, Any]]:
+    """The unacked same-purpose candidate query: same sender, same type,
+    overlapping recipient set (not yet fully acked), same task (or both
+    taskless). Local NotificationTable import: avoid import cycle."""
+    from roboco.db.tables import NotificationTable
+
+    return (
+        select(
+            NotificationTable.id,
+            NotificationTable.to_agents,
+            NotificationTable.subject,
+            NotificationTable.body,
+        )
+        .where(NotificationTable.from_agent == from_agent)
+        .where(NotificationTable.type == notification_type)
+        .where(NotificationTable.to_agents.overlap(to_agents_list))
+        .where(~NotificationTable.acked_by.contains(to_agents_list))
+        .where(
+            NotificationTable.related_task_id == related_task_id
+            if related_task_id is not None
+            else NotificationTable.related_task_id.is_(None)
+        )
+    )
+
+
 async def duplicate_unacked_notification_exists(  # noqa: PLR0913
     db: AsyncSession,
     *,
@@ -177,28 +209,15 @@ async def duplicate_unacked_notification_exists(  # noqa: PLR0913
     (positional-contract kwargs like the rest, hence the targeted PLR0913
     noqa rather than bundling the probe into an object no caller asked for).
     """
-    from roboco.db.tables import NotificationTable  # local: avoid import cycle
-
     if not ACK_REQUIRED_BY_TYPE.get(notification_type, True):
         return False
     to_agents_list = list(to_agents)
     new_set = set(to_agents_list)
-    dup_q = (
-        select(
-            NotificationTable.id,
-            NotificationTable.to_agents,
-            NotificationTable.subject,
-            NotificationTable.body,
-        )
-        .where(NotificationTable.from_agent == from_agent)
-        .where(NotificationTable.type == notification_type)
-        .where(NotificationTable.to_agents.overlap(to_agents_list))
-        .where(~NotificationTable.acked_by.contains(to_agents_list))
-        .where(
-            NotificationTable.related_task_id == related_task_id
-            if related_task_id is not None
-            else NotificationTable.related_task_id.is_(None)
-        )
+    dup_q = _unacked_overlap_query(
+        from_agent=from_agent,
+        notification_type=notification_type,
+        related_task_id=related_task_id,
+        to_agents_list=to_agents_list,
     )
     result = await db.execute(dup_q)
     rows = result.all()
@@ -224,11 +243,49 @@ async def duplicate_unacked_notification_exists(  # noqa: PLR0913
     return False
 
 
+async def _probe_semantic_duplicate(  # noqa: PLR0913
+    db: AsyncSession,
+    *,
+    related_task_id: UUID | str | None,
+    subject: str,
+    body: str,
+    row: Any,
+    new_set: set[UUID],
+) -> bool:
+    """One B12 noul screen against a single candidate row. Fail-open: any
+    decisions failure delivers as today."""
+    from roboco.services.decisions.pilots_infra import semantic_duplicate
+
+    prior_recipients = set(row[1])
+    try:
+        duplicate = await semantic_duplicate(
+            db,
+            new_subject=subject,
+            new_body=body,
+            prior_subject=str(row[2] or ""),
+            prior_body=str(row[3] or ""),
+            recipients=[str(r) for r in new_set],
+            prior_recipients=[str(r) for r in prior_recipients],
+        )
+    except Exception as exc:
+        logger.warning("notification semantic-dedup probe failed (deliver): %s", exc)
+        return False
+    if duplicate:
+        logger.info(
+            "Suppressed notification (semantic duplicate of unacked): "
+            "related_task_id=%s to_agents=%s",
+            related_task_id,
+            sorted(str(r) for r in new_set),
+        )
+        return True
+    return False
+
+
 async def _semantic_duplicate_exists(
     db: AsyncSession,
     *,
     related_task_id: UUID | str | None,
-    rows: Sequence[tuple],
+    rows: Sequence[Any],
     new_set: set[UUID],
     content: tuple[str, str],
 ) -> bool:
@@ -236,34 +293,17 @@ async def _semantic_duplicate_exists(
     filtered to the same sender/type/task/unacked-overlap view).
     ``content`` is the (subject, body) of the notification being screened.
     Best-effort fail-open: any decisions failure delivers as today."""
-    from roboco.services.decisions.pilots_infra import semantic_duplicate
-
     subject, body = content
     for row in rows:
-        prior_recipients = set(row[1])
-        if prior_recipients == new_set:
+        if set(row[1]) == new_set:
             continue  # equal sets were already suppressed above
-        try:
-            duplicate = await semantic_duplicate(
-                db,
-                new_subject=subject,
-                new_body=body,
-                prior_subject=str(row[2] or ""),
-                prior_body=str(row[3] or ""),
-                recipients=[str(r) for r in new_set],
-                prior_recipients=[str(r) for r in prior_recipients],
-            )
-        except Exception as exc:
-            logger.warning(
-                "notification semantic-dedup probe failed (deliver): %s", exc
-            )
-            return False
-        if duplicate:
-            logger.info(
-                "Suppressed notification (semantic duplicate of unacked): "
-                "related_task_id=%s to_agents=%s",
-                related_task_id,
-                sorted(str(r) for r in new_set),
-            )
+        if await _probe_semantic_duplicate(
+            db,
+            related_task_id=related_task_id,
+            subject=subject,
+            body=body,
+            row=row,
+            new_set=new_set,
+        ):
             return True
     return False
