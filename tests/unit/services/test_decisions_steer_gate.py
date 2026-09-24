@@ -132,7 +132,7 @@ async def test_steer_mode_attaches_confident_steering_verdict(
     monkeypatch.setattr(
         decisions, "steer_gate", AsyncMock(return_value=SteerMode.STEER_NOW)
     )
-    mode = await svc._decisions_steer_mode(
+    mode_result = await svc._decisions_steer_mode(
         conversation_id=MagicMock(),
         sender="a",
         recipient="b",
@@ -140,7 +140,11 @@ async def test_steer_mode_attaches_confident_steering_verdict(
         requires_response=False,
         purpose=None,
     )
+    # (mode, already-composed context) so delivery never recomposes it.
+    assert mode_result is not None
+    mode, context = mode_result
     assert mode is SteerMode.STEER_NOW
+    assert context == {}
 
 
 @pytest.mark.asyncio

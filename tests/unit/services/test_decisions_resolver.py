@@ -161,6 +161,32 @@ class TestOpenRouterKeyResolution:
         session.execute = AsyncMock(return_value=result)
         assert await resolver._openrouter_api_key(session) is None
 
+    @pytest.mark.asyncio
+    async def test_key_cached_within_ttl(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inside the 60s TTL window a repeat call pays neither the
+        ProviderConfigTable read nor the Fernet decrypt (the unhealthy-
+        sidecar fallback path resolves per call)."""
+        row = MagicMock()
+        row.id = "00000000-0000-0000-0000-000000000002"
+        session = MagicMock()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = row
+        session.execute = AsyncMock(return_value=result)
+
+        provider_svc = MagicMock()
+        provider_svc.get_decrypted_token = AsyncMock(return_value="sk-or-live")
+        monkeypatch.setattr(
+            "roboco.services.provider.get_provider_service",
+            lambda s: provider_svc,
+        )
+        first = await resolver._openrouter_api_key(session)
+        second = await resolver._openrouter_api_key(session)
+        assert first == second == "sk-or-live"
+        assert session.execute.await_count == 1
+        assert provider_svc.get_decrypted_token.await_count == 1
+
 
 @pytest.mark.asyncio
 async def test_missing_key_notification_names_the_fix_screen(

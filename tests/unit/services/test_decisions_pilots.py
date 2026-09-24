@@ -303,6 +303,26 @@ async def test_preflight_diff_batched_verdicts(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_preflight_diff_shadow_returns_no_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Shadow doctrine: verdicts logged, behavior unchanged - the envelope
+    # never reaches the agent until the mode is ON.
+    answers = {
+        "criterion_0": {"type": "noul", "noul": 0.9, "confidence": 0.9},
+        "hygiene": {"type": "noul", "noul": 0.85, "confidence": 0.9},
+    }
+    _arm(monkeypatch, mode=PilotMode.SHADOW, payload=_payload(answers))
+    result = await preflight_diff(
+        cast("AsyncSession", None),
+        task_id="T1",
+        criteria=["criterion one"],
+        diff="diff --git ...",
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_triage_confident_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     _arm(
         monkeypatch,
@@ -340,6 +360,31 @@ async def test_triage_low_confidence_is_unknown(
         changed_files_in_diff=[],
         is_retry=False,
         recent_flake_history_for_test=[],
+    )
+    assert lane is TriageLane.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_triage_failure_shadow_returns_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Shadow doctrine: verdicts logged, behavior unchanged - the advisory
+    # lane never reaches the agent until the mode is ON.
+    _arm(
+        monkeypatch,
+        mode=PilotMode.SHADOW,
+        payload=_payload(
+            {"gate": {"type": "choice", "choice": "flaky", "confidence": 0.85}}
+        ),
+    )
+    lane = await triage_failure(
+        cast("AsyncSession", None),
+        task_id="T1",
+        test_name="test_flaky_thing",
+        error_excerpt="TimeoutError",
+        changed_files_in_diff=["a.py"],
+        is_retry=True,
+        recent_flake_history_for_test=["flaked 2026-09-01"],
     )
     assert lane is TriageLane.UNKNOWN
 

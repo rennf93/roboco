@@ -219,8 +219,8 @@ def log_action(
             action=action,
             result=result,
         )
-    except Exception:  # evidence must never break a decision
-        pass
+    except Exception as exc:  # evidence must never break a decision
+        logger.debug("decision_log persist skipped", pilot=pilot, error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +439,8 @@ async def preflight_diff(
     "addresses"}...], "hygiene": {"flagged", "noul", "confidence"}}`` or
     ``None`` when no verdict. Advisory by design: the envelope informs the
     agent, it never blocks or waives ``i_am_done`` (self-review exclusion,
-    spec 5).
+    spec 5). In shadow mode the verdict is logged and ``None`` is returned:
+    the baseline, so no envelope reaches the agent until the mode is ON.
     """
     # One noul per criterion, capped at 6, longest first (spec 6.4).
     ordered = sorted(criteria, key=len, reverse=True)[:6]
@@ -487,6 +488,11 @@ async def preflight_diff(
         "criteria": len(criteria_verdicts),
         "hygiene_flagged": (hygiene or {}).get("flagged"),
     }
+    if mode is PilotMode.SHADOW:
+        # Shadow doctrine: verdicts logged, behavior unchanged. The envelope
+        # never reaches the agent until the mode is ON.
+        log_action("preflight_diff", mode, verdict_summary, "no-op (shadow)", result)
+        return None
     log_action("preflight_diff", mode, verdict_summary, "advisory envelope", result)
     return {"criteria": criteria_verdicts, "hygiene": hygiene}
 
@@ -523,7 +529,10 @@ async def triage_failure(
 ) -> TriageLane:
     """Classify a failed test: this dev's regression, a flake, or an
     environment failure. Below the confidence floor the envelope says
-    ``unknown`` and the agent proceeds exactly as today (debug first)."""
+    ``unknown`` and the agent proceeds exactly as today (debug first). In
+    shadow mode the verdict is logged and ``TriageLane.UNKNOWN`` is
+    returned: the baseline, so no advisory lane reaches the agent until
+    the mode is ON."""
     state = {
         "test_name": test_name,
         "error_excerpt": error_excerpt,
@@ -556,6 +565,11 @@ async def triage_failure(
         return TriageLane.UNKNOWN
     choice, confidence = _gate_choice(result)
     verdict = _triage_verdict(choice, confidence)
+    if mode is PilotMode.SHADOW:
+        # Shadow doctrine: verdicts logged, behavior unchanged. The advisory
+        # lane never reaches the agent until the mode is ON.
+        log_action("triage_failure", mode, verdict.value, "no-op (shadow)", result)
+        return TriageLane.UNKNOWN
     log_action("triage_failure", mode, verdict.value, "advisory envelope", result)
     return verdict
 

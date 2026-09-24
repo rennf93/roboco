@@ -1,6 +1,6 @@
 """Add the `steering` column to a2a_messages (Decisions steer gate).
 
-The steer gate (docs/internal/jev-decisions-spec.md section 6.6) classifies
+The steer gate (docs/internal/decisions-spec.md section 6.6) classifies
 HOW a peer DM should reach its recipient. Messages the gate marks
 `steer_switch_consideration` or `steer_now` carry that mode in this column
 and are rendered into the recipient's NEXT context boundary (spawn

@@ -104,7 +104,9 @@ def render_steering_note(
             "STEERING (apply within your current task): a peer message "
             "changes what you should do next."
         )
-    parts = [header, f"From `{sender}`: {content}"]
+    # _excerpt keeps a long DM from ballooning the injected note (the full
+    # body stays readable via the normal message endpoints).
+    parts = [header, f"From `{sender}`: {_excerpt(content)}"]
     if task_line:
         parts.append(task_line)
     if others_line:
@@ -1329,7 +1331,7 @@ class A2AService:
         # row insert. CEO conversations are untouched: CEO-authored sends
         # already wake the recipient through their own path.
         to_agent = conv.agent_b if from_agent == conv.agent_a else conv.agent_a
-        steer_mode = await self._decisions_steer_mode(
+        steer = await self._decisions_steer_mode(
             conversation_id=conversation_id,
             sender=from_agent,
             recipient=to_agent,
@@ -1337,6 +1339,8 @@ class A2AService:
             requires_response=requires_response,
             purpose=skill or str(message_kind),
         )
+        steer_mode = steer[0] if steer is not None else None
+        steer_context = steer[1] if steer is not None else None
 
         msg = self._build_chat_message(
             conversation_id=conversation_id,
@@ -1374,6 +1378,7 @@ class A2AService:
             to_agent=to_agent,
             skill=skill,
             steer_mode=steer_mode,
+            steer_context=steer_context,
         )
         return model
 
@@ -1479,6 +1484,7 @@ class A2AService:
         to_agent: str,
         skill: Any,
         steer_mode: "decisions_pilots.SteerMode | None",
+        steer_context: dict | None = None,
     ) -> None:
         """Post-persist fan-out for a chat message.
 
@@ -1486,7 +1492,10 @@ class A2AService:
         message emits A2A_MESSAGE_SENT here, so the direct REST send paths
         (conversation-create + post-message) light up the /a2a view too, not
         just the gateway send() wrapper. Suppressed duplicates return earlier
-        and deliberately don't re-emit.
+        and deliberately don't re-emit. ``steer_context`` is the recipient
+        work context already composed by ``_decisions_steer_mode``; it is
+        threaded to the live steering delivery so the context is composed
+        exactly once per send.
         """
         await self._publish_a2a_message_sent(
             model, task_id, from_agent, to_agent, skill
@@ -1498,6 +1507,7 @@ class A2AService:
                 task_id=task_id,
                 mode=steer_mode,
                 message=model,
+                recipient_context=steer_context,
             )
         await self._maybe_wake_ceo_recipient(from_agent, to_agent, task_id)
 
@@ -1514,12 +1524,14 @@ class A2AService:
         content: str,
         requires_response: bool,
         purpose: str | None,
-    ) -> "decisions_pilots.SteerMode | None":
-        """Run the steer gate for one peer DM. Returns the attached steering
-        mode, or ``None`` for ordinary pull-only delivery (gate off, no
-        verdict, below the confidence floor, CEO conversation, or any
-        failure). Steering injects CONTEXT, never commands; the who-may-
-        talk-to-whom validation already ran on this send path."""
+    ) -> "tuple[decisions_pilots.SteerMode, dict] | None":
+        """Run the steer gate for one peer DM. Returns ``(steering mode,
+        recipient work context)`` - the context is composed here, exactly
+        once per send, and threaded onward to the live delivery - or
+        ``None`` for ordinary pull-only delivery (gate off, no verdict,
+        below the confidence floor, CEO conversation, or any failure).
+        Steering injects CONTEXT, never commands; the who-may-talk-to-whom
+        validation already ran on this send path."""
         if "ceo" in (sender, recipient):
             return None
         try:
@@ -1529,9 +1541,17 @@ class A2AService:
             if mode is decisions_pilots.PilotMode.OFF:
                 return None
             recipient_context = await recipient_work_context(self.session, recipient)
+            # conversation_id alone gives every steer-gate row in a busy
+            # conversation the same session id; the short content hash keeps
+            # the decision_log rows attributable per message.
+            import hashlib
+
+            message_id = (
+                f"{conversation_id}:{hashlib.sha256(content.encode()).hexdigest()[:8]}"
+            )
             gate = await decisions_pilots.steer_gate(
                 self.session,
-                message_id=str(conversation_id),
+                message_id=message_id,
                 sender=sender,
                 purpose=purpose,
                 requires_response=requires_response,
@@ -1542,7 +1562,7 @@ class A2AService:
                 decisions_pilots.SteerMode.STEER_SWITCH_CONSIDERATION,
                 decisions_pilots.SteerMode.STEER_NOW,
             ):
-                return gate
+                return gate, recipient_context
             return None
         except Exception as exc:
             logger.warning(
@@ -1559,11 +1579,16 @@ class A2AService:
         task_id: str | None,
         mode: "decisions_pilots.SteerMode",
         message: A2AChatMessage,
+        recipient_context: dict | None = None,
     ) -> None:
         """Boundary (2) of the steering channel: when the recipient has a
         live session (intake/secretary/parked), push the steering note into
         its turn queue. No spawns are burned; a sessionless recipient picks
-        the message up at the next-spawn briefing instead. Best-effort."""
+        the message up at the next-spawn briefing instead. Best-effort.
+        ``recipient_context`` is the work context already composed by
+        ``_decisions_steer_mode`` (threaded through so it is never composed
+        twice); callers without one get an empty context, which renders the
+        note without the task lines."""
         try:
             from roboco.services.prompter_live import get_live_registry
 
@@ -1572,14 +1597,11 @@ class A2AService:
                 session = get_live_registry().find_by_task(task_id)
             if session is None:
                 return
-            from roboco.services.decisions.context import recipient_work_context
-
-            context = await recipient_work_context(self.session, recipient)
             note = render_steering_note(
                 mode=mode,
                 sender=message.from_agent,
                 content=message.content,
-                recipient_context=context,
+                recipient_context=recipient_context or {},
             )
             delivered = await get_live_registry().deliver(session.session_id, note)
             if delivered:

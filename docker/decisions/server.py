@@ -16,9 +16,9 @@ rl_agent_config.json and are applied BY THE LIBRARY at load (clamped to
 [0.5, 5.0]; per-option-count buckets in temperature_by_options take
 precedence over the per-type temperature vector). This server never
 recomputes or bypasses calibration; it verifies the fitted vector exists at
-startup and fails every decisions request with 500 when it is missing, so
-the client's circuit breaker hands the traffic to the fallback tier instead
-of serving raw-logit confidences.
+startup, fails every decisions request with 500 when it is missing, and
+reports unhealthy (503) on /health, so the client's circuit breaker hands
+the traffic to the fallback tier instead of serving raw-logit confidences.
 """
 
 from __future__ import annotations
@@ -27,11 +27,13 @@ import hmac
 import json
 import math
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 MODEL_ID = os.environ.get("LAYA_MODEL_ID", "convaiinnovations/laya")
 SUBFOLDER = os.environ.get("LAYA_SUBFOLDER", "typed-decisions")
@@ -45,6 +47,11 @@ CHECKPOINT = f"{MODEL_ID}:{SUBFOLDER}"
 _VALID_TYPES = ("noul", "choice", "score")
 
 app = FastAPI(title="roboco-decisions", version="0.1.0")
+
+# ONNXAgent's thread-safety is undocumented, so inference is serialized
+# behind this lock (acquired inside the threadpool-wrapped predict call,
+# never on the event loop).
+_PREDICT_LOCK = threading.Lock()
 
 # Populated by the startup hook; read by the routes.
 _state: dict[str, Any] = {
@@ -169,6 +176,19 @@ def health() -> dict[str, str]:
                 "error": _state["load_error"],
             },
         )
+    if _state["calibration_error"]:
+        # 503, not 200: the resolver's health probe only checks the status
+        # code (30s TTL), so a calibration failure must surface here or it
+        # keeps routing traffic into a sidecar whose every decisions call
+        # 500s and the client circuit breaker cycles forever.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "unhealthy",
+                "model": CHECKPOINT,
+                "error": _state["calibration_error"],
+            },
+        )
     return {"status": "healthy", "model": CHECKPOINT}
 
 
@@ -196,6 +216,17 @@ def _validate_questions(questions: Any) -> dict[str, dict[str, Any]]:
     return questions
 
 
+def _predict_serialized(agent: Any, state: Any, questions: Any) -> Any:
+    """Run ONNX inference off the event loop, serialized.
+
+    ONNXAgent thread-safety is undocumented, so the predict call runs behind
+    the module-level lock; run_in_threadpool keeps the async route (and the
+    whole sidecar) responsive while the synchronous inference executes.
+    """
+    with _PREDICT_LOCK:
+        return agent.predict(state, questions)
+
+
 @app.post("/api/alpha/decisions")
 async def decisions(request: Request) -> dict[str, Any]:
     _check_auth(request)
@@ -207,7 +238,7 @@ async def decisions(request: Request) -> dict[str, Any]:
     questions = _validate_questions(body.get("questions"))
     state = body.get("state", "")
 
-    result = agent.predict(state, questions)
+    result = await run_in_threadpool(_predict_serialized, agent, state, questions)
 
     raw_answers = result.get("answers") or {}
     answers: dict[str, dict[str, Any]] = {}

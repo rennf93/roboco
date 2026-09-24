@@ -31,21 +31,33 @@ FROM python:3.13-slim-bookworm
 #   docker build -f docker/decisions.Dockerfile --build-arg LAYA_HF_REVISION=<hash> .
 ARG LAYA_HF_REVISION=main
 
+# LAYA_LIB_REVISION pins the laya LIBRARY revision installed below (the
+# weights pin above covers only the checkpoint). PRODUCTION BUILDS MUST PIN
+# THE FULL COMMIT HASH: the default "main" tracks the moving branch, so two
+# builds can install different library code. server.py's _load_agent docstring
+# depends on ONNXAgent's signature at the pinned revision, so bump the two
+# pins together and re-verify that docstring on every bump. Build with e.g.
+#   docker build -f docker/decisions.Dockerfile --build-arg LAYA_LIB_REVISION=<hash> .
+ARG LAYA_LIB_REVISION=main
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # uv, same source as the orchestrator image. The laya repo has no lockfile to
-# pin against, so uv here is just the fast installer; versions resolve fresh
-# at build time and are pinned by pinning the LAYA_HF_REVISION above.
+# pin against, so uv here is just the fast installer; transitive dep versions
+# resolve fresh at build time and are pinned by pinning LAYA_HF_REVISION (the
+# checkpoint) and LAYA_LIB_REVISION (the library) above.
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
 # Library + runtime deps. onnxruntime is listed explicitly so the ONNX path
 # never depends on the extra resolving upstream; fastapi + uvicorn serve the
-# adapter; huggingface_hub pulls the checkpoint at build time.
+# adapter; huggingface_hub pulls the checkpoint at build time. The library
+# install is pinned to LAYA_LIB_REVISION (ARG vars are in scope as shell env
+# for the RUN lines of their stage, which is how the ref expands below).
 RUN uv pip install --system --no-cache \
-        "laya[onnx] @ git+https://github.com/NandhaKishorM/laya.git" \
+        "laya[onnx] @ git+https://github.com/NandhaKishorM/laya.git@${LAYA_LIB_REVISION}" \
         onnxruntime \
         fastapi \
         uvicorn \

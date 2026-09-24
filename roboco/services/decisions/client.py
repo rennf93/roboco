@@ -16,6 +16,8 @@ load-bearing.
 
 from __future__ import annotations
 
+import copy
+import json
 import time
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -25,7 +27,8 @@ import httpx
 import structlog
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
+    from typing import Any
 
 from roboco.services.decisions.schemas import (
     DecisionQuestion,
@@ -44,6 +47,13 @@ _DIFF_CAP_CHARS = 8_000
 _EXCERPT_CAP_CHARS = 2_000
 _DESC_CAP_CHARS = 4_000
 _DEFAULT_CAP_CHARS = 4_000
+
+# Stage-2 budget, Laya tier only: the default-serving Laya model context is
+# tiny (~512-1024 tokens), so a state still large after the per-key caps
+# silently truncates to mush inside the model. The per-key caps above stay
+# stage 1 for BOTH tiers (they are the billing guard for the OpenRouter
+# fallback); this deterministic total budget runs after them, laya only.
+_LAYA_STATE_BUDGET_CHARS = 1_800
 
 # Keys whose informative content sits at the END of the text (CI logs,
 # tracebacks): keep the tail. Everything else keeps the head.
@@ -111,6 +121,77 @@ def _keeps_tail(key: str) -> bool:
     return any(part in lowered for part in _TAIL_KEEP_KEY_PARTS)
 
 
+def _iter_string_slots(node: object) -> Iterator[tuple[Any, Any, str]]:
+    """Yield ``(container, key, value)`` for every string reachable in the
+    structure, so the budget pass can replace values in place."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str):
+                yield node, key, value
+            else:
+                yield from _iter_string_slots(value)
+    elif isinstance(node, list):
+        for idx, item in enumerate(node):
+            if isinstance(item, str):
+                yield node, idx, item
+            else:
+                yield from _iter_string_slots(item)
+
+
+# Minimal truncated form ("...[truncated]"): a string at or below this
+# length cannot be usefully shrunk by the budget pass, so it is skipped.
+_BUDGET_BARE_SUFFIX = "...[truncated]"
+_BUDGET_MIN_SHRINKABLE_CHARS = len(_BUDGET_BARE_SUFFIX)
+
+# Tail truncation keeps the informative END (same style as cap_text's
+# keep-tail form, minus its room=0 edge case, which could grow a string).
+_BUDGET_TAIL_PREFIX = "...[truncated] "
+_BUDGET_HEAD_SUFFIX = " ...[truncated]"
+
+
+def cap_state_to_budget(state: object, budget: int) -> object:
+    """Stage-2 total-budget cap (Laya tier only): while the serialized state
+    exceeds ``budget`` chars, truncate the currently-longest string value
+    (re-walking each pass is fine at these sizes) until under budget or
+    nothing shrinkable remains. Truncation keeps the "...[truncated]" style
+    and the keep-tail semantics for tail keys. Every pass strictly shortens
+    the chosen string, so the loop always terminates. Returns a new
+    structure; the input is never mutated."""
+    capped = copy.deepcopy(state)
+    while True:
+        serialized = json.dumps(capped, ensure_ascii=False, default=str)
+        if len(serialized) <= budget:
+            return capped
+        shrinkable = [
+            slot
+            for slot in _iter_string_slots(capped)
+            if len(slot[2]) > _BUDGET_MIN_SHRINKABLE_CHARS
+        ]
+        if not shrinkable:
+            return capped
+        container, key, value = max(shrinkable, key=lambda slot: len(slot[2]))
+        # Room for the kept content: the overshoot plus the suffix chars
+        # themselves (the truncated form re-adds a 15-char marker).
+        room = max(
+            len(value) - (len(serialized) - budget) - len(_BUDGET_HEAD_SUFFIX), 0
+        )
+        if _keeps_tail(str(key)):
+            truncated = (
+                _BUDGET_TAIL_PREFIX + value[-room:]
+                if room
+                else _BUDGET_BARE_SUFFIX
+            )
+        else:
+            truncated = (
+                value[:room] + _BUDGET_HEAD_SUFFIX
+                if room
+                else _BUDGET_BARE_SUFFIX
+            )
+        if truncated == value:  # nothing shrinkable remains
+            return capped
+        container[key] = truncated
+
+
 @dataclass
 class _Circuit:
     consecutive_failures: int = 0
@@ -162,9 +243,19 @@ class DecisionsClient:
             )
             return None
 
+        # Two cap stages (spec 3.1): the per-key caps run first for BOTH
+        # tiers - they are the billing guard for the OpenRouter fallback.
+        # The Laya tier additionally gets the deterministic total-budget
+        # pass, because its tiny model context turns any state still large
+        # after stage 1 into mush before a single verdict is rendered.
+        capped_state = cap_state(state)
+        if endpoint.tier == "laya":
+            capped_state = cap_state_to_budget(capped_state, _LAYA_STATE_BUDGET_CHARS)
+        state_json = json.dumps(capped_state, ensure_ascii=False, default=str)
+
         body = {
             "model": endpoint.model,
-            "state": cap_state(state),
+            "state": capped_state,
             "questions": {
                 key: q.model_dump(exclude_none=True) for key, q in questions.items()
             },
@@ -218,6 +309,7 @@ class DecisionsClient:
             confidence={key: ans.confidence for key, ans in result.answers.items()},
             cost=result.usage.cost,
             input_tokens=result.usage.input_tokens,
+            state_chars=len(state_json),
             latency_ms=int((time.monotonic() - started) * 1000),
         )
         return result

@@ -41,6 +41,14 @@ logger = structlog.get_logger(__name__)
 _HEALTH_TTL_SECONDS = 30.0
 _health_cache: dict[str, tuple[float, bool]] = {}
 
+# Cached OpenRouter fallback key (60s TTL): when the sidecar is unhealthy
+# and the fallback is opted in, every decision call would otherwise pay a
+# ProviderConfigTable read + Fernet decrypt. The key string lives only in
+# process, the same trust domain as the boot-state dict below.
+_API_KEY_TTL_SECONDS = 60.0
+_API_KEY_CACHE_KEY = "openrouter"
+_api_key_cache: dict[str, tuple[float, str | None]] = {}
+
 # Once-per-boot marker for the OpenRouter-key-missing CEO notification
 # (dict, not a bare global, to keep mutation explicit).
 _BOOT_STATE = {"openrouter_key_warning_sent": False}
@@ -121,7 +129,14 @@ async def _openrouter_endpoint(session: AsyncSession) -> DecisionsEndpoint | Non
 
 async def _openrouter_api_key(session: AsyncSession) -> str | None:
     """Resolve the OpenRouter key exactly like the existing provider: the
-    single seeded OPENROUTER row, Fernet-decrypted (spec 4)."""
+    single seeded OPENROUTER row, Fernet-decrypted (spec 4). Cached with a
+    60s TTL (same pattern as the health probe above) so an unhealthy-sidecar
+    window does not turn every decision call into a config-table read plus
+    a decrypt; ``reset_health_cache`` drops it in tests."""
+    now = time.monotonic()
+    cached = _api_key_cache.get(_API_KEY_CACHE_KEY)
+    if cached is not None and now - cached[0] < _API_KEY_TTL_SECONDS:
+        return cached[1]
     from roboco.services.provider import get_provider_service
 
     result = await session.execute(
@@ -131,9 +146,10 @@ async def _openrouter_api_key(session: AsyncSession) -> str | None:
     )
     row = result.scalar_one_or_none()
     if row is None:
+        _api_key_cache[_API_KEY_CACHE_KEY] = (now, None)
         return None
     try:
-        return await get_provider_service(session).get_decrypted_token(
+        api_key = await get_provider_service(session).get_decrypted_token(
             cast("UUID", row.id)
         )
     except Exception as exc:
@@ -141,7 +157,9 @@ async def _openrouter_api_key(session: AsyncSession) -> str | None:
             "could not decrypt OpenRouter key for the decisions fallback",
             error=str(exc),
         )
-        return None
+        api_key = None
+    _api_key_cache[_API_KEY_CACHE_KEY] = (now, api_key)
+    return api_key
 
 
 async def _sidecar_healthy() -> bool:
@@ -169,8 +187,10 @@ async def _sidecar_healthy() -> bool:
 
 
 def reset_health_cache() -> None:
-    """Test hook: drop the cached probe and the boot warning marker."""
+    """Test hook: drop the cached probe, the cached fallback key, and the
+    boot warning marker."""
     _health_cache.clear()
+    _api_key_cache.clear()
     _BOOT_STATE["openrouter_key_warning_sent"] = False
 
 

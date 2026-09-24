@@ -1,7 +1,9 @@
 """Unit tests for DecisionsClient: mocked httpx transport covering success,
 error envelope, timeout, malformed payload, low confidence, circuit open,
-and the client-side token caps (spec section 9)."""
+and the client-side token caps (spec section 9): per-key billing caps for
+both tiers plus the laya-only total-budget pass."""
 
+import json
 from collections.abc import Callable
 from typing import cast
 
@@ -11,7 +13,9 @@ import roboco.config as cfg
 from roboco.services.decisions.client import (
     DecisionsClient,
     DecisionsEndpoint,
+    _LAYA_STATE_BUDGET_CHARS,
     cap_state,
+    cap_state_to_budget,
     cap_text,
 )
 from roboco.services.decisions.schemas import DecisionResult, NoulQuestion
@@ -242,6 +246,83 @@ class TestTokenCaps:
     def test_short_values_untouched(self) -> None:
         state = {"diff": "small diff"}
         assert cap_state(state) == state
+
+
+class TestLayaBudget:
+    """The stage-2 total-budget pass: laya tier only, after the per-key
+    caps, so the tiny default-serving Laya context still sees coherent
+    states instead of silently truncated mush."""
+
+    def test_under_budget_untouched(self) -> None:
+        state = {"task_title": "small", "criteria": ["a", "b"]}
+        assert cap_state_to_budget(state, _LAYA_STATE_BUDGET_CHARS) == state
+
+    def test_truncates_longest_string_first(self) -> None:
+        state = {
+            "task_description": "z" * 5_000,
+            "criteria": ["a" * 1_000, "b" * 900],
+        }
+        capped = cast("dict[str, object]", cap_state_to_budget(state, 1_800))
+        assert len(json.dumps(capped, ensure_ascii=False, default=str)) <= 1_800
+        desc = cast("str", capped["task_description"])
+        assert "truncated" in desc
+        # The longest strings are shrunk first: the 900-char criterion
+        # survives untouched, the 1000-char one does not.
+        criteria = cast("list[object]", capped["criteria"])
+        assert criteria[1] == "b" * 900
+        assert criteria[0] != "a" * 1_000
+
+    def test_keeps_tail_for_tail_keys(self) -> None:
+        state = {"error_excerpt": "head-junk" + "y" * 5_000 + "FATAL: at end"}
+        capped = cast("dict[str, object]", cap_state_to_budget(state, 1_800))
+        excerpt = cast("str", capped["error_excerpt"])
+        assert len(json.dumps(capped, ensure_ascii=False, default=str)) <= 1_800
+        assert excerpt.endswith("FATAL: at end")
+
+    def test_does_not_mutate_input(self) -> None:
+        state = {"task_description": "z" * 5_000}
+        cap_state_to_budget(state, 1_800)
+        assert state == {"task_description": "z" * 5_000}
+
+    def test_nothing_shrinkable_terminates(self) -> None:
+        # Over budget but every string is already shorter than the
+        # truncation suffix: must terminate, state unchanged.
+        state = {f"k{i}": "v" for i in range(3)}
+        assert cap_state_to_budget(state, 4) == state
+
+    @pytest.mark.asyncio
+    async def test_laya_tier_applies_budget_pass(self) -> None:
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["state"] = json.loads(request.read())["state"]
+            return httpx.Response(200, json=_OK_PAYLOAD)
+
+        client = _client_with(handler)
+        await client.decide(_LAYA, {"task_description": "z" * 5_000}, {}, "s")
+        await client.aclose()
+        assert (
+            len(json.dumps(captured["state"], ensure_ascii=False, default=str))
+            <= _LAYA_STATE_BUDGET_CHARS
+        )
+
+    @pytest.mark.asyncio
+    async def test_openrouter_tier_keeps_per_key_caps_only(self) -> None:
+        # The budget pass is laya-only: the OpenRouter fallback keeps its
+        # per-key billing caps (here 4k for task_description), far over the
+        # laya budget, intact for the bigger fallback model.
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["state"] = json.loads(request.read())["state"]
+            return httpx.Response(200, json=_OK_PAYLOAD)
+
+        client = _client_with(handler)
+        await client.decide(_OPENROUTER, {"task_description": "z" * 5_000}, {}, "s")
+        await client.aclose()
+        sent = cast("str", captured["state"]["task_description"])
+        assert len(sent) <= 4_100
+        assert len(sent) > _LAYA_STATE_BUDGET_CHARS
 
 
 def test_flag_off_client_still_parses_but_resolver_gates(
