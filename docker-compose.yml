@@ -459,8 +459,16 @@ services:
   # ==========================================================================
   # MinIO - Object storage for rendered videos (NAS default-on; registry OFF)
   # ==========================================================================
+  # MinIO withdrew anonymous community distribution (verified 2026-09-25):
+  # docker.io and quay.io deny every tag and dl.min.io binaries 410. This
+  # digest is RELEASE.2025-09-07T16-13-09Z, the final community release
+  # (AGPLv3), already cached on the NAS. Fresh hosts cannot pull it and must
+  # import it once from any host that has it:
+  #   docker save 14cea493d9a34 | docker load
+  # mc is bundled in this image, so minio-init below reuses it instead of
+  # the (equally unpullable) separate mc image.
   minio:
-    image: quay.io/minio/minio:latest
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: roboco-minio
     restart: unless-stopped
     # data-only network — keeps MinIO off the agent mesh; the multi-homed
@@ -487,7 +495,9 @@ services:
   # minio healthy, creates the bucket idempotently, then exits. `|| true`
   # covers re-runs (bucket already exists).
   minio-init:
-    image: quay.io/minio/mc:latest
+    # Same image as the minio service above: it bundles mc, and the
+    # standalone quay.io/minio/mc image is no longer anonymously pullable.
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: roboco-minio-init
     depends_on:
       minio:
