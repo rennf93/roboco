@@ -118,7 +118,11 @@ while IFS= read -r img; do
       esac
       if [ -f "docker/$name.Dockerfile" ]; then
         echo "[deploy] building $img ..."
-        docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" .
+        # One retry: these builds download from the internet (curl/uv/apt),
+        # and a transient TLS reset (dl.k8s.io reset 7 of 8 handshakes from
+        # this NAS, 2026-09-25) must not kill a mid-deploy run.
+        docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" . ||
+          docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" .
       else
         echo "[deploy] WARNING: $img missing and no docker/$name.Dockerfile to build it" >&2
       fi
