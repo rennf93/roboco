@@ -370,6 +370,8 @@ async def run_trajectory_pass(session: Any) -> int:
     graded += await _grade_size(session, grade_after)
     graded += await _grade_heal_severity(session, grade_after)
     graded += await _grade_ci_history(session, grade_after, rot_after)
+    graded += await _grade_stranded(session, grade_after, rot_after, now)
+    graded += await _grade_collision_edge(session, grade_after)
     # History retention (best-effort): CI readings and retrieval events
     # past their windows stop being useful and stop the tables growing.
     try:
@@ -475,20 +477,28 @@ def _finding_fate(
     return None
 
 
+def _finding_refs(state: Any) -> list[tuple[int, str]]:
+    """(idx, finding id) pairs a findings row asked about."""
+    if not isinstance(state, dict) or not isinstance(state.get("findings"), list):
+        return []
+    refs: list[tuple[int, str]] = []
+    for entry in state["findings"]:
+        if isinstance(entry, dict) and entry.get("id") and entry.get("idx") is not None:
+            refs.append((int(entry["idx"]), str(entry["id"])))
+    return refs
+
+
 def _findings_fates(
-    state: Any, facts: dict[str, tuple[str, datetime | None]],
-    decision_at: datetime, now: datetime, rot_after: datetime,
+    state: Any,
+    facts: dict[str, tuple[str, datetime | None]],
+    decision_at: datetime,
+    now: datetime,
+    rot_after: datetime,
 ) -> dict[str, str]:
     """{question_key: fate} for one findings_mapping row's state."""
-    if not isinstance(state, dict) or not isinstance(state.get("findings"), list):
-        return {}
     fates: dict[str, str] = {}
-    for entry in state["findings"]:
-        if not isinstance(entry, dict):
-            continue
-        finding_id = str(entry.get("id") or "")
-        idx = entry.get("idx")
-        if not finding_id or idx is None or finding_id not in facts:
+    for idx, finding_id in _finding_refs(state):
+        if finding_id not in facts:
             continue
         fate = _finding_fate(*facts[finding_id], decision_at, now, rot_after)
         if fate:
@@ -561,16 +571,18 @@ def _norm_test(name: str) -> str:
     return " ".join(str(name or "").lower().split())
 
 
+def _rel_path(path: str) -> str:
+    return str(path).replace("\\", "/").strip("/").lower()
+
+
 def _files_overlap(a: list[str], b: list[str]) -> bool:
     """Loose POSIX-style overlap between two changed-file lists (same
     matching family as the findings mapper's file overlap)."""
-    norm_a = {f.replace("\\", "/").strip("/").lower() for f in a if f}
-    norm_b = {f.replace("\\", "/").strip("/").lower() for f in b if f}
-    for path_a in norm_a:
-        for path_b in norm_b:
-            if path_a == path_b or path_a.endswith(path_b) or path_b.endswith(path_a):
-                return True
-    return False
+    norm_a = {_rel_path(f) for f in a}
+    norm_b = {_rel_path(f) for f in b}
+    return any(
+        x == y or x.endswith(y) or y.endswith(x) for x in norm_a for y in norm_b
+    )
 
 
 def _later_independent_failure(
@@ -978,3 +990,281 @@ async def stamp_secretary_confirmation(
         session_id=session_id,
         fates={"gate": f"confirmed:{kind}"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave 4 graders: stranded batches, collision overlap, release decisions.
+# ---------------------------------------------------------------------------
+
+
+def _stranded_titles(rows: list[Any]) -> list[str]:
+    """Every blocked-task title referenced by the rows' states."""
+    titles: list[str] = []
+    for row in rows:
+        state = row.state if isinstance(row.state, dict) else {}
+        titles.extend(str(t) for t in state.get("blocked_task_titles") or [])
+    return titles
+
+
+def _stranded_fate(
+    titles: list[str],
+    facts: dict[str, tuple[str, datetime | None]],
+    decision_at: datetime,
+    now: datetime,
+    rot_after: datetime,
+) -> str | None:
+    """The blocked batch's fate: every matched task cleared = the wait
+    was right; every matched task still stuck past the rot horizon (or
+    cancelled by a human) = escalation was warranted; mixed or absent =
+    unlabeled."""
+    candidates = {
+        fate
+        for fate in (
+            _stranded_title_fate(facts.get(title), decision_at, now, rot_after)
+            for title in titles
+        )
+        if fate
+    }
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    return None
+
+
+def _stranded_title_fate(
+    entry: tuple[str, datetime | None] | None,
+    decision_at: datetime,
+    now: datetime,
+    rot_after: datetime,
+) -> str | None:
+    """One blocked task's fate: cleared after the decision proves the
+    wait was right; human-cancelled or stuck past the rot horizon proves
+    escalation was warranted; anything else proves nothing."""
+    if entry is None:
+        return None
+    status_now, updated_at = entry
+    moved = _moved_after(updated_at, decision_at)
+    if status_now in _DELIVERED and moved:
+        return "batch_recovered_after"
+    if status_now == "cancelled" and moved:
+        # A human cancelled it: the strand needed exactly the authority
+        # the escalate option describes.
+        return "still_stranded_past_window"
+    if status_now in _ACTIVE_UNFINISHED and not moved and now >= rot_after:
+        return "still_stranded_past_window"
+    return None
+
+
+async def _grade_stranded(
+    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+) -> int:
+    rows = await _unlabeled_rows(session, "stranded_response", grade_after)
+    if not rows:
+        return 0
+    titles = _stranded_titles(rows)
+    if not titles:
+        return 0
+    result = await session.execute(
+        select(TaskTable.title, TaskTable.status, TaskTable.updated_at).where(
+            TaskTable.title.in_(titles)
+        )
+    )
+    facts = {
+        str(title): (str(status), updated_at)
+        for title, status, updated_at in result.all()
+    }
+    graded = 0
+    for row in rows:
+        slug = _stranded_fate(
+            _stranded_titles([row]),
+            facts,
+            row.created_at,
+            now,
+            rot_after,
+        )
+        graded += await _label(
+            session, "stranded_response", str(row.session_id), slug
+        )
+    return graded
+
+
+def _pair_fates(
+    pairs: list[Any],
+    facts: dict[str, tuple[str, datetime | None, set[str]]],
+    decision_at: datetime,
+) -> dict[str, str]:
+    """Per-pair fates from the delivered diffs' actual file overlap: both
+    tasks delivered and their commit files intersect proves the edge; both
+    delivered with no intersection disproves it; anything else waits."""
+    fates: dict[str, str] = {}
+    for idx, pair in enumerate(pairs):
+        if not isinstance(pair, dict):
+            continue
+        fate = _pair_fate(pair, facts, decision_at)
+        if fate:
+            fates[f"pair_{idx}"] = fate
+    return fates
+
+
+def _delivered_since(
+    fact: tuple[str, datetime | None, set[str]] | None,
+    decision_at: datetime,
+) -> bool:
+    """True when a fact's task is delivered and moved after the mark."""
+    return fact is not None and fact[0] in _DELIVERED and _moved_after(
+        fact[1], decision_at
+    )
+
+
+def _pair_fate(
+    pair: dict[str, Any],
+    facts: dict[str, tuple[str, datetime | None, set[str]]],
+    decision_at: datetime,
+) -> str | None:
+    """One pair's fate: both sides delivered and their commit files
+    intersect proves the edge; both delivered with no intersection
+    disproves it; anything else waits for more evidence."""
+    left = pair.get("left") or {}
+    right = pair.get("right") or {}
+    left_fact = facts.get(str(left.get("id") or ""))
+    right_fact = facts.get(str(right.get("id") or ""))
+    left_ok = _delivered_since(left_fact, decision_at)
+    right_ok = _delivered_since(right_fact, decision_at)
+    if not (left_ok and right_ok):
+        return None
+    return (
+        "overlap_confirmed" if left_fact[2] & right_fact[2] else "no_overlap"
+    )
+
+
+def _pair_sides(state: Any) -> list[str]:
+    """Every task id referenced by one row's collision pairs."""
+    if not isinstance(state, dict) or not isinstance(state.get("pairs"), list):
+        return []
+    ids: list[str] = []
+    for pair in state["pairs"]:
+        if not isinstance(pair, dict):
+            continue
+        for side in ("left", "right"):
+            value = (pair.get(side) or {}).get("id")
+            if value:
+                ids.append(str(value))
+    return ids
+
+
+def _pair_task_ids(rows: list[Any]) -> list[str]:
+    """Every task id referenced by the rows' collision pairs."""
+    task_ids: list[str] = []
+    for row in rows:
+        task_ids.extend(_pair_sides(row.state))
+    return task_ids
+
+
+async def _grade_collision_edge(session: Any, grade_after: datetime) -> int:
+    rows = await _unlabeled_rows(session, "collision_edge", grade_after)
+    if not rows:
+        return 0
+    task_ids = _pair_task_ids(rows)
+    facts = await _delivered_files(session, task_ids)
+    graded = 0
+    for row in rows:
+        state = row.state if isinstance(row.state, dict) else {}
+        fates = _pair_fates(state.get("pairs") or [], facts, row.created_at)
+        if not fates:
+            continue
+        graded += await persist.record_question_outcomes(
+            session,
+            pilot="collision_edge",
+            session_id=str(row.session_id),
+            fates=fates,
+        )
+    return graded
+
+
+async def _delivered_files(
+    session: Any, task_ids: list[str]
+) -> dict[str, tuple[str, datetime | None, set[str]]]:
+    """(status, updated_at, changed-file set) per task id, from the
+    tasks' recorded commit files."""
+    ids: list[Any] = []
+    for raw in task_ids:
+        with contextlib.suppress(ValueError):
+            ids.append(UUID(raw))
+    if not ids:
+        return {}
+    rows = await session.execute(
+        select(
+            TaskTable.id, TaskTable.status, TaskTable.updated_at, TaskTable.commits
+        ).where(TaskTable.id.in_(ids))
+    )
+    out: dict[str, tuple[str, datetime | None, set[str]]] = {}
+    for task_id, status, updated_at, commits in rows.all():
+        files: set[str] = set()
+        for commit in commits or []:
+            commit_files = commit.get("files") if isinstance(commit, dict) else None
+            if isinstance(commit_files, list):
+                files.update(str(f) for f in commit_files)
+        out[str(task_id)] = (str(status), updated_at, files)
+    return out
+
+
+async def stamp_release_decision(
+    session: Any,
+    *,
+    decision: str,
+    change_summaries: list[str],
+    bump_kind: str,
+    gap_count: int,
+) -> int:
+    """Grade the release_worthy and release_readiness rows of one
+    proposal when the CEO decides it: approve proves the urgency call
+    and confirms the flagged risks were acceptable; reject-with-changes
+    proves the opposite. Recomputes the pilots' state keys EXACTLY as
+    the pilots built them (same caps, same derived fields) so the labels
+    land on the decision rows. Best-effort; unlabeled rows stay
+    candidates."""
+    from roboco.services.decisions.pilots import state_key
+
+    if not settings.decisions_enabled:
+        return 0
+    summaries = [s[:200] for s in list(change_summaries)[:30]]
+    worthy_state = {
+        "bump_kind": bump_kind,
+        "commit_count": len(summaries),
+        "commit_floor": settings.release_min_commits,
+        "change_summary": summaries,
+    }
+    readiness_state = {
+        "bump_kind": bump_kind,
+        "open_gap_count": gap_count,
+        "change_summary": summaries,
+    }
+    worthy_key = f"release:worthy:{state_key(worthy_state)}"
+    readiness_key = f"readiness:risk:{state_key(readiness_state)}"
+    graded = 0
+    if decision == "approve":
+        graded += await persist.record_outcome(
+            session,
+            pilot="release_worthy",
+            session_id=worthy_key,
+            outcome=outcomes.WORTHY_CONFIRMED,
+        )
+        graded += await persist.record_outcome(
+            session,
+            pilot="release_readiness",
+            session_id=readiness_key,
+            outcome=outcomes.RISK_CONFIRMED_LOW,
+        )
+    elif decision == "reject":
+        graded += await persist.record_outcome(
+            session,
+            pilot="release_worthy",
+            session_id=worthy_key,
+            outcome=outcomes.NOT_WORTHY_YET,
+        )
+        graded += await persist.record_outcome(
+            session,
+            pilot="release_readiness",
+            session_id=readiness_key,
+            outcome=outcomes.RISK_CONFIRMED_HIGH,
+        )
+    return graded

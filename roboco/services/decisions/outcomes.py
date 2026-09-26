@@ -55,6 +55,14 @@ REGRESSION_CONFIRMED_LATER = "regression_confirmed_no_recurrence"
 REALIZED_LIGHT = "realized_light"
 REALIZED_STANDARD = "realized_standard"
 REALIZED_HEAVY = "realized_heavy"
+BATCH_RECOVERED_AFTER = "batch_recovered_after"
+STILL_STRANDED_PAST_WINDOW = "still_stranded_past_window"
+OVERLAP_CONFIRMED = "overlap_confirmed"
+NO_OVERLAP = "no_overlap"
+WORTHY_CONFIRMED = "worthy_confirmed"
+NOT_WORTHY_YET = "not_worthy_yet"
+RISK_CONFIRMED_LOW = "risk_confirmed_low"
+RISK_CONFIRMED_HIGH = "risk_confirmed_high"
 CI_FLAKED = "ci_flaked"
 CI_HARD_RED = "ci_hard_red"
 UPDATE_CAUSED_FAILURES = "update_caused_failures"
@@ -202,6 +210,24 @@ OUTCOME_GOLD: dict[tuple[str, str], Gold] = {
     # clean run sequence proves low.
     ("dep_update_risk", UPDATE_CAUSED_FAILURES): {"gate": {"2": 1.0}},
     ("dep_update_risk", UPDATE_RAN_CLEAN): {"gate": {"0": 1.0}},
+    # stranded_response (B15 choice): the blocked tasks' fate after the
+    # decision. Recovery without a human proves waiting was right; the
+    # strand persisting past the rot horizon proves escalation was
+    # warranted. Respawn is never auto-derived (not attributable).
+    ("stranded_response", BATCH_RECOVERED_AFTER): {
+        "gate": {"wait": 1.0},
+    },
+    ("stranded_response", STILL_STRANDED_PAST_WINDOW): {
+        "gate": {"escalate": 1.0},
+    },
+    # release_worthy (B8 score): the CEO's own approve/reject of the
+    # proposal is the ground truth for "worth releasing now".
+    ("release_worthy", WORTHY_CONFIRMED): {"gate": {"2": 1.0}},
+    ("release_worthy", NOT_WORTHY_YET): {"gate": {"0": 0.7, "1": 0.3}},
+    # release_readiness (B19 score): approve = the flagged risks were
+    # acceptable; reject-with-required-changes = they were real.
+    ("release_readiness", RISK_CONFIRMED_LOW): {"gate": {"0": 0.7, "1": 0.3}},
+    ("release_readiness", RISK_CONFIRMED_HIGH): {"gate": {"2": 0.7, "1": 0.3}},
 }
 
 # Per-question fate golds for BATCHED pilots whose questions each carry
@@ -218,6 +244,13 @@ QUESTION_FATE_GOLD: dict[str, dict[str, dict[str, float] | None]] = {
         # A waived finding says nothing about whether the diff addressed
         # it: exclusion, never a guessed gold.
         "waived": None,
+    },
+    # collision_edge (B5): per-pair noul "these two drafts logically
+    # conflict beyond file overlap". The delivered diffs' actual file
+    # overlap is the truth.
+    "collision_edge": {
+        "overlap_confirmed": {"true": 1.0, "false": 0.0},
+        "no_overlap": {"true": 0.0, "false": 1.0},
     },
     # secretary_nl (B18 choice): the CEO running a pilot-filled directive
     # unchanged IS the ground truth for the kind it picked. A rejection is

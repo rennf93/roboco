@@ -690,3 +690,147 @@ async def test_secretary_confirmation_stamp_recomputes_the_key(
     assert graded == 1
     assert stamped[0]["pilot"] == "secretary_nl"
     assert stamped[0]["fates"] == {"gate": "confirmed:relay_message"}
+
+
+# ---------------------------------------------------------------------------
+# Wave 4: stranded batches, collision overlap, release decisions
+# ---------------------------------------------------------------------------
+
+
+def test_stranded_all_recovered_proves_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    titles = ["Task one", "Task two"]
+    facts = {
+        "Task one": ("awaiting_qa", old + timedelta(days=2)),
+        "Task two": ("completed", old + timedelta(days=3)),
+    }
+    slug = trajectory._stranded_fate(titles, facts, old, _ROT, _ROT)
+    assert slug == "batch_recovered_after"
+
+
+def test_stranded_cancelled_proves_escalate(monkeypatch: pytest.MonkeyPatch) -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    facts = {"Task one": ("cancelled", old + timedelta(days=2))}
+    slug = trajectory._stranded_fate(facts and titles_helper(facts), facts, old, _ROT, _ROT)
+    assert slug == "still_stranded_past_window"
+
+
+def titles_helper(facts):
+    return list(facts)
+
+
+def test_stranded_mixed_fates_stay_unlabeled() -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    titles = ["Task one", "Task two"]
+    facts = {
+        "Task one": ("awaiting_qa", old + timedelta(days=2)),
+        "Task two": ("in_progress", old),
+    }
+    slug = trajectory._stranded_fate(titles, facts, old, _ROT, _ROT)
+    assert slug is None
+
+
+def test_collision_pair_both_delivered_overlapping_proves_edge() -> None:
+    facts = {
+        "t1": ("completed", _T0 + timedelta(days=2), {"backend/a.py", "shared/x.py"}),
+        "t2": ("completed", _T0 + timedelta(days=3), {"shared/x.py", "panel/b.ts"}),
+    }
+    pair = {
+        "left": {"id": "t1", "title": "A"},
+        "right": {"id": "t2", "title": "B"},
+    }
+    fates = trajectory._pair_fates([pair], facts, _T0)
+    assert fates == {"pair_0": "overlap_confirmed"}
+
+
+def test_collision_pair_delivered_disjoint_disproves_edge() -> None:
+    facts = {
+        "t1": ("completed", _T0 + timedelta(days=2), {"backend/a.py"}),
+        "t2": ("completed", _T0 + timedelta(days=3), {"panel/b.ts"}),
+    }
+    pair = {"left": {"id": "t1"}, "right": {"id": "t2"}}
+    fates = trajectory._pair_fates([pair], facts, _T0)
+    assert fates == {"pair_0": "no_overlap"}
+
+
+def test_collision_pair_undelivered_side_stays_unlabeled() -> None:
+    facts = {
+        "t1": ("completed", _T0 + timedelta(days=2), {"a.py"}),
+        "t2": ("in_progress", None),
+    }
+    pair = {"left": {"id": "t1"}, "right": {"id": "t2"}}
+    assert trajectory._pair_fates([pair], facts, _T0) == {}
+
+
+def test_release_stamp_keys_and_slugs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Approve grades worthy-confirmed + risk-confirmed-low on the exact
+    recomputed session keys; reject grades the opposite pair."""
+    monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
+    stamped: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        stamped.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_outcome", _capture)
+    summaries = ["fix: login crash", "feat: export"]
+    graded = asyncio_run(
+        trajectory.stamp_release_decision(
+            _FakeSession([], []),
+            decision="approve",
+            change_summaries=summaries,
+            bump_kind="minor",
+            gap_count=1,
+        )
+    )
+    assert graded == 2
+    by_pilot = {s["pilot"]: s for s in stamped}
+    worthy = by_pilot["release_worthy"]
+    assert worthy["outcome"] == "worthy_confirmed"
+    assert str(worthy["session_id"]).startswith("release:worthy:")
+    readiness = by_pilot["release_readiness"]
+    assert readiness["outcome"] == "risk_confirmed_low"
+    assert str(readiness["session_id"]).startswith("readiness:risk:")
+
+    stamped.clear()
+    graded = asyncio_run(
+        trajectory.stamp_release_decision(
+            _FakeSession([], []),
+            decision="reject",
+            change_summaries=summaries,
+            bump_kind="minor",
+            gap_count=1,
+        )
+    )
+    by_pilot = {s["pilot"]: s for s in stamped}
+    assert by_pilot["release_worthy"]["outcome"] == "not_worthy_yet"
+    assert by_pilot["release_readiness"]["outcome"] == "risk_confirmed_high"
+
+
+def asyncio_run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def test_state_keys_recompute_deterministically() -> None:
+    from roboco.services.decisions.pilots import state_key
+
+    summaries = ["fix: a", "feat: b"]
+    one = state_key(
+        {
+            "bump_kind": "minor",
+            "commit_count": len(summaries),
+            "commit_floor": 5,
+            "change_summary": summaries,
+        }
+    )
+    two = state_key(
+        {
+            "change_summary": summaries,
+            "bump_kind": "minor",
+            "commit_count": len(summaries),
+            "commit_floor": 5,
+        }
+    )
+    assert one == two  # key order must not matter
