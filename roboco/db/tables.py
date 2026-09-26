@@ -2899,3 +2899,34 @@ class MemoryRetrievalLogTable(Base):
     retrieved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class MemoryLinkTable(Base):
+    """Decision-row to knowledge-item linkage (spec 12.1 Wave 5).
+
+    Links one memory-family decision (memory_distill_gate, vault_prefilter)
+    to the knowledge item its decision produced - the distilled learning's
+    source URI, or the board-review draft task created from the note. The
+    trajectory labeler grades the decision by joining the link to the
+    retrieval log / task trajectory. Append-only facts; never overwritten.
+    """
+
+    __tablename__ = "memory_links"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+    pilot: Mapped[str] = mapped_column(String(60), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(280), nullable=False)
+    source: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    __table_args__ = (
+        Index("ix_memory_links_pilot_session", "pilot", "session_id"),
+        Index("ix_memory_links_source", "source"),
+    )

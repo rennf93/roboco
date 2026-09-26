@@ -689,6 +689,44 @@ async def tg_freetext_gate(session: Any, *, chat_id: str, text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def memory_distill_state(
+    *,
+    title: str,
+    acceptance_criteria: list[str],
+    dev_notes: str | None,
+    qa_notes: str | None,
+    commit_messages: list[str],
+) -> dict[str, Any]:
+    """The gate's state payload, exposed so the learnings persist site
+    can address the decision row by the same content-addressed key
+    (spec 12.1 Wave 5)."""
+    return {
+        "title": _cap(title),
+        "acceptance_criteria": [str(c)[:500] for c in acceptance_criteria][:20],
+        "dev_notes": _cap(dev_notes),
+        "qa_notes": _cap(qa_notes),
+        "commit_messages": [str(c)[:200] for c in commit_messages][:20],
+    }
+
+
+def memory_distill_session_key(
+    *,
+    title: str,
+    acceptance_criteria: list[str],
+    dev_notes: str | None,
+    qa_notes: str | None,
+    commit_messages: list[str],
+) -> str:
+    state = memory_distill_state(
+        title=title,
+        acceptance_criteria=acceptance_criteria,
+        dev_notes=dev_notes,
+        qa_notes=qa_notes,
+        commit_messages=commit_messages,
+    )
+    return f"distill:{state_key(state)}"
+
+
 async def memory_distill_gate(
     session: Any,
     *,
@@ -710,6 +748,7 @@ async def memory_distill_gate(
         "qa_notes": _cap(qa_notes),
         "commit_messages": [str(c)[:200] for c in commit_messages][:20],
     }
+    session_id = f"distill:{state_key(state)}"
 
     async def _run(db: Any) -> bool:
         mode, noul, result = await _ask_noul(
@@ -721,7 +760,7 @@ async def memory_distill_gate(
                 "(a real problem, approach, or gotcha) worth persisting "
                 "to org memory."
             ),
-            session_id=f"distill:{state_key(state)}",
+            session_id=session_id,
         )
         if result is None:
             # OFF or unreachable: distill + persist as today, no row.

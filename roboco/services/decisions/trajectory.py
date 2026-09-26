@@ -372,6 +372,7 @@ async def run_trajectory_pass(session: Any) -> int:
     graded += await _grade_ci_history(session, grade_after, rot_after)
     graded += await _grade_stranded(session, grade_after, rot_after, now)
     graded += await _grade_collision_edge(session, grade_after)
+    graded += await _grade_memory_links(session, grade_after, rot_after, now)
     # History retention (best-effort): CI readings and retrieval events
     # past their windows stop being useful and stop the tables growing.
     try:
@@ -1267,4 +1268,175 @@ async def stamp_release_decision(
             session_id=readiness_key,
             outcome=outcomes.RISK_CONFIRMED_HIGH,
         )
+    return graded
+
+
+# ---------------------------------------------------------------------------
+# Wave 5: memory-family links and retrieval grading.
+# ---------------------------------------------------------------------------
+
+
+def learning_source_uri(content: str) -> str:
+    """The source URI a learning is indexed under: deterministic from the
+    content per the optimal learnings plugin's documented scheme
+    (``roboco://learnings/lrn-{md5(content[:100])[:12]}``), so the link
+    writer and the retrieval log agree without sharing state."""
+    import hashlib
+
+    digest = hashlib.md5(content[:100].encode("utf-8")).hexdigest()[:12]
+    return f"roboco://learnings/lrn-{digest}"
+
+
+async def link_memory_source(pilot: str, session_id: str, source: str) -> None:
+    """Record that one decision produced one knowledge item. Own
+    short-lived session, best-effort: the producer's path must never wait
+    on or fail for the corpus."""
+    from roboco.db.base import get_session_factory
+    from roboco.db.tables import MemoryLinkTable
+
+    if not session_id or not source:
+        return
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            db.add(
+                MemoryLinkTable(
+                    pilot=pilot[:60],
+                    session_id=session_id[:280],
+                    source=source[:500],
+                )
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.debug("memory link write skipped", pilot=pilot, error=str(exc))
+
+
+async def _grade_distill_links(
+    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+) -> int:
+    """memory_distill_gate: a post-decision retrieval of the recorded
+    learning proves the persist-worthy claim held; no retrieval by the
+    rot horizon proves it did not; rows whose learning was never linked
+    (still in the persist pipeline) wait."""
+    from roboco.db.tables import MemoryLinkTable, MemoryRetrievalLogTable
+
+    rows = await _unlabeled_rows(session, "memory_distill_gate", grade_after)
+    if not rows:
+        return 0
+    session_ids = [str(r.session_id) for r in rows]
+    links = await session.execute(
+        select(MemoryLinkTable).where(
+            MemoryLinkTable.pilot == "memory_distill_gate",
+            MemoryLinkTable.session_id.in_(session_ids),
+        )
+    )
+    sources_by_session: dict[str, list[str]] = {}
+    for link in links.scalars():
+        sources_by_session.setdefault(link.session_id, []).append(link.source)
+    graded = 0
+    for row in rows:
+        session_id = str(row.session_id)
+        sources = sources_by_session.get(session_id)
+        if not sources:
+            continue  # learning never persisted: nothing to grade yet
+        retrieved = await session.execute(
+            select(MemoryRetrievalLogTable.id)
+            .where(
+                MemoryRetrievalLogTable.source.in_(sources),
+                MemoryRetrievalLogTable.retrieved_at > row.created_at,
+            )
+            .limit(1)
+        )
+        if retrieved.first() is not None:
+            fate = "retrieved"
+        elif now >= rot_after:
+            fate = "never_retrieved"
+        else:
+            continue
+        graded += await persist.record_question_outcomes(
+            session,
+            pilot="memory_distill_gate",
+            session_id=session_id,
+            fates={"gate": fate},
+        )
+    return graded
+
+
+def _vault_fate(
+    entry: tuple[str, datetime | None] | None,
+    decision_at: datetime,
+) -> str | None:
+    """One vault draft's fate: approved and started proves the note
+    warranted a task; cancelled proves it did not; still pending waits."""
+    if entry is None:
+        return None
+    status_now, updated_at = entry
+    moved = _moved_after(updated_at, decision_at)
+    if status_now == "cancelled" and moved:
+        return "draft_cancelled"
+    if status_now in _DELIVERED and moved:
+        return "draft_approved"
+    return None
+
+
+async def _vault_drafts(
+    session: Any, session_ids: list[str]
+) -> tuple[dict[str, list[str]], dict[str, tuple[str, datetime | None]]]:
+    """Draft task refs per decision session, plus their task facts."""
+    from roboco.db.tables import MemoryLinkTable
+
+    links = await session.execute(
+        select(MemoryLinkTable).where(
+            MemoryLinkTable.pilot == "vault_prefilter",
+            MemoryLinkTable.session_id.in_(session_ids),
+        )
+    )
+    draft_ids: list[str] = []
+    drafts_by_session: dict[str, list[str]] = {}
+    for link in links.scalars():
+        task_ref = link.source.removeprefix("task:")
+        if task_ref == link.source:
+            continue
+        drafts_by_session.setdefault(link.session_id, []).append(task_ref)
+        draft_ids.append(task_ref)
+    return drafts_by_session, await _task_facts(session, draft_ids)
+
+
+async def _grade_vault_links(
+    session: Any, grade_after: datetime
+) -> int:
+    """vault_prefilter: the board-review draft created from the note is
+    the truth - approved and started proves the note warranted a task; a
+    cancelled draft proves it did not; still pending waits."""
+    rows = await _unlabeled_rows(session, "vault_prefilter", grade_after)
+    if not rows:
+        return 0
+    session_ids = [str(r.session_id) for r in rows]
+    drafts_by_session, facts = await _vault_drafts(session, session_ids)
+    if not drafts_by_session:
+        return 0
+    graded = 0
+    for row in rows:
+        fates: dict[str, str] = {}
+        for task_ref in drafts_by_session.get(str(row.session_id)) or []:
+            fate = _vault_fate(facts.get(task_ref), row.created_at)
+            if fate:
+                fates["gate"] = fate
+        if not fates:
+            continue
+        graded += await persist.record_question_outcomes(
+            session,
+            pilot="vault_prefilter",
+            session_id=str(row.session_id),
+            fates=fates,
+        )
+    return graded
+
+
+async def _grade_memory_links(
+    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+) -> int:
+    """Wave 5 entry: grade both memory-family pilots through their links."""
+    graded = await _grade_distill_links(session, grade_after, rot_after, now)
+    graded += await _grade_vault_links(session, grade_after)
     return graded

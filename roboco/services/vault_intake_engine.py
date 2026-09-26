@@ -373,6 +373,18 @@ class VaultIntakeEngine(BaseService):
             },
         )
         await self.session.flush()
+        # Corpus linkage (spec 12.1 Wave 5): tie the vault_prefilter
+        # decision row to its board-review draft, so the labeler can grade
+        # the gate against the draft's fate (board approve/cancel).
+        # Best-effort, never fails the intake.
+        try:
+            from roboco.services.decisions.trajectory import link_memory_source
+
+            await link_memory_source(
+                "vault_prefilter", f"vault:{rel_path}", f"task:{task.id}"
+            )
+        except Exception:
+            pass
         self.log.info(
             "vault-intake: board-review draft opened",
             task_id=str(task.id),

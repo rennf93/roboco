@@ -5410,6 +5410,33 @@ class TaskService(BaseService):
                 commit_messages=commit_messages,
             )
         )
+        if lesson:
+            # Corpus linkage (spec 12.1 Wave 5): tie the distilled
+            # learning back to its distill-gate decision row, so the
+            # labeler can grade the gate against the learning's later
+            # retrievals. Best-effort, own session, never raises.
+            try:
+                from roboco.services.decisions.pilots_content import (
+                    memory_distill_session_key,
+                )
+                from roboco.services.decisions.trajectory import (
+                    learning_source_uri,
+                    link_memory_source,
+                )
+
+                await link_memory_source(
+                    "memory_distill_gate",
+                    memory_distill_session_key(
+                        title=snapshot.task_title or "",
+                        acceptance_criteria=acceptance_criteria,
+                        dev_notes=snapshot.dev_notes,
+                        qa_notes=snapshot.qa_notes,
+                        commit_messages=commit_messages,
+                    ),
+                    learning_source_uri(lesson),
+                )
+            except Exception:
+                pass
         return [(lesson, LearningType.SOLUTION)] if lesson else []
 
     async def _extract_completion_learnings(

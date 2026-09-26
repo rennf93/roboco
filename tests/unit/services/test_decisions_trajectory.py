@@ -210,6 +210,9 @@ class _FakeRows:
     def all(self) -> list:
         return self._rows
 
+    def first(self) -> object | None:
+        return self._rows[0] if self._rows else None
+
 
 _GRADED_PILOTS = {
     "idle_legitimacy",
@@ -232,10 +235,19 @@ class _FakeSession:
     the registered task facts. record_outcome is patched at the persist
     module by the caller."""
 
-    def __init__(self, rows: list, facts: list, size_facts: list | None = None) -> None:
+    def __init__(
+        self,
+        rows: list,
+        facts: list,
+        size_facts: list | None = None,
+        links: list | None = None,
+        retrievals: list | None = None,
+    ) -> None:
         self._rows = rows
         self._facts = facts
         self._size_facts_rows = size_facts or []
+        self._links = links or []
+        self._retrievals = retrievals or []
 
     def _result_for(self, stmt: object) -> _FakeRows:
         compiled = str(stmt.compile())
@@ -260,6 +272,10 @@ class _FakeSession:
             return _FakeRows(self._size_facts_rows)
         if "ci_runs" in compiled:  # the CI history select
             return _FakeRows([])
+        if "memory_links" in compiled:
+            return _FakeRows(self._links)
+        if "memory_retrieval_log" in compiled:
+            return _FakeRows(self._retrievals)
         return _FakeRows(self._facts)
 
     async def execute(self, stmt: object) -> _FakeRows:
@@ -834,3 +850,112 @@ def test_state_keys_recompute_deterministically() -> None:
         }
     )
     assert one == two  # key order must not matter
+
+
+# ---------------------------------------------------------------------------
+# Wave 5: memory-family links (distill + vault)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_distill_link_retrieved_proves_the_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    row = _row("memory_distill_gate", "distill:97a8553991823b", {"title": "t"}, old)
+    link = SimpleNamespace(
+        pilot="memory_distill_gate",
+        session_id="distill:97a8553991823b",
+        source="roboco://learnings/lrn-abc123",
+    )
+    retrieved = SimpleNamespace(id=1)
+    session = _FakeSession([row], [], links=[link], retrievals=[retrieved])
+    stamped: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        stamped.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_question_outcomes", _capture)
+    graded = await trajectory._grade_memory_links(
+        session,
+        datetime.now(UTC) - timedelta(days=10),
+        datetime.now(UTC) + timedelta(days=1),
+        datetime.now(UTC),
+    )
+    assert graded == 1
+    assert stamped[0]["fates"] == {"gate": "retrieved"}
+
+
+@pytest.mark.asyncio
+async def test_distill_no_retrieval_past_rot_disproves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    row = _row("memory_distill_gate", "distill:97a8553991823b", {"title": "t"}, old)
+    link = SimpleNamespace(
+        pilot="memory_distill_gate",
+        session_id="distill:97a8553991823b",
+        source="roboco://learnings/lrn-abc123",
+    )
+    session = _FakeSession([row], [], links=[link], retrievals=[])
+    stamped: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        stamped.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_question_outcomes", _capture)
+    await trajectory._grade_memory_links(
+        session,
+        datetime.now(UTC) - timedelta(days=10),
+        datetime.now(UTC) - timedelta(days=5),
+        datetime.now(UTC),
+    )
+    assert stamped[0]["fates"] == {"gate": "never_retrieved"}
+
+
+def test_learning_source_uri_is_content_addressed() -> None:
+    from roboco.services.decisions.trajectory import learning_source_uri
+
+    one = learning_source_uri("Always X when Y")
+    assert one == learning_source_uri("Always X when Y")
+    assert one != learning_source_uri("Always Z when Y")
+    assert one.startswith("roboco://learnings/lrn-")
+
+
+@pytest.mark.asyncio
+async def test_vault_draft_cancelled_proves_not_warranted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    row = _row(
+        "vault_prefilter",
+        "vault:notes/idea.md",
+        {"note_path": "notes/idea.md", "body": "x"},
+        old,
+    )
+    link = SimpleNamespace(
+        pilot="vault_prefilter",
+        session_id="vault:notes/idea.md",
+        source="task:22222222-2222-2222-2222-222222222222",
+    )
+    task_facts = [
+        (
+            UUID("22222222-2222-2222-2222-222222222222"),
+            "cancelled",
+            old + timedelta(days=4),
+        )
+    ]
+    session = _FakeSession([row], task_facts, links=[link])
+    stamped: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        stamped.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_question_outcomes", _capture)
+    await trajectory._grade_vault_links(
+        session, datetime.now(UTC) - timedelta(days=10)
+    )
+    assert stamped[0]["fates"] == {"gate": "draft_cancelled"}
