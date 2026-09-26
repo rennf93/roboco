@@ -252,8 +252,8 @@ class _FakeSession:
     def _result_for(self, stmt: object) -> _FakeRows:
         compiled = str(stmt.compile())
         if compiled.lstrip().upper().startswith("UPDATE"):
-            return _FakeRows([])
-        if "decision_log" in compiled:
+            rows: list = []
+        elif "decision_log" in compiled:
             pilot = next(
                 (
                     v
@@ -262,21 +262,18 @@ class _FakeSession:
                 ),
                 None,
             )
-            matching = (
-                [r for r in self._rows if r.pilot == pilot]
-                if pilot
-                else self._rows
-            )
-            return _FakeRows(matching)
-        if "commits" in compiled:  # the size-facts select (5 columns)
-            return _FakeRows(self._size_facts_rows)
-        if "ci_runs" in compiled:  # the CI history select
-            return _FakeRows([])
-        if "memory_links" in compiled:
-            return _FakeRows(self._links)
-        if "memory_retrieval_log" in compiled:
-            return _FakeRows(self._retrievals)
-        return _FakeRows(self._facts)
+            rows = [r for r in self._rows if r.pilot == pilot] if pilot else self._rows
+        elif "commits" in compiled:  # the size-facts select (5 columns)
+            rows = self._size_facts_rows
+        elif "ci_runs" in compiled:  # the CI history select
+            rows = []
+        elif "memory_links" in compiled:
+            rows = self._links
+        elif "memory_retrieval_log" in compiled:
+            rows = self._retrievals
+        else:
+            rows = self._facts
+        return _FakeRows(rows)
 
     async def execute(self, stmt: object) -> _FakeRows:
         return self._result_for(stmt)
@@ -382,18 +379,12 @@ async def test_engine_loop_disabled_is_a_noop(
 
 
 def test_finding_fate_resolved_by_verification() -> None:
-    assert (
-        trajectory._finding_fate("verified", None, _T0, _ROT, _ROT)
-        == "resolved"
-    )
+    assert trajectory._finding_fate("verified", None, _T0, _ROT, _ROT) == "resolved"
 
 
 def test_finding_fate_addressed_after_decision() -> None:
     updated = _T0 + timedelta(days=1)
-    assert (
-        trajectory._finding_fate("addressed", updated, _T0, _ROT, _ROT)
-        == "resolved"
-    )
+    assert trajectory._finding_fate("addressed", updated, _T0, _ROT, _ROT) == "resolved"
 
 
 def test_finding_fate_still_open_past_rot_is_re_raised() -> None:
@@ -581,7 +572,6 @@ def test_size_slug_poles_and_middle() -> None:
         _SIZE_LIGHT_DURATION,
     )
 
-    heavy_at = _T0 + timedelta(days=10)
     assert (
         trajectory.size_slug(
             _SIZE_HEAVY_COMMITS,
@@ -621,6 +611,7 @@ async def test_complexity_graded_from_realized_size(
     task_id = "11111111-1111-1111-1111-111111111111"
     row = _row("complexity", f"complexity:{task_id}", {}, old)
     session = _FakeSession([row], [])
+
     async def _size_facts(_session: object, _ids: list) -> dict:
         return {
             task_id: (
@@ -650,6 +641,7 @@ async def test_heal_severity_graded_from_fix_task(
 ) -> None:
     old = datetime.now(UTC) - timedelta(days=30)
     row = _row("heal_severity", "heal:roboco-api:abc123", {}, old)
+
     async def _fix_tasks(_session: object) -> dict:
         return {"abc123": ("awaiting_qa", old + timedelta(hours=5), old, 1)}
 
@@ -727,7 +719,9 @@ def test_stranded_all_recovered_proves_wait(monkeypatch: pytest.MonkeyPatch) -> 
 def test_stranded_cancelled_proves_escalate(monkeypatch: pytest.MonkeyPatch) -> None:
     old = datetime.now(UTC) - timedelta(days=30)
     facts = {"Task one": ("cancelled", old + timedelta(days=2))}
-    slug = trajectory._stranded_fate(facts and titles_helper(facts), facts, old, _ROT, _ROT)
+    slug = trajectory._stranded_fate(
+        facts and titles_helper(facts), facts, old, _ROT, _ROT
+    )
     assert slug == "still_stranded_past_window"
 
 
@@ -955,7 +949,5 @@ async def test_vault_draft_cancelled_proves_not_warranted(
         return 1
 
     monkeypatch.setattr(trajectory.persist, "record_question_outcomes", _capture)
-    await trajectory._grade_vault_links(
-        session, datetime.now(UTC) - timedelta(days=10)
-    )
+    await trajectory._grade_vault_links(session, datetime.now(UTC) - timedelta(days=10))
     assert stamped[0]["fates"] == {"gate": "draft_cancelled"}
