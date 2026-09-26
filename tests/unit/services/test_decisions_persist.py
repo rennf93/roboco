@@ -140,9 +140,11 @@ def _stamped_result(
     stamped on (what the model actually saw)."""
     result = _result(noul)
     result.state = state if state is not None else {"repo": "roboco"}
-    result.questions = questions if questions is not None else {
-        "gate": {"type": "noul", "instructions": "Transient?"}
-    }
+    result.questions = (
+        questions
+        if questions is not None
+        else {"gate": {"type": "noul", "instructions": "Transient?"}}
+    )
     return result
 
 
@@ -151,9 +153,7 @@ def test_row_captures_question_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     log_action("self_heal", PilotMode.ON, "originate", "allow", _stamped_result())
     row = persist._pending[0]
     assert row["state"] == {"repo": "roboco"}
-    assert row["questions"] == {
-        "gate": {"type": "noul", "instructions": "Transient?"}
-    }
+    assert row["questions"] == {"gate": {"type": "noul", "instructions": "Transient?"}}
 
 
 def test_row_without_inputs_stays_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,9 +182,7 @@ def test_oversize_input_becomes_marked_stub(
         _stamped_result(state=oversized),
     )
     row = persist._pending[0]
-    assert row["state"] == {
-        "_dropped": f"oversize>{persist._CORPUS_INPUT_CAP_CHARS}"
-    }
+    assert row["state"] == {"_dropped": f"oversize>{persist._CORPUS_INPUT_CAP_CHARS}"}
     assert row["questions"]["gate"]["type"] == "noul"
 
 

@@ -277,9 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum rows to select (default 50000, oldest first).",
     )
     args = parser.parse_args(argv)
-    written = asyncio.run(
-        export_corpus(args.out, args.pilot, max(args.limit, 0))
-    )
+    written = asyncio.run(export_corpus(args.out, args.pilot, max(args.limit, 0)))
     print(f"wrote {written} labeled examples to {args.out}")
     return 0
 

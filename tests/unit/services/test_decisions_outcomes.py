@@ -31,9 +31,7 @@ def test_unusable_outcome_yields_no_gold_even_if_registered() -> None:
 def test_usable_slugs_view_excludes_unusable() -> None:
     view = usable_slugs()
     assert ("self_heal", "cleared_after_gate") in view
-    assert all(
-        key not in UNUSABLE_OUTCOMES for key in view
-    )
+    assert all(key not in UNUSABLE_OUTCOMES for key in view)
 
 
 def test_example_gold_restricted_to_asked_questions() -> None:
@@ -70,21 +68,17 @@ def test_gold_shape_rejects_non_normalized_and_empty() -> None:
 
 
 def test_parking_and_triage_and_review_golds() -> None:
-    assert gold_for("parking", "limit_lifted_quickly") == {
-        "gate": {"retry_soon": 1.0}
-    }
+    assert gold_for("parking", "limit_lifted_quickly") == {"gate": {"retry_soon": 1.0}}
     assert gold_for("parking", "limit_lifted_after_cooldown") == {
         "gate": {"park_standard": 1.0}
     }
-    assert gold_for("parking", "re_limited_on_resume") == {
-        "gate": {"escalate": 1.0}
-    }
+    assert gold_for("parking", "re_limited_on_resume") == {"gate": {"escalate": 1.0}}
     assert gold_for("triage_failure", "flake_confirmed_by_later_failures") == {
         "gate": {"flaky": 1.0}
     }
-    assert gold_for(
-        "triage_failure", "regression_confirmed_no_recurrence"
-    ) == {"gate": {"my_regression": 1.0}}
+    assert gold_for("triage_failure", "regression_confirmed_no_recurrence") == {
+        "gate": {"my_regression": 1.0}
+    }
     # second_review: clean delivery proves NOT high-stakes; a post-gate
     # bounce proves it was.
     assert gold_for("second_review_eligibility", "qa_passed_after") == {

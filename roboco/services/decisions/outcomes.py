@@ -288,9 +288,7 @@ def gold_for(pilot: str, outcome: str) -> Gold | None:
     return OUTCOME_GOLD.get(key)
 
 
-def question_fate_gold(
-    pilot: str, fate: str
-) -> dict[str, float] | None:
+def question_fate_gold(pilot: str, fate: str) -> dict[str, float] | None:
     """One question's fate resolved to gold probabilities, or ``None``
     when the pilot has no fate map, the fate is unknown, or the fate is
     explicitly unusable for training."""

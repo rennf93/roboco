@@ -400,9 +400,7 @@ class TestCorpusStamping:
             return httpx.Response(200, json=_OK_PAYLOAD)
 
         client = _client_with(handler)
-        result = await client.decide(
-            _LAYA, {"task_description": "z" * 5_000}, {}, "s"
-        )
+        result = await client.decide(_LAYA, {"task_description": "z" * 5_000}, {}, "s")
         await client.aclose()
         assert result is not None
         assert result.state is not None

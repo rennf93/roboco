@@ -56,7 +56,6 @@ def state_key(state: dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
 
 
-
 class PilotMode(StrEnum):
     OFF = "off"
     SHADOW = "shadow"

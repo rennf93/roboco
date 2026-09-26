@@ -72,9 +72,7 @@ def _rows_from_samples(
     return rows
 
 
-async def record_runs(
-    session: Any, samples: list[Any], workflow: str | None
-) -> int:
+async def record_runs(session: Any, samples: list[Any], workflow: str | None) -> int:
     """Persist the distinct readings a sweep observed. Conflict-nothing on
     the dedup key, so re-observing the same run is a no-op. Commits the
     session - call immediately after the fetch, before any writes. Never
@@ -84,9 +82,7 @@ async def record_runs(
         return 0
     try:
         result = await session.execute(
-            insert(CiRunTable).on_conflict_do_nothing(
-                index_elements=_DEDUP_ELEMENTS
-            ),
+            insert(CiRunTable).on_conflict_do_nothing(index_elements=_DEDUP_ELEMENTS),
             rows,
         )
         await session.commit()

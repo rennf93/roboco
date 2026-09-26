@@ -125,9 +125,7 @@ def record_decision(
 
 def _clean_fates(fates: dict[str, str]) -> dict[str, str]:
     """Length- and emptiness-guarded copy of a per-question fate map."""
-    return {
-        str(k)[:60]: str(v)[:60] for k, v in fates.items() if str(v).strip()
-    }
+    return {str(k)[:60]: str(v)[:60] for k, v in fates.items() if str(v).strip()}
 
 
 def _subject_update(pilot: str, session_id: str) -> Any:

@@ -2892,9 +2892,7 @@ class MemoryRetrievalLogTable(Base):
         index=True,
     )
     source: Mapped[str] = mapped_column(String(500), nullable=False)
-    task_id: Mapped[PyUUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
+    task_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     agent_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
     retrieved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

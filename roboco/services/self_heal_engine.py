@@ -335,9 +335,7 @@ class SelfHealEngine(BaseService):
                 return
             window = timedelta(hours=settings.self_heal_outcome_window_hours)
             now = datetime.now(UTC)
-            samples_by_fp = {
-                _fingerprint(s.signal_name): s for s in self._last_samples
-            }
+            samples_by_fp = {_fingerprint(s.signal_name): s for s in self._last_samples}
             for session_id, gated_at in gated.items():
                 fingerprint = session_id.removeprefix("selfheal:")
                 slug = _transient_outcome_slug(

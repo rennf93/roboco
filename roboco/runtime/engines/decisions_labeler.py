@@ -51,6 +51,4 @@ class DecisionsLabelerEngine(_Base):
             graded = await trajectory.run_trajectory_pass(db)
             await db.commit()
         if graded:
-            logger.info(
-                "decisions trajectory labeler graded rows", labeled=graded
-            )
+            logger.info("decisions trajectory labeler graded rows", labeled=graded)

@@ -311,9 +311,7 @@ def _owned_task_ids(state: Any) -> list[tuple[str, str]]:
     return pairs
 
 
-async def _unlabeled_rows(
-    session: Any, pilot: str, older_than: datetime
-) -> list[Any]:
+async def _unlabeled_rows(session: Any, pilot: str, older_than: datetime) -> list[Any]:
     rows = await session.execute(
         select(DecisionLogTable)
         .where(
@@ -384,9 +382,7 @@ async def run_trajectory_pass(session: Any) -> int:
     return graded
 
 
-async def _label(
-    session: Any, pilot: str, session_id: str, slug: str | None
-) -> int:
+async def _label(session: Any, pilot: str, session_id: str, slug: str | None) -> int:
     if slug is None:
         return 0
     return await persist.record_outcome(
@@ -408,9 +404,7 @@ async def _grade_idle_legitimacy(
     for row in rows:
         owned = _owned_task_ids(row.state)
         tasks_now = {
-            task_id: facts[task_id]
-            for task_id, _ in owned
-            if task_id in facts
+            task_id: facts[task_id] for task_id, _ in owned if task_id in facts
         }
         slug = idle_legitimacy_slug(
             [{"task_id": t, "status": s} for t, s in owned],
@@ -431,9 +425,7 @@ async def _grade_single_subject(
         rows = await _unlabeled_rows(session, pilot, grade_after)
         if not rows:
             continue
-        task_ids = [
-            str(row.session_id).rsplit(":", 1)[-1] for row in rows
-        ]
+        task_ids = [str(row.session_id).rsplit(":", 1)[-1] for row in rows]
         facts = await _task_facts(session, task_ids)
         for row in rows:
             task_id = str(row.session_id).rsplit(":", 1)[-1]
@@ -464,10 +456,7 @@ def _finding_fate(
         return "waived"
     if status_now == "verified":
         return "resolved"
-    if (
-        status_now == "addressed"
-        and _moved_after(updated_at, decision_at)
-    ):
+    if status_now == "addressed" and _moved_after(updated_at, decision_at):
         return "resolved"
     if (
         status_now == "open"
@@ -581,9 +570,7 @@ def _files_overlap(a: list[str], b: list[str]) -> bool:
     matching family as the findings mapper's file overlap)."""
     norm_a = {_rel_path(f) for f in a}
     norm_b = {_rel_path(f) for f in b}
-    return any(
-        x == y or x.endswith(y) or y.endswith(x) for x in norm_a for y in norm_b
-    )
+    return any(x == y or x.endswith(y) or y.endswith(x) for x in norm_a for y in norm_b)
 
 
 def _later_independent_failure(
@@ -608,8 +595,7 @@ def _any_later_failure(
     decision_at: datetime,
 ) -> bool:
     return any(
-        h["task_id"] != own_task_id and h["created_at"] > decision_at
-        for h in same_test
+        h["task_id"] != own_task_id and h["created_at"] > decision_at for h in same_test
     )
 
 
@@ -648,9 +634,7 @@ def _triage_history_entry(row: Any) -> dict[str, Any]:
     return {
         "task_id": str(row.session_id or "").rsplit(":", 1)[-1],
         "test_name": str(state.get("test_name") or ""),
-        "changed_files": [
-            str(f) for f in state.get("changed_files_in_diff") or []
-        ],
+        "changed_files": [str(f) for f in state.get("changed_files_in_diff") or []],
         "created_at": row.created_at,
     }
 
@@ -670,13 +654,8 @@ async def _grade_triage_history(session: Any, grade_after: datetime) -> int:
         .order_by(DecisionLogTable.created_at.asc())
         .limit(2000)
     )
-    history = [
-        _triage_history_entry(row) for row in result.scalars()
-    ]
-    task_ids = [
-        str(row.session_id).rsplit(":", 1)[-1]
-        for row in rows
-    ]
+    history = [_triage_history_entry(row) for row in result.scalars()]
+    task_ids = [str(row.session_id).rsplit(":", 1)[-1] for row in rows]
     facts = await _task_facts(session, task_ids)
     graded = 0
     for row in rows:
@@ -687,9 +666,7 @@ async def _grade_triage_history(session: Any, grade_after: datetime) -> int:
             [str(f) for f in state.get("changed_files_in_diff") or []],
             task_id,
         )
-        slug = triage_slug(
-            subject, history, facts.get(task_id), row.created_at
-        )
+        slug = triage_slug(subject, history, facts.get(task_id), row.created_at)
         graded += await _label(session, "triage_failure", row.session_id, slug)
     return graded
 
@@ -862,9 +839,7 @@ async def _grade_size(session: Any, grade_after: datetime) -> int:
     return graded
 
 
-async def _grade_heal_severity(
-    session: Any, grade_after: datetime
-) -> int:
+async def _grade_heal_severity(session: Any, grade_after: datetime) -> int:
     rows = await _unlabeled_rows(session, "heal_severity", grade_after)
     fix_tasks = await _heal_fix_tasks_by_fingerprint(session)
     graded = 0
@@ -886,8 +861,7 @@ def _size_fate(
     return size_slug(
         commits,
         duration,
-        delivered=status_now in _DELIVERED
-        and _moved_after(updated_at, decision_at),
+        delivered=status_now in _DELIVERED and _moved_after(updated_at, decision_at),
     )
 
 
@@ -1082,9 +1056,7 @@ async def _grade_stranded(
             now,
             rot_after,
         )
-        graded += await _label(
-            session, "stranded_response", str(row.session_id), slug
-        )
+        graded += await _label(session, "stranded_response", str(row.session_id), slug)
     return graded
 
 
@@ -1111,8 +1083,10 @@ def _delivered_since(
     decision_at: datetime,
 ) -> bool:
     """True when a fact's task is delivered and moved after the mark."""
-    return fact is not None and fact[0] in _DELIVERED and _moved_after(
-        fact[1], decision_at
+    return (
+        fact is not None
+        and fact[0] in _DELIVERED
+        and _moved_after(fact[1], decision_at)
     )
 
 
@@ -1132,9 +1106,7 @@ def _pair_fate(
     right_ok = _delivered_since(right_fact, decision_at)
     if not (left_ok and right_ok):
         return None
-    return (
-        "overlap_confirmed" if left_fact[2] & right_fact[2] else "no_overlap"
-    )
+    return "overlap_confirmed" if left_fact[2] & right_fact[2] else "no_overlap"
 
 
 def _pair_sides(state: Any) -> list[str]:
@@ -1402,9 +1374,7 @@ async def _vault_drafts(
     return drafts_by_session, await _task_facts(session, draft_ids)
 
 
-async def _grade_vault_links(
-    session: Any, grade_after: datetime
-) -> int:
+async def _grade_vault_links(session: Any, grade_after: datetime) -> int:
     """vault_prefilter: the board-review draft created from the note is
     the truth - approved and started proves the note warranted a task; a
     cancelled draft proves it did not; still pending waits."""

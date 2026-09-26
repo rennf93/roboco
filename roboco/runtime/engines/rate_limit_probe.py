@@ -144,8 +144,6 @@ class RateLimitProbeEngine(_Base):
         await self._delete_waiting_record(agent_id)
         return instance
 
-
-
     def _parking_stamp_context(self, record: Any) -> tuple[str, str] | None:
         """(provider, kind) for a rate-lift waiting record, or None when
         this wait is not a provider rate limit or carries no provider."""
