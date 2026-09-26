@@ -33,7 +33,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
@@ -55,6 +55,9 @@ from roboco.services.decisions.outcomes import (
     TASK_DELIVERED_AFTER,
     TASK_STALLED_PAST_WINDOW,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = structlog.get_logger(__name__)
 
@@ -983,7 +986,7 @@ def _stranded_titles(rows: list[Any]) -> list[str]:
 
 def _stranded_fate(
     titles: list[str],
-    facts: dict[str, tuple[str, datetime | None]],
+    facts: Mapping[str, tuple[str, datetime | None]],
     decision_at: datetime,
     now: datetime,
     rot_after: datetime,
@@ -1062,7 +1065,7 @@ async def _grade_stranded(
 
 def _pair_fates(
     pairs: list[Any],
-    facts: dict[str, tuple[str, datetime | None, set[str]]],
+    facts: Mapping[str, tuple[str, datetime | None, set[str]]],
     decision_at: datetime,
 ) -> dict[str, str]:
     """Per-pair fates from the delivered diffs' actual file overlap: both
@@ -1092,7 +1095,7 @@ def _delivered_since(
 
 def _pair_fate(
     pair: dict[str, Any],
-    facts: dict[str, tuple[str, datetime | None, set[str]]],
+    facts: Mapping[str, tuple[str, datetime | None, set[str]]],
     decision_at: datetime,
 ) -> str | None:
     """One pair's fate: both sides delivered and their commit files
@@ -1102,6 +1105,8 @@ def _pair_fate(
     right = pair.get("right") or {}
     left_fact = facts.get(str(left.get("id") or ""))
     right_fact = facts.get(str(right.get("id") or ""))
+    if left_fact is None or right_fact is None:
+        return None
     left_ok = _delivered_since(left_fact, decision_at)
     right_ok = _delivered_since(right_fact, decision_at)
     if not (left_ok and right_ok):

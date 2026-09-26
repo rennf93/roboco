@@ -8,9 +8,14 @@ only notifies the CEO (this slice never originates, starts, merges, or deploys).
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis_asyncio
 from roboco.config import settings as cfg
 from roboco.services.decisions import persist as decisions_persist
@@ -286,7 +291,7 @@ def _label_engine(
     """An engine whose labeler runs against a fake session, with
     record_outcome captured instead of hitting the DB."""
     session = _FakeLabelSession(gated)
-    engine = SelfHealEngine(session, source=_FakeSource(samples))
+    engine = SelfHealEngine(cast("AsyncSession", session), source=_FakeSource(samples))
     labeled: list[dict[str, object]] = []
 
     async def _capture(_session: object, **kwargs: object) -> int:
@@ -398,7 +403,7 @@ async def test_open_fix_task_marks_row_superseded(
         gated=[(f"selfheal:{_fp()}", gate_time)],
         samples=[_sample_at(0.0, "2026-06-17T01:00:00Z")],
     )
-    object_id = object()
+    object_id = uuid4()
     await engine.assess()
     await engine._label_transient_outcomes({_fp(): object_id})
     assert len(labeled) == 1
@@ -444,7 +449,9 @@ async def test_labeler_db_failure_never_breaks_the_sweep(
     monkeypatch.setattr(cfg, "self_heal_originate_enabled", False)
     send = AsyncMock()
     monkeypatch.setattr(NotificationService, "send_ack_notification", send)
-    engine = SelfHealEngine(_BoomSession(), source=_FakeSource([_sample(1.0)]))
+    engine = SelfHealEngine(
+        cast("AsyncSession", _BoomSession()), source=_FakeSource([_sample(1.0)])
+    )
     monkeypatch.setattr(engine, "_already_notified", AsyncMock(return_value=True))
     monkeypatch.setattr(
         engine, "_open_self_heal_task_ids_by_fp", AsyncMock(return_value={})

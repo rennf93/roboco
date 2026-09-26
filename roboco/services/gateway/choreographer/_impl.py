@@ -1345,7 +1345,7 @@ class Choreographer:
         if status == "ok":
             # Retrieval tracking (spec 12.1 Wave 3 instrumentation): what
             # institutional memory was injected, for which task/agent.
-            self._log_memory_retrievals(agent_id, task, items)
+            await self._log_memory_retrievals(agent_id, task, items)
             # B41 lesson_prune (decisions pilot, default-off): score each
             # retrieved lesson's applicability and prune the inapplicable
             # ones from the INJECTED list only. The retrieval query, the
@@ -1357,29 +1357,37 @@ class Choreographer:
             "lessons": items,
         }
 
-    def _log_memory_retrievals(
+    async def _log_memory_retrievals(
         self, agent_id: UUID, task: Any | None, items: list[Any]
     ) -> None:
         """Retrieval tracking (spec 12.1 Wave 3 instrumentation): persist
         what institutional memory was injected, for which task/agent - the
         evidence future knowledge-family graders grade against.
-        Best-effort: never breaks the briefing."""
+        Best-effort: never breaks the briefing. Runs in its OWN committed
+        session so the log survives the verb's transaction outcome."""
+        if not items:
+            return
         try:
+            from roboco.db.base import get_session_factory
             from roboco.db.tables import MemoryRetrievalLogTable
 
             now = datetime.now(UTC)
-            for item in items:
-                source = str(item.get("source") or "")[:500]
-                if not source:
-                    continue
-                self.session.add(
-                    MemoryRetrievalLogTable(
-                        source=source,
-                        task_id=task.id if task is not None else None,
-                        agent_slug=str(agent_id),
-                        retrieved_at=now,
-                    )
+            rows = [
+                MemoryRetrievalLogTable(
+                    source=str(item.get("source") or "")[:500],
+                    task_id=task.id if task is not None else None,
+                    agent_slug=str(agent_id),
+                    retrieved_at=now,
                 )
+                for item in items
+            ]
+            rows = [row for row in rows if row.source]
+            if not rows:
+                return
+            factory = get_session_factory()
+            async with factory() as db:
+                db.add_all(rows)
+                await db.commit()
         except Exception:
             logger.debug(
                 "memory retrieval log write failed (best-effort)",

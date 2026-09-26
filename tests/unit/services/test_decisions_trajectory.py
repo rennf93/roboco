@@ -6,6 +6,7 @@ row gets the soft low gold rather than a fabricated pole."""
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -201,8 +202,9 @@ def test_idle_unknown_tasks_stay_unlabeled() -> None:
 
 
 class _FakeRows:
-    def __init__(self, rows: list) -> None:
+    def __init__(self, rows: list, rowcount: int = 0) -> None:
         self._rows = rows
+        self.rowcount = rowcount
 
     def scalars(self) -> list:
         return self._rows
@@ -249,7 +251,7 @@ class _FakeSession:
         self._links = links or []
         self._retrievals = retrievals or []
 
-    def _result_for(self, stmt: object) -> _FakeRows:
+    def _result_for(self, stmt: Any) -> _FakeRows:
         compiled = str(stmt.compile())
         if compiled.lstrip().upper().startswith("UPDATE"):
             rows: list = []
@@ -275,7 +277,7 @@ class _FakeSession:
             rows = self._facts
         return _FakeRows(rows)
 
-    async def execute(self, stmt: object) -> _FakeRows:
+    async def execute(self, stmt: Any) -> _FakeRows:
         return self._result_for(stmt)
 
     async def commit(self) -> None:
@@ -285,7 +287,9 @@ class _FakeSession:
         return None
 
 
-def _row(pilot: str, session_id: str, state: object, created_at: datetime):
+def _row(
+    pilot: str, session_id: str, state: object, created_at: datetime
+) -> SimpleNamespace:
     return SimpleNamespace(
         pilot=pilot,
         session_id=session_id,
@@ -364,7 +368,7 @@ async def test_engine_loop_disabled_is_a_noop(
     from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 
     monkeypatch.setattr(cfg.settings, "decisions_enabled", False)
-    engine = DecisionsLabelerEngine()
+    engine = DecisionsLabelerEngine()  # type: ignore[abstract]
     engine._record_loop_heartbeat = lambda *a, **kw: None  # type: ignore[method-assign]
     engine._running = True
     sleep = AsyncMock()
@@ -510,10 +514,10 @@ class _LiftSession(_FakeSession):
     def begin_nested(self) -> _FakeNested:
         return _FakeNested()
 
-    async def execute(self, stmt: object) -> object:
+    async def execute(self, stmt: Any) -> _FakeRows:
         compiled = str(stmt.compile())
         if compiled.lstrip().upper().startswith("UPDATE"):
-            return SimpleNamespace(rowcount=1)
+            return _FakeRows([], rowcount=1)
         return await super().execute(stmt)
 
 
@@ -719,14 +723,8 @@ def test_stranded_all_recovered_proves_wait(monkeypatch: pytest.MonkeyPatch) -> 
 def test_stranded_cancelled_proves_escalate(monkeypatch: pytest.MonkeyPatch) -> None:
     old = datetime.now(UTC) - timedelta(days=30)
     facts = {"Task one": ("cancelled", old + timedelta(days=2))}
-    slug = trajectory._stranded_fate(
-        facts and titles_helper(facts), facts, old, _ROT, _ROT
-    )
+    slug = trajectory._stranded_fate(list(facts), facts, old, _ROT, _ROT)
     assert slug == "still_stranded_past_window"
-
-
-def titles_helper(facts):
-    return list(facts)
 
 
 def test_stranded_mixed_fates_stay_unlabeled() -> None:
@@ -764,15 +762,16 @@ def test_collision_pair_delivered_disjoint_disproves_edge() -> None:
 
 
 def test_collision_pair_undelivered_side_stays_unlabeled() -> None:
-    facts = {
+    facts: dict[str, tuple[str, datetime | None, set[str]]] = {
         "t1": ("completed", _T0 + timedelta(days=2), {"a.py"}),
-        "t2": ("in_progress", None),
+        "t2": ("in_progress", None, set()),
     }
     pair = {"left": {"id": "t1"}, "right": {"id": "t2"}}
     assert trajectory._pair_fates([pair], facts, _T0) == {}
 
 
-def test_release_stamp_keys_and_slugs(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_release_stamp_keys_and_slugs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Approve grades worthy-confirmed + risk-confirmed-low on the exact
     recomputed session keys; reject grades the opposite pair."""
     monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
@@ -784,14 +783,12 @@ def test_release_stamp_keys_and_slugs(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(trajectory.persist, "record_outcome", _capture)
     summaries = ["fix: login crash", "feat: export"]
-    graded = asyncio_run(
-        trajectory.stamp_release_decision(
-            _FakeSession([], []),
-            decision="approve",
-            change_summaries=summaries,
-            bump_kind="minor",
-            gap_count=1,
-        )
+    graded = await trajectory.stamp_release_decision(
+        _FakeSession([], []),
+        decision="approve",
+        change_summaries=summaries,
+        bump_kind="minor",
+        gap_count=1,
     )
     assert graded == 2
     by_pilot = {s["pilot"]: s for s in stamped}
@@ -803,24 +800,16 @@ def test_release_stamp_keys_and_slugs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert str(readiness["session_id"]).startswith("readiness:risk:")
 
     stamped.clear()
-    graded = asyncio_run(
-        trajectory.stamp_release_decision(
-            _FakeSession([], []),
-            decision="reject",
-            change_summaries=summaries,
-            bump_kind="minor",
-            gap_count=1,
-        )
+    graded = await trajectory.stamp_release_decision(
+        _FakeSession([], []),
+        decision="reject",
+        change_summaries=summaries,
+        bump_kind="minor",
+        gap_count=1,
     )
     by_pilot = {s["pilot"]: s for s in stamped}
     assert by_pilot["release_worthy"]["outcome"] == "not_worthy_yet"
     assert by_pilot["release_readiness"]["outcome"] == "risk_confirmed_high"
-
-
-def asyncio_run(coro):
-    import asyncio
-
-    return asyncio.run(coro)
 
 
 def test_state_keys_recompute_deterministically() -> None:

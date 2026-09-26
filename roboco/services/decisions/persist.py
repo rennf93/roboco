@@ -29,7 +29,7 @@ import asyncio
 import json
 from collections import deque
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from sqlalchemy import update
@@ -70,7 +70,7 @@ def _corpus_input(value: Any) -> dict[str, Any] | None:
         return {"_dropped": "unserializable"}
     if len(serialized) > _CORPUS_INPUT_CAP_CHARS:
         return {"_dropped": f"oversize>{_CORPUS_INPUT_CAP_CHARS}"}
-    return value
+    return cast("dict[str, Any]", value)
 
 
 def _answers_from(result: Any) -> tuple[dict[str, Any], dict[str, Any]]:
