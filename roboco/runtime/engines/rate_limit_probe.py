@@ -123,19 +123,67 @@ class RateLimitProbeEngine(_Base):
             raise
         if instance is None or instance.state == AgentState.OFFLINE:
             # Spawn bailed without launching (provider re-parked). Keep the record
-            # so the probe-resume loop re-attempts on the next clear.
+            # so the probe-resume loop re-attempts on the next clear. The bail is
+            # ALSO the parking pilot's repeated-failure evidence: the limit came
+            # back, so the escalate option was true for this subject's unlabeled
+            # park decisions (spec 12.1).
+            await self._stamp_parking_re_limit(record, agent_id)
             return instance
         if record.waiting_for == "rate_limit_lifted":
             # #71: don't tear down the record on a bare launch — a container that
             # launches then dies immediately would orphan the task until the
             # reaper's TTL. Keep the record past the launch and confirm liveness
             # in the background; if the container dies the probe-resume orphan
-            # fallback re-resumes within a tick instead of waiting the full TTL.
+            # fallback re-resumes on the next tick instead of waiting the full TTL.
+            # The successful resume is ALSO the parking pilot's lift evidence:
+            # the latency split grades retry_soon vs park_standard (spec 12.1).
+            await self._stamp_parking_lift(record, agent_id)
             self._schedule_bg(self._confirm_resume_liveness(agent_id))
             return instance
         del self._waiting_records[agent_id]
         await self._delete_waiting_record(agent_id)
         return instance
+
+
+
+    def _parking_stamp_context(self, record: Any) -> tuple[str, str] | None:
+        """(provider, kind) for a rate-lift waiting record, or None when
+        this wait is not a provider rate limit or carries no provider."""
+        if record.waiting_for != "rate_limit_lifted":
+            return None
+        context = record.context or {}
+        provider = str(context.get("provider") or "")
+        if not provider:
+            return None
+        return provider, str(context.get("kind") or "")
+
+    async def _stamp_parking_lift(self, record: Any, agent_id: str) -> None:
+        """Grade this subject's unlabeled parking rows on a successful
+        resume: lift latency splits retry_soon vs park_standard."""
+        stamped = self._parking_stamp_context(record)
+        if stamped is None:
+            return
+        try:
+            from roboco.services.decisions import trajectory
+
+            await trajectory.stamp_parking_lift(stamped[0], stamped[1], agent_id)
+        except Exception as exc:
+            logger.debug("parking lift stamp failed", agent_id=agent_id, error=str(exc))
+
+    async def _stamp_parking_re_limit(self, record: Any, agent_id: str) -> None:
+        """Grade this subject's unlabeled parking rows when a resume bails
+        on a re-limit: the escalate option was true."""
+        stamped = self._parking_stamp_context(record)
+        if stamped is None:
+            return
+        try:
+            from roboco.services.decisions import trajectory
+
+            await trajectory.stamp_parking_re_limit(stamped[0], stamped[1], agent_id)
+        except Exception as exc:
+            logger.debug(
+                "parking re-limit stamp failed", agent_id=agent_id, error=str(exc)
+            )
 
     async def _confirm_resume_liveness(self, agent_id: str) -> None:
         """Tear down a resumed agent's WaitingRecord once it is confirmed alive.

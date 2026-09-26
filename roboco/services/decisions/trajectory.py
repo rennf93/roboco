@@ -30,23 +30,27 @@ than guessed. Never raises into the caller.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from roboco.config import settings
-from roboco.db.tables import DecisionLogTable, TaskTable
-from roboco.services.decisions import persist
+from roboco.db.tables import DecisionLogTable, TaskReviewFindingTable, TaskTable
+from roboco.services.decisions import outcomes, persist
 from roboco.services.decisions.outcomes import (
+    FLAKE_CONFIRMED_LATER,
     IDLE_WAIT_RESOLVED_AFTER,
     OWNED_TASK_ROTTED_AFTER,
     OWNED_TASK_SUBMITTED_AFTER,
     PLAN_BOUNCED_AFTER,
     PLAN_STALLED_PAST_WINDOW,
     QA_PASSED_AFTER,
+    REGRESSION_CONFIRMED_LATER,
     TASK_CANCELLED_AFTER,
     TASK_DELIVERED_AFTER,
     TASK_STALLED_PAST_WINDOW,
@@ -101,7 +105,19 @@ _SINGLE_SUBJECT_PILOTS = (
     "pm_closure_confidence",
     "plan_quality",
     "preflight_diff",
+    "second_review_eligibility",
+    "assembled_coherence",
 )
+
+# Parking label definitions (spec 12.1): a lift inside this window proves
+# "a short retry is likely to succeed"; a re-park for the same subject
+# inside this window proves the repeated-failure escalation.
+_PARK_SHORT_LIFT_MINUTES = 10
+_PARK_REPARK_WINDOW_MINUTES = 30
+
+# Triage history window: test-recurrence evidence is scanned over this
+# span of triage rows.
+_TRIAGE_HISTORY_DAYS = 90
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +263,18 @@ _FATE_RULES: dict[str, _FateSlugs] = {
     # preflight_diff grades pass-only: per-criterion truth on a bounce
     # needs finding-to-criterion matching (Wave 2).
     "preflight_diff": _FateSlugs(delivered=QA_PASSED_AFTER),
+    # second_review_eligibility (B9 noul "high-stakes"): a post-gate
+    # bounce proves the second review was warranted; clean delivery
+    # proves it was not (documented noise: a clean pass could also mean
+    # the first review was simply good).
+    "second_review_eligibility": _FateSlugs(
+        delivered=QA_PASSED_AFTER, bounced=PLAN_BOUNCED_AFTER
+    ),
+    # assembled_coherence (B43 score): bounced from the gate leans
+    # incoherent; through the gate leans coherent.
+    "assembled_coherence": _FateSlugs(
+        delivered=QA_PASSED_AFTER, bounced=PLAN_BOUNCED_AFTER
+    ),
 }
 
 
@@ -291,6 +319,7 @@ async def _unlabeled_rows(
         .where(
             DecisionLogTable.pilot == pilot,
             DecisionLogTable.outcome.is_(None),
+            DecisionLogTable.question_outcomes.is_(None),
             DecisionLogTable.session_id.is_not(None),
             DecisionLogTable.state.is_not(None),
             DecisionLogTable.created_at.is_not(None),
@@ -335,6 +364,9 @@ async def run_trajectory_pass(session: Any) -> int:
     graded = 0
     graded += await _grade_idle_legitimacy(session, grade_after, rot_after, now)
     graded += await _grade_single_subject(session, grade_after, rot_after, now)
+    graded += await _grade_findings_mapping(session, grade_after, rot_after, now)
+    graded += await _grade_parking_stale(session, rot_after)
+    graded += await _grade_triage_history(session, grade_after)
     return graded
 
 
@@ -396,3 +428,339 @@ async def _grade_single_subject(
             )
             graded += await _label(session, pilot, row.session_id, slug)
     return graded
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 graders: findings ledger, parking stale sweep, triage history.
+# ---------------------------------------------------------------------------
+
+
+def _finding_fate(
+    status_now: str,
+    updated_at: datetime | None,
+    decision_at: datetime,
+    now: datetime,
+    rot_after: datetime,
+) -> str | None:
+    """One finding's fate from its ledger state: verified (or addressed
+    after the decision) proves the diff addressed it; still open past the
+    rot horizon proves it re-raised; waived is recorded but unusable;
+    anything in between stays unlabeled."""
+    if status_now == "waived":
+        return "waived"
+    if status_now == "verified":
+        return "resolved"
+    if (
+        status_now == "addressed"
+        and _moved_after(updated_at, decision_at)
+    ):
+        return "resolved"
+    if (
+        status_now == "open"
+        and not _moved_after(updated_at, decision_at)
+        and now >= rot_after
+    ):
+        return "re_raised"
+    return None
+
+
+def _findings_fates(
+    state: Any, facts: dict[str, tuple[str, datetime | None]],
+    decision_at: datetime, now: datetime, rot_after: datetime,
+) -> dict[str, str]:
+    """{question_key: fate} for one findings_mapping row's state."""
+    if not isinstance(state, dict) or not isinstance(state.get("findings"), list):
+        return {}
+    fates: dict[str, str] = {}
+    for entry in state["findings"]:
+        if not isinstance(entry, dict):
+            continue
+        finding_id = str(entry.get("id") or "")
+        idx = entry.get("idx")
+        if not finding_id or idx is None or finding_id not in facts:
+            continue
+        fate = _finding_fate(*facts[finding_id], decision_at, now, rot_after)
+        if fate:
+            fates[f"finding_{idx}"] = fate
+    return fates
+
+
+def _collect_finding_ids(rows: list[Any]) -> list[Any]:
+    """UUID-parse every finding id referenced by the rows' states."""
+    ids: list[Any] = []
+    for row in rows:
+        for entry in (row.state or {}).get("findings") or []:
+            if isinstance(entry, dict) and entry.get("id"):
+                with contextlib.suppress(ValueError):
+                    ids.append(UUID(str(entry["id"])))
+    return ids
+
+
+async def _grade_findings_mapping(
+    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+) -> int:
+    rows = await _unlabeled_rows(session, "findings_mapping", grade_after)
+    if not rows:
+        return 0
+    finding_ids = _collect_finding_ids(rows)
+    facts: dict[str, tuple[str, datetime | None]] = {}
+    if finding_ids:
+        result = await session.execute(
+            select(
+                TaskReviewFindingTable.id,
+                TaskReviewFindingTable.status,
+                TaskReviewFindingTable.updated_at,
+            ).where(TaskReviewFindingTable.id.in_(finding_ids))
+        )
+        facts = {
+            str(finding_id): (str(status), updated_at)
+            for finding_id, status, updated_at in result.all()
+        }
+    graded = 0
+    for row in rows:
+        fates = _findings_fates(row.state, facts, row.created_at, now, rot_after)
+        if not fates:
+            continue
+        graded += await persist.record_question_outcomes(
+            session,
+            pilot="findings_mapping",
+            session_id=str(row.session_id),
+            fates=fates,
+        )
+    return graded
+
+
+async def _grade_parking_stale(session: Any, rot_after: datetime) -> int:
+    """Retire parking rows past the rot horizon with no lift evidence:
+    ambiguous (the probe path may simply never have stamped), so they get
+    the unusable slug and stop being rescanned."""
+    rows = await _unlabeled_rows(session, "parking", rot_after)
+    graded = 0
+    for row in rows:
+        graded += await persist.record_outcome(
+            session,
+            pilot="parking",
+            session_id=str(row.session_id),
+            outcome=outcomes.STALE_UNRESOLVED,
+        )
+    return graded
+
+
+def _norm_test(name: str) -> str:
+    return " ".join(str(name or "").lower().split())
+
+
+def _files_overlap(a: list[str], b: list[str]) -> bool:
+    """Loose POSIX-style overlap between two changed-file lists (same
+    matching family as the findings mapper's file overlap)."""
+    norm_a = {f.replace("\\", "/").strip("/").lower() for f in a if f}
+    norm_b = {f.replace("\\", "/").strip("/").lower() for f in b if f}
+    for path_a in norm_a:
+        for path_b in norm_b:
+            if path_a == path_b or path_a.endswith(path_b) or path_b.endswith(path_a):
+                return True
+    return False
+
+
+def _later_independent_failure(
+    same_test: list[dict[str, Any]],
+    own_files: list[str],
+    own_task_id: str,
+    decision_at: datetime,
+) -> bool:
+    """True when the test failed again after the decision on a task whose
+    diff shares no files with this one: an independent failure."""
+    return any(
+        h["task_id"] != own_task_id
+        and h["created_at"] > decision_at
+        and not _files_overlap(h["changed_files"], own_files)
+        for h in same_test
+    )
+
+
+def _any_later_failure(
+    same_test: list[dict[str, Any]],
+    own_task_id: str,
+    decision_at: datetime,
+) -> bool:
+    return any(
+        h["task_id"] != own_task_id and h["created_at"] > decision_at
+        for h in same_test
+    )
+
+
+def triage_slug(
+    subject: tuple[str, list[str], str],
+    history: list[dict[str, Any]],
+    own_task_facts: tuple[str, datetime | None] | None,
+    decision_at: datetime,
+) -> str | None:
+    """The triage cause rule from the test's later history (pure).
+
+    - The same test failing later on tasks whose diffs share no files
+      with this one proves the failure was independent: flaky.
+    - No later failure of that test anywhere AND this task delivered:
+      the failure died with this diff: my_regression.
+    - Anything else stays unlabeled (environment is never auto-derived).
+    """
+    test_name, own_files, own_task_id = subject
+    test = _norm_test(test_name)
+    same_test = [h for h in history if _norm_test(h["test_name"]) == test]
+    if _later_independent_failure(same_test, own_files, own_task_id, decision_at):
+        return FLAKE_CONFIRMED_LATER
+    if own_task_facts is not None:
+        status_now, updated_at = own_task_facts
+        if (
+            status_now in _DELIVERED
+            and _moved_after(updated_at, decision_at)
+            and not _any_later_failure(same_test, own_task_id, decision_at)
+        ):
+            return REGRESSION_CONFIRMED_LATER
+    return None
+
+
+def _triage_history_entry(row: Any) -> dict[str, Any]:
+    state = row.state if isinstance(row.state, dict) else {}
+    return {
+        "task_id": str(row.session_id or "").rsplit(":", 1)[-1],
+        "test_name": str(state.get("test_name") or ""),
+        "changed_files": [
+            str(f) for f in state.get("changed_files_in_diff") or []
+        ],
+        "created_at": row.created_at,
+    }
+
+
+async def _grade_triage_history(session: Any, grade_after: datetime) -> int:
+    now = datetime.now(UTC)
+    history_since = now - timedelta(days=_TRIAGE_HISTORY_DAYS)
+    rows = await _unlabeled_rows(session, "triage_failure", grade_after)
+    if not rows:
+        return 0
+    result = await session.execute(
+        select(DecisionLogTable)
+        .where(
+            DecisionLogTable.pilot == "triage_failure",
+            DecisionLogTable.created_at >= history_since,
+        )
+        .order_by(DecisionLogTable.created_at.asc())
+        .limit(2000)
+    )
+    history = [
+        _triage_history_entry(row) for row in result.scalars()
+    ]
+    task_ids = [
+        str(row.session_id).rsplit(":", 1)[-1]
+        for row in rows
+    ]
+    facts = await _task_facts(session, task_ids)
+    graded = 0
+    for row in rows:
+        task_id = str(row.session_id).rsplit(":", 1)[-1]
+        state = row.state if isinstance(row.state, dict) else {}
+        subject = (
+            str(state.get("test_name") or ""),
+            [str(f) for f in state.get("changed_files_in_diff") or []],
+            task_id,
+        )
+        slug = triage_slug(
+            subject, history, facts.get(task_id), row.created_at
+        )
+        graded += await _label(session, "triage_failure", row.session_id, slug)
+    return graded
+
+
+# ---------------------------------------------------------------------------
+# In-process event stamps: called at the moment evidence is created, not
+# swept. Own short-lived session, best-effort, like the parking path.
+# ---------------------------------------------------------------------------
+
+
+async def stamp_parking_lift(provider: str, kind: str, agent_id: str) -> None:
+    """Grade this subject's unlabeled parking rows when the provider
+    probe lifts: a lift inside the short-retry window proves retry_soon,
+    a later lift proves park_standard. Best-effort, own session."""
+    from roboco.db.base import get_session_factory
+
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            now = datetime.now(UTC)
+            rows = await _unlabeled_rows(db, "parking", now)
+            session_id = f"parking:{provider}:{kind}:{agent_id}"
+            graded = 0
+            for row in rows:
+                if row.session_id != session_id:
+                    continue
+                age = now - row.created_at if row.created_at else timedelta()
+                slug = (
+                    outcomes.LIMIT_LIFTED_QUICKLY
+                    if age <= timedelta(minutes=_PARK_SHORT_LIFT_MINUTES)
+                    else outcomes.LIMIT_LIFTED_AFTER_COOLDOWN
+                )
+                graded += await persist.record_outcome(
+                    db, pilot="parking", session_id=session_id, outcome=slug
+                )
+            await db.commit()
+        if graded:
+            logger.info(
+                "parking rows graded by provider lift",
+                provider=provider,
+                rows=graded,
+            )
+    except Exception as exc:
+        logger.debug("parking lift stamp skipped", error=str(exc))
+
+
+async def stamp_parking_re_limit(provider: str, kind: str, agent_id: str) -> None:
+    """Grade this subject's unlabeled parking rows when a resume bails on
+    a re-limit: repeated failure, the escalate option was true."""
+    from roboco.db.base import get_session_factory
+
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            await persist.record_outcome(
+                db,
+                pilot="parking",
+                session_id=f"parking:{provider}:{kind}:{agent_id}",
+                outcome=outcomes.RE_LIMITED_ON_RESUME,
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.debug("parking re-limit stamp skipped", error=str(exc))
+
+
+async def stamp_parking_repark(session: Any, session_id: str) -> int:
+    """Called from the parking decision path: a fresh park for a subject
+    that parked again within the repark window is exactly the
+    repeated-failure evidence the escalate option describes. Grades only
+    the rows inside that window (the just-written decision row is
+    excluded by the freshness floor); never raises."""
+    now = datetime.now(UTC)
+    window_open = now - timedelta(minutes=_PARK_REPARK_WINDOW_MINUTES)
+    fresh_floor = now - timedelta(seconds=5)
+    try:
+        async with session.begin_nested():
+            result = await session.execute(
+                update(DecisionLogTable)
+                .where(
+                    DecisionLogTable.pilot == "parking",
+                    DecisionLogTable.session_id == session_id[:280],
+                    DecisionLogTable.outcome.is_(None),
+                    DecisionLogTable.created_at >= window_open,
+                    DecisionLogTable.created_at <= fresh_floor,
+                )
+                .values(
+                    outcome="re_limited_on_resume",
+                    outcome_at=now,
+                )
+            )
+        return int(result.rowcount or 0)
+    except Exception as exc:
+        logger.debug(
+            "parking repark stamp skipped",
+            session_id=session_id,
+            error=str(exc),
+        )
+        return 0

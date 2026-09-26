@@ -32,6 +32,7 @@ from roboco.services.decisions.pilots import (
     PilotMode,
     decide_for_pilot,
     log_action,
+    state_key,
 )
 from roboco.services.decisions.schemas import (
     ChoiceQuestion,
@@ -566,7 +567,7 @@ async def secretary_directive_kind(session: Any, *, utterance: str) -> str | Non
         state=state,
         instructions="Which directive kind does this utterance ask for?",
         criteria=_DIRECTIVE_KIND_CRITERIA,
-        session_id="secretary:kind",
+        session_id=f"secretary:kind:{state_key(state)}",
         floor=SECRETARY_NL_CONFIDENCE_FLOOR,
     )
     if choice is None:
@@ -620,7 +621,7 @@ async def secretary_assignee(
         state=state,
         instructions="Which agent does this utterance assign the work to?",
         criteria=criteria,
-        session_id="secretary:assignee",
+        session_id=f"secretary:assignee:{state_key(state)}",
         floor=SECRETARY_NL_CONFIDENCE_FLOOR,
     )
     if choice is None:
@@ -720,7 +721,7 @@ async def memory_distill_gate(
                 "(a real problem, approach, or gotcha) worth persisting "
                 "to org memory."
             ),
-            session_id="distill",
+            session_id=f"distill:{state_key(state)}",
         )
         if result is None:
             # OFF or unreachable: distill + persist as today, no row.

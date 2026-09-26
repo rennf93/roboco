@@ -2231,7 +2231,7 @@ class SpawnExitEngine(_Base):
                 fleet_active_tasks = len(
                     await get_task_service(db).list_in_progress_or_claimed()
                 )
-                return await decisions.parking_route(
+                lane = await decisions.parking_route(
                     db,
                     agent_slug=agent_id,
                     verb="park",
@@ -2242,6 +2242,18 @@ class SpawnExitEngine(_Base):
                     fleet_active_tasks=fleet_active_tasks,
                     run_id=f"{provider}:{kind}:{agent_id}",
                 )
+                # A fresh park for a subject whose earlier park row is
+                # still recent is the repeated-failure evidence the
+                # escalate option describes: grade the PRIOR rows (the
+                # stamp is bounded to rows created before the repark
+                # window opened, never this fresh one). Best-effort.
+                with contextlib.suppress(Exception):
+                    from roboco.services.decisions import trajectory
+
+                    await trajectory.stamp_parking_repark(
+                        db, f"parking:{provider}:{kind}:{agent_id}"
+                    )
+                return lane
         except Exception as exc:
             logger.debug(
                 "decisions parking lane unavailable; park_standard",

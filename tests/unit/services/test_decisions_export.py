@@ -211,3 +211,37 @@ async def test_export_failure_leaves_no_partial_file(
     assert not out.exists()
     leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".corpus-")]
     assert leftovers == []
+
+
+def test_example_from_question_outcomes_fates() -> None:
+    """Batched pilots grade per question through the fate map; waived
+    findings drop out of the gold entirely."""
+    row = _row(
+        pilot="findings_mapping",
+        state={"diff": "+fix", "files_changed": ["a.py"]},
+        questions={
+            "finding_0": {
+                "type": "noul",
+                "instructions": "The diff plausibly addresses finding 0.",
+            },
+            "finding_1": {
+                "type": "noul",
+                "instructions": "The diff plausibly addresses finding 1.",
+            },
+        },
+    )
+    row.question_outcomes = {"finding_0": "resolved", "finding_1": "waived"}
+    example = build_example(row)
+    assert example is not None
+    gold = json.loads(example["gold"])
+    # Only the fate-labeled, usable keys survive.
+    assert set(gold) == {"finding_0"}
+    assert gold["finding_0"]["probabilities"] == {"true": 1.0, "false": 0.0}
+
+
+def test_state_key_is_content_addressed() -> None:
+    from roboco.services.decisions.pilots import state_key
+
+    a = state_key({"bump_kind": "minor", "summary": "x"})
+    assert a == state_key({"summary": "x", "bump_kind": "minor"})
+    assert a != state_key({"bump_kind": "patch", "summary": "x"})

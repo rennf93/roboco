@@ -46,6 +46,12 @@ IDLE_WAIT_RESOLVED_AFTER = "idle_wait_resolved_after"
 QA_PASSED_AFTER = "qa_passed_after"
 PLAN_BOUNCED_AFTER = "plan_bounced_after"
 PLAN_STALLED_PAST_WINDOW = "plan_stalled_past_window"
+LIMIT_LIFTED_QUICKLY = "limit_lifted_quickly"
+LIMIT_LIFTED_AFTER_COOLDOWN = "limit_lifted_after_cooldown"
+RE_LIMITED_ON_RESUME = "re_limited_on_resume"
+STALE_UNRESOLVED = "stale_unresolved"
+FLAKE_CONFIRMED_LATER = "flake_confirmed_by_later_failures"
+REGRESSION_CONFIRMED_LATER = "regression_confirmed_no_recurrence"
 
 # Gold label shapes mirror the laya fine-tune corpus: per question key,
 # a probability map over the question's outcomes.
@@ -129,6 +135,65 @@ OUTCOME_GOLD: dict[tuple[str, str], Gold] = {
         **{f"criterion_{i}": {"true": 1.0, "false": 0.0} for i in range(6)},
         "hygiene": {"true": 0.0, "false": 1.0},
     },
+    # parking (6.2): the provider-probe lift timing and re-limit evidence
+    # prove which handling was true. A lift inside the short-retry window
+    # proves a short retry would have sufficed; a lift after the standard
+    # cooldown proves the standard park was right; a re-limit proves the
+    # repeated-failure escalation was warranted.
+    ("parking", LIMIT_LIFTED_QUICKLY): {
+        "gate": {"retry_soon": 1.0},
+    },
+    ("parking", LIMIT_LIFTED_AFTER_COOLDOWN): {
+        "gate": {"park_standard": 1.0},
+    },
+    ("parking", RE_LIMITED_ON_RESUME): {
+        "gate": {"escalate": 1.0},
+    },
+    # triage_failure (6.5): the test's own later history proves the cause.
+    # The same test failing again on tasks whose diffs share no files with
+    # this one proves flake; this task delivering and the test never
+    # failing again proves the regression (and its fix).
+    ("triage_failure", FLAKE_CONFIRMED_LATER): {
+        "gate": {"flaky": 1.0},
+    },
+    ("triage_failure", REGRESSION_CONFIRMED_LATER): {
+        "gate": {"my_regression": 1.0},
+    },
+    # second_review_eligibility (B9, noul "high-stakes"): a post-gate
+    # bounce proves the second review was warranted; a clean delivery
+    # proves it was not (documented noise: a clean pass could also mean
+    # the first review was simply good).
+    ("second_review_eligibility", QA_PASSED_AFTER): {
+        "gate": {"true": 0.0, "false": 1.0},
+    },
+    ("second_review_eligibility", PLAN_BOUNCED_AFTER): {
+        "gate": {"true": 1.0, "false": 0.0},
+    },
+    # assembled_coherence (B43, 3-level score): bounced from the gate
+    # leans incoherent; passed the gate leans coherent (soft golds).
+    ("assembled_coherence", QA_PASSED_AFTER): {
+        "gate": {"1": 0.5, "2": 0.5},
+    },
+    ("assembled_coherence", PLAN_BOUNCED_AFTER): {
+        "gate": {"0": 0.7, "1": 0.3},
+    },
+}
+
+# Per-question fate golds for BATCHED pilots whose questions each carry
+# their own truth (one row-level outcome slug cannot express them). The
+# labeler stamps ``question_outcomes`` = {question_key: fate} and the
+# exporter resolves each fate through this map. A fate mapped to None is
+# real but unusable for that pilot's training (excluded per question).
+QUESTION_FATE_GOLD: dict[str, dict[str, dict[str, float] | None]] = {
+    # findings_mapping (B31): per-finding noul "this diff plausibly
+    # addresses finding F". The finding's ledger fate is the truth.
+    "findings_mapping": {
+        "resolved": {"true": 1.0, "false": 0.0},
+        "re_raised": {"true": 0.0, "false": 1.0},
+        # A waived finding says nothing about whether the diff addressed
+        # it: exclusion, never a guessed gold.
+        "waived": None,
+    },
 }
 
 # (pilot, outcome slug) rows that must NEVER become training examples:
@@ -136,7 +201,13 @@ OUTCOME_GOLD: dict[tuple[str, str], Gold] = {
 # breach "cleared" because the engine's own fix task is open against it,
 # so neither "transient" nor "defect" is the honest label).
 UNUSABLE_OUTCOMES: frozenset[tuple[str, str]] = frozenset(
-    {(SELF_HEAL_PILOT, SUPERSEDED_BY_FIX_TASK)}
+    {
+        (SELF_HEAL_PILOT, SUPERSEDED_BY_FIX_TASK),
+        # A parking row with no lift evidence before the rot horizon is
+        # ambiguous (the probe path may simply never have stamped), so it
+        # is retired rather than graded escalate.
+        ("parking", STALE_UNRESOLVED),
+    }
 )
 
 
@@ -147,6 +218,18 @@ def gold_for(pilot: str, outcome: str) -> Gold | None:
     if key in UNUSABLE_OUTCOMES:
         return None
     return OUTCOME_GOLD.get(key)
+
+
+def question_fate_gold(
+    pilot: str, fate: str
+) -> dict[str, float] | None:
+    """One question's fate resolved to gold probabilities, or ``None``
+    when the pilot has no fate map, the fate is unknown, or the fate is
+    explicitly unusable for training."""
+    fate_map = QUESTION_FATE_GOLD.get(pilot)
+    if not fate_map:
+        return None
+    return fate_map.get(fate)
 
 
 def usable_slugs() -> dict[tuple[str, str], Gold]:

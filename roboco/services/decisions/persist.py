@@ -73,6 +73,17 @@ def _corpus_input(value: Any) -> dict[str, Any] | None:
     return value
 
 
+def _answers_from(result: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(verdicts, confidences) keyed per question off a parsed result."""
+    answers: dict[str, Any] = {}
+    confidence: dict[str, Any] = {}
+    if result is not None:
+        for key, ans in getattr(result, "answers", {}).items():
+            answers[key] = ans.verdict()
+            confidence[key] = ans.confidence
+    return answers, confidence
+
+
 def record_decision(
     *,
     pilot: str,
@@ -88,12 +99,7 @@ def record_decision(
     """
     if not settings.decisions_enabled:
         return
-    answers: dict[str, Any] = {}
-    confidence: dict[str, Any] = {}
-    if result is not None:
-        for key, ans in getattr(result, "answers", {}).items():
-            answers[key] = ans.verdict()
-            confidence[key] = ans.confidence
+    answers, confidence = _answers_from(result)
     if not answers and verdict is not None:
         # No typed answers came back (defensive): record the caller's
         # verdict summary so the row still says what the pilot decided.
@@ -117,6 +123,21 @@ def record_decision(
     _ensure_flusher()
 
 
+def _clean_fates(fates: dict[str, str]) -> dict[str, str]:
+    """Length- and emptiness-guarded copy of a per-question fate map."""
+    return {
+        str(k)[:60]: str(v)[:60] for k, v in fates.items() if str(v).strip()
+    }
+
+
+def _subject_update(pilot: str, session_id: str) -> Any:
+    """The unlabeled-rows UPDATE target for one (pilot, session_id)."""
+    return update(DecisionLogTable).where(
+        DecisionLogTable.pilot == pilot[:60],
+        DecisionLogTable.session_id == session_id[:280],
+    )
+
+
 async def record_outcome(
     session: Any,
     *,
@@ -124,6 +145,7 @@ async def record_outcome(
     session_id: str,
     outcome: str,
     at: datetime | None = None,
+    older_than: datetime | None = None,
 ) -> int:
     """Attach a ground-truth label to every unlabeled row of one subject.
 
@@ -131,13 +153,15 @@ async def record_outcome(
     the self-heal engine after its recurrence window closes: the gated
     breach either recurred or it did not). Labels EVERY unlabeled row
     matching (pilot, session_id): re-gates of the same subject share the
-    outcome. Labeled rows are never overwritten. Returns the number of
-    rows labeled; 0 when nothing matched (nothing to label is normal, not
-    an error). Never raises: the caller's own path must keep working, so
-    under any failure the label is simply missing and the row stays a
-    corpus candidate. Runs its UPDATE inside a savepoint per the
-    shared-session discipline, so a failure cannot poison the caller's
-    transaction.
+    outcome. ``older_than`` bounds the labels to rows created before that
+    timestamp (the parking repark stamp uses it to grade only PRIOR
+    parks, never the fresh one that triggered the stamp). Labeled rows
+    are never overwritten. Returns the number of rows labeled; 0 when
+    nothing matched (nothing to label is normal, not an error). Never
+    raises: the caller's own path must keep working, so under any failure
+    the label is simply missing and the row stays a corpus candidate.
+    Runs its UPDATE inside a savepoint per the shared-session discipline,
+    so a failure cannot poison the caller's transaction.
     """
     if not settings.decisions_enabled:
         return 0
@@ -152,14 +176,13 @@ async def record_outcome(
         return 0
     try:
         async with session.begin_nested():
+            stmt = _subject_update(pilot, session_id).where(
+                DecisionLogTable.outcome.is_(None)
+            )
+            if older_than is not None:
+                stmt = stmt.where(DecisionLogTable.created_at < older_than)
             result = await session.execute(
-                update(DecisionLogTable)
-                .where(
-                    DecisionLogTable.pilot == pilot[:60],
-                    DecisionLogTable.session_id == session_id[:280],
-                    DecisionLogTable.outcome.is_(None),
-                )
-                .values(outcome=slug, outcome_at=at or datetime.now(UTC))
+                stmt.values(outcome=slug, outcome_at=at or datetime.now(UTC))
             )
         return int(result.rowcount or 0)
     except Exception as exc:
@@ -208,6 +231,57 @@ async def _write(batch: list[dict[str, Any]]) -> None:
     async with factory() as db:
         db.add_all([DecisionLogTable(**row) for row in batch])
         await db.commit()
+
+
+async def record_question_outcomes(
+    session: Any,
+    *,
+    pilot: str,
+    session_id: str,
+    fates: dict[str, str],
+    at: datetime | None = None,
+) -> int:
+    """Attach per-question fates to every unlabeled row of one subject.
+
+    The batched-pilot counterpart of ``record_outcome`` (spec 12.1): a
+    findings-mapping row's questions each carry their own truth, so the
+    label is a {question_key: fate} map stored in ``question_outcomes``.
+    Rows already carrying question outcomes are never overwritten. Same
+    posture as ``record_outcome``: savepoint-wrapped, never raises, 0 on
+    any failure or empty input.
+    """
+    if not settings.decisions_enabled or not fates:
+        return 0
+    clean = _clean_fates(fates)
+    if not clean or not session_id:
+        logger.warning(
+            "decision question outcomes rejected",
+            pilot=pilot,
+            session_id=session_id,
+            fates=len(clean),
+        )
+        return 0
+    try:
+        async with session.begin_nested():
+            result = await session.execute(
+                _subject_update(pilot, session_id)
+                .where(DecisionLogTable.question_outcomes.is_(None))
+                .values(
+                    question_outcomes={
+                        **clean,
+                        "_labeled_at": (at or datetime.now(UTC)).isoformat(),
+                    }
+                )
+            )
+        return int(result.rowcount or 0)
+    except Exception as exc:
+        logger.warning(
+            "decision question-outcome labeling failed; rows stay unlabeled",
+            pilot=pilot,
+            session_id=session_id,
+            error=str(exc),
+        )
+        return 0
 
 
 async def flush_now() -> int:

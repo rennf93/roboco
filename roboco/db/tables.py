@@ -2801,6 +2801,14 @@ class DecisionLogTable(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Per-question fates for BATCHED pilots whose questions each carry
+    # their own truth (e.g. findings_mapping: {"finding_0": "resolved",
+    # "finding_3": "re_raised"}), resolved to golds through the outcome
+    # registry's fate map (migration 107). NULL until labeled.
+    question_outcomes: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
+
     # The action the caller took (or would have taken, in shadow).
     action: Mapped[str | None] = mapped_column(String(160), nullable=True)
 

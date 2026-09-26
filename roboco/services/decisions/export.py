@@ -37,12 +37,13 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from roboco.db.tables import DecisionLogTable
 from roboco.services.decisions.outcomes import (
     example_gold,
     gold_for,
+    question_fate_gold,
     validate_gold_shape,
 )
 
@@ -101,22 +102,77 @@ def _labeled_gold(
     return probabilities_by_key, kept_questions
 
 
+def _fates_gold(
+    row_id: str,
+    pilot: str,
+    fates: dict[str, Any],
+    questions: dict[str, Any],
+) -> tuple[dict[str, dict[str, float]], dict[str, Any]] | None:
+    """Resolve a row's per-question fates into shape-checked golds,
+    restricted to the questions the row asked (the batched-pilot path).
+    ``None`` when no question yields a usable gold."""
+    probabilities_by_key: dict[str, dict[str, float]] = {}
+    kept_questions: dict[str, Any] = {}
+    for key, fate in fates.items():
+        if key not in questions:
+            continue
+        probability_map = question_fate_gold(pilot, str(fate))
+        if probability_map is None:
+            continue
+        checked = _checked_probabilities(
+            str(questions[key].get("type", "")), probability_map
+        )
+        if checked is None:
+            logger.warning(
+                "export: question fate failed its shape check; key skipped",
+                pilot=pilot,
+                row_id=row_id,
+                question_key=key,
+                fate=str(fate),
+            )
+            continue
+        probabilities_by_key[key] = checked
+        kept_questions[key] = questions[key]
+    if not probabilities_by_key:
+        return None
+    return probabilities_by_key, kept_questions
+
+
+def _resolve_row_gold(
+    pilot: str,
+    row_id: str,
+    questions: dict[str, Any],
+    outcome: str | None,
+    fates: Any,
+) -> tuple[dict[str, dict[str, float]], dict[str, Any]] | None:
+    """Fates first (the batched-pilot path), then the row-level slug;
+    ``None`` when neither yields a usable gold."""
+    resolved = None
+    if isinstance(fates, dict) and fates:
+        resolved = _fates_gold(row_id, pilot, fates, questions)
+    if resolved is None and outcome is not None:
+        resolved = _labeled_gold(row_id, pilot, str(outcome), questions)
+    return resolved
+
+
 def build_example(row: Any) -> dict[str, Any] | None:
     """One corpus line from a decision_log row, or ``None`` to skip.
 
     Skips (with a logged reason, never silently): rows missing inputs or
     outcome, outcomes with no registered gold for the pilot, gold that
     labels a question the row never asked, and gold that fails its
-    question-type shape check.
+    question-type shape check. Rows carrying per-question ``fates`` (the
+    batched-pilot path) resolve through the fate map first.
     """
     state = getattr(row, "state", None)
     questions = getattr(row, "questions", None)
     outcome = getattr(row, "outcome", None)
-    if not state or not questions or not outcome:
+    fates = getattr(row, "question_outcomes", None)
+    if not state or not questions or (outcome is None and not fates):
         return None
     pilot = str(getattr(row, "pilot", ""))
     row_id = str(getattr(row, "id", ""))
-    resolved = _labeled_gold(row_id, pilot, str(outcome), questions)
+    resolved = _resolve_row_gold(pilot, row_id, questions, outcome, fates)
     if resolved is None:
         return None
     probabilities_by_key, kept_questions = resolved
@@ -142,7 +198,10 @@ def _select_labeled(pilot: str | None, limit: int) -> Any:
     query = (
         select(DecisionLogTable)
         .where(
-            DecisionLogTable.outcome.is_not(None),
+            or_(
+                DecisionLogTable.outcome.is_not(None),
+                DecisionLogTable.question_outcomes.is_not(None),
+            ),
             DecisionLogTable.state.is_not(None),
             DecisionLogTable.questions.is_not(None),
         )

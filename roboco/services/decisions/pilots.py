@@ -15,7 +15,7 @@ enablement pattern.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -39,6 +39,22 @@ from roboco.services.decisions.schemas import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+def state_key(state: dict[str, Any]) -> str:
+    """Content-addressed instance key for a pilot's state payload.
+
+    Singleton session ids ("release:worthy") cannot be outcome-labeled per
+    instance - every instance of the decision shares one subject. Hashing
+    the state gives same-context decisions one shared subject and
+    different contexts their own, which is exactly what per-instance
+    outcome labeling and the training exporter need (spec 12.1)."""
+    import hashlib
+    import json
+
+    serialized = json.dumps(state, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+
 
 
 class PilotMode(StrEnum):

@@ -38,6 +38,7 @@ from roboco.services.decisions.pilots import (
     PilotMode,
     decide_for_pilot,
     log_action,
+    state_key,
 )
 from roboco.services.decisions.schemas import (
     ChoiceQuestion,
@@ -582,7 +583,11 @@ async def release_worthy_urgent(
         )
     }
     mode, result = await decide_for_pilot(
-        session, "release_worthy", state, questions, session_id="release:worthy"
+        session,
+        "release_worthy",
+        state,
+        questions,
+        session_id=f"release:worthy:{state_key(state)}",
     )
     if result is None:
         return False
@@ -642,7 +647,7 @@ async def second_review_high_stakes(
         "second_review_eligibility",
         state,
         questions,
-        session_id="secondreview:gate",
+        session_id=f"secondreview:{state_key(state)}",
     )
     if result is None:
         return False
@@ -997,7 +1002,11 @@ async def stranded_lane(
         )
     }
     mode, result = await decide_for_pilot(
-        session, "stranded_response", state, questions, session_id="strategy:stranded"
+        session,
+        "stranded_response",
+        state,
+        questions,
+        session_id=f"strategy:stranded:{state_key(state)}",
     )
     if result is None:
         return None
@@ -1041,7 +1050,11 @@ async def coroner_postmortem_warranted(
         )
     }
     mode, result = await decide_for_pilot(
-        session, "coroner_gate", state, questions, session_id=f"coroner:{kind}"
+        session,
+        "coroner_gate",
+        state,
+        questions,
+        session_id=f"coroner:{kind}:{state_key(state)}",
     )
     if result is None:
         return False
@@ -1162,7 +1175,11 @@ async def release_risk_advisory(
         )
     }
     mode, result = await decide_for_pilot(
-        session, "release_readiness", state, questions, session_id="readiness:risk"
+        session,
+        "release_readiness",
+        state,
+        questions,
+        session_id=f"readiness:risk:{state_key(state)}",
     )
     if result is None:
         return None

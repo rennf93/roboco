@@ -211,20 +211,54 @@ class _FakeRows:
         return self._rows
 
 
+_GRADED_PILOTS = {
+    "idle_legitimacy",
+    "respawn_verdict",
+    "submit_now_confidence",
+    "pm_closure_confidence",
+    "plan_quality",
+    "preflight_diff",
+    "second_review_eligibility",
+    "assembled_coherence",
+    "findings_mapping",
+    "parking",
+    "triage_failure",
+}
+
+
 class _FakeSession:
-    """execute() dispatches by statement shape: the caller pre-registers
-    the row list and the task-facts list; record_outcome is patched at the
-    persist module by the caller."""
+    """execute() dispatches by statement shape AND pilot bound param, so
+    each pilot's grader sees only its own rows; the tasks select returns
+    the registered task facts. record_outcome is patched at the persist
+    module by the caller."""
 
     def __init__(self, rows: list, facts: list) -> None:
         self._rows = rows
         self._facts = facts
 
-    async def execute(self, stmt: object) -> object:
+    def _result_for(self, stmt: object) -> _FakeRows:
         compiled = str(stmt.compile())
+        if compiled.lstrip().upper().startswith("UPDATE"):
+            return _FakeRows([])
         if "decision_log" in compiled:
-            return _FakeRows(self._rows)
-        return _FakeRows(self._facts)  # tasks select: (id, status, updated_at)
+            pilot = next(
+                (
+                    v
+                    for v in stmt.compile().params.values()
+                    if isinstance(v, str) and v in _GRADED_PILOTS
+                ),
+                None,
+            )
+            matching = (
+                [r for r in self._rows if r.pilot == pilot]
+                if pilot
+                else self._rows
+            )
+            return _FakeRows(matching)
+        return _FakeRows(self._facts)
+
+    async def execute(self, stmt: object) -> _FakeRows:
+        return self._result_for(stmt)
 
     async def commit(self) -> None:
         return None
@@ -319,3 +353,196 @@ async def test_engine_loop_disabled_is_a_noop(
     monkeypatch.setattr("asyncio.sleep", sleep)
     await engine._decisions_labeler_loop()
     sleep.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Wave 2: findings fates, triage history, parking stamps
+# ---------------------------------------------------------------------------
+
+
+def test_finding_fate_resolved_by_verification() -> None:
+    assert (
+        trajectory._finding_fate("verified", None, _T0, _ROT, _ROT)
+        == "resolved"
+    )
+
+
+def test_finding_fate_addressed_after_decision() -> None:
+    updated = _T0 + timedelta(days=1)
+    assert (
+        trajectory._finding_fate("addressed", updated, _T0, _ROT, _ROT)
+        == "resolved"
+    )
+
+
+def test_finding_fate_still_open_past_rot_is_re_raised() -> None:
+    assert (
+        trajectory._finding_fate("open", None, _T0, _ROT + timedelta(days=1), _ROT)
+        == "re_raised"
+    )
+
+
+def test_finding_fate_waived_is_recorded_but_unusable() -> None:
+    assert trajectory._finding_fate("waived", None, _T0, _ROT, _ROT) == "waived"
+    from roboco.services.decisions.outcomes import question_fate_gold
+
+    assert question_fate_gold("findings_mapping", "waived") is None
+    assert question_fate_gold("findings_mapping", "resolved") == {
+        "true": 1.0,
+        "false": 0.0,
+    }
+
+
+def test_findings_fates_skip_unknown_findings() -> None:
+    state = {"findings": [{"idx": 0, "id": "f0"}, {"idx": 1, "id": "f1"}]}
+    fates = trajectory._findings_fates(
+        state,
+        {"f0": ("verified", None)},
+        _T0,
+        _ROT,
+        _ROT,
+    )
+    assert fates == {"finding_0": "resolved"}
+
+
+def test_triage_flake_confirmed_by_independent_later_failure() -> None:
+    history = [
+        {
+            "task_id": "other-task",
+            "test_name": "test_flaky_login",
+            "changed_files": ["panel/other.ts"],
+            "created_at": _T0 + timedelta(days=1),
+        }
+    ]
+    slug = trajectory.triage_slug(
+        ("test_flaky_login", ["backend/auth.py"], "this-task"),
+        history,
+        ("awaiting_qa", _T0 + timedelta(days=2)),
+        _T0,
+    )
+    assert slug == "flake_confirmed_by_later_failures"
+
+
+def test_triage_regression_confirmed_when_no_recurrence() -> None:
+    slug = trajectory.triage_slug(
+        ("test_logout_crash", ["backend/auth.py"], "this-task"),
+        [],
+        ("completed", _T0 + timedelta(days=3)),
+        _T0,
+    )
+    assert slug == "regression_confirmed_no_recurrence"
+
+
+def test_triage_overlapping_later_failure_is_not_flake_evidence() -> None:
+    history = [
+        {
+            "task_id": "other-task",
+            "test_name": "test_logout_crash",
+            "changed_files": ["backend/auth.py"],
+            "created_at": _T0 + timedelta(days=1),
+        }
+    ]
+    slug = trajectory.triage_slug(
+        ("test_logout_crash", ["backend/auth.py"], "this-task"),
+        history,
+        None,
+        _T0,
+    )
+    assert slug is None
+
+
+@pytest.mark.asyncio
+async def test_parking_stale_rows_get_retired_not_escalated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    row = _row("parking", "parking:anthropic:rate-limit:be-dev-1", {}, old)
+    session = _FakeSession([row], [])
+    labeled: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        labeled.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_outcome", _capture)
+    graded = await trajectory._grade_parking_stale(
+        session, datetime.now(UTC) - timedelta(hours=1)
+    )
+    assert graded == 1
+    assert labeled[0]["outcome"] == "stale_unresolved"
+
+
+class _FakeNested:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _LiftSession(_FakeSession):
+    """Adds the savepoint + UPDATE surface record_outcome uses."""
+
+    def __init__(self, rows: list) -> None:
+        super().__init__(rows, [])
+
+    async def __aenter__(self) -> "_LiftSession":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def commit(self) -> None:
+        return None
+
+    def begin_nested(self) -> _FakeNested:
+        return _FakeNested()
+
+    async def execute(self, stmt: object) -> object:
+        compiled = str(stmt.compile())
+        if compiled.lstrip().upper().startswith("UPDATE"):
+            return SimpleNamespace(rowcount=1)
+        return await super().execute(stmt)
+
+
+@pytest.mark.asyncio
+async def test_parking_lift_stamp_splits_on_latency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lift inside the short-retry window grades retry_soon; a later
+    lift grades park_standard."""
+    from roboco.services.decisions import outcomes
+
+    now = datetime.now(UTC)
+    quick = _row(
+        "parking",
+        "parking:anthropic:rate-limit:be-dev-1",
+        {},
+        now - timedelta(minutes=3),
+    )
+    slow = _row(
+        "parking",
+        "parking:anthropic:rate-limit:fe-dev-2",
+        {},
+        now - timedelta(hours=2),
+    )
+    stamped: list[str] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        stamped.append(str(kwargs.get("outcome")))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_outcome", _capture)
+    import roboco.db.base as db_base
+
+    monkeypatch.setattr(
+        db_base,
+        "get_session_factory",
+        lambda: lambda: _LiftSession([quick, slow]),
+    )
+    await trajectory.stamp_parking_lift("anthropic", "rate-limit", "be-dev-1")
+    await trajectory.stamp_parking_lift("anthropic", "rate-limit", "fe-dev-2")
+    assert stamped == [
+        outcomes.LIMIT_LIFTED_QUICKLY,
+        outcomes.LIMIT_LIFTED_AFTER_COOLDOWN,
+    ]
