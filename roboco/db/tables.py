@@ -2822,3 +2822,80 @@ class DecisionLogTable(Base):
         # ("intent:{task_id}", "selfheal:{fingerprint}", ...).
         Index("ix_decision_log_pilot_session", "pilot", "session_id"),
     )
+
+
+class CiRunTable(Base):
+    """One observed CI conclusion for a project/workflow (spec 12.1 Wave 3).
+
+    Written by the CI telemetry consumers (ci-watch engine, self-heal
+    engine) once per sweep per distinct reading, deduplicated on
+    (project_slug, workflow, observed_at_str). This is the run history the
+    pull-based telemetry layer otherwise throws away - the outcome
+    labeler grades ci_watch_route and dep_update_risk rows against it.
+    Pruned by the trajectory labeler pass past its retention window.
+    """
+
+    __tablename__ = "ci_runs"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+    project_slug: Mapped[str] = mapped_column(String(200), nullable=False)
+    workflow: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    conclusion: Mapped[str] = mapped_column(String(40), nullable=False)
+    is_breach: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # The CI run's own completion stamp (verbatim from the source) - the
+    # dedup key; None-observed readings dedupe as the empty string.
+    observed_at_str: Mapped[str] = mapped_column(String(80), nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index(
+            "ux_ci_runs_reading",
+            "project_slug",
+            "workflow",
+            "observed_at_str",
+            unique=True,
+        ),
+    )
+
+
+class MemoryRetrievalLogTable(Base):
+    """One institutional-memory item injected into a spawn briefing (spec
+    12.1 Wave 3 instrumentation).
+
+    This is the evidence future knowledge-family graders need: whether a
+    stored lesson/vault note was EVER retrieved for real work. Written
+    best-effort at injection time from the choreographer's memory keystone;
+    pruned by the trajectory labeler pass. No decisions pilot is graded
+    from it yet - transcript_notes/vault_prefilter grading additionally
+    needs a stable note->lesson identity, tracked in the map.
+    """
+
+    __tablename__ = "memory_retrieval_log"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(500), nullable=False)
+    task_id: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    agent_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )

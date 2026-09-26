@@ -483,14 +483,22 @@ SEVERITY_COMPLEXITY_TIERS = ("low", "medium", "high")
 
 
 async def heal_severity(
-    session: AsyncSession, *, repo: str, workflow: str, error_excerpt: str
+    session: AsyncSession,
+    *,
+    repo: str,
+    workflow: str,
+    error_excerpt: str,
+    fingerprint: str = "",
 ) -> int | None:
     """Score the severity/fix-size of one self-heal breach, 0-2, or None
-    when off/shadow/below-floor (the caller then keeps MEDIUM as today)."""
+    when off/shadow/below-floor (the caller then keeps MEDIUM as today).
+    The fingerprint instances the session key so outcome labeling can
+    grade per breach instead of per repo (spec 12.1)."""
     state = {
         "repo": repo,
         "workflow": workflow,
         "error_excerpt": _cap(error_excerpt),
+        "fingerprint": fingerprint,
     }
     questions = {
         "gate": ScoreQuestion(
@@ -504,7 +512,11 @@ async def heal_severity(
         )
     }
     mode, result = await decide_for_pilot(
-        session, "heal_severity", state, questions, session_id=f"heal:{repo}"
+        session,
+        "heal_severity",
+        state,
+        questions,
+        session_id=f"heal:{repo}:{fingerprint}",
     )
     if result is None:
         return None

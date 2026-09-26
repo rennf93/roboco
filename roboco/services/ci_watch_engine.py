@@ -85,6 +85,12 @@ class CiWatchEngine(BaseService):
         await self._release_pool_connection()
         samples = await self._source.fetch(projects)
         await self._release_pool_connection()
+        # Persist the readings as run history (spec 12.1): consecutive
+        # sweeps re-observe the same run, so this is conflict-nothing.
+        # Commits; must precede the origination writes below.
+        from roboco.services.ci_history import record_runs
+
+        await record_runs(self.session, samples, workflow=None)
         breaches = [s for s in samples if s.is_breach]
         if not breaches:
             return []

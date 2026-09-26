@@ -367,6 +367,17 @@ async def run_trajectory_pass(session: Any) -> int:
     graded += await _grade_findings_mapping(session, grade_after, rot_after, now)
     graded += await _grade_parking_stale(session, rot_after)
     graded += await _grade_triage_history(session, grade_after)
+    graded += await _grade_size(session, grade_after)
+    graded += await _grade_heal_severity(session, grade_after)
+    graded += await _grade_ci_history(session, grade_after, rot_after)
+    # History retention (best-effort): CI readings and retrieval events
+    # past their windows stop being useful and stop the tables growing.
+    try:
+        from roboco.services import ci_history
+
+        await ci_history.prune(session)
+    except Exception as exc:
+        logger.debug("ci history prune failed", error=str(exc))
     return graded
 
 
@@ -764,3 +775,206 @@ async def stamp_parking_repark(session: Any, session_id: str) -> int:
             error=str(exc),
         )
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 graders: realized-size golds, CI run-history joins, and the
+# secretary confirmation stamp.
+# ---------------------------------------------------------------------------
+
+
+_SIZE_HEAVY_COMMITS = 8
+_SIZE_HEAVY_DURATION = timedelta(hours=96)
+_SIZE_LIGHT_COMMITS = 2
+_SIZE_LIGHT_DURATION = timedelta(hours=24)
+
+
+def size_slug(
+    commits: int, duration: timedelta | None, *, delivered: bool
+) -> str | None:
+    """The realized-size fate of a delivered task (pure). Pole thresholds:
+    heavy means >= 8 commits or >= 4 days of work; light means <= 2
+    commits inside a day. Everything else was standard."""
+    if not delivered:
+        return None
+    if commits >= _SIZE_HEAVY_COMMITS or (
+        duration is not None and duration >= _SIZE_HEAVY_DURATION
+    ):
+        return outcomes.REALIZED_HEAVY
+    if commits <= _SIZE_LIGHT_COMMITS and (
+        duration is None or duration <= _SIZE_LIGHT_DURATION
+    ):
+        return outcomes.REALIZED_LIGHT
+    return outcomes.REALIZED_STANDARD
+
+
+async def _size_facts(
+    session: Any, task_ids: list[str]
+) -> dict[str, tuple[str, datetime | None, datetime | None, int]]:
+    """(status, updated_at, created_at, commit_count) per task id."""
+    ids: list[Any] = []
+    for raw in task_ids:
+        with contextlib.suppress(ValueError):
+            ids.append(UUID(raw))
+    if not ids:
+        return {}
+    rows = await session.execute(
+        select(
+            TaskTable.id,
+            TaskTable.status,
+            TaskTable.updated_at,
+            TaskTable.created_at,
+            TaskTable.commits,
+        ).where(TaskTable.id.in_(ids))
+    )
+    return {
+        str(task_id): (str(status), updated_at, created_at, len(commits or []))
+        for task_id, status, updated_at, created_at, commits in rows.all()
+    }
+
+
+async def _grade_size(session: Any, grade_after: datetime) -> int:
+    """complexity + heal_severity: the delivered work's realized size
+    grades the size/severity prediction (documented softness: commit
+    count and elapsed time approximate weight)."""
+    graded = 0
+    rows = await _unlabeled_rows(session, "complexity", grade_after)
+    facts = await _size_facts(
+        session, [str(r.session_id).rsplit(":", 1)[-1] for r in rows]
+    )
+    for row in rows:
+        task_id = str(row.session_id).rsplit(":", 1)[-1]
+        slug = _size_fate(facts.get(task_id), row.created_at)
+        graded += await _label(session, "complexity", row.session_id, slug)
+    return graded
+
+
+async def _grade_heal_severity(
+    session: Any, grade_after: datetime
+) -> int:
+    rows = await _unlabeled_rows(session, "heal_severity", grade_after)
+    fix_tasks = await _heal_fix_tasks_by_fingerprint(session)
+    graded = 0
+    for row in rows:
+        fingerprint = str(row.session_id).rsplit(":", 1)[-1]
+        slug = _size_fate(fix_tasks.get(fingerprint), row.created_at)
+        graded += await _label(session, "heal_severity", row.session_id, slug)
+    return graded
+
+
+def _size_fate(
+    entry: tuple[str, datetime | None, datetime | None, int] | None,
+    decision_at: datetime,
+) -> str | None:
+    if entry is None:
+        return None
+    status_now, updated_at, created_at, commits = entry
+    duration = updated_at - created_at if updated_at and created_at else None
+    return size_slug(
+        commits,
+        duration,
+        delivered=status_now in _DELIVERED
+        and _moved_after(updated_at, decision_at),
+    )
+
+
+async def _heal_fix_tasks_by_fingerprint(
+    session: Any,
+) -> dict[str, tuple[str, datetime | None, datetime | None, int]]:
+    """Map each self-heal fix task's fingerprint to its size facts. The
+    bounded scan is fine at fleet scale: self-heal opens few tasks, each
+    deduped per fingerprint."""
+    from roboco.services.task import (
+        SELF_HEAL_SOURCE,
+        extract_self_heal_fingerprint,
+    )
+
+    result = await session.execute(
+        select(TaskTable)
+        .where(TaskTable.source == SELF_HEAL_SOURCE)
+        .order_by(TaskTable.created_at.desc())
+        .limit(300)
+    )
+    mapping: dict[str, tuple[str, datetime | None, datetime | None, int]] = {}
+    for task in result.scalars():
+        fingerprint = extract_self_heal_fingerprint(task)
+        if not fingerprint:
+            continue
+        mapping[fingerprint] = (
+            str(task.status),
+            task.updated_at,
+            task.created_at,
+            len(task.commits or []),
+        )
+    return mapping
+
+
+_HARD_RED_RUNS = 2
+
+
+def _ci_watch_urgency_slug(runs: list[Any]) -> str | None:
+    """Green-first proves flake; repeated reds prove a hard regression;
+    anything else waits for more history."""
+    if not runs:
+        return None
+    if not runs[0].is_breach:
+        return outcomes.CI_FLAKED
+    if sum(1 for r in runs if r.is_breach) >= _HARD_RED_RUNS:
+        return outcomes.CI_HARD_RED
+    return None
+
+
+def _dep_update_risk_slug(runs: list[Any]) -> str | None:
+    """Any post-bump failure proves high risk; a clean run sequence
+    proves low; no runs prove nothing."""
+    if not runs:
+        return None
+    if any(r.is_breach for r in runs):
+        return outcomes.UPDATE_CAUSED_FAILURES
+    return outcomes.UPDATE_RAN_CLEAN
+
+
+async def _grade_ci_history(
+    session: Any, grade_after: datetime, rot_after: datetime
+) -> int:
+    """ci_watch_route urgency + dep_update_risk from persisted run
+    sequences (the reason ci_runs exists)."""
+    from roboco.services import ci_history
+
+    graded = 0
+    rows = await _unlabeled_rows(session, "ci_watch_route", grade_after)
+    for row in rows:
+        project = str(row.session_id).rsplit(":", 1)[-1]
+        runs = await ci_history.runs_for(session, project, row.created_at, rot_after)
+        slug = _ci_watch_urgency_slug(runs)
+        graded += await _label(session, "ci_watch_route", row.session_id, slug)
+    rows = await _unlabeled_rows(session, "dep_update_risk", grade_after)
+    for row in rows:
+        project = str(row.session_id).rsplit(":", 1)[-1]
+        runs = await ci_history.runs_for(session, project, row.created_at, rot_after)
+        slug = _dep_update_risk_slug(runs)
+        graded += await _label(session, "dep_update_risk", row.session_id, slug)
+    return graded
+
+
+async def stamp_secretary_confirmation(
+    session: Any, payload: dict[str, Any], kind: str
+) -> int:
+    """The CEO ran a pilot-filled directive unchanged: the picked kind was
+    right (spec 12.1). Rejections are ambiguous and stay unlabeled."""
+    from roboco.services.decisions.pilots import state_key
+    from roboco.services.decisions.pilots_content import _STATE_TEXT_CAP
+
+    utterance = " ".join(
+        str(v).strip() for v in (payload or {}).values() if isinstance(v, str)
+    ).strip()
+    if not utterance:
+        return 0
+    key = state_key({"utterance": utterance[:_STATE_TEXT_CAP]})
+    session_id = f"secretary:kind:{key}"
+    return await persist.record_question_outcomes(
+        session,
+        pilot="secretary_nl",
+        session_id=session_id,
+        fates={"gate": f"confirmed:{kind}"},
+    )

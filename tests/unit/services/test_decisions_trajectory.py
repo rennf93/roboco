@@ -232,9 +232,10 @@ class _FakeSession:
     the registered task facts. record_outcome is patched at the persist
     module by the caller."""
 
-    def __init__(self, rows: list, facts: list) -> None:
+    def __init__(self, rows: list, facts: list, size_facts: list | None = None) -> None:
         self._rows = rows
         self._facts = facts
+        self._size_facts_rows = size_facts or []
 
     def _result_for(self, stmt: object) -> _FakeRows:
         compiled = str(stmt.compile())
@@ -255,6 +256,10 @@ class _FakeSession:
                 else self._rows
             )
             return _FakeRows(matching)
+        if "commits" in compiled:  # the size-facts select (5 columns)
+            return _FakeRows(self._size_facts_rows)
+        if "ci_runs" in compiled:  # the CI history select
+            return _FakeRows([])
         return _FakeRows(self._facts)
 
     async def execute(self, stmt: object) -> _FakeRows:
@@ -546,3 +551,142 @@ async def test_parking_lift_stamp_splits_on_latency(
         outcomes.LIMIT_LIFTED_QUICKLY,
         outcomes.LIMIT_LIFTED_AFTER_COOLDOWN,
     ]
+
+
+# ---------------------------------------------------------------------------
+# Wave 3: size golds, CI history joins, secretary confirmation
+# ---------------------------------------------------------------------------
+
+
+def test_size_slug_poles_and_middle() -> None:
+    from roboco.services.decisions.trajectory import (
+        _SIZE_HEAVY_COMMITS,
+        _SIZE_LIGHT_COMMITS,
+        _SIZE_LIGHT_DURATION,
+    )
+
+    heavy_at = _T0 + timedelta(days=10)
+    assert (
+        trajectory.size_slug(
+            _SIZE_HEAVY_COMMITS,
+            timedelta(days=2),
+            delivered=True,
+        )
+        == "realized_heavy"
+    )
+    assert (
+        trajectory.size_slug(
+            3,
+            timedelta(days=10),
+            delivered=True,
+        )
+        == "realized_heavy"
+    )
+    assert (
+        trajectory.size_slug(
+            _SIZE_LIGHT_COMMITS,
+            _SIZE_LIGHT_DURATION,
+            delivered=True,
+        )
+        == "realized_light"
+    )
+    assert (
+        trajectory.size_slug(4, timedelta(hours=30), delivered=True)
+        == "realized_standard"
+    )
+    assert trajectory.size_slug(1, timedelta(hours=1), delivered=False) is None
+
+
+@pytest.mark.asyncio
+async def test_complexity_graded_from_realized_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    task_id = "11111111-1111-1111-1111-111111111111"
+    row = _row("complexity", f"complexity:{task_id}", {}, old)
+    session = _FakeSession([row], [])
+    async def _size_facts(_session: object, _ids: list) -> dict:
+        return {
+            task_id: (
+                "completed",
+                old + timedelta(days=12),
+                old - timedelta(days=1),
+                11,
+            )
+        }
+
+    monkeypatch.setattr(trajectory, "_size_facts", _size_facts)
+    labeled: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        labeled.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_outcome", _capture)
+    graded = await trajectory._grade_size(session, old)
+    assert graded == 1
+    assert labeled[0]["outcome"] == "realized_heavy"
+
+
+@pytest.mark.asyncio
+async def test_heal_severity_graded_from_fix_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime.now(UTC) - timedelta(days=30)
+    row = _row("heal_severity", "heal:roboco-api:abc123", {}, old)
+    async def _fix_tasks(_session: object) -> dict:
+        return {"abc123": ("awaiting_qa", old + timedelta(hours=5), old, 1)}
+
+    monkeypatch.setattr(trajectory, "_heal_fix_tasks_by_fingerprint", _fix_tasks)
+    labeled: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        labeled.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_outcome", _capture)
+    graded = await trajectory._grade_heal_severity(_FakeSession([row], []), old)
+    assert graded == 1
+    assert labeled[0]["outcome"] == "realized_light"
+
+
+def test_ci_watch_urgency_slug_rules() -> None:
+    green_first = [SimpleNamespace(is_breach=False)]
+    assert trajectory._ci_watch_urgency_slug(green_first) == "ci_flaked"
+    hard = [
+        SimpleNamespace(is_breach=True),
+        SimpleNamespace(is_breach=True),
+    ]
+    assert trajectory._ci_watch_urgency_slug(hard) == "ci_hard_red"
+    assert trajectory._ci_watch_urgency_slug([]) is None
+    one_red = [SimpleNamespace(is_breach=True)]
+    assert trajectory._ci_watch_urgency_slug(one_red) is None
+
+
+def test_dep_update_risk_slug_rules() -> None:
+    clean = [SimpleNamespace(is_breach=False), SimpleNamespace(is_breach=False)]
+    assert trajectory._dep_update_risk_slug(clean) == "update_ran_clean"
+    failed = [SimpleNamespace(is_breach=True)]
+    assert trajectory._dep_update_risk_slug(failed) == "update_caused_failures"
+    assert trajectory._dep_update_risk_slug([]) is None
+
+
+@pytest.mark.asyncio
+async def test_secretary_confirmation_stamp_recomputes_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
+    stamped: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        stamped.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_question_outcomes", _capture)
+    payload = {"utterance": "relay a message to the board"}
+    graded = await trajectory.stamp_secretary_confirmation(
+        _FakeSession([], []), payload, "relay_message"
+    )
+    assert graded == 1
+    assert stamped[0]["pilot"] == "secretary_nl"
+    assert stamped[0]["fates"] == {"gate": "confirmed:relay_message"}

@@ -195,6 +195,18 @@ class SelfHealEngine(BaseService):
         if not settings.self_heal_enabled:
             return []
         observations = await self.assess()
+        # Persist the readings as run history (spec 12.1) - commits its own
+        # inserts; nothing else is pending in this fresh transaction yet.
+        try:
+            from roboco.services.ci_history import record_runs
+
+            await record_runs(
+                self.session,
+                self._last_samples,
+                workflow=settings.self_heal_ci_workflow,
+            )
+        except Exception as exc:
+            self.log.debug("ci history write failed", error=str(exc))
         # Release the pool connection right after the telemetry fetch above
         # (a project lookup immediately followed by an outbound GitHub HTTP
         # call, inside GitService.get_latest_ci_conclusion) - mirrors
@@ -274,6 +286,7 @@ class SelfHealEngine(BaseService):
                 repo=obs.repo_hint,
                 workflow=settings.self_heal_ci_workflow,
                 error_excerpt=obs.detail,
+                fingerprint=obs.fingerprint,
             )
             if score is not None:
                 return Complexity(SEVERITY_COMPLEXITY_TIERS[score])

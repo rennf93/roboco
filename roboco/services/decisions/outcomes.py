@@ -52,6 +52,13 @@ RE_LIMITED_ON_RESUME = "re_limited_on_resume"
 STALE_UNRESOLVED = "stale_unresolved"
 FLAKE_CONFIRMED_LATER = "flake_confirmed_by_later_failures"
 REGRESSION_CONFIRMED_LATER = "regression_confirmed_no_recurrence"
+REALIZED_LIGHT = "realized_light"
+REALIZED_STANDARD = "realized_standard"
+REALIZED_HEAVY = "realized_heavy"
+CI_FLAKED = "ci_flaked"
+CI_HARD_RED = "ci_hard_red"
+UPDATE_CAUSED_FAILURES = "update_caused_failures"
+UPDATE_RAN_CLEAN = "update_ran_clean"
 
 # Gold label shapes mirror the laya fine-tune corpus: per question key,
 # a probability map over the question's outcomes.
@@ -177,6 +184,24 @@ OUTCOME_GOLD: dict[tuple[str, str], Gold] = {
     ("assembled_coherence", PLAN_BOUNCED_AFTER): {
         "gate": {"0": 0.7, "1": 0.3},
     },
+    # complexity + heal_severity (3-level scores): the realized size of
+    # the delivered work grades the prediction (soft at the edges - a
+    # standard-size delivery between the poles stays soft).
+    ("complexity", REALIZED_LIGHT): {"gate": {"0": 1.0}},
+    ("complexity", REALIZED_STANDARD): {"gate": {"1": 1.0}},
+    ("complexity", REALIZED_HEAVY): {"gate": {"2": 1.0}},
+    ("heal_severity", REALIZED_LIGHT): {"gate": {"0": 1.0}},
+    ("heal_severity", REALIZED_STANDARD): {"gate": {"1": 1.0}},
+    ("heal_severity", REALIZED_HEAVY): {"gate": {"2": 1.0}},
+    # ci_watch_route urgency (B6 score): the next post-decision run going
+    # green proves flake; repeated reds prove a hard regression. The
+    # route choice is counterfactual and gets no gold.
+    ("ci_watch_route", CI_FLAKED): {"urgency": {"0": 1.0}},
+    ("ci_watch_route", CI_HARD_RED): {"urgency": {"2": 1.0}},
+    # dep_update_risk (B17 score): post-bump failures prove high risk; a
+    # clean run sequence proves low.
+    ("dep_update_risk", UPDATE_CAUSED_FAILURES): {"gate": {"2": 1.0}},
+    ("dep_update_risk", UPDATE_RAN_CLEAN): {"gate": {"0": 1.0}},
 }
 
 # Per-question fate golds for BATCHED pilots whose questions each carry
@@ -193,6 +218,16 @@ QUESTION_FATE_GOLD: dict[str, dict[str, dict[str, float] | None]] = {
         # A waived finding says nothing about whether the diff addressed
         # it: exclusion, never a guessed gold.
         "waived": None,
+    },
+    # secretary_nl (B18 choice): the CEO running a pilot-filled directive
+    # unchanged IS the ground truth for the kind it picked. A rejection is
+    # ambiguous (wrong kind vs bad directive) and stays unlabeled.
+    "secretary_nl": {
+        "confirmed:relay_message": {"relay_message": 1.0},
+        "confirmed:update_charter": {"update_charter": 1.0},
+        "confirmed:control_task": {"control_task": 1.0},
+        "confirmed:approve_pitch": {"approve_pitch": 1.0},
+        "confirmed:announce": {"announce": 1.0},
     },
 }
 

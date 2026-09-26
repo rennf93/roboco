@@ -189,6 +189,24 @@ class SecretaryService(BaseService):
     ) -> SecretaryDirectiveTable:
         row = await self._pending_or_raise(directive_id)
         row.decided_by = require_uuid(decided_by)
+        # Ground truth for the B18 secretary_nl training corpus: the CEO
+        # ran a pilot-filled directive unchanged, so the kind it picked
+        # was right. Rejections stay unlabeled (ambiguous between wrong
+        # kind and bad directive). Rows for explicitly panel-picked kinds
+        # do not exist (the pilot never runs for one), so this is a no-op
+        # for them. Best-effort, savepoint-wrapped.
+        try:
+            from roboco.services.decisions import trajectory
+
+            await trajectory.stamp_secretary_confirmation(
+                self.session, row.payload or {}, row.kind
+            )
+        except Exception as exc:
+            import structlog
+
+            structlog.get_logger(__name__).debug(
+                "secretary confirmation stamp skipped", error=str(exc)
+            )
         await self._run(row)
         return row
 
