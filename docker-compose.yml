@@ -39,12 +39,21 @@ x-orchestrator-env: &orchestrator-env
   # (CEO-path routing, notification suppression, context dropping, lifecycle
   # choices) SHADOW - verdicts logged against real outcomes, behavior
   # unchanged. Per-pilot settings rows always win over these env defaults.
+  # self_heal's gate joined SHADOW (CEO decision 2026-09-26): the ENGINE is
+  # armed fully below, but laya's transient verdict is logged, not acted on,
+  # until a fine-tuned checkpoint clears the quality probe - shadow rows +
+  # the sweep's outcome labeler are exactly the labeled training data.
   ROBOCO_DECISIONS_ENABLED: ${ROBOCO_DECISIONS_ENABLED:-true}
   ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-decisions:8100}
   ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
-  ROBOCO_DECISIONS_PILOTS_ON: ${ROBOCO_DECISIONS_PILOTS_ON:-self_heal,parking,preflight_diff,triage_failure,tool_spotlight,x_mention_triage,heal_severity,external_pr_triage,dep_update_risk,release_readiness,commit_intent,changelog_highlights,proactive_domain,idle_reaping,decision_note_sufficiency,park_cause,pre_send_completeness,findings_mapping,delta_brief,idle_legitimacy,review_queue_priority,branch_staleness,pm_closure_confidence,assembled_coherence,silent_exit}
-  ROBOCO_DECISIONS_PILOTS_SHADOW: ${ROBOCO_DECISIONS_PILOTS_SHADOW:-complexity,steer_gate,transcript_notes,plan_quality,injection_screen,intake_preroute,collision_edge,ci_watch_route,release_worthy,second_review_eligibility,segment_classify,vault_prefilter,notify_dedup,board_due_early,stranded_response,coroner_gate,secretary_nl,tg_freetext_gate,memory_distill_gate,context_pruning,budget_wrapup,board_evidence_skip,respawn_verdict,submit_now_confidence,lesson_prune}
+  ROBOCO_DECISIONS_PILOTS_ON: ${ROBOCO_DECISIONS_PILOTS_ON:-parking,preflight_diff,triage_failure,tool_spotlight,x_mention_triage,heal_severity,external_pr_triage,dep_update_risk,release_readiness,commit_intent,changelog_highlights,proactive_domain,idle_reaping,decision_note_sufficiency,park_cause,pre_send_completeness,findings_mapping,delta_brief,idle_legitimacy,review_queue_priority,branch_staleness,pm_closure_confidence,assembled_coherence,silent_exit}
+  ROBOCO_DECISIONS_PILOTS_SHADOW: ${ROBOCO_DECISIONS_PILOTS_SHADOW:-self_heal,complexity,steer_gate,transcript_notes,plan_quality,injection_screen,intake_preroute,collision_edge,ci_watch_route,release_worthy,second_review_eligibility,segment_classify,vault_prefilter,notify_dedup,board_due_early,stranded_response,coroner_gate,secretary_nl,tg_freetext_gate,memory_distill_gate,context_pruning,budget_wrapup,board_evidence_skip,respawn_verdict,submit_now_confidence,lesson_prune}
+  # Self-heal engine FULLY ARMED (CEO decision 2026-09-26): detect + notify +
+  # originate (tasks still held for the CEO's Approve-&-Start, per doctrine).
+  # Its laya transient gate is what the decisions SHADOW list above logs, and
+  # the sweep's outcome labeler turns those logged verdicts into labeled
+  # fine-tuning rows against real CI outcomes.
   # MinIO object storage for rendered videos (use container name). Empty
   # endpoint = disabled (FileResponse fallback); armed here for the NAS
   # deploy, left OFF in docker-compose.registry.yml.
@@ -104,10 +113,12 @@ x-orchestrator-env: &orchestrator-env
   # Production self-healing ("engine 4"). RoboCo watches its OWN repo CI and,
   # when red, notifies the CEO and (with originate on) opens a PENDING fix
   # task that STOPS for the CEO's Approve-&-Start — it never self-deploys.
-  # Both toggles default OFF (arm from Settings -> Feature Flags). Set
-  # PROJECT_SLUG to the registered project that IS RoboCo; CI_WORKFLOW scopes
-  # the signal to the real CI workflow (RoboCo has several workflows, so the
-  # unscoped "latest run" would be unreliable).
+  # FULLY ARMED here (both toggles on; CEO decision 2026-09-26, training-data
+  # rollout): the sweep's outcome labeler grades the logged laya transient
+  # verdicts against real CI outcomes, feeding the fine-tuning corpus (spec
+  # section 12). Set PROJECT_SLUG to the registered project that IS RoboCo;
+  # CI_WORKFLOW scopes the signal to the real CI workflow (RoboCo has several
+  # workflows, so the unscoped "latest run" would be unreliable).
   ROBOCO_SELF_HEAL_ENABLED: ${ROBOCO_SELF_HEAL_ENABLED:-true}
   ROBOCO_SELF_HEAL_ORIGINATE_ENABLED: ${ROBOCO_SELF_HEAL_ORIGINATE_ENABLED:-true}
   ROBOCO_SELF_HEAL_PROJECT_SLUG: ${ROBOCO_SELF_HEAL_PROJECT_SLUG:-roboco-api}
