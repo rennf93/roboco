@@ -23,12 +23,29 @@ _GOLD_SUM_TOLERANCE = 1e-6
 # Pilot slugs (decision_log.pilot values).
 SELF_HEAL_PILOT = "self_heal"
 
+# Pilot slugs (decision_log.pilot values).
+SELF_HEAL_PILOT = "self_heal"
+RESPAWN_VERDICT_PILOT = "respawn_verdict"
+
 # Outcome slugs, grouped by the pilot that produces them. A slug is part
 # of the training contract: renaming one silently orphans every row
 # already labeled with it, so both sides import these constants.
 CLEARED_AFTER_GATE = "cleared_after_gate"
 STILL_FAILING_AFTER_WINDOW = "still_failing_after_window"
 SUPERSEDED_BY_FIX_TASK = "superseded_by_fix_task"
+
+# Task-trajectory slugs (the trajectory labeler, spec 12.1 Wave 1). One
+# slug = one observed fate of the subject task; the gold asserts which of
+# the pilot's options WAS true.
+TASK_DELIVERED_AFTER = "task_delivered_after"
+TASK_CANCELLED_AFTER = "task_cancelled_after"
+TASK_STALLED_PAST_WINDOW = "task_stalled_past_window"
+OWNED_TASK_SUBMITTED_AFTER = "owned_task_submitted_after"
+OWNED_TASK_ROTTED_AFTER = "owned_task_rotted_after"
+IDLE_WAIT_RESOLVED_AFTER = "idle_wait_resolved_after"
+QA_PASSED_AFTER = "qa_passed_after"
+PLAN_BOUNCED_AFTER = "plan_bounced_after"
+PLAN_STALLED_PAST_WINDOW = "plan_stalled_past_window"
 
 # Gold label shapes mirror the laya fine-tune corpus: per question key,
 # a probability map over the question's outcomes.
@@ -52,6 +69,65 @@ OUTCOME_GOLD: dict[tuple[str, str], Gold] = {
     # one-off flake would have cleared, so the claim did not hold.
     (SELF_HEAL_PILOT, STILL_FAILING_AFTER_WINDOW): {
         "gate": {"true": 0.0, "false": 1.0},
+    },
+    # idle_legitimacy (B34 choice over the owned tasks' fate after the
+    # idle). Exactly one option can be gold: the fate the tasks actually
+    # took proves which option WAS true.
+    ("idle_legitimacy", OWNED_TASK_SUBMITTED_AFTER): {
+        "gate": {"likely-done-submit-now": 1.0},
+    },
+    ("idle_legitimacy", OWNED_TASK_ROTTED_AFTER): {
+        "gate": {"likely-stranded-escalate": 1.0},
+    },
+    ("idle_legitimacy", IDLE_WAIT_RESOLVED_AFTER): {
+        "gate": {"legit-wait": 1.0},
+    },
+    # respawn_verdict (B37): what the wedged task did after the trip.
+    (RESPAWN_VERDICT_PILOT, TASK_DELIVERED_AFTER): {
+        "gate": {"spawn": 1.0},
+    },
+    (RESPAWN_VERDICT_PILOT, TASK_CANCELLED_AFTER): {
+        "gate": {"kill-task": 1.0},
+    },
+    (RESPAWN_VERDICT_PILOT, TASK_STALLED_PAST_WINDOW): {
+        "gate": {"hold-task-for-human": 1.0},
+    },
+    # submit_now_confidence (B38, 3-level score): a QA bounce after a
+    # confident submit grades the row low (soft gold, not a pole); clean
+    # delivery grades it at the top.
+    ("submit_now_confidence", QA_PASSED_AFTER): {
+        "gate": {"2": 1.0},
+    },
+    ("submit_now_confidence", PLAN_BOUNCED_AFTER): {
+        "gate": {"0": 0.7, "1": 0.3},
+    },
+    # pm_closure_confidence (B42, 3-level score): same axis as submit_now
+    # one hop later in the lifecycle.
+    ("pm_closure_confidence", QA_PASSED_AFTER): {
+        "gate": {"2": 1.0},
+    },
+    ("pm_closure_confidence", PLAN_BOUNCED_AFTER): {
+        "gate": {"0": 0.7, "1": 0.3},
+    },
+    # plan_quality (B1, 3-level score): a bounced plan was inadequate;
+    # a plan that shipped unreplanned was at least adequate (soft between
+    # adequate and strong); a stalled one was likely inadequate.
+    ("plan_quality", PLAN_BOUNCED_AFTER): {
+        "gate": {"0": 1.0},
+    },
+    ("plan_quality", QA_PASSED_AFTER): {
+        "gate": {"1": 0.5, "2": 0.5},
+    },
+    ("plan_quality", PLAN_STALLED_PAST_WINDOW): {
+        "gate": {"0": 0.7, "1": 0.3},
+    },
+    # preflight_diff (6.4): graded ONLY when QA fully passed - every
+    # criterion's "plausibly addresses" claim held and the hygiene claim
+    # was false. Bounced rows keep their inputs (per-criterion truth needs
+    # finding-to-criterion matching, Wave 2).
+    ("preflight_diff", QA_PASSED_AFTER): {
+        **{f"criterion_{i}": {"true": 1.0, "false": 0.0} for i in range(6)},
+        "hygiene": {"true": 0.0, "false": 1.0},
     },
 }
 

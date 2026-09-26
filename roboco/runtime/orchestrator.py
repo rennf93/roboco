@@ -1325,6 +1325,7 @@ def _format_barfly_candidates(markers_dict: dict[str, Any]) -> str:
 
 from roboco.runtime.engines._shared import SharedEngine
 from roboco.runtime.engines.ci_watch import CiWatchEngine
+from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 from roboco.runtime.engines.dep_update import DepUpdateEngine
 from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
 from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
@@ -1350,6 +1351,7 @@ from roboco.runtime.engines.x_mentions import XMentionsEngine
 class AgentOrchestrator(
     SharedEngine,
     CiWatchEngine,
+    DecisionsLabelerEngine,
     DepUpdateEngine,
     DispatchBreakerEngine,
     DispatchClaimEngine,
@@ -1701,6 +1703,7 @@ class AgentOrchestrator(
         self._strategy_engine_task: asyncio.Task | None = None
         self._external_pr_poll_task: asyncio.Task | None = None
         self._self_heal_task: asyncio.Task | None = None
+        self._decisions_labeler_task: asyncio.Task | None = None
         self._ci_watch_task: asyncio.Task | None = None
         self._dep_update_task: asyncio.Task | None = None
         self._env_sync_task: asyncio.Task | None = None
@@ -1797,6 +1800,9 @@ class AgentOrchestrator(
         self._strategy_engine_task = asyncio.create_task(self._strategy_engine_loop())
         self._external_pr_poll_task = asyncio.create_task(self._external_pr_poll_loop())
         self._self_heal_task = asyncio.create_task(self._self_heal_loop())
+        self._decisions_labeler_task = asyncio.create_task(
+            self._decisions_labeler_loop()
+        )
         self._ci_watch_task = asyncio.create_task(self._ci_watch_loop())
         self._dep_update_task = asyncio.create_task(self._dep_update_loop())
         self._env_sync_task = asyncio.create_task(self._env_sync_loop())
@@ -1899,6 +1905,7 @@ class AgentOrchestrator(
             self._strategy_engine_task,
             self._external_pr_poll_task,
             self._self_heal_task,
+            self._decisions_labeler_task,
             self._ci_watch_task,
             self._dep_update_task,
             self._env_sync_task,

@@ -467,6 +467,36 @@ class Settings(BaseSettings):
             "pilot) are computed from this window."
         ),
     )
+    decisions_labeler_interval_seconds: int = Field(
+        default=900,
+        ge=60,
+        description=(
+            "Seconds between trajectory-labeler passes over unlabeled "
+            "decision_log rows (spec 12.1). The labeler only writes "
+            "outcome columns; it gates nothing, so it rides the master "
+            "decisions flag with no separate switch."
+        ),
+    )
+    decisions_trajectory_grade_after_hours: int = Field(
+        default=48,
+        ge=1,
+        description=(
+            "Minimum age of a decision row before the trajectory labeler "
+            "grades it: ground truth needs time to exist (a submit must "
+            "have met QA or not, an idle's tasks must have gone somewhere "
+            "or rotted)."
+        ),
+    )
+    decisions_trajectory_rot_hours: int = Field(
+        default=168,
+        ge=1,
+        description=(
+            "Rot horizon for the trajectory labeler's stalled fates: an "
+            "in-progress task with zero activity since before the decision "
+            "is graded stranded/stalled only once THIS many hours have "
+            "passed since the decision."
+        ),
+    )
 
     # ==========================================================================
     # Agent runtime toolchain matching (default-off)
