@@ -2785,10 +2785,32 @@ class DecisionLogTable(Base):
     answers: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     confidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
+    # Training-corpus inputs (migration 106): the state and the question
+    # payload EXACTLY as sent on the wire (spec 3.1 caps applied by the
+    # client). With an outcome, one row is one fine-tunable example; rows
+    # without an outcome are still corpus candidates for bulk labeling.
+    state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    questions: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    # Ground-truth label attached after the fact by an outcome producer
+    # (e.g. the self-heal recurrence check): a short slug such as
+    # "recurred_within_window" / "did_not_recur", with the timestamp of
+    # when it became known. NULL until labeled.
+    outcome: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    outcome_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # The action the caller took (or would have taken, in shadow).
     action: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
     # Fallback-tier spend (Laya is 0 by construction).
     cost: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    __table_args__ = (Index("ix_decision_log_pilot_created", "pilot", "created_at"),)
+    __table_args__ = (
+        Index("ix_decision_log_pilot_created", "pilot", "created_at"),
+        # Outcome producers address rows by (pilot, session_id): the
+        # deterministic per-subject session ids the pilots compose
+        # ("intent:{task_id}", "selfheal:{fingerprint}", ...).
+        Index("ix_decision_log_pilot_session", "pilot", "session_id"),
+    )

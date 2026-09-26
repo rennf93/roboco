@@ -25,14 +25,17 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from roboco.config import settings
+from roboco.db.tables import DecisionLogTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services import decisions as decisions_pilots
 from roboco.services.base import BaseService
+from roboco.services.decisions import outcomes as decisions_outcomes
 from roboco.services.notification import NotificationService
 from roboco.services.project import get_project_service
 from roboco.services.task import (
@@ -48,7 +51,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.services.telemetry import TelemetrySource
+    from roboco.services.telemetry import TelemetrySample, TelemetrySource
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,55 @@ def _fingerprint(signal_name: str) -> str:
     return hashlib.sha256(signal_name.encode("utf-8")).hexdigest()[:16]
 
 
+def _parse_observed_at(raw: str) -> datetime | None:
+    """Parse a telemetry sample's ``observed_at`` (ISO-8601 from the
+    source, e.g. GitHub's ``...T...Z``). Naive stamps are read as UTC.
+    Empty or unparseable returns ``None``: the outcome labeler skips the
+    row rather than guess whether a run completed after the gate."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _transient_outcome_slug(
+    *,
+    gated_at: datetime | None,
+    sample: TelemetrySample | None,
+    has_open_task: bool,
+    now: datetime,
+    window: timedelta,
+) -> str | None:
+    """The ground-truth slug for one gated fingerprint, or ``None`` when
+    this sweep's telemetry proves nothing yet (never a guess):
+
+    - an open self-heal fix task means any later clearing is OUR fix, not
+      transience: the row is kept but marked unusable for training;
+    - a green reading whose run completed AFTER the gate proves the
+      transience claim held (``cleared_after_gate``);
+    - a post-gate red reading still breaching a full outcome window after
+      the gate proves the claim failed (``still_failing_after_window``);
+    - anything else (no reading, pre-gate-only readings, inside the
+      window) stays unlabeled.
+    """
+    if has_open_task:
+        return decisions_outcomes.SUPERSEDED_BY_FIX_TASK
+    if sample is None or gated_at is None:
+        return None
+    observed_at = _parse_observed_at(sample.observed_at)
+    if observed_at is None or observed_at <= gated_at:
+        return None
+    if not sample.is_breach:
+        return decisions_outcomes.CLEARED_AFTER_GATE
+    if now - gated_at >= window:
+        return decisions_outcomes.STILL_FAILING_AFTER_WINDOW
+    return None
+
+
 _NOTIFY_DEDUPE_KEY_PREFIX = "self_heal:notified:"
 
 
@@ -90,11 +142,21 @@ class SelfHealEngine(BaseService):
     ) -> None:
         super().__init__(session)
         self._source: TelemetrySource = source or get_ci_telemetry_source(session)
+        # Raw telemetry of the most recent assess() (breaches AND green
+        # readings); the outcome labeler reads it instead of re-fetching.
+        self._last_samples: list[TelemetrySample] = []
 
     async def assess(self) -> list[RegressionObservation]:
-        """Read telemetry and return observations. Pure — no side effects."""
+        """Read telemetry and return observations. Pure — no side effects.
+
+        The raw samples are cached on ``self._last_samples`` for the
+        cycle's outcome labeler (it needs GREEN readings too, which this
+        method's breach filter drops); exactly one telemetry fetch per
+        cycle.
+        """
         observations: list[RegressionObservation] = []
-        for sample in await self._source.fetch():
+        self._last_samples = await self._source.fetch()
+        for sample in self._last_samples:
             if not sample.is_breach:
                 continue
             observations.append(
@@ -140,9 +202,14 @@ class SelfHealEngine(BaseService):
         # pool-exhaustion incident), so the reads/writes below start from a
         # fresh transaction instead of riding whatever the fetch left open.
         await self._release_pool_connection()
+        # Ground-truth labeling for the transient-gate training corpus runs
+        # on EVERY cycle, all-green ones included: a green sweep is exactly
+        # when past "transient" verdicts become provably right. fp_to_task
+        # feeds both the CEO-alert links and the labeler's fix-task rule.
+        fp_to_task = await self._open_self_heal_task_ids_by_fp()
+        await self._label_transient_outcomes(fp_to_task)
         if not observations:
             return []
-        fp_to_task = await self._open_self_heal_task_ids_by_fp()
         notifier = NotificationService()
         for obs in observations:
             if await self._already_notified(obs.fingerprint):
@@ -217,6 +284,79 @@ class SelfHealEngine(BaseService):
                 error=str(exc),
             )
         return Complexity.MEDIUM
+
+    async def _label_transient_outcomes(self, fp_to_task: dict[str, UUID]) -> None:
+        """Attach ground truth to the transient-gate's decision_log rows.
+
+        The 6.1 gate claims "this breach is transient (infra flake), not a
+        defect in the recent commits." Telemetry proves the claim right or
+        wrong after the fact, per gated fingerprint (the decision_log
+        session_id is ``selfheal:{fingerprint}``); the per-row rules live
+        in ``_transient_outcome_slug``. Best-effort end to end: a labeling
+        failure logs and returns; the sweep itself must never break for
+        the corpus's sake.
+        """
+        from sqlalchemy import func, select
+
+        from roboco.services.decisions import persist
+
+        try:
+            rows = await self.session.execute(
+                select(
+                    DecisionLogTable.session_id,
+                    func.min(DecisionLogTable.created_at).label("gated_at"),
+                )
+                .where(
+                    DecisionLogTable.pilot == decisions_outcomes.SELF_HEAL_PILOT,
+                    DecisionLogTable.outcome.is_(None),
+                    DecisionLogTable.session_id.is_not(None),
+                )
+                .group_by(DecisionLogTable.session_id)
+            )
+            gated = {
+                str(session_id): gated_at
+                for session_id, gated_at in rows.all()
+                if session_id
+            }
+            if not gated:
+                return
+            window = timedelta(hours=settings.self_heal_outcome_window_hours)
+            now = datetime.now(UTC)
+            samples_by_fp = {
+                _fingerprint(s.signal_name): s for s in self._last_samples
+            }
+            for session_id, gated_at in gated.items():
+                fingerprint = session_id.removeprefix("selfheal:")
+                slug = _transient_outcome_slug(
+                    gated_at=gated_at,
+                    sample=samples_by_fp.get(fingerprint),
+                    has_open_task=fingerprint in fp_to_task,
+                    now=now,
+                    window=window,
+                )
+                if slug is None:
+                    continue
+                labeled = await persist.record_outcome(
+                    self.session,
+                    pilot=decisions_outcomes.SELF_HEAL_PILOT,
+                    session_id=session_id,
+                    outcome=slug,
+                )
+                if labeled:
+                    self.log.info(
+                        "self-heal: transient-gate outcome labeled",
+                        fingerprint=fingerprint,
+                        outcome=slug,
+                        rows=labeled,
+                    )
+        except Exception:
+            self.log.exception("self-heal outcome labeling failed; corpus waits")
+        finally:
+            # The labeler only reads and savepoint-UPDATEs, but its SELECT
+            # opened a transaction on the shared session: end it so the
+            # notify/originate writes below start fresh (same rationale as
+            # the pool release above).
+            await self._release_pool_connection()
 
     async def _open_self_heal_task_ids_by_fp(self) -> dict[str, UUID]:
         """Map each open self-heal task's fingerprint to its task id.

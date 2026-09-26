@@ -1,8 +1,8 @@
 """Fire-and-forget persistence for Decisions verdicts.
 
 Every pilot routes its verdict through ``log_action``; this module turns
-those calls into rows in ``decision_log`` (migration 105) without ever
-blocking, failing, or slowing a decision path:
+those calls into rows in ``decision_log`` (migration 105, corpus columns
+in 106) without ever blocking, failing, or slowing a decision path:
 
 - Appends to a bounded in-memory buffer (oldest dropped when full).
 - A single background flush task drains the buffer in batches over its own
@@ -10,6 +10,13 @@ blocking, failing, or slowing a decision path:
 - Any failure drops the batch with a debug log and keeps going - the log
   is evidence, not a gate, so losing rows under a DB outage is the right
   degradation.
+
+Each row carries the question inputs EXACTLY as sent on the wire (the
+client stamps its post-cap state and question payload onto the result), so
+a row plus a ground-truth outcome is one fine-tunable example for the Laya
+checkpoint. ``record_outcome`` is the labeled-row writer: outcome
+producers (e.g. the self-heal recurrence check) attach what actually
+happened to every unlabeled row of one (pilot, session_id) subject.
 
 The Auditor's daily decisions-audit board cycle reads this table as the
 baseline history: verdict distributions, mean confidence, action counts,
@@ -19,11 +26,13 @@ and spend per pilot, plus the mode/threshold calibration trail.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy import update
 
 from roboco.config import settings
 from roboco.db.tables import DecisionLogTable
@@ -36,8 +45,32 @@ _BUFFER_MAX = 2_000
 _FLUSH_DELAY_S = 5.0
 _BATCH_SIZE = 200
 
+# Defensive serialized-size cap per corpus input (state, questions). The
+# client's own caps bound the laya tier near 2k chars and the fallback
+# tier's per-key caps near 8k, so this only bites a future call path that
+# skips the client; the payload is dropped rather than stored oversize
+# (a marked stub keeps the row honest about why inputs are missing).
+_CORPUS_INPUT_CAP_CHARS = 64_000
+
 _pending: deque[dict[str, Any]] = deque(maxlen=_BUFFER_MAX)
 _STATE: dict[str, Any] = {"flush_task": None}
+
+
+def _corpus_input(value: Any) -> dict[str, Any] | None:
+    """Size-guard one corpus input for the JSON column. Returns the value
+    verbatim under the cap, a marked stub over it, ``None`` for missing.
+    Catches EVERY serialization failure: a poison input must drop the
+    input, never the whole row (log_action's outer guard would otherwise
+    skip the row entirely, losing the verdict too)."""
+    if value is None:
+        return None
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        return {"_dropped": "unserializable"}
+    if len(serialized) > _CORPUS_INPUT_CAP_CHARS:
+        return {"_dropped": f"oversize>{_CORPUS_INPUT_CAP_CHARS}"}
+    return value
 
 
 def record_decision(
@@ -75,11 +108,68 @@ def record_decision(
             "session_id": result_session_id[:280] if result_session_id else None,
             "answers": answers or None,
             "confidence": confidence or None,
+            "state": _corpus_input(getattr(result, "state", None)),
+            "questions": _corpus_input(getattr(result, "questions", None)),
             "action": str(action)[:160] if action is not None else None,
             "cost": getattr(getattr(result, "usage", None), "cost", None),
         }
     )
     _ensure_flusher()
+
+
+async def record_outcome(
+    session: Any,
+    *,
+    pilot: str,
+    session_id: str,
+    outcome: str,
+    at: datetime | None = None,
+) -> int:
+    """Attach a ground-truth label to every unlabeled row of one subject.
+
+    Outcome producers call this once the real-world result is known (e.g.
+    the self-heal engine after its recurrence window closes: the gated
+    breach either recurred or it did not). Labels EVERY unlabeled row
+    matching (pilot, session_id): re-gates of the same subject share the
+    outcome. Labeled rows are never overwritten. Returns the number of
+    rows labeled; 0 when nothing matched (nothing to label is normal, not
+    an error). Never raises: the caller's own path must keep working, so
+    under any failure the label is simply missing and the row stays a
+    corpus candidate. Runs its UPDATE inside a savepoint per the
+    shared-session discipline, so a failure cannot poison the caller's
+    transaction.
+    """
+    if not settings.decisions_enabled:
+        return 0
+    slug = outcome.strip()[:60]
+    if not slug or not session_id:
+        logger.warning(
+            "decision outcome rejected",
+            pilot=pilot,
+            session_id=session_id,
+            outcome=outcome,
+        )
+        return 0
+    try:
+        async with session.begin_nested():
+            result = await session.execute(
+                update(DecisionLogTable)
+                .where(
+                    DecisionLogTable.pilot == pilot[:60],
+                    DecisionLogTable.session_id == session_id[:280],
+                    DecisionLogTable.outcome.is_(None),
+                )
+                .values(outcome=slug, outcome_at=at or datetime.now(UTC))
+            )
+        return int(result.rowcount or 0)
+    except Exception as exc:
+        logger.warning(
+            "decision outcome labeling failed; rows stay unlabeled",
+            pilot=pilot,
+            session_id=session_id,
+            error=str(exc),
+        )
+        return 0
 
 
 def _ensure_flusher() -> None:

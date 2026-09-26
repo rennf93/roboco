@@ -7,11 +7,13 @@ only notifies the CEO (this slice never originates, starts, merges, or deploys).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 import redis.asyncio as redis_asyncio
 from roboco.config import settings as cfg
+from roboco.services.decisions import persist as decisions_persist
 from roboco.services.notification import NotificationService
 from roboco.services.self_heal_engine import SelfHealEngine, _fingerprint
 from roboco.services.telemetry import TelemetrySample
@@ -225,3 +227,228 @@ async def test_run_cycle_notifies_when_dedupe_check_fails_open(
     await engine.run_cycle()
 
     send.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Outcome labeling: ground truth for the transient-gate training corpus
+# ---------------------------------------------------------------------------
+
+
+class _FakeRows:
+    def __init__(self, rows: list[tuple[str, object]]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[tuple[str, object]]:
+        return list(self._rows)
+
+
+class _FakeLabelSession:
+    """execute() answers the gated-rows SELECT; commit() ends the
+    transaction like the real pool release."""
+
+    def __init__(self, rows: list[tuple[str, object]]) -> None:
+        self._rows = rows
+        self.committed = 0
+
+    async def execute(self, _stmt: object) -> _FakeRows:
+        return _FakeRows(self._rows)
+
+    async def commit(self) -> None:
+        self.committed += 1
+
+    async def rollback(self) -> None:
+        return None
+
+
+def _fp() -> str:
+    return _fingerprint("ci_conclusion:roboco")
+
+
+def _sample_at(value: float, observed_at: str) -> TelemetrySample:
+    base = _sample(value)
+    return TelemetrySample(
+        signal_name=base.signal_name,
+        value=base.value,
+        threshold=base.threshold,
+        window=base.window,
+        repo_hint=base.repo_hint,
+        observed_at=observed_at,
+        raw_ref=base.raw_ref,
+        detail=base.detail,
+    )
+
+
+def _label_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    gated: list[tuple[str, object]],
+    samples: list[TelemetrySample],
+) -> tuple[SelfHealEngine, list[dict[str, object]]]:
+    """An engine whose labeler runs against a fake session, with
+    record_outcome captured instead of hitting the DB."""
+    session = _FakeLabelSession(gated)
+    engine = SelfHealEngine(session, source=_FakeSource(samples))
+    labeled: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        labeled.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(decisions_persist, "record_outcome", _capture)
+    return engine, labeled
+
+
+@pytest.mark.asyncio
+async def test_green_reading_after_gate_labels_cleared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_time = datetime(2026, 6, 17, tzinfo=UTC)
+    engine, labeled = _label_engine(
+        monkeypatch,
+        gated=[(f"selfheal:{_fp()}", gate_time)],
+        samples=[_sample_at(0.0, "2026-06-17T01:00:00Z")],
+    )
+    await engine.assess()
+    await engine._label_transient_outcomes({})
+    assert len(labeled) == 1
+    assert labeled[0]["pilot"] == "self_heal"
+    assert labeled[0]["session_id"] == f"selfheal:{_fp()}"
+    assert labeled[0]["outcome"] == "cleared_after_gate"
+
+
+@pytest.mark.asyncio
+async def test_pre_gate_red_reading_stays_unlabeled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_time = datetime.now(UTC) - timedelta(
+        hours=cfg.self_heal_outcome_window_hours + 12
+    )
+    observed = (gate_time - timedelta(hours=1)).isoformat()
+    engine, labeled = _label_engine(
+        monkeypatch,
+        gated=[(f"selfheal:{_fp()}", gate_time)],
+        # The sample's run completed BEFORE the gate: it is the very breach
+        # the gate saw, so it proves nothing about what happened after.
+        samples=[_sample_at(1.0, observed)],
+    )
+    await engine.assess()
+    await engine._label_transient_outcomes({})
+    assert labeled == []
+
+
+@pytest.mark.asyncio
+async def test_red_reading_after_gate_past_window_labels_still_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_time = datetime.now(UTC) - timedelta(
+        hours=cfg.self_heal_outcome_window_hours + 12
+    )
+    observed = (gate_time + timedelta(hours=1)).isoformat()
+    engine, labeled = _label_engine(
+        monkeypatch,
+        gated=[(f"selfheal:{_fp()}", gate_time)],
+        samples=[_sample_at(1.0, observed)],
+    )
+    await engine.assess()
+    await engine._label_transient_outcomes({})
+    assert len(labeled) == 1
+    assert labeled[0]["outcome"] == "still_failing_after_window"
+
+
+@pytest.mark.asyncio
+async def test_red_reading_inside_window_stays_unlabeled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_time = datetime.now(UTC) - timedelta(hours=1)
+    observed = (gate_time + timedelta(minutes=30)).isoformat()
+    engine, labeled = _label_engine(
+        monkeypatch,
+        gated=[(f"selfheal:{_fp()}", gate_time)],
+        samples=[_sample_at(1.0, observed)],
+    )
+    await engine.assess()
+    await engine._label_transient_outcomes({})
+    # A post-gate red reading inside the window: wait for proof.
+    assert labeled == []
+
+
+@pytest.mark.asyncio
+async def test_no_post_gate_reading_stays_unlabeled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_time = datetime.now(UTC) - timedelta(hours=1)
+    observed = (gate_time - timedelta(minutes=30)).isoformat()
+    engine, labeled = _label_engine(
+        monkeypatch,
+        gated=[(f"selfheal:{_fp()}", gate_time)],
+        # No run completed after the gate: nothing provable yet.
+        samples=[_sample_at(1.0, observed)],
+    )
+    await engine.assess()
+    await engine._label_transient_outcomes({})
+    assert labeled == []
+
+
+@pytest.mark.asyncio
+async def test_open_fix_task_marks_row_superseded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_time = datetime(2026, 6, 17, tzinfo=UTC)
+    engine, labeled = _label_engine(
+        monkeypatch,
+        gated=[(f"selfheal:{_fp()}", gate_time)],
+        samples=[_sample_at(0.0, "2026-06-17T01:00:00Z")],
+    )
+    object_id = object()
+    await engine.assess()
+    await engine._label_transient_outcomes({_fp(): object_id})
+    assert len(labeled) == 1
+    assert labeled[0]["outcome"] == "superseded_by_fix_task"
+
+
+@pytest.mark.asyncio
+async def test_labeler_runs_on_all_green_sweeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The point of the green sweep: past 'transient' verdicts become
+    provably right exactly when today's readings are all green."""
+    monkeypatch.setattr(cfg, "self_heal_enabled", True)
+    engine = _engine([_sample(0.0)])
+    monkeypatch.setattr(
+        engine, "_open_self_heal_task_ids_by_fp", AsyncMock(return_value={})
+    )
+    labeler = AsyncMock()
+    monkeypatch.setattr(engine, "_label_transient_outcomes", labeler)
+    obs = await engine.run_cycle()
+    assert obs == []
+    labeler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_labeler_db_failure_never_breaks_the_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The labeler's own contract: a failure inside the gated-rows SELECT
+    is logged and swallowed; the sweep completes untouched."""
+
+    class _BoomSession:
+        async def execute(self, _stmt: object) -> object:
+            raise RuntimeError("db down")
+
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+    monkeypatch.setattr(cfg, "self_heal_enabled", True)
+    monkeypatch.setattr(cfg, "self_heal_originate_enabled", False)
+    send = AsyncMock()
+    monkeypatch.setattr(NotificationService, "send_ack_notification", send)
+    engine = SelfHealEngine(_BoomSession(), source=_FakeSource([_sample(1.0)]))
+    monkeypatch.setattr(engine, "_already_notified", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        engine, "_open_self_heal_task_ids_by_fp", AsyncMock(return_value={})
+    )
+    obs = await engine.run_cycle()
+    assert len(obs) == 1
+    send.assert_not_awaited()  # dedupe held; the sweep itself completed

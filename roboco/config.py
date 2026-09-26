@@ -1217,6 +1217,18 @@ class Settings(BaseSettings):
             " outage in the check still lets the notify through."
         ),
     )
+    self_heal_outcome_window_hours: int = Field(
+        default=24,
+        ge=1,
+        description=(
+            "Ground-truth window for the transient-gate training corpus. A"
+            " breach the gate called transient that is STILL breaching this"
+            " long after the gate is labeled still_failing_after_window"
+            " (claim false); one whose latest CI run went green after the"
+            " gate is labeled cleared_after_gate (claim true). Short windows"
+            " label faster but mistake a slow flake for a regression."
+        ),
+    )
 
     # Multi-repo CI-watch — generalizes the single-repo self-heal CI loop to any
     # opted-in project (per-project `ci_watch_enabled` column). Default-off;

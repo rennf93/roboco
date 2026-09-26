@@ -370,6 +370,74 @@ def test_flag_off_client_still_parses_but_resolver_gates(
     assert cfg.settings.decisions_enabled is False
 
 
+class TestCorpusStamping:
+    """The training-corpus guarantee: a parsed result carries EXACTLY the
+    state and questions that went on the wire (post per-key caps, post
+    laya budget pass), so a persisted decision_log row records what the
+    model actually saw. Failed calls stamp nothing."""
+
+    @pytest.mark.asyncio
+    async def test_result_stamps_the_wire_state_and_questions(self) -> None:
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.read())
+            return httpx.Response(200, json=_OK_PAYLOAD)
+
+        client = _client_with(handler)
+        questions = {"gate": NoulQuestion(instructions="Transient?")}
+        result = await client.decide(_LAYA, {"repo": "roboco"}, questions, "s")
+        await client.aclose()
+        assert result is not None
+        assert result.state == captured["body"]["state"] == {"repo": "roboco"}
+        assert result.questions == captured["body"]["questions"]
+        assert result.questions is not None
+        assert result.questions["gate"]["instructions"] == "Transient?"
+
+    @pytest.mark.asyncio
+    async def test_stamped_state_is_the_post_budget_trim(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_OK_PAYLOAD)
+
+        client = _client_with(handler)
+        result = await client.decide(
+            _LAYA, {"task_description": "z" * 5_000}, {}, "s"
+        )
+        await client.aclose()
+        assert result is not None
+        assert result.state is not None
+        assert (
+            len(json.dumps(result.state, ensure_ascii=False, default=str))
+            <= _LAYA_STATE_BUDGET_CHARS
+        )
+
+    @pytest.mark.asyncio
+    async def test_openrouter_stamp_keeps_per_key_caps_only(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_OK_PAYLOAD)
+
+        client = _client_with(handler)
+        result = await client.decide(
+            _OPENROUTER, {"task_description": "z" * 5_000}, {}, "s"
+        )
+        await client.aclose()
+        assert result is not None
+        assert result.state is not None
+        sent = cast("str", result.state["task_description"])
+        assert len(sent) <= 4_100
+        assert len(sent) > _LAYA_STATE_BUDGET_CHARS
+
+    @pytest.mark.asyncio
+    async def test_failed_call_stamps_nothing(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="boom")
+
+        client = _client_with(handler)
+        result = await client.decide(_LAYA, {"repo": "roboco"}, {}, "s")
+        await client.aclose()
+        assert result is None
+
+
 _OPENROUTER = DecisionsEndpoint(
     tier="openrouter",
     base_url="https://openrouter.ai",

@@ -84,7 +84,16 @@ class DecisionAnswer(BaseModel):
 
 class DecisionResult(BaseModel):
     """A parsed Decisions API response plus the metadata the audit trail
-    needs (active tier, session id, full raw payload for logs)."""
+    needs (active tier, session id, full raw payload for logs).
+
+    ``state`` and ``questions`` are stamped by the client with EXACTLY what
+    was sent on the wire (post per-key caps and post Laya total-budget
+    pass), so the persisted decision_log row carries the training corpus
+    inputs: what the model saw, not what the caller originally passed.
+    Both stay ``None`` on results built outside the client (tests, manual
+    construction) - the audit trail tolerates their absence, the training
+    exporter skips those rows.
+    """
 
     answers: dict[str, DecisionAnswer]
     model: str | None = None
@@ -92,6 +101,8 @@ class DecisionResult(BaseModel):
     tier: str
     session_id: str
     raw: dict[str, Any] = Field(default_factory=dict)
+    state: Any | None = None
+    questions: dict[str, Any] | None = None
 
     def answer(self, key: str) -> DecisionAnswer | None:
         return self.answers.get(key)

@@ -331,6 +331,14 @@ class DecisionsClient:
         result = parse_decisions_payload(
             payload, tier=endpoint.tier, session_id=session_id
         )
+        # Stamp the training-corpus inputs: the capped state and the
+        # question payload are exactly what this call put on the wire, so
+        # the persisted decision_log row records what the model actually
+        # saw (spec 3.1 caps applied), never the caller's oversized
+        # original. Assigned, not constructor-passed: parse_decisions_payload
+        # stays a pure wire-shape parser.
+        result.state = capped_state
+        result.questions = questions_payload
         # Observe-only spend tracking (spec 3.1): usage.cost is summed per
         # tier per UTC day and alerts once the daily threshold is crossed.
         # Never affects the verdict or the fail-open behavior.
