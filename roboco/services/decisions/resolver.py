@@ -196,30 +196,34 @@ def reset_health_cache() -> None:
 
 async def _notify_ceo_missing_openrouter_key(session: AsyncSession) -> None:
     """One ack-required CEO notification per boot (spec 4/5). Deduped by the
-    once-per-boot marker, never per call."""
+    once-per-boot marker, never per call. The write lands on the CALLER's
+    shared session inside its own savepoint (repo shared-session
+    discipline): a failed notification rolls the savepoint back and leaves
+    the caller's transaction usable."""
     from roboco.models.base import NotificationPriority, NotificationType
     from roboco.services.notification import NotificationService
 
     try:
-        await NotificationService()._create_notification(
-            CreateNotificationParams(
-                notification_type=NotificationType.ALERT,
-                priority=NotificationPriority.HIGH,
-                from_agent="system",
-                to_agents=["ceo"],
-                subject="Decisions: OpenRouter fallback opted in but no key",
-                body=(
-                    "The Decisions service's OpenRouter fallback tier is opted "
-                    "in, but no OpenRouter key is configured, so decisions "
-                    "resolve to the self-hosted sidecar only. Fix: set the "
-                    "OpenRouter key on Settings -> AI Providers. This "
-                    "notification fires once per orchestrator boot."
+        async with session.begin_nested():
+            await NotificationService()._create_notification(
+                CreateNotificationParams(
+                    notification_type=NotificationType.ALERT,
+                    priority=NotificationPriority.HIGH,
+                    from_agent="system",
+                    to_agents=["ceo"],
+                    subject="Decisions: OpenRouter fallback opted in but no key",
+                    body=(
+                        "The Decisions service's OpenRouter fallback tier is opted "
+                        "in, but no OpenRouter key is configured, so decisions "
+                        "resolve to the self-hosted sidecar only. Fix: set the "
+                        "OpenRouter key on Settings -> AI Providers. This "
+                        "notification fires once per orchestrator boot."
+                    ),
+                    requires_ack=True,
+                    bypass_purpose_dedup=True,
                 ),
-                requires_ack=True,
-                bypass_purpose_dedup=True,
-            ),
-            db_session=session,
-        )
+                db_session=session,
+            )
     except Exception as exc:
         logger.warning(
             "failed to send the OpenRouter-key-missing CEO notification",

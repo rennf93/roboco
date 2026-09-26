@@ -192,14 +192,52 @@ async def test_b14_engine_flags_marker_and_top_priority(
     created = SimpleNamespace(
         priority=2, orchestration_markers=None, source="external_pr"
     )
+
+    @asynccontextmanager
+    async def fake_nested() -> AsyncIterator[None]:
+        yield
+
     task_service = SimpleNamespace(
-        session=SimpleNamespace(flush=AsyncMock()),
+        session=SimpleNamespace(flush=AsyncMock(), begin_nested=fake_nested),
     )
     await engine._decisions_external_pr_triage(
         task_service, SimpleNamespace(slug="p"), {"number": 1}, created
     )
     assert created.priority == 3
     assert _markers.get_marker(created, "external_pr_injection_flag") is not None
+    task_service.session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_b14_engine_internal_pr_not_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fail-closed injection screen runs on external/fork PRs only: an
+    org-internal PR keeps its structural classification (its own flag bit
+    is logged but the marker and priority-3 stamp never fire)."""
+    _flag_on(monkeypatch)
+    engine = _bare(SweepsEngine)
+
+    async def fake_triage(session: object, **kwargs: object) -> tuple[int | None, bool]:
+        return None, True
+
+    monkeypatch.setattr(pilots_dispatch, "external_pr_triage", fake_triage)
+    created = SimpleNamespace(
+        priority=2, orchestration_markers=None, source="internal_pr"
+    )
+
+    @asynccontextmanager
+    async def fake_nested() -> AsyncIterator[None]:
+        yield
+
+    task_service = SimpleNamespace(
+        session=SimpleNamespace(flush=AsyncMock(), begin_nested=fake_nested),
+    )
+    await engine._decisions_external_pr_triage(
+        task_service, SimpleNamespace(slug="p"), {"number": 1}, created
+    )
+    assert created.priority == 2
+    assert _markers.get_marker(created, "external_pr_injection_flag") is None
     task_service.session.flush.assert_awaited_once()
 
 
@@ -882,6 +920,39 @@ async def test_b35_engine_orders_and_injects_depth(
     assert engine._decisions_qa_depth_directive(low, depths) == ""
 
 
+@pytest.mark.asyncio
+async def test_b35_engine_keeps_tasks_beyond_the_scored_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pilot scores a capped prefix; tasks beyond it are appended
+    UNSCORED, never dropped from this tick's dispatch (the regression
+    made tasks 13+ invisible to the dispatcher while the same head of
+    the queue was re-scored every tick)."""
+    _flag_on(monkeypatch)
+    engine = _bare(DispatchWorkEngine)
+    candidates = [{"id": f"t{i}", "team": "backend"} for i in range(15)]
+
+    async def fake_verdicts(
+        session: object, *, tasks: list[dict[str, str]]
+    ) -> list[tuple[int | None, int | None]]:
+        assert len(tasks) == 15  # the caller passes the whole queue
+        return [(2, None)] * 12  # the pilot only scored the first 12
+
+    monkeypatch.setattr(pilots_dispatch, "review_queue_verdicts", fake_verdicts)
+
+    @asynccontextmanager
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
+        yield MagicMock()
+
+    monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
+    ordered, _depths = await engine._decisions_order_qa_queue(candidates)
+    assert len(ordered) == len(candidates)
+    assert {t["id"] for t in ordered} == {t["id"] for t in candidates}
+    # The scored head (priority 2) sorts before the unscored tail.
+    assert {t["id"] for t in ordered[:12]} == {f"t{i}" for i in range(12)}
+    assert {t["id"] for t in ordered[12:]} == {"t12", "t13", "t14"}
+
+
 # ---------------------------------------------------------------------------
 # B36 board_evidence_skip
 # ---------------------------------------------------------------------------
@@ -981,7 +1052,7 @@ async def test_b37_off_shadow_below_floor_spawn(
                 spawn_attempts=5,
                 statuses_seen=["in_progress"],
             )
-            is pilots_dispatch.RespawnVerdict.SPAWN
+            is pilots_dispatch.RespawnVerdict.NO_VERDICT
         )
 
 
@@ -1030,12 +1101,80 @@ async def test_b37_breaker_kill_and_amended_fall_back_to_spawn(
         yield MagicMock()
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
-    # kill-task has no existing mechanic -> falls back to the spawn path.
+    # kill-task has no breaker mechanic -> the trip STANDS (the stall
+    # notice is the human path to cancellation); respawning the identical
+    # prompt is exactly the churn the trip exists to stop.
     assert (
         await engine._decisions_respawn_override(
             "be-pm", "t", "in_progress", {"count": 5, "seen_statuses": ["in_progress"]}
         )
-        is False
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_b37_trip_consults_coroner_wedged_postmortem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B16 coroner_gate wiring: a breaker trip is an incident class the
+    coroner's fixed hooks never see, so the one-shot stall mechanics are
+    followed by exactly one decisions-gated postmortem consult."""
+    engine = _bare(DispatchBreakerEngine)
+    monkeypatch.setattr(engine, "_PM_RESPAWN_MAX_UNPRODUCTIVE", 3, raising=False)
+    monkeypatch.setattr(
+        engine, "_schedule_respawn_persist", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(engine, "_mark_task_stalled", AsyncMock())
+    # _notify_stuck_agent lives on another orchestrator mixin, absent from
+    # the bare breaker under test.
+    monkeypatch.setattr(engine, "_notify_stuck_agent", AsyncMock(), raising=False)
+    coroner = AsyncMock(return_value=None)
+    monkeypatch.setattr(engine, "_coroner_wedged_postmortem", coroner)
+    record = {"count": 5, "seen_statuses": ["in_progress"], "notified": False}
+    await engine._pm_trip_stall_notice("be-pm", "t", "in_progress", record)
+    coroner.assert_awaited_once()
+    assert record["notified"] is True
+
+
+@pytest.mark.asyncio
+async def test_b16_coroner_consult_failure_is_best_effort() -> None:
+    """A coroner-side failure (here: an unparseable task id failing UUID
+    construction inside the call) degrades to today's stall-notice-only
+    behavior: swallowed, logged, never raised into the breaker tick."""
+    engine = _bare(DispatchBreakerEngine)
+    await engine._coroner_wedged_postmortem(
+        "be-pm", "not-a-uuid", "in_progress", {"count": 5, "seen_statuses": []}
+    )
+
+
+@pytest.mark.asyncio
+async def test_b37_breaker_no_verdict_keeps_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OFF/SHADOW regression: with the master flag on but the pilot
+    unarmed, the pilot resolves NO_VERDICT and the breaker KEEPS its trip
+    (the old mapping turned every no-verdict into spawn-anyway, silently
+    disabling the wedged-agent protection fleet-wide)."""
+    _flag_on(monkeypatch)
+    engine = _bare(DispatchBreakerEngine)
+
+    async def fake_verdict(
+        session: object, **kwargs: object
+    ) -> pilots_dispatch.RespawnVerdict:
+        return pilots_dispatch.RespawnVerdict.NO_VERDICT
+
+    monkeypatch.setattr(pilots_dispatch, "respawn_verdict", fake_verdict)
+
+    @asynccontextmanager
+    async def fake_db_ctx() -> AsyncIterator[MagicMock]:
+        yield MagicMock()
+
+    monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
+    assert (
+        await engine._decisions_respawn_override(
+            "be-pm", "t", "in_progress", {"count": 5, "seen_statuses": ["in_progress"]}
+        )
+        is None
     )
 
 
@@ -1117,6 +1256,11 @@ async def test_b38_engine_veto_only_on_confident_work_remains(
     async def confident_work(session: object, **kw: object) -> tuple[int | None, bool]:
         return 0, True
 
+    async def confident_conflict(
+        session: object, **kw: object
+    ) -> tuple[int | None, bool]:
+        return 1, True
+
     async def confident_zero(session: object, **kw: object) -> tuple[int | None, bool]:
         return 2, True
 
@@ -1124,6 +1268,10 @@ async def test_b38_engine_veto_only_on_confident_work_remains(
         return None, False
 
     monkeypatch.setattr(pilots_dispatch, "submit_now_confidence", confident_work)
+    assert await engine._decisions_submit_now_veto({}) is True
+    # A confident "signals conflict" also vetoes: only a confident 2 keeps
+    # the proxy's flip (a wrong auto-submit burns a review cycle).
+    monkeypatch.setattr(pilots_dispatch, "submit_now_confidence", confident_conflict)
     assert await engine._decisions_submit_now_veto({}) is True
     monkeypatch.setattr(pilots_dispatch, "submit_now_confidence", confident_zero)
     assert await engine._decisions_submit_now_veto({}) is False

@@ -628,6 +628,45 @@ async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wire_sibling_collision_dag_uses_semantic_edges_when_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B5 collision_edge: master flag on -> the DAG comes from the semantic
+    superset (deterministic edges authoritative, decisions verdicts may
+    only add); flag off keeps the pure analyzer with no decisions call."""
+    parent_id = uuid4()
+    held_back = _build_task(id=uuid4(), assigned_to=uuid4())
+    blocking = _build_task(id=uuid4())
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get_subtasks", AsyncMock(return_value=[held_back, blocking]))
+    _bind(svc, "add_dependency", AsyncMock(return_value=True))
+    mock_ns = MagicMock()
+    mock_ns.send_collision_sequencing_notification = AsyncMock()
+    semantic = AsyncMock(return_value=[(blocking.id, held_back.id)])
+    monkeypatch.setattr(settings, "decisions_enabled", True)
+    monkeypatch.setattr("roboco.services.sequencing.semantic_collision_edges", semantic)
+    with patch(
+        "roboco.services.notification.NotificationService",
+        return_value=mock_ns,
+    ):
+        await svc.wire_sibling_collision_dag(parent_id)
+    semantic.assert_awaited_once()
+    mock_ns.send_collision_sequencing_notification.assert_awaited_once()
+
+    # Flag off: the pure analyzer runs, the semantic screen never fires.
+    monkeypatch.setattr(settings, "decisions_enabled", False)
+    pure = MagicMock(return_value=[])
+    monkeypatch.setattr("roboco.services.sequencing.dev_task_collision_edges", pure)
+    with patch(
+        "roboco.services.notification.NotificationService",
+        return_value=mock_ns,
+    ):
+        await svc.wire_sibling_collision_dag(parent_id)
+    pure.assert_called_once()
+    semantic.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_collision_sequencing_notify_rides_task_service_session() -> None:
     """2026-07-29: the held-back task row is uncommitted in this transaction —
     the notification must ride the SAME session or its related_task_id FK

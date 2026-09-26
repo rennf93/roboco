@@ -34,6 +34,11 @@ else:
     _Base = object
 
 
+# B38 submit_now_confidence legend top: score 2 = "remaining work is
+# zero", the only verdict that lets the brittle proxy's flip stand.
+_SUBMIT_NOW_ZERO_REMAINING = 2
+
+
 class DispatchPromptsEngine(_Base):
     """Mixin holding the "dispatch_prompts" methods moved out of AgentOrchestrator."""
 
@@ -700,11 +705,15 @@ When out of work: i_am_idle().
 
     async def _decisions_submit_now_veto(self, task: dict[str, Any]) -> bool:
         """B38 submit_now_confidence: True when a CONFIDENT classifier verdict
-        says work remains (vetoing the brittle proxy's WORK_ALREADY_DONE flip).
+        is anything short of "remaining work is zero" (vetoing the brittle
+        proxy's WORK_ALREADY_DONE flip).
 
-        A confident zero (remaining work is zero) keeps the flip, and any
-        below-floor/missing/unreachable verdict returns False so the proxy
-        decides exactly as today. Fail-open end to end.
+        Legend: 0 = work remains, 1 = signals conflict, 2 = zero
+        remaining. Only a confident 2 keeps the flip; any confident 0 or
+        1 vetoes it (asymmetric costs: a wrong auto-submit burns a review
+        cycle, a missed one follows today's flow), and any
+        below-floor/missing/unreachable verdict returns False so the
+        proxy decides exactly as today. Fail-open end to end.
         """
         try:
             from roboco.db import get_db_context
@@ -728,9 +737,12 @@ When out of work: i_am_idle().
                     task_id=str(task.get("id") or ""),
                     task_state=task_state,
                 )
-            # Confident work-remains is the only veto; everything else keeps
-            # the proxy's flip (the server fast path stays the authority).
-            return bool(confident and score == 0)
+            # Only a confident ZERO_REMAINING ("remaining work is zero")
+            # keeps the proxy's flip; a confident 0 or 1 vetoes (the
+            # server fast path stays the authority).
+            return bool(
+                confident and score is not None and score < _SUBMIT_NOW_ZERO_REMAINING
+            )
         except Exception as exc:
             logger.warning(
                 "submit-now confidence check failed (best-effort)", error=str(exc)

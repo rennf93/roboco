@@ -58,6 +58,20 @@ def _scored(result: DecisionResult, key: str) -> tuple[float | None, float | Non
     )
 
 
+def _tail(text: str, cap: int) -> str:
+    """Tail-cap one free-text state field: the informative side of a
+    transcript excerpt, CI log, or error dump is the END."""
+    return text[-cap:]
+
+
+def _batch_id(items: list[str]) -> str:
+    """A stable content-derived session-id suffix for batched asks, so
+    unrelated batches of the same size do not share one session key."""
+    import hashlib
+
+    return hashlib.sha1("\n".join(items).encode("utf-8")).hexdigest()[:12]
+
+
 # ---------------------------------------------------------------------------
 # B14 external_pr_triage (ops lane, FAIL-CLOSED injection screen)
 # ---------------------------------------------------------------------------
@@ -177,21 +191,23 @@ async def external_pr_triage(
         # unreachable classifier is the fail-closed direction: flag.
         return None, mode is PilotMode.ON
     answer = result.answer("injection")
-    flagged = (
-        _extpr_injection_on(answer)
-        if mode is PilotMode.ON
-        else _extpr_injection_off(answer)
-    )
     priority_verdict = _extpr_priority(result.answer("priority"))
     if mode is PilotMode.SHADOW:
+        # Shadow previews the ON posture it calibrates: log the fail-closed
+        # flag direction (what arming would produce) alongside the raw
+        # noul/confidence already on the decision_log row.
         log_action(
             EXTERNAL_PR_SLUG,
             mode,
-            {"priority": priority_verdict, "flagged": flagged},
+            {
+                "priority": priority_verdict,
+                "would_flag_on": _extpr_injection_on(answer),
+            },
             "no-op (shadow)",
             result,
         )
         return None, False
+    flagged = _extpr_injection_on(answer)
     log_action(
         EXTERNAL_PR_SLUG,
         mode,
@@ -245,7 +261,7 @@ async def idle_abandonment_verdicts(
         IDLE_REAPING_SLUG,
         {"sessions": capped},
         questions,
-        session_id=f"idlereap:{len(capped)}",
+        session_id=f"idlereap:{len(capped)}:{_batch_id([str(c) for c in capped])}",
     )
     if result is None:
         return None
@@ -400,7 +416,11 @@ async def budget_wrapup_choice(
         "task_id": task_id,
         "total_calls": total_calls,
         "halt_threshold": halt_threshold,
-        **task_state,
+        **{
+            k: v
+            for k, v in task_state.items()
+            if k not in ("task_id", "total_calls", "halt_threshold")
+        },
     }
     questions = {
         "gate": ChoiceQuestion(
@@ -519,7 +539,13 @@ async def delta_brief(
     context to inject" score; ``None`` when off/no-verdict/below-floor
     (caller renders today's briefing exactly).
     """
-    state = {"task_id": task_id, "trigger": trigger, **task_state}
+    state = {
+        "task_id": task_id,
+        "trigger": trigger,
+        # Explicit keys win: a caller-supplied collision must never
+        # silently override the identity/trigger fields.
+        **{k: v for k, v in task_state.items() if k not in ("task_id", "trigger")},
+    }
     questions: dict[str, DecisionQuestion] = {
         "gate": ChoiceQuestion(
             instructions=(
@@ -679,12 +705,13 @@ async def review_queue_verdicts(
     if not capped:
         return []
     questions = _review_questions(capped)
+    batch_key = _batch_id([str(t.get("id") or "") for t in capped])
     mode, result = await decide_for_pilot(
         session,
         REVIEW_QUEUE_SLUG,
         _review_state(capped),
         questions,
-        session_id=f"qapri:{len(capped)}",
+        session_id=f"qapri:{len(capped)}:{batch_key}",
     )
     if result is None:
         return None
@@ -775,12 +802,20 @@ RESPAWN_VERDICT_CONFIDENCE_FLOOR = 0.7
 
 
 class RespawnVerdict(StrEnum):
-    """Verdict for a respawn candidate the breaker is about to gate (B37)."""
+    """Verdict for a respawn candidate the breaker is about to gate (B37).
+
+    ``NO_VERDICT`` is load-bearing: off / shadow / no verdict / below
+    floor all resolve to it, and the caller must keep its tripped
+    behavior for it. Conflating "the classifier said spawn" with "the
+    classifier said nothing" would let the pilot silently override the
+    wedged-agent protection whenever the master flag is on but the
+    pilot is not armed (the breaker maps SPAWN to "override")."""
 
     SPAWN = "spawn"
     SPAWN_WITH_AMENDED_PROMPT = "spawn-with-amended-prompt"
     HOLD_TASK_FOR_HUMAN = "hold-task-for-human"
     KILL_TASK = "kill-task"
+    NO_VERDICT = "no_verdict"
 
 
 async def respawn_verdict(
@@ -795,10 +830,12 @@ async def respawn_verdict(
     """Classify a respawn candidate the strike counter is gating.
 
     State is ONLY what the breaker already holds (strike count, statuses
-    seen) - it does not read transcripts. ``spawn`` is today's fallback;
-    every other verdict needs confidence at/above the floor. Callers map
-    hold/kill onto existing mechanics only, falling back to the spawn
-    path where none exist.
+    seen) - it does not read transcripts. OFF, shadow, no verdict, an
+    unparseable choice, and a below-floor confidence all return
+    ``NO_VERDICT`` (the caller keeps today's tripped behavior); only an
+    ON-mode, at-floor choice is returned as-is. Callers map
+    hold/kill onto existing mechanics only, keeping the trip where none
+    exist.
     """
     state = {
         "agent_slug": agent_slug,
@@ -841,21 +878,23 @@ async def respawn_verdict(
         session_id=f"respawn:{agent_slug}:{task_id}",
     )
     if result is None:
-        return RespawnVerdict.SPAWN
+        return RespawnVerdict.NO_VERDICT
     answer = result.answer("gate")
     choice = answer.choice if answer else None
     confidence = answer.confidence if answer else None
     try:
-        verdict = RespawnVerdict(choice) if choice is not None else RespawnVerdict.SPAWN
+        verdict = (
+            RespawnVerdict(choice) if choice is not None else RespawnVerdict.NO_VERDICT
+        )
     except ValueError:
-        verdict = RespawnVerdict.SPAWN
-    if verdict is not RespawnVerdict.SPAWN and (
+        verdict = RespawnVerdict.NO_VERDICT
+    if verdict is not RespawnVerdict.NO_VERDICT and (
         confidence is None or confidence < RESPAWN_VERDICT_CONFIDENCE_FLOOR
     ):
-        verdict = RespawnVerdict.SPAWN
+        verdict = RespawnVerdict.NO_VERDICT
     if mode is PilotMode.SHADOW:
         log_action(RESPAWN_VERDICT_SLUG, mode, verdict.value, "no-op (shadow)", result)
-        return RespawnVerdict.SPAWN
+        return RespawnVerdict.NO_VERDICT
     log_action(
         RESPAWN_VERDICT_SLUG,
         mode,
@@ -885,14 +924,20 @@ async def submit_now_confidence(
     branch.
 
     Returns ``(score, confident)``: score is the clamped 0-2 ordinal
-    (0 = work remains, 1 = uncertain, 2 = remaining work is zero) and
-    ``confident`` whether the answer cleared the floor. ``(None, False)``
-    when no verdict - the caller then lets the existing 3-field proxy
-    decide exactly as today. While ON and confident, the verdict gates
-    the branch both ways: a confident zero flips it on, a confident
-    not-zero keeps it off; below the floor the proxy decides.
+    (0 = work remains, 1 = signals conflict, 2 = remaining work is zero)
+    and ``confident`` whether the answer cleared the floor. ``(None,
+    False)`` when no verdict - the caller then lets the existing 3-field
+    proxy decide exactly as today. While ON and confident, the verdict
+    gates the branch: only a confident 2 (remaining work is zero) lets
+    the proxy's flip stand; a confident 0 or 1 vetoes it (a wrong
+    auto-submit burns a review cycle, a missed one just follows
+    today's flow); below the floor the proxy decides.
     """
-    state = {"task_id": task_id, **task_state}
+    state = {
+        # Explicit identity key wins over a caller-supplied collision.
+        "task_id": task_id,
+        **{k: v for k, v in task_state.items() if k != "task_id"},
+    }
     questions = {
         "gate": ScoreQuestion(
             instructions=(
@@ -990,7 +1035,7 @@ async def park_cause(
         "task_id": task_id,
         "exit_code": exit_code,
         "parked_kind": parked_kind,
-        "transcript_tail": (transcript_tail or "")[:1200],
+        "transcript_tail": _tail((transcript_tail or ""), 1200),
     }
     questions = {
         "gate": ChoiceQuestion(
@@ -1111,15 +1156,13 @@ async def closure_safety(
         verdict = max(0, min(2, round(score)))
     line = _closure_line(verdict, confidence)
     # Logged ALWAYS while ON (and in shadow): the shadow data is the point.
-    log_action(
-        PM_CLOSURE_SLUG,
-        mode,
-        verdict,
-        "advisory line"
-        if line
-        else ("no-op (shadow)" if mode is not PilotMode.ON else "logged, no injection"),
-        result,
-    )
+    # The action string mirrors what actually happens in THIS mode: shadow
+    # never injects even when a line was computed.
+    if mode is PilotMode.SHADOW:
+        action = "no-op (shadow)"
+    else:
+        action = "advisory line" if line else "logged, no injection"
+    log_action(PM_CLOSURE_SLUG, mode, verdict, action, result)
     if mode is not PilotMode.ON:
         return None, None
     return verdict, line
@@ -1166,7 +1209,7 @@ async def silent_exit_pickup(
         "task_id": task_id,
         "stop_attempts": stop_attempts,
         "last_tool": last_tool,
-        "transcript_tail": (transcript_tail or "")[:1200],
+        "transcript_tail": _tail((transcript_tail or ""), 1200),
     }
     questions = {
         "gate": NoulQuestion(

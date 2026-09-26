@@ -637,6 +637,13 @@ def _task(priority: int = 3, title: str = "t", description: str = "d") -> "Task"
 async def test_b9_confident_high_stakes_adds_review(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Flag on, deterministic classifier below threshold: the screen may
+    ADD eligibility (the flag-off short-circuit is pinned in
+    test_second_review.py — a classifier verdict must not re-enable a
+    flag-off pass)."""
+    monkeypatch.setattr(
+        second_review_module.settings, "cross_vendor_review_enabled", True
+    )
     _arm(monkeypatch, answers={"gate": {"noul": 0.9, "confidence": 0.9}})
     assert (
         await second_review_module.task_is_high_stakes_with_decisions(
@@ -648,6 +655,9 @@ async def test_b9_confident_high_stakes_adds_review(
 
 @pytest.mark.asyncio
 async def test_b9_below_floor_adds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        second_review_module.settings, "cross_vendor_review_enabled", True
+    )
     _arm(monkeypatch, answers={"gate": {"noul": 0.5, "confidence": 0.9}})
     assert (
         await second_review_module.task_is_high_stakes_with_decisions(
@@ -775,35 +785,35 @@ def _dedup_db(rows: list[Any]) -> AsyncMock:
 async def test_b12_exact_duplicate_path_unchanged_and_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Equal recipient sets suppress exactly as today, without any
-    decisions call, even when the semantic screen is opted in."""
+    """Equal recipient sets WITHOUT the subject/body opt-in suppress exactly
+    as today, without any decisions call."""
     a, b = uuid4(), uuid4()
     row = (uuid4(), [a, b], "prior subject", "prior body")
     db = _dedup_db([row])
     mock = AsyncMock()
-    monkeypatch.setattr(pi, "semantic_duplicate", mock)
+    monkeypatch.setattr(pi, "semantic_distinct_delivery", mock)
     suppressed = await duplicate_unacked_notification_exists(
         cast("AsyncSession", db),
         from_agent=uuid4(),
         notification_type=NotificationType.APPROVAL,
         related_task_id=None,
         to_agents=[a, b],
-        subject="new subject",
-        body="new body",
     )
     assert suppressed is True
     mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_b12_semantic_suppression_overlapping_set(
+async def test_b12_equal_set_screen_not_distinct_suppresses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Equal sets WITH the opt-in: the screen only lifts suppression when
+    it CONFIDENTLY says the new notification is distinct; anything else
+    (off/shadow/below-floor/error) keeps the deterministic suppression."""
     a, b = uuid4(), uuid4()
-    # Prior went to {a} alone; the new copy adds b: no exact match.
-    row = (uuid4(), [a], "prior subject", "prior body")
+    row = (uuid4(), [a, b], "prior subject", "prior body")
     db = _dedup_db([row])
-    monkeypatch.setattr(pi, "semantic_duplicate", AsyncMock(return_value=True))
+    monkeypatch.setattr(pi, "semantic_distinct_delivery", AsyncMock(return_value=False))
     assert (
         await duplicate_unacked_notification_exists(
             cast("AsyncSession", db),
@@ -819,13 +829,43 @@ async def test_b12_semantic_suppression_overlapping_set(
 
 
 @pytest.mark.asyncio
-async def test_b12_semantic_below_floor_delivers(
+async def test_b12_equal_set_confidently_distinct_delivers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The additive refinement: equal-set unacked prior, but the screen is
+    ON and confident the notification carries NEW information -> deliver."""
     a, b = uuid4(), uuid4()
-    row = (uuid4(), [a], "prior subject", "prior body")
+    row = (uuid4(), [a, b], "prior subject", "prior body")
     db = _dedup_db([row])
-    monkeypatch.setattr(pi, "semantic_duplicate", AsyncMock(return_value=False))
+    monkeypatch.setattr(pi, "semantic_distinct_delivery", AsyncMock(return_value=True))
+    assert (
+        await duplicate_unacked_notification_exists(
+            cast("AsyncSession", db),
+            from_agent=uuid4(),
+            notification_type=NotificationType.APPROVAL,
+            related_task_id=None,
+            to_agents=[a, b],
+            subject="genuinely new information",
+            body="the blocker moved: a different fix is needed now",
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_b12_equal_set_screen_failure_suppresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing screen is fail-closed to today's suppression, never a
+    raised exception into the create path."""
+    a, b = uuid4(), uuid4()
+    row = (uuid4(), [a, b], "prior subject", "prior body")
+    db = _dedup_db([row])
+    monkeypatch.setattr(
+        pi,
+        "semantic_distinct_delivery",
+        AsyncMock(side_effect=RuntimeError("decisions down")),
+    )
     assert (
         await duplicate_unacked_notification_exists(
             cast("AsyncSession", db),
@@ -836,8 +876,37 @@ async def test_b12_semantic_below_floor_delivers(
             subject="s",
             body="b",
         )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_b12_overlapping_set_never_suppresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overlapping-but-not-equal sets are NEVER suppressed (and the screen
+    is not even consulted): recipient b never received the prior, so the
+    notification must reach them. The old behavior suppressed the whole
+    notification on a body verdict, dropping it for b."""
+    a, b = uuid4(), uuid4()
+    # Prior went to {a} alone; the new copy adds b: no exact match.
+    row = (uuid4(), [a], "prior subject", "prior body")
+    db = _dedup_db([row])
+    mock = AsyncMock(return_value=False)
+    monkeypatch.setattr(pi, "semantic_distinct_delivery", mock)
+    assert (
+        await duplicate_unacked_notification_exists(
+            cast("AsyncSession", db),
+            from_agent=uuid4(),
+            notification_type=NotificationType.APPROVAL,
+            related_task_id=None,
+            to_agents=[a, b],
+            subject="reworded subject",
+            body="reworded body",
+        )
         is False
     )
+    mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -850,7 +919,7 @@ async def test_b12_without_subject_body_no_decisions_call(
     row = (uuid4(), [a], "prior subject", "prior body")
     db = _dedup_db([row])
     mock = AsyncMock()
-    monkeypatch.setattr(pi, "semantic_duplicate", mock)
+    monkeypatch.setattr(pi, "semantic_distinct_delivery", mock)
     assert (
         await duplicate_unacked_notification_exists(
             cast("AsyncSession", db),
@@ -1196,6 +1265,24 @@ async def test_b17_off_no_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_b17_shadow_confident_no_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SHADOW must behave exactly like off: the caller materializes nothing
+    (the regression shipped a confident (verdict, True) out of shadow,
+    which raised the task's complexity and wrote the risk note)."""
+    _arm(
+        monkeypatch,
+        mode=PilotMode.SHADOW,
+        answers={"gate": {"type": "score", "score": 2, "confidence": 0.9}},
+    )
+    assert await pi.dep_update_risk(
+        cast("AsyncSession", None), project_slug="p", command="uv sync"
+    ) == (
+        None,
+        False,
+    )
+
+
 def _dep_update_capture() -> tuple[dict[str, Any], MagicMock]:
     created: dict[str, Any] = {}
 
@@ -1253,6 +1340,27 @@ async def test_b19_confident_advisory_line(monkeypatch: pytest.MonkeyPatch) -> N
         gap_count=1,
     )
     assert line is not None and "high" in line and "advisory" in line
+
+
+@pytest.mark.asyncio
+async def test_b19_shadow_no_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SHADOW must behave exactly like off: no advisory line reaches the
+    CEO's proposal description (the regression shipped the line out of
+    shadow)."""
+    _arm(
+        monkeypatch,
+        mode=PilotMode.SHADOW,
+        answers={"gate": {"type": "score", "score": 2, "confidence": 0.9}},
+    )
+    assert (
+        await pi.release_risk_advisory(
+            cast("AsyncSession", None),
+            change_summary=["fix: x"],
+            bump_kind="patch",
+            gap_count=1,
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

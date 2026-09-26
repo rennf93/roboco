@@ -307,6 +307,42 @@ class TestLayaBudget:
         )
 
     @pytest.mark.asyncio
+    async def test_laya_budget_charges_question_text_too(self) -> None:
+        """Question text rides in the same tiny model context: a wide
+        question batch shrinks the STATE budget rather than silently
+        overflowing the model (questions themselves are never truncated,
+        since a half instruction can invert a verdict)."""
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.read())
+            captured["state"] = body["state"]
+            captured["questions"] = body["questions"]
+            return httpx.Response(200, json=_OK_PAYLOAD)
+
+        client = _client_with(handler)
+        big_questions = {
+            f"q{i}": NoulQuestion(instructions="x" * 300) for i in range(10)
+        }
+        await client.decide(
+            _LAYA, {"task_description": "z" * 5_000}, big_questions, "s"
+        )
+        await client.aclose()
+        state_size = len(json.dumps(captured["state"], ensure_ascii=False, default=str))
+        question_size = len(
+            json.dumps(captured["questions"], ensure_ascii=False, default=str)
+        )
+        # The questions alone exhaust the budget here, so the state drops
+        # to its floor (a few short fields alive) instead of the pair
+        # silently overflowing the model context.
+        assert state_size < 400
+        # The questions survive whole.
+        assert question_size > 3_000
+        assert all(
+            len(q["instructions"]) == 300 for q in captured["questions"].values()
+        )
+
+    @pytest.mark.asyncio
     async def test_openrouter_tier_keeps_per_key_caps_only(self) -> None:
         # The budget pass is laya-only: the OpenRouter fallback keeps its
         # per-key billing caps (here 4k for task_description), far over the

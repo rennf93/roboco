@@ -1537,10 +1537,18 @@ class A2AService:
         try:
             from roboco.services.decisions.context import recipient_work_context
 
-            mode = await decisions_pilots.pilot_mode(self.session, "steer_gate")
-            if mode is decisions_pilots.PilotMode.OFF:
-                return None
-            recipient_context = await recipient_work_context(self.session, recipient)
+            # The direct reads (mode row, recipient work context) run on
+            # the send path's shared session inside a savepoint: a failed
+            # SELECT rolls the savepoint back and the message falls back
+            # to pull-only, instead of aborting the send transaction and
+            # poisoning every later statement on this session.
+            async with self.session.begin_nested():
+                mode = await decisions_pilots.pilot_mode(self.session, "steer_gate")
+                if mode is decisions_pilots.PilotMode.OFF:
+                    return None
+                recipient_context = await recipient_work_context(
+                    self.session, recipient
+                )
             # conversation_id alone gives every steer-gate row in a busy
             # conversation the same session id; the short content hash keeps
             # the decision_log rows attributable per message.

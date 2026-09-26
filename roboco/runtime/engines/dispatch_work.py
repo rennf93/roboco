@@ -1725,7 +1725,10 @@ class DispatchWorkEngine(_Base):
         Returns ``(ordered_tasks, depth_by_task_id)``. Tasks with a
         confident high-priority score sort first, confident low-priority
         last, everything else (including unscored) keeps fetch order via
-        the stable sort. Any failure returns the candidates unchanged.
+        the stable sort. The pilot scores a capped batch, so tasks beyond
+        the scored prefix are appended UNSCORED after the sorted head:
+        dropping them from the ordering would hide them from this tick's
+        dispatch entirely. Any failure returns the candidates unchanged.
         """
         if len(candidates) < _QA_QUEUE_MIN_TO_RANK or not settings.decisions_enabled:
             return candidates, {}
@@ -1739,9 +1742,12 @@ class DispatchWorkEngine(_Base):
                 )
             if not verdicts:
                 return candidates, {}
-            scored, depths = self._qa_queue_scored_pairs(candidates, verdicts)
+            scored, depths = self._qa_queue_scored_pairs(
+                candidates[: len(verdicts)], verdicts
+            )
             scored.sort(key=lambda item: -item[0])
             ordered = [task for _p, _o, task in scored]
+            ordered.extend(candidates[len(verdicts) :])
             logger.info(
                 "QA review queue prioritized by Decisions verdicts",
                 considered=len(candidates),
@@ -1778,8 +1784,9 @@ class DispatchWorkEngine(_Base):
     ) -> str:
         """B35: the depth directive line injected into the QA prompt.
 
-        Depth 1 (standard) is today's review, so only depth 2-3 render a
-        directive; depth 0 renders "light" only when explicitly scored so.
+        Depth 1 (standard) and below is today's review, so only depth
+        2-3 render a directive; the directive can only ratchet the
+        review depth UP, never below today's standard.
         """
         depth = depth_directives.get(str(task.get("id")))
         if depth is None or depth <= _QA_PRIORITY_NEUTRAL:

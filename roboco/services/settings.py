@@ -186,8 +186,10 @@ _VALIDATORS = {
     # tri-state rows (off | shadow | on), not FEATURE_FLAGS (no roboco.config
     # bool to fall back to): an unset key means off, which is exactly the
     # pre-Decisions behavior for that pilot. The per-pilot chokepoint
-    # (decisions.pilot_mode) resolves these; keep the slug list in sync with
-    # roboco/services/decisions/pilots.py.
+    # (pilots.pilot_mode) resolves these; keep the slug list in sync with
+    # the slugs passed to decide_for_pilot across all four pilot modules
+    # (roboco/services/decisions/pilots{,_infra,_content,_dispatch,_gateway}.py;
+    # note board_rotation_target shares the board_due_early row by design).
     **dict.fromkeys(
         (
             # Tier A (spec 6) + cognition-lane built pilots.

@@ -65,6 +65,7 @@ _INCIDENT_KIND_LABELS: dict[str, str] = {
     "cancelled": "cancelled after work had started",
     "budget": "blocked on a budget breach",
     "stranded": "blocked beyond the stranded threshold",
+    "wedged": "held for human attention by the respawn breaker",
 }
 
 
@@ -193,6 +194,14 @@ class CoronerEngine(BaseService):
                 f"time blocked — {extra_context.get('time_blocked', 'unknown')}; "
                 "escalation history — "
                 f"{extra_context.get('escalation_history', 'none')}."
+            )
+        if kind == "wedged" and extra_context:
+            description += (
+                "\n\nWedged-spawn context: agent — "
+                f"{extra_context.get('agent', 'unknown')}; spawn attempts — "
+                f"{extra_context.get('spawn_attempts', 'unknown')}; statuses "
+                "seen — "
+                f"{extra_context.get('statuses_seen', 'none')}."
             )
         project_id = incident.project_id or await self._roboco_project_id()
         task = await task_svc.create(

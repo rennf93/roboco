@@ -1338,7 +1338,12 @@ class DispatchBreakerEngine(_Base):
         task; alert an overseer once so a wedged agent isn't silently
         stranded, and record a durable marker on the task itself (readable
         without container logs) alongside that one-shot notification. Both
-        are one-shot per trip, gated by the same `notified` flag."""
+        are one-shot per trip, gated by the same `notified` flag. A breaker
+        trip is also an incident class the coroner's fixed hooks (3+
+        bounces, cancel-after-start, budget, stranded) never see, so the
+        B16 decisions-gated postmortem entry is consulted here: it may only
+        ADD a postmortem (ON-mode confident verdict, coroner program armed)
+        and is best-effort to the core stall mechanics."""
         logger.warning(
             "PM respawn loop detected — skipping spawn",
             agent_id=agent_slug,
@@ -1356,6 +1361,48 @@ class DispatchBreakerEngine(_Base):
             self._schedule_respawn_persist(agent_slug, str(task_id), record)
             await self._mark_task_stalled(task_id)
             await self._notify_stuck_agent(agent_slug, task_id, current_status)
+            await self._coroner_wedged_postmortem(
+                agent_slug, task_id, current_status, record
+            )
+
+    async def _coroner_wedged_postmortem(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> None:
+        """B16 coroner_gate: offer the wedged task to the coroner through
+        the decisions-gated entry point. The gate (pilot ON + confident +
+        coroner program armed + one-open-autopsy dedup) decides inside; a
+        failure here degrades to today's behavior (stall notice only) and
+        must never break the breaker tick."""
+        try:
+            from uuid import UUID
+
+            from roboco.db import get_db_context
+            from roboco.services.coroner_engine import CoronerEngine
+
+            async with get_db_context() as db:
+                await CoronerEngine(db).open_for_incident_on_verdict(
+                    UUID(str(task_id)),
+                    kind="wedged",
+                    extra_context={
+                        "agent": agent_slug,
+                        "task_status": current_status,
+                        "spawn_attempts": int(record.get("count") or 0),
+                        "statuses_seen": [
+                            str(s) for s in record.get("seen_statuses") or []
+                        ],
+                    },
+                )
+        except Exception as exc:
+            logger.warning(
+                "coroner wedged-postmortem pass failed (best-effort)",
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                error=str(exc),
+            )
 
     async def _decisions_respawn_override(
         self,
@@ -1367,15 +1414,17 @@ class DispatchBreakerEngine(_Base):
         """B37 respawn_verdict: refine the counters' approximate "wedged"
         verdict at the trip point.
 
-        Returns False to override the trip with a spawn, None to keep
-        today's tripped behavior (the stall marker + overseer notification
-        are the existing hold-for-human mechanics). Mapping: ``spawn`` and
-        ``spawn-with-amended-prompt`` spawn (the breaker holds no amended-
-        prompt mechanic, so that verdict falls back to the spawn path per
-        the row's instruction); ``hold-task-for-human`` keeps the trip;
-        ``kill-task`` has NO existing kill-task mechanic here and also
-        falls back to the spawn path. Below floor / no verdict keeps the
-        trip (today exactly).
+        Returns False ONLY for an ON-mode, at-floor ``spawn`` verdict
+        (override the trip with one more spawn); every other outcome
+        returns None and keeps today's tripped behavior (the stall
+        marker + overseer notification are the existing hold-for-human
+        mechanics). ``hold-task-for-human`` keeps the trip by design;
+        ``spawn-with-amended-prompt`` and ``kill-task`` have NO breaker
+        mechanics, and re-spawning the identical prompt is exactly the
+        churn the trip exists to stop, so they keep the trip too (the
+        human the stall notice pages can amend or kill). NO_VERDICT
+        (off / shadow / no verdict / below floor) keeps the trip: the
+        pilot must never weaken the wedged-agent protection by default.
         """
         try:
             from roboco.db import get_db_context
@@ -1398,25 +1447,27 @@ class DispatchBreakerEngine(_Base):
                 )
                 return False
             if verdict is pilots_dispatch.RespawnVerdict.SPAWN_WITH_AMENDED_PROMPT:
-                # No amended-prompt mechanic at the breaker: spawn fallback.
+                # No amended-prompt mechanic at the breaker: keep the trip
+                # (the stall notice names the task for a human to amend).
                 logger.info(
                     "Respawn verdict spawn-with-amended-prompt has no breaker"
-                    " mechanic; falling back to spawn",
+                    " mechanic; keeping the trip (stall notice fired)",
                     agent_id=agent_slug,
                     task_id=str(task_id),
                 )
-                return False
+                return None
             if verdict is pilots_dispatch.RespawnVerdict.KILL_TASK:
-                # No existing kill-task mechanic in the breaker: spawn
-                # fallback (the row's instruction for missing mechanics).
+                # No kill-task mechanic in the breaker: keep the trip (the
+                # stall notice is the human path to cancellation).
                 logger.info(
-                    "Respawn verdict kill-task has no kill mechanic; falling"
-                    " back to spawn",
+                    "Respawn verdict kill-task has no kill mechanic; keeping"
+                    " the trip (stall notice fired)",
                     agent_id=agent_slug,
                     task_id=str(task_id),
                 )
-                return False
-            # hold-task-for-human: the trip path IS the hold mechanic.
+                return None
+            # hold-task-for-human and NO_VERDICT: the trip path IS the
+            # hold mechanic.
             return None
         except Exception as exc:
             logger.warning(

@@ -32,7 +32,9 @@ from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
-from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.injection_guard import (
+    screen_external_text_with_decisions,
+)
 from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.llm.providers.nebius_sandboxes import (
     run_sandbox_command,
@@ -3847,7 +3849,8 @@ class ContentActions:
         normalized_threats = [str(t).strip() for t in (threats or [])]
         normalized_opportunities = [str(o).strip() for o in (opportunities or [])]
         normalized_note = positioning_note.strip()
-        screened = screen_external_text(
+        screened = await screen_external_text_with_decisions(
+            self.task.session,
             _render_market_brief_for_screening(
                 headline,
                 normalized_findings,

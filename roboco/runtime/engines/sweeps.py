@@ -2644,39 +2644,53 @@ class SweepsEngine(_Base):
         priority column so the review queue ORDER responds; the injection
         screen is FAIL-CLOSED while the pilot is ON (below-confidence counts
         as flagged) and flagging may only ADD scrutiny to the structural
-        trust classification above, never clear or downgrade one. Best-effort:
-        a decisions failure leaves today's classification untouched.
+        trust classification above, never clear or downgrade one. The
+        screen runs ONLY on external/fork PRs: the org's own internal PRs
+        already pass QA + PM review, and a classifier outage would
+        otherwise flag every integration PR. The whole best-effort block
+        (pilot reads + priority/marker writes + flush) runs inside a
+        savepoint on the poller's shared session: a failure rolls back
+        cleanly to the un-triaged task instead of poisoning the session
+        or half-applying the priority mutation.
         """
         if not settings.decisions_enabled:
             return
+        review_kind = str(getattr(created, "source", "") or "external_pr")
         try:
             from roboco.services.decisions import pilots_dispatch
 
-            review_kind = str(getattr(created, "source", "") or "external_pr")
-            priority, flagged = await pilots_dispatch.external_pr_triage(
-                task_service.session,
-                project_slug=str(getattr(project, "slug", "") or ""),
-                pr=pr,
-                review_kind=review_kind,
-            )
-            if priority is not None:
-                # 0-2 ordinal onto the 0-3 priority column, nudged above the
-                # default 2 so higher-priority reviews dispatch first.
-                created.priority = max(int(created.priority or 2), 1 + priority)
-            if flagged:
-                _markers.set_marker(
-                    created,
-                    "external_pr_injection_flag",
-                    {"flagged": True, "review_kind": review_kind},
-                )
-                created.priority = 3
-                logger.warning(
-                    "External PR flagged by injection screen (fail-closed)",
-                    pr_number=pr.get("number"),
+            async with task_service.session.begin_nested():
+                priority, flagged = await pilots_dispatch.external_pr_triage(
+                    task_service.session,
                     project_slug=str(getattr(project, "slug", "") or ""),
+                    pr=pr,
                     review_kind=review_kind,
                 )
-            await task_service.session.flush()
+                if priority is not None:
+                    # 0-2 ordinal onto the 0-3 priority column, nudged above the
+                    # default 2 so higher-priority reviews dispatch first.
+                    created.priority = max(int(created.priority or 2), 1 + priority)
+                if flagged and review_kind == "external_pr":
+                    _markers.set_marker(
+                        created,
+                        "external_pr_injection_flag",
+                        {"flagged": True, "review_kind": review_kind},
+                    )
+                    created.priority = 3
+                    logger.warning(
+                        "External PR flagged by injection screen (fail-closed)",
+                        pr_number=pr.get("number"),
+                        project_slug=str(getattr(project, "slug", "") or ""),
+                        review_kind=review_kind,
+                    )
+                elif flagged:
+                    logger.info(
+                        "Injection noul flagged on a non-external PR; "
+                        "internal reviews keep their structural classification",
+                        pr_number=pr.get("number"),
+                        review_kind=review_kind,
+                    )
+                await task_service.session.flush()
         except Exception as exc:
             logger.warning(
                 "external-PR triage decisions pass failed (best-effort)",

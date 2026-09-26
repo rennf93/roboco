@@ -16,6 +16,7 @@ load-bearing.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import time
@@ -48,12 +49,25 @@ _EXCERPT_CAP_CHARS = 2_000
 _DESC_CAP_CHARS = 4_000
 _DEFAULT_CAP_CHARS = 4_000
 
-# Stage-2 budget, Laya tier only: the default-serving Laya model context is
-# tiny (~512-1024 tokens), so a state still large after the per-key caps
-# silently truncates to mush inside the model. The per-key caps above stay
-# stage 1 for BOTH tiers (they are the billing guard for the OpenRouter
-# fallback); this deterministic total budget runs after them, laya only.
+# Stage-2 budget, Laya tier only: the default-serving Laya checkpoint
+# (convaiinnovations/laya, typed-decisions subfolder) is a 1024-token
+# ModernBERT with head_max_len=256, leaving roughly 768 tokens for state +
+# question text. This budget's 1800 chars serialize to roughly 450-600
+# tokens, fitting under that ceiling with headroom for the render
+# template. Anything still large after the per-key caps silently
+# truncates to mush inside the model, so the total budget is enforced
+# deterministically here. The per-key caps above stay stage 1 for BOTH
+# tiers (they are the billing guard for the OpenRouter fallback); this
+# stage-2 pass runs after them, laya only, and is charged for the
+# question text too (same context). When the questions alone exhaust the
+# budget, the state keeps the floor below so a few short fields still
+# mean something instead of arriving as pure mush. CAVEAT: the budget is
+# calibrated to the typed-decisions checkpoint; repointing
+# settings.decisions_model at the repo-root english checkpoint (512-token
+# context, head 192 - the overlong-truncation failure the Hummin gate
+# hit) requires halving this constant.
 _LAYA_STATE_BUDGET_CHARS = 1_800
+_LAYA_MIN_STATE_BUDGET_CHARS = 240
 
 # Keys whose informative content sits at the END of the text (CI logs,
 # tracebacks): keep the tail. Everything else keeps the head.
@@ -216,10 +230,37 @@ class DecisionsClient:
 
     http_client: httpx.AsyncClient | None = None
     _circuits: dict[str, _Circuit] = field(default_factory=dict, repr=False)
+    _pooled: httpx.AsyncClient | None = field(default=None, repr=False)
+    _pooled_loop: object | None = field(default=None, repr=False)
+
+    def _transport(self) -> httpx.AsyncClient:
+        """The injected client (tests own its lifecycle) or one pooled
+        client created lazily on first use and reused for the process
+        lifetime: a fresh client per call paid a TCP connect (and a TLS
+        handshake on the fallback tier) on every decision. If the running
+        loop changed since the pool was created (tests relooping), the
+        stale pool is dropped rather than reused bound to a dead loop."""
+        import asyncio
+
+        if self.http_client is not None:
+            return self.http_client
+        loop = asyncio.get_running_loop()
+        if self._pooled is not None and self._pooled_loop is not loop:
+            self._pooled = None
+        if self._pooled is None:
+            self._pooled = httpx.AsyncClient(
+                limits=httpx.Limits(max_keepalive_connections=4, keepalive_expiry=60.0)
+            )
+            self._pooled_loop = loop
+        return self._pooled
 
     async def aclose(self) -> None:
         if self.http_client is not None:
             await self.http_client.aclose()
+        if self._pooled is not None:
+            pooled, self._pooled = self._pooled, None
+            with contextlib.suppress(httpx.HTTPError):
+                await pooled.aclose()
 
     async def decide(
         self,
@@ -239,22 +280,38 @@ class DecisionsClient:
             )
             return None
 
+        questions_payload = {
+            key: q.model_dump(exclude_none=True) for key, q in questions.items()
+        }
+
         # Two cap stages (spec 3.1): the per-key caps run first for BOTH
         # tiers - they are the billing guard for the OpenRouter fallback.
         # The Laya tier additionally gets the deterministic total-budget
         # pass, because its tiny model context turns any state still large
-        # after stage 1 into mush before a single verdict is rendered.
+        # after stage 1 into mush before a single verdict is rendered. The
+        # budget accounts for the QUESTION text too (it rides in the same
+        # ~1024-token context): the state gets whatever is left after the
+        # serialized questions, so a wide batch shrinks the state instead
+        # of silently overflowing the model. Questions are never truncated
+        # themselves (a half instruction can invert a verdict); the floor
+        # just keeps a few short fields alive when the questions alone
+        # exhaust the budget.
         capped_state = cap_state(state)
         if endpoint.tier == "laya":
-            capped_state = cap_state_to_budget(capped_state, _LAYA_STATE_BUDGET_CHARS)
+            question_chars = len(
+                json.dumps(questions_payload, ensure_ascii=False, default=str)
+            )
+            state_budget = max(
+                _LAYA_STATE_BUDGET_CHARS - question_chars,
+                _LAYA_MIN_STATE_BUDGET_CHARS,
+            )
+            capped_state = cap_state_to_budget(capped_state, state_budget)
         state_json = json.dumps(capped_state, ensure_ascii=False, default=str)
 
         body = {
             "model": endpoint.model,
             "state": capped_state,
-            "questions": {
-                key: q.model_dump(exclude_none=True) for key, q in questions.items()
-            },
+            "questions": questions_payload,
             "session_id": session_id[:256],
         }
         headers = {}
@@ -303,17 +360,13 @@ class DecisionsClient:
         """POST one decisions batch. ``None`` = transport failure (the circuit
         is charged and the fail-open warning is logged here)."""
         try:
-            client = self.http_client or httpx.AsyncClient()
-            try:
-                return await client.post(
-                    f"{endpoint.base_url.rstrip('/')}/api/alpha/decisions",
-                    json=body,
-                    headers=headers,
-                    timeout=endpoint.timeout_s,
-                )
-            finally:
-                if self.http_client is None:
-                    await client.aclose()
+            client = self._transport()
+            return await client.post(
+                f"{endpoint.base_url.rstrip('/')}/api/alpha/decisions",
+                json=body,
+                headers=headers,
+                timeout=endpoint.timeout_s,
+            )
         except (httpx.HTTPError, OSError) as exc:
             circuit.record_failure()
             logger.warning(

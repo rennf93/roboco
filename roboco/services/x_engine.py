@@ -46,7 +46,9 @@ from roboco.db.tables import (
 )
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
-from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.injection_guard import (
+    screen_external_text_with_decisions,
+)
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.board_programs import program_armed
@@ -909,7 +911,9 @@ class XEngine(BaseService):
     async def _originate_reply(
         self, mention: XMention, project_id: UUID, product_name: str
     ) -> TaskTable | None:
-        screened = screen_external_text(mention.text, source=f"x_mention:{mention.id}")
+        screened = await screen_external_text_with_decisions(
+            self.session, mention.text, source=f"x_mention:{mention.id}"
+        )
         if screened.flagged:
             self.log.warning(
                 "x-engine: injection pattern detected in mention text",

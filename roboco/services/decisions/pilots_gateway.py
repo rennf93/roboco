@@ -49,6 +49,9 @@ BRANCH_STALENESS_FLOOR = 0.7
 LESSON_PRUNE_KEEP_FLOOR = 0.4
 LESSON_PRUNE_MAX_BATCH = 12
 COHERENCE_SCAFFOLD_FLOOR = 0.7
+# plan_quality's own sub-task cap: shared no more with the findings-map
+# batch, so retuning one never silently moves the other.
+PLAN_SUBTASKS_CAP = 12
 
 # Advisory hint text for B20 (the exact wording the spec pins).
 COMMIT_INTENT_HINT = "intent looks mismatched: re-read the diff"
@@ -111,7 +114,7 @@ def _plan_quality_subtasks(
                 st.get("description") if isinstance(st, dict) else None
             ),
         }
-        for st in sub_tasks[:FINDINGS_MAP_MAX_BATCH]
+        for st in sub_tasks[:PLAN_SUBTASKS_CAP]
     ]
 
 
@@ -249,27 +252,47 @@ def _file_overlap(changed_file: str, finding_file: str | None) -> bool:
 
 
 def _overlap_files(finding: dict[str, Any], files_changed: list[str]) -> list[str]:
-    """Diff files plausibly covering a finding's file, best-effort."""
+    """Diff files plausibly covering a finding's file, best-effort. A
+    finding with no file never claims the whole diff (that would make
+    every suggested map useless noise)."""
     target = finding.get("file")
-    if not files_changed:
+    if not files_changed or not target:
         return []
     hits = [f for f in files_changed if _file_overlap(f, target)]
-    return hits if hits else ([] if target else list(files_changed))
+    return hits
 
 
 def _findings_questions(ordered: list[dict[str, Any]]) -> dict[str, NoulQuestion]:
-    """One noul question per ordered finding."""
+    """One noul question per ordered finding. The finding TEXT lives in
+    the state's ``findings`` list (where the client's budget pass can
+    trim it); the question carries only the index reference, so a large
+    batch cannot smuggle unbounded text past the Laya context through
+    the instructions."""
     return {
         f"finding_{idx}": NoulQuestion(
             instructions=(
-                "This diff plausibly addresses this finding (file/line "
-                f"overlap plus semantics): {_clip(f.get('expected'), 400)} | "
-                f"actual: {_clip(f.get('actual'), 400)} | file: "
-                f"{_clip(f.get('file'), 200)}"
+                "The diff plausibly addresses finding number "
+                f"{idx} from the state's findings list (file/line "
+                "overlap plus semantics)."
             )
         )
-        for idx, f in enumerate(ordered)
+        for idx in range(len(ordered))
     }
+
+
+def _findings_state_rows(ordered: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Head-capped finding rows for the state payload (order preserved:
+    question ``finding_{idx}`` refers to row ``idx``)."""
+    return [
+        {
+            "idx": idx,
+            "id": _clip(f.get("id"), 80),
+            "file": _clip(f.get("file"), 200),
+            "expected": _clip(f.get("expected"), 400),
+            "actual": _clip(f.get("actual"), 400),
+        }
+        for idx, f in enumerate(ordered)
+    ]
 
 
 def _findings_map(
@@ -282,10 +305,8 @@ def _findings_map(
     for idx, f in enumerate(ordered):
         answer = result.answer(f"finding_{idx}")
         noul = answer.noul if answer else None
-        if noul is None or noul < FINDINGS_MAP_FLOOR:
+        if answer is None or noul is None or noul < FINDINGS_MAP_FLOOR:
             continue
-        # noul above the floor implies the answer exists.
-        assert answer is not None
         mapping.append(
             {
                 "finding_id": str(f.get("id") or ""),
@@ -327,6 +348,7 @@ async def findings_mapping(
     questions = _findings_questions(ordered)
     state = {
         "task_id": task_id,
+        "findings": _findings_state_rows(ordered),
         "diff": _clip(diff, 20_000),
         "files_changed": list(files_changed)[: FINDINGS_MAP_MAX_BATCH * 4],
     }
@@ -480,7 +502,9 @@ def _staleness_payload(
     """The advisory envelope the caller may notify the developer with."""
     return {
         "noul": noul,
-        "risk_score": round(risk_score) if risk_score is not None else None,
+        "risk_score": max(0, min(2, round(risk_score)))
+        if risk_score is not None
+        else None,
         "confidence": confidence,
     }
 
@@ -587,15 +611,18 @@ def _lesson_questions(capped: list[Any]) -> dict[str, ScoreQuestion]:
 def _kept_lessons(result: DecisionResult, capped: list[Any]) -> tuple[list[Any], int]:
     """Split the batch into (kept, pruned) on the applicability floor.
 
-    Normalized 0-1 applicability; below the keep floor (or an unreadable
-    answer never prunes - fail-open keeps the lesson)."""
+    Normalized 0-1 applicability; an unreadable answer NEVER prunes
+    (fail-open keeps the lesson) - only a readable score below the keep
+    floor drops a lesson from the injected list."""
     kept: list[Any] = []
     pruned = 0
     for idx, lesson in enumerate(capped):
         answer = result.answer(f"lesson_{idx}")
         score = answer.score if answer else None
-        applicable = score is not None and (score / 2) >= LESSON_PRUNE_KEEP_FLOOR
-        if applicable:
+        if score is None:
+            kept.append(lesson)
+            continue
+        if (score / 2) >= LESSON_PRUNE_KEEP_FLOOR:
             kept.append(lesson)
         else:
             pruned += 1
@@ -615,9 +642,12 @@ async def lesson_prune(
     plan + files-touched) and return the KEPT list (B41).
 
     Returns the pruned-to-keep list only when ON; ``None`` (off, shadow,
-    below floor, no verdict) means the caller injects ALL lessons exactly
-    as today. May only PRUNE from the injected list: the retrieval query,
-    the floor, and the add path are untouched.
+    no verdict) means the caller injects ALL lessons exactly as today.
+    May only PRUNE SCORED lessons: lessons beyond the batch cap are
+    passed through unscored (dropping them by index would subtract from
+    the injected list without a verdict), and an unreadable answer keeps
+    its lesson. The retrieval query, the floor, and the add path are
+    untouched.
     """
     capped = lessons[:LESSON_PRUNE_MAX_BATCH]
     if not capped:
@@ -646,7 +676,7 @@ async def lesson_prune(
     )
     if mode is PilotMode.SHADOW:
         return None
-    return kept
+    return kept + lessons[LESSON_PRUNE_MAX_BATCH:]
 
 
 # ---------------------------------------------------------------------------

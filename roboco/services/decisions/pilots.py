@@ -25,7 +25,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.config import settings
-from roboco.services.decisions.client import get_decisions_client
+from roboco.services.decisions.client import (
+    DecisionsEndpoint,
+    get_decisions_client,
+)
 from roboco.services.decisions.resolver import resolve_endpoint
 from roboco.services.decisions.schemas import (
     ChoiceQuestion,
@@ -100,6 +103,7 @@ COMPLEXITY_CONFIDENCE_FLOOR = 0.7
 TRIAGE_CONFIDENCE_FLOOR = 0.7
 STEER_CONFIDENCE_FLOOR = 0.8
 PREFLIGHT_ADVISORY_CONFIDENCE_FLOOR = 0.7
+TRANSCRIPT_NOTE_FLOOR = 0.75
 
 
 def _env_slug_set(raw: str) -> frozenset[str]:
@@ -140,14 +144,40 @@ async def decide_for_pilot(
 ) -> tuple[PilotMode, DecisionResult | None]:
     """Resolve mode + tier, ask one batched question set, log the verdict.
 
-    Returns ``(mode, result)``; ``result`` is ``None`` when off/unreachable/
-    failed. Shadow callers act as if the verdict never happened (the log
-    line above is the shadow data); on callers gate on it.
+    The prologue's DB reads (settings row, provider key) run on the
+    CALLER's shared, reused session inside a savepoint (repo
+    shared-session discipline): a failed read rolls the savepoint back
+    and this returns OFF instead of leaving the caller's transaction
+    poisoned for its next statement. A ``None`` session (test stubs;
+    session-less callers now open their own) skips the savepoint. The
+    network call itself runs AFTER the savepoint is released. ``result``
+    is ``None`` when off/unreachable/failed. Shadow callers act as if
+    the verdict never happened (the log line above is the shadow data);
+    on callers gate on it.
     """
-    mode = await pilot_mode(session, pilot)
-    if mode is PilotMode.OFF:
-        return mode, None
-    endpoint = await resolve_endpoint(session)
+
+    async def _prologue() -> tuple[PilotMode, DecisionsEndpoint | None]:
+        resolved_mode = await pilot_mode(session, pilot)
+        if resolved_mode is PilotMode.OFF:
+            return resolved_mode, None
+        return resolved_mode, await resolve_endpoint(session)
+
+    try:
+        begin_nested = getattr(session, "begin_nested", None)
+        if begin_nested is not None:
+            async with begin_nested():
+                mode, endpoint = await _prologue()
+        else:
+            # Test stubs pass a bare None session; production sessions
+            # always carry begin_nested.
+            mode, endpoint = await _prologue()
+    except Exception as exc:
+        logger.warning(
+            "decisions prologue failed on the caller's session; pilot off (fail-open)",
+            pilot=pilot,
+            error=str(exc),
+        )
+        return PilotMode.OFF, None
     if endpoint is None:
         return mode, None
     result = await get_decisions_client().decide(
@@ -587,10 +617,13 @@ async def transcript_note_worthy(
 ) -> list[bool] | None:
     """One noul per transcript segment: is this a durable decision or
     constraint worth a journal entry? Returns a list aligned with
-    ``segments`` (True = worth persisting), or ``None`` when no verdict.
-    Durable knowledge is otherwise captured only if the agent self-reported
-    via `note`; this is the system-side capture pass at finalize. Advisory
-    to the journal: it never edits or gates anything."""
+    ``segments`` (True = worth persisting) ONLY when the mode is ON;
+    shadow and off return ``None`` exactly like every other pilot, so a
+    caller that skips its own mode check can never write journal entries
+    out of shadow data. Durable knowledge is otherwise captured only if
+    the agent self-reported via `note`; this is the system-side capture
+    pass at finalize. Advisory to the journal: it never edits or gates
+    anything."""
     # Cap the batch: at most 20 segments per call, each head-capped.
     capped = [s[:1500] for s in segments[:20]]
     if not capped:
@@ -612,7 +645,7 @@ async def transcript_note_worthy(
         questions,
         session_id=f"notes:{task_id}",
     )
-    if result is None:
+    if result is None or mode is not PilotMode.ON:
         return None
     verdicts: list[bool] = []
     for idx in range(len(capped)):
@@ -623,13 +656,10 @@ async def transcript_note_worthy(
         "transcript_notes",
         mode,
         f"{sum(verdicts)}/{len(verdicts)} worthy",
-        "journal entries" if mode is PilotMode.ON else "no-op (shadow)",
+        "journal entries",
         result,
     )
     return verdicts
-
-
-TRANSCRIPT_NOTE_FLOOR = 0.75
 
 
 # ---------------------------------------------------------------------------
@@ -735,7 +765,10 @@ TOOL_SPOTLIGHT_MIN_VERBS = 8
 TOOL_SPOTLIGHT_MAX_VERBS = 20
 TOOL_SPOTLIGHT_MIN_HIGHLIGHTS = 5
 TOOL_SPOTLIGHT_MAX_HIGHLIGHTS = 7
-TOOL_SPOTLIGHT_CONFIDENCE_FLOOR = 0.6
+# Many-option choice is the model's weakest surface (Hummin's measured
+# gray-zone operating point is 0.7; a 20-way pick does not get a
+# discount).
+TOOL_SPOTLIGHT_CONFIDENCE_FLOOR = 0.7
 
 
 def _spotlight_ranking(probabilities: dict[str, float]) -> list[str] | None:
@@ -797,9 +830,23 @@ async def tool_spotlight(
     confidence = answer.confidence if answer else None
     probabilities = answer.probabilities if answer else {}
     if confidence is None or confidence < TOOL_SPOTLIGHT_CONFIDENCE_FLOOR:
+        # Below floor: log in every non-OFF mode so the decision_log keeps
+        # the rejection cases the Auditor's aggregates read.
+        if mode is not PilotMode.OFF:
+            log_action(
+                "tool_spotlight", mode, None, "below floor; no highlight", result
+            )
         return None
     verdict = _spotlight_ranking(probabilities)
     if verdict is None:
+        if mode is not PilotMode.OFF:
+            log_action(
+                "tool_spotlight",
+                mode,
+                None,
+                "too few ranked verbs; no highlight",
+                result,
+            )
         return None
     if mode is PilotMode.SHADOW:
         log_action("tool_spotlight", mode, verdict, "no-op (shadow)", result)

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -52,9 +52,12 @@ INTAKE_PREROUTE_CONFIDENCE_FLOOR = 0.7  # spec 7.1 row B3
 X_MENTION_TRIAGE_CONFIDENCE_FLOOR = 0.7
 SEGMENT_CLASSIFY_CONFIDENCE_FLOOR = 0.7
 VAULT_PREFILTER_NOUL_FLOOR = 0.8  # skipping a note is the costly direction
+VAULT_PREFILTER_CONFIDENCE_FLOOR = 0.7
 SECRETARY_NL_CONFIDENCE_FLOOR = 0.7  # spec 7.1 row B18
 TG_FREETEXT_NOUL_FLOOR = 0.75  # additive delivery still deserves a bar
+TG_FREETEXT_CONFIDENCE_FLOOR = 0.7
 MEMORY_DISTILL_NOUL_FLOOR = 0.8  # skipping a lesson is the costly direction
+MEMORY_DISTILL_CONFIDENCE_FLOOR = 0.7
 CHANGELOG_HIGHLIGHTS_CONFIDENCE_FLOOR = 0.7
 PROACTIVE_DOMAIN_CONFIDENCE_FLOOR = 0.7
 DECISION_NOTE_SUFFICIENCY_CONFIDENCE_FLOOR = 0.7
@@ -196,10 +199,35 @@ async def _ask_noul(
     return mode, (answer.noul if answer else None), result
 
 
-def _confidently_not(noul: float | None, floor: float) -> bool:
+def _confidently_not(
+    noul: float | None,
+    floor: float,
+    confidence: float | None = None,
+    confidence_floor: float | None = None,
+) -> bool:
     """True when the statement is confidently FALSE: the noul for the
-    positive statement sits at least ``floor`` below 1.0."""
-    return noul is not None and (1.0 - noul) >= floor
+    positive statement sits at least ``floor`` below 1.0, AND (when a
+    confidence floor is supplied) the answer's confidence clears it.
+    A None confidence never skips: the schemas' contract is that a
+    missing confidence is below-threshold, and these gates skip
+    expensive work in the costly direction."""
+    return (
+        noul is not None
+        and (1.0 - noul) >= floor
+        and (
+            confidence_floor is None
+            or (confidence is not None and confidence >= confidence_floor)
+        )
+    )
+
+
+def _batch_id(items: list[str]) -> str:
+    """A stable content-derived session-id suffix for batched asks, so
+    unrelated batches of the same size do not share one session key."""
+    import hashlib
+
+    joined = "\n".join(items)
+    return hashlib.sha1(joined.encode()).hexdigest()[:12]
 
 
 def _capped_options(mapping: dict[str, str]) -> dict[str, str]:
@@ -394,34 +422,50 @@ async def segment_classify(
 ) -> list[tuple[str, float] | None]:
     """Batched segment classification: one ChoiceQuestion per segment,
     one Decisions request for the whole buffer. Returns a list aligned
-    with ``segments``; a ``None`` entry (or a ``None`` list) means that
-    segment keeps today's regex result. The caller skips its full-LLM
-    fallback only when every segment came back confident."""
+    with ``segments`` (NEVER compacted: a ``None`` entry means that
+    segment keeps today's regex result, and callers consume the list
+    positionally); a ``None`` list means no verdict anywhere. The caller
+    skips its full-LLM fallback only when every entry is confident.
+    Session may be None (extraction is session-less): a short-lived
+    background session is opened for the ask."""
     if not segments:
         return []
-    capped = [s[:1500] for s in segments[:_MAX_BATCHED_QUESTIONS]]
-    questions = _segment_questions(capped)
-    state = {"segments": capped}
-    mode, result = await decide_for_pilot(
-        session,
-        "segment_classify",
-        state,
-        questions,
-        session_id=f"segments:{len(capped)}",
-    )
-    if result is None:
+
+    async def _run(db: Any) -> list[tuple[str, float] | None]:
+        capped = [s[:1500] for s in segments[:_MAX_BATCHED_QUESTIONS]]
+        questions = _segment_questions(capped)
+        state = {"segments": capped}
+        mode, result = await decide_for_pilot(
+            db,
+            "segment_classify",
+            state,
+            questions,
+            session_id=f"segments:{len(capped)}:{_batch_id(capped)}",
+        )
+        if result is None:
+            return []
+        verdicts, confident = _segment_verdicts(result, capped)
+        log_action(
+            "segment_classify",
+            mode,
+            f"{confident}/{len(capped)} confident",
+            _segment_action(mode, confident, len(capped)),
+            result,
+        )
+        if mode is not PilotMode.ON:
+            return []
+        return verdicts
+
+    try:
+        return cast(
+            "list[tuple[str, float] | None]", await _with_session(session, _run)
+        )
+    except Exception as exc:
+        logger.warning(
+            "segment_classify failed to open a session; regex as today (fail-open)",
+            error=str(exc),
+        )
         return []
-    verdicts, confident = _segment_verdicts(result, capped)
-    log_action(
-        "segment_classify",
-        mode,
-        f"{confident}/{len(capped)} confident",
-        _segment_action(mode, confident, len(capped)),
-        result,
-    )
-    if mode is not PilotMode.ON:
-        return []
-    return verdicts
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +502,7 @@ async def vault_prefilter(
         ),
         "route": ChoiceQuestion(
             instructions="If the note warrants anything, what is it?",
-            criteria=route_criteria or {"intake_draft": "As today."},
+            criteria=route_criteria,
         ),
     }
     mode, result = await decide_for_pilot(
@@ -473,7 +517,13 @@ async def vault_prefilter(
     gate = result.answer("gate")
     route_answer = result.answer("route")
     noul = gate.noul if gate else None
-    skip = _confidently_not(noul, VAULT_PREFILTER_NOUL_FLOOR) and (mode is PilotMode.ON)
+    gate_confidence = gate.confidence if gate else None
+    skip = _confidently_not(
+        noul,
+        VAULT_PREFILTER_NOUL_FLOOR,
+        gate_confidence,
+        VAULT_PREFILTER_CONFIDENCE_FLOOR,
+    ) and (mode is PilotMode.ON)
     log_action(
         "vault_prefilter",
         mode,
@@ -510,7 +560,7 @@ async def secretary_directive_kind(session: Any, *, utterance: str) -> str | Non
     when off/shadow/unconfident. Called only when the caller left the
     kind unset, so an explicit panel-picked kind is never overridden."""
     state = {"utterance": _cap(utterance)}
-    _mode, choice, result = await _ask_choice(
+    mode, choice, result = await _ask_choice(
         session,
         pilot="secretary_nl",
         state=state,
@@ -521,8 +571,29 @@ async def secretary_directive_kind(session: Any, *, utterance: str) -> str | Non
     )
     if choice is None:
         return None
-    log_action("secretary_nl", PilotMode.ON, choice, "fill directive kind", result)
+    log_action("secretary_nl", mode, choice, "fill directive kind", result)
     return choice
+
+
+def _shortlist_by_name(
+    utterance: str, candidate_slugs: list[str], limit: int = _MAX_CHOICE_OPTIONS
+) -> list[str]:
+    """Pre-narrow a full roster down to the slugs whose name tokens appear
+    in the utterance (B18's assignee half can never fire on a 26-agent
+    roster: the 20-option band fails it open before the ask). Ranked by
+    matching-token count then slug brevity; zero matches -> empty list
+    (fail open, caller keeps today's unresolved-assignee behavior)."""
+    tokens = set(utterance.lower().replace("_", "-").split())
+    ranked: list[tuple[int, int, str]] = []
+    for slug in candidate_slugs:
+        if not slug:
+            continue
+        slug_tokens = slug.lower().replace("_", "-").split("-")
+        score = sum(1 for token in slug_tokens if token in tokens)
+        if score > 0:
+            ranked.append((score, -len(slug), slug))
+    ranked.sort(reverse=True)
+    return [slug for _, _, slug in ranked[:limit]]
 
 
 async def secretary_assignee(
@@ -530,18 +601,20 @@ async def secretary_assignee(
 ) -> str | None:
     """Resolve a natural-language assignee to an agent slug from the
     roster. Called only where today's exact slug/UUID match FAILED, so it
-    can only fill a match, never override one. Out-of-band rosters (0 or
-    more than 20 agents) fail open."""
+    can only fill a match, never override one. The roster is pre-narrowed
+    to name-matched candidates (a full 26-agent roster would fail the
+    20-option band open before the ask); an out-of-band shortlist or no
+    name-shaped match fails open."""
+    shortlist = _shortlist_by_name(utterance, candidate_slugs)
     criteria = _capped_options(
         dict.fromkeys(
-            sorted(slug for slug in candidate_slugs if slug),
-            "This agent is the one the utterance refers to.",
+            sorted(shortlist), "This agent is the one the utterance refers to."
         )
     )
     if not criteria:
         return None
     state = {"utterance": _cap(utterance), "agents": sorted(criteria)}
-    _mode, choice, result = await _ask_choice(
+    mode, choice, result = await _ask_choice(
         session,
         pilot="secretary_nl",
         state=state,
@@ -552,7 +625,7 @@ async def secretary_assignee(
     )
     if choice is None:
         return None
-    log_action("secretary_nl", PilotMode.ON, choice, "fill assignee slug", result)
+    log_action("secretary_nl", mode, choice, "fill assignee slug", result)
     return choice
 
 
@@ -578,7 +651,18 @@ async def tg_freetext_gate(session: Any, *, chat_id: str, text: str) -> bool:
         ),
         session_id=f"tggate:{chat_id}",
     )
-    deserves = noul is not None and noul >= TG_FREETEXT_NOUL_FLOOR
+    if result is None:
+        # OFF or unreachable: today's silent drop (the unavailable case is
+        # logged by decide_for_pilot; OFF writes no decision_log row).
+        return False
+    answer = result.answer("gate")
+    confidence = answer.confidence if answer else None
+    deserves = (
+        noul is not None
+        and noul >= TG_FREETEXT_NOUL_FLOOR
+        and confidence is not None
+        and confidence >= TG_FREETEXT_CONFIDENCE_FLOOR
+    )
     if mode is PilotMode.SHADOW:
         log_action(
             "tg_freetext_gate",
@@ -595,7 +679,7 @@ async def tg_freetext_gate(session: Any, *, chat_id: str, text: str) -> bool:
         "surface to CEO" if deserves else "drop as today",
         result,
     )
-    return bool(deserves and mode is PilotMode.ON)
+    return deserves
 
 
 # ---------------------------------------------------------------------------
@@ -638,9 +722,17 @@ async def memory_distill_gate(
             ),
             session_id="distill",
         )
-        skip = _confidently_not(noul, MEMORY_DISTILL_NOUL_FLOOR) and (
-            mode is PilotMode.ON
-        )
+        if result is None:
+            # OFF or unreachable: distill + persist as today, no row.
+            return False
+        answer = result.answer("gate")
+        confidence = answer.confidence if answer else None
+        skip = _confidently_not(
+            noul,
+            MEMORY_DISTILL_NOUL_FLOOR,
+            confidence,
+            MEMORY_DISTILL_CONFIDENCE_FLOOR,
+        ) and (mode is PilotMode.ON)
         if mode is PilotMode.SHADOW:
             log_action("memory_distill_gate", mode, noul, "no-op (shadow)", result)
             return False
@@ -711,7 +803,10 @@ async def changelog_highlights_pick(
         idx = int(choice)
     except (TypeError, ValueError):
         return highlights
-    if not 0 <= idx < len(highlights):
+    # The picked index must be one of the OFFERED candidates: with more
+    # than the option band's worth of highlights, an unoffered in-bounds
+    # index would still reorder the list without ever being judged.
+    if choice not in candidates or not 0 <= idx < len(highlights):
         return highlights
     ordered = [highlights[idx], *highlights[:idx], *highlights[idx + 1 :]]
     log_action(
@@ -738,36 +833,48 @@ async def proactive_domain(
     task_type: str | None,
     description: str,
     keyword_domain: str,
+    task_id: str | None = None,
 ) -> str | None:
     """Classify the standards domain for a claimed task. A confident
     verdict overrides the keyword map's guess; anything else returns None
-    and the caller keeps ``keyword_domain``."""
+    and the caller keeps ``keyword_domain``. Session may be None
+    (proactive is session-less): a short-lived background session is
+    opened for the ask."""
     state = {
         "task_type": task_type,
         "description": _cap(description),
         "keyword_guess": keyword_domain,
     }
-    _mode, choice, result = await _ask_choice(
-        session,
-        pilot="proactive_domain",
-        state=state,
-        instructions="Which standards domain does this task belong to?",
-        criteria={
-            "security": "Auth, secrets, encryption, attack surface.",
-            "workflow": "Process, board mechanics, coordination, QA flow.",
-            "coding": "Ordinary feature/bug code work.",
-        },
-        session_id="domain",
-        floor=PROACTIVE_DOMAIN_CONFIDENCE_FLOOR,
-    )
-    if choice is None:
+
+    async def _run(db: Any) -> str | None:
+        mode, choice, result = await _ask_choice(
+            db,
+            pilot="proactive_domain",
+            state=state,
+            instructions="Which standards domain does this task belong to?",
+            criteria={
+                "security": "Auth, secrets, encryption, attack surface.",
+                "workflow": "Process, board mechanics, coordination, QA flow.",
+                "coding": "Ordinary feature/bug code work.",
+            },
+            session_id=f"domain:{task_id or 'adhoc'}",
+            floor=PROACTIVE_DOMAIN_CONFIDENCE_FLOOR,
+        )
+        if choice is None:
+            return None
+        if choice not in DOMAINS:
+            return None
+        log_action("proactive_domain", mode, choice, "override keyword guess", result)
+        return choice
+
+    try:
+        return cast("str | None", await _with_session(session, _run))
+    except Exception as exc:
+        logger.warning(
+            "proactive_domain failed to open a session; keyword guess kept (fail-open)",
+            error=str(exc),
+        )
         return None
-    if choice not in DOMAINS:
-        return None
-    log_action(
-        "proactive_domain", PilotMode.ON, choice, "override keyword guess", result
-    )
-    return choice
 
 
 # ---------------------------------------------------------------------------

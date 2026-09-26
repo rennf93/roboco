@@ -29,6 +29,7 @@ existing default-OFF ``decisions.pilot.{slug}`` settings rows.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING
 
 import structlog
@@ -114,6 +115,13 @@ RELEASE_RISK_CONFIDENCE_FLOOR = 0.7
 
 # Shared state caps (spec 10: bounded inputs).
 _TEXT_CAP = 800
+# Choice band (spec 10 limit 3: many-option choice degrades past ~20
+# options), mirroring pilots_content._MAX_CHOICE_OPTIONS.
+_MAX_CHOICE_OPTIONS = 20
+# Collision-edge batch: 12 pairs x 6 string fields would serialize well
+# past the Laya tier's state budget, so the batch stays at 8 pairs and the
+# per-field caps keep each pair's view meaningful.
+_COLLISION_PAIR_BATCH = 8
 
 
 def _cap(text: str | None) -> str:
@@ -221,7 +229,11 @@ async def injection_screen(session: AsyncSession, *, text: str, source: str) -> 
         return False
     noul, confidence = _noul_confidence(result, "gate")
     if mode is PilotMode.SHADOW:
-        flagged = noul is not None and noul >= INJECTION_NOUL_FLOOR
+        # Shadow previews the ON posture it calibrates: use the fail-closed
+        # predicate for the logged verdict (the raw noul/confidence still
+        # ride the decision_log row), so the shadow flag rate matches what
+        # arming would actually produce instead of understating it.
+        flagged = _injection_flagged(noul, confidence)
         log_action("injection_screen", mode, flagged, "no-op (shadow)", result)
         return False
     flagged = _injection_flagged(noul, confidence)
@@ -290,33 +302,61 @@ def _edge_verdicts(
     return verdicts
 
 
+def _edge_raw_hits(result: DecisionResult, capped: list[tuple[dict, dict]]) -> int:
+    """Count of pairs whose raw noul cleared the floor regardless of
+    calibration or mode (the shadow-log view of what the model said)."""
+    hits = 0
+    for idx in range(len(capped)):
+        answer = _answer(result, f"pair_{idx}")
+        noul = answer.noul if answer else None
+        if noul is not None and noul >= COLLISION_EDGE_NOUL_FLOOR:
+            hits += 1
+    return hits
+
+
 async def collision_edges(
     session: AsyncSession, *, pairs: list[tuple[dict, dict]]
 ) -> list[bool]:
     """One noul per draft pair: do these two logically conflict beyond
-    file-path overlap? Returns a list of booleans aligned with ``pairs``;
-    True = the caller MAY add an edge (never remove/reorder one). Only an
-    ON-mode verdict clearing both floors yields True; off/shadow/below-floor
-    yields False (no edge). Batched in one call, capped by the caller."""
-    capped = pairs[:12]
+    file-path overlap? Returns a list of booleans ALIGNED WITH ``pairs``
+    (the batch cap truncates the ASK; pairs beyond it are False without a
+    verdict, never shifted). True = the caller MAY add an edge (never
+    remove/reorder one). Only an ON-mode verdict clearing both floors
+    yields True; off/shadow/below-floor yields False (no edge). Batched
+    in one call."""
+    capped = pairs[:_COLLISION_PAIR_BATCH]
     if not capped:
-        return []
+        return [False] * len(pairs)
     questions = _collision_questions(capped)
     state = _collision_state(capped)
+    pair_key = hashlib.sha1(
+        "\n".join(
+            f"{left.get('id')}|{right.get('id')}" for left, right in capped
+        ).encode("utf-8")
+    ).hexdigest()[:12]
     mode, result = await decide_for_pilot(
-        session, "collision_edge", state, questions, session_id="collision:pairs"
+        session,
+        "collision_edge",
+        state,
+        questions,
+        session_id=f"collision:pairs:{pair_key}",
     )
     if result is None:
-        return [False] * len(capped)
+        return [False] * len(pairs)
     verdicts = _edge_verdicts(result, capped, mode)
     log_action(
         "collision_edge",
         mode,
-        f"{sum(verdicts)}/{len(verdicts)} edges",
+        (
+            f"{_edge_raw_hits(result, capped)}/{len(capped)} raw noul hits; "
+            f"gated {verdicts.count(True)}/{len(verdicts)}"
+            if mode is PilotMode.SHADOW
+            else f"{verdicts.count(True)}/{len(verdicts)} edges"
+        ),
         "add edges" if mode is PilotMode.ON else "no-op (shadow)",
         result,
     )
-    return verdicts
+    return verdicts + [False] * (len(pairs) - len(capped))
 
 
 # ---------------------------------------------------------------------------
@@ -547,13 +587,14 @@ async def release_worthy_urgent(
         return False
     score, confidence = _score_confidence(result, "gate")
     verdict = _worthy_verdict(mode, score, confidence)
-    log_action(
-        "release_worthy",
-        mode,
-        score,
-        "propose early" if verdict else "no-op (below threshold)",
-        result,
+    action = (
+        "propose early"
+        if verdict
+        else "no-op (shadow)"
+        if mode is PilotMode.SHADOW
+        else "no-op (below threshold)"
     )
+    log_action("release_worthy", mode, score, action, result)
     return verdict
 
 
@@ -684,6 +725,76 @@ async def semantic_duplicate(
     return verdict
 
 
+async def semantic_distinct_delivery(
+    session: AsyncSession,
+    *,
+    new_subject: str,
+    new_body: str,
+    prior_subject: str,
+    prior_body: str,
+    recipients: Sequence[str],
+    prior_recipients: Sequence[str],
+) -> bool:
+    """Noul, refined direction: is the new notification CONFIDENTLY NOT a
+    semantic duplicate of the still-unacked prior (new information worth
+    delivering despite the deterministic equal-set match)? True = the
+    caller may deliver where the deterministic rule would suppress.
+
+    This is the only doctrine-safe additive role for a body-aware screen
+    beside the exact-set suppressor: equal recipient sets are already
+    suppressed deterministically, and overlapping-but-not-equal sets must
+    never suppress (recipients who missed the prior must not lose this
+    one either), so the screen can only ADD delivery, never subtract it.
+    Deviating from suppression requires ON mode AND the noul at/below
+    ``1 - NOTIFY_DEDUP_NOUL_FLOOR`` AND confidence at/above floor (tight:
+    overriding a dedup rule on a guess is the expensive direction).
+    Off/shadow/below-floor = False = suppress exactly as today."""
+    state = {
+        "new": {"subject": _cap(new_subject), "body": _cap(new_body)},
+        "prior_unacked": {
+            "subject": _cap(prior_subject),
+            "body": _cap(prior_body),
+        },
+        "recipients": [str(r) for r in recipients],
+        "prior_recipients": [str(r) for r in prior_recipients],
+    }
+    questions = {
+        "gate": NoulQuestion(
+            instructions=(
+                "The new notification is a semantic duplicate of the "
+                "still-unacked prior one: it asks for the same action on "
+                "the same thing, merely reworded, so delivering it adds "
+                "churn rather than information."
+            )
+        )
+    }
+    content_hash = hashlib.sha1(f"{new_subject}\n{new_body}".encode()).hexdigest()[:12]
+    mode, result = await decide_for_pilot(
+        session,
+        "notify_dedup",
+        state,
+        questions,
+        session_id=f"notify:dedup:{content_hash}",
+    )
+    if result is None:
+        return False
+    noul, confidence = _noul_confidence(result, "gate")
+    distinct = (
+        noul is not None
+        and noul <= 1.0 - NOTIFY_DEDUP_NOUL_FLOOR
+        and confidence is not None
+        and confidence >= NOTIFY_DEDUP_CONFIDENCE_FLOOR
+    )
+    log_action(
+        "notify_dedup",
+        mode,
+        distinct,
+        "deliver (confidently distinct)" if distinct else "suppressed as today",
+        result,
+    )
+    return distinct
+
+
 # ---------------------------------------------------------------------------
 # B13 board_due_early + rotation target.
 # ---------------------------------------------------------------------------
@@ -698,7 +809,9 @@ async def board_due_early(
 ) -> bool:
     """Noul: is this program due early this tick? True = the caller may
     open a cycle off-schedule (never later than its cron would). Only an
-    ON-mode verdict clearing both floors yields True."""
+    ON-mode verdict clearing both floors yields True. The question asks
+    ONLY what the state carries (program identity, recency, cadence): no
+    company signals are passed, so none are promised."""
     state = {
         "program": program_key,
         "last_opened_at": last_opened_at,
@@ -707,9 +820,10 @@ async def board_due_early(
     questions = {
         "gate": NoulQuestion(
             instructions=(
-                "Given when this program last ran, company signals make "
-                "it worth running a cycle early this tick (fresh material "
-                "to explore) rather than waiting out its cron interval."
+                "Given when this program last ran and its usual interval, "
+                "the program is due for a cycle early this tick (it has "
+                "been idle long enough that waiting out the full cron "
+                "interval would waste the tick)."
             )
         )
     }
@@ -764,8 +878,12 @@ async def board_rotation_target(
     """ChoiceQuestion over the opted-in projects: which one should this
     cycle's rotation target? Returns the index into ``project_slugs`` when
     an ON-mode confident verdict names a valid slug, else None (the
-    deterministic round-robin pick stands)."""
+    deterministic round-robin pick stands). Out of the option band (spec
+    10: choice verdicts degrade past ~20 options) the pilot fails open to
+    the deterministic pick instead of asking a degraded question."""
     if len(project_slugs) <= 1:
+        return None
+    if len(project_slugs) > _MAX_CHOICE_OPTIONS:
         return None
     questions = {
         "gate": ChoiceQuestion(
@@ -983,19 +1101,21 @@ async def dep_update_risk(
     if result is None:
         return None, False
     score, confidence = _score_confidence(result, "gate")
-    if mode is PilotMode.SHADOW and score is not None:
-        log_action("dep_update_risk", mode, score, "no-op (shadow)", result)
     if (
         score is None
         or confidence is None
         or confidence < DEP_UPDATE_RISK_CONFIDENCE_FLOOR
     ):
+        # Below floor (or unparseable): log in every non-OFF mode so the
+        # decision_log keeps the rejection cases too, then fail open.
+        if mode is not PilotMode.OFF:
+            log_action("dep_update_risk", mode, score, "below floor; baseline", result)
         return None, False
     verdict = max(0, min(2, round(score)))
-    if mode is PilotMode.ON:
-        log_action(
-            "dep_update_risk", mode, verdict, f"risk note tier={verdict}", result
-        )
+    if mode is PilotMode.SHADOW:
+        log_action("dep_update_risk", mode, verdict, "no-op (shadow)", result)
+        return None, False
+    log_action("dep_update_risk", mode, verdict, f"risk note tier={verdict}", result)
     return verdict, True
 
 
@@ -1044,19 +1164,25 @@ async def release_risk_advisory(
     if result is None:
         return None
     score, confidence = _score_confidence(result, "gate")
-    if mode is PilotMode.SHADOW and score is not None:
-        log_action("release_readiness", mode, score, "no-op (shadow)", result)
     if (
         score is None
         or confidence is None
         or confidence < RELEASE_RISK_CONFIDENCE_FLOOR
     ):
+        # Below floor (or unparseable): log in every non-OFF mode so the
+        # decision_log keeps the rejection cases too, then fail open.
+        if mode is not PilotMode.OFF:
+            log_action(
+                "release_readiness", mode, score, "below floor; baseline", result
+            )
         return None
     verdict = max(0, min(2, round(score)))
     line = (
         f"Decisions release-risk screen: {RELEASE_RISK_LABELS[verdict]} overall "
         f"risk (advisory only; the CEO decides)."
     )
-    if mode is PilotMode.ON:
-        log_action("release_readiness", mode, verdict, "advisory line", result)
+    if mode is PilotMode.SHADOW:
+        log_action("release_readiness", mode, verdict, "no-op (shadow)", result)
+        return None
+    log_action("release_readiness", mode, verdict, "advisory line", result)
     return line

@@ -469,6 +469,36 @@ async def test_b10_wiring_all_confident_skips_full_llm_fallback(
     assert result.messages[0].type == MessageType.ACTION
 
 
+@pytest.mark.asyncio
+async def test_b10_wiring_partial_verdicts_stay_aligned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The verdicts list is consumed ALIGNED with the non-blank segments:
+    the regression compacted the None entries out, shifting every later
+    verdict onto the wrong segment (segment 0 received segment 1's
+    blocker verdict and segment 1 kept its regex result)."""
+    monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
+    service = ExtractionService()
+    # Segment 0 gets no verdict (keeps its regex type); segment 1 is
+    # confidently a blocker.
+    monkeypatch.setattr(
+        pc,
+        "segment_classify",
+        AsyncMock(return_value=[None, ("blocker", 0.93)]),
+    )
+    ctx = ExtractionContext(
+        content="Decision: use SQLite for the cache.\n\nError: connection refused.",
+        agent_id=uuid4(),
+        channel_id=uuid4(),
+        session_id=uuid4(),
+        group_id=uuid4(),
+    )
+    result = await service.extract(ctx)
+    assert result.messages[0].type == MessageType.DECISION
+    assert result.messages[1].type == MessageType.BLOCKER
+    assert result.messages[1].confidence == 0.93
+
+
 # ---------------------------------------------------------------------------
 # B11 vault_prefilter
 # ---------------------------------------------------------------------------
@@ -487,7 +517,7 @@ async def test_b11_shadow_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
         mode=PilotMode.SHADOW,
         payload=_payload(
             {
-                "gate": {"type": "noul", "noul": 0.05},
+                "gate": {"type": "noul", "noul": 0.05, "confidence": 0.9},
                 "route": {
                     "type": "choice",
                     "choice": "reference_only",
@@ -507,7 +537,7 @@ async def test_b11_confidently_not_worthy_skips(
         monkeypatch,
         payload=_payload(
             {
-                "gate": {"type": "noul", "noul": 0.05},
+                "gate": {"type": "noul", "noul": 0.05, "confidence": 0.9},
                 "route": {
                     "type": "choice",
                     "choice": "reference_only",
@@ -749,7 +779,10 @@ async def test_b21_shadow_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_b21_confident_deserves_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
-    _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.95}}))
+    _arm(
+        monkeypatch,
+        payload=_payload({"gate": {"type": "noul", "noul": 0.95, "confidence": 0.9}}),
+    )
     assert await pc.tg_freetext_gate(None, chat_id="1", text="please fix X") is True
 
 
@@ -831,7 +864,10 @@ async def test_b22_shadow_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_b22_confidently_not_worth_skips(monkeypatch: pytest.MonkeyPatch) -> None:
-    _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.05}}))
+    _arm(
+        monkeypatch,
+        payload=_payload({"gate": {"type": "noul", "noul": 0.05, "confidence": 0.9}}),
+    )
     assert (
         await pc.memory_distill_gate(
             MagicMock(),

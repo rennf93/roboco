@@ -372,10 +372,14 @@ class ExtractionService:
 
     async def _decisions_segment_types(
         self, segments: list[str]
-    ) -> list[tuple[str, float]]:
+    ) -> list[tuple[str, float] | None]:
         """B10 segment_classify: the batched Decisions verdicts for a
-        buffer. Empty list = no verdict anywhere (off/shadow/error/below
-        floor), i.e. regex + fallback exactly as today."""
+        buffer, ALIGNED with ``segments`` (a None entry = that segment
+        keeps the regex result). Empty list = no verdict anywhere
+        (off/shadow/error/below floor), i.e. regex + fallback exactly as
+        today. The alignment is load-bearing: extract() consumes this
+        list positionally over the non-blank segments, so compacting the
+        Nones out would shift verdicts onto the wrong segments."""
         if not segments:
             return []
         from roboco.config import settings
@@ -385,13 +389,12 @@ class ExtractionService:
         try:
             from roboco.services.decisions import pilots_content
 
-            verdicts = await pilots_content.segment_classify(None, segments=segments)
+            return list(await pilots_content.segment_classify(None, segments=segments))
         except Exception as exc:
             self.log.warning(
                 "Decisions segment classify failed (fail-open)", error=str(exc)
             )
             return []
-        return [v for v in (verdicts or []) if v is not None]
 
     async def _call_anthropic_with_retry(self, client: Any, prompt: str) -> Any:
         """Call Anthropic messages.create with up to MAX_RATE_LIMIT_RETRIES on 429.
@@ -460,7 +463,10 @@ class ExtractionService:
         # verdict, that classification REPLACES this method's expensive
         # full-LLM fallback entirely (extract() applies the same verdicts
         # without a second Decisions call). Any unconfident segment keeps
-        # today's path: the Anthropic call below.
+        # today's path: the Anthropic call below. The list is aligned
+        # with pre_segments (None entries included), so "every segment
+        # confident" is a length-plus-all-present check: an empty list
+        # (pilot off/unreachable) must fall through to the LLM.
         pre_segments = [
             s
             for s in self._segment_content(ctx.content)[
@@ -469,7 +475,11 @@ class ExtractionService:
             if s.strip()
         ]
         pre_verdicts = await self._decisions_segment_types(pre_segments)
-        if pre_segments and len(pre_verdicts) == len(pre_segments):
+        if (
+            pre_segments
+            and len(pre_verdicts) == len(pre_segments)
+            and all(v is not None for v in pre_verdicts)
+        ):
             self.log.info(
                 "Decisions classified every segment; full-LLM fallback skipped",
                 segments=len(pre_segments),

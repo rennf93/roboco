@@ -114,6 +114,9 @@ async def test_resolver_skip_never_blocks_and_reports_reason(
     monkeypatch.setattr(settings, "cross_vendor_review_enabled", True)
 
     class _SkipService:
+        async def is_high_stakes_with_decisions(self, _task: object) -> bool:
+            return True
+
         async def resolve_second_reviewer(
             self, _authoring_provider: ModelProvider
         ) -> SecondReviewSelection:
@@ -153,6 +156,9 @@ async def test_no_runner_injected_reports_honest_skip_not_a_false_ran(
     monkeypatch.setattr(settings, "cross_vendor_review_enabled", True)
 
     class _ResolvedService:
+        async def is_high_stakes_with_decisions(self, _task: object) -> bool:
+            return True
+
         async def resolve_second_reviewer(
             self, _authoring_provider: ModelProvider
         ) -> SecondReviewSelection:
@@ -188,6 +194,9 @@ async def test_resolved_provider_runs_injected_runner_and_reports_findings(
     monkeypatch.setattr(settings, "cross_vendor_review_enabled", True)
 
     class _ResolvedService:
+        async def is_high_stakes_with_decisions(self, _task: object) -> bool:
+            return True
+
         async def resolve_second_reviewer(
             self, _authoring_provider: ModelProvider
         ) -> SecondReviewSelection:

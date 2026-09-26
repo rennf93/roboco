@@ -521,6 +521,27 @@ async def test_b41_lesson_prune_postures(
     _pin_verdict(monkeypatch, pilots.PilotMode.ON, None)
     assert await choreo._prune_institutional_memory(t, items) is items
 
+    # Unreadable answer (lesson_1 missing/malformed): the lesson is KEPT,
+    # never pruned on a missing verdict (fail-open keeps the lesson).
+    _pin_verdict(
+        monkeypatch,
+        pilots.PilotMode.ON,
+        _result(lesson_0={"type": "score", "score": 0, "confidence": 0.9}),
+    )
+    kept = await choreo._prune_institutional_memory(t, items)
+    assert kept == [items[1]]
+
+    # Lessons beyond the batch cap pass through UNSCORED: they may never
+    # be dropped from the injected list by index truncation.
+    items14 = [{"title": f"lesson-{i}"} for i in range(14)]
+    capped_answers = {
+        f"lesson_{i}": {"type": "score", "score": 0, "confidence": 0.9}
+        for i in range(12)
+    }
+    _pin_verdict(monkeypatch, pilots.PilotMode.ON, _result(**capped_answers))
+    kept = await choreo._prune_institutional_memory(t, items14)
+    assert kept == items14[12:]
+
 
 # ---------------------------------------------------------------------------
 # B43 assembled_coherence: advisory scaffold in the gate claim envelope
