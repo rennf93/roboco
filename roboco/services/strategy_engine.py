@@ -151,12 +151,58 @@ class StrategyEngine(BaseService):
                 body = f"{body}\n\n{await self._trigger_roadmap_cycle()}"
             elif obs.kind == "stranded_blocked":
                 body = f"{body}\n\n{await self._trigger_coroner_incident()}"
+                body = f"{body}\n\n{await self._decisions_stranded_line()}"
             await notifier.send_ack_notification(
                 from_agent="system",
                 to_agent="ceo",
                 body=body,
             )
         return observations
+
+    async def _decisions_stranded_line(self) -> str:
+        """B15 decisions screen: pick a response lane for the stranded
+        batch ({escalate, respawn, wait}) and report it in the CEO
+        observation.
+
+        The engine's only response machinery IS the observation above (plus
+        the Coroner trigger it already fires) - there is no respawn
+        machinery here, so per the spec every lane degrades to the
+        observation, annotated with the chosen lane. Off/shadow/below-floor/
+        backend failure returns "" (observation exactly as today); the lane
+        verdict can never suppress the observation.
+        """
+        try:
+            from roboco.services.decisions.pilots_infra import stranded_lane
+
+            stranded = await get_task_service(self.session).list_long_running_blocked(
+                threshold_minutes=settings.strategy_stranded_blocked_minutes
+            )
+            lane = await stranded_lane(
+                self.session,
+                task_titles=[t.title for t in stranded],
+                threshold_minutes=settings.strategy_stranded_blocked_minutes,
+            )
+        except Exception:
+            self.log.warning("strategy-engine stranded-lane screen failed")
+            return ""
+        if not lane:
+            return ""
+        if lane == "escalate":
+            return (
+                "Decisions lane: escalate. The Coroner autopsy trigger above "
+                "is the escalation machinery available here; the block "
+                "reasons read like they need a human decision."
+            )
+        if lane == "respawn":
+            return (
+                "Decisions lane: respawn. No respawn machinery exists in the "
+                "strategy engine, so this observation stands in for it; the "
+                "block reasons read like a wedged agent, not a wedged task."
+            )
+        return (
+            "Decisions lane: wait. The blocks look self-resolving; the "
+            "observation above is informational."
+        )
 
     async def _trigger_roadmap_cycle(self) -> str:
         """Best-effort: open a roadmap cycle via the Board Program engine.

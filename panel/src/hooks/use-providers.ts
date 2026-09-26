@@ -13,6 +13,7 @@ export const providerKeys = {
   ollamaKey: () => [...providerKeys.all, "ollama-key"] as const,
   grokKey: () => [...providerKeys.all, "grok-key"] as const,
   openRouterKey: () => [...providerKeys.all, "openrouter-key"] as const,
+  decisionsStatus: () => [...providerKeys.all, "decisions-status"] as const,
   zaiKey: () => [...providerKeys.all, "zai-key"] as const,
   humminKey: () => [...providerKeys.all, "hummin-key"] as const,
   openRouterModels: (query: string) =>
@@ -80,6 +81,14 @@ export function useOpenRouterKey() {
   return useQuery({
     queryKey: providerKeys.openRouterKey(),
     queryFn: () => providersApi.getOpenRouterKey(),
+    staleTime: 60_000,
+  });
+}
+
+export function useDecisionsStatus() {
+  return useQuery({
+    queryKey: providerKeys.decisionsStatus(),
+    queryFn: () => providersApi.getDecisionsStatus(),
     staleTime: 60_000,
   });
 }

@@ -1382,6 +1382,36 @@ def task_time(task_id: str) -> dict[str, Any]:
     return _post("/api/v1/do/task_time", {"task_id": task_id})
 
 
+def preflight_diff(task_id: str) -> dict[str, Any]:
+    """Pre-submit self-check before i_am_done (advisory, never a gate).
+
+    Sends nothing but your task context: the orchestrator reads the task's
+    acceptance criteria and your working diff, then returns per-criterion
+    plausibility verdicts plus a hygiene screen (debug leftovers, conflict
+    markers, hardcoded secrets, TODO stubs), each with confidence. Advisory
+    only: re-check anything flagged low-confidence; it never blocks or
+    waives the submit.
+    """
+    return _post("/api/v1/do/preflight_diff", {"task_id": task_id})
+
+
+def triage_failure(
+    task_id: str, test_name: str, error_excerpt: str = ""
+) -> dict[str, Any]:
+    """Triage a failed test before spending a debug turn (advisory).
+
+    Send the failing test's name and the error excerpt (tail). The
+    orchestrator adds your diff's changed files and retry state and returns
+    one of: my_regression, flaky, environment, or unknown (no confident
+    verdict: debug first, exactly as usual). A flaky verdict is a hint you
+    may cite in your submission evidence, never a waiver.
+    """
+    return _post(
+        "/api/v1/do/triage_failure",
+        {"task_id": task_id, "test_name": test_name, "error_excerpt": error_excerpt},
+    )
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -1421,6 +1451,8 @@ _TOOLS: dict[str, Any] = {
     "read_messages": read_messages,
     "read_a2a": read_a2a,
     "task_time": task_time,
+    "preflight_diff": preflight_diff,
+    "triage_failure": triage_failure,
     "draft_playbook": draft_playbook,
     "approve_playbook": approve_playbook,
     "reject_playbook": reject_playbook,

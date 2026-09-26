@@ -317,6 +317,25 @@ PROGRAMS: dict[str, BoardProgram] = {
                 "approval."
             ),
         ),
+        BoardProgram(
+            key="decisions_audit",
+            role="auditor",
+            trigger=TriggerKind.CRON,
+            source="board_decisions_audit",
+            default_interval_seconds=DAY_SECONDS,
+            max_items_per_cycle=1,
+            # Org-scoped: it audits the Decisions service's own verdict
+            # history, not one repo.
+            scope="org",
+            title="Decisions Audit",
+            description=(
+                "Daily: the Auditor reviews the Decisions service's persisted "
+                "verdict log (per-pilot volume, confidence, actions, spend "
+                "vs. the trailing baseline) and files an adjustment "
+                "recommendation when the evidence shows a pilot miscalibrated "
+                "— thresholds and shadow/on flips stay CEO decisions."
+            ),
+        ),
     )
 }
 

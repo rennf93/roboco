@@ -849,6 +849,41 @@ class DispatchClaimEngine(_Base):
             reason = f"{reason} ({remediate})"
         return reason
 
+    async def _decisions_closure_advisory(self, task: dict[str, Any]) -> str:
+        """B42 pm_closure_confidence: the advisory line for the PM closure
+        prompt, or "" when off/shadow/below-floor/unreachable. The ask is
+        logged inside the pilot on EVERY call while the pilot is ON - that
+        log is the point; the injection is advisory. The gate chain stays
+        deterministic."""
+        if not settings.decisions_enabled:
+            return ""
+        try:
+            return await self._closure_safety_verdict(task)
+        except Exception as exc:
+            logger.warning(
+                "closure-safety advisory failed (best-effort)",
+                task_id=str(task.get("id") or ""),
+                error=str(exc),
+            )
+            return ""
+
+    async def _closure_safety_verdict(self, task: dict[str, Any]) -> str:
+        """The B42 closure-safety advisory line from the classifier ('' when
+        none). The ask is logged inside the pilot on EVERY call while the
+        pilot is ON - that log is the point; the injection is advisory."""
+        from roboco.db import get_db_context
+        from roboco.services.decisions import pilots_dispatch
+
+        async with get_db_context() as db:
+            _score, line = await pilots_dispatch.closure_safety(
+                db,
+                task_id=str(task.get("id") or ""),
+                team=str(task.get("team") or "") or None,
+                branch=str(task.get("branch_name") or "") or None,
+                child_count=int(task.get("children_count") or 0),
+            )
+        return line or ""
+
     async def _try_auto_submit(
         self, client: httpx.AsyncClient, task: dict[str, Any], pm_slug: str
     ) -> tuple[bool, str | None]:
@@ -872,6 +907,16 @@ class DispatchClaimEngine(_Base):
             return False, None
         role, role_path, verb, pm_uuid = target
         task_id = str(task.get("id"))
+        # B42 pm_closure_confidence: score closure safety alongside the gate
+        # chain. The score is logged ALWAYS while the pilot is ON and its
+        # advisory line is stashed for the PM closure prompt (advisory only:
+        # the deterministic gate chain below is untouched and a classifier
+        # never widens auto-submit).
+        advisory_line = await self._decisions_closure_advisory(task)
+        if advisory_line:
+            self.__dict__.setdefault("_decisions_closure_advisories", {})[task_id] = (
+                advisory_line
+            )
         notes = (
             "Auto-submitted for gate review: every child task is terminal and "
             "the assembled branch is ready. Freshness and integrity are "

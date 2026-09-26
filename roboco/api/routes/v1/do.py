@@ -26,6 +26,7 @@ from roboco.api.schemas.v1.do import (
     NotifyListRequest,
     NotifyRequest,
     PitchRequest,
+    PreflightDiffRequest,
     ProgressRequest,
     ProposeBugHuntRequest,
     ProposeCampaignRequest,
@@ -49,6 +50,7 @@ from roboco.api.schemas.v1.do import (
     RequestSandboxRequest,
     RunSandboxTestsRequest,
     TaskTimeRequest,
+    TriageFailureRequest,
 )
 from roboco.security import (
     guard_deco,
@@ -721,6 +723,41 @@ async def do_task_time(
     actions: _ContentActionsDep,
 ) -> dict:
     env = await actions.task_time(agent_id=x_agent_id, task_id=body.task_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/preflight_diff")
+@mesh_scanned
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=4096)
+@guard_deco.content_type_filter(["application/json"])
+async def do_preflight_diff(
+    request: Request,
+    body: PreflightDiffRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.preflight_diff(agent_id=x_agent_id, task_id=body.task_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/triage_failure")
+@mesh_scanned
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=16384)
+@guard_deco.content_type_filter(["application/json"])
+async def do_triage_failure(
+    request: Request,
+    body: TriageFailureRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.triage_failure(
+        agent_id=x_agent_id,
+        task_id=body.task_id,
+        test_name=body.test_name,
+        error_excerpt=body.error_excerpt,
+    )
     return envelope_to_response(env, request)
 
 

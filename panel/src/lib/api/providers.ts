@@ -23,6 +23,14 @@ export interface OpenRouterKeyStatus {
   enabled: boolean;
 }
 
+/** Decisions-service tier status (GET /providers/decisions-status). Booleans
+ * only: the OpenRouter key itself never leaves the server. */
+export interface DecisionsStatus {
+  decisions_enabled: boolean;
+  openrouter_opted_in: boolean;
+  openrouter_key_present: boolean;
+}
+
 export interface NebiusKeyStatus {
   has_key: boolean;
   enabled: boolean;
@@ -225,6 +233,13 @@ export const providersApi = {
   getOpenRouterKey: async (): Promise<OpenRouterKeyStatus> => {
     const { data } = await api.get<OpenRouterKeyStatus>(
       "/providers/openrouter-key",
+    );
+    return data;
+  },
+
+  getDecisionsStatus: async (): Promise<DecisionsStatus> => {
+    const { data } = await api.get<DecisionsStatus>(
+      "/providers/decisions-status",
     );
     return data;
   },

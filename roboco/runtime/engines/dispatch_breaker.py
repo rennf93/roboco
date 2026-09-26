@@ -1289,30 +1289,194 @@ class DispatchBreakerEngine(_Base):
         record["last_check"] = now
         self._schedule_respawn_persist(agent_slug, str(task_id), record)
         tripped: bool = record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
-        if tripped:
-            logger.warning(
-                "PM respawn loop detected — skipping spawn",
-                agent_id=agent_slug,
-                task_id=task_id,
-                task_status=current_status,
-                spawn_attempts=record["count"],
-                threshold=self._PM_RESPAWN_MAX_UNPRODUCTIVE,
-                hint=(
-                    "Agent repeatedly spawned without advancing task state. "
-                    "Investigate prompt/schema drift or escalate manually."
-                ),
+        # B37 respawn_verdict: a confident "productive respawn" verdict
+        # overrides the trip (skipping the stall/notify below); None (hold,
+        # or below-floor/no verdict) falls through to today's trip behavior -
+        # the stall marker + one-shot overseer notification ARE the existing
+        # hold-for-human mechanics.
+        spawn_anyway = await self._pm_respawn_spawn_anyway(
+            agent_slug, task_id, current_status, record, tripped
+        )
+        if tripped and not spawn_anyway:
+            await self._pm_trip_stall_notice(
+                agent_slug, task_id, current_status, record
             )
-            # A skipped spawn pauses the loop but can't advance the task; alert
-            # an overseer once so a wedged agent isn't silently stranded, and
-            # record a durable marker on the task itself (readable without
-            # container logs) alongside that one-shot notification. Both are
-            # one-shot per trip, gated by the same `notified` flag.
-            if not record.get("notified"):
-                record["notified"] = True
-                self._schedule_respawn_persist(agent_slug, str(task_id), record)
-                await self._mark_task_stalled(task_id)
-                await self._notify_stuck_agent(agent_slug, task_id, current_status)
-        return tripped
+        return tripped and not spawn_anyway
+
+    async def _pm_respawn_spawn_anyway(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+        tripped: bool,
+    ) -> bool:
+        """B37 respawn_verdict: True when a confident "productive respawn"
+        verdict overrides the trip. Short-circuits exactly as before: the
+        classifier is only consulted when decisions are enabled and the
+        counter actually tripped."""
+        return bool(
+            settings.decisions_enabled
+            and tripped
+            and (
+                await self._decisions_respawn_override(
+                    agent_slug, task_id, current_status, record
+                )
+                is False
+            )
+        )
+
+    async def _pm_trip_stall_notice(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> None:
+        """Log the trip and fire the one-shot stall marker + overseer
+        notification. A skipped spawn pauses the loop but can't advance the
+        task; alert an overseer once so a wedged agent isn't silently
+        stranded, and record a durable marker on the task itself (readable
+        without container logs) alongside that one-shot notification. Both
+        are one-shot per trip, gated by the same `notified` flag. A breaker
+        trip is also an incident class the coroner's fixed hooks (3+
+        bounces, cancel-after-start, budget, stranded) never see, so the
+        B16 decisions-gated postmortem entry is consulted here: it may only
+        ADD a postmortem (ON-mode confident verdict, coroner program armed)
+        and is best-effort to the core stall mechanics."""
+        logger.warning(
+            "PM respawn loop detected — skipping spawn",
+            agent_id=agent_slug,
+            task_id=task_id,
+            task_status=current_status,
+            spawn_attempts=record["count"],
+            threshold=self._PM_RESPAWN_MAX_UNPRODUCTIVE,
+            hint=(
+                "Agent repeatedly spawned without advancing task state. "
+                "Investigate prompt/schema drift or escalate manually."
+            ),
+        )
+        if not record.get("notified"):
+            record["notified"] = True
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            await self._mark_task_stalled(task_id)
+            await self._notify_stuck_agent(agent_slug, task_id, current_status)
+            await self._coroner_wedged_postmortem(
+                agent_slug, task_id, current_status, record
+            )
+
+    async def _coroner_wedged_postmortem(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> None:
+        """B16 coroner_gate: offer the wedged task to the coroner through
+        the decisions-gated entry point. The gate (pilot ON + confident +
+        coroner program armed + one-open-autopsy dedup) decides inside; a
+        failure here degrades to today's behavior (stall notice only) and
+        must never break the breaker tick."""
+        try:
+            from uuid import UUID
+
+            from roboco.db import get_db_context
+            from roboco.services.coroner_engine import CoronerEngine
+
+            async with get_db_context() as db:
+                await CoronerEngine(db).open_for_incident_on_verdict(
+                    UUID(str(task_id)),
+                    kind="wedged",
+                    extra_context={
+                        "agent": agent_slug,
+                        "task_status": current_status,
+                        "spawn_attempts": int(record.get("count") or 0),
+                        "statuses_seen": [
+                            str(s) for s in record.get("seen_statuses") or []
+                        ],
+                    },
+                )
+        except Exception as exc:
+            logger.warning(
+                "coroner wedged-postmortem pass failed (best-effort)",
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                error=str(exc),
+            )
+
+    async def _decisions_respawn_override(
+        self,
+        agent_slug: str,
+        task_id: str,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> bool | None:
+        """B37 respawn_verdict: refine the counters' approximate "wedged"
+        verdict at the trip point.
+
+        Returns False ONLY for an ON-mode, at-floor ``spawn`` verdict
+        (override the trip with one more spawn); every other outcome
+        returns None and keeps today's tripped behavior (the stall
+        marker + overseer notification are the existing hold-for-human
+        mechanics). ``hold-task-for-human`` keeps the trip by design;
+        ``spawn-with-amended-prompt`` and ``kill-task`` have NO breaker
+        mechanics, and re-spawning the identical prompt is exactly the
+        churn the trip exists to stop, so they keep the trip too (the
+        human the stall notice pages can amend or kill). NO_VERDICT
+        (off / shadow / no verdict / below floor) keeps the trip: the
+        pilot must never weaken the wedged-agent protection by default.
+        """
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            async with get_db_context() as db:
+                verdict = await pilots_dispatch.respawn_verdict(
+                    db,
+                    agent_slug=agent_slug,
+                    task_id=str(task_id),
+                    task_status=current_status,
+                    spawn_attempts=int(record.get("count") or 0),
+                    statuses_seen=[str(s) for s in record.get("seen_statuses") or []],
+                )
+            if verdict is pilots_dispatch.RespawnVerdict.SPAWN:
+                logger.info(
+                    "Respawn trip overridden to spawn by Decisions verdict",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return False
+            if verdict is pilots_dispatch.RespawnVerdict.SPAWN_WITH_AMENDED_PROMPT:
+                # No amended-prompt mechanic at the breaker: keep the trip
+                # (the stall notice names the task for a human to amend).
+                logger.info(
+                    "Respawn verdict spawn-with-amended-prompt has no breaker"
+                    " mechanic; keeping the trip (stall notice fired)",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return None
+            if verdict is pilots_dispatch.RespawnVerdict.KILL_TASK:
+                # No kill-task mechanic in the breaker: keep the trip (the
+                # stall notice is the human path to cancellation).
+                logger.info(
+                    "Respawn verdict kill-task has no kill mechanic; keeping"
+                    " the trip (stall notice fired)",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return None
+            # hold-task-for-human and NO_VERDICT: the trip path IS the
+            # hold mechanic.
+            return None
+        except Exception as exc:
+            logger.warning(
+                "respawn verdict decisions pass failed (best-effort)",
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return None
 
     async def _mark_task_stalled(self, task_id: str) -> None:
         """Record a durable stalled marker on the task (breaker-tripped path).

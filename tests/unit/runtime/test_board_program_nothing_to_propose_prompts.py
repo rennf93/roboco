@@ -36,6 +36,7 @@ _PROMPT_BUILDERS: dict[str, str] = {
     "war_room": "_build_war_room_prompt",
     "barfly": "_build_barfly_prompt",
     "dogfood": "_build_dogfood_prompt",
+    "decisions_audit": "_build_decisions_audit_prompt",
 }
 
 

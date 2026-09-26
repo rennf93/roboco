@@ -85,7 +85,16 @@ class MemoryDistiller:
     """Turn a completed task into one curated lesson (best-effort, local LLM)."""
 
     async def distill(self, snapshot: LessonInput) -> str | None:
-        """Return a <=120-word lesson, or None on failure / no real lesson."""
+        """Return a <=120-word lesson, or None on failure / no real lesson.
+
+        B22 memory_distill_gate runs BEFORE the local-LLM call: a
+        confidently not-worthy completion skips both the distill call and
+        the caller's persist (the same seam as a None return here). The
+        gate may only SKIP; it never deletes existing entries. Off /
+        shadow / below-floor / any failure = distill + persist as today.
+        """
+        if await self._decisions_skip(snapshot):
+            return None
         try:
             result = await _chat(_build_prompt(snapshot))
         except Exception as exc:
@@ -96,3 +105,27 @@ class MemoryDistiller:
             return None
         words = lesson.split()
         return " ".join(words[:_MAX_WORDS]) if len(words) > _MAX_WORDS else lesson
+
+    async def _decisions_skip(self, snapshot: LessonInput) -> bool:
+        """True only when the B22 pilot is armed and confident this task
+        holds no persistable lesson. The distiller is session-less, so
+        the pilot opens its own short-lived background session."""
+        if not settings.decisions_enabled:
+            return False
+        try:
+            from roboco.services.decisions import pilots_content
+
+            return await pilots_content.memory_distill_gate(
+                None,
+                title=snapshot.title,
+                acceptance_criteria=list(snapshot.acceptance_criteria),
+                dev_notes=snapshot.dev_notes,
+                qa_notes=snapshot.qa_notes,
+                commit_messages=list(snapshot.commit_messages),
+            )
+        except Exception as exc:
+            logger.warning(
+                "memory distill gate failed (fail-open: distill as today)",
+                error=str(exc),
+            )
+            return False

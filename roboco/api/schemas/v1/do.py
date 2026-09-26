@@ -518,6 +518,24 @@ class TaskTimeRequest(BaseModel):
     task_id: UUID
 
 
+class PreflightDiffRequest(BaseModel):
+    """Task to pre-flight before i_am_done. The agent sends nothing but the
+    task context: the diff, criteria, and questions are composed
+    server-side (spec 6.4)."""
+
+    task_id: UUID
+
+
+class TriageFailureRequest(BaseModel):
+    """Failed test to triage (spec 6.5). The agent sends the test name and
+    the error excerpt; changed files, retry state, and flake history are
+    composed server-side."""
+
+    task_id: UUID
+    test_name: str
+    error_excerpt: str = ""
+
+
 class PRUpdateRequest(BaseModel):
     """Update an open PR's title/body and/or request reviewers.
 

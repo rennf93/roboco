@@ -66,6 +66,11 @@ _DEV_DO = (
     # tree); manifest carries it unconditionally, gated for real by
     # request_render's active-video-task + flag checks.
     "request_render",
+    # Decisions agent lane (spec 6.4/6.5): the pre-submit self-check and
+    # red-test triage. Advisory only; the server composes the state, and
+    # the decisions master flag + per-pilot mode gate for real.
+    "preflight_diff",
+    "triage_failure",
     *_NOTIFY_RECEIVER,
 )
 
@@ -84,6 +89,8 @@ _QA_DO = (
     # QA's render source is a read-only branch export, never a working tree
     # (see request_render/_render_qa_source); gated the same way as above.
     "request_render",
+    # Decisions agent lane (spec 6.5): red-test triage for the verifier too.
+    "triage_failure",
     *_NOTIFY_RECEIVER,
 )
 

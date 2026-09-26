@@ -143,8 +143,20 @@ def _first_changelog_bullet(changelog: str) -> str:
     return highlights[0] if highlights else ""
 
 
-def _fallback_release_script(version: str, changelog: str, product_name: str) -> str:
-    highlight = _first_changelog_bullet(changelog)
+def _fallback_release_script(
+    version: str,
+    changelog: str,
+    product_name: str,
+    top_highlight: str | None = None,
+) -> str:
+    """Template fallback one-liner. ``top_highlight`` (B23: the pilot's
+    picked lead) overrides the regex first bullet when provided; None
+    keeps the exact pre-B23 behavior."""
+    highlight = (
+        top_highlight
+        if top_highlight is not None
+        else _first_changelog_bullet(changelog)
+    )
     lead = f": {highlight}" if highlight else ""
     return f"{product_name} v{version} just shipped{lead}."
 
@@ -551,8 +563,15 @@ class VideoEngine(BaseService):
         product_name = await get_company_goals_service(
             self.session
         ).resolve_product_name(project)
-        script = await self._draft_release_script(version, changelog, product_name)
-        highlights = _changelog_highlights(changelog)
+        highlights = await self._decisions_top_highlight(
+            version, _changelog_highlights(changelog), product_name
+        )
+        script = await self._draft_release_script(
+            version,
+            changelog,
+            product_name,
+            top_highlight=highlights[0] if highlights else None,
+        )
         brief = _release_video_brief(version, changelog, highlights, product_name)
         return await self.open_video_task(
             occasion=f"release {version}",
@@ -563,8 +582,35 @@ class VideoEngine(BaseService):
             project_id=project_id,
         )
 
+    async def _decisions_top_highlight(
+        self, version: str, highlights: list[str], product_name: str | None
+    ) -> list[str]:
+        """B23 changelog_highlights: the shared pilot picks which parsed
+        highlight leads (today the first bullet leads by regex accident).
+        Mirrors XEngine's identical wrapper; fail-open keeps the input
+        order, i.e. exactly the pre-B23 behavior."""
+        from roboco.services.decisions import pilots_content
+
+        try:
+            return await pilots_content.changelog_highlights_pick(
+                self.session,
+                version=version,
+                product_name=product_name,
+                highlights=highlights,
+            )
+        except Exception as exc:
+            self.log.warning(
+                "video-engine: changelog highlight pick failed (fail-open)",
+                error=str(exc),
+            )
+            return highlights
+
     async def _draft_release_script(
-        self, version: str, changelog: str, product_name: str
+        self,
+        version: str,
+        changelog: str,
+        product_name: str,
+        top_highlight: str | None = None,
     ) -> str:
         try:
             draft = await _chat(_release_video_prompt(version, changelog, product_name))
@@ -575,7 +621,10 @@ class VideoEngine(BaseService):
             )
             draft = None
         return (draft or "").strip() or _fallback_release_script(
-            version, changelog, product_name
+            version,
+            changelog,
+            product_name,
+            top_highlight=top_highlight,
         )
 
     # ---- held draft (materialized once a render pass produces MP4s) -------

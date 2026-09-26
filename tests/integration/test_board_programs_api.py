@@ -260,6 +260,7 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "war_room",
         "barfly",
         "dogfood",
+        "decisions_audit",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"

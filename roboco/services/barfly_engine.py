@@ -46,7 +46,9 @@ from roboco.config import settings
 from roboco.db.tables import XSeenMentionTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
-from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.injection_guard import (
+    screen_external_text_with_decisions,
+)
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.board_programs import program_armed
@@ -154,7 +156,9 @@ class BarflyEngine(BaseService):
             return None
         if await self._already_seen(mention.id):
             return None
-        screened = screen_external_text(mention.text, source=f"x_search:{mention.id}")
+        screened = await screen_external_text_with_decisions(
+            self.session, mention.text, source=f"x_search:{mention.id}"
+        )
         if screened.flagged:
             self.log.warning(
                 "barfly-engine: injection pattern detected in candidate text",

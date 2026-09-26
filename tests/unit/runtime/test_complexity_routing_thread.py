@@ -10,6 +10,7 @@ logic itself is covered in tests/integration/test_llm_routing.py.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,7 +42,15 @@ class _ScalarResult:
 
 
 class _FakeSession:
-    """Minimal async-context-manager session returning a fixed complexity."""
+    """Minimal async-context-manager session returning a fixed task row.
+
+    The lookup selects the whole TaskTable row (the Decisions complexity
+    pilot 6.3 needs title/description/criteria alongside the static
+    complexity); the fake returns a task-like SimpleNamespace whose
+    description is below the pilot's meaningful-length floor so the pilot
+    is skipped and the static estimated_complexity threads through exactly
+    as before.
+    """
 
     def __init__(self, complexity_value: Any) -> None:
         self._complexity_value = complexity_value
@@ -56,7 +65,15 @@ class _FakeSession:
         return None
 
     async def execute(self, _stmt: Any) -> _ScalarResult:
-        return _ScalarResult(self._complexity_value)
+        return _ScalarResult(
+            SimpleNamespace(
+                id="task-123",
+                title="t",
+                description="short",
+                estimated_complexity=self._complexity_value,
+                acceptance_criteria_status=[],
+            )
+        )
 
 
 class _BoomSession(_FakeSession):

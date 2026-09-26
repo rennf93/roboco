@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.repositories.review_findings import STATUS_ADDRESSED
-from roboco.services.second_review import get_second_review_service, task_is_high_stakes
+from roboco.services.second_review import get_second_review_service
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -104,8 +104,11 @@ async def run_second_review_for_gate(
     ``second_review.resolve_second_review_provider`` for why every
     authoring provider must be excluded, not just one. Returns
     ``SecondReviewOutcome.not_applicable()`` when the task doesn't qualify
-    (flag off or below the risk threshold — ``task_is_high_stakes`` already
-    folds both checks together). Otherwise resolves a differing enabled
+    (flag off, below the risk threshold, or — B9 — the decisions
+    high-stakes screen not adding eligibility: the DB-backed entry point
+    folds the deterministic classifier and the may-only-ADD screen
+    together, and with the feature flag off it never consults the
+    classifier at all). Otherwise resolves a differing enabled
     provider via the sibling ``SecondReviewService``; an explicit resolver
     skip (single provider enabled fleet-wide) is returned as-is and never
     blocks the caller. When a provider resolves and a real ``runner`` is
@@ -116,7 +119,7 @@ async def run_second_review_for_gate(
     is reported as an honest skip rather than a false ``ran=True`` — see
     below.
     """
-    if not task_is_high_stakes(task):
+    if not await get_second_review_service(session).is_high_stakes_with_decisions(task):
         return SecondReviewOutcome.not_applicable()
     selection = await get_second_review_service(session).resolve_second_reviewer(
         authoring_provider

@@ -1,0 +1,218 @@
+name: Decisions sidecar
+
+# The Laya tier's live contract: stand up the REAL sidecar (real laya
+# library, real typed-decisions checkpoint, real ONNX inference) and run
+# the orchestrator's own client + schemas against it. This is the layer
+# unit tests cannot give, and it has already earned its keep offline: the
+# checkpoint ships NO laya.onnx (it must be exported at deploy time), and
+# the raw in-process confidence for choice/score is entropy-based and can
+# never clear a 0.7 floor - both found by running laya for real, both
+# invisible to mocked transports.
+#
+# Two jobs, both fail loudly:
+#   live-contract — venv-based: export ONNX, serve docker/decisions/
+#     server.py, run tests/integration/test_decisions_sidecar_live.py.
+#   image-build — builds docker/decisions.Dockerfile (validating the
+#     multi-stage export the NAS image build performs) and smokes the
+#     served container. Pushes only (not pull_request): the torch CPU
+#     wheel + checkpoint download make it the expensive job, and
+#     live-contract already gates PRs.
+
+on:
+  push:
+    branches:
+      - master
+      - slave
+    paths:
+      - 'docker/decisions/**'
+      - 'docker/decisions.Dockerfile'
+      - 'tests/integration/test_decisions_sidecar_live.py'
+      - '.github/workflows/decisions-sidecar.yml'
+  pull_request:
+    paths:
+      - 'docker/decisions/**'
+      - 'docker/decisions.Dockerfile'
+      - 'tests/integration/test_decisions_sidecar_live.py'
+      - '.github/workflows/decisions-sidecar.yml'
+  schedule:
+    # Weekly, Monday 04:23 UTC: the tier drifts upstream (library tags,
+    # checkpoint revisions) without any repo file changing.
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  # The library/checkpoint pins MUST stay in lockstep with
+  # docker/decisions.Dockerfile's LAYA_LIB_TAG / LAYA_HF_REVISION args:
+  # the point of this workflow is to test what ships.
+  LAYA_LIB_TAG: v0.3.20
+  LAYA_HF_REVISION: main
+
+jobs:
+  live-contract:
+    name: Live sidecar contract (real laya)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install repo dependencies
+        run: uv sync --extra dev
+
+      # torch from the CPU index FIRST, so the resolver keeps the CPU
+      # wheel instead of pulling the multi-GB CUDA build to satisfy
+      # laya's core dependency (same ordering as the Dockerfile).
+      - name: Install laya + ONNX toolchain
+        run: |
+          uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install \
+            "laya[onnx] @ git+https://github.com/NandhaKishorM/laya.git@${LAYA_LIB_TAG}" \
+            onnxscript
+
+      - name: Cache the typed-decisions checkpoint
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: laya-typed-decisions-${{ env.LAYA_HF_REVISION }}-${{ hashFiles('.github/workflows/decisions-sidecar.yml') }}
+          restore-keys: |
+            laya-typed-decisions-${{ env.LAYA_HF_REVISION }}-
+            laya-typed-decisions-
+
+      - name: Download the checkpoint
+        run: |
+          uv run python - <<'EOF'
+          import os
+
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id="convaiinnovations/laya",
+              revision=os.environ["LAYA_HF_REVISION"],
+              local_dir="models",
+              allow_patterns=["typed-decisions/**"],
+          )
+          EOF
+
+      - name: Export ONNX (upstream script at the same pin)
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/NandhaKishorM/laya/${LAYA_LIB_TAG}/scripts/export_onnx.py" \
+            -o /tmp/export_onnx.py
+          uv run python /tmp/export_onnx.py \
+            --model models/typed-decisions \
+            --output models/typed-decisions/laya.onnx
+
+      - name: Start the sidecar
+        run: |
+          LAYA_MODELS_DIR="$PWD/models" \
+            uv run python docker/decisions/server.py > /tmp/sidecar.log 2>&1 &
+          echo $! > /tmp/sidecar.pid
+
+      - name: Wait for /health (model load + ONNX session)
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8100/health > /tmp/health.json 2>/dev/null; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::sidecar never became healthy"
+          cat /tmp/sidecar.log
+          exit 1
+
+      - name: Run the live contract suite
+        run: |
+          ROBOCO_SIDECAR_LIVE_URL=http://127.0.0.1:8100 \
+            uv run pytest tests/integration/test_decisions_sidecar_live.py -v
+
+      - name: Stop the sidecar
+        if: always()
+        run: |
+          if [ -f /tmp/sidecar.pid ]; then kill "$(cat /tmp/sidecar.pid)" 2>/dev/null || true; fi
+
+      - name: Upload the sidecar log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-log
+          path: /tmp/sidecar.log
+
+  image-build:
+    name: Sidecar image builds and serves
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the sidecar image (multi-stage ONNX export)
+        run: |
+          docker build -f docker/decisions.Dockerfile \
+            --build-arg LAYA_LIB_TAG=${LAYA_LIB_TAG} \
+            --build-arg LAYA_HF_REVISION=${LAYA_HF_REVISION} \
+            -t roboco-decisions:ci .
+
+      - name: Run the image
+        run: |
+          docker run -d --name sidecar -p 8100:8100 roboco-decisions:ci
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8100/health > /tmp/health.json 2>/dev/null; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::container never became healthy"
+          docker logs sidecar
+          exit 1
+
+      - name: Smoke a decisions POST
+        run: |
+          curl -fsS http://127.0.0.1:8100/api/alpha/decisions \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "model": "convaiinnovations/laya",
+              "state": {"repo": "roboco", "attempt_number": 1},
+              "questions": {
+                "gate": {
+                  "type": "noul",
+                  "instructions": "This failure is transient rather than a code regression."
+                }
+              },
+              "session_id": "ci-image-smoke"
+            }' | tee /tmp/decision.json
+          python3 - <<'EOF'
+          import json
+
+          with open("/tmp/decision.json") as fh:
+              body = json.load(fh)
+          gate = body["answers"]["gate"]
+          assert isinstance(gate["noul"], float), gate
+          assert not isinstance(gate["noul"], bool), gate
+          assert 0.0 <= gate["noul"] <= 1.0, gate
+          assert gate["confidence"] > 0.0, gate
+          print("image smoke: noul is a float probability with confidence — OK")
+          EOF
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f sidecar 2>/dev/null || true
+
+      - name: Upload the container log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-log
+          path: /tmp/health.json

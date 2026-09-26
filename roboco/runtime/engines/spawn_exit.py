@@ -66,6 +66,7 @@ from roboco.runtime.orchestrator import (
     _system_api_headers,
     logger,
 )
+from roboco.services import decisions
 
 if TYPE_CHECKING:
     # Also bound into this module's real (non-TYPE_CHECKING) globals at
@@ -80,6 +81,40 @@ if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
+
+# Decisions pilot 6.2 (parking): the retry_soon lane caps the park at this
+# window (a rolling limit that just reset should be re-probed quickly).
+# fail-open default is today's ladder via PARK_STANDARD.
+_DECISIONS_RETRY_SOON_RETRY_AFTER_S = 60.0
+# Decisions B28 (transcript auto-notes): an assistant text segment shorter
+# than this is chatter, never a durable note candidate.
+_TRANSCRIPT_NOTE_MIN_CHARS = 200
+
+
+def _assistant_block_texts(content: object) -> list[str]:
+    """Text pieces of one assistant message content payload: per-block text
+    for a content list, the whole string for a plain-string payload."""
+    texts: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text") or ""
+                if text.strip():
+                    texts.append(text)
+    elif isinstance(content, str) and content.strip():
+        texts.append(content)
+    return texts
+
+
+def _assistant_texts_from_transcript_entry(entry: object) -> str:
+    """Joined assistant text of one transcript .jsonl line, '' when the line
+    is not an assistant message with text content."""
+    message = entry.get("message") if isinstance(entry, dict) else None
+    if not isinstance(message, dict):
+        return ""
+    if message.get("role") != "assistant":
+        return ""
+    return "\n".join(_assistant_block_texts(message.get("content"))).strip()
 
 
 class SpawnExitEngine(_Base):
@@ -333,6 +368,11 @@ class SpawnExitEngine(_Base):
         The record is mirrored to `waiting_records` in Postgres so a later
         orchestrator restart can still resolve the wait.
         """
+        # B40 park_cause: attach the Decisions exit-cause line when one was
+        # stashed for this agent (additive context field only).
+        cause = getattr(self, "_decisions_exit_causes", {}).pop(agent_id, None)
+        if cause:
+            context = {**(context or {}), "decisions_park_cause": cause}
         record = WaitingRecord(
             agent_id=agent_id,
             task_id=task_id,
@@ -1157,12 +1197,155 @@ class SpawnExitEngine(_Base):
                         estimated_cost_usd=cost,
                         doctrine_version=doctrine_version,
                     )
+
+            # Decisions B28 (spec 7.1 row B28 / rollout stage 4): the
+            # system-side transcript auto-notes pass. The transcript is
+            # already opened here for token sums; this classifies assistant
+            # segments for durable decisions/constraints. Off by default
+            # (decisions.pilot.transcript_notes); never blocks finalization.
+            await self._capture_transcript_notes(agent_id)
         except Exception as exc:
             logger.warning(
                 "Failed to finalize spawn session",
                 agent_id=agent_id,
                 error=str(exc),
             )
+
+    async def _capture_transcript_notes(self, agent_id: str) -> None:
+        """Persist journal entries for transcript segments the Decisions
+        B28 pilot marks as durable. Shadow mode logs verdicts only; ON mode
+        writes generalized journal entries tagged ``auto-note``. Fail-open
+        end to end: a finalization must never block on journaling."""
+        try:
+            segments = self._assistant_segments_from_transcript(agent_id)
+            if not segments:
+                return
+            instance = self._instances.get(agent_id)
+            task_uuid = instance.current_task_id if instance else None
+            from roboco.db.base import get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as db:
+                await self._write_transcript_auto_notes(
+                    db, agent_id, task_uuid, segments
+                )
+        except Exception as exc:
+            logger.debug(
+                "Transcript auto-notes pass skipped",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
+    async def _write_transcript_auto_notes(
+        self,
+        db: Any,
+        agent_id: str,
+        task_uuid: Any,
+        segments: list[str],
+    ) -> None:
+        """Gate the B28 auto-notes pass on the pilot mode, then persist one
+        journal entry per transcript-note-worthy segment. Caller owns the
+        session and the fail-open except."""
+        from roboco.services.decisions.pilots import (
+            PilotMode,
+            pilot_mode,
+            transcript_note_worthy,
+        )
+
+        mode = await pilot_mode(db, "transcript_notes")
+        if mode is PilotMode.OFF:
+            return
+        verdicts = await transcript_note_worthy(
+            db,
+            task_id=str(task_uuid) if task_uuid else "unattributed",
+            segments=segments,
+        )
+        if verdicts is None or mode is not PilotMode.ON:
+            return
+        from sqlalchemy import select as _select
+
+        from roboco.db.tables import AgentTable
+        from roboco.services.journal import get_journal_service
+
+        agent_uuid = (
+            await db.execute(_select(AgentTable.id).where(AgentTable.slug == agent_id))
+        ).scalar_one_or_none()
+        if agent_uuid is None:
+            return
+        journal_svc = get_journal_service(db)
+        await self._persist_worthy_auto_notes(
+            journal_svc,
+            agent_id,
+            task_uuid,
+            agent_uuid,
+            list(zip(segments, verdicts, strict=False)),
+        )
+        await db.commit()
+        logger.info(
+            "Transcript auto-notes captured",
+            agent_id=agent_id,
+            worthy=sum(1 for v in verdicts if v),
+            considered=len(verdicts),
+        )
+
+    @staticmethod
+    async def _persist_worthy_auto_notes(
+        journal_svc: Any,
+        agent_id: str,
+        task_uuid: Any,
+        agent_uuid: Any,
+        pairs: list[tuple[str, bool]],
+    ) -> None:
+        """Write one journal entry per transcript-note-worthy segment."""
+        from uuid import UUID as _UUID
+
+        from roboco.models.journal import GeneralEntryParams
+
+        for segment, worthy in pairs:
+            if not worthy:
+                continue
+            await journal_svc.add_general_entry(
+                agent_uuid,
+                GeneralEntryParams(
+                    title=f"Auto-note from {agent_id}: {segment[:80]}",
+                    content=segment,
+                    task_id=_UUID(task_uuid) if task_uuid else None,
+                    tags=["auto-note"],
+                ),
+            )
+
+    @staticmethod
+    def _assistant_segments_from_transcript(agent_id: str) -> list[str]:
+        """Assistant text segments (>= 200 chars) from the agent's newest
+        Claude Code transcript, oldest first. Mirrors the resolution of
+        _usage_from_transcript's durable fallback (newest .jsonl in the
+        agent's own projects dir)."""
+        import json as _json
+
+        projects = Path.home() / ".claude" / "projects"
+        try:
+            jsonl = [
+                f
+                for d in projects.glob(f"*-{agent_id}")
+                if d.is_dir()
+                for f in d.glob("*.jsonl")
+            ]
+            if not jsonl:
+                return []
+            newest = max(jsonl, key=lambda f: f.stat().st_mtime)
+            segments: list[str] = []
+            with newest.open() as fh:
+                for line in fh:
+                    try:
+                        entry = _json.loads(line)
+                    except ValueError:
+                        continue
+                    joined = _assistant_texts_from_transcript_entry(entry)
+                    if len(joined) >= _TRANSCRIPT_NOTE_MIN_CHARS:
+                        segments.append(joined)
+            return segments
+        except OSError:
+            return []
 
     @staticmethod
     def _doctrine_version_for_instance(instance: AgentInstance | None) -> str | None:
@@ -1364,6 +1547,13 @@ class SpawnExitEngine(_Base):
         # probe-resume loop revives the task when the limit lifts / overload clears.
         if await self._maybe_park_for_exit_error(agent_id, instance, graceful):
             return
+        # B40 park_cause: when the deterministic park ladders declined and the
+        # exit was a crash, ask the classifier for the one-line cause that the
+        # stranded/waiting notification will carry (additive only - the
+        # ladders keep first refusal on parking, so the verdict never changes
+        # today's classification).
+        if not graceful:
+            await self._decisions_record_exit_cause(agent_id, instance, exit_code)
         if graceful:
             logger.info(
                 "Agent container exited gracefully",
@@ -1384,21 +1574,21 @@ class SpawnExitEngine(_Base):
         instance.container_id = None
         if graceful:
             instance.error_count = 0
-            # Re-arm the auth-missing CEO notification only when THIS agent
-            # was itself auth-parked and has now exited gracefully - proof
-            # the credential is back. An unrelated agent of the same
-            # provider finishing normally mid-outage must not clear the
-            # flag, or the next auth crash pages the CEO again for the same
-            # still-dead credential.
-            if agent_id in self._auth_parked_agents:
-                self._auth_parked_agents.discard(agent_id)
-                provider_type = (
-                    instance.config.provider_type if instance.config else None
-                )
-                if provider_type is not None:
-                    self._auth_ceo_notified.discard(provider_type)
+            self._rearm_auth_ceo_notify(agent_id, instance)
             return
         await self._crash_retry_or_escalate(agent_id, instance)
+
+    def _rearm_auth_ceo_notify(self, agent_id: str, instance: Any) -> None:
+        """Re-arm the auth-missing CEO notification only when THIS agent was
+        itself auth-parked and has now exited gracefully - proof the
+        credential is back. An unrelated agent of the same provider finishing
+        normally mid-outage must not clear the flag, or the next auth crash
+        pages the CEO again for the same still-dead credential."""
+        if agent_id in self._auth_parked_agents:
+            self._auth_parked_agents.discard(agent_id)
+            provider_type = instance.config.provider_type if instance.config else None
+            if provider_type is not None:
+                self._auth_ceo_notified.discard(provider_type)
 
     async def _log_stopped_container(
         self, agent_id: str, container_id: str | None, exit_code: int | None
@@ -1471,6 +1661,46 @@ class SpawnExitEngine(_Base):
                 task_id=instance.current_task_id,
             )
 
+    async def _decisions_record_exit_cause(
+        self, agent_id: str, instance: Any, exit_code: int | None
+    ) -> None:
+        """B40 park_cause: classify the exit cause and stash the one-line
+        cause for the stranded/waiting notification (fail-open: any failure
+        leaves today's classification and notification exactly as they were)."""
+        if not settings.decisions_enabled:
+            return
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.services.decisions import pilots_dispatch
+
+            transcript_tail = None
+            segments = self._assistant_segments_from_transcript(agent_id)
+            if segments:
+                transcript_tail = segments[-1]
+            task_id = getattr(instance, "current_task_id", None)
+            factory = get_session_factory()
+            async with factory() as db:
+                verdict = await pilots_dispatch.park_cause(
+                    db,
+                    agent_id=agent_id,
+                    task_id=str(task_id) if task_id else None,
+                    exit_code=exit_code,
+                    parked_kind=None,
+                    transcript_tail=transcript_tail,
+                )
+            if verdict is None:
+                return
+            _cause, line = verdict
+            causes: dict[str, str] = getattr(self, "_decisions_exit_causes", {})
+            self._decisions_exit_causes = causes
+            causes[agent_id] = line
+        except Exception as exc:
+            logger.debug(
+                "park-cause decisions pass failed (best-effort)",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
     async def _notify_agent_stranded(
         self,
         agent_id: str,
@@ -1513,17 +1743,23 @@ class SpawnExitEngine(_Base):
                 # same value as `auditor.id if auditor else ceo.id`, without the
                 # union-narrowing mypy can't prove.
                 from_agent = recipients[0]
+                # B40 park_cause: append the Decisions one-line cause when the
+                # exit classifier produced one (additive only).
+                cause = getattr(self, "_decisions_exit_causes", {}).pop(agent_id, "")
+                body = (
+                    f"Agent '{agent_id}' exceeded max restart attempts "
+                    f"({error_count}) and will not auto-recover. "
+                    f"Task: {task_id or 'none'}. Manual intervention needed."
+                )
+                if cause:
+                    body = f"{body} {cause}."
                 notification = NotificationTable(
                     type=NotificationType.ALERT,
                     priority=NotificationPriority.HIGH,
                     from_agent=from_agent,
                     to_agents=recipients,
                     subject=f"Agent stranded: {agent_id}",
-                    body=(
-                        f"Agent '{agent_id}' exceeded max restart attempts "
-                        f"({error_count}) and will not auto-recover. "
-                        f"Task: {task_id or 'none'}. Manual intervention needed."
-                    ),
+                    body=body,
                     requires_ack=True,
                 )
                 db.add(notification)
@@ -1891,6 +2127,27 @@ class SpawnExitEngine(_Base):
         probe-resume loop clears it. The task stays claimed/in_progress and is
         retried when the provider recovers.
         """
+        # Decisions pilot 6.2 (spec): a typed routing choice over lanes that
+        # are all already legal behaviors. Below-threshold / no verdict /
+        # shadow resolves to park_standard (exactly today's behavior).
+        lane = await self._decisions_parking_lane(
+            agent_id, provider=provider, kind=kind, task_id=instance.current_task_id
+        )
+        if lane is decisions.ParkingLane.RETRY_SOON:
+            retry_after = min(retry_after, _DECISIONS_RETRY_SOON_RETRY_AFTER_S)
+            logger.info(
+                "decisions parking lane retry_soon: shortened retry-after",
+                agent_id=agent_id,
+                provider=provider,
+                retry_after=retry_after,
+            )
+        elif lane is decisions.ParkingLane.ESCALATE:
+            await self._notify_parking_escalation(
+                agent_id,
+                provider=provider,
+                kind=kind,
+                task_id=instance.current_task_id,
+            )
         await self._finalize_spawn_session(agent_id, exit_reason=kind)
         instance.state = AgentState.OFFLINE
         instance.container_id = None
@@ -1933,6 +2190,103 @@ class SpawnExitEngine(_Base):
             agent_id=agent_id,
             task_id=instance.current_task_id,
         )
+
+    async def _decisions_parking_lane(
+        self,
+        agent_id: str,
+        *,
+        provider: str,
+        kind: str,
+        task_id: Any,
+    ) -> "decisions.ParkingLane":
+        """Decisions pilot 6.2: pick the park lane from the recipient-free
+        state the parking path already holds (tracker probes, episode age,
+        fleet load). Opens its own short-lived DB session because the parking
+        path runs outside any request session; every failure inside is
+        fail-open (PARK_STANDARD)."""
+        try:
+            from roboco.db.base import get_session_factory
+
+            attempts = 1
+            minutes_since_first_attempt = 0.0
+            try:
+                state = await self._make_tracker(provider).get_state()
+                if isinstance(state, dict):
+                    attempts = max(int(state.get("probe_failures") or 0), 1)
+                    activated_at = state.get("activated_at")
+                    if activated_at:
+                        parsed = datetime.fromisoformat(str(activated_at))
+                        minutes_since_first_attempt = max(
+                            (datetime.now(UTC) - parsed).total_seconds() / 60,
+                            0.0,
+                        )
+            except Exception:
+                pass
+
+            fleet_active_tasks = 0
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                from roboco.services.task import get_task_service
+
+                fleet_active_tasks = len(
+                    await get_task_service(db).list_in_progress_or_claimed()
+                )
+                lane = await decisions.parking_route(
+                    db,
+                    agent_slug=agent_id,
+                    verb="park",
+                    task_id=str(task_id) if task_id else None,
+                    upstream_status=None,
+                    attempts=attempts,
+                    minutes_since_first_attempt=minutes_since_first_attempt,
+                    fleet_active_tasks=fleet_active_tasks,
+                    run_id=f"{provider}:{kind}:{agent_id}",
+                )
+                # A fresh park for a subject whose earlier park row is
+                # still recent is the repeated-failure evidence the
+                # escalate option describes: grade the PRIOR rows (the
+                # stamp is bounded to rows created before the repark
+                # window opened, never this fresh one). Best-effort.
+                with contextlib.suppress(Exception):
+                    from roboco.services.decisions import trajectory
+
+                    await trajectory.stamp_parking_repark(
+                        db, f"parking:{provider}:{kind}:{agent_id}"
+                    )
+                return lane
+        except Exception as exc:
+            logger.debug(
+                "decisions parking lane unavailable; park_standard",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+            return decisions.ParkingLane.PARK_STANDARD
+
+    async def _notify_parking_escalation(
+        self, agent_id: str, *, provider: str, kind: str, task_id: Any
+    ) -> None:
+        """The escalate lane of pilot 6.2: a PM-facing ack-required note
+        about repeated park churn. Best-effort; never blocks the park."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            body = (
+                f"[decisions] Repeated {kind} parks on provider {provider} "
+                f"for agent {agent_id}"
+                + (f" (task {task_id})" if task_id else "")
+                + "; the parking router escalated instead of parking silently."
+            )
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent="main-pm",
+                body=body,
+            )
+        except Exception as exc:
+            logger.warning(
+                "failed to send parking escalation notification",
+                agent_id=agent_id,
+                error=str(exc),
+            )
 
     async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
         """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75).

@@ -1541,6 +1541,14 @@ class A2AMessageTable(Base):
     # unspecified messages. Migration 054.
     skill: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # Steering mode from the Decisions steer gate (spec 6.6): one of
+    # steer_switch_consideration | steer_now, or NULL for ordinary
+    # pull-only messages (queue_after_current / fyi_pull and every
+    # pre-Decisions row). A steering message is rendered into the
+    # recipient's NEXT context boundary (spawn briefing or live turn
+    # queue); it never interrupts a turn and never bypasses gates.
+    steering: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     # Threading
     response_to_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -2725,4 +2733,198 @@ class VerbLatencySampleTable(Base):
 
     __table_args__ = (
         Index("ix_verb_latency_samples_verb_created", "verb", "created_at"),
+    )
+
+
+# =============================================================================
+# DECISIONS SERVICE - PERSISTED DECISION LOG
+# =============================================================================
+
+
+class DecisionLogTable(Base):
+    """Persisted record of one Decisions verdict (spec section 4: "if audit
+    needs persistence later, add a decision_log table in a dedicated
+    migration" - the Auditor's daily decisions-audit review is that
+    consumer).
+
+    Written fire-and-forget from the log_action chokepoint every pilot
+    routes through, so on, shadow, and future pilots are all captured with
+    no per-pilot wiring. This table is the baseline history the daily
+    board-program aggregates read: verdict distributions, mean confidence,
+    action counts, and spend per pilot over time.
+
+    Retention: pruned by the decisions-audit board cycle past
+    settings.decisions_log_retention_days.
+    """
+
+    __tablename__ = "decision_log"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    # Which pilot spoke, on which backend tier, in which mode. mode is
+    # "on" or "shadow" (OFF pilots never reach the log).
+    pilot: Mapped[str] = mapped_column(String(60), nullable=False)
+    tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False)
+
+    # Correlation with the orchestrator log line (carries the pilot and
+    # the originating run/task id the caller composed).
+    session_id: Mapped[str | None] = mapped_column(String(280), nullable=True)
+
+    # Typed answers: {"gate": "flaky", ...} keyed per question; confidence
+    # mirrors the keys. JSON so noul floats, choice slugs, and scores all
+    # fit one shape.
+    answers: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    # Training-corpus inputs (migration 106): the state and the question
+    # payload EXACTLY as sent on the wire (spec 3.1 caps applied by the
+    # client). With an outcome, one row is one fine-tunable example; rows
+    # without an outcome are still corpus candidates for bulk labeling.
+    state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    questions: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    # Ground-truth label attached after the fact by an outcome producer
+    # (e.g. the self-heal recurrence check): a short slug such as
+    # "recurred_within_window" / "did_not_recur", with the timestamp of
+    # when it became known. NULL until labeled.
+    outcome: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    outcome_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Per-question fates for BATCHED pilots whose questions each carry
+    # their own truth (e.g. findings_mapping: {"finding_0": "resolved",
+    # "finding_3": "re_raised"}), resolved to golds through the outcome
+    # registry's fate map (migration 107). NULL until labeled.
+    question_outcomes: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
+
+    # The action the caller took (or would have taken, in shadow).
+    action: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+    # Fallback-tier spend (Laya is 0 by construction).
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("ix_decision_log_pilot_created", "pilot", "created_at"),
+        # Outcome producers address rows by (pilot, session_id): the
+        # deterministic per-subject session ids the pilots compose
+        # ("intent:{task_id}", "selfheal:{fingerprint}", ...).
+        Index("ix_decision_log_pilot_session", "pilot", "session_id"),
+    )
+
+
+class CiRunTable(Base):
+    """One observed CI conclusion for a project/workflow (spec 12.1 Wave 3).
+
+    Written by the CI telemetry consumers (ci-watch engine, self-heal
+    engine) once per sweep per distinct reading, deduplicated on
+    (project_slug, workflow, observed_at_str). This is the run history the
+    pull-based telemetry layer otherwise throws away - the outcome
+    labeler grades ci_watch_route and dep_update_risk rows against it.
+    Pruned by the trajectory labeler pass past its retention window.
+    """
+
+    __tablename__ = "ci_runs"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+    project_slug: Mapped[str] = mapped_column(String(200), nullable=False)
+    workflow: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    conclusion: Mapped[str] = mapped_column(String(40), nullable=False)
+    is_breach: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # The CI run's own completion stamp (verbatim from the source) - the
+    # dedup key; None-observed readings dedupe as the empty string.
+    observed_at_str: Mapped[str] = mapped_column(String(80), nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index(
+            "ux_ci_runs_reading",
+            "project_slug",
+            "workflow",
+            "observed_at_str",
+            unique=True,
+        ),
+    )
+
+
+class MemoryRetrievalLogTable(Base):
+    """One institutional-memory item injected into a spawn briefing (spec
+    12.1 Wave 3 instrumentation).
+
+    This is the evidence future knowledge-family graders need: whether a
+    stored lesson/vault note was EVER retrieved for real work. Written
+    best-effort at injection time from the choreographer's memory keystone;
+    pruned by the trajectory labeler pass. No decisions pilot is graded
+    from it yet - transcript_notes/vault_prefilter grading additionally
+    needs a stable note->lesson identity, tracked in the map.
+    """
+
+    __tablename__ = "memory_retrieval_log"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(500), nullable=False)
+    task_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    agent_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class MemoryLinkTable(Base):
+    """Decision-row to knowledge-item linkage (spec 12.1 Wave 5).
+
+    Links one memory-family decision (memory_distill_gate, vault_prefilter)
+    to the knowledge item its decision produced - the distilled learning's
+    source URI, or the board-review draft task created from the note. The
+    trajectory labeler grades the decision by joining the link to the
+    retrieval log / task trajectory. Append-only facts; never overwritten.
+    """
+
+    __tablename__ = "memory_links"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+    pilot: Mapped[str] = mapped_column(String(60), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(280), nullable=False)
+    source: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    __table_args__ = (
+        Index("ix_memory_links_pilot_session", "pilot", "session_id"),
+        Index("ix_memory_links_source", "source"),
     )

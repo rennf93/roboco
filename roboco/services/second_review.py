@@ -110,6 +110,46 @@ def task_is_high_stakes(task: Task) -> bool:
     )
 
 
+async def task_is_high_stakes_with_decisions(session: AsyncSession, task: Task) -> bool:
+    """B9 decisions screen (spec 7.1): a noul "high-stakes" verdict layered
+    ON TOP of the weak threshold + keyword classifier above (explicitly a
+    weak classifier per the survey). MAY ONLY ADD reviews, never subtract:
+    when the deterministic classifier already says True it returns True
+    without a decisions call, and a False from the screen never downgrades
+    anything. Off/shadow/below the 0.8 floors/backend failure = the
+    deterministic verdict unchanged. With ``cross_vendor_review_enabled``
+    OFF the deterministic False means the whole pass is disabled, so the
+    screen is never consulted: a classifier verdict must not re-enable a
+    flag-off feature."""
+    deterministic = task_is_high_stakes(task)
+    if deterministic:
+        return True
+    if not settings.cross_vendor_review_enabled:
+        return False
+    from roboco.services.decisions.pilots_infra import second_review_high_stakes
+
+    haystack = f"{task.title}\n{task.description}".lower()
+    security_relevant = any(
+        keyword in haystack
+        for keyword in settings.cross_vendor_review_security_keywords
+    )
+    try:
+        return await second_review_high_stakes(
+            session,
+            title=task.title,
+            description=task.description,
+            priority=task.priority,
+            adds_migration=task.adds_migration,
+            touches_shared=task.touches_shared,
+            security_relevant=security_relevant,
+        )
+    except Exception:
+        # The screen may only ADD reviews; any failure of the screen itself
+        # degrades to the deterministic verdict (False here), never an
+        # exception into the caller.
+        return False
+
+
 def resolve_second_review_provider(
     authoring_provider: ModelProvider | Sequence[ModelProvider],
     enabled_providers: Sequence[ModelProvider],
@@ -178,6 +218,12 @@ class SecondReviewService(BaseService):
             agent_slug, complexity=complexity
         )
         return await self.resolve_second_reviewer(route.provider_type)
+
+    async def is_high_stakes_with_decisions(self, task: Task) -> bool:
+        """DB-backed B9 entry point mirroring the module-level
+        `task_is_high_stakes_with_decisions`: the deterministic classifier
+        first, the decisions screen may only ADD eligibility."""
+        return await task_is_high_stakes_with_decisions(self.session, task)
 
 
 def get_second_review_service(session: AsyncSession) -> SecondReviewService:

@@ -535,6 +535,13 @@ class A2AChatMessage(RobocoBase):
         default=None, description="Capability this A2A concerns, if any"
     )
 
+    # Decisions steer gate mode (spec 6.6): steer_switch_consideration |
+    # steer_now when the gate marked this message for the recipient's next
+    # context boundary; None = ordinary pull-only delivery.
+    steering: str | None = Field(
+        default=None, description="Steering mode attached by the steer gate"
+    )
+
     # Threading
     response_to_id: str | None = Field(
         default=None, description="ID of message this replies to"

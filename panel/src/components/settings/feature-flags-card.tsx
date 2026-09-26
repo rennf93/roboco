@@ -39,6 +39,12 @@ import { toast } from "sonner";
 
 // One-line blurb per flag so the operator knows what each master switch gates.
 const FLAG_DESCRIPTIONS: Record<string, string> = {
+  decisions_enabled:
+    "Master switch for the Decisions service (typed System One verdicts: choice / score / noul with calibrated confidence). Off = every decision point does exactly what it did before this service existed; nothing else decisions-related has any effect until this is on.",
+  decisions_tier_laya_enabled:
+    "Serve decisions from the self-hosted Laya sidecar (roboco-decisions container) when it is healthy: the built-in default tier, no key, no spend. Inert until that container exists and decisions_enabled above is on.",
+  decisions_tier_openrouter_enabled:
+    "Opt-in fallback tier: serve decisions through the OpenRouter Decisions API when the sidecar is disabled or unhealthy. Opting in is deliberate spend and requires an OpenRouter key on the AI Providers screen (a warning banner appears there while the key is missing).",
   external_pr_enabled:
     "Discover and review inbound external/fork pull requests.",
   internal_pr_enabled:
@@ -117,6 +123,12 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
 // FLAG_DESCRIPTIONS' always-visible paragraph above. Keyed by settings-key,
 // not label text, since label text alone is sometimes ambiguous.
 const FLAG_TOOLTIPS: Record<string, string> = {
+  decisions_enabled:
+    "Master switch for typed System One verdicts; off = tier 3 everywhere.",
+  decisions_tier_laya_enabled:
+    "Serves decisions from the self-hosted sidecar (no key, no spend).",
+  decisions_tier_openrouter_enabled:
+    "Falls back to the paid OpenRouter Decisions API when the sidecar is down.",
   external_pr_enabled:
     "Reviews inbound external/fork pull requests before merge.",
   internal_pr_enabled: "Safety-reviews internal PRs before merge.",

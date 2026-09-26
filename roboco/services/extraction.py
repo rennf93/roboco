@@ -163,12 +163,17 @@ class ExtractionService:
         self._compiled_patterns = self._compile_patterns()
         self._mention_pattern = re.compile(r"@(\w+)")
 
-    async def extract(self, ctx: ExtractionContext) -> ExtractionResult:
+    async def extract(
+        self, ctx: ExtractionContext, *, _pilot_verdicts: list | None = None
+    ) -> ExtractionResult:
         """
         Extract messages from raw content.
 
         Args:
             ctx: Extraction context with content and metadata
+            _pilot_verdicts: internal B10 seam - precomputed confident
+                Decisions verdicts (from ``extract_with_llm``, which must
+                not trigger a second Decisions call). None = compute here.
 
         Returns:
             ExtractionResult with extracted messages
@@ -189,43 +194,37 @@ class ExtractionService:
         pattern_matches: dict[str, list[str]] = {}
         confidence_scores: dict[UUID, float] = {}
 
-        for segment in segments[: self.config.max_segments_per_buffer]:
+        capped_segments = segments[: self.config.max_segments_per_buffer]
+        if _pilot_verdicts is None:
+            # B10 segment_classify: one batched Decisions classification
+            # for the whole buffer; None entries (and an empty list on any
+            # failure/off) keep the regex result per segment.
+            _pilot_verdicts = await self._decisions_segment_types(
+                [s for s in capped_segments if s.strip()]
+            )
+        pilot_verdicts = _pilot_verdicts
+        pilot_idx = 0
+
+        for segment in capped_segments:
             if not segment.strip():
                 continue
 
             # Classify segment
             msg_type, confidence, matches = self._classify_segment(segment)
+            verdict = (
+                pilot_verdicts[pilot_idx] if pilot_idx < len(pilot_verdicts) else None
+            )
+            pilot_idx += 1
+            msg_type, confidence = self._resolved_segment_type(
+                verdict, msg_type, confidence
+            )
 
             # Store pattern matches for debugging
             if matches:
                 pattern_matches[segment[:50]] = matches
 
-            # Extract mentions
-            mentions: list[UUID] = []
-            if self.config.extract_mentions:
-                mention_names = self._mention_pattern.findall(segment)
-                # In production, resolve names to agent UUIDs
-                # For now, just log them
-                if mention_names:
-                    self.log.debug("Found mentions", mentions=mention_names)
-
             # Create message
-            message = ExtractedMessage(
-                id=uuid4(),
-                agent_id=ctx.agent_id,
-                channel_id=ctx.channel_id,
-                group_id=ctx.group_id,
-                session_id=ctx.session_id,
-                type=msg_type,
-                content=segment.strip(),
-                content_length=len(segment.strip()),
-                mentions=mentions,
-                task_id=ctx.task_id,
-                confidence=confidence,
-                raw_excerpt=segment[:MAX_EXCERPT_LENGTH]
-                if len(segment) > MAX_EXCERPT_LENGTH
-                else segment,
-            )
+            message = self._build_segment_message(ctx, segment, msg_type, confidence)
 
             messages.append(message)
             confidence_scores[message.id] = confidence
@@ -248,6 +247,64 @@ class ExtractionService:
         )
 
         return result
+
+    def _resolved_segment_type(
+        self,
+        verdict: tuple[str, float] | None,
+        msg_type: MessageType,
+        confidence: float,
+    ) -> tuple[MessageType, float]:
+        """Apply one confident Decisions pilot verdict on top of the regex
+        classification. A confident verdict REPLACES the regex result (and
+        lets the caller avoid the expensive full-LLM fallback); an unknown
+        type string keeps the regex classification unchanged."""
+        if verdict is None:
+            return msg_type, confidence
+        pilot_type, pilot_confidence = verdict
+        try:
+            resolved = MessageType(pilot_type)
+        except ValueError:
+            return msg_type, confidence
+        return resolved, pilot_confidence
+
+    def _collect_mentions(self, segment: str) -> list[UUID]:
+        """Extract mention names when configured.
+
+        In production, resolve names to agent UUIDs
+        For now, just log them
+        """
+        mentions: list[UUID] = []
+        if not self.config.extract_mentions:
+            return mentions
+        mention_names = self._mention_pattern.findall(segment)
+        if mention_names:
+            self.log.debug("Found mentions", mentions=mention_names)
+        return mentions
+
+    def _build_segment_message(
+        self,
+        ctx: ExtractionContext,
+        segment: str,
+        msg_type: MessageType,
+        confidence: float,
+    ) -> ExtractedMessage:
+        """Create one ExtractedMessage from a classified segment."""
+        return ExtractedMessage(
+            id=uuid4(),
+            agent_id=ctx.agent_id,
+            channel_id=ctx.channel_id,
+            group_id=ctx.group_id,
+            session_id=ctx.session_id,
+            type=msg_type,
+            content=segment.strip(),
+            content_length=len(segment.strip()),
+            mentions=self._collect_mentions(segment),
+            task_id=ctx.task_id,
+            confidence=confidence,
+            raw_excerpt=segment[:MAX_EXCERPT_LENGTH]
+            if len(segment) > MAX_EXCERPT_LENGTH
+            else segment,
+        )
 
     def _segment_content(self, content: str) -> list[str]:
         """
@@ -313,6 +370,32 @@ class ExtractionService:
 
         return best_type, confidence, matches
 
+    async def _decisions_segment_types(
+        self, segments: list[str]
+    ) -> list[tuple[str, float] | None]:
+        """B10 segment_classify: the batched Decisions verdicts for a
+        buffer, ALIGNED with ``segments`` (a None entry = that segment
+        keeps the regex result). Empty list = no verdict anywhere
+        (off/shadow/error/below floor), i.e. regex + fallback exactly as
+        today. The alignment is load-bearing: extract() consumes this
+        list positionally over the non-blank segments, so compacting the
+        Nones out would shift verdicts onto the wrong segments."""
+        if not segments:
+            return []
+        from roboco.config import settings
+
+        if not settings.decisions_enabled:
+            return []
+        try:
+            from roboco.services.decisions import pilots_content
+
+            return list(await pilots_content.segment_classify(None, segments=segments))
+        except Exception as exc:
+            self.log.warning(
+                "Decisions segment classify failed (fail-open)", error=str(exc)
+            )
+            return []
+
     async def _call_anthropic_with_retry(self, client: Any, prompt: str) -> Any:
         """Call Anthropic messages.create with up to MAX_RATE_LIMIT_RETRIES on 429.
 
@@ -376,6 +459,33 @@ class ExtractionService:
 
         toon = ToonAdapter()
 
+        # B10: when every segment gets a confident batched Decisions
+        # verdict, that classification REPLACES this method's expensive
+        # full-LLM fallback entirely (extract() applies the same verdicts
+        # without a second Decisions call). Any unconfident segment keeps
+        # today's path: the Anthropic call below. The list is aligned
+        # with pre_segments (None entries included), so "every segment
+        # confident" is a length-plus-all-present check: an empty list
+        # (pilot off/unreachable) must fall through to the LLM.
+        pre_segments = [
+            s
+            for s in self._segment_content(ctx.content)[
+                : self.config.max_segments_per_buffer
+            ]
+            if s.strip()
+        ]
+        pre_verdicts = await self._decisions_segment_types(pre_segments)
+        if (
+            pre_segments
+            and len(pre_verdicts) == len(pre_segments)
+            and all(v is not None for v in pre_verdicts)
+        ):
+            self.log.info(
+                "Decisions classified every segment; full-LLM fallback skipped",
+                segments=len(pre_segments),
+            )
+            return await self.extract(ctx, _pilot_verdicts=pre_verdicts)
+
         try:
             client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
@@ -401,39 +511,10 @@ Output only valid TOON, no other text."""
 
             # Parse response using TOON (falls back to JSON)
             # Extract text from first TextBlock content
-            response_text = ""
-            for block in response.content:
-                if hasattr(block, "text"):
-                    response_text = block.text
-                    break
+            response_text = self._llm_response_text(response)
             segments = toon.decode(response_text)
 
-            messages: list[ExtractedMessage] = []
-            for segment in segments:
-                if isinstance(segment, dict):
-                    msg_type_str = segment.get("type", "reasoning")
-                    msg_content = segment.get("content", "")
-                    confidence = segment.get("confidence", 0.8)
-                else:
-                    msg_type_str = "reasoning"
-                    msg_content = str(segment)
-                    confidence = 0.8
-                msg_type = MessageType(msg_type_str)
-
-                messages.append(
-                    ExtractedMessage(
-                        id=uuid4(),
-                        content=msg_content,
-                        content_length=len(msg_content),
-                        type=msg_type,
-                        agent_id=ctx.agent_id,
-                        channel_id=ctx.channel_id,
-                        session_id=ctx.session_id,
-                        group_id=ctx.group_id,
-                        task_id=ctx.task_id,
-                        confidence=confidence,
-                    )
-                )
+            messages = self._messages_from_toon_segments(segments, ctx)
 
             return ExtractionResult(
                 messages=messages,
@@ -449,6 +530,47 @@ Output only valid TOON, no other text."""
             # Fall back to pattern matching
             self.log.warning("LLM extraction failed, using patterns", error=str(e))
             return await self.extract(ctx)
+
+    def _llm_response_text(self, response: Any) -> str:
+        """Extract the first text block from an Anthropic response."""
+        response_text = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                response_text = block.text
+                break
+        return response_text
+
+    def _messages_from_toon_segments(
+        self, segments: list[Any] | dict[str, Any], ctx: ExtractionContext
+    ) -> list[ExtractedMessage]:
+        """Turn decoded TOON segments into ExtractedMessage rows."""
+        messages: list[ExtractedMessage] = []
+        for segment in segments:
+            if isinstance(segment, dict):
+                msg_type_str = segment.get("type", "reasoning")
+                msg_content = segment.get("content", "")
+                confidence = segment.get("confidence", 0.8)
+            else:
+                msg_type_str = "reasoning"
+                msg_content = str(segment)
+                confidence = 0.8
+            msg_type = MessageType(msg_type_str)
+
+            messages.append(
+                ExtractedMessage(
+                    id=uuid4(),
+                    content=msg_content,
+                    content_length=len(msg_content),
+                    type=msg_type,
+                    agent_id=ctx.agent_id,
+                    channel_id=ctx.channel_id,
+                    session_id=ctx.session_id,
+                    group_id=ctx.group_id,
+                    task_id=ctx.task_id,
+                    confidence=confidence,
+                )
+            )
+        return messages
 
 
 # =============================================================================

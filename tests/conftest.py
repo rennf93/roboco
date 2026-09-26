@@ -80,6 +80,16 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
+# Isolate every test-spawned git subprocess from the developer machine's
+# global git config. Fixtures commit with throwaway identities ("t <t@t>");
+# a machine that sets core.hooksPath (identity guards) or commit.gpgsign in
+# ~/.gitconfig makes every fixture commit fail before the code under test
+# runs. Mirrors the `-c core.hooksPath=` bypass already used in
+# test_release_manager_engine.py, but applied suite-wide.
+os.environ.setdefault("GIT_CONFIG_GLOBAL", "/dev/null")
+os.environ.setdefault("GIT_CONFIG_SYSTEM", "/dev/null")
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _dispose_global_db_engine() -> AsyncIterator[None]:
     """Never let the lazy global engine outlive the test that created it.

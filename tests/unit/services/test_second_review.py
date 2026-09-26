@@ -13,9 +13,14 @@ Plus the settings-driven risk-threshold classifier (`is_high_stakes` /
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 from roboco.config import settings
 from roboco.models.base import ModelProvider, Team
 from roboco.models.task import Task
@@ -24,6 +29,7 @@ from roboco.services.second_review import (
     is_high_stakes,
     resolve_second_review_provider,
     task_is_high_stakes,
+    task_is_high_stakes_with_decisions,
 )
 
 
@@ -213,3 +219,84 @@ def test_task_is_high_stakes_false_for_routine_task(
         priority=3,
     )
     assert task_is_high_stakes(task) is False
+
+
+# ---------------------------------------------------------------------------
+# B9 task_is_high_stakes_with_decisions: the deterministic classifier is
+# authoritative; the decisions screen may only ADD eligibility, and never
+# re-enables a flag-off pass.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_b9_flag_off_never_consults_the_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With cross_vendor_review_enabled off, deterministic False means the
+    whole pass is disabled: the decisions screen is never consulted, so a
+    classifier verdict cannot implicitly re-enable the feature."""
+    monkeypatch.setattr(settings, "cross_vendor_review_enabled", False)
+    pilot = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "roboco.services.decisions.pilots_infra.second_review_high_stakes",
+        pilot,
+    )
+    assert (
+        await task_is_high_stakes_with_decisions(cast("AsyncSession", None), _task())
+        is False
+    )
+    pilot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_b9_screen_may_add_eligibility(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flag on, deterministic classifier below threshold, decisions screen
+    ON-confident: the task qualifies (may only ADD)."""
+    monkeypatch.setattr(settings, "cross_vendor_review_enabled", True)
+    monkeypatch.setattr(settings, "cross_vendor_review_max_priority", 0)
+    monkeypatch.setattr(
+        "roboco.services.decisions.pilots_infra.second_review_high_stakes",
+        AsyncMock(return_value=True),
+    )
+    assert (
+        await task_is_high_stakes_with_decisions(cast("AsyncSession", None), _task())
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_b9_screen_false_keeps_deterministic_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "cross_vendor_review_enabled", True)
+    monkeypatch.setattr(settings, "cross_vendor_review_max_priority", 0)
+    monkeypatch.setattr(
+        "roboco.services.decisions.pilots_infra.second_review_high_stakes",
+        AsyncMock(return_value=False),
+    )
+    assert (
+        await task_is_high_stakes_with_decisions(cast("AsyncSession", None), _task())
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_b9_deterministic_true_short_circuits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The classifier saying True wins without a decisions call (may only
+    ADD, never need)."""
+    monkeypatch.setattr(settings, "cross_vendor_review_enabled", True)
+    monkeypatch.setattr(settings, "cross_vendor_review_max_priority", 1)
+    pilot = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        "roboco.services.decisions.pilots_infra.second_review_high_stakes",
+        pilot,
+    )
+    assert (
+        await task_is_high_stakes_with_decisions(
+            cast("AsyncSession", None), _task(priority=0)
+        )
+        is True
+    )
+    pilot.assert_not_awaited()

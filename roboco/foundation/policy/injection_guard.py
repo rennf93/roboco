@@ -22,6 +22,21 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import structlog
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+# The B2 decisions screen (spec 7.1) is the one deliberate service-layer
+# import in this foundation module: it is fail-CLOSED (a guardrail may
+# never be less suspicious than the heuristic) and, because this module's
+# import chain never reaches back into the engines that consume it, it is
+# cycle-free at module scope (verified against both import orders).
+from roboco.services.decisions.pilots_infra import injection_screen as _pilot_screen
+
+logger = structlog.get_logger(__name__)
 
 # (pattern, reason) — matched against the lowercased turn text. Anchored
 # loosely since injected content typically appears mid-message when pasted
@@ -68,6 +83,73 @@ def detect_injection(text: str) -> str | None:
         if pattern.search(low):
             return reason
     return None
+
+
+async def decisions_injection_screen(
+    session: AsyncSession, text: str, *, source: str
+) -> bool:
+    """The Decisions (noul) injection screen the regex-only consumers can
+    additionally consult (spec 7.1 row B2, fail-CLOSED posture).
+
+    ``detect_injection`` is sync and widely called, so this is a separate
+    awaitable: ONLY new/updated consumers that already hold a DB session
+    call it, in parallel to their regex screen, and its verdict is a pure
+    UNION of suspicion:
+
+    * True means "treat as flagged" (adds a hit) - it can never downgrade
+      or clear a regex hit.
+    * False (pilot off, shadow, no verdict, backend error, or a confident
+      benign noul) means the pure-regex baseline, exactly today.
+    * When the pilot is ON, below-confidence counts as FLAGGED: a
+      guardrail must never be less suspicious than the heuristic it
+      replaces.
+
+    Any failure here resolves to False (regex baseline); the regex screen
+    itself is unaffected either way.
+    """
+    try:
+        return await _pilot_screen(session, text=text, source=source)
+    except Exception:
+        logger.warning(
+            "injection decisions screen failed; regex baseline stands",
+            source=source,
+        )
+        return False
+
+
+_DECISIONS_FLAG_REASON = "decisions noul screen flagged (fail-closed)"
+
+
+async def screen_external_text_with_decisions(
+    session: AsyncSession, text: str, *, source: str
+) -> ScreenedText:
+    """``screen_external_text`` plus the B2 decisions noul screen, UNIONed.
+
+    The async consumer-facing seam (spec 7.1 row B2): the regex screen runs
+    exactly as always, then the decisions verdict may only ADD suspicion —
+    a flagged text gains one synthetic hit plus one flagged line right
+    under the untrusted-content envelope, so every consumer branch
+    (``.flagged``, ``.hits``, the rendered draft) sees it. False (pilot
+    off, shadow, no verdict, backend error, or a confident benign noul)
+    returns the pure-regex result unchanged.
+
+    Callers must already hold a DB session (the sweep engines do); the
+    session is read-only here and the decisions leg is fail-open to the
+    regex baseline.
+    """
+    screened = screen_external_text(text, source=source)
+    flagged = await decisions_injection_screen(session, text, source=source)
+    if not flagged:
+        return screened
+    lines = screened.rendered.splitlines()
+    # Line 0 is the envelope-open marker, line 1 the caution — the flag
+    # goes right after the caution, before the content lines.
+    lines.insert(2, f"[FLAGGED - possible injection ({_DECISIONS_FLAG_REASON})]")
+    return ScreenedText(
+        raw=screened.raw,
+        hits=[*screened.hits, _DECISIONS_FLAG_REASON],
+        rendered="\n".join(lines),
+    )
 
 
 _ENVELOPE_OPEN = "<<<UNTRUSTED EXTERNAL CONTENT ({source})>>>"

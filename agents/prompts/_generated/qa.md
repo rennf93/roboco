@@ -27,6 +27,7 @@
 | `request_sandbox` | `request_sandbox(services: list[str] | None = None, extensions: str | list[str] | None = None)` |
 | `run_sandbox_tests` | `run_sandbox_tests(command: str, image: str | None = None, timeout_seconds: int | None = None)` |
 | `request_render` | `request_render(composition_id: str | None = None, orientation: str = 'vertical', frame_count: int = 8, input_props: str | Any | None = None)` |
+| `triage_failure` | `triage_failure(task_id: UUID, test_name: str, error_excerpt: str = '')` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
