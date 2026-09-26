@@ -784,6 +784,13 @@ def _spotlight_ranking(probabilities: dict[str, float]) -> list[str] | None:
     return verdict
 
 
+def _spotlight_reject(mode: PilotMode, result: DecisionResult, line: str) -> None:
+    """Log a rejected highlight in every non-OFF mode so the decision_log
+    keeps the rejection cases the Auditor's aggregates read."""
+    if mode is not PilotMode.OFF:
+        log_action("tool_spotlight", mode, None, line, result)
+
+
 async def tool_spotlight(
     session: AsyncSession,
     *,
@@ -830,23 +837,11 @@ async def tool_spotlight(
     confidence = answer.confidence if answer else None
     probabilities = answer.probabilities if answer else {}
     if confidence is None or confidence < TOOL_SPOTLIGHT_CONFIDENCE_FLOOR:
-        # Below floor: log in every non-OFF mode so the decision_log keeps
-        # the rejection cases the Auditor's aggregates read.
-        if mode is not PilotMode.OFF:
-            log_action(
-                "tool_spotlight", mode, None, "below floor; no highlight", result
-            )
+        _spotlight_reject(mode, result, "below floor; no highlight")
         return None
     verdict = _spotlight_ranking(probabilities)
     if verdict is None:
-        if mode is not PilotMode.OFF:
-            log_action(
-                "tool_spotlight",
-                mode,
-                None,
-                "too few ranked verbs; no highlight",
-                result,
-            )
+        _spotlight_reject(mode, result, "too few ranked verbs; no highlight")
         return None
     if mode is PilotMode.SHADOW:
         log_action("tool_spotlight", mode, verdict, "no-op (shadow)", result)

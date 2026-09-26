@@ -69,7 +69,9 @@ def _batch_id(items: list[str]) -> str:
     unrelated batches of the same size do not share one session key."""
     import hashlib
 
-    return hashlib.sha1("\n".join(items).encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(
+        "\n".join(items).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +396,28 @@ class BudgetWrapup(StrEnum):
     ABORT_CLEAN = "abort-clean"
 
 
+def _resolve_wrapup_verdict(
+    choice: str | None, confidence: float | None
+) -> BudgetWrapup:
+    """The parsed wrap-up verdict, degraded to push-to-finish on doubt.
+
+    An unknown choice string and any wrap-up verdict below the confidence
+    floor both fall back to push-to-finish: that IS today's behavior, so
+    every parse or calibration failure degrades to it.
+    """
+    try:
+        verdict = (
+            BudgetWrapup(choice) if choice is not None else BudgetWrapup.PUSH_TO_FINISH
+        )
+    except ValueError:
+        return BudgetWrapup.PUSH_TO_FINISH
+    if verdict is not BudgetWrapup.PUSH_TO_FINISH and (
+        confidence is None or confidence < BUDGET_WRAPUP_CONFIDENCE_FLOOR
+    ):
+        return BudgetWrapup.PUSH_TO_FINISH
+    return verdict
+
+
 async def budget_wrapup_choice(
     session: AsyncSession,
     *,
@@ -459,18 +483,10 @@ async def budget_wrapup_choice(
     if result is None:
         return BudgetWrapup.PUSH_TO_FINISH
     answer = result.answer("gate")
-    choice = answer.choice if answer else None
-    confidence = answer.confidence if answer else None
-    try:
-        verdict = (
-            BudgetWrapup(choice) if choice is not None else BudgetWrapup.PUSH_TO_FINISH
-        )
-    except ValueError:
-        verdict = BudgetWrapup.PUSH_TO_FINISH
-    if verdict is not BudgetWrapup.PUSH_TO_FINISH and (
-        confidence is None or confidence < BUDGET_WRAPUP_CONFIDENCE_FLOOR
-    ):
-        verdict = BudgetWrapup.PUSH_TO_FINISH
+    verdict = _resolve_wrapup_verdict(
+        answer.choice if answer else None,
+        answer.confidence if answer else None,
+    )
     if mode is PilotMode.SHADOW:
         log_action(BUDGET_WRAPUP_SLUG, mode, verdict.value, "no-op (shadow)", result)
         return BudgetWrapup.PUSH_TO_FINISH
@@ -914,6 +930,16 @@ SUBMIT_NOW_SLUG = "submit_now_confidence"
 SUBMIT_NOW_CONFIDENCE_FLOOR = 0.8
 
 
+def _submit_now_stop(
+    mode: PilotMode, result: DecisionResult, score: float | None
+) -> tuple[int | None, bool]:
+    """Log the shadow case (below-floor stays silent unless shadow) and
+    hand the submit decision back to the existing 3-field proxy."""
+    if mode is PilotMode.SHADOW:
+        log_action(SUBMIT_NOW_SLUG, mode, score, "no-op (shadow)", result)
+    return None, False
+
+
 async def submit_now_confidence(
     session: AsyncSession,
     *,
@@ -965,13 +991,10 @@ async def submit_now_confidence(
     score = answer.score if answer else None
     confidence = answer.confidence if answer else None
     if score is None or confidence is None or confidence < SUBMIT_NOW_CONFIDENCE_FLOOR:
-        if mode is PilotMode.SHADOW:
-            log_action(SUBMIT_NOW_SLUG, mode, score, "no-op (shadow)", result)
-        return None, False
+        return _submit_now_stop(mode, result, score)
     verdict = max(0, min(2, round(score)))
     if mode is PilotMode.SHADOW:
-        log_action(SUBMIT_NOW_SLUG, mode, verdict, "no-op (shadow)", result)
-        return None, False
+        return _submit_now_stop(mode, result, verdict)
     log_action(SUBMIT_NOW_SLUG, mode, verdict, f"score={verdict}", result)
     return verdict, True
 

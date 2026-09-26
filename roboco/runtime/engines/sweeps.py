@@ -2670,32 +2670,48 @@ class SweepsEngine(_Base):
                     # 0-2 ordinal onto the 0-3 priority column, nudged above the
                     # default 2 so higher-priority reviews dispatch first.
                     created.priority = max(int(created.priority or 2), 1 + priority)
-                if flagged and review_kind == "external_pr":
-                    _markers.set_marker(
-                        created,
-                        "external_pr_injection_flag",
-                        {"flagged": True, "review_kind": review_kind},
-                    )
-                    created.priority = 3
-                    logger.warning(
-                        "External PR flagged by injection screen (fail-closed)",
-                        pr_number=pr.get("number"),
-                        project_slug=str(getattr(project, "slug", "") or ""),
-                        review_kind=review_kind,
-                    )
-                elif flagged:
-                    logger.info(
-                        "Injection noul flagged on a non-external PR; "
-                        "internal reviews keep their structural classification",
-                        pr_number=pr.get("number"),
-                        review_kind=review_kind,
-                    )
+                self._apply_injection_flag(created, project, pr, review_kind, flagged)
                 await task_service.session.flush()
         except Exception as exc:
             logger.warning(
                 "external-PR triage decisions pass failed (best-effort)",
                 pr_number=pr.get("number"),
                 error=str(exc),
+            )
+
+    @staticmethod
+    def _apply_injection_flag(
+        created: Any,
+        project: Any,
+        pr: dict[str, Any],
+        review_kind: str,
+        flagged: bool,
+    ) -> None:
+        """Apply the fail-closed injection screen's outcome.
+
+        A flag on an external PR may only ADD scrutiny (marker + top
+        priority), never clear the structural trust classification; a flag
+        on any other review kind is logged and dropped.
+        """
+        if flagged and review_kind == "external_pr":
+            _markers.set_marker(
+                created,
+                "external_pr_injection_flag",
+                {"flagged": True, "review_kind": review_kind},
+            )
+            created.priority = 3
+            logger.warning(
+                "External PR flagged by injection screen (fail-closed)",
+                pr_number=pr.get("number"),
+                project_slug=str(getattr(project, "slug", "") or ""),
+                review_kind=review_kind,
+            )
+        elif flagged:
+            logger.info(
+                "Injection noul flagged on a non-external PR; "
+                "internal reviews keep their structural classification",
+                pr_number=pr.get("number"),
+                review_kind=review_kind,
             )
 
     @staticmethod

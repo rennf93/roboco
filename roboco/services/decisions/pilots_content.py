@@ -227,7 +227,7 @@ def _batch_id(items: list[str]) -> str:
     import hashlib
 
     joined = "\n".join(items)
-    return hashlib.sha1(joined.encode()).hexdigest()[:12]
+    return hashlib.sha1(joined.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def _capped_options(mapping: dict[str, str]) -> dict[str, str]:

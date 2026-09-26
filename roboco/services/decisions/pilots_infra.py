@@ -332,7 +332,8 @@ async def collision_edges(
     pair_key = hashlib.sha1(
         "\n".join(
             f"{left.get('id')}|{right.get('id')}" for left, right in capped
-        ).encode("utf-8")
+        ).encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()[:12]
     mode, result = await decide_for_pilot(
         session,
@@ -768,7 +769,9 @@ async def semantic_distinct_delivery(
             )
         )
     }
-    content_hash = hashlib.sha1(f"{new_subject}\n{new_body}".encode()).hexdigest()[:12]
+    content_hash = hashlib.sha1(
+        f"{new_subject}\n{new_body}".encode(), usedforsecurity=False
+    ).hexdigest()[:12]
     mode, result = await decide_for_pilot(
         session,
         "notify_dedup",
