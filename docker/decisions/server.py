@@ -227,6 +227,127 @@ def _predict_serialized(agent: Any, state: Any, questions: Any) -> Any:
         return agent.predict(state, questions)
 
 
+def _probability(value: Any) -> float | None:
+    """Coerce one raw model output into a ``[0.0, 1.0]`` probability.
+
+    The library's per-answer shape has varied across revisions (float
+    probability, 0/1 bool, numeric string, ``{"probability": ...}`` dict);
+    the wire format needs a float either way. The orchestrator's parser
+    rejects booleans ON PURPOSE (a bool is not a calibrated confidence),
+    so coercing here - never emitting a bare bool - is what keeps the
+    Laya tier's noul surface alive. NaN and unparseable shapes return
+    None and the answer is omitted entirely, which the client reads as
+    "no verdict for this question" (the fail-open direction, and the
+    fail-CLOSED direction for the injection screens)."""
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, int | float):
+        prob = float(value)
+    elif isinstance(value, str):
+        try:
+            prob = float(value)
+        except ValueError:
+            return None
+    elif isinstance(value, dict):
+        for key in ("probability", "prob", "noul", "confidence", "score"):
+            coerced = _probability(value.get(key))
+            if coerced is not None:
+                return coerced
+        return None
+    else:
+        return None
+    if math.isnan(prob):
+        return None
+    return max(0.0, min(1.0, prob))
+
+
+def _gating_confidence(raw: dict[str, Any]) -> float | None:
+    """The confidence the wire contract means: the probability of the
+    REPORTED answer.
+
+    Verified live against the v0.3.20 library (2026-09-26): the in-process
+    ``Router.predict`` shape carries ``confidence`` as a 1-minus-entropy
+    summary of the whole distribution, which for a 3-option choice rarely
+    exceeds ~0.5 even when the model is decisive (a 0.9/0.05/0.05 split
+    yields ~0.58; measured live: 0.023 for 0.44/0.31/0.25). Gating every
+    pilot's 0.6-0.8 floors on THAT would permanently fail all choice and
+    score pilots open on this tier. The semantics the OpenRouter wire
+    examples show (0.75-0.81) and upstream's own recommended gating field
+    is the answer probability, which we recover in priority order:
+    ``answer_confidence`` when the shape carries it, else the max bucket
+    probability, else the entropy summary as a last resort."""
+    probs = [p for p in (_probability(v) for v in _probs_values(raw)) if p is not None]
+    candidates = [_probability(raw.get("answer_confidence"))]
+    if probs:
+        candidates.append(max(probs))
+    candidates.append(_probability(raw.get("confidence")))
+    for source in candidates:
+        if source is not None:
+            return source
+    return None
+
+
+def _probs_values(raw: dict[str, Any]) -> list[Any]:
+    for key in ("probabilities", "probs"):
+        probs = raw.get(key)
+        if isinstance(probs, dict) and probs:
+            return list(probs.values())
+    return []
+
+
+def build_answers(questions: dict[str, dict[str, Any]], raw_answers: Any) -> dict:
+    """Build the wire answers for one predicted batch, leniently.
+
+    A question whose raw answer carries no usable payload is OMITTED
+    rather than emitted with fabricated zeros: the client's lenient
+    parser treats a missing answer as "no verdict", and the
+    fail-closed consumers flag on exactly that. This function is the
+    single seam the contract test exercises (the orchestrator parses
+    its output under the same schemas.py as OpenRouter's)."""
+    if not isinstance(raw_answers, dict):
+        raw_answers = {}
+    answers: dict[str, dict[str, Any]] = {}
+    for key, spec in questions.items():
+        qtype = spec["type"]
+        raw = raw_answers.get(key) or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        out: dict[str, Any] = {"type": qtype}
+        if qtype == "noul":
+            noul = _probability(raw.get("noul"))
+            if noul is None:
+                continue
+            out["noul"] = noul
+            # A noul's raw confidence is already answer-probability
+            # semantics (max of the two slots: 0.5445 for noul 0.4555,
+            # verified live); the probability itself is the fallback.
+            out["confidence"] = _probability(raw.get("confidence")) or noul
+        elif qtype == "choice":
+            choice = raw.get("choice")
+            confidence = _gating_confidence(raw)
+            if choice is None or confidence is None:
+                continue
+            out["choice"] = str(choice)
+            out["confidence"] = confidence
+            # Probabilities come from the model logits when the library
+            # surfaces them on the answer.
+            probs = raw.get("probabilities") or raw.get("probs")
+            if isinstance(probs, dict) and probs:
+                out["probabilities"] = probs
+        else:  # score
+            score = raw.get("score")
+            confidence = _gating_confidence(raw)
+            if score is None or confidence is None:
+                continue
+            out["score"] = score
+            out["confidence"] = confidence
+            legend = raw.get("legend")
+            if legend:
+                out["legend"] = legend
+        answers[key] = out
+    return answers
+
+
 @app.post("/api/alpha/decisions")
 async def decisions(request: Request) -> dict[str, Any]:
     _check_auth(request)
@@ -240,31 +361,9 @@ async def decisions(request: Request) -> dict[str, Any]:
 
     result = await run_in_threadpool(_predict_serialized, agent, state, questions)
 
-    raw_answers = result.get("answers") or {}
-    answers: dict[str, dict[str, Any]] = {}
-    for key, spec in questions.items():
-        qtype = spec["type"]
-        raw = raw_answers.get(key) or {}
-        out: dict[str, Any] = {"type": qtype}
-        if qtype == "noul":
-            out["noul"] = bool(raw.get("noul"))
-        elif qtype == "choice":
-            out["choice"] = raw.get("choice")
-            out["confidence"] = float(raw.get("confidence") or 0.0)
-            # Probabilities come from the model logits when the library
-            # surfaces them on the answer; confidence is always present.
-            probs = raw.get("probabilities") or raw.get("probs")
-            if probs:
-                out["probabilities"] = probs
-        else:  # score
-            out["score"] = raw.get("score")
-            out["confidence"] = float(raw.get("confidence") or 0.0)
-            legend = raw.get("legend")
-            if legend:
-                out["legend"] = legend
-        answers[key] = out
+    answers = build_answers(questions, (result or {}).get("answers"))
 
-    usage = result.get("usage") or {}
+    usage = (result or {}).get("usage") or {}
     # session_id is accepted but unused: the sidecar is stateless and the
     # client owns session bookkeeping (spec section 4).
     return {
