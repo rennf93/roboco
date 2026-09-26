@@ -94,11 +94,21 @@ class SweepsEngine(_Base):
         state, so an active or page-reloaded chat that keeps exchanging turns is
         never reaped; board-review-parked sessions are exempt. Provider-agnostic
         (Claude + Grok interactive). Disabled when the threshold is 0.
+
+        B25 idle_reaping: when the pilot is ON, a chat in its first extension
+        window (between 1x and 2x the threshold) that the classifier confidently
+        judges NOT abandoned is spared this tick - the TTL effectively extends
+        one window. Past 2x it reaps regardless, and a below-floor/no verdict
+        reaps exactly as today: the verdict may only EXTEND life, never
+        shorten it.
         """
         from roboco.services.prompter_live import get_live_registry
 
         threshold = float(settings.interactive_idle_reap_seconds)
-        for session_id, agent_id in get_live_registry().idle_session_ids(threshold):
+        due = get_live_registry().idle_session_ids(threshold)
+        if due and settings.decisions_enabled:
+            due = await self._decisions_spare_not_abandoned(due, threshold)
+        for session_id, agent_id in due:
             try:
                 if agent_id == INTAKE_AGENT_ID:
                     await self.reap_intake_session(session_id)
@@ -118,6 +128,65 @@ class SweepsEngine(_Base):
                     session_id=session_id,
                     error=str(exc),
                 )
+
+    async def _decisions_spare_not_abandoned(
+        self, due: list[tuple[str, str]], threshold: float
+    ) -> list[tuple[str, str]]:
+        """B25 idle_reaping: drop confidently-not-abandoned chats from the
+        reap list (fail-open: any error reaps exactly as today)."""
+        try:
+            from roboco.services.prompter_live import get_live_registry
+
+            # Sessions already past 2x the threshold always reap; only the
+            # first extension window (1x..2x) gets the verdict.
+            past_extension = {
+                sid for sid, _aid in get_live_registry().idle_session_ids(threshold * 2)
+            }
+            band = [pair for pair in due if pair[0] not in past_extension]
+            if not band:
+                return due
+            verdicts = await self._idle_abandonment_verdicts(band)
+            if not verdicts:
+                return due
+            spares = self._spared_session_ids(band, verdicts)
+            logger.info(
+                "Idle reap extended for confident still-active chats",
+                spared=sorted(spares),
+                considered=len(band),
+            )
+            return [pair for pair in due if pair[0] not in spares]
+        except Exception as exc:
+            logger.warning(
+                "idle-reap decisions pass failed (best-effort)", error=str(exc)
+            )
+            return due
+
+    async def _idle_abandonment_verdicts(
+        self, band: list[tuple[str, str]]
+    ) -> list[bool] | None:
+        """Classifier verdicts for the first-extension-window sessions."""
+        from roboco.db import get_db_context
+        from roboco.services.decisions import pilots_dispatch
+
+        async with get_db_context() as db:
+            return await pilots_dispatch.idle_abandonment_verdicts(
+                db,
+                sessions=[
+                    {
+                        "session_id": sid,
+                        "agent_id": aid,
+                        "idle_band": "one_window_past_threshold",
+                    }
+                    for sid, aid in band
+                ],
+            )
+
+    @staticmethod
+    def _spared_session_ids(
+        band: list[tuple[str, str]], verdicts: list[bool]
+    ) -> set[str]:
+        """Session ids the classifier confidently kept alive."""
+        return {sid for (sid, _aid), keep in zip(band, verdicts, strict=False) if keep}
 
     async def stop_agent(
         self,
@@ -1634,8 +1703,215 @@ class SweepsEngine(_Base):
         task_breach = await self._maybe_task_budget_breach(instance, task_budgets_on)
         tool_call_halt = bool(data and data.get("halt"))
         if not tool_call_halt and task_breach is None:
+            # B32 budget_wrapup: the warn threshold is the last point where a
+            # graceful directive can still reach the agent's turn before the
+            # halt sweep's mid-air stop. Off/below-floor = today exactly (the
+            # hook's canned warn line, nothing orchestrator-side).
+            if data and data.get("warn"):
+                await self._decisions_budget_wrapup_directive(agent_id, instance, data)
             return
         await self._stop_budget_exceeded_agent(agent_id, instance, data, task_breach)
+
+    async def _decisions_budget_wrapup_directive(
+        self, agent_id: str, instance: Any, data: dict[str, Any]
+    ) -> None:
+        """B32 budget_wrapup: ask the wrap-up choice at the warn threshold and
+        act on it (graceful degradation instead of mid-air loss).
+
+        ``push-to-finish`` (and off/shadow/below-floor/no-verdict) does
+        nothing - today's behavior. The wrap-up choices render a directive
+        for the agent's next turn as a notification to the agent plus a
+        durable task marker (the next-tick directive), once per task.
+        ``abort-clean`` releases the task cleanly NOW via the existing
+        graceful stop path instead of letting the halt sweep drop WIP
+        mid-air. Everything is best-effort: a failure here must never turn
+        the warn sweep into a crash.
+        """
+        if not settings.decisions_enabled:
+            return
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            sent: dict[str, bool] = getattr(self, "_decisions_budget_directives", {})
+            self._decisions_budget_directives = sent
+            task_id = instance.current_task_id
+            if task_id and sent.get(str(task_id)):
+                return
+            task_state: dict[str, Any] = {}
+            async with get_db_context() as db:
+                if task_id:
+                    task_state = await self._budget_wrapup_task_state(db, task_id)
+                choice = await pilots_dispatch.budget_wrapup_choice(
+                    db,
+                    agent_id=agent_id,
+                    task_id=str(task_id) if task_id else None,
+                    total_calls=data.get("total"),
+                    halt_threshold=data.get("halt_threshold"),
+                    task_state=task_state,
+                )
+            if choice is pilots_dispatch.BudgetWrapup.PUSH_TO_FINISH:
+                return
+            if task_id:
+                sent[str(task_id)] = True
+            if choice is pilots_dispatch.BudgetWrapup.ABORT_CLEAN:
+                await self._budget_wrapup_abort_clean(agent_id, task_id)
+                return
+            directive = self._budget_wrapup_directive_text(choice)
+            await self._deliver_budget_wrapup_directive(
+                agent_id, task_id, choice, directive
+            )
+        except Exception as exc:
+            logger.warning(
+                "budget wrap-up decisions pass failed (best-effort)",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
+    async def _budget_wrapup_abort_clean(self, agent_id: str, task_id: Any) -> None:
+        """Release the task cleanly NOW via the graceful stop path instead of
+        letting the halt sweep drop WIP mid-air."""
+        logger.info(
+            "Budget wrap-up: aborting cleanly at warn threshold",
+            agent_id=agent_id,
+            task_id=str(task_id) if task_id else None,
+        )
+        await self.stop_agent(
+            agent_id,
+            graceful=True,
+            release_claim=True,
+            stop_reason="budget_wrapup_abort",
+        )
+
+    async def _deliver_budget_wrapup_directive(
+        self,
+        agent_id: str,
+        task_id: Any,
+        choice: Any,
+        directive: str,
+    ) -> None:
+        """Log the issued directive, stamp the task marker, and drop the
+        agent-addressed notification."""
+        logger.info(
+            "Budget wrap-up directive issued",
+            agent_id=agent_id,
+            task_id=str(task_id) if task_id else None,
+            choice=choice.value,
+        )
+        from roboco.db import get_db_context
+
+        async with get_db_context() as db:
+            await self._persist_budget_wrapup_directive(db, task_id, choice, directive)
+            await self._notify_budget_wrapup_directive(
+                db, agent_id, str(task_id) if task_id else None, directive
+            )
+
+    async def _budget_wrapup_task_state(self, db: Any, task_id: Any) -> dict[str, Any]:
+        """Commit/PR state of the wrapped task for the classifier payload."""
+        from uuid import UUID as _UUID
+
+        from roboco.services.task import get_task_service
+
+        task = await get_task_service(db).get(_UUID(str(task_id)))
+        if task is None:
+            return {}
+        return {
+            "commit_count": len(task.commits or []),
+            "pr_created": bool(task.pr_created),
+            "task_status": str(getattr(task, "status", "") or ""),
+        }
+
+    def _budget_wrapup_directive_text(self, choice: Any) -> str:
+        """The next-turn directive text for a wrap-up choice."""
+        from roboco.services.decisions import pilots_dispatch
+
+        if choice is pilots_dispatch.BudgetWrapup.WRAP_UP_AND_SUBMIT:
+            return (
+                "Your tool-call budget is nearly exhausted. Stop starting "
+                "new work: verify what you have and call "
+                "i_am_done(task_id, notes) now to submit it."
+            )
+        return (
+            "Your tool-call budget is nearly exhausted and real work "
+            "remains. Write a handoff note (note(scope='reflect', ...)) "
+            "describing exactly where the work stands, then stop "
+            "cleanly with i_am_idle()."
+        )
+
+    async def _persist_budget_wrapup_directive(
+        self, db: Any, task_id: Any, choice: Any, directive: str
+    ) -> None:
+        """Stamp the durable next-tick marker on the task (when it has one)."""
+        from uuid import UUID as _UUID
+
+        from roboco.foundation.policy.content import markers
+        from roboco.services.task import get_task_service
+
+        if not task_id:
+            return
+        task_service = get_task_service(db)
+        task = await task_service.get(_UUID(str(task_id)))
+        if task is None:
+            return
+        markers.set_marker(
+            task,
+            "budget_wrapup_directive",
+            {"choice": choice.value, "directive": directive},
+        )
+        await db.commit()
+
+    async def _notify_budget_wrapup_directive(
+        self, db: Any, agent_id: str, task_id: str | None, directive: str
+    ) -> None:
+        """Deliver the wrap-up directive as an agent-addressed notification.
+
+        The agent cannot be text-injected mid-turn orchestrator-side (the
+        live-registry deliver pattern only reaches interactive intake/
+        secretary chats), so the notification inbox plus the durable task
+        marker are the sanctioned next-tick channels. Best-effort.
+        """
+        try:
+            from uuid import UUID as _UUID
+
+            from roboco.db.tables import NotificationTable
+            from roboco.models.base import (
+                NotificationPriority,
+                NotificationType,
+            )
+            from roboco.seeds.initial_data import AGENT_UUIDS
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+            from roboco.services.repositories.query_helpers import get_agent_by_slug
+            from roboco.utils.converters import require_uuid
+
+            raw_uuid = AGENT_UUIDS.get(agent_id)
+            agent_uuid: _UUID | None = _UUID(raw_uuid) if raw_uuid else None
+            if agent_uuid is None:
+                agent_row = await get_agent_by_slug(db, agent_id)
+                agent_uuid = cast("_UUID", agent_row.id) if agent_row else None
+            if agent_uuid is None:
+                return
+            notification = NotificationTable(
+                type=NotificationType.ALERT,
+                priority=NotificationPriority.HIGH,
+                from_agent=_foundation.AGENTS["system"].uuid,
+                to_agents=[agent_uuid],
+                subject="Budget wrap-up directive",
+                body=directive + (f" Task: {task_id}." if task_id else ""),
+                requires_ack=False,
+            )
+            db.add(notification)
+            await db.flush()
+            delivery = get_notification_delivery_service(db)
+            await delivery.deliver(require_uuid(notification.id))
+            await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "budget wrap-up notification failed (best-effort)",
+                agent_id=agent_id,
+                error=str(exc),
+            )
 
     async def _maybe_task_budget_breach(
         self, instance: Any, task_budgets_on: bool
@@ -2295,11 +2571,42 @@ class SweepsEngine(_Base):
         """
         if pr.get("number") is None:
             return False
+        source = await self._pr_review_source(task_service, project, pr, allowlist)
+        if source is None:
+            return False
+        created = await task_service.ingest_external_pr(
+            project_id=cast("UUID", project.id),
+            pr=pr,
+            created_by=system_id,
+            team=Team.BOARD,
+            source=source,
+        )
+        if created is not None:
+            await self._decisions_external_pr_triage(task_service, project, pr, created)
+        return created is not None
+
+    async def _pr_review_source(
+        self,
+        task_service: "TaskService",
+        project: Any,
+        pr: dict[str, Any],
+        allowlist: set[str],
+    ) -> str | None:
+        """Classify a qualifying PR as ``external_pr`` / ``internal_pr``;
+        None when it must not be reviewed.
+
+        External/fork PRs (when external review is on and the author is
+        allowed) are ingested as ``external_pr``. Org-repo PRs whose head
+        branch no active task owns (when internal review is on) are ingested
+        as ``internal_pr``; the org's own in-flight integration PRs are
+        skipped, since a live task owns their branch and they already pass
+        QA + PM review.
+        """
         # The reviewer reviews PRs the org did NOT author. Skip PRs opened by the
         # repo-owner account: a self-review can't post REQUEST_CHANGES (GitHub
         # 422), and re-reviewing the org's own in-flight PRs every poll is noise.
         if pr.get("author_is_owner"):
-            return False
+            return None
         # The org's own in-flight PRs are recognized by BRANCH OWNERSHIP, not
         # author identity: with a GitHub App bound, fleet PRs are authored by
         # <app-slug>[bot] whose author_association is NONE, which the external
@@ -2313,25 +2620,99 @@ class SweepsEngine(_Base):
             str(pr.get("head_ref") or ""),
             cast("UUID", project.id),
         ):
-            return False
+            return None
         if self._is_external_pr(pr):
             if not settings.external_pr_enabled or not self._pr_author_allowed(
                 pr, allowlist
             ):
-                return False
-            source = "external_pr"
-        else:
-            if not settings.internal_pr_enabled:
-                return False
-            source = "internal_pr"
-        created = await task_service.ingest_external_pr(
-            project_id=cast("UUID", project.id),
-            pr=pr,
-            created_by=system_id,
-            team=Team.BOARD,
-            source=source,
-        )
-        return created is not None
+                return None
+            return "external_pr"
+        if not settings.internal_pr_enabled:
+            return None
+        return "internal_pr"
+
+    async def _decisions_external_pr_triage(
+        self,
+        task_service: Any,
+        project: Any,
+        pr: dict[str, Any],
+        created: Any,
+    ) -> None:
+        """B14 external_pr_triage: priority score + injection screen (B14).
+
+        The priority ordinal (0-2, confident only) is mapped onto the task's
+        priority column so the review queue ORDER responds; the injection
+        screen is FAIL-CLOSED while the pilot is ON (below-confidence counts
+        as flagged) and flagging may only ADD scrutiny to the structural
+        trust classification above, never clear or downgrade one. The
+        screen runs ONLY on external/fork PRs: the org's own internal PRs
+        already pass QA + PM review, and a classifier outage would
+        otherwise flag every integration PR. The whole best-effort block
+        (pilot reads + priority/marker writes + flush) runs inside a
+        savepoint on the poller's shared session: a failure rolls back
+        cleanly to the un-triaged task instead of poisoning the session
+        or half-applying the priority mutation.
+        """
+        if not settings.decisions_enabled:
+            return
+        review_kind = str(getattr(created, "source", "") or "external_pr")
+        try:
+            from roboco.services.decisions import pilots_dispatch
+
+            async with task_service.session.begin_nested():
+                priority, flagged = await pilots_dispatch.external_pr_triage(
+                    task_service.session,
+                    project_slug=str(getattr(project, "slug", "") or ""),
+                    pr=pr,
+                    review_kind=review_kind,
+                )
+                if priority is not None:
+                    # 0-2 ordinal onto the 0-3 priority column, nudged above the
+                    # default 2 so higher-priority reviews dispatch first.
+                    created.priority = max(int(created.priority or 2), 1 + priority)
+                self._apply_injection_flag(created, project, pr, review_kind, flagged)
+                await task_service.session.flush()
+        except Exception as exc:
+            logger.warning(
+                "external-PR triage decisions pass failed (best-effort)",
+                pr_number=pr.get("number"),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _apply_injection_flag(
+        created: Any,
+        project: Any,
+        pr: dict[str, Any],
+        review_kind: str,
+        flagged: bool,
+    ) -> None:
+        """Apply the fail-closed injection screen's outcome.
+
+        A flag on an external PR may only ADD scrutiny (marker + top
+        priority), never clear the structural trust classification; a flag
+        on any other review kind is logged and dropped.
+        """
+        if flagged and review_kind == "external_pr":
+            _markers.set_marker(
+                created,
+                "external_pr_injection_flag",
+                {"flagged": True, "review_kind": review_kind},
+            )
+            created.priority = 3
+            logger.warning(
+                "External PR flagged by injection screen (fail-closed)",
+                pr_number=pr.get("number"),
+                project_slug=str(getattr(project, "slug", "") or ""),
+                review_kind=review_kind,
+            )
+        elif flagged:
+            logger.info(
+                "Injection noul flagged on a non-external PR; "
+                "internal reviews keep their structural classification",
+                pr_number=pr.get("number"),
+                review_kind=review_kind,
+            )
 
     @staticmethod
     def _pr_author_allowed(pr: dict[str, Any], allowlist: set[str]) -> bool:

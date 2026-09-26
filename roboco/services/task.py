@@ -1071,6 +1071,7 @@ MEGAPHONE_SOURCE = "board_megaphone"
 # already a real PlaybookTable row riding the normal pending-playbook
 # curation queue, so there is no separate materialized-item source.
 LIBRARIAN_SOURCE = "board_librarian"
+DECISIONS_AUDIT_SOURCE = "board_decisions_audit"
 
 # Source tag for a Barfly (Board Program) conversation-reply exploration
 # cycle: a PENDING task the barfly engine opens for the Head of Marketing,
@@ -10024,12 +10025,24 @@ class TaskService(BaseService):
         contributes no edge. ``dev_task_collision_edges`` orders siblings by
         ``(priority, sequence)`` so re-runs only ADD edges (never flip an
         existing pair's order), and ``add_dependency`` dedupes.
+
+        B5 collision_edge: with the master flag on, the deterministic DAG
+        is computed FIRST and stays authoritative; the semantic screen is
+        consulted only for pairs it left unconnected, and its verdicts may
+        only ADD edges (merged acyclically) — flag off skips the ask
+        entirely and the result is byte-identical to the pure analyzer.
         """
+        from roboco.config import settings
         from roboco.services.sequencing import dev_task_collision_edges
 
         siblings = await self.get_subtasks(parent_task_id)
         siblings_by_id = {UUID(str(s.id)): s for s in siblings}
-        edges = dev_task_collision_edges(siblings)
+        if settings.decisions_enabled:
+            from roboco.services.sequencing import semantic_collision_edges
+
+            edges = await semantic_collision_edges(self.session, siblings)
+        else:
+            edges = dev_task_collision_edges(siblings)
         for depends_on_id, task_id in edges:
             held_back_id = UUID(str(task_id))
             blocking_id = UUID(str(depends_on_id))

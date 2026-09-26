@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
-from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.services.base import BaseService
 from roboco.services.notification import NotificationService
 from roboco.services.task import (
@@ -191,6 +191,40 @@ class CiWatchEngine(BaseService):
         self, task_svc: TaskService, project: Any, sample: Any
     ) -> TaskTable:
         slug = str(getattr(project, "slug", "") or sample.repo_hint)
+        # B6 decisions screen (route + urgency): default is exactly today's
+        # Main PM / MEDIUM; an ON-mode confident verdict may reroute to the
+        # project's cell PM (only when the cell mapping resolves here) and
+        # set the urgency tier. Any failure keeps today's shape.
+        assigned_slug = "main-pm"
+        complexity = Complexity.MEDIUM
+        try:
+            from roboco.services.decisions.pilots_infra import (
+                SEVERITY_COMPLEXITY_TIERS,
+                ci_watch_route,
+            )
+
+            route, urgency, confident = await ci_watch_route(
+                self.session,
+                project_slug=slug,
+                workflow=str(
+                    getattr(project, "ci_watch_workflow", None)
+                    or settings.ci_watch_default_workflow
+                ),
+                detail=str(sample.detail or ""),
+            )
+            if confident:
+                if route == "project_cell_pm":
+                    pm_slug = _cell_pm_slug_for(getattr(project, "assigned_cell", None))
+                    if pm_slug:
+                        assigned_slug = pm_slug
+                if urgency is not None:
+                    complexity = Complexity(SEVERITY_COMPLEXITY_TIERS[urgency])
+        except Exception:
+            self.log.warning(
+                "ci-watch decisions route failed; Main PM / MEDIUM as today",
+                repo=slug,
+            )
+        assigned = _foundation.AGENTS[assigned_slug]
         return await task_svc.create(
             TaskCreateRequest(
                 title=f"CI-watch: fix the CI regression on {slug}",
@@ -199,9 +233,9 @@ class CiWatchEngine(BaseService):
                     f"{sample.detail}\n\n"
                     f"Evidence: {sample.raw_ref}\n\n"
                     "This is a Main-PM coordination root: decompose the fix and "
-                    "delegate the code work to a cell dev — the Main PM does not "
+                    "delegate the code work to a cell dev - the Main PM does not "
                     "write the fix itself. This task was opened automatically by "
-                    "the CI-watch loop and is READY TO START NOW — no approval "
+                    "the CI-watch loop and is READY TO START NOW - no approval "
                     "needed; plan the fix and delegate it. It still ships through "
                     "the normal gates (QA, PR review, and the CEO's merge)."
                 ),
@@ -211,12 +245,12 @@ class CiWatchEngine(BaseService):
                     f"CI on {slug}'s default branch is green again and the fix "
                     "merged through the normal gates",
                 ],
-                team=Team.MAIN_PM,
-                assigned_to=_foundation.AGENTS["main-pm"].uuid,
+                team=assigned.team,
+                assigned_to=assigned.uuid,
                 created_by=_foundation.AGENTS["system"].uuid,
                 task_type=TaskType.PLANNING,
                 nature=TaskNature.TECHNICAL,
-                estimated_complexity=Complexity.MEDIUM,
+                estimated_complexity=complexity,
                 project_id=cast("UUID", project.id),
                 status=TaskStatus.PENDING,
                 source=CI_WATCH_SOURCE,

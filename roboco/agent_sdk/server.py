@@ -28,7 +28,6 @@ from roboco.agent_sdk.models import (
     BudgetStatus,
     BudgetToolCalledRequest,
     HealthResponse,
-    InboxResponse,
     MessagePriority,
     PostMortemRequest,
     SendRequest,
@@ -127,13 +126,14 @@ def load_tool_manifest() -> dict[str, object] | None:
 
 app = FastAPI(
     title=f"RoboCo SDK Server ({AGENT_ID})",
-    description="Agent-to-Agent communication server",
+    description="Agent-to-agent communication server",
     version="1.0.0",
 )
 
-# Priority queues (urgent first)
-urgent_inbox: deque[A2AMessage] = deque(maxlen=100)
-normal_inbox: deque[A2AMessage] = deque(maxlen=500)
+# The old in-container priority inbox (urgent_inbox/normal_inbox +
+# /inbox/poll|ack|count) is deleted: steering is orchestrator-composed and
+# delivered at the recipient's context boundaries (spec 6.6), never queued
+# in the container. Inbound A2A flows through the gateway's read_a2a.
 
 
 # =============================================================================
@@ -157,32 +157,23 @@ async def receive_message(msg: A2AMessage) -> dict[str, str]:
     """
     Receive A2A message from another agent.
 
-    Messages are queued by priority for Claude Code to poll.
-    Also persists to database for conversation history.
+    Persists to database for conversation history. Delivery to the agent
+    happens through the gateway's read_a2a or the steering channel's
+    context boundaries, never an in-container queue.
     """
-    # Queue for immediate polling
-    if msg.priority == MessagePriority.URGENT:
-        urgent_inbox.append(msg)
-        logger.info(
-            "Received urgent A2A message",
-            from_agent=msg.from_agent,
-            task_id=msg.task_id,
-            skill=msg.skill,
-        )
-    else:
-        normal_inbox.append(msg)
-        logger.info(
-            "Received A2A message",
-            from_agent=msg.from_agent,
-            task_id=msg.task_id,
-            skill=msg.skill,
-        )
+    logger.info(
+        "Received A2A message",
+        from_agent=msg.from_agent,
+        task_id=msg.task_id,
+        skill=msg.skill,
+        urgent=msg.priority == MessagePriority.URGENT,
+    )
 
     # Also persist to database for conversation history
     # This enables resuming conversations across agent spawns
     await _persist_received_message(msg)
 
-    return {"status": "queued", "message_id": str(msg.id)}
+    return {"status": "received", "message_id": str(msg.id)}
 
 
 async def _persist_received_message(msg: A2AMessage) -> None:
@@ -314,59 +305,13 @@ async def _create_notification_fallback(req: SendRequest) -> None:
 
 
 # =============================================================================
-# INBOX (for Claude Code to poll)
+# INBOX (deleted)
 # =============================================================================
-
-
-@app.get("/inbox/poll", response_model=InboxResponse)
-async def poll_inbox(limit: int = 10) -> InboxResponse:
-    """
-    Poll inbox for pending A2A messages.
-
-    Returns messages in priority order (urgent first).
-    Messages are removed from queue once returned.
-    """
-    messages: list[A2AMessage] = []
-
-    # Urgent first
-    while urgent_inbox and len(messages) < limit:
-        messages.append(urgent_inbox.popleft())
-
-    # Then normal
-    while normal_inbox and len(messages) < limit:
-        messages.append(normal_inbox.popleft())
-
-    if messages:
-        logger.info(
-            "Inbox polled",
-            message_count=len(messages),
-            urgent_remaining=len(urgent_inbox),
-            normal_remaining=len(normal_inbox),
-        )
-
-    return InboxResponse(messages=messages, count=len(messages))
-
-
-@app.post("/inbox/ack/{message_id}")
-async def ack_message(message_id: str) -> dict[str, str]:
-    """
-    Acknowledge message was processed.
-
-    For now, messages are removed on poll. This endpoint exists
-    for future Redis persistence where we might need explicit ACK.
-    """
-    logger.info("Message acknowledged", message_id=message_id)
-    return {"status": "acked", "message_id": message_id}
-
-
-@app.get("/inbox/count")
-async def inbox_count() -> dict[str, int]:
-    """Get count of pending messages without consuming them."""
-    return {
-        "urgent": len(urgent_inbox),
-        "normal": len(normal_inbox),
-        "total": len(urgent_inbox) + len(normal_inbox),
-    }
+# The /inbox/poll, /inbox/ack and /inbox/count routes and their in-memory
+# queues were a dead scaffold: nothing in production ever queued or polled
+# them (agents read A2A through the gateway's read_a2a). Deleted alongside
+# the steering channel (spec 6.6), which delivers context at the
+# orchestrator's boundaries instead of an in-container inbox.
 
 
 # =============================================================================

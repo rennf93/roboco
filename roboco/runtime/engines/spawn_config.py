@@ -1134,11 +1134,13 @@ class SpawnConfigEngine(_Base):
         escalate_to = get_escalation_target(agent_id) or "main-pm"
 
         tool_load_block = self._build_tool_load_block(role)
+        spotlight_line = await self._tool_spotlight_line(agent_id, task_id)
         task_block = ""
         if task_id:
             task = await self._fetch_task_for_briefing(agent_id, task_id)
             if task is not None:
                 task_block = self._format_task_briefing_block(task_id, task)
+        steer_block = await self._steering_briefing_block(agent_id)
         sandbox_line = (
             f"- **Sandbox available:** `{', '.join(sandbox_services)}` — call "
             "`request_sandbox()` to provision on demand\n"
@@ -1150,6 +1152,7 @@ class SpawnConfigEngine(_Base):
             f"# Session briefing — {agent_id}\n"
             "\n"
             f"{tool_load_block}"
+            f"{spotlight_line}"
             "## You are\n"
             f"- **Agent:** `{agent_id}`\n"
             f"- **Role:** {role}\n"
@@ -1158,6 +1161,7 @@ class SpawnConfigEngine(_Base):
             f"- **Workspace:** `{workspace_path}`\n"
             f"{sandbox_line}"
             f"{task_block}"
+            f"{steer_block}"
             "\n## Terminal tools (how to exit cleanly)\n"
             "- `i_am_idle()` — no work remaining (every role)\n"
             "- `i_am_blocked(task_id, reason, ...)` — stuck (developer)\n"
@@ -1196,6 +1200,111 @@ class SpawnConfigEngine(_Base):
             has_task=bool(task_block),
         )
         return path
+
+    async def _steering_briefing_block(self, agent_id: str) -> str:
+        """Steering channel, boundary 1 (spec 6.6): render the agent's
+        unread steering-marked A2A messages into the next-spawn briefing.
+        Rendering never consumes them (read_a2a still delivers); a fetch
+        failure renders nothing. Steering injects context, never commands."""
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.services.a2a import A2AService, render_steering_note
+            from roboco.services.decisions import SteerMode
+            from roboco.services.decisions.context import recipient_work_context
+
+            factory = get_session_factory()
+            async with factory() as db:
+                messages = await A2AService(db).list_unread_steering_messages(agent_id)
+                if not messages:
+                    return ""
+                context = await recipient_work_context(db, agent_id)
+            lines = ["\n## Steering (unread, delivered at this boundary)\n"]
+            for message in messages:
+                try:
+                    mode = SteerMode(message["steering"])
+                except ValueError:
+                    continue
+                lines.append(
+                    render_steering_note(
+                        mode=mode,
+                        sender=message["from_agent"],
+                        content=message["content"],
+                        recipient_context=context,
+                    )
+                )
+                lines.append("")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.debug(
+                "Steering briefing block unavailable",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+            return ""
+
+    async def _tool_spotlight_line(self, agent_id: str, task_id: str | None) -> str:
+        """Tool spotlight (B27, cognition lane): one briefing line naming the
+        5-7 verbs that matter most for THIS task. Purely additive navigation
+        over the action space: the full per-role surface stays in the manifest
+        unchanged, and the highlight is only ever ADDED to the briefing. No
+        task, no verdict, or the pilot off/failing renders nothing at all.
+        Best-effort fail-open throughout."""
+        if not task_id:
+            return ""
+        try:
+            from roboco.services.decisions.pilots import TOOL_SPOTLIGHT_MIN_VERBS
+            from roboco.services.gateway.role_config import get_role_config
+
+            role = get_agent_role(agent_id) or ""
+            try:
+                do_tools = list(get_role_config(role).do_tools)
+            except KeyError:
+                return ""
+            if len(do_tools) < TOOL_SPOTLIGHT_MIN_VERBS:  # below the option band
+                return ""
+            verbs = await self._tool_spotlight_verbs(agent_id, task_id, do_tools)
+            if not verbs:
+                return ""
+            verb_list = ", ".join(f"`{verb}`" for verb in verbs)
+            return (
+                f"\n**Spotlight for this task:** {verb_list} (the full "
+                "surface stays available; these matter most right now)\n"
+            )
+        except Exception as exc:
+            logger.debug(
+                "Tool spotlight line unavailable",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return ""
+
+    async def _tool_spotlight_verbs(
+        self, agent_id: str, task_id: str, do_tools: list[str]
+    ) -> list[str] | None:
+        """Classifier spotlight verbs for this task; [] when the task row or
+        the verdict is missing. Caller owns the fail-open except."""
+        from uuid import UUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.services.decisions import tool_spotlight
+        from roboco.services.task import get_task_service
+
+        title = ""
+        description = ""
+        factory = get_session_factory()
+        async with factory() as db:
+            task = await get_task_service(db).get(UUID(task_id))
+            if task is not None:
+                title = task.title or ""
+                description = task.description or ""
+            return await tool_spotlight(
+                db,
+                agent_slug=agent_id,
+                task_title=title,
+                task_description=description,
+                verbs=do_tools,
+            )
 
     def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
         """Resolve agent UUID to slug. Returns input if already a slug."""

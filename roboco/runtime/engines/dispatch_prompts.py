@@ -34,8 +34,17 @@ else:
     _Base = object
 
 
+# B38 submit_now_confidence legend top: score 2 = "remaining work is
+# zero", the only verdict that lets the brittle proxy's flip stand.
+_SUBMIT_NOW_ZERO_REMAINING = 2
+
+
 class DispatchPromptsEngine(_Base):
     """Mixin holding the "dispatch_prompts" methods moved out of AgentOrchestrator."""
+
+    # B30 context_pruning: fewer description entries than this are never
+    # offered to the pilot (nothing to prune without noise to cut).
+    _CONTEXT_PRUNE_MIN_ENTRIES = 3
 
     def _build_main_pm_triage_prompt(
         self, task: dict[str, Any], *, bounced_block: str = ""
@@ -234,6 +243,7 @@ Start now: evidence(task_id="{task_id}")
         subtasks: list[dict[str, Any]],
         *,
         auto_submit_reason: str | None = None,
+        advisory_line: str = "",
     ) -> str:
         """Prompt for PM closing their own parent task (subtasks terminal).
 
@@ -241,6 +251,10 @@ Start now: evidence(task_id="{task_id}")
         ``_try_auto_submit`` on this PM's behalf and the gate refused it —
         threading the refusal into the prompt so the respawned PM doesn't
         re-run evidence-gathering from scratch to rediscover it blind.
+
+        ``advisory_line`` (B42 pm_closure_confidence) is the system-scored
+        closure-safety advisory - purely informational; the submit gates
+        stay authoritative and deterministic.
         """
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
@@ -256,6 +270,7 @@ Start now: evidence(task_id="{task_id}")
                 "(subtask flipped since) may just need a retry.\n"
             )
         )
+        advisory_note = "" if not advisory_line else f"\n{advisory_line}\n"
 
         subtask_summary = "\n".join(
             f"  - {st.get('title', 'Untitled')} ({st.get('status', 'unknown')})"
@@ -293,7 +308,7 @@ Start now: evidence(task_id="{task_id}")
 
         return f"""You are closing YOUR OWN parent task. All subtasks are
 terminal — promote the merged work one level up the hierarchy.
-{auto_submit_note}
+{auto_submit_note}{advisory_note}
 TASK: {task_id}
 TITLE: {title}
 TEAM: {team}
@@ -596,21 +611,9 @@ the source is not enough; the rendered frames are the evidence.
 
         # Determine workflow state based on task attributes
         has_plan = bool(task.get("plan"))
-        workflow_state = self._get_workflow_state(status, has_plan)
-        # Possibilities-matrix prompt proxy: when the flag is armed and the
-        # task already has commits + an open PR, steer the dev to submit in one
-        # turn instead of re-deriving (re-running gates, re-reading the diff).
-        # This is a cheap sync proxy — the async DB gates (AC coverage, open
-        # findings) are NOT re-checked here; the server fast path
-        # (_i_am_done_fast_path) is the authority and runs them. The prompt
-        # just collapses the 3-5-turn re-derivation to a single i_am_done call.
-        if (
-            settings.possibilities_matrix_enabled
-            and status in ("claimed", "in_progress")
-            and task.get("pr_created")
-            and task.get("commits")
-        ):
-            workflow_state = "WORK_ALREADY_DONE"
+        workflow_state = await self._dev_workflow_state_with_submit_proxy(
+            task, status, has_plan
+        )
         open_findings_block = ""
         if workflow_state == "REVISION_REQUIRED":
             open_findings_block = await self._open_findings_prompt_block(str(task_id))
@@ -625,7 +628,24 @@ the source is not enough; the rendered frames are the evidence.
         # actual ask (file:line targets, constraints, the intake's rationale)
         # instead of hunting in the fog. evidence() carries the full upstream
         # ancestor chain on top; this is the leaf's own brief.
-        desc_block = f"DESCRIPTION:\n{self._description_body(description)}"
+        #
+        # B30 context_pruning: while that pilot is ON, low-value description
+        # entries may be dropped from the injected block (never gates,
+        # findings, acceptance criteria, or blocking info).
+        description_text = self._description_body(description)
+        if settings.decisions_enabled:
+            description_text = await self._decisions_pruned_description(
+                description,
+                task_id=str(task_id),
+                workflow_state=workflow_state,
+                fallback=description_text,
+            )
+        desc_block = f"DESCRIPTION:\n{description_text}"
+
+        # B33 delta_brief: the shared prior-attempt briefing (one classifier,
+        # three trigger points — revision respawn, parked/maintenance resume,
+        # rate-limit resume — all of which respawn through this builder).
+        delta_block = await self._delta_brief_block(task)
 
         return f"""You have been assigned a development task.
 
@@ -642,12 +662,331 @@ and constraints come from the intake analysis and PM decomposition. Re-articulat
 only the HOW (the solution); the WHAT is already decided upstream.
 
 {instructions}
-{video_block}
+{delta_block}{video_block}
 Start by calling evidence(task_id="{task_id}") for full details, acceptance
 criteria, and the upstream parent/ancestor context (the original intake analysis).
 
 When out of work: i_am_idle().
 """
+
+    async def _dev_workflow_state_with_submit_proxy(
+        self, task: dict[str, Any], status: str, has_plan: bool
+    ) -> str:
+        """Workflow state for the dev prompt, with the possibilities-matrix
+        prompt proxy applied.
+
+        When the flag is armed and the task already has commits + an open PR,
+        steer the dev to submit in one turn instead of re-deriving (re-running
+        gates, re-reading the diff). This is a cheap sync proxy; the async DB
+        gates (AC coverage, open findings) are NOT re-checked here; the server
+        fast path (_i_am_done_fast_path) is the authority and runs them. The
+        prompt just collapses the 3-5-turn re-derivation to a single
+        i_am_done call.
+
+        B38 submit_now_confidence: while that pilot is ON, the brittle
+        3-field proxy's flip is gated by a real "remaining work is zero"
+        verdict: a confident zero keeps the flip, a confident not-zero
+        vetoes it back to the state-derived workflow, and a below-floor/
+        missing verdict leaves the proxy in charge exactly as today.
+        """
+        workflow_state = self._get_workflow_state(status, has_plan)
+        if (
+            settings.possibilities_matrix_enabled
+            and status in ("claimed", "in_progress")
+            and task.get("pr_created")
+            and task.get("commits")
+        ):
+            workflow_state = "WORK_ALREADY_DONE"
+            if settings.decisions_enabled and (
+                await self._decisions_submit_now_veto(task)
+            ):
+                workflow_state = self._get_workflow_state(status, has_plan)
+        return workflow_state
+
+    async def _decisions_submit_now_veto(self, task: dict[str, Any]) -> bool:
+        """B38 submit_now_confidence: True when a CONFIDENT classifier verdict
+        is anything short of "remaining work is zero" (vetoing the brittle
+        proxy's WORK_ALREADY_DONE flip).
+
+        Legend: 0 = work remains, 1 = signals conflict, 2 = zero
+        remaining. Only a confident 2 keeps the flip; any confident 0 or
+        1 vetoes it (asymmetric costs: a wrong auto-submit burns a review
+        cycle, a missed one follows today's flow), and any
+        below-floor/missing/unreachable verdict returns False so the
+        proxy decides exactly as today. Fail-open end to end.
+        """
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            commits = task.get("commits") or []
+            task_state = {
+                "commit_count": len(commits),
+                "commit_subjects": [
+                    str(c.get("message") or "")[:80]
+                    for c in commits[:5]
+                    if isinstance(c, dict)
+                ],
+                "pr_created": bool(task.get("pr_created")),
+                "has_plan": bool(task.get("plan")),
+                "status": str(task.get("status") or ""),
+            }
+            async with get_db_context() as db:
+                score, confident = await pilots_dispatch.submit_now_confidence(
+                    db,
+                    task_id=str(task.get("id") or ""),
+                    task_state=task_state,
+                )
+            # Only a confident ZERO_REMAINING ("remaining work is zero")
+            # keeps the proxy's flip; a confident 0 or 1 vetoes (the
+            # server fast path stays the authority).
+            return bool(
+                confident and score is not None and score < _SUBMIT_NOW_ZERO_REMAINING
+            )
+        except Exception as exc:
+            logger.warning(
+                "submit-now confidence check failed (best-effort)", error=str(exc)
+            )
+            return False
+
+    def _context_prune_candidates(
+        self, entries: list[str]
+    ) -> tuple[list[int], list[str]]:
+        """Indices and texts of description entries eligible for dropping.
+
+        Any entry matching a protected pattern (gates, findings, acceptance
+        criteria, blocking info) is never offered for dropping.
+        """
+        import re as _re
+
+        protected = _re.compile(
+            r"(?i)(acceptance criter|finding|blocked|blocker|gate\b"
+            r"|security|secret|credential|must |required|critical"
+            r"|migration|breaking|do not|never )"
+        )
+        droppable = [i for i, e in enumerate(entries) if not protected.search(e)]
+        offered = [entries[i] for i in droppable]
+        return droppable, offered
+
+    def _context_prune_entries(self, description: str | None) -> tuple[str, list[str]]:
+        """Stripped description text and its blank-line-separated entries."""
+        import re as _re
+
+        text = (description or "").strip()
+        entries = [e.strip() for e in _re.split(r"\n\s*\n", text) if e.strip()]
+        return text, entries
+
+    async def _pruned_description_text(
+        self,
+        description: str | None,
+        *,
+        task_id: str,
+        workflow_state: str,
+    ) -> str | None:
+        """Pruned description rendering, or None when the pass does not fire.
+
+        Entries are blank-line-separated paragraphs of the raw description.
+        Only a confident, below-cut relevance verdict drops an entry. Fewer
+        than 3 entries, more than the batch cap, or no droppable entries
+        leaves the description untouched (None).
+        """
+        from roboco.services.decisions import pilots_dispatch
+
+        text, entries = self._context_prune_entries(description)
+        if not (
+            text
+            and len(entries) >= self._CONTEXT_PRUNE_MIN_ENTRIES
+            and len(entries) <= pilots_dispatch.CONTEXT_PRUNE_MAX_ENTRIES
+        ):
+            return None
+        droppable, offered = self._context_prune_candidates(entries)
+        if not droppable or not offered:
+            return None
+        from roboco.db import get_db_context
+
+        async with get_db_context() as db:
+            keeps = await pilots_dispatch.context_relevance_verdicts(
+                db,
+                task_id=task_id,
+                workflow_state=workflow_state,
+                entries=offered,
+            )
+        if keeps and len(keeps) == len(offered):
+            pruned, dropped = self._apply_context_keep_set(entries, droppable, keeps)
+            if dropped > 0:
+                logger.info(
+                    "Pruned low-value context entries from spawn prompt",
+                    task_id=task_id,
+                    dropped=dropped,
+                    kept=len(pruned),
+                )
+                return self._description_body("\n\n".join(pruned))
+        return None
+
+    def _apply_context_keep_set(
+        self,
+        entries: list[str],
+        droppable: list[int],
+        keeps: list[bool],
+    ) -> tuple[list[str], int]:
+        """Drop kept-out entries: returns (pruned entries, dropped count)."""
+        keep_set = {i for i, keep in zip(droppable, keeps, strict=False) if keep}
+        pruned = [
+            e for i, e in enumerate(entries) if i in keep_set or i not in droppable
+        ]
+        return pruned, len(entries) - len(pruned)
+
+    async def _decisions_pruned_description(
+        self,
+        description: str | None,
+        *,
+        task_id: str,
+        workflow_state: str,
+        fallback: str,
+    ) -> str:
+        """B30 context_pruning: drop low-value description entries from the
+        injected block.
+
+        Only a confident, below-cut relevance verdict drops an entry, and
+        fewer than 3 entries, more than the batch cap, or ANY failure
+        returns the original rendering unchanged.
+        """
+        result = fallback
+        try:
+            pruned = await self._pruned_description_text(
+                description, task_id=task_id, workflow_state=workflow_state
+            )
+            if pruned is not None:
+                result = pruned
+        except Exception as exc:
+            logger.warning(
+                "context-pruning decisions pass failed (best-effort)",
+                task_id=task_id,
+                error=str(exc),
+            )
+            result = fallback
+        return result
+
+    async def _delta_brief_block(self, task: dict[str, Any]) -> str:
+        """B33 delta_brief: the shared prior-attempt briefing section.
+
+        ONE classifier serves the three trigger points (spec 7.1): a
+        revision respawn (needs_revision), a parked/maintenance resume,
+        and a rate-limit resume - every one of them respawns the agent
+        through this builder, so the hook lives here rather than in each
+        resume path. Off/shadow/below-floor/fresh-start renders nothing
+        (today's briefing exactly). Findings ride the existing
+        open-findings block; this section adds prior commits, PR state,
+        and elapsed time the respawned dev otherwise never sees.
+        """
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            task_id = str(task.get("id") or "")
+            if not task_id:
+                return ""
+            status = str(task.get("status") or "")
+            trigger = (
+                "revision_respawn" if status == "needs_revision" else "resume_respawn"
+            )
+            task_state, commits = self._delta_brief_task_state(task, status)
+            elapsed_line = self._delta_brief_elapsed_line(task_state, task)
+            async with get_db_context() as db:
+                verdict = await pilots_dispatch.delta_brief(
+                    db,
+                    task_id=task_id,
+                    trigger=trigger,
+                    task_state=task_state,
+                )
+            return self._delta_brief_render(
+                task_id, verdict, task_state, commits, elapsed_line
+            )
+        except Exception as exc:
+            logger.warning(
+                "delta-brief decisions pass failed (best-effort)", error=str(exc)
+            )
+            return ""
+
+    def _delta_brief_task_state(
+        self, task: dict[str, Any], status: str
+    ) -> tuple[dict[str, Any], list[Any]]:
+        """The delta-brief classifier payload plus the dict-valued commits."""
+        commits = [c for c in (task.get("commits") or []) if isinstance(c, dict)]
+        task_state: dict[str, Any] = {
+            "commit_count": len(commits),
+            "commit_subjects": [
+                f"{str(c.get('hash') or '')[:8]} "
+                f"{str(c.get('message') or '')[:80]}".strip()
+                for c in commits[:5]
+            ],
+            "pr_created": bool(task.get("pr_created")),
+            "has_plan": bool(task.get("plan")),
+            "status": status,
+            "updated_at": str(task.get("updated_at") or ""),
+        }
+        return task_state, commits
+
+    def _delta_brief_elapsed_line(
+        self, task_state: dict[str, Any], task: dict[str, Any]
+    ) -> str:
+        """Elapsed-time line for the delta brief, stamping elapsed_minutes
+        into task_state when a start/claim timestamp parses."""
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        started_at = self._parse_iso_dt(task.get("started_at"))
+        if started_at is None:
+            started_at = self._parse_iso_dt(task.get("claimed_at"))
+        if started_at is not None:
+            elapsed = _datetime.now(_UTC) - started_at
+            elapsed_minutes = int(elapsed.total_seconds() // 60)
+            task_state["elapsed_minutes"] = elapsed_minutes
+            return f"- Time on this attempt so far: {elapsed_minutes} min"
+        return ""
+
+    def _delta_brief_render(
+        self,
+        task_id: str,
+        verdict: Any,
+        task_state: dict[str, Any],
+        commits: list[Any],
+        elapsed_line: str,
+    ) -> str:
+        """Render the delta-brief section from the classifier verdict."""
+        from roboco.services.decisions import pilots_dispatch
+
+        if verdict is None:
+            return ""
+        mode, depth = verdict
+        if mode is pilots_dispatch.DeltaBriefMode.FRESH_START_BRIEF or depth == 0:
+            return ""
+        if mode is pilots_dispatch.DeltaBriefMode.WORK_ALREADY_DONE_BRIEF:
+            return (
+                "\n## PRIOR ATTEMPT: WORK APPEARS DONE\n"
+                "A prior attempt on this task left committed work. Check "
+                f'evidence(task_id="{task_id}") and submit via '
+                "i_am_done if the gates pass instead of redoing it.\n"
+            )
+        lines = ["\n## WHERE YOUR PRIOR ATTEMPT LEFT OFF"]
+        if commits:
+            lines.append("- Commits already on the branch (do NOT redo them):")
+            lines.extend(f"  - {s}" for s in task_state["commit_subjects"])
+        else:
+            lines.append("- No commits yet from the prior attempt.")
+        lines.append(
+            "- A PR is already open."
+            if task_state["pr_created"]
+            else "- No PR open yet."
+        )
+        if elapsed_line:
+            lines.append(elapsed_line)
+        lines.append(
+            "- Open review findings, if any, are listed in the workflow "
+            "section above; address them by id."
+        )
+        lines.append("")
+        return "\n".join(lines)
 
     def _build_qa_prompt(self, task: dict[str, Any]) -> str:
         """Build initial prompt for a QA agent."""
@@ -1800,6 +2139,61 @@ there is no separate approval surface.
 
 Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
 not your job here, and the gateway will reject those.
+"""
+
+    def _build_decisions_audit_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        evidence_context: str = "",
+    ) -> str:
+        """Prompt for the Auditor's one-shot daily decisions-audit review
+        (Board Program #15). Auditor-solo, complete-at-note: review the
+        injected decision_log aggregates (yesterday vs. the trailing-week
+        baseline), record per-pilot health via note(), and where the
+        evidence shows miscalibration name the pilot, the numbers, and the
+        recommended knob change. The Auditor never adjusts anything itself
+        - recommendations are requirements the CEO decides; the pilot
+        verdicts being audited were themselves advisory or gated by
+        confidence floors, so this pass audits the evidence, not live
+        gates."""
+        task_id = task.get("id", "unknown")
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        evidence_block = (
+            f"\n## Decision-log evidence gathered for you\n{evidence_context}\n"
+            if evidence_context
+            else ""
+        )
+        return f"""\
+You are the Auditor. It's time for your daily Decisions audit.
+
+TASK: {task_id}
+
+The Decisions service renders typed verdicts (choice/score/noul with
+confidence) that gate or advise fleet decisions; pilots run ON (acting) or
+SHADOW (logged only). Your job is to say, from the evidence, whether each
+pilot is behaving like its confidence numbers mean anything: volume
+collapses or spikes, mean confidence drifting off the threshold it gates
+on, spend anomalies, or a pilot whose actions stopped correlating with
+outcomes.
+{evidence_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the decision-log evidence gathered for you above (per-pilot 24h
+   aggregates vs. the trailing-week baseline). It is server-assembled —
+   you cannot re-run those queries yourself, so start from it.
+3. Judge each active pilot on drift, not on a single day: one noisy window
+   is not miscalibration.
+4. note() your assessment — one line per notable pilot. Where the
+   evidence supports a knob change, name the pilot, the numbers, and your
+   recommended threshold value or shadow/on flip. You never adjust
+   anything yourself; the CEO decides.
+5. If (and only if) the whole window is genuinely unremarkable, call
+   nothing_to_propose(task_id="{task_id}", reason="no pilot anomalous in
+   this window") instead of a filler note — an honest miss is better than
+   manufactured findings.
+6. i_am_idle() — once noted (or declined).
 """
 
     def _build_librarian_prompt(

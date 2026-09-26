@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 BumpKind = Literal["major", "minor", "patch"]
 
 # Kinds that must carry a CHANGELOG line; pure chore/docs/test noise is exempt
@@ -723,4 +725,29 @@ def report_from_dict(data: dict[str, Any]) -> ReleaseReadinessReport:
         ],
         migration_notes=list(data.get("migration_notes", [])),
         gate_state=data.get("gate_state", "unknown"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# B19 advisory risk screen (Decisions pilot, spec 7.1): one score over the
+# whole release. ADVISES the CEO and NEVER decides, blocks, or gates a
+# release: the deterministic classification + gap heuristics above stay the
+# only gating inputs, and off/shadow/below-floor means the output is
+# unchanged.
+# --------------------------------------------------------------------------- #
+
+
+async def decisions_risk_advisory(
+    session: AsyncSession, report: ReleaseReadinessReport
+) -> str | None:
+    """The advisory release-risk line for ``report``, or None (output
+    unchanged). Async only because the screen is; ``assess`` above stays
+    pure and untouched."""
+    from roboco.services.decisions.pilots_infra import release_risk_advisory
+
+    return await release_risk_advisory(
+        session,
+        change_summary=report.change_summary,
+        bump_kind=report.bump_kind,
+        gap_count=len(report.gaps),
     )

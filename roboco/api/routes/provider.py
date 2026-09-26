@@ -20,6 +20,7 @@ from roboco.api.schemas.provider import (
     CatalogEntryResponse,
     ComplexityOverrideRequest,
     ComplexityOverrideResponse,
+    DecisionsStatus,
     GrokKeyStatus,
     HumminKeyStatus,
     ModeResponse,
@@ -50,6 +51,7 @@ from roboco.api.utils.provider import (
     safe_float,
 )
 from roboco.billing.pricing import input_price_per_million
+from roboco.config import settings as roboco_settings
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.models.runtime import ROLE_MODEL_MAP
@@ -392,6 +394,43 @@ async def set_hummin_key(
     return HumminKeyStatus(
         has_key=bool(provider.auth_token_encrypted),
         enabled=provider.enabled,
+    )
+
+
+# =============================================================================
+# DECISIONS TIER STATUS (backs the AI Providers warning banner)
+# =============================================================================
+
+
+@router.get("/decisions-status", response_model=DecisionsStatus)
+async def get_decisions_status(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> DecisionsStatus:
+    """Report the Decisions service's OpenRouter fallback-tier readiness.
+
+    Reads the two roboco.config flags (panel-persisted feature-flag overrides
+    are applied to this singleton at startup) and whether the seeded
+    OPENROUTER provider row carries a stored key. Booleans only: the key
+    itself is never returned. The panel shows a warning banner when
+    `openrouter_opted_in` is true but `openrouter_key_present` is false, so a
+    silently unauthenticated fallback tier is never a surprise.
+    """
+    require_pm_or_above(agent.role, "view the Decisions tier status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    openrouter = next(
+        (p for p in providers if p.type == ModelProvider.OPENROUTER),
+        None,
+    )
+    return DecisionsStatus(
+        decisions_enabled=bool(getattr(roboco_settings, "decisions_enabled", False)),
+        openrouter_opted_in=bool(
+            getattr(roboco_settings, "decisions_tier_openrouter_enabled", False)
+        ),
+        openrouter_key_present=bool(openrouter.auth_token_encrypted)
+        if openrouter is not None
+        else False,
     )
 
 

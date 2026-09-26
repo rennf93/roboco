@@ -78,7 +78,11 @@ COMPOSE=(docker compose -f docker-compose.yaml)
 
 echo "[deploy] app/$COLOR: building images..."
 if [ "$SKIP_BUILD" -eq 0 ]; then
-  "${COMPOSE[@]}" build "orchestrator-$COLOR" "panel-$COLOR"
+  # Non-fatal: a total image wipe also takes roboco-agent-base down with the
+  # app images (2026-09-25); the ensure passes below rebuild everything in
+  # dependency order. Killing the deploy here would defeat that.
+  "${COMPOSE[@]}" build "orchestrator-$COLOR" "panel-$COLOR" ||
+    echo "[deploy] WARNING: app/$COLOR pre-build failed; the ensure pass below will rebuild" >&2
 fi
 
 # Ensure ALL needed images exist BEFORE the new color comes up: the overlap
@@ -98,33 +102,72 @@ while IFS= read -r img; do
     echo "[deploy] $img present, skipping"
   elif docker pull -q "$img" >/dev/null 2>&1; then
     echo "[deploy] $img pulled"
+  elif [ "${img#roboco-}" != "$img" ]; then
+    # Expected: locally built, the build pass below produces it.
+    echo "[deploy] $img not pullable (locally built)"
+  else
+    # Say it NOW, loudly: a silently-failed pull here only surfaces much
+    # later as an obscure "unauthorized" at container creation (the
+    # quay.io/minio 401, 2026-09-25).
+    echo "[deploy] WARNING: $img not present and pull failed; up will fail unless pulled/built later" >&2
   fi
   # Not present and not pullable = locally built; the build pass below
   # handles it (or the build step above already did).
 done < <("${COMPOSE[@]}" config --images)
 
 echo "[deploy] ensuring images: build pass (missing locally-built images)..."
-while IFS= read -r img; do
-  [ -z "$img" ] && continue
-  # The rollback color's app images are rebuilt by its own re-run.
-  case "$img" in *"-$OTHER") continue ;; esac
-  docker image inspect "$img" >/dev/null 2>&1 && continue
-  case "$img" in
-    roboco-*)
-      name="${img#roboco-}"
-      case "$name" in
-        # Per-color images are built by the compose build step above.
-        orchestrator|panel) continue ;;
-      esac
-      if [ -f "docker/$name.Dockerfile" ]; then
-        echo "[deploy] building $img ..."
-        docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" .
-      else
-        echo "[deploy] WARNING: $img missing and no docker/$name.Dockerfile to build it" >&2
-      fi
-      ;;
-  esac
-done < <("${COMPOSE[@]}" config --images)
+# Wipe-proof fixpoint. roboco-agent-base is the root of the agent image DAG:
+# every role image FROMs it, so after a full image wipe all role builds fail
+# until the base exists, and a single-pass, die-on-first-failure loop can
+# never recover (2026-09-25). Build the base first, then repeat rounds over
+# every missing image until a round adds nothing new. One immediate retry
+# per build absorbs transient download resets (dl.k8s.io reset 7 of 8 TLS
+# handshakes from this NAS that day).
+if ! docker image inspect roboco-agent-base >/dev/null 2>&1; then
+  echo "[deploy] building roboco-agent-base (root of the agent image DAG) ..."
+  docker build -q -t roboco-agent-base:latest -f docker/agent-base.Dockerfile . ||
+    docker build -q -t roboco-agent-base:latest -f docker/agent-base.Dockerfile .
+fi
+for round in 1 2 3 4 5 6; do
+  built=0
+  while IFS= read -r img; do
+    [ -z "$img" ] && continue
+    # The rollback color's app images are rebuilt by its own re-run.
+    case "$img" in *"-$OTHER") continue ;; esac
+    docker image inspect "$img" >/dev/null 2>&1 && continue
+    case "$img" in
+      roboco-*)
+        name="${img#roboco-}"
+        case "$name" in
+          # Bare blue names are built by their own deploy run.
+          orchestrator|panel) continue ;;
+          orchestrator-*|panel-*)
+            echo "[deploy] building $img (compose) ..."
+            if "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name"; then
+              built=$((built + 1))
+            else
+              echo "[deploy] WARNING: compose build failed for $img (retried next round)" >&2
+            fi
+            ;;
+          *)
+            if [ -f "docker/$name.Dockerfile" ]; then
+              echo "[deploy] building $img (round $round) ..."
+              if docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" . ||
+                 docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" .; then
+                built=$((built + 1))
+              else
+                echo "[deploy] WARNING: build failed for $img (retried next round)" >&2
+              fi
+            else
+              echo "[deploy] WARNING: $img missing and no docker/$name.Dockerfile to build it" >&2
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done < <("${COMPOSE[@]}" config --images)
+  [ "$built" -eq 0 ] && break
+done
 
 echo "[deploy] ensuring images: reconciliation..."
 while IFS= read -r img; do

@@ -179,7 +179,11 @@ async def test_run_guarded_tolerates_a_transient_renew_raise() -> None:
         return True
 
     async def _work() -> str:
-        await asyncio.sleep(0.02)
+        # 0.15s vs. a 0.005s heartbeat: ~30 renewal ticks, so the recovered
+        # ticks the assertion needs survive even a heavily loaded machine
+        # (under a full-suite run, 0.02s could starve the loop to a single
+        # tick and turn this into a flake).
+        await asyncio.sleep(0.15)
         return "done"
 
     # ttl=60 vs. a sub-second test run: the grace window is enormous, so a

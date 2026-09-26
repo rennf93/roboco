@@ -154,6 +154,12 @@ async def _originate_barfly(session: AsyncSession) -> TaskTable | None:
     return await get_barfly_engine(session).run_cycle()
 
 
+async def _originate_decisions_audit(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.decisions_audit_engine import get_decisions_audit_engine
+
+    return await get_decisions_audit_engine(session).run_cycle()
+
+
 async def _originate_dogfood(session: AsyncSession) -> TaskTable | None:
     """Unlike Coroner's never-firing stub, this is a REAL originator: a
     Dogfood cycle needs no external incident id, just the next opted-in
@@ -189,6 +195,7 @@ _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] =
     "war_room": _originate_war_room,
     "barfly": _originate_barfly,
     "dogfood": _originate_dogfood,
+    "decisions_audit": _originate_decisions_audit,
 }
 
 
@@ -219,6 +226,56 @@ async def pick_rotation_target(
             last_explored.get(cast("UUID", p.id), _NEVER_EXPLORED),
         ),
     )
+
+
+async def pick_rotation_target_with_decisions(
+    session: AsyncSession,
+    projects: list[ProjectTable],
+    *,
+    source: str,
+    program_key: str,
+) -> ProjectTable:
+    """B13 rotation screen wrapped around :func:`pick_rotation_target`.
+
+    The deterministic round-robin pick is computed FIRST and stays the
+    fallback; the decisions ChoiceQuestion may only REPLACE it with a
+    different project from the same opted-in list when the pilot is ON and
+    the verdict is confident. Off/shadow/below-floor/unreachable/name-not-
+    in-list returns the deterministic pick unchanged. Existing callers keep
+    calling ``pick_rotation_target``; only new/updated consumers reach for
+    this (it costs one decisions call when armed)."""
+    deterministic = await pick_rotation_target(session, projects, source=source)
+    if len(projects) <= 1:
+        return deterministic
+    try:
+        from roboco.services.decisions.pilots_infra import board_rotation_target
+
+        last_explored = await _last_explored_at(session, source)
+        idx = await board_rotation_target(
+            session,
+            program_key=program_key,
+            project_slugs=[str(p.slug or p.id) for p in projects],
+            last_explored=[
+                (last_explored.get(cast("UUID", p.id)) or _NEVER_EXPLORED).isoformat()
+                for p in projects
+            ],
+        )
+        if idx is not None:
+            chosen = projects[idx]
+            if chosen.id != deterministic.id:
+                logger.info(
+                    "board-program: decisions rotation override",
+                    program=program_key,
+                    deterministic=str(deterministic.slug),
+                    chosen=str(chosen.slug),
+                )
+            return chosen
+    except Exception:
+        logger.exception(
+            "board-program rotation screen failed; deterministic pick stands",
+            program=program_key,
+        )
+    return deterministic
 
 
 async def _last_explored_at(session: AsyncSession, source: str) -> dict[UUID, datetime]:
@@ -441,6 +498,16 @@ def _legacy_enabled(key: str) -> bool:
         return settings.roadmap_engine_enabled
     if key == "x_feature":
         return settings.x_engine_enabled and settings.x_feature_spotlight_enabled
+    if key == "decisions_audit":
+        # NAS/deploy-level arming (CEO 2026-09-23): the audit loop runs
+        # wherever the Decisions master flag is on AND pilots are env-armed
+        # (the decisions_pilots_* signature) - the registry/user-facing
+        # deploys leave both empty, so the program stays off there and the
+        # panel row (board_program.decisions_audit.enabled) overrides
+        # everywhere.
+        return settings.decisions_enabled and bool(
+            settings.decisions_pilots_on or settings.decisions_pilots_shadow
+        )
     return False
 
 
@@ -585,8 +652,34 @@ class BoardProgramEngine(BaseService):
             last_opened_at=last_opened_at,
             interval_override=_interval_override(key),
         ):
-            return False
+            # B13 decisions screen: an ON-mode confident "due early this
+            # tick" verdict may open the cycle off-schedule (pure
+            # acceleration; it can never DELAY a cycle the cron is due
+            # for). Off/shadow/below-floor keeps today's schedule.
+            if not await self._decisions_due_early(key, last_opened_at):
+                return False
+            self.log.info("board-program: decisions marks due early", program=key)
         return await self._originate_and_record(key) is not None
+
+    async def _decisions_due_early(
+        self, key: str, last_opened_at: datetime | None
+    ) -> bool:
+        """B13 due-early screen, best-effort fail-open (False = today's
+        schedule). Serves all registered programs, not just the
+        pest_control metric predicate."""
+        try:
+            from roboco.services.decisions.pilots_infra import board_due_early
+
+            program = PROGRAMS[key]
+            return await board_due_early(
+                self.session,
+                program_key=key,
+                last_opened_at=(last_opened_at.isoformat() if last_opened_at else None),
+                cron_seconds=program.default_interval_seconds,
+            )
+        except Exception:
+            self.log.exception("board-program due-early screen failed")
+            return False
 
     async def open_program_cycle(self, key: str) -> TaskTable | None:
         """Originate a cycle for ``key`` off-schedule (enabled + dedup only,

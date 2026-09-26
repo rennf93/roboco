@@ -359,6 +359,146 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Decisions service (typed System One decisions, default-off)
+    # ==========================================================================
+    # A small orchestrator-side service that answers TYPED questions (choice /
+    # score / noul) with calibrated confidence at decision points that would
+    # otherwise be a full LLM call or a hardcoded heuristic. Two tiers behind
+    # one wire format: the self-hosted Laya sidecar (roboco-decisions container,
+    # built-in default, no key, no spend) and the OpenRouter Decisions API
+    # (opt-in fallback). With the master flag off, every call site does exactly
+    # what it did before this service existed; decisions can only add
+    # behavior, never subtract, and nothing ever materializes on a verdict
+    # alone. See docs/internal/decisions-spec.md.
+    decisions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the Decisions service. OFF = tier 3 everywhere "
+            "regardless of any other decisions setting: every pilot and verb "
+            "does exactly what it did before. ON = per-tier and per-pilot "
+            "settings decide what actually serves."
+        ),
+    )
+    decisions_model: str = Field(
+        default="convaiinnovations/laya",
+        description=(
+            "Checkpoint id reported to the Decisions backend. Vendor-neutral "
+            "by doctrine: the model slug appears only here, and swapping "
+            "checkpoint weights must never change anything above the client."
+        ),
+    )
+    decisions_base_url: str = Field(
+        default="http://roboco-decisions:8100",
+        description=(
+            "Base URL of the self-hosted Decisions sidecar (the roboco-decisions "
+            "container on the internal bridge). The sidecar mirrors the "
+            "OpenRouter Decisions wire shape at /api/alpha/decisions so the "
+            "client stays one implementation."
+        ),
+    )
+    decisions_tier_laya_enabled: bool = Field(
+        default=True,
+        description=(
+            "Serve decisions from the self-hosted sidecar when it is healthy. "
+            "The BUILT-IN default tier. Inert until the roboco-decisions container "
+            "exists and the master flag is on."
+        ),
+    )
+    decisions_tier_openrouter_enabled: bool = Field(
+        default=False,
+        description=(
+            "OPT-IN fallback tier: serve decisions through the OpenRouter "
+            "Decisions API (typesafe/jev-1.13) when the sidecar is disabled "
+            "or unhealthy. Off by default - opting in is a deliberate spend "
+            "and requires an OpenRouter key on Settings -> AI Providers."
+        ),
+    )
+    decisions_timeout_s: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the local CPU sidecar (single attempt, no "
+            "retries; sweep cadence is the natural backoff)."
+        ),
+    )
+    decisions_openrouter_timeout_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the OpenRouter fallback tier (single "
+            "attempt, no retries)."
+        ),
+    )
+    decisions_cost_alert_usd: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Cumulative daily OpenRouter-fallback Decisions spend (USD, "
+            "summed from per-call usage.cost per UTC day) above which the "
+            "CEO gets one ack-required alert per day. The 402-twice-in-"
+            "an-hour alert is independent of this threshold."
+        ),
+    )
+    decisions_pilots_on: str = Field(
+        default="",
+        description=(
+            "Comma-separated pilot slugs armed ON via env (operator deploys "
+            "like the NAS). A settings-store row always wins over this "
+            "default; slugs in neither list stay OFF. Empty on user-facing "
+            "deploys: nothing acts until the CEO arms pilots from "
+            "Settings -> Decisions Pilots."
+        ),
+    )
+    decisions_pilots_shadow: str = Field(
+        default="",
+        description=(
+            "Comma-separated pilot slugs running in SHADOW via env "
+            "(verdicts logged, behavior unchanged). Settings-store rows "
+            "win; empty default keeps user-facing deploys fully off."
+        ),
+    )
+    decisions_log_retention_days: int = Field(
+        default=90,
+        ge=1,
+        description=(
+            "How long decision_log rows feed the Auditor's baseline history "
+            "before the decisions-audit board cycle prunes them. The daily "
+            "aggregates (verdict distributions, confidence, spend per "
+            "pilot) are computed from this window."
+        ),
+    )
+    decisions_labeler_interval_seconds: int = Field(
+        default=900,
+        ge=60,
+        description=(
+            "Seconds between trajectory-labeler passes over unlabeled "
+            "decision_log rows (spec 12.1). The labeler only writes "
+            "outcome columns; it gates nothing, so it rides the master "
+            "decisions flag with no separate switch."
+        ),
+    )
+    decisions_trajectory_grade_after_hours: int = Field(
+        default=48,
+        ge=1,
+        description=(
+            "Minimum age of a decision row before the trajectory labeler "
+            "grades it: ground truth needs time to exist (a submit must "
+            "have met QA or not, an idle's tasks must have gone somewhere "
+            "or rotted)."
+        ),
+    )
+    decisions_trajectory_rot_hours: int = Field(
+        default=168,
+        ge=1,
+        description=(
+            "Rot horizon for the trajectory labeler's stalled fates: an "
+            "in-progress task with zero activity since before the decision "
+            "is graded stranded/stalled only once THIS many hours have "
+            "passed since the decision."
+        ),
+    )
+
+    # ==========================================================================
     # Agent runtime toolchain matching (default-off)
     # ==========================================================================
     # When enabled, an agent's workspace is provisioned with the Python the
@@ -1105,6 +1245,18 @@ class Settings(BaseSettings):
             " tick; the dedupe key expires after this window so a regression"
             " that clears and later recurs notifies again. Fail-open: a Redis"
             " outage in the check still lets the notify through."
+        ),
+    )
+    self_heal_outcome_window_hours: int = Field(
+        default=24,
+        ge=1,
+        description=(
+            "Ground-truth window for the transient-gate training corpus. A"
+            " breach the gate called transient that is STILL breaching this"
+            " long after the gate is labeled still_failing_after_window"
+            " (claim false); one whose latest CI run went green after the"
+            " gate is labeled cleared_after_gate (claim true). Short windows"
+            " label faster but mistake a slow flake for a regression."
         ),
     )
 

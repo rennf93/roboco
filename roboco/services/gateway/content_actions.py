@@ -32,7 +32,9 @@ from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
-from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.injection_guard import (
+    screen_external_text_with_decisions,
+)
 from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.llm.providers.nebius_sandboxes import (
     run_sandbox_command,
@@ -304,6 +306,21 @@ def _ownership_violation(task_id: UUID) -> Envelope:
         ),
         context_briefing={},
     )
+
+
+def _preflight_ownership_violation(
+    t: Any, agent_id: UUID, task_id: UUID
+) -> Envelope | None:
+    """The ownership-violation envelope for a preflight caller who is not
+    the task's assignee, or None when the caller may preflight the task."""
+    if t.assigned_to is not None and t.assigned_to != agent_id:
+        return _ownership_violation(task_id)
+    return None
+
+
+def _preflight_criteria(t: Any) -> list[str]:
+    """The task's non-empty acceptance criteria as strings."""
+    return [str(c) for c in (t.acceptance_criteria or []) if str(c).strip()]
 
 
 def _not_active_claimant(task_id: UUID) -> Envelope:
@@ -3832,7 +3849,8 @@ class ContentActions:
         normalized_threats = [str(t).strip() for t in (threats or [])]
         normalized_opportunities = [str(o).strip() for o in (opportunities or [])]
         normalized_note = positioning_note.strip()
-        screened = screen_external_text(
+        screened = await screen_external_text_with_decisions(
+            self.task.session,
             _render_market_brief_for_screening(
                 headline,
                 normalized_findings,
@@ -7107,6 +7125,206 @@ class ContentActions:
                 "task stale or unattended"
             ),
             evidence=evidence,
+            context_briefing={},
+        )
+
+    async def preflight_diff(self, *, agent_id: UUID, task_id: UUID) -> Envelope:
+        """Decisions agent lane 6.4 (spec): the pre-submit self-check.
+
+        The Choreographer composes the whole state server-side from the task
+        record plus the working diff in the agent's own workspace, so the
+        verb cannot be used to smuggle arbitrary text past the budget or
+        the audit. Advisory by design: the agent decides; it never blocks
+        or waives ``i_am_done`` (self-review exclusion, spec 5).
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        violation = _preflight_ownership_violation(t, agent_id, task_id)
+        if violation is not None:
+            return violation
+        criteria = _preflight_criteria(t)
+        if not criteria:
+            return Envelope.invalid_state(
+                message="the task has no acceptance criteria to pre-flight",
+                remediate="ask your PM to record acceptance criteria on the task",
+            )
+
+        # Release the request transaction before the git work (pool-exhaustion
+        # guard, mirrors evidence()).
+        await self._release_task_session_before_git()
+
+        diff = await self._preflight_working_diff(t, agent_id, task_id)
+        if not diff.strip():
+            return Envelope.invalid_state(
+                message="no working diff found on the task branch",
+                remediate=(
+                    "commit something to the task branch first, or use "
+                    "evidence to inspect state"
+                ),
+            )
+
+        return await self._preflight_verdict_envelope(task_id, criteria, diff)
+
+    async def _release_task_session_before_git(self) -> None:
+        """Commit (or roll back) the request transaction so the git work
+        below runs off the request's DB session (pool-exhaustion guard)."""
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.task.session.commit()
+        except PendingRollbackError:
+            await self.task.session.rollback()
+
+    async def _preflight_working_diff(
+        self, t: Any, agent_id: UUID, task_id: UUID
+    ) -> str:
+        """The working diff on the task branch; empty when the branch is
+        unset or the diff cannot be read."""
+        if not t.branch_name:
+            return ""
+        diff: str
+        try:
+            diff, _files = await self.git.diff_and_files(
+                branch_name=t.branch_name, actor_agent_id=agent_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "preflight_diff could not read the working diff",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return ""
+        return diff
+
+    async def _preflight_verdict_envelope(
+        self, task_id: UUID, criteria: list[str], diff: str
+    ) -> Envelope:
+        """Run the decisions preflight screen and wrap its verdict into the
+        advisory envelope (no_verdict pass-through when unavailable)."""
+        from roboco.services import decisions
+
+        result = await decisions.preflight_diff(
+            self.task.session,
+            task_id=str(task_id),
+            criteria=criteria,
+            diff=diff,
+        )
+        if result is None:
+            return Envelope.ok(
+                status="no_verdict",
+                task_id=str(task_id),
+                next=(
+                    "decisions unavailable: proceed exactly as usual "
+                    "(run your own check before i_am_done)"
+                ),
+                evidence={"advisory": True, "criteria": criteria},
+                context_briefing={},
+            )
+        low = [c["criterion"] for c in result["criteria"] if not c.get("addresses")]
+        hints: list[str] = []
+        if low:
+            hints.append(
+                "low-confidence criteria: re-check before i_am_done -> "
+                + "; ".join(low[:3])
+            )
+        if (result.get("hygiene") or {}).get("flagged"):
+            hints.append(
+                "hygiene flagged: sweep the diff for debug leftovers, "
+                "conflict markers, hardcoded secrets, or TODO stubs"
+            )
+        return Envelope.ok(
+            status="preflight",
+            task_id=str(task_id),
+            next=" | ".join(hints) or "all criteria plausible: submit when ready",
+            evidence={
+                "advisory": True,
+                "verdicts": result,
+                "tier": "see orchestrator decision log",
+            },
+            context_briefing={},
+        )
+
+    async def triage_failure(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        test_name: str,
+        error_excerpt: str = "",
+    ) -> Envelope:
+        """Decisions agent lane 6.5 (spec): red-test triage.
+
+        The agent sends only the test name and the error excerpt; the
+        orchestrator composes the rest of the state server-side. The lane
+        is advisory: a ``flaky`` verdict is a hint the agent may cite in
+        its submission evidence, never a waiver; below the confidence floor
+        the envelope says ``unknown`` and the agent proceeds exactly as
+        today (debug first).
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        from roboco.services import decisions
+
+        changed_files: list[str] = []
+        if t.branch_name:
+            try:
+                _diff, changed_files = await self.git.diff_and_files(
+                    branch_name=t.branch_name, actor_agent_id=agent_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "triage_failure could not read changed files",
+                    task_id=str(task_id),
+                    error=str(exc),
+                )
+                changed_files = []
+        is_retry = str(t.status) in ("needs_revision", "verifying")
+        lane = await decisions.triage_failure(
+            self.task.session,
+            task_id=str(task_id),
+            test_name=test_name,
+            error_excerpt=error_excerpt,
+            changed_files_in_diff=changed_files[:50],
+            is_retry=is_retry,
+            recent_flake_history_for_test=[],
+        )
+        if lane is decisions.TriageLane.UNKNOWN:
+            return Envelope.ok(
+                status="unknown",
+                task_id=str(task_id),
+                next=(
+                    "no confident triage: debug the failure first, exactly "
+                    "as you would without this verb"
+                ),
+                evidence={"advisory": True, "test_name": test_name},
+                context_briefing={},
+            )
+        next_by_lane = {
+            decisions.TriageLane.MY_REGRESSION: (
+                "likely your regression: fix it on this branch before submitting"
+            ),
+            decisions.TriageLane.FLAKY: (
+                "likely a flake: you may cite this verdict in your submission "
+                "evidence; it is a hint, not a waiver - QA can still fail the "
+                "review on the same test"
+            ),
+            decisions.TriageLane.ENVIRONMENT: (
+                "likely environment: consider a rerun or note the runner "
+                "failure in your submission evidence"
+            ),
+        }
+        return Envelope.ok(
+            status=lane.value,
+            task_id=str(task_id),
+            next=next_by_lane[lane],
+            evidence={
+                "advisory": True,
+                "test_name": test_name,
+                "changed_files_in_diff": changed_files[:50],
+                "is_retry": is_retry,
+            },
             context_briefing={},
         )
 

@@ -1,29 +1,15 @@
 #!/bin/bash
-# A2A Check Hook
+# A2A Check Hook (retired)
 #
-# Claude Code hook that runs after each tool call to check for
-# incoming A2A messages. Notifies Claude if messages are pending.
+# This hook once polled the agent SDK's /inbox/count endpoint to hint at
+# pending A2A messages. That endpoint (and the whole in-container priority
+# inbox scaffold) was deleted: agent-to-agent DMs are pull-only by design,
+# read through the read_a2a verb, and steering-marked messages are rendered
+# by the orchestrator into the recipient's next context boundary (spawn
+# briefing / live turn queue), never pushed into the container.
 #
-# This hook is non-blocking and always succeeds to avoid
-# interrupting Claude's workflow.
-
-SDK_URL="${ROBOCO_SDK_URL:-http://localhost:9000}"
-
-# Check inbox count (non-consuming endpoint)
-response=$(curl -sf "$SDK_URL/inbox/count" 2>/dev/null)
-
-if [ $? -eq 0 ]; then
-    total=$(echo "$response" | jq -r '.total // 0')
-    urgent=$(echo "$response" | jq -r '.urgent // 0')
-
-    if [ "$total" -gt 0 ]; then
-        if [ "$urgent" -gt 0 ]; then
-            echo "[A2A] URGENT: You have $urgent urgent message(s). Use roboco_a2a_check() to read them."
-        else
-            echo "[A2A] You have $total pending message(s). Use roboco_a2a_check() to read them."
-        fi
-    fi
-fi
+# The hook stays registered in spawn_config and the agent image, so it
+# remains a non-blocking no-op instead of breaking the hook wiring.
 
 # Always exit 0 - don't block Claude
 exit 0

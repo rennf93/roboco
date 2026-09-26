@@ -39,7 +39,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from roboco.config import settings
-from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.injection_guard import (
+    screen_external_text_with_decisions,
+)
 from roboco.foundation.policy.vault_notes import content_hash as _content_hash
 from roboco.foundation.policy.vault_notes import split_frontmatter as _split_frontmatter
 from roboco.models.optimal import IndexType
@@ -222,7 +224,9 @@ class VaultKBEngine(BaseService):
         # Screen + index the BODY only: frontmatter is Obsidian metadata, not
         # retrievable prose, and would pollute the chunks.
         _, body = _split_frontmatter(raw)
-        screened = screen_external_text(body, source=f"vault_kb:{rel_path}")
+        screened = await screen_external_text_with_decisions(
+            self.session, body, source=f"vault_kb:{rel_path}"
+        )
         if screened.flagged:
             if existing is not None:
                 # Was clean and indexed, now edited into a flagged state — its

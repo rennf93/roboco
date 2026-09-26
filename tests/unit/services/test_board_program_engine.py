@@ -48,6 +48,7 @@ from roboco.services.gateway.content_actions import ContentActions, ContentActio
 from roboco.services.task import (
     BARFLY_SOURCE,
     CORONER_SOURCE,
+    DECISIONS_AUDIT_SOURCE,
     DOGFOOD_SOURCE,
     LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
@@ -752,6 +753,7 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["war_room"].source == WAR_ROOM_SOURCE
     assert PROGRAMS["barfly"].source == BARFLY_SOURCE
     assert PROGRAMS["dogfood"].source == DOGFOOD_SOURCE
+    assert PROGRAMS["decisions_audit"].source == DECISIONS_AUDIT_SOURCE
 
 
 @pytest.mark.asyncio

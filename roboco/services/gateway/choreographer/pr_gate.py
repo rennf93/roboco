@@ -1925,4 +1925,48 @@ class PRGateMixin(_Base):
             evidence["collision_context"] = collision
         if evidence_gaps:
             evidence["evidence_gaps"] = evidence_gaps
+        coherence = await self._coherence_scaffold(t, diff, files_changed)
+        if coherence:
+            evidence["coherence_scaffold"] = coherence
         return evidence
+
+    async def _coherence_scaffold(
+        self, t: Any, diff: str, files_changed: list[str]
+    ) -> dict[str, Any] | None:
+        """B43 assembled_coherence scaffold (decisions pilot, default-off).
+
+        The gate reviewer judges assembled cell->root / root->master diffs
+        raw; this pre-digests an AC-coverage x mixed-concerns x
+        missing-pieces score from the diff + AC list already assembled
+        here and surfaces it as ``coherence_scaffold`` in the claim
+        envelope evidence. Purely advisory scaffolding for the existing
+        reviewer: it never decides, blocks, or passes the gate. Below
+        floor / shadow / off / no verdict / no diff omits the field.
+        """
+        if not diff:
+            return None
+        try:
+            from roboco.services.decisions.pilots import PilotMode, pilot_mode
+
+            mode = await pilot_mode(self.task.session, "assembled_coherence")
+        except Exception:
+            return None
+        if mode is PilotMode.OFF:
+            return None
+        from roboco.services.decisions.pilots_gateway import assembled_coherence
+
+        try:
+            return await assembled_coherence(
+                self.task.session,
+                task_id=str(t.id),
+                diff=diff,
+                acceptance_criteria=list(getattr(t, "acceptance_criteria", None) or []),
+                files_changed=files_changed,
+            )
+        except Exception as exc:
+            logger.warning(
+                "coherence_scaffold_skip",
+                task_id=str(getattr(t, "id", "")),
+                error=str(exc),
+            )
+            return None

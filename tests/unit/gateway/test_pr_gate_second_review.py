@@ -241,6 +241,9 @@ async def test_pr_pass_never_blocks_on_single_provider_skip(
     monkeypatch.setattr(settings, "cross_vendor_review_max_priority", 1)
 
     class _SkipService:
+        async def is_high_stakes_with_decisions(self, _task: Any) -> bool:
+            return True
+
         async def resolve_second_reviewer(
             self, _authoring_provider: ModelProvider
         ) -> SecondReviewSelection:

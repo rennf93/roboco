@@ -46,7 +46,9 @@ from roboco.db.tables import (
 )
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
-from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.injection_guard import (
+    screen_external_text_with_decisions,
+)
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.board_programs import program_armed
@@ -703,6 +705,9 @@ class XEngine(BaseService):
         product_name = await get_company_goals_service(
             self.session
         ).resolve_product_name(project)
+        highlights = await self._decisions_top_highlight(
+            version, highlights, product_name
+        )
         body = await self._draft_release_body(version, highlights, product_name)
         task = await self._originate_post(
             title=f"X post: release v{version}",
@@ -714,6 +719,29 @@ class XEngine(BaseService):
         await self.session.flush()
         self.log.info("x-engine: release post drafted (held for CEO)", version=version)
         return task
+
+    async def _decisions_top_highlight(
+        self, version: str, highlights: list[str], product_name: str | None
+    ) -> list[str]:
+        """B23 changelog_highlights: let the shared pilot pick which parsed
+        highlight leads the announcement (today the first bullet leads by
+        regex accident). Fail-open: any pilot error keeps the input order,
+        i.e. exactly the pre-B23 behavior."""
+        from roboco.services.decisions import pilots_content
+
+        try:
+            return await pilots_content.changelog_highlights_pick(
+                self.session,
+                version=version,
+                product_name=product_name,
+                highlights=highlights,
+            )
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: changelog highlight pick failed (fail-open)",
+                error=str(exc),
+            )
+            return highlights
 
     async def _draft_release_body(
         self, version: str, highlights: list[str], product_name: str
@@ -812,12 +840,45 @@ class XEngine(BaseService):
         )
 
     async def _skip_mention(self, mention: XMention) -> bool:
-        """A mention already handled, or below the engagement floor, is skipped.
-        The floor skip is deliberately not marked seen, so a later viral
-        re-fetch can still draft it."""
+        """A mention already handled, below the engagement floor, or
+        confidently triaged as spam/compliment (B4) is skipped. The floor
+        and triage skips are deliberately not marked seen, so a later
+        viral re-fetch can still draft it."""
         if not mention.id or await self._already_seen(mention.id):
             return True
-        return not _is_meaningful(mention, settings.x_mentions_min_engagement)
+        if not _is_meaningful(mention, settings.x_mentions_min_engagement):
+            return True
+        return await self._decisions_mention_skip(mention)
+
+    async def _decisions_mention_skip(self, mention: XMention) -> bool:
+        """B4 x_mention_triage: a confident spam/compliment verdict
+        suppresses the local-LLM draft call (the whole point: not every
+        mention deserves a draft); a question/bug-report verdict and any
+        below-floor/off/shadow outcome proceed exactly as today. Runs
+        only after the engagement heuristic passed, so off = no pilot
+        call at all."""
+        from roboco.services.decisions import pilots_content
+
+        try:
+            verdict = await pilots_content.x_mention_triage(
+                self.session, mention_id=str(mention.id), text=mention.text
+            )
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: mention triage pilot failed (fail-open)",
+                error=str(exc),
+            )
+            return False
+        if verdict is not None and verdict in (
+            pilots_content.X_MENTION_SUPPRESS_VERDICTS
+        ):
+            self.log.info(
+                "x-engine: mention suppressed by triage verdict (not marked seen)",
+                mention_id=mention.id,
+                verdict=verdict.value,
+            )
+            return True
+        return False
 
     async def _since_id_get(self) -> str | None:
         """Best-effort read of the persisted mentions cursor; None on miss or
@@ -850,7 +911,9 @@ class XEngine(BaseService):
     async def _originate_reply(
         self, mention: XMention, project_id: UUID, product_name: str
     ) -> TaskTable | None:
-        screened = screen_external_text(mention.text, source=f"x_mention:{mention.id}")
+        screened = await screen_external_text_with_decisions(
+            self.session, mention.text, source=f"x_mention:{mention.id}"
+        )
         if screened.flagged:
             self.log.warning(
                 "x-engine: injection pattern detected in mention text",

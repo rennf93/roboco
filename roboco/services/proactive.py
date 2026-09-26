@@ -165,6 +165,7 @@ class ProactiveKnowledgeService:
         # 3. Get applicable standards
         try:
             domain = self._infer_domain(task_type, task_description)
+            domain = await self._decisions_domain(domain, task_type, task_description)
             package.applicable_standards = await self._get_applicable_standards(domain)
         except Exception as e:
             logger.warning("Failed to get standards", error=str(e))
@@ -458,6 +459,34 @@ class ProactiveKnowledgeService:
             return "workflow"
 
         return "coding"
+
+    async def _decisions_domain(
+        self, keyword_domain: str, task_type: str | None, description: str
+    ) -> str:
+        """B24 proactive_domain: a confident verdict overrides the keyword
+        map's guess; off/shadow/below-floor/any failure returns the
+        keyword result unchanged. The service is session-less, so the
+        pilot opens its own short-lived background session."""
+        from roboco.config import settings
+
+        if not settings.decisions_enabled:
+            return keyword_domain
+        try:
+            from roboco.services.decisions import pilots_content
+
+            verdict = await pilots_content.proactive_domain(
+                None,
+                task_type=task_type,
+                description=description,
+                keyword_domain=keyword_domain,
+            )
+        except Exception as e:
+            logger.warning(
+                "Proactive domain pilot failed (fail-open: keyword map result)",
+                error=str(e),
+            )
+            return keyword_domain
+        return verdict or keyword_domain
 
     def _role_to_domain(self, role: str) -> str:
         """Map agent role to a standards domain."""

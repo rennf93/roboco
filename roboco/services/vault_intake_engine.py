@@ -45,7 +45,9 @@ from roboco.config import settings
 from roboco.db.tables import VaultSeenNoteTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
-from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.injection_guard import (
+    screen_external_text_with_decisions,
+)
 from roboco.foundation.policy.vault_notes import content_hash as _content_hash
 from roboco.foundation.policy.vault_notes import split_frontmatter as _split_frontmatter
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
@@ -227,13 +229,41 @@ class VaultIntakeEngine(BaseService):
         content_hash = _content_hash(raw)
         if await self._already_seen(rel_path, content_hash):
             return None
-        screened = screen_external_text(body, source=f"vault_note:{rel_path}")
+        screened = await screen_external_text_with_decisions(
+            self.session, body, source=f"vault_note:{rel_path}"
+        )
         if screened.flagged:
             self.log.warning(
                 "vault-intake: injection pattern detected in note body",
                 path=rel_path,
                 hits=screened.hits,
             )
+        # B11 vault_prefilter: a CONFIDENTLY not-worthy note skips the
+        # (up to 60s) extraction call and everything after it. May only
+        # SKIP work - the pilot can never invent a task, and the skip is
+        # deliberately not marked seen so an edited note is eligible
+        # again. Any failure or low confidence = extraction as today.
+        prefilter = None
+        try:
+            from roboco.services.decisions import pilots_content
+
+            prefilter = await pilots_content.vault_prefilter(
+                self.session, note_path=rel_path, body=screened.rendered
+            )
+        except Exception as exc:
+            self.log.warning(
+                "vault-intake: prefilter pilot failed (fail-open)",
+                path=rel_path,
+                error=str(exc),
+            )
+        if prefilter is not None and prefilter.skip:
+            self.log.info(
+                "vault-intake: prefilter says the note does not warrant a "
+                "task; skipping extraction",
+                path=rel_path,
+                route=prefilter.route,
+            )
+            return None
         # Released right before the local-LLM chat call below (up to
         # _CHAT_TIMEOUT_SECONDS=60s of HTTP IO), per note - not once for the
         # whole cycle, so the hold never accumulates across a multi-note
