@@ -242,21 +242,21 @@ def _probability(value: Any) -> float | None:
     if isinstance(value, bool):
         return 1.0 if value else 0.0
     if isinstance(value, int | float):
-        prob = float(value)
+        prob: float | None = float(value)
     elif isinstance(value, str):
         try:
             prob = float(value)
         except ValueError:
-            return None
+            prob = None
     elif isinstance(value, dict):
         for key in ("probability", "prob", "noul", "confidence", "score"):
             coerced = _probability(value.get(key))
             if coerced is not None:
                 return coerced
-        return None
+        prob = None
     else:
-        return None
-    if math.isnan(prob):
+        prob = None
+    if prob is None or math.isnan(prob):
         return None
     return max(0.0, min(1.0, prob))
 
