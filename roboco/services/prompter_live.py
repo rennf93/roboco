@@ -261,6 +261,9 @@ class PrompterLiveRegistry:
         """Deliver the human's message to the container's receiver. False if gone."""
         session = self._sessions.get(session_id)
         if session is None or session.closed:
+            # Silent: the opening-message retry loop polls through the
+            # container's boot, and the exhaustion path warns once upstream
+            # (_deliver_when_ready) — a per-attempt warning here is spam.
             return False
         session.last_activity = time.monotonic()  # human turn = activity
         url = f"http://roboco-agent-{session.agent_id}:{SDK_PORT}/turn"
@@ -268,6 +271,16 @@ class PrompterLiveRegistry:
         try:
             resp = await client.post(url, json={"text": text})
             resp.raise_for_status()
+            # The one positive signal the live path had none of: without this
+            # line, a session that "opened then did nothing" left zero trace
+            # in either the orchestrator or the container log (2026-09-27
+            # intake report) — delivery success, delivery failure, and
+            # never-attempted were indistinguishable.
+            self.log.info(
+                "Live turn delivered",
+                session_id=session_id,
+                agent_id=session.agent_id,
+            )
             return True
         except Exception as exc:
             # Debug, not error: the opening-message delivery retries until the
@@ -275,7 +288,9 @@ class PrompterLiveRegistry:
             # and were spamming ERROR. Callers surface a real failure (the
             # /messages route 404s; _deliver_when_ready warns once after N tries).
             self.log.debug(
-                "Message delivery attempt failed", session_id=session_id, error=str(exc)
+                "Message delivery attempt failed",
+                session_id=session_id,
+                error=str(exc),
             )
             return False
         finally:

@@ -6271,16 +6271,44 @@ class Choreographer:
         i_am_idle if they still owned pending work, leading to a tight
         respawn loop. Now an explicit refusal lets the agent fix it via
         i_will_work_on or i_will_plan before exiting.
+
+        Two shapes turn that refusal into a permanent dead-end instead of a
+        fixable gate, and neither may block the exit:
+
+        - The agent already holds claimed/in_progress work: the claim gate
+          refuses a second claim ("finish or pause it before claiming new
+          work"), so no pending assignment can be acted on in THIS run. The
+          spawn-per-pending dispatcher gives each root its own run after
+          this container exits — a cell PM holding one root in_progress with
+          two more assigned wedged at this guard on EVERY run until the CEO
+          paused them by hand (be-pm, 2026-09-27).
+        - The pending task is held by the claim gate itself (dependency/
+          sequence reachability — the exact predicate the claim endpoint
+          enforces). Demanding a claim the gate will refuse is the same
+          "gate A refuses action, gate B refuses exit" trap as the dev's
+          lane-held leaf below (be-dev-2's idle refusal, 2026-09-27).
         """
         assigned = await self.task.list_assigned_for_agent(agent_id)
         pending = [t for t in assigned if str(t.status) == "pending"]
         if not pending:
             return None
+        if any(
+            str(t.status) in ("claimed", "in_progress")
+            for t in assigned
+        ):
+            return None
         agent = await self.task.agent_for(agent_id)
         pending = await self._pending_blocking_idle(agent, pending)
         if not pending:
             return None
-        first = pending[0]
+        claimable: list[Any] = []
+        for t in pending:
+            if await self.task.is_pending_claim_blocked(t.id) is True:
+                continue
+            claimable.append(t)
+        if not claimable:
+            return None
+        first = claimable[0]
         verb = (
             "i_will_plan"
             if agent and agent.role in ("cell_pm", "main_pm")

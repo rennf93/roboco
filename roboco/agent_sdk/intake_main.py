@@ -85,6 +85,13 @@ def build_receiver(queue: asyncio.Queue[str | None]) -> FastAPI:
 
     @app.post("/turn")
     async def turn(body: _Turn) -> dict[str, bool]:
+        # INFO on receipt: uvicorn runs at warning level here, so without
+        # this a live session that receives no turns (relay broken upstream)
+        # is indistinguishable from one that is processing them silently.
+        logger.info(
+            "Turn received by live agent",
+            chars=len(body.text),
+        )
         await queue.put(body.text)
         return {"queued": True}
 

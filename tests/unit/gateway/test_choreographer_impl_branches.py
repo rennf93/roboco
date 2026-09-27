@@ -1409,6 +1409,44 @@ async def test_pending_assignment_guard_still_blocks_developer() -> None:
     assert guard.as_dict()["error"] == "invalid_state"
 
 
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_allows_idle_with_active_work() -> None:
+    """Regression (be-pm, 2026-09-27): a cell PM holding one root in_progress
+    with two more roots assigned could NEVER satisfy this guard — the claim
+    gate refuses a second claim, so the refusal demanded the impossible and
+    every run wedged at the exit until the CEO paused the roots by hand. The
+    spawn-per-pending dispatcher gives each pending root its own run."""
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [
+        MagicMock(id=uuid4(), status="in_progress"),
+        MagicMock(id=uuid4(), status="pending"),
+        MagicMock(id=uuid4(), status="pending"),
+    ]
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm", team="backend", slug=None
+    )
+    c = Choreographer(_make_deps(task=task_svc))
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_allows_idle_when_claim_blocked() -> None:
+    """Regression (be-dev-2, 2026-09-27): a pending assignment the claim gate
+    itself holds (dependency/sequence reachability) must not block the exit —
+    "gate A refuses the action, gate B refuses the exit" is a dead-end, and
+    the orchestrator re-spawns when the hold clears."""
+    task_svc = AsyncMock()
+    held = MagicMock(id=uuid4(), status="pending")
+    task_svc.list_assigned_for_agent.return_value = [held]
+    task_svc.agent_for.return_value = MagicMock(
+        role="developer", team="backend", slug=None
+    )
+    task_svc.is_pending_claim_blocked.return_value = True
+    c = Choreographer(_make_deps(task=task_svc))
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+    task_svc.is_pending_claim_blocked.assert_awaited_once_with(held.id)
+
+
 # ---------------------------------------------------------------------------
 # F-ff8bc25a / F-52ac54a5 (pr_gate round-1): _notify_qa and
 # _notify_request_changes_owner must savepoint their post-transition
