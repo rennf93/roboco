@@ -58,10 +58,10 @@ import os
 from typing import TYPE_CHECKING, Protocol
 
 from roboco.config import settings
-from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 from roboco.runtime.compose_labels import compose_label_args
+from roboco.seeds.initial_data import AGENT_UUIDS
 
 if TYPE_CHECKING:
     from pathlib import Path

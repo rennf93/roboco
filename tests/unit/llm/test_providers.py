@@ -30,6 +30,7 @@ from roboco.llm.providers import (
 )
 from roboco.models.base import ModelProvider
 from roboco.models.runtime import OrchestratorAgentConfig
+from roboco.seeds.initial_data import AGENT_UUIDS
 
 
 @pytest.fixture(autouse=True)
@@ -778,7 +779,10 @@ async def test_hummin_spawn_wires_gateway_env_and_image_last() -> None:
         result = await provider.spawn(_hummin_config())
     cmd = list(exec_mock.call_args.args)
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
-    assert "ROBOCO_AGENT_ID=be-dev-1" in cmd
+    # Auth identity is the agent's UUID, never the slug: the token HMAC signs
+    # (uuid, role, team) and verify_agent_token does not normalize slugs, so a
+    # slug env made every direct verb call 401 with "signature mismatch".
+    assert f"ROBOCO_AGENT_ID={AGENT_UUIDS['be-dev-1']}" in cmd
     # BARE zai-catalog model id — the entrypoint prefixes it as zai/<id>.
     assert "ROBOCO_AGENT_MODEL=glm-5.3" in cmd
     # Memory isolation: hummin's memory extension must never run in a

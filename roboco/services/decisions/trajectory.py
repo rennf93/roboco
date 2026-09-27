@@ -1260,7 +1260,11 @@ def learning_source_uri(content: str) -> str:
     writer and the retrieval log agree without sharing state."""
     import hashlib
 
-    digest = hashlib.md5(content[:100].encode("utf-8")).hexdigest()[:12]
+    # md5 is mandated by the documented URI scheme (stability for existing
+    # rows); the digest is a content fingerprint, never a security primitive.
+    digest = hashlib.md5(
+        content[:100].encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:12]
     return f"roboco://learnings/lrn-{digest}"
 
 

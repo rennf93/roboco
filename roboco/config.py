@@ -145,6 +145,8 @@ class Settings(BaseSettings):
         Note: 0.0.0.0 is only valid for binding, not connecting - use
         127.0.0.1 instead.
         """
+        # String COMPARISON against the bind-all literal (not a bind call);
+        # the conditional maps 0.0.0.0 to loopback for connect URLs.
         connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
         if self.role == "dispatcher":
             return f"http://{connect_host}:{self.port}/api"

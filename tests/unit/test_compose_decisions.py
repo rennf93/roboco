@@ -76,8 +76,14 @@ def test_sidecar_exists_in_both_composes_with_expected_posture() -> None:
             f"{name}: roboco-decisions must carry a healthcheck - the decisions "
             "resolver's cached probe depends on /health"
         )
-        assert sidecar.get("mem_limit"), (
-            f"{name}: roboco-decisions must carry a mem_limit cap"
+        # NO mem_limit, deliberately: the original low cap rendered the
+        # container useless (2fcca85d removed it) - the decisions resolver's
+        # in-process model needs headroom. Do not reintroduce a cap without
+        # measuring the resolver's real working set.
+        assert "mem_limit" not in sidecar, (
+            f"{name}: roboco-decisions must not carry a mem_limit - the cap "
+            "rendered the resolver useless and was deliberately removed "
+            "(2fcca85d)"
         )
         assert "ports" not in sidecar or not sidecar["ports"], (
             f"{name}: roboco-decisions must not publish host ports "

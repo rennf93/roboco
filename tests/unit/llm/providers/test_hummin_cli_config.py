@@ -137,12 +137,14 @@ def test_check_mode_maps_missing_binary_to_invalid(
 
 def test_qualified_names_match_hummin_convention() -> None:
     # sanitizeToolPart: lowercase, non-alnum runs -> "_", outer "_" stripped.
-    assert hummin_cli_config.qualified_mcp_tool_name(
-        "roboco-flow", "give_me_work"
-    ) == "mcp_roboco_flow_give_me_work"
-    assert hummin_cli_config.qualified_mcp_tool_name(
-        "roboco-git-readonly", "git_status"
-    ) == "mcp_roboco_git_readonly_git_status"
+    assert (
+        hummin_cli_config.qualified_mcp_tool_name("roboco-flow", "give_me_work")
+        == "mcp_roboco_flow_give_me_work"
+    )
+    assert (
+        hummin_cli_config.qualified_mcp_tool_name("roboco-git-readonly", "git_status")
+        == "mcp_roboco_git_readonly_git_status"
+    )
 
 
 def test_load_mcp_servers_reads_mount(tmp_path: Path) -> None:
@@ -164,9 +166,7 @@ def test_load_mcp_servers_reads_mount(tmp_path: Path) -> None:
 
 def test_load_mcp_servers_missing_mount_is_inert(tmp_path: Path) -> None:
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        hummin_cli_config, "MCP_CONFIG_PATH", tmp_path / "absent.json"
-    )
+    monkeypatch.setattr(hummin_cli_config, "MCP_CONFIG_PATH", tmp_path / "absent.json")
     try:
         assert hummin_cli_config.load_mcp_servers() == {}
     finally:
