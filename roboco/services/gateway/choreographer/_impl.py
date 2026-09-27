@@ -1622,7 +1622,22 @@ class Choreographer:
         project = getattr(task, "project", None)
         if project is None or getattr(project, "id", None) is None:
             return False, "unknown"
-        if self._devops_lane_exempt(agent) or self._org_wide_exempt(agent):
+        # The assignee passthrough shares the exempt-roles short-circuit: an
+        # explicit assignment IS authorization. The coordinator that set
+        # ``assigned_to`` deliberately routed this work to this agent, so a
+        # cross-cell slice (panel work for the frontend cell on the
+        # backend-assigned roboco-api project) must not be refused at
+        # claim/offer time. Without this carve-out the assignment wedged:
+        # fe-pm's i_will_plan was refused not_authorized four times, it
+        # escalated to main-pm five times, blocked all three roots itself,
+        # and the whole frontend cell starved (2026-09-27). This passes only
+        # the task's own assignee — the POST /access grant surface is
+        # unchanged and still cannot widen an assigned cell.
+        if (
+            self._devops_lane_exempt(agent)
+            or self._org_wide_exempt(agent)
+            or getattr(task, "assigned_to", None) == agent_id
+        ):
             return False, "unknown"
         team = agent.team
         if not isinstance(team, str):
@@ -6292,10 +6307,7 @@ class Choreographer:
         pending = [t for t in assigned if str(t.status) == "pending"]
         if not pending:
             return None
-        if any(
-            str(t.status) in ("claimed", "in_progress")
-            for t in assigned
-        ):
+        if any(str(t.status) in ("claimed", "in_progress") for t in assigned):
             return None
         agent = await self.task.agent_for(agent_id)
         pending = await self._pending_blocking_idle(agent, pending)

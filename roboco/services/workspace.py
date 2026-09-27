@@ -1779,8 +1779,15 @@ class WorkspaceService:
 
         # Fetch tags: the release manager reads this same clone and derives
         # "commits since last release" from the newest tag — a tagless clone
-        # makes git describe fail and it walks the entire history.
-        fetched = _git(*fetch_prefix, "fetch", "--tags", git_url, default_branch)
+        # makes git describe fail and it walks the entire history. --force
+        # because a re-published tag (v0.31.0 was clobbered upstream) makes a
+        # plain --tags fetch fail wholesale with "would clobber existing tag",
+        # freezing this read mirror at clone time — and this clone is
+        # hard-reset to FETCH_HEAD right below anyway, never pushed from, so
+        # tracking origin's tags exactly is the only correct state for it.
+        fetched = _git(
+            *fetch_prefix, "fetch", "--tags", "--force", git_url, default_branch
+        )
         if fetched.returncode != 0:
             logger.warning(
                 "conventions read-clone fetch failed",
