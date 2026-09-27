@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings
+from roboco.foundation.policy.lifecycle import Role
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.claim_guards import agent_access_denied_guard
 
@@ -260,6 +261,65 @@ async def test_devops_off_still_refused(
     agent_id = uuid4()
     deps.task.agent_for.return_value = MagicMock(
         id=agent_id, team="board", role="devops"
+    )
+
+    env = await c._agent_access_claim_guard(_task_with_project(uuid4()), agent_id)
+    assert env is not None
+    assert env.as_dict()["error"] == "not_authorized"
+
+
+# ---------------------------------------------------------------------------
+# Org-wide exemption: coordination/board roles act across cells by design
+# (lifecycle._ORG_WIDE_ROLES minus the flag-gated devops role). Before this
+# exemption the assigned-cell check wedged every main-pm root claim on a
+# cell-assigned project (live 2026-09-27).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role",
+    ["main_pm", "product_owner", "head_marketing", "auditor", "pr_reviewer", "ceo"],
+)
+async def test_org_wide_roles_exempt_from_assigned_cell_rule(role: str) -> None:
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(id=agent_id, team="main_pm", role=role)
+
+    assert (
+        await c._agent_access_claim_guard(_task_with_project(uuid4()), agent_id) is None
+    )
+    deps.project.check_agent_access.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_org_wide_exempt_accepts_role_enum() -> None:
+    """agent_for rows carry a Role enum in production — the .value path
+    must exempt the same way the plain-string path does."""
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="main_pm", role=Role.MAIN_PM
+    )
+
+    assert (
+        await c._agent_access_claim_guard(_task_with_project(uuid4()), agent_id) is None
+    )
+    deps.project.check_agent_access.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cell_role_still_refused_on_other_cells_project() -> None:
+    """The exemption is role-scoped: a cell agent on a foreign cell's
+    project is still refused — the org-wide carve-out must not become a
+    blanket bypass."""
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="frontend", role="developer"
     )
 
     env = await c._agent_access_claim_guard(_task_with_project(uuid4()), agent_id)

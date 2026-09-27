@@ -1464,6 +1464,14 @@ class Choreographer:
     # forever and burning tokens for zero progress.
     _COORDINATOR_ROLES: ClassVar[frozenset[str]] = frozenset({"main_pm", "cell_pm"})
 
+    # Org-wide actors exempt from the project access rule, straight from the
+    # spec's _ORG_WIDE_ROLES. Devops is subtracted: its cross-cell grant is
+    # flag-gated in _devops_lane_exempt, and unconditional membership here
+    # would silently un-gate it.
+    _ORG_WIDE_EXEMPT_ROLES: ClassVar[frozenset[str]] = frozenset(
+        role.value for role in spec_module._ORG_WIDE_ROLES - {spec_module.Role.DEVOPS}
+    )
+
     async def _run_claim_guards(
         self,
         *,
@@ -1567,10 +1575,12 @@ class Choreographer:
         agent-to-project grant chokepoint, so a restriction set via
         POST /projects/{id}/access/{agent_id} is actually enforced. The
         deny decision comes solely from that rule; this helper only
-        resolves its inputs. Inert when the deps lack a project service
-        (existing tests), the task has no project (branchless coordination
-        root), or the agent view carries no usable team — mirroring
-        ``_sequence_claim_guard``'s mock-safety guard.
+        resolves its inputs. Two carve-outs run before the rule — the
+        flag-gated devops lane and the unconditional org-wide roles
+        (``_ORG_WIDE_EXEMPT_ROLES``). Inert when the deps lack a project
+        service (existing tests), the task has no project (branchless
+        coordination root), or the agent view carries no usable team —
+        mirroring ``_sequence_claim_guard``'s mock-safety guard.
         """
         if self._deps.project is None:
             return None
@@ -1580,7 +1590,7 @@ class Choreographer:
         agent = await self.task.agent_for(agent_id)
         if agent is None or not isinstance(agent.team, str):
             return None
-        if self._devops_lane_exempt(agent):
+        if self._devops_lane_exempt(agent) or self._org_wide_exempt(agent):
             return None
         try:
             team = Team(agent.team)
@@ -1609,6 +1619,25 @@ class Choreographer:
         from roboco.config import settings
 
         return settings.devops_enabled
+
+    @staticmethod
+    def _org_wide_exempt(agent: Any) -> bool:
+        """Unconditional org-wide exemption from the project access rule.
+
+        The Main PM owns coordination roots on every cell's project and the
+        board roles plan across cells by design — lifecycle's
+        ``_ORG_WIDE_ROLES`` is the single source (the spec team-match gate
+        and TaskService's claim-time management-role exemption already
+        carve them out; the chokepoint guard just missed them, wedging
+        every root claim behind the assigned-cell rule — live 2026-09-27:
+        main-pm unable to start any cell-project root). Devops is handled
+        by ``_devops_lane_exempt`` instead: its grant is flag-gated.
+        """
+        raw_role = getattr(agent, "role", None)
+        if raw_role is None:
+            return False
+        role = raw_role.value if hasattr(raw_role, "value") else raw_role
+        return role in Choreographer._ORG_WIDE_EXEMPT_ROLES
 
     async def _sequencing_claim_guard(self, task: Any) -> Envelope | None:
         """Both halves of the claim-time sequencing bar in one call — an
