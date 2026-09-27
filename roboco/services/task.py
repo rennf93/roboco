@@ -38,6 +38,7 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
+from roboco.foundation.identity import Role
 from roboco.foundation.policy.batch import (
     is_batch_root_subtask,
     is_batch_umbrella,
@@ -50,6 +51,9 @@ from roboco.foundation.policy.content import Finding, Severity, markers
 from roboco.foundation.policy.content.validators import (
     ContentValidationError,
     reject_trivial,
+)
+from roboco.foundation.policy.lifecycle import (
+    _ORG_WIDE_ROLES as _SPEC_ORG_WIDE_ROLES,
 )
 from roboco.models.base import (
     AgentRole,
@@ -4238,9 +4242,15 @@ class TaskService(BaseService):
             return "invalid status for role"
         return None
 
-    # Management roles that can claim tasks from any team
-    _MANAGEMENT_ROLES = frozenset(
-        {"main_pm", "product_owner", "head_marketing", "auditor"}
+    # Management roles that can claim tasks from any team. Derived from the
+    # spec's _ORG_WIDE_ROLES (devops subtracted: its cross-cell grant is the
+    # flag-gated branch below) so this set cannot drift from the doctrine
+    # source the spec team-match gate and the gateway's project-access guard
+    # both use. Until it was derived, this set silently lagged the spec
+    # (no ceo, no pr_reviewer) — latent, but one new claim caller away from
+    # a wedge.
+    _MANAGEMENT_ROLES: frozenset[str] = frozenset(
+        role.value for role in _SPEC_ORG_WIDE_ROLES - {Role.DEVOPS}
     )
 
     def _validate_claim_team(

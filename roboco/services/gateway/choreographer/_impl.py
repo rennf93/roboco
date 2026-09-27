@@ -1063,8 +1063,11 @@ class Choreographer:
         # starve it (2026-08-24: be-dev-1 held 3 bounced tasks all day
         # behind a stream of freshly pre-assigned pending ones).
         assigned_rows = await self._deps.task.list_assigned_for_agent(agent_id)
-        bounced = await self._drop_dependency_held(
-            [t for t in assigned_rows if str(t.status) == "needs_revision"]
+        bounced = await self._drop_access_denied(
+            await self._drop_dependency_held(
+                [t for t in assigned_rows if str(t.status) == "needs_revision"]
+            ),
+            agent_id,
         )
         if bounced:
             return await self._work_envelope(agent_id, bounced[0], role)
@@ -1074,12 +1077,17 @@ class Choreographer:
         # list_assigned_for_agent (ordered by priority/updated_at — pending
         # could rank behind in_progress rows) and the PM path checked
         # awaiting_* queues but not the pre-assigned pending case.
-        pre_assigned = await self._pending_not_lane_held(
-            await self._deps.task.list_pending_for_agent(agent_id)
+        pre_assigned = await self._drop_access_denied(
+            await self._pending_not_lane_held(
+                await self._deps.task.list_pending_for_agent(agent_id)
+            ),
+            agent_id,
         )
         if pre_assigned:
             return await self._work_envelope(agent_id, pre_assigned[0], role)
-        assigned = await self._drop_dependency_held(assigned_rows)
+        assigned = await self._drop_access_denied(
+            await self._drop_dependency_held(assigned_rows), agent_id
+        )
         if assigned:
             # B39 mid-work staleness advisory (default-off): the dev just
             # re-surfaceed its in-progress branch; this is the natural
@@ -1588,16 +1596,86 @@ class Choreographer:
         if project is None or getattr(project, "id", None) is None:
             return None
         agent = await self.task.agent_for(agent_id)
-        if agent is None or not isinstance(agent.team, str):
+        if agent is None or not isinstance(getattr(agent, "team", None), str):
             return None
+        denied, reason = await self._project_access_denied(task, agent_id, agent)
+        if not denied:
+            return None
+        return agent_access_denied_guard(
+            task, project.id, agent_id, False, reason=reason
+        )
+
+    async def _project_access_denied(
+        self, task: Any, agent_id: UUID, agent: Any
+    ) -> tuple[bool, str]:
+        """The single project-access verdict, shared by the claim guard and
+        the give_me_work / pm_give_me_work offer pre-filter so the two can
+        never drift (the offer-then-reject lesson: the drop predicate wraps
+        the EXACT claim-time refusal).
+
+        Returns ``(denied, reason)`` with reason "assigned_cell" (a
+        cross-cell actor the rule refuses) or "allowed_agents" (a same-cell
+        agent left off the list). Exempt or unverifiable cases return
+        (False, "unknown"): no project service, branchless task, non-string
+        or invalid team, the flag-gated devops lane, or an org-wide role.
+        """
+        project = getattr(task, "project", None)
+        if project is None or getattr(project, "id", None) is None:
+            return False, "unknown"
         if self._devops_lane_exempt(agent) or self._org_wide_exempt(agent):
-            return None
+            return False, "unknown"
+        team = agent.team
+        if not isinstance(team, str):
+            return False, "unknown"
         try:
-            team = Team(agent.team)
+            team_enum = Team(team)
         except ValueError:
-            return None
-        has_access = await self.project.check_agent_access(project.id, agent.id, team)
-        return agent_access_denied_guard(task, project.id, agent.id, has_access)
+            return False, "unknown"
+        has_access = await self.project.check_agent_access(
+            project.id, agent_id, team_enum
+        )
+        if has_access:
+            return False, "unknown"
+        reason = (
+            "allowed_agents"
+            if getattr(project, "assigned_cell", None) == team
+            else "assigned_cell"
+        )
+        return True, reason
+
+    async def _drop_access_denied(self, tasks: list[Any], agent_id: UUID) -> list[Any]:
+        """give_me_work / pm_give_me_work mirror of the claim-time
+        project-access guard — the offer half of the offer-then-reject
+        class. Without it an agent pre-assigned a task on a project whose
+        access rule refuses them was offered the task forever:
+        give_me_work said i_will_work_on, the claim guard refused
+        not_authorized, and the loop only ended at the in-container circuit
+        breaker (the 2026-07-24 offer-then-reject incident's access-rule
+        flavor; live 2026-09-27 in its coordinator shape). Shares
+        ``_project_access_denied`` with the claim guard so the two cannot
+        drift. Scoped to PENDING / NEEDS_REVISION — the statuses a fresh
+        claim would transition; an in_progress row survives a mid-work
+        revocation so the agent keeps seeing the task it holds. Inert
+        without a project service or a usable agent view (mirroring the
+        guard's mock-safety), and org-wide / flag-on-devops actors are
+        exempt exactly as at claim time.
+        """
+        if not tasks or self._deps.project is None:
+            return tasks
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or not isinstance(getattr(agent, "team", None), str):
+            return tasks
+        if self._devops_lane_exempt(agent) or self._org_wide_exempt(agent):
+            return tasks
+        offerable: list[Any] = []
+        for t in tasks:
+            if (
+                str(getattr(t, "status", "")) in ("pending", "needs_revision")
+                and (await self._project_access_denied(t, agent_id, agent))[0]
+            ):
+                continue
+            offerable.append(t)
+        return offerable
 
     @staticmethod
     def _devops_lane_exempt(agent: Any) -> bool:
@@ -8391,7 +8469,9 @@ class Choreographer:
         wins unconditionally.
         """
         # Pre-assigned pending tasks take priority over everything else.
-        pre_assigned = await self.task.list_pending_for_agent(pm_agent_id)
+        pre_assigned = await self._drop_access_denied(
+            await self.task.list_pending_for_agent(pm_agent_id), pm_agent_id
+        )
         if pre_assigned:
             t = pre_assigned[0]
             await self._touch(t.id)
@@ -8403,7 +8483,9 @@ class Choreographer:
                     pm_agent_id, t.id, task=t, full=True
                 ),
             )
-        assigned = await self.task.list_assigned_for_agent(pm_agent_id)
+        assigned = await self._drop_access_denied(
+            await self.task.list_assigned_for_agent(pm_agent_id), pm_agent_id
+        )
         if assigned:
             t = assigned[0]
             await self._touch(t.id)

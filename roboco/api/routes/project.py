@@ -415,7 +415,9 @@ async def add_agent_access(
     Add an agent to the project's allowed list (PM only).
 
     By default, all agents in the assigned cell have access.
-    This restricts access to specific agents.
+    This restricts access to specific agents. Only agents in the
+    project's assigned cell can be granted: the list narrows within
+    the cell, it cannot widen it.
     """
     require_pm_or_above(agent.role, "manage access")
 

@@ -44,8 +44,14 @@ def test_developer_or_above_roles_matches_foundation_composition() -> None:
 
 
 def test_global_cell_access_roles_matches_foundation_composition() -> None:
-    """`require_cell_access` lets main-PM + non-marketing board + CEO cross cells."""
-    expected = (BOARD_ROLES - {Role.HEAD_MARKETING}) | {Role.MAIN_PM, Role.CEO}
+    """`require_cell_access` lets main-PM + the FULL board + CEO cross cells.
+
+    head_marketing was excluded here until the 2026-09-27 access-guard hunt:
+    cell scope is a different axis from _PM_OR_ABOVE approval authority, and
+    the org-wide doctrine (lifecycle._ORG_WIDE_ROLES) has head_marketing
+    planning exploration roots on any cell's project through the gateway.
+    """
+    expected = BOARD_ROLES | {Role.MAIN_PM, Role.CEO}
     assert expected == _GLOBAL_CELL_ACCESS_ROLES
 
 

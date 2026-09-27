@@ -26,6 +26,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
+# Devops's org-wide exemption is flag-gated at the spec team-match gate too
+# (mirroring TaskService and the gateway access guard); config imports
+# nothing from roboco, so this stays cycle-free.
+from roboco.config import settings
+
 # Role enum is canonicalized in roboco/foundation/identity.py.
 # Re-exported here so callers can import `Role` from this module alongside
 # the lifecycle tables that depend on it. New consumers may also import
@@ -1959,12 +1964,18 @@ def _check_team_match(
     trusting the spec gate alone let a backend dev claim a frontend task. When
     the caller supplies the agent's team via Context, enforce it here; absent,
     defer to the service layer (backward compatible). Org-wide roles
-    (``_ORG_WIDE_ROLES``) are exempt.
+    (``_ORG_WIDE_ROLES``) are exempt — devops among them only while its lane
+    flag is on, the same gate TaskService's claim team exemption and the
+    gateway's project-access guard apply, so all three sites agree on who
+    crosses cells.
     """
     if not spec_action.needs_team_match:
         return None
     if role is not None and role in _ORG_WIDE_ROLES:
-        return None
+        if role is not Role.DEVOPS:
+            return None
+        if settings.devops_enabled:
+            return None
     agent_team = getattr(ctx, "agent_team", None)
     if agent_team is None:
         return None

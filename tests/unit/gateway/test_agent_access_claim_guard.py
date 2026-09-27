@@ -325,3 +325,135 @@ async def test_cell_role_still_refused_on_other_cells_project() -> None:
     env = await c._agent_access_claim_guard(_task_with_project(uuid4()), agent_id)
     assert env is not None
     assert env.as_dict()["error"] == "not_authorized"
+
+
+# ---------------------------------------------------------------------------
+# Reason-specific refusal (F3): the deny reason picks the remediate, so the
+# envelope never sends an agent down a path that cannot work.
+# ---------------------------------------------------------------------------
+
+
+def test_predicate_assigned_cell_reason_names_reassignment_only() -> None:
+    """A cross-cell refusal cannot be fixed by the access route (the cell
+    check precedes the list check), so the remediate must not send the
+    agent there."""
+    task = MagicMock(id=uuid4())
+    project_id, agent_id = uuid4(), uuid4()
+    env = agent_access_denied_guard(
+        task, project_id, agent_id, False, reason="assigned_cell"
+    )
+    assert env is not None
+    body = env.as_dict()
+    assert "outside the project's assigned cell" in body["message"]
+    # The route is named only to be negated: it cannot fix a cross-cell
+    # refusal, and the remediate must say so instead of suggesting it.
+    assert "cannot widen" in body["remediate"]
+    assert "reassign" in body["remediate"].lower()
+
+
+@pytest.mark.asyncio
+async def test_same_cell_exclusion_remediate_names_the_access_route() -> None:
+    """A same-cell agent left off the allowed list CAN be fixed by the
+    access route — the remediate keeps pointing at it."""
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="backend", role="developer"
+    )
+    task = _task_with_project(uuid4())
+    task.project.assigned_cell = "backend"
+
+    env = await c._agent_access_claim_guard(task, agent_id)
+    assert env is not None
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    assert "access/" in body["remediate"]
+
+
+@pytest.mark.asyncio
+async def test_cross_cell_refusal_remediate_names_reassignment() -> None:
+    """End to end: a cell agent on a foreign cell's project produces the
+    reassign remediate, never the access route as a fix (the main-pm wedge
+    showed the coordinator shape of this refusal live)."""
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="frontend", role="developer"
+    )
+    task = _task_with_project(uuid4())
+    task.project.assigned_cell = "backend"
+
+    env = await c._agent_access_claim_guard(task, agent_id)
+    assert env is not None
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    assert "cannot widen" in body["remediate"]
+    assert "reassign" in body["remediate"].lower()
+
+
+# ---------------------------------------------------------------------------
+# give_me_work / pm_give_me_work access pre-filter (F7): the offer half of
+# the offer-then-reject loop — an agent excluded from a project is never
+# offered its tasks, instead of offered-then-refused until the circuit
+# breaker trips.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drop_access_denied_filters_refused_claimables_only() -> None:
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="backend", role="developer"
+    )
+    denied_pending = MagicMock(status="pending", project=MagicMock(id=uuid4()))
+    denied_revision = MagicMock(status="needs_revision", project=MagicMock(id=uuid4()))
+    held_in_progress = MagicMock(status="in_progress", project=MagicMock(id=uuid4()))
+    branchless = MagicMock(status="pending", project=None)
+
+    out = await c._drop_access_denied(
+        [denied_pending, denied_revision, held_in_progress, branchless], agent_id
+    )
+    assert out == [held_in_progress, branchless]
+
+
+@pytest.mark.asyncio
+async def test_drop_access_denied_keeps_allowed_agent_work() -> None:
+    deps = _make_deps(check_agent_access_result=True)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="backend", role="developer"
+    )
+    offered = MagicMock(status="pending", project=MagicMock(id=uuid4()))
+
+    assert await c._drop_access_denied([offered], agent_id) == [offered]
+
+
+@pytest.mark.asyncio
+async def test_drop_access_denied_keeps_org_wide_actors_work() -> None:
+    """The pre-filter must exempt exactly like the claim guard, or it would
+    hide main-pm's cross-cell roots from give_me_work — a NEW wedge replacing
+    the old one."""
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(
+        id=agent_id, team="main_pm", role="main_pm"
+    )
+    root = MagicMock(status="pending", project=MagicMock(id=uuid4()))
+
+    assert await c._drop_access_denied([root], agent_id) == [root]
+
+
+@pytest.mark.asyncio
+async def test_drop_access_denied_inert_without_project_dep() -> None:
+    deps = _make_deps(project=None)
+    c = Choreographer(deps)
+    tasks = [MagicMock(status="pending")]
+
+    assert await c._drop_access_denied(tasks, uuid4()) == tasks
+    deps.task.agent_for.assert_not_awaited()
