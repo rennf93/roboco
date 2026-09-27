@@ -91,7 +91,10 @@ async def test_reader_role_classified_as_non_author_for_refresh() -> None:
     ws.ensure_workspace = AsyncMock()
 
     with (
-        patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
+        patch(
+            "roboco.db.base.get_db_context",
+            side_effect=lambda: _fake_db_ctx(MagicMock()),
+        ),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
         patch(
             "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
@@ -117,7 +120,10 @@ async def test_heals_missing_clone_before_self_heal() -> None:
     ws.ensure_workspace = AsyncMock()
 
     with (
-        patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
+        patch(
+            "roboco.db.base.get_db_context",
+            side_effect=lambda: _fake_db_ctx(MagicMock()),
+        ),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
         patch(
             "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
@@ -171,7 +177,10 @@ async def test_fatal_failure_releases_claim_and_aborts() -> None:
     ws.ensure_workspace = AsyncMock()
 
     with (
-        patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
+        patch(
+            "roboco.db.base.get_db_context",
+            side_effect=lambda: _fake_db_ctx(MagicMock()),
+        ),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
         patch(
             "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
@@ -201,7 +210,10 @@ async def test_transient_failure_aborts_without_release() -> None:
     ws.ensure_workspace = AsyncMock()
 
     with (
-        patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
+        patch(
+            "roboco.db.base.get_db_context",
+            side_effect=lambda: _fake_db_ctx(MagicMock()),
+        ),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
         patch(
             "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
@@ -229,7 +241,10 @@ async def test_recoverable_ensure_no_raise_no_release() -> None:
     ws.ensure_workspace = AsyncMock()
 
     with (
-        patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
+        patch(
+            "roboco.db.base.get_db_context",
+            side_effect=lambda: _fake_db_ctx(MagicMock()),
+        ),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
         patch(
             "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
@@ -241,3 +256,83 @@ async def test_recoverable_ensure_no_raise_no_release() -> None:
         )
 
     release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_base_clone_refresh_runs_for_reader_roles_only() -> None:
+    # #692 family, item 3: a non-author's base clone checkout is refreshed at
+    # spawn; an author's (be-dev-1, holds the commit verb) is NEVER touched.
+    for slug, should_refresh in (("be-qa", True), ("be-dev-1", False)):
+        orch = _make_orchestrator()
+        ws = MagicMock()
+        ws.ensure_worktree_self_heal = AsyncMock()
+        ws.ensure_workspace = AsyncMock()
+        ws.refresh_base_clone_checkout = AsyncMock()
+
+        with (
+            patch(
+                "roboco.db.base.get_db_context",
+                side_effect=lambda: _fake_db_ctx(MagicMock()),
+            ),
+            patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+            patch(
+                "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
+                return_value=True,
+            ),
+        ):
+            await orch._ensure_worktree_before_spawn(
+                _ctx(), "roboco-api", "backend", slug, "task-1"
+            )
+
+        if should_refresh:
+            ws.refresh_base_clone_checkout.assert_awaited_once_with(
+                Path("/data/workspaces/roboco-api/backend/be-qa"), "roboco-api"
+            )
+        else:
+            ws.refresh_base_clone_checkout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_base_clone_refresh_skips_unknown_role_conservatively() -> None:
+    # When in doubt (unresolvable role), treat as author: skip and log —
+    # never reset a clone we can't classify.
+    orch = _make_orchestrator()
+    ws = MagicMock()
+    ws.refresh_base_clone_checkout = AsyncMock()
+
+    with (
+        patch(
+            "roboco.db.base.get_db_context",
+            side_effect=lambda: _fake_db_ctx(MagicMock()),
+        ),
+        patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+    ):
+        await orch._maybe_refresh_base_clone(
+            clone_root=Path("/tmp/clone"),
+            project_slug="roboco-api",
+            team="backend",
+            agent_id="no-such-agent-slug",
+        )
+
+    ws.refresh_base_clone_checkout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_base_clone_refresh_failure_never_breaks_spawn() -> None:
+    orch = _make_orchestrator()
+    ws = MagicMock()
+    ws.refresh_base_clone_checkout = AsyncMock(side_effect=RuntimeError("db down"))
+
+    with (
+        patch(
+            "roboco.db.base.get_db_context",
+            side_effect=lambda: _fake_db_ctx(MagicMock()),
+        ),
+        patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+    ):
+        await orch._maybe_refresh_base_clone(
+            clone_root=Path("/tmp/clone"),
+            project_slug="roboco-api",
+            team="backend",
+            agent_id="be-qa",
+        )
