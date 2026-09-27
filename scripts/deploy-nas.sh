@@ -81,7 +81,9 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
   # Non-fatal: a total image wipe also takes roboco-agent-base down with the
   # app images (2026-09-25); the ensure passes below rebuild everything in
   # dependency order. Killing the deploy here would defeat that.
-  "${COMPOSE[@]}" build "orchestrator-$COLOR" "panel-$COLOR" ||
+  # decisions rides along on every deploy: it is a color-INDEPENDENT
+  # singleton sidecar (like ollama), not part of the blue/green pairs.
+  "${COMPOSE[@]}" build "orchestrator-$COLOR" "panel-$COLOR" decisions ||
     echo "[deploy] WARNING: app/$COLOR pre-build failed; the ensure pass below will rebuild" >&2
 fi
 
@@ -185,14 +187,15 @@ echo "[deploy] bringing up $COLOR ..."
 # code and destroying rollback honesty. nginx joins the blue list (first
 # deploy) and is ensured for green (it is the reload target).
 if [ "$COLOR" = "green" ]; then
-  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green
+  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green decisions
   "${COMPOSE[@]}" up -d nginx
 else
-  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue nginx
+  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions nginx
 fi
 wait_healthy "roboco-orchestrator-$COLOR"
 wait_healthy roboco-postgres
 wait_healthy roboco-ollama
+wait_healthy roboco-decisions
 wait_healthy roboco-ollama-init exit0
 
 echo "[deploy] schema migrations (idempotent)..."
