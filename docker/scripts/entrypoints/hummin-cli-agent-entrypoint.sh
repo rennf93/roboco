@@ -65,8 +65,18 @@ source /tmp/roboco-hummin-env
 # config (rendered into settings by hummin_cli_config) and the extension
 # file. Built-in allowlist and MCP names are joined into ONE --tools token
 # (hummin's allowlist is a single exact-name set covering both kinds).
+#
+# The two timeout exports only ride the armed bridge (hummin-cli >= 1.2.5;
+# older CLIs ignore unknown env). Init: the gateway servers boot through
+# `uv run` and six of them serialize on uv's project lock, so a cold
+# container's slowest handshake legitimately exceeds even hummin's 30s
+# default. Request: flow verbs budget up to 900s slow server-side
+# (ROBOCO_FLOW_VERB_SLOW_TIMEOUT_SECONDS); the client must never clip a
+# verb the server is still honoring.
 if [ -f /app/mcp-config.json ] && [ -n "$MCP_EXT" ] && [ -n "${ROBOCO_HUMMIN_MCP_TOOLS:-}" ]; then
   FULL_TOOLS="${ROBOCO_HUMMIN_TOOLS:+$ROBOCO_HUMMIN_TOOLS,}$ROBOCO_HUMMIN_MCP_TOOLS"
+  export HUMMIN_MCP_INIT_TIMEOUT_MS="${HUMMIN_MCP_INIT_TIMEOUT_MS:-120000}"
+  export HUMMIN_MCP_REQUEST_TIMEOUT_MS="${HUMMIN_MCP_REQUEST_TIMEOUT_MS:-960000}"
 else
   FULL_TOOLS="${ROBOCO_HUMMIN_TOOLS:-}"
 fi
@@ -111,7 +121,7 @@ ERR_LOG="/tmp/hummin-run.err"
 
 set +e
 if [ -s "$SYSTEM_PROMPT_FILE" ]; then
-  hummin --mode json \
+  hummin --mode json --no-json-deltas \
     --model "zai/${ROBOCO_AGENT_MODEL:-glm-5.3-flash:high}" \
     --system-prompt "$(cat "$SYSTEM_PROMPT_FILE")" \
     ${FULL_TOOLS:+--tools "$FULL_TOOLS"} \
@@ -121,7 +131,7 @@ if [ -s "$SYSTEM_PROMPT_FILE" ]; then
     < /dev/null 2> "$ERR_LOG" | tee "$RUN_LOG"
 else
   echo "[hummin] system prompt file missing at ${SYSTEM_PROMPT_FILE} — running on the CLI default prompt." >&2
-  hummin --mode json \
+  hummin --mode json --no-json-deltas \
     --model "zai/${ROBOCO_AGENT_MODEL:-glm-5.3-flash:high}" \
     ${FULL_TOOLS:+--tools "$FULL_TOOLS"} \
     ${MCP_EXT:+--extension "$MCP_EXT"} \
