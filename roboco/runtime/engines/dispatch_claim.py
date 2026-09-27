@@ -1329,6 +1329,29 @@ class DispatchClaimEngine(_Base):
             return False
         task_id = str(task.get("id"))
         task_created = task.get("created_at")
+        # A sibling that (transitively, within the sibling set) depends on this
+        # task is ordered AFTER it by the dependency guard, never before it in
+        # the lane. Counting such a sibling as "earlier" via the equal-sequence
+        # created-at tiebreak — which happens when a PM wires the dependency
+        # opposite to creation order — makes each guard wait on the other: the
+        # dependency guard holds the sibling on this task while this barrier
+        # holds this task on the sibling. A silent, permanent wedge (be-dev-2
+        # starved for a day on exactly this shape, 2026-09-27). Dependency
+        # order outranks the created-at tiebreak.
+        dep_map = {
+            str(sib.id): {str(d) for d in (getattr(sib, "dependency_ids", None) or ())}
+            for sib in siblings
+        }
+        dependents: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for sib_id, deps in dep_map.items():
+                if sib_id in dependents:
+                    continue
+                if task_id in deps or deps & dependents:
+                    dependents.add(sib_id)
+                    changed = True
         return any(
             self._is_earlier_live_lane_sibling(
                 sib,
@@ -1339,6 +1362,7 @@ class DispatchClaimEngine(_Base):
                 task_created=task_created,
             )
             for sib in siblings
+            if str(sib.id) not in dependents
         )
 
     @staticmethod

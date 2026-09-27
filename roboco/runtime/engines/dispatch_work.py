@@ -1512,12 +1512,22 @@ class DispatchWorkEngine(_Base):
         # sequence-held dev leaf isn't booted into a claim the chokepoint will
         # refuse — pure spawn churn until the predecessor goes terminal.
         if await self._pending_claim_blocked(task.get("id")):
+            logger.debug(
+                "Holding spawn: dependency/sequence guard still owns the task",
+                task_id=task["id"],
+                agent=agent_slug,
+            )
             return
         # Per-dev queue order: hold a dev's higher-sequence code leaf while it
         # still has an earlier non-terminal code sibling under the same parent,
         # so the dev works its queue one task at a time, in order. Loop-free —
         # just not dispatched this tick.
         if await self._blocked_by_earlier_lane_sibling(task):
+            logger.debug(
+                "Holding spawn: the dev's earlier lane sibling is still live",
+                task_id=task["id"],
+                agent=agent_slug,
+            )
             return
         # Respawn circuit breaker — a dev leaf that respawns without the task
         # advancing (wedged workspace, unclaimable state) stops after strikes.
