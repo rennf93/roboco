@@ -7325,6 +7325,35 @@ class Choreographer:
         """Lower-case, whitespace-collapsed title for duplicate comparison."""
         return " ".join((title or "").lower().split())
 
+    # Near-duplicate title detection for code queues. Containment coefficient
+    # over stopword-stripped tokens: how much of the SHORTER title appears in
+    # the longer. 0.85 catches a rephrasing with a suffix ("... queue" vs
+    # "... queue (cap growth; optional prune-on-ack)") and stopword drift
+    # ("rewrite the stale X" vs "rewrite stale X to assert Y"), while leaving
+    # genuinely distinct queue items alone.
+    _DUP_TITLE_CONTAINMENT: float = 0.85
+    _TITLE_STOPWORDS: frozenset[str] = frozenset(
+        {"the", "a", "an", "and", "for", "to", "of", "in", "on", "with"}
+    )
+
+    @classmethod
+    def _titles_are_duplicates(cls, norm_a: str, norm_b: str) -> bool:
+        """True when one open sibling's title is a near-duplicate of the new
+        one. Live failure (be-pm, 2026-09-27): re-planning a paused parent
+        re-delegated work that already existed as awaiting_qa / in_progress
+        siblings under near-identical titles, and the exact-match rule let
+        all of it through — three copies of one task, two of another."""
+        if norm_a == norm_b:
+            return True
+        strip = cls._TITLE_STOPWORDS
+        a_tokens = set(norm_a.split()) - strip
+        b_tokens = set(norm_b.split()) - strip
+        if not a_tokens or not b_tokens:
+            return False
+        smaller, larger = sorted((a_tokens, b_tokens), key=len)
+        containment = len(smaller & larger) / len(smaller)
+        return containment >= cls._DUP_TITLE_CONTAINMENT
+
     @classmethod
     def _same_assignee_rejection(
         cls, live: list[Any], new_type: str, new_assignee: str, new_title: str = ""
@@ -7347,9 +7376,14 @@ class Choreographer:
             if str(getattr(sibling, "task_type", "")) != new_type:
                 continue
             if new_type == "code":
-                # A distinct queue item is fine; an exact title repeat is not.
+                # A distinct queue item is fine; a rephrased repeat of an open
+                # sibling is not.
                 sib_title = cls._norm_title(str(getattr(sibling, "title", "") or ""))
-                if norm_new and sib_title == norm_new:
+                if (
+                    norm_new
+                    and sib_title
+                    and cls._titles_are_duplicates(norm_new, sib_title)
+                ):
                     return cls._same_assignee_dup_envelope(
                         new_type, new_assignee, sibling
                     )
