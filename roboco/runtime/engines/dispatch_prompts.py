@@ -2185,10 +2185,14 @@ outcomes.
    you cannot re-run those queries yourself, so start from it.
 3. Judge each active pilot on drift, not on a single day: one noisy window
    is not miscalibration.
-4. note() your assessment — one line per notable pilot. Where the
-   evidence supports a knob change, name the pilot, the numbers, and your
-   recommended threshold value or shadow/on flip. You never adjust
-   anything yourself; the CEO decides.
+4. note() your assessment — one line per notable pilot, and EVERY call
+   must carry task_id="{task_id}": the audit completes at note, and a
+   note without the task id is only a journal entry that completes
+   nothing (the 2026-09-27 wedge — findings were noted, the cycle
+   pend-resp-looped anyway). Where the evidence supports a knob
+   change, name the pilot, the numbers, and your recommended threshold
+   value or shadow/on flip. You never adjust anything yourself; the
+   CEO decides.
 5. If (and only if) the whole window is genuinely unremarkable, call
    nothing_to_propose(task_id="{task_id}", reason="no pilot anomalous in
    this window") instead of a filler note — an honest miss is better than
