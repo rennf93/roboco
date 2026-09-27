@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING
 
 from roboco.llm.providers import hummin_cli_config
+from roboco.services.gateway.role_config import ROLE_CONFIGS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,16 +28,33 @@ def test_tools_for_role_bash_roles_get_bash_and_authors_get_writes() -> None:
     assert hummin_cli_config.tools_for_role("documenter") == "read,edit,write,bash"
 
 
-def test_tools_for_role_reviewer_roles_read_only() -> None:
-    # pr_reviewer/board are neither bash-capable nor authors: `--tools` is a
-    # STRICT allowlist, so omitting bash/write/edit IS kimi's deny mapping.
-    assert hummin_cli_config.tools_for_role("pr_reviewer") == "read"
+def test_tools_for_role_board_roles_get_the_gateway_channel() -> None:
+    """hummin has no MCP client, so bash is the ONLY gateway transport (the
+    workspace verb helper run under the shell). Until 2026-09-27 the board
+    roles got a bare `read` allowlist: no verbs, no shell, no way to do
+    their job — they wrote their report into the void and respawn-looped
+    (auditor, product-owner, head-marketing live that day). Review roles
+    still don't get write/edit: they are not authors."""
+    assert hummin_cli_config.tools_for_role("pr_reviewer") == "read,bash"
+    assert hummin_cli_config.tools_for_role("auditor") == "read,bash"
+    assert hummin_cli_config.tools_for_role("product_owner") == "read,bash"
+    assert hummin_cli_config.tools_for_role("head_marketing") == "read,bash"
+    assert hummin_cli_config.tools_for_role("qa") == "read,bash"
 
 
-def test_tools_for_role_qa_reads_only() -> None:
-    # qa is not in _BASH_ROLES and does not allow_write — the same shape
-    # kimi's permission rules produce for the role.
-    assert hummin_cli_config.tools_for_role("qa") == "read"
+def test_tools_for_role_every_configured_role_gets_bash() -> None:
+    """Drift-proofing: any role in role_config must come out of
+    tools_for_role with bash. Withholding bash on hummin withholds the
+    gateway itself, not just a shell."""
+    for role in ROLE_CONFIGS:
+        tools = hummin_cli_config.tools_for_role(role)
+        assert "bash" in tools.split(","), f"role {role} lost the gateway channel"
+
+
+def test_tools_for_role_non_authors_do_not_get_writes() -> None:
+    # The write boundary is intact: non-author roles never see edit/write.
+    assert "edit" not in hummin_cli_config.tools_for_role("qa").split(",")
+    assert "write" not in hummin_cli_config.tools_for_role("pr_reviewer").split(",")
 
 
 def test_render_settings_defaults_merge_preserving() -> None:
@@ -85,7 +103,8 @@ def test_main_renders_settings_and_env_file(
     assert rc == 0
     rendered = json.loads(settings_path.read_text(encoding="utf-8"))
     assert rendered["defaultProjectTrust"] == "never"
-    assert env_file.read_text(encoding="utf-8") == 'ROBOCO_HUMMIN_TOOLS="read"\n'
+    # The default-role env file carries the gateway channel too.
+    assert env_file.read_text(encoding="utf-8") == 'ROBOCO_HUMMIN_TOOLS="read,bash"\n'
 
 
 def test_main_existing_settings_never_clobbered(

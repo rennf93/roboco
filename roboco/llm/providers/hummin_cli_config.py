@@ -19,22 +19,19 @@ against the hummin source, vault gotcha ``hummin-mcp-and-rules-gaps``):
 
   * **No mcp.json.** hummin has no MCP client at all (its README: "No MCP.
     ... build an extension that adds MCP support"), so there is nothing to
-    render the mounted ``mcp-config.json`` INTO. The gateway
-    (``roboco-flow`` / ``roboco-do``) is unreachable from a hummin agent in
-    V1; the env var rides along inert for the future explicit ``-e`` bridge
-    extension. See :mod:`roboco.llm.providers.hummin`'s module docstring.
+    render the mounted ``mcp-config.json`` INTO. The gateway's MCP servers
+    are unreachable from a hummin agent; the env var rides along inert for
+    the future explicit ``-e`` bridge extension. See
+    :mod:`roboco.llm.providers.hummin`'s module docstring.
   * **No hooks / permission rules.** hummin has no PreToolUse hook surface
     (its "hooks" are extension lifecycle events, and V1 runs
     ``--no-extensions`` anyway) and no kimi-style ``[[permission.rules]]``
     engine. The kimi concept maps onto hummin's ``--tools`` STRICT
     allowlist instead (:func:`tools_for_role`): only built-in tools exist
-    under ``--no-extensions`` (read/bash/edit/write), so a non-bash role
-    simply doesn't get ``bash`` in its allowlist, and a non-author role
-    doesn't get ``edit``/``write``. The bash-guard hook CANNOT be
-    replicated — command-level screening inside bash has no hummin
-    equivalent — which makes the tool-level boundary the ONLY boundary in
-    V1 (a documented degradation vs the kimi/grok/codex paths, acceptable
-    because a hummin agent also has no gateway verbs to abuse).
+    under ``--no-extensions`` (read/bash/edit/write). The bash-guard hook
+    CANNOT be replicated — command-level screening inside bash has no
+    hummin equivalent — so what a role may DO is scoped server-side
+    (orchestrator API role gates), exactly as for the MCP CLIs.
 
 The ``--check`` mode is the auth preflight: it shells out to
 ``hummin auth check --provider zai --json`` and passes its exit code through
@@ -76,10 +73,6 @@ _READ_TOOLS = ("read",)
 _WRITE_TOOLS = ("edit", "write")
 _BASH_TOOLS = ("bash",)
 
-# Roles that legitimately run a shell. Review / board roles never do — the
-# same set grok_cli_config / kimi_cli_config agree on.
-_BASH_ROLES = frozenset({"developer", "documenter", "cell_pm", "main_pm"})
-
 
 def _allows_write(role: str) -> bool:
     """True if the role writes code (``role_config.allows_write``)."""
@@ -93,17 +86,18 @@ def tools_for_role(role: str) -> str:
     """The ``--tools`` allowlist string for one role (kimi's permission
     semantics mapped onto hummin's strict allowlist).
 
-    Every role gets ``read``. Author roles (``role_config.allows_write``)
-    add ``edit``/``write``; bash-capable roles (the same ``_BASH_ROLES`` set
-    every other CLI config module uses) add ``bash``. Under ``--tools``
-    hummin starts from the EMPTY set and only allows what's listed, so an
-    omitted tool is exactly kimi's deny — and since no extension/custom
-    tools exist under ``--no-extensions``, the built-in surface above is the
-    complete universe to scope.
+    EVERY role gets ``read`` and ``bash``: hummin has no MCP client, so
+    bash is the ONLY gateway transport an agent has (the workspace verb
+    helper run through the shell). A role without bash here is a role with
+    no gateway channel at all — the board roles (auditor, product_owner,
+    head_marketing, pr_reviewer) were exactly that until 2026-09-27: they
+    spawned onto a read-only session, could not call a single verb, wrote
+    their report into the void, and respawn-looped. What a role may DO
+    through the channel is scoped server-side (orchestrator API role
+    gates), not by withholding the transport. Author roles
+    (``role_config.allows_write``) additionally get ``edit``/``write``.
     """
-    tools = *_READ_TOOLS, *(_WRITE_TOOLS if _allows_write(role) else ())
-    if role in _BASH_ROLES:
-        tools = (*tools, *_BASH_TOOLS)
+    tools = *_READ_TOOLS, *(_WRITE_TOOLS if _allows_write(role) else ()), *_BASH_TOOLS
     return ",".join(tools)
 
 
