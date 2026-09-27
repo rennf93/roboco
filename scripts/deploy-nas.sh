@@ -117,34 +117,80 @@ while IFS= read -r img; do
   # handles it (or the build step above already did).
 done < <("${COMPOSE[@]}" config --images)
 
-echo "[deploy] ensuring images: build pass (missing locally-built images)..."
-# Wipe-proof fixpoint. roboco-agent-base is the root of the agent image DAG:
-# every role image FROMs it, so after a full image wipe all role builds fail
-# until the base exists, and a single-pass, die-on-first-failure loop can
-# never recover (2026-09-25). Build the base first, then repeat rounds over
-# every missing image until a round adds nothing new. One immediate retry
-# per build absorbs transient download resets (dl.k8s.io reset 7 of 8 TLS
-# handshakes from this NAS that day).
-if ! docker image inspect roboco-agent-base >/dev/null 2>&1; then
-  echo "[deploy] building roboco-agent-base (root of the agent image DAG) ..."
-  docker build -q -t roboco-agent-base:latest -f docker/agent-base.Dockerfile . ||
-    docker build -q -t roboco-agent-base:latest -f docker/agent-base.Dockerfile .
-fi
+echo "[deploy] ensuring images: build pass (locally-built images, always rebuilt from the checkout)..."
+# ALWAYS rebuild locally-built images from the current checkout. The old
+# existence-only checks ("image present, skipping") left stale agent images
+# serving days-old code after every deploy: a rebuilt base never propagated
+# to dependents, and new roboco/ or entrypoint code never reached a running
+# fleet until someone deleted images by hand (2026-09-27 hummin outage).
+# Layer caching makes an unchanged rebuild a cached no-op; only real source
+# changes pay.
+#
+# Provenance stamp is a CONTENT hash of the build inputs, deliberately NOT a
+# git ref: the deploy checkout carries no meaningful branch identity
+# (master/slave/feature flow through it), and the only question worth
+# answering is whether an image was built from exactly these files. Same
+# files => same label; a label that differs from a fresh hash of the
+# checkout means the image is stale.
+CONTEXT_HASH="$(find roboco docker pyproject.toml uv.lock README.md \
+  -type f 2>/dev/null | LC_ALL=C sort | xargs cat 2>/dev/null \
+  | sha256sum | cut -c1-12)"
+HASH_LABEL="--label org.opencontainers.image.checkout=$CONTEXT_HASH"
+echo "[deploy] checkout content hash: $CONTEXT_HASH"
+echo "[deploy] building roboco-agent-base (root of the agent image DAG) ..."
+docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile . ||
+  docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile .
+build_local_image() {
+  img="$1"; shift
+  old="$(docker image inspect "$img" --format '{{.Id}}' 2>/dev/null || true)"
+  docker build -q -t "$img:latest" $HASH_LABEL "$@" . ||
+    docker build -q -t "$img:latest" $HASH_LABEL "$@" . ||
+    { echo "[deploy] WARNING: build failed for $img" >&2; return 0; }
+  new="$(docker image inspect "$img" --format '{{.Id}}' 2>/dev/null || true)"
+  if [ -n "$old" ] && [ "$old" = "$new" ]; then
+    echo "[deploy] $img unchanged (layer cache)"
+  else
+    echo "[deploy] $img REBUILT ($CONTEXT_HASH)"
+  fi
+}
+while IFS= read -r img; do
+  [ -z "$img" ] && continue
+  # The rollback color's app images are rebuilt by its own re-run.
+  case "$img" in *"-$OTHER") continue ;; esac
+  case "$img" in
+    roboco-*)
+      name="${img#roboco-}"
+      case "$name" in
+        # Bare blue names are built by their own deploy run.
+        orchestrator|panel) continue ;;
+        orchestrator-*|panel-*)
+          echo "[deploy] building $img (compose) ..."
+          "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name" ||
+            echo "[deploy] WARNING: compose build failed for $img" >&2
+          ;;
+        *)
+          if [ -f "docker/$name.Dockerfile" ]; then
+            build_local_image "$img" -f "docker/$name.Dockerfile"
+          fi
+          ;;
+      esac
+      ;;
+  esac
+done < <("${COMPOSE[@]}" config --images)
+echo "[deploy] ensuring images: fixpoint pass (wipe recovery: retry anything still missing)..."
 for round in 1 2 3 4 5 6; do
   built=0
   while IFS= read -r img; do
     [ -z "$img" ] && continue
-    # The rollback color's app images are rebuilt by its own re-run.
     case "$img" in *"-$OTHER") continue ;; esac
     docker image inspect "$img" >/dev/null 2>&1 && continue
     case "$img" in
       roboco-*)
         name="${img#roboco-}"
         case "$name" in
-          # Bare blue names are built by their own deploy run.
           orchestrator|panel) continue ;;
           orchestrator-*|panel-*)
-            echo "[deploy] building $img (compose) ..."
+            echo "[deploy] building $img (compose, round $round) ..."
             if "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name"; then
               built=$((built + 1))
             else
@@ -154,8 +200,8 @@ for round in 1 2 3 4 5 6; do
           *)
             if [ -f "docker/$name.Dockerfile" ]; then
               echo "[deploy] building $img (round $round) ..."
-              if docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" . ||
-                 docker build -q -t "$img:latest" -f "docker/$name.Dockerfile" .; then
+              if docker build -q -t "$img:latest" $HASH_LABEL -f "docker/$name.Dockerfile" . ||
+                 docker build -q -t "$img:latest" $HASH_LABEL -f "docker/$name.Dockerfile" .; then
                 built=$((built + 1))
               else
                 echo "[deploy] WARNING: build failed for $img (retried next round)" >&2
