@@ -76,16 +76,69 @@ wait_healthy() { # wait_healthy <container> [exit0]
 
 COMPOSE=(docker compose -f docker-compose.yaml)
 
-echo "[deploy] app/$COLOR: building images..."
-if [ "$SKIP_BUILD" -eq 0 ]; then
-  # Non-fatal: a total image wipe also takes roboco-agent-base down with the
-  # app images (2026-09-25); the ensure passes below rebuild everything in
-  # dependency order. Killing the deploy here would defeat that.
-  # decisions rides along on every deploy: it is a color-INDEPENDENT
-  # singleton sidecar (like ollama), not part of the blue/green pairs.
-  "${COMPOSE[@]}" build "orchestrator-$COLOR" "panel-$COLOR" decisions ||
-    echo "[deploy] WARNING: app/$COLOR pre-build failed; the ensure pass below will rebuild" >&2
-fi
+echo "[deploy] app/$COLOR: content-gated image builds..."
+# ---------------------------------------------------------------------------
+# Content-aware rebuild gating (2026-09-28). The 02ec8b4c always-rebuild rule
+# fixed the stale-image outage by rebuilding EVERYTHING on every deploy -
+# correct, but a zero-change redeploy re-ran the whole 25-image agent matrix
+# and a panel-only change rebuilt agents that had nothing to do with it. Now
+# every image family carries a content hash of its REAL inputs, persisted
+# per-image in .deploy-cache/, and a build is skipped when the image exists
+# AND its recorded hash matches the checkout:
+#   - roboco/ + pyproject + uv.lock changes  -> orchestrator family + all
+#     agent images rebuild (they bake the roboco venv) - panel does NOT.
+#   - panel/ changes -> panel rebuilds only.
+#   - docker/ changes (Dockerfiles, entrypoints) -> everything rebuilds.
+# Missing images always build (the fixpoint pass below is unchanged, so the
+# 2026-09-25 total-wipe recovery still works). The global CONTEXT_HASH label
+# stamped on builds stays as provenance; freshness is decided here, per
+# family, from the hash files. Under-inclusive hashes would rot images, so
+# the families are deliberately coarse: docker/ as ONE input covers every
+# Dockerfile and entrypoint, at the cost of a docker-only change rebuilding
+# the matrix - rare, and always safe.
+# ---------------------------------------------------------------------------
+CACHE_DIR="${STACK_DIR:-/volume1/roboco}/.deploy-cache"
+mkdir -p "$CACHE_DIR"
+
+hash_paths() { # hash_paths <paths...> -> 16-hex over every file's bytes
+  local h
+  h="$(find "$@" -type f \
+      -not -path '*/__pycache__/*' -not -path '*/node_modules/*' \
+      -not -path '*/.next/*' -not -path '*/.git/*' -not -name '*.pyc' \
+      -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 -r cat 2>/dev/null \
+      | sha256sum | cut -c1-16 || true)"
+  echo "${h:-unknown}"
+}
+ROBOCO_HASH=$(hash_paths roboco pyproject.toml uv.lock README.md)
+PANEL_HASH=$(hash_paths panel)
+DOCKER_HASH=$(hash_paths docker)
+echo "[deploy] content hashes: roboco=$ROBOCO_HASH panel=$PANEL_HASH docker=$DOCKER_HASH"
+
+family_hash() { # family_hash <agent|orch|panel>
+  case "$1" in
+    agent) printf '%s' "agent $ROBOCO_HASH $DOCKER_HASH" ;;
+    orch)  printf '%s' "orch $ROBOCO_HASH $DOCKER_HASH" ;;
+    panel) printf '%s' "panel $PANEL_HASH $DOCKER_HASH" ;;
+  esac | sha256sum | cut -c1-16
+}
+
+image_family() { # image_family <name-without-roboco-prefix>
+  case "$1" in
+    panel*) echo panel ;;
+    orchestrator*|indexer*|dispatcher*|decisions*|video-renderer*|sandbox*)
+      echo orch ;;
+    *) echo agent ;;
+  esac
+}
+
+image_fresh() { # image_fresh <img> <name>: exit 0 = up to date, 1 = build
+  docker image inspect "$img" >/dev/null 2>&1 || return 1
+  local f="$CACHE_DIR/$name.hash" expected
+  expected=$(family_hash "$(image_family "$name")")
+  [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$expected" ]
+}
+
+record_fresh() { family_hash "$(image_family "$name")" > "$CACHE_DIR/$name.hash"; }
 
 # Ensure ALL needed images exist BEFORE the new color comes up: the overlap
 # window (old color serving, new color starting) must never stretch into
@@ -117,21 +170,10 @@ while IFS= read -r img; do
   # handles it (or the build step above already did).
 done < <("${COMPOSE[@]}" config --images)
 
-echo "[deploy] ensuring images: build pass (locally-built images, always rebuilt from the checkout)..."
-# ALWAYS rebuild locally-built images from the current checkout. The old
-# existence-only checks ("image present, skipping") left stale agent images
-# serving days-old code after every deploy: a rebuilt base never propagated
-# to dependents, and new roboco/ or entrypoint code never reached a running
-# fleet until someone deleted images by hand (2026-09-27 hummin outage).
-# Layer caching makes an unchanged rebuild a cached no-op; only real source
-# changes pay.
-#
-# Provenance stamp is a CONTENT hash of the build inputs, deliberately NOT a
-# git ref: the deploy checkout carries no meaningful branch identity
-# (master/slave/feature flow through it), and the only question worth
-# answering is whether an image was built from exactly these files. Same
-# files => same label; a label that differs from a fresh hash of the
-# checkout means the image is stale.
+echo "[deploy] ensuring images: content-gated build pass (only stale or missing)..."
+# Provenance stamp: a CONTENT hash of the checkout, deliberately NOT a git
+# ref (the deploy checkout carries no branch identity). Stamped on builds so
+# a running image can always be traced to the bytes that produced it.
 # Null-delimited end to end: the checkout contains human files with spaces
 # (roboco/vault_assets/meta/"Sync to your Mac.md") and whitespace-splitting
 # xargs turned each word into a missing file, failing the hash - which under
@@ -143,46 +185,65 @@ CONTEXT_HASH="$(find roboco docker pyproject.toml uv.lock README.md \
 [ -n "$CONTEXT_HASH" ] || CONTEXT_HASH="unknown"
 HASH_LABEL="--label org.opencontainers.image.checkout=$CONTEXT_HASH"
 echo "[deploy] checkout content hash: $CONTEXT_HASH"
-echo "[deploy] building roboco-agent-base (root of the agent image DAG) ..."
-docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile . ||
-  docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile .
-build_local_image() {
-  img="$1"; shift
-  old="$(docker image inspect "$img" --format '{{.Id}}' 2>/dev/null || true)"
-  docker build -q -t "$img:latest" $HASH_LABEL "$@" . ||
-    docker build -q -t "$img:latest" $HASH_LABEL "$@" . ||
-    { echo "[deploy] WARNING: build failed for $img" >&2; return 0; }
-  new="$(docker image inspect "$img" --format '{{.Id}}' 2>/dev/null || true)"
-  if [ -n "$old" ] && [ "$old" = "$new" ]; then
-    echo "[deploy] $img unchanged (layer cache)"
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  # agent-base is the root of the agent image DAG: build it first when stale
+  # so every dependent's build sees the fresh base (compose config --images
+  # ordering is not trusted for this).
+  if image_fresh roboco-agent-base agent-base; then
+    echo "[deploy] roboco-agent-base up to date, skipping"
   else
-    echo "[deploy] $img REBUILT ($CONTEXT_HASH)"
+    echo "[deploy] building roboco-agent-base (root of the agent image DAG) ..."
+    docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile . ||
+      docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile .
+    name="agent-base"
+    record_fresh
   fi
-}
-while IFS= read -r img; do
-  [ -z "$img" ] && continue
-  # The rollback color's app images are rebuilt by its own re-run.
-  case "$img" in *"-$OTHER") continue ;; esac
-  case "$img" in
-    roboco-*)
-      name="${img#roboco-}"
-      case "$name" in
-        # Bare blue names are built by their own deploy run.
-        orchestrator|panel) continue ;;
-        orchestrator-*|panel-*)
-          echo "[deploy] building $img (compose) ..."
-          "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name" ||
-            echo "[deploy] WARNING: compose build failed for $img" >&2
-          ;;
-        *)
-          if [ -f "docker/$name.Dockerfile" ]; then
-            build_local_image "$img" -f "docker/$name.Dockerfile"
-          fi
-          ;;
-      esac
-      ;;
-  esac
-done < <("${COMPOSE[@]}" config --images)
+  while IFS= read -r img; do
+    [ -z "$img" ] && continue
+    # The rollback color's app images are rebuilt by its own re-run.
+    case "$img" in *"-$OTHER") continue ;; esac
+    case "$img" in
+      roboco-*)
+        name="${img#roboco-}"
+        case "$name" in
+          # Bare blue names are built by their own deploy run.
+          orchestrator|panel) continue ;;
+        esac
+        df="docker/${name%-blue}.Dockerfile"
+        df="${df%-green}.Dockerfile"
+        if [ ! -f "$df" ]; then
+          continue # registry-pulled or compose-shared image (e.g. dispatcher)
+        fi
+        if image_fresh "$img" "$name"; then
+          echo "[deploy] $img up to date, skipping"
+          continue
+        fi
+        case "$name" in
+          orchestrator-*|panel-*)
+            # Compose-defined builds (the live color's app services).
+            echo "[deploy] building $img (compose) ..."
+            if "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name"; then
+              record_fresh
+            else
+              echo "[deploy] WARNING: compose build failed for $img" >&2
+            fi
+            ;;
+          *)
+            echo "[deploy] building $img ..."
+            if docker build -q -t "$img:latest" $HASH_LABEL -f "$df" . ||
+               docker build -q -t "$img:latest" $HASH_LABEL -f "$df" .; then
+              record_fresh
+            else
+              echo "[deploy] WARNING: build failed for $img" >&2
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done < <("${COMPOSE[@]}" config --images)
+else
+  echo "[deploy] --skip-build: trusting existing images (fixpoint still recovers missing)"
+fi
 echo "[deploy] ensuring images: fixpoint pass (wipe recovery: retry anything still missing)..."
 for round in 1 2 3 4 5 6; do
   built=0
@@ -198,6 +259,7 @@ for round in 1 2 3 4 5 6; do
           orchestrator-*|panel-*)
             echo "[deploy] building $img (compose, round $round) ..."
             if "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name"; then
+              record_fresh
               built=$((built + 1))
             else
               echo "[deploy] WARNING: compose build failed for $img (retried next round)" >&2
@@ -208,6 +270,7 @@ for round in 1 2 3 4 5 6; do
               echo "[deploy] building $img (round $round) ..."
               if docker build -q -t "$img:latest" $HASH_LABEL -f "docker/$name.Dockerfile" . ||
                  docker build -q -t "$img:latest" $HASH_LABEL -f "docker/$name.Dockerfile" .; then
+                record_fresh
                 built=$((built + 1))
               else
                 echo "[deploy] WARNING: build failed for $img (retried next round)" >&2

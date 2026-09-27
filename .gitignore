@@ -134,3 +134,4 @@ docs/internal/
 
 .mimosa/
 .video_agent/
+.deploy-cache/
