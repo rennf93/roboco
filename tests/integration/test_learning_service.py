@@ -22,7 +22,8 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable
+from roboco.db.tables import AgentTable, NotificationTable
+from roboco.models import NotificationType
 from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.services.learning import (
     LearningPropagationService,
@@ -30,7 +31,7 @@ from roboco.services.learning import (
     LearningType,
     RecordLearningParams,
 )
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -70,13 +71,15 @@ async def shared_session(
     yield db_session
 
 
-def _make_agent(role: AgentRole, slug: str | None = None) -> AgentTable:
+def _make_agent(
+    role: AgentRole, slug: str | None = None, team: Team = Team.BACKEND
+) -> AgentTable:
     return AgentTable(
         id=uuid4(),
         name=f"Agent {slug or role.value}",
         slug=slug or f"learn-{role.value}-{uuid4().hex[:8]}",
         role=role,
-        team=Team.BACKEND,
+        team=team,
         status=AgentStatus.ACTIVE,
         model_config={},
         system_prompt="x",
@@ -181,28 +184,44 @@ async def test_team_scope_invalid_role_skips_filter(
 
 
 @pytest.mark.asyncio
-async def test_cell_scope_runs_without_role_filter(
+async def test_cell_scope_notifies_author_team_excludes_cross_cell(
     shared_session: AsyncSession,
 ) -> None:
-    """CELL scope hits the elif branch (line 222-224)."""
-    a1 = _make_agent(AgentRole.DEVELOPER)
-    a2 = _make_agent(AgentRole.QA)
-    shared_session.add_all([a1, a2])
+    """CELL scope notifies the author's team only — cross-cell agents are excluded.
+
+    Since #914 (`_fetch_notify_agents`), CELL scope resolves the author's
+    team from AgentTable and filters recipients to it: a same-cell peer
+    receives the learning, an agent on another team does not. Fanout is
+    asserted on the persisted KNOWLEDGE_SHARE notification rows — the
+    durable, observable outcome — never on in-memory queue internals.
+    """
+    author = _make_agent(AgentRole.DEVELOPER)
+    peer = _make_agent(AgentRole.QA)  # same cell, different role
+    cross_cell = _make_agent(AgentRole.DEVELOPER, team=Team.FRONTEND)
+    shared_session.add_all([author, peer, cross_cell])
     await shared_session.flush()
 
     svc = LearningPropagationService()
     await svc.initialize(_StubOptimal())
-    await svc.record_learning(
+    learning = await svc.record_learning(
         RecordLearningParams(
-            agent_id=cast("uuid.UUID", a1.id),
+            agent_id=cast("uuid.UUID", author.id),
             agent_role="developer",
             content="cell-scope lesson",
             learning_type=LearningType.INSIGHT,
             scope=LearningScope.CELL,
         )
     )
-    targets = {n.target_agent_id for n in svc._notification_queue}
-    assert a2.id in targets
+    result = await shared_session.execute(
+        select(NotificationTable).where(
+            NotificationTable.from_agent == learning.agent_id,
+            NotificationTable.type == NotificationType.KNOWLEDGE_SHARE,
+        )
+    )
+    notified_rows = result.scalars().all()
+    recipients = {recipient for row in notified_rows for recipient in row.to_agents}
+    assert peer.id in recipients
+    assert cross_cell.id not in recipients
 
 
 @pytest.mark.asyncio
