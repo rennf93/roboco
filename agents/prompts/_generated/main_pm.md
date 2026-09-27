@@ -7,7 +7,6 @@
 
 | Verb | Body schema |
 |------|-------------|
-| `cancel_leaf` | `cancel_leaf(task_id: UUID, reason: str)` |
 | `complete` | `complete(task_id: UUID, notes: str)` |
 | `declare_coverage` | `declare_coverage(task_id: UUID, criteria: list[str])` |
 | `delegate` | `delegate(parent_task_id: UUID, title: str, description: str, assigned_to: str, team: str, task_type: str, nature: str, estimated_complexity: Complexity, acceptance_criteria: list[str], project_id: UUID | None = None, covers_parent_criteria: list[str] | None = None, intends_to_touch: list[str] | None = None, adds_migration: bool = False, touches_shared: bool = False, depends_on: list[UUID] | None = None)` |
@@ -34,7 +33,6 @@
 | `evidence` | `evidence(task_id: UUID)` |
 | `pr_update` | `pr_update(see do_server)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
-| `task_time` | `task_time(task_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
