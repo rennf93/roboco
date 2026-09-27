@@ -273,6 +273,71 @@ async def test_derive_mode_gemini_when_only_gemini_global(llm_setup: dict) -> No
 
 
 @pytest.mark.asyncio
+async def test_derive_mode_hummin_with_seeded_role_tiers(llm_setup: dict) -> None:
+    """The hummin state apply_mode writes (GLOBAL default + the seeded
+    oversight/delivery ROLE tiers) derives as "hummin", not "mix".
+
+    Regression: derive_mode only recognized exactly-one-assignment states, so
+    the mode button's own seeded ROLE rows tripped the catch-all — clicking
+    hummin reported "mix" forever, on every apply, including the fresh GET
+    the panel renders right after (2026-09-27 CEO report).
+    """
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    assert await svc.derive_mode() == "hummin"
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_hummin_survives_agent_pin_and_complexity_override(
+    llm_setup: dict,
+) -> None:
+    """AGENT_SLUG pins and compound ROLE":"complexity overrides are operator
+    layers that survive every mode switch — they never flip the label to
+    "mix" (the UI surfaces them separately)."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=_first_model_for_type(ModelProvider.OPENAI),
+    )
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=_first_model_for_type(ModelProvider.GROK),
+    )
+    assert await svc.derive_mode() == "hummin"
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_kimi_survives_agent_pin(llm_setup: dict) -> None:
+    """Same carve-out for a single-GLOBAL mode: GLOBAL kimi + an AGENT_SLUG
+    pin reports "kimi" — the pin is a per-agent override, not mode state."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="kimi")
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=_first_model_for_type(ModelProvider.GEMINI),
+    )
+    assert await svc.derive_mode() == "kimi"
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_mix_when_plain_role_row_differs(llm_setup: dict) -> None:
+    """A plain ROLE row re-pointed at another provider IS genuine mixing of
+    the mode-authored rows — the catch-all applies."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer",
+        model_name=_first_model_for_type(ModelProvider.OPENAI),
+    )
+    assert await svc.derive_mode() == "mix"
+
+
+@pytest.mark.asyncio
 async def test_derive_mode_kimi_when_only_kimi_global(llm_setup: dict) -> None:
     """A pure-KIMI global assignment reports "kimi", not the catch-all
     "mix" — mirrors the codex/gemini branches derive_mode already carries."""

@@ -88,13 +88,16 @@ HUMMIN provider support (the GLM go-to, GLM-native hummin CLI):
   Anthropic-protocol path stays enabled as a manual fallback (it keeps
   its row + key endpoint; it simply has no static-catalog entries
   anymore).
-- derive_mode() returns 'hummin' when there is exactly one GLOBAL
-  assignment pointing to the HUMMIN provider.
+- derive_mode() returns 'hummin' when the mode-authored rows (the GLOBAL
+  default + the plain ROLE oversight/delivery tiers) all point to the
+  HUMMIN provider; AGENT_SLUG pins and complexity overrides never
+  disqualify the label.
 - apply_mode('hummin', ...) force-enables the HUMMIN row (the
   kimi/openrouter shape: the spawn-time key check is the gate — a
   missing ZAI_API_KEY exits the container 78 at the auth preflight and
   the orchestrator parks the provider) and sets a GLOBAL assignment to
-  the given model (default settings.hummin_cli_model).
+  the given model (default settings.hummin_cli_model), then seeds the
+  _HUMMIN_ROLE_TIERS ROLE rows on top.
 - set_hummin_api_key() Fernet-encrypts the Z.ai key on the provider row
   (the set_zai_api_key twin). Empty string clears + disables; non-empty
   encrypts + enables.
@@ -173,10 +176,11 @@ _HUMMIN_ROLE_TIERS: tuple[tuple[str, str], ...] = (
 # else needs editing.
 _COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = ()
 
-# derive_mode()'s single-GLOBAL-assignment lookup — a provider type maps to
-# its "mode" label 1:1 for every mode `apply_mode` can set via a sole GLOBAL
-# row. A dict keeps derive_mode's branch count low (a chain of `if` returns
-# hits ruff's PLR0911 the moment a new provider is added, as GEMINI did).
+# derive_mode()'s provider → mode-label lookup — a provider type maps to its
+# "mode" label 1:1 for every mode `apply_mode` can author via uniform
+# mode-rows (a lone GLOBAL row, or GLOBAL + plain ROLE tiers). A dict keeps
+# derive_mode's branch count low (a chain of `if` returns hits ruff's PLR0911
+# the moment a new provider is added, as GEMINI did).
 _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
     ModelProvider,
     Literal[
@@ -792,27 +796,42 @@ class ModelRoutingService(BaseService):
     ]:
         """Return the current "mode" label for the Settings UI.
 
-        Decision tree matches what `apply_mode` writes:
-          - no assignments at all           → "anthropic"
-          - only a global row, Ollama Cloud → "ollama"
-          - only a global row, LOCAL        → "self_hosted"
-          - only a global row, GROK         → "grok"
-          - only a global row, OPENAI       → "codex"
-          - only a global row, GEMINI       → "gemini"
-          - only a global row, KIMI         → "kimi"
-          - only a global row, NEBIUS       → "nebius"
-          - anything else                   → "mix"
+        The label describes what the mode buttons author: the GLOBAL default
+        plus the plain ROLE tiers `apply_mode('hummin')` seeds. AGENT_SLUG
+        pins and compound ROLE":"complexity overrides are operator layers that
+        survive every mode switch (see `_wipe_mode_switch_assignments`) and
+        never define it — the UI surfaces those separately (per-agent
+        overrides row, complexity table).
+
+        Decision tree:
+          - no assignments at all                    → "anthropic"
+          - no GLOBAL/plain-ROLE row (pins only)     → "mix"
+          - one GLOBAL row, Ollama Cloud             → "ollama"
+          - one GLOBAL row, LOCAL                    → "self_hosted"
+          - one GLOBAL row, GROK                     → "grok"
+          - one GLOBAL row, OPENAI                   → "codex"
+          - one GLOBAL row, GEMINI                   → "gemini"
+          - one GLOBAL row, KIMI                     → "kimi"
+          - one GLOBAL row, NEBIUS                   → "nebius"
+          - GLOBAL + ROLE tiers, all one provider    → that provider's mode
+            (the hummin shape: GLOBAL GLM default + oversight/delivery tiers)
+          - anything else                            → "mix"
         """
         assignments = await self.list_assignments()
         if not assignments:
             return "anthropic"
-        only_global = (
-            len(assignments) == 1 and assignments[0].scope == AssignmentScope.GLOBAL
-        )
-        if only_global:
-            mode = _SINGLE_GLOBAL_MODE_BY_PROVIDER.get(assignments[0].provider.type)
-            if mode is not None:
-                return mode
+        mode_rows = [
+            a
+            for a in assignments
+            if a.scope == AssignmentScope.GLOBAL
+            or (a.scope == AssignmentScope.ROLE and ":" not in (a.scope_value or ""))
+        ]
+        if any(a.scope == AssignmentScope.GLOBAL for a in mode_rows):
+            provider_types = {a.provider.type for a in mode_rows}
+            if len(provider_types) == 1:
+                mode = _SINGLE_GLOBAL_MODE_BY_PROVIDER.get(provider_types.pop())
+                if mode is not None:
+                    return mode
         return "mix"
 
     async def set_ollama_api_key(self, api_key: str) -> ProviderConfigTable:
