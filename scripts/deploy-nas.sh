@@ -132,9 +132,15 @@ echo "[deploy] ensuring images: build pass (locally-built images, always rebuilt
 # answering is whether an image was built from exactly these files. Same
 # files => same label; a label that differs from a fresh hash of the
 # checkout means the image is stale.
+# Null-delimited end to end: the checkout contains human files with spaces
+# (roboco/vault_assets/meta/"Sync to your Mac.md") and whitespace-splitting
+# xargs turned each word into a missing file, failing the hash - which under
+# set -euo pipefail killed the whole deploy silently. The || true degrades a
+# failed hash to "unknown" instead of ever killing a deploy.
 CONTEXT_HASH="$(find roboco docker pyproject.toml uv.lock README.md \
-  -type f 2>/dev/null | LC_ALL=C sort | xargs cat 2>/dev/null \
-  | sha256sum | cut -c1-12)"
+  -type f -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 -r cat 2>/dev/null \
+  | sha256sum | cut -c1-12 || true)"
+[ -n "$CONTEXT_HASH" ] || CONTEXT_HASH="unknown"
 HASH_LABEL="--label org.opencontainers.image.checkout=$CONTEXT_HASH"
 echo "[deploy] checkout content hash: $CONTEXT_HASH"
 echo "[deploy] building roboco-agent-base (root of the agent image DAG) ..."
