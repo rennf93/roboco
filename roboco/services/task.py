@@ -10432,7 +10432,13 @@ class TaskService(BaseService):
         if parent_id is None or owner is None or seq is None:
             return False
         result = await self.session.execute(
-            select(TaskTable.status, TaskTable.sequence, TaskTable.created_at).where(
+            select(
+                TaskTable.id,
+                TaskTable.status,
+                TaskTable.sequence,
+                TaskTable.created_at,
+                TaskTable.dependency_ids,
+            ).where(
                 TaskTable.parent_task_id == parent_id,
                 TaskTable.assigned_to == owner,
                 TaskTable.task_type == TaskType.CODE,
@@ -10440,10 +10446,34 @@ class TaskService(BaseService):
             )
         )
         terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        rows = list(result.all())
+        # A sibling that (transitively, within the sibling set) depends on this
+        # task is ordered AFTER it by the dependency guard, never before it in
+        # the lane. Counting such a sibling as "earlier" via the equal-sequence
+        # created-at tiebreak — which happens when a PM wires the dependency
+        # opposite to creation order — makes the claim gate refuse this task
+        # while the dependency gate refuses the sibling: the dispatch side
+        # spawns, the claim side refuses, and the dev burns every verb bouncing
+        # between the two (be-dev-2, 2026-09-27). Dependency order outranks the
+        # created-at tiebreak, mirroring the dispatch barrier's exclusion.
+        dep_map = {
+            str(row.id): {str(d) for d in (row.dependency_ids or ())} for row in rows
+        }
+        dependents: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for sib_id, deps in dep_map.items():
+                if sib_id in dependents:
+                    continue
+                if str(task.id) in deps or deps & dependents:
+                    dependents.add(sib_id)
+                    changed = True
         return any(
-            ((sib_seq or 0), sib_created) < (seq, task.created_at)
-            and status not in terminal
-            for status, sib_seq, sib_created in result.all()
+            ((row.sequence or 0), row.created_at) < (seq, task.created_at)
+            and row.status not in terminal
+            and str(row.id) not in dependents
+            for row in rows
         )
 
     async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]:

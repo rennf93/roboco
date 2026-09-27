@@ -7,6 +7,7 @@ session boundary and checks the method's contract.
 
 from __future__ import annotations
 
+from collections import namedtuple
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -1965,13 +1966,34 @@ async def test_unclaimed_parent_acs_counts_live_children_not_just_completed() ->
     ]
 
 
+_BASE_WIDTH = 2  # (status, sequence) — the minimal padded row width
+_SiblingRow = namedtuple(
+    "_SiblingRow",
+    ["id", "status", "sequence", "created_at", "dependency_ids"],
+)
+
+
 def _svc_with_sibling_status_seq(rows: list[tuple]) -> TaskService:
-    """TaskService whose execute() yields (status, sequence[, created_at])
-    sibling rows; 2-tuples are padded with created_at=None (only compared on
-    a sequence tie)."""
-    row_width = 3  # (status, sequence, created_at)
+    """TaskService whose execute() yields (status, sequence[, created_at]
+    [, dependency_ids]) sibling rows; 2-tuples are padded with created_at=None
+    (only compared on a sequence tie). Each row gets a fresh id so the lane
+    predicate's dependency-successor exclusion can key on it."""
+    padded = []
+    for r in rows:
+        status, seq = r[0], r[1]
+        created = r[2] if len(r) > _BASE_WIDTH else None
+        dep_ids = r[3] if len(r) > _BASE_WIDTH + 1 else ()
+        padded.append(
+            _SiblingRow(
+                id=uuid4(),
+                status=status,
+                sequence=seq,
+                created_at=created,
+                dependency_ids=dep_ids,
+            )
+        )
     res = MagicMock()
-    res.all.return_value = [r if len(r) == row_width else (*r, None) for r in rows]
+    res.all.return_value = padded
     return TaskService(MagicMock(execute=AsyncMock(return_value=res)))
 
 
@@ -2019,6 +2041,58 @@ async def test_earlier_incomplete_code_sibling_tie_breaks_by_created_at() -> Non
     svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 1, earlier)])
     assert await svc.has_earlier_incomplete_code_sibling(task) is True
     svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 1, later)])
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_lane_sibling_depending_on_task_is_never_earlier() -> None:
+    """Regression (be-dev-2, 2026-09-27, claim-side): the PM wired the
+    dependency opposite to creation order — the earlier-created tied sibling
+    DEPENDS on the later-created task. The dependency guard refuses the
+    sibling; if the lane predicate also refused the task, the dev bounced
+    between the two rejections forever. Dependency order outranks the
+    created-at tiebreak here, mirroring the dispatch barrier."""
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=0,
+        created_at=datetime(2026, 9, 27, 2, 26, tzinfo=UTC),
+    )
+    svc = _svc_with_sibling_status_seq(
+        [(TaskStatus.PENDING, 0, datetime(2026, 9, 27, 1, 14, tzinfo=UTC), (task.id,))]
+    )
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_lane_sibling_transitively_depending_on_task_is_never_earlier() -> None:
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=0,
+        created_at=datetime(2026, 9, 27, 3, 0, tzinfo=UTC),
+    )
+    # Both rows are tied AND created earlier than the task — the ONLY reason
+    # they must not hold the lane is the dependency-successor exclusion.
+    mid = _SiblingRow(
+        id=uuid4(),
+        status=TaskStatus.PENDING,
+        sequence=0,
+        created_at=datetime(2026, 9, 27, 2, 0, tzinfo=UTC),
+        dependency_ids=(task.id,),
+    )
+    head = _SiblingRow(
+        id=uuid4(),
+        status=TaskStatus.PENDING,
+        sequence=0,
+        created_at=datetime(2026, 9, 27, 2, 30, tzinfo=UTC),
+        dependency_ids=(mid.id,),
+    )
+    res = MagicMock()
+    res.all.return_value = [head, mid]
+    svc = TaskService(MagicMock(execute=AsyncMock(return_value=res)))
     assert await svc.has_earlier_incomplete_code_sibling(task) is False
 
 

@@ -1160,7 +1160,7 @@ class ContentActions:
             # Section write (dev_notes / quick_context / auditor_notes / …), not
             # a journal entry. Content quality is enforced by the content model
             # (apply_structured_note), so skip the journal-text soup check.
-            return await self._record_section_handoff(
+            envelope = await self._record_section_handoff(
                 agent_id=agent_id,
                 text=text,
                 task_id=task_id,
@@ -1168,13 +1168,44 @@ class ContentActions:
                     section, done=done, next=next, where_to_look=where_to_look
                 ),
             )
-        return await self._write_journal_note(
-            agent_id=agent_id,
-            text=text,
-            scope=scope,
-            task_id=task_id,
-            structured=structured,
-        )
+        else:
+            envelope = await self._write_journal_note(
+                agent_id=agent_id,
+                text=text,
+                scope=scope,
+                task_id=task_id,
+                structured=structured,
+            )
+        if envelope.error is None:
+            await self._complete_note_completing_exploration(agent_id, task_id)
+        return envelope
+
+    async def _complete_note_completing_exploration(
+        self, agent_id: UUID, task_id: UUID | None
+    ) -> None:
+        """Complete the caller's own exploration task under the
+        complete-at-note contract (``BoardProgram.completes_on_note``).
+
+        Best-effort and narrow: the task must exist, be assigned to the
+        caller, be non-terminal, and its ``source`` must belong to a program
+        that declares the contract (decisions_audit — one review pass IS the
+        cycle). Proposal programs (roadmap/scales/…) stay open awaiting
+        per-item CEO review and are never touched here. A failed note never
+        completes anything (the caller gates on the envelope)."""
+        if task_id is None:
+            return
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task = await self.task.get(task_id)
+        if task is None or task.assigned_to != agent_id:
+            return
+        program = next((p for p in PROGRAMS.values() if p.source == task.source), None)
+        if program is None or not program.completes_on_note:
+            return
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
+            return
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
 
     async def _write_journal_note(
         self,
