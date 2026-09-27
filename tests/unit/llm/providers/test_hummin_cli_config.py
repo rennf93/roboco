@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
 
+import pytest
 from roboco.llm.providers import hummin_cli_config
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    import pytest
 
 
 def _role_of(agent_id: str) -> str:
@@ -129,3 +125,107 @@ def test_check_mode_maps_missing_binary_to_invalid(
 
     monkeypatch.setattr(hummin_cli_config.subprocess, "run", _boom)
     assert hummin_cli_config.main(["--check"]) == 2  # noqa: PLR2004
+
+
+# ---------------------------------------------------------------------------
+# MCP bridge: hummin has a native MCP client (extensions/hummin-mcp.ts) that
+# reads settings `mcpServers` and registers tools as mcp_<server>_<tool>;
+# --tools gates every tool by exact name, so the renderer emits the role's
+# qualified verb surface + the read-only aux servers.
+# ---------------------------------------------------------------------------
+
+
+def test_qualified_names_match_hummin_convention() -> None:
+    # sanitizeToolPart: lowercase, non-alnum runs -> "_", outer "_" stripped.
+    assert hummin_cli_config.qualified_mcp_tool_name(
+        "roboco-flow", "give_me_work"
+    ) == "mcp_roboco_flow_give_me_work"
+    assert hummin_cli_config.qualified_mcp_tool_name(
+        "roboco-git-readonly", "git_status"
+    ) == "mcp_roboco_git_readonly_git_status"
+
+
+def test_load_mcp_servers_reads_mount(tmp_path: Path) -> None:
+    config = tmp_path / "mcp-config.json"
+    config.write_text(
+        json.dumps(
+            {"mcpServers": {"roboco-flow": {"command": "uv", "args": ["run", "x"]}}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(hummin_cli_config, "MCP_CONFIG_PATH", config)
+    try:
+        servers = hummin_cli_config.load_mcp_servers()
+    finally:
+        monkeypatch.undo()
+    assert list(servers) == ["roboco-flow"]
+
+
+def test_load_mcp_servers_missing_mount_is_inert(tmp_path: Path) -> None:
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        hummin_cli_config, "MCP_CONFIG_PATH", tmp_path / "absent.json"
+    )
+    try:
+        assert hummin_cli_config.load_mcp_servers() == {}
+    finally:
+        monkeypatch.undo()
+
+
+def test_render_mcp_servers_merges_and_preserves_operator_keys() -> None:
+    settings: dict[str, object] = {"defaultProjectTrust": "always"}
+    servers = {"roboco-flow": {"command": "uv"}}
+    merged = hummin_cli_config.render_mcp_servers(settings, servers)
+    assert merged["mcpServers"] == servers
+    assert merged["defaultProjectTrust"] == "always"
+    # No servers (no mount) -> settings untouched.
+    assert hummin_cli_config.render_mcp_servers(settings, {}) == settings
+
+
+def test_mcp_tool_allowlist_role_scoped_from_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The allowlist exposes exactly the manifest's flow/do verbs (role-
+    scoped governance) plus the mounted read-only aux servers — never a
+    blanket mcp wildcard."""
+    manifest = tmp_path / "tool-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "flow_tools": ["triage", "i_am_idle"],
+                "do_tools": ["note", "propose_quality_report"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hummin_cli_config, "_TOOL_MANIFEST_PATH", manifest)
+    # Aux introspection stubbed: the server modules' names come from the mcp
+    # registry at runtime; here we pin the assembly, not the SDK.
+    monkeypatch.setattr(
+        hummin_cli_config,
+        "_aux_server_tool_names",
+        lambda _module: ["git_status", "git_log"],
+    )
+    servers = {
+        "roboco-flow": {"command": "uv"},
+        "roboco-do": {"command": "uv"},
+        "roboco-git-readonly": {"command": "uv"},
+    }
+    names = hummin_cli_config.mcp_tool_allowlist(servers)
+    assert "mcp_roboco_flow_triage" in names
+    assert "mcp_roboco_flow_i_am_idle" in names
+    assert "mcp_roboco_do_note" in names
+    assert "mcp_roboco_do_propose_quality_report" in names
+    assert "mcp_roboco_git_readonly_git_status" in names
+    # A server in the manifest map but NOT mounted contributes nothing.
+    assert not any(n.startswith("mcp_roboco_optimal_") for n in names)
+
+
+def test_mcp_tool_allowlist_without_servers_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        hummin_cli_config, "MCP_CONFIG_PATH", Path("/nonexistent/mcp-config.json")
+    )
+    assert hummin_cli_config.mcp_tool_allowlist() == []

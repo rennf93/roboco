@@ -46,15 +46,39 @@ The ``--check`` mode is the auth preflight: it shells out to
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from roboco.agents_config import get_agent_role
 from roboco.services.gateway.role_config import get_role_config
+
+# The orchestrator-rendered gateway config (Claude-style {"mcpServers": …}),
+# mounted read-only into every agent container. hummin's own MCP client is an
+# EXTENSION (extensions/hummin-mcp.ts) that reads the settings.json
+# `mcpServers` namespace, so the entrypoint's render step bridges the two:
+# this file's mcpServers land in ~/.hummin/agent/settings.json and its tool
+# names are appended to the strict --tools allowlist (hummin gates EVERY
+# tool — built-in and extension alike — on that allowlist, default-deny).
+MCP_CONFIG_PATH = Path(os.environ.get("ROBOCO_MCP_CONFIG_PATH", "/app/mcp-config.json"))
+_TOOL_MANIFEST_PATH = Path(
+    os.environ.get("ROBOCO_TOOL_MANIFEST_PATH", "/app/tool-manifest.json")
+)
+# The MCP servers whose tool surface is NOT role-scoped by the manifest
+# (read-only git views + KB). Their qualified names are enumerated from the
+# server modules themselves so this list cannot drift from the code.
+_AUX_MCP_SERVER_MODULES = {
+    "roboco-git-readonly": "roboco.mcp.git_readonly",
+    "roboco-optimal": "roboco.mcp.optimal_server",
+    "roboco-docs": "roboco.mcp.docs_server",
+    "roboco-search": "roboco.mcp.search_server",
+}
 
 # hummin reads its global config from $HUMMIN_CODING_AGENT_DIR/settings.json
 # (default ~/.hummin/agent — the agent's HOME is /home/agent). Rendered only
@@ -107,6 +131,110 @@ def tools_for_role(role: str) -> str:
     return ",".join(tools)
 
 
+# =============================================================================
+# MCP bridge (hummin-mcp extension + settings mcpServers + --tools names)
+# =============================================================================
+
+
+def sanitize_tool_part(name: str) -> str:
+    """Mirror hummin's mcp-client sanitizeToolPart: lowercase, non-
+    alphanumeric runs collapse to ``_``, outer underscores stripped, 64-char
+    cap. The qualified name convention is ``mcp_<server>_<tool>``."""
+    part = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
+    return part[:64]
+
+
+def qualified_mcp_tool_name(server: str, tool: str) -> str:
+    """hummin registers MCP tools as ``mcp_<server>_<tool>`` (both parts
+    sanitized); --tools allowlists by exact name, so the renderer must emit
+    the same qualified names the extension will register."""
+    return f"mcp_{sanitize_tool_part(server)}_{sanitize_tool_part(tool)}"
+
+
+def load_mcp_servers() -> dict[str, Any]:
+    """Read the orchestrator-rendered gateway config. Returns the raw
+    ``mcpServers`` mapping (Claude-style {command, args, env} — exactly the
+    shape hummin's McpServerConfig normalizes) or {} when the mount is
+    absent or unreadable; never raises."""
+    with contextlib.suppress(OSError, ValueError):
+        parsed = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
+        servers = parsed.get("mcpServers") if isinstance(parsed, dict) else None
+        if isinstance(servers, dict):
+            return dict(servers)
+    return {}
+
+
+def render_mcp_servers(
+    settings: dict[str, object], servers: dict[str, Any]
+) -> dict[str, object]:
+    """Bridge the mounted gateway config into hummin's global settings.
+
+    The MCP extension reads ``mcpServers`` from global settings (no project
+    trust involved). The orchestrator's mount is the config of record: it is
+    written verbatim each render, replacing any stale previous render, while
+    unrelated operator keys merge-preserve."""
+    merged = dict(settings)
+    if servers:
+        merged["mcpServers"] = dict(servers)
+    return merged
+
+
+def _manifest_verb_tools() -> dict[str, list[str]]:
+    """The role-scoped verb surface from the spawn manifest: server name →
+    tool names. The flow/do servers register exactly these (they read the
+    same manifest), so no introspection is needed for them."""
+    with contextlib.suppress(OSError, ValueError):
+        manifest = json.loads(_TOOL_MANIFEST_PATH.read_text(encoding="utf-8"))
+        if isinstance(manifest, dict):
+            return {
+                "roboco-flow": [str(v) for v in manifest.get("flow_tools") or []],
+                "roboco-do": [str(v) for v in manifest.get("do_tools") or []],
+            }
+    return {}
+
+
+def _aux_server_tool_names(module_name: str) -> list[str]:
+    """Enumerate a non-role-scoped MCP server's tool names by importing it.
+    These servers (git views, KB) are the same surfaces every role gets on
+    the MCP-CLI paths; introspection reads the mcp SDK's registry so the
+    names cannot drift from the server code. Never raises."""
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        return []
+    server = getattr(module, "mcp", None)
+    manager = getattr(server, "_tool_manager", None)
+    tools = getattr(manager, "_tools", None)
+    if isinstance(tools, dict):
+        return [str(name) for name in tools]
+    return []
+
+
+def mcp_tool_allowlist(
+    servers: dict[str, Any] | None = None,
+) -> list[str]:
+    """The exact qualified MCP tool names to append to the strict --tools
+    allowlist. Composed from the role-scoped manifest (flow/do verbs — a
+    role can only ever see its own verbs) plus the read-only aux servers.
+    Servers absent from the mounted config contribute nothing."""
+    if servers is None:
+        servers = load_mcp_servers()
+    if not servers:
+        return []
+
+    server_tools = _manifest_verb_tools()
+    for name, module_name in _AUX_MCP_SERVER_MODULES.items():
+        if name in servers:
+            server_tools[name] = _aux_server_tool_names(module_name)
+
+    names: list[str] = []
+    for server, tools in server_tools.items():
+        if server not in servers:
+            continue
+        names.extend(qualified_mcp_tool_name(server, tool) for tool in tools)
+    return names
+
+
 def render_settings_defaults(existing: dict[str, object] | None) -> dict[str, object]:
     """The fleet-safe settings defaults, merged over ``existing`` (if any).
 
@@ -127,6 +255,23 @@ def write_env_file(path: Path = HUMMIN_ENV_FILE, *, role: str | None = None) -> 
         role = get_agent_role(os.environ.get("ROBOCO_AGENT_ID", "")) or ""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f'ROBOCO_HUMMIN_TOOLS="{tools_for_role(role)}"\n', encoding="utf-8")
+
+
+def write_mcp_env_file(
+    path: Path = HUMMIN_ENV_FILE, servers: dict[str, Any] | None = None
+) -> None:
+    """Append the qualified MCP tool names to the sourced env file.
+
+    Written ONLY when there are servers to expose: the entrypoint references
+    the var with the ``:+`` form, so an absent var simply means no MCP tools
+    in the allowlist (the pre-bridge behavior, unchanged)."""
+    if servers is None:
+        servers = load_mcp_servers()
+    names = mcp_tool_allowlist(servers)
+    if not names:
+        return
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f'ROBOCO_HUMMIN_MCP_TOOLS="{",".join(names)}"\n')
 
 
 def auth_preflight() -> int:
@@ -158,15 +303,20 @@ def main(argv: list[str] | None = None) -> int:
         loaded = json.loads(HUMMIN_SETTINGS_PATH.read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
             existing = loaded
+    servers = load_mcp_servers()
     HUMMIN_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     HUMMIN_SETTINGS_PATH.write_text(
-        json.dumps(render_settings_defaults(existing), indent=2), encoding="utf-8"
+        json.dumps(
+            render_mcp_servers(render_settings_defaults(existing), servers), indent=2
+        ),
+        encoding="utf-8",
     )
     # Pass the module global explicitly (not relying on write_env_file's own
     # default, which binds at function-definition time and would go stale if
     # a caller reassigns the global after import — a real gap for e.g. a
     # test module monkeypatching it post-import).
     write_env_file(HUMMIN_ENV_FILE)
+    write_mcp_env_file(HUMMIN_ENV_FILE, servers)
     return 0
 
 

@@ -13,9 +13,17 @@
 # V1 contract notes (verified against the hummin source — see
 # roboco.llm.providers.hummin_cli_config):
 #   - `--no-extensions` is REQUIRED: without it hummin's bundled colibri
-#     extension probes localhost ports at startup. It also means NO
-#     extension/custom tools and NO MCP bridge exist in V1 — the built-in
-#     tool surface is scoped per role via the rendered `--tools` allowlist.
+#     extension probes localhost ports at startup. `--extension` survives
+#     `--no-extensions` (verified in resource-loader.ts: CLI-enabled paths
+#     bypass the noExtensions merge), so the SINGLE extension we opt into is
+#     hummin-mcp — the gateway bridge. Every other bundled extension stays
+#     dead; governance unchanged, the strict --tools allowlist still gates
+#     every tool by exact name, MCP tools included (mcp_<server>_<tool>).
+#   - The gateway verbs travel over that MCP bridge: the renderer merges the
+#     mounted /app/mcp-config.json into ~/.hummin/agent/settings.json
+#     (mcpServers) and appends the role's qualified tool names to the
+#     allowlist. No mcp-config (older orchestrator) => no --extension, no
+#     MCP tools: the pre-bridge behavior, unchanged.
 #   - stdin must be closed (`< /dev/null`) or startup blocks reading it.
 #   - stdout carries ONLY protocol JSONL (tee'd live to docker logs and
 #     captured for usage + sniff reads below).
@@ -29,6 +37,19 @@ command -v hummin >/dev/null || {
   exit 1
 }
 
+# Locate the bundled hummin-mcp extension (shipped as source inside the
+# package; path varies by npm global prefix).
+MCP_EXT=""
+NPM_ROOT="$(npm root -g 2>/dev/null || true)"
+for cand in "$NPM_ROOT/hummin-cli/extensions/hummin-mcp.ts" \
+  /usr/local/lib/node_modules/hummin-cli/extensions/hummin-mcp.ts \
+  /usr/lib/node_modules/hummin-cli/extensions/hummin-mcp.ts; do
+  if [ -n "$cand" ] && [ -f "$cand" ]; then
+    MCP_EXT="$cand"
+    break
+  fi
+done
+
 # Render ~/.hummin/agent/settings.json (fleet-safe defaults, merged-
 # preserving) + /tmp/roboco-hummin-env (the per-role --tools allowlist).
 # Run from /app so `python -m` resolves the INSTALLED roboco package: dev/
@@ -39,6 +60,16 @@ command -v hummin >/dev/null || {
 
 # shellcheck disable=SC1091
 source /tmp/roboco-hummin-env
+
+# The MCP bridge only arms when BOTH halves exist: the mounted gateway
+# config (rendered into settings by hummin_cli_config) and the extension
+# file. Built-in allowlist and MCP names are joined into ONE --tools token
+# (hummin's allowlist is a single exact-name set covering both kinds).
+if [ -f /app/mcp-config.json ] && [ -n "$MCP_EXT" ] && [ -n "${ROBOCO_HUMMIN_MCP_TOOLS:-}" ]; then
+  FULL_TOOLS="${ROBOCO_HUMMIN_TOOLS:+$ROBOCO_HUMMIN_TOOLS,}$ROBOCO_HUMMIN_MCP_TOOLS"
+else
+  FULL_TOOLS="${ROBOCO_HUMMIN_TOOLS:-}"
+fi
 
 # Prompt-injection guard (parity with the Claude/grok/codex/kimi path): the
 # task prompt is DATA, not instructions — refuse a poisoned one before the
@@ -83,7 +114,8 @@ if [ -s "$SYSTEM_PROMPT_FILE" ]; then
   hummin --mode json \
     --model "zai/${ROBOCO_AGENT_MODEL:-glm-5.3-flash:high}" \
     --system-prompt "$(cat "$SYSTEM_PROMPT_FILE")" \
-    ${ROBOCO_HUMMIN_TOOLS:+--tools "$ROBOCO_HUMMIN_TOOLS"} \
+    ${FULL_TOOLS:+--tools "$FULL_TOOLS"} \
+    ${MCP_EXT:+--extension "$MCP_EXT"} \
     --no-extensions \
     -p "${ROBOCO_INITIAL_PROMPT:-}" \
     < /dev/null 2> "$ERR_LOG" | tee "$RUN_LOG"
@@ -91,7 +123,8 @@ else
   echo "[hummin] system prompt file missing at ${SYSTEM_PROMPT_FILE} — running on the CLI default prompt." >&2
   hummin --mode json \
     --model "zai/${ROBOCO_AGENT_MODEL:-glm-5.3-flash:high}" \
-    ${ROBOCO_HUMMIN_TOOLS:+--tools "$ROBOCO_HUMMIN_TOOLS"} \
+    ${FULL_TOOLS:+--tools "$FULL_TOOLS"} \
+    ${MCP_EXT:+--extension "$MCP_EXT"} \
     --no-extensions \
     -p "${ROBOCO_INITIAL_PROMPT:-}" \
     < /dev/null 2> "$ERR_LOG" | tee "$RUN_LOG"
@@ -132,6 +165,6 @@ fi
 
 # A graceful exit without a terminal verb is handled server-side by the
 # orchestrator (_handle_stopped_container substitutes the still-owned task)
-# — the hummin-cli runtime has no in-container SDK server and, in V1, no
-# MCP gateway client at all (see roboco.llm.providers.hummin).
+# — the hummin-cli runtime has no in-container SDK server; its gateway
+# channel is the hummin-mcp extension bridge above.
 exit "$run_rc"
