@@ -61,6 +61,36 @@ def _project_payload(slug_suffix: str) -> ProjectCreate:
     )
 
 
+async def _make_agent(
+    db_session: AsyncSession,
+    team: Team,
+) -> AgentTable:
+    """Seed a real agent row in ``team`` and return it.
+
+    ``add_allowed_agent`` validates that the agent EXISTS and sits in the
+    project's assigned cell (the access-hardening guards, so a grant cannot
+    flip a project to list-only while adding an agent that gains nothing) —
+    the allowed-list tests therefore need a persisted in-cell agent, not a
+    random UUID.
+    """
+    agent = AgentTable(
+        id=uuid4(),
+        name=f"Dev {uuid4().hex[:6]}",
+        slug=f"dev-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=team,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    return agent
+
+
 @pytest.mark.asyncio
 async def test_create_project(project_setup: dict) -> None:
     svc = project_setup["svc"]
@@ -438,15 +468,17 @@ async def test_check_agent_access_returns_bool(project_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_and_remove_allowed_agent(project_setup: dict) -> None:
+async def test_add_and_remove_allowed_agent(
+    project_setup: dict, db_session: AsyncSession
+) -> None:
     svc = project_setup["svc"]
     project = await svc.create(
         _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
     )
-    new_agent_id = uuid4()
-    added = await svc.add_allowed_agent(project.id, new_agent_id)
+    new_agent = await _make_agent(db_session, Team.BACKEND)
+    added = await svc.add_allowed_agent(project.id, new_agent.id)
     assert added is not None
-    removed = await svc.remove_allowed_agent(project.id, new_agent_id)
+    removed = await svc.remove_allowed_agent(project.id, new_agent.id)
     assert removed is not None
 
 
@@ -734,13 +766,15 @@ async def test_add_allowed_agent_returns_none_when_missing(
 
 
 @pytest.mark.asyncio
-async def test_add_allowed_agent_idempotent(project_setup: dict) -> None:
+async def test_add_allowed_agent_idempotent(
+    project_setup: dict, db_session: AsyncSession
+) -> None:
     """Adding same agent twice doesn't duplicate."""
     svc = project_setup["svc"]
     project = await svc.create(
         _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
     )
-    aid = uuid4()
+    aid = (await _make_agent(db_session, Team.BACKEND)).id
     await svc.add_allowed_agent(project.id, aid)
     refreshed = await svc.add_allowed_agent(project.id, aid)
     assert refreshed is not None
@@ -748,13 +782,16 @@ async def test_add_allowed_agent_idempotent(project_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_allowed_agent_appends_new(project_setup: dict) -> None:
+async def test_add_allowed_agent_appends_new(
+    project_setup: dict, db_session: AsyncSession
+) -> None:
     """Adding a different agent after one exists appends it."""
     svc = project_setup["svc"]
     project = await svc.create(
         _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
     )
-    a1, a2 = uuid4(), uuid4()
+    a1 = (await _make_agent(db_session, Team.BACKEND)).id
+    a2 = (await _make_agent(db_session, Team.BACKEND)).id
     await svc.add_allowed_agent(project.id, a1)
     refreshed = await svc.add_allowed_agent(project.id, a2)
     assert refreshed is not None
@@ -791,7 +828,7 @@ async def test_remove_allowed_agent_when_allowed_list_is_none(
 
 @pytest.mark.asyncio
 async def test_remove_last_allowed_agent_restores_cell_default(
-    project_setup: dict,
+    project_setup: dict, db_session: AsyncSession
 ) -> None:
     """Removing the only entry collapses the list back to None -- an emptied
     restriction is no restriction, not a list nobody is on."""
@@ -799,7 +836,7 @@ async def test_remove_last_allowed_agent_restores_cell_default(
     project = await svc.create(
         _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
     )
-    aid = uuid4()
+    aid = (await _make_agent(db_session, Team.BACKEND)).id
     await svc.add_allowed_agent(project.id, aid)
     refreshed = await svc.remove_allowed_agent(project.id, aid)
     assert refreshed is not None
@@ -833,14 +870,14 @@ async def test_check_agent_access_wrong_cell_returns_false(
 
 @pytest.mark.asyncio
 async def test_check_agent_access_with_allowed_list_membership(
-    project_setup: dict,
+    project_setup: dict, db_session: AsyncSession
 ) -> None:
     """Project with explicit allowed_agents list — checks membership."""
     svc = project_setup["svc"]
     project = await svc.create(
         _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
     )
-    target = uuid4()
+    target = (await _make_agent(db_session, Team.BACKEND)).id
     await svc.add_allowed_agent(project.id, target)
     # Same cell + member → True.
     assert (await svc.check_agent_access(project.id, target, Team.BACKEND)) is True
