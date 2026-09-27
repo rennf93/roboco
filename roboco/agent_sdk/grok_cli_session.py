@@ -239,6 +239,11 @@ class GrokCliSession:  # pragma: no cover - needs the live grok binary
                 *self._build_argv(text),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Grok's JSONL stream can carry single lines far past
+                # asyncio's default 64KB readline limit (LimitOverrunError
+                # kills the turn mid-stream); 16MB covers any plausible
+                # single event.
+                limit=16 * 1024 * 1024,
             )
         except OSError as exc:
             logger.error("grok turn could not start", error=str(exc))
@@ -283,7 +288,14 @@ class GrokCliSession:  # pragma: no cover - needs the live grok binary
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError
-            raw = await asyncio.wait_for(stdout.readline(), timeout=remaining)
+            try:
+                raw = await asyncio.wait_for(stdout.readline(), timeout=remaining)
+            except asyncio.LimitOverrunError:
+                # Even at 16MB a line can overflow: consume the buffered
+                # chunk so the stream stays usable and keep draining (the
+                # event parser skips unparsable lines).
+                await asyncio.wait_for(stdout.read(1024 * 1024), timeout=remaining)
+                continue
             if not raw:  # EOF
                 return
             event = _parse_event(raw.decode("utf-8", "replace").strip())

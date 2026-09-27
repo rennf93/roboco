@@ -120,6 +120,13 @@ class HeadlessCliTurnSession:
                 cwd=self._cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # hummin's --mode json emits ONE JSONL line per protocol
+                # message; a single long assistant message blows far past
+                # asyncio's default 64KB readline limit and raises
+                # LimitOverrunError ("Separator is not found, and chunk
+                # exceed the limit") — the 2026-09-28 intake failure. 16MB
+                # covers any plausible single message.
+                limit=16 * 1024 * 1024,
             )
         except OSError as exc:
             logger.error("live CLI turn could not start", error=str(exc))
@@ -208,7 +215,15 @@ class HeadlessCliTurnSession:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError
-            raw = await asyncio.wait_for(stdout.readline(), timeout=remaining)
+            try:
+                raw = await asyncio.wait_for(stdout.readline(), timeout=remaining)
+            except asyncio.LimitOverrunError:
+                # Even at 16MB a line can overflow. Consume the buffered
+                # chunk so the stream stays usable and keep draining: the
+                # accumulator tolerates unparsable lines, so a split monster
+                # line loses the seam, never the turn.
+                await asyncio.wait_for(stdout.read(1024 * 1024), timeout=remaining)
+                continue
             if not raw:  # EOF
                 return
             line = raw.decode("utf-8", "replace").rstrip("\n")
