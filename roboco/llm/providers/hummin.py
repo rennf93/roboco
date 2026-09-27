@@ -58,6 +58,7 @@ import os
 from typing import TYPE_CHECKING, Protocol
 
 from roboco.config import settings
+from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 from roboco.runtime.compose_labels import compose_label_args
@@ -233,8 +234,8 @@ class HumminCliProvider(AgentProvider):
         Fernet-decrypted key, or an orchestrator-env fallback).
         ``ROBOCO_AGENT_MODEL`` carries the BARE zai-catalog id (the
         entrypoint prefixes it as ``--model zai/<id>``).
-        ``ROBOCO_MCP_CONFIG`` is passed for provenance but is INERT in V1 —
-        hummin has no MCP client (see the module docstring).
+        ``ROBOCO_MCP_CONFIG`` is passed for provenance; the entrypoint arms
+        the hummin-mcp gateway bridge from the mounted config when present.
         ``HUMMIN_MEMORY=0`` keeps hummin's memory extension out of the
         operator's personal vault. The prompt travels as an env var (never
         an argv positional).
@@ -242,7 +243,12 @@ class HumminCliProvider(AgentProvider):
         cmd.extend(
             [
                 "-e",
-                f"ROBOCO_AGENT_ID={config.agent_id}",
+                # Auth identity is the agent's UUID, never its slug: the agent
+                # token is an HMAC over (uuid, role, team) and
+                # verify_agent_token does not normalize slugs, so a slug here
+                # makes every direct verb call 401 with "signature mismatch"
+                # (same reason the SDK path in spawn_launch writes the UUID).
+                f"ROBOCO_AGENT_ID={AGENT_UUIDS.get(config.agent_id, config.agent_id)}",
                 "-e",
                 f"ROBOCO_AGENT_MODEL={config.model or _HUMMIN_CLI_MODEL}",
                 "-e",
