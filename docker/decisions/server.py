@@ -29,8 +29,9 @@ import math
 import os
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
@@ -46,7 +47,28 @@ CHECKPOINT = f"{MODEL_ID}:{SUBFOLDER}"
 
 _VALID_TYPES = ("noul", "choice", "score")
 
-app = FastAPI(title="roboco-decisions", version="0.1.0")
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@contextmanager
+def _lifespan(_app: FastAPI) -> Iterator[None]:
+    """Load the checkpoint once at startup; /health reports load failures.
+
+    The names below (_load_agent, _state, _calibration_error) are defined
+    later in this module and only resolve when uvicorn enters the lifespan,
+    not at import time.
+    """
+    try:
+        _state["agent"] = _load_agent()
+    except Exception as exc:  # keep serving so /health can report the failure
+        _state["load_error"] = str(exc)
+    else:
+        _state["calibration_error"] = _calibration_error()
+    yield
+
+
+app = FastAPI(title="roboco-decisions", version="0.1.0", lifespan=_lifespan)
 
 # ONNXAgent's thread-safety is undocumented, so inference is serialized
 # behind this lock (acquired inside the threadpool-wrapped predict call,
@@ -124,16 +146,6 @@ def _calibration_error() -> str:
     if any(not isinstance(t, int | float) or math.isnan(t) or t <= 0 for t in temps):
         return f"{cfg_path} fitted temperature vector is not finite/positive: {temps!r}"
     return ""
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    try:
-        _state["agent"] = _load_agent()
-    except Exception as exc:  # keep serving so /health can report the failure
-        _state["load_error"] = str(exc)
-        return
-    _state["calibration_error"] = _calibration_error()
 
 
 def _require_ready() -> Any:
