@@ -57,6 +57,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { TaskTypeBadge } from "../task-type-badge";
+import { StuckIndicator } from "../stuck-indicator";
 import { CopyButton } from "@/components/ui/copy-button";
 import { HelpTip } from "@/components/ui/help-tip";
 import {
@@ -709,6 +710,10 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
 
               {/* Stalled chip - only when this task carries the backend's
                   durable stalled marker (task.stalled_reason). */}
+              {/* Stuck chip — read-only wedge-ledger surfacing (strikes or
+                  blocked-for-human); nothing renders on a healthy task. */}
+              <StuckIndicator task={task} />
+
               {stalledReason && (
                 <Tooltip>
                   <TooltipTrigger asChild>
