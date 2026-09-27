@@ -29,7 +29,7 @@ import math
 import os
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -48,16 +48,21 @@ CHECKPOINT = f"{MODEL_ID}:{SUBFOLDER}"
 _VALID_TYPES = ("noul", "choice", "score")
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator
 
 
-@contextmanager
-def _lifespan(_app: FastAPI) -> Iterator[None]:
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Load the checkpoint once at startup; /health reports load failures.
 
     The names below (_load_agent, _state, _calibration_error) are defined
     later in this module and only resolve when uvicorn enters the lifespan,
-    not at import time.
+    not at import time. Starlette wraps ``lifespan`` with ``async with``, so
+    this MUST be an async context manager: a sync @contextmanager here dies
+    at startup with "'_GeneratorContextManager' object does not support the
+    asynchronous context manager protocol". The blocking checkpoint load
+    runs on the loop exactly as the old on_event handler did; nothing
+    serves until startup returns either way.
     """
     try:
         _state["agent"] = _load_agent()
