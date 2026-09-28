@@ -11274,6 +11274,34 @@ class TaskService(BaseService):
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
+    async def list_open_review_claims(self, agent_id: UUID) -> list[TaskTable]:
+        """Tasks where the agent holds an OPEN specialized claim (QA / doc /
+        PR review) but has not yet submitted the decision that closes it.
+
+        ``qa_claim`` / ``doc_claim`` / ``pr_gate_claim`` / ``claim_pr_review``
+        keep the task in its awaiting_* status and mark ownership via
+        ``active_claimant_id``; only the decision verb (pass_review /
+        fail_review, i_documented, pr_pass / pr_fail) clears it. A claimant
+        that walks away via ``i_am_idle`` while this is non-empty strands the
+        claim: competing claimants are rejected, so the task is unreviewable
+        by anyone else and the respawn breaker eventually stops re-spawning
+        the role - the lane wedges behind the awaiting_* task (fe-qa, 2026-
+        09-28).
+        """
+        query = select(TaskTable).where(
+            TaskTable.active_claimant_id == agent_id,
+            TaskTable.status.in_(
+                (
+                    TaskStatus.AWAITING_QA,
+                    TaskStatus.AWAITING_DOCUMENTATION,
+                    TaskStatus.AWAITING_PR_REVIEW,
+                )
+            ),
+        )
+        query = self.fifo_order(query)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
     async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None:
         """Return a gateway-shaped view of the agent (DB + config derived).
 
