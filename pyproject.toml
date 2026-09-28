@@ -114,8 +114,14 @@ allow-direct-references = true
 # pyjwt is pulled in transitively (by mcp and msal). 2.12.1 carries four
 # disclosed CVEs that are fixed in 2.13.0; constrain the floor so the resolver
 # picks a patched release while leaving the direct dependents' own ranges intact.
+#
+# rich is capped below 15.0.0: that release ships a self-inconsistent wheel
+# (rich/cells.py imports `load` from rich._unicode_data, which the same
+# release turned into a package no longer exporting it), breaking bandit's
+# import at startup. Drop the cap once bandit ships a release that tolerates
+# rich >= 15.
 [tool.uv]
-constraint-dependencies = ["pyjwt>=2.13.0"]
+constraint-dependencies = ["pyjwt>=2.13.0", "rich<15.0.0"]
 
 # =============================================================================
 # RUFF Configuration
