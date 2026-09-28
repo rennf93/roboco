@@ -28,6 +28,8 @@ const {
   setOpenRouterKey,
   getZaiKey,
   setZaiKey,
+  getHumminKey,
+  setHumminKey,
   searchOpenRouterModels,
   getNebiusKey,
   setNebiusKey,
@@ -82,6 +84,9 @@ const {
   // Mirrors the backend ZaiKeyStatus schema (has_key + enabled).
   getZaiKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setZaiKey: vi.fn(async () => ({ has_key: true, enabled: true })),
+  // Mirrors the backend HumminKeyStatus schema (has_key + enabled).
+  getHumminKey: vi.fn(async () => ({ has_key: false, enabled: false })),
+  setHumminKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   searchOpenRouterModels: vi.fn(async (): Promise<OpenRouterModel[]> => []),
   getNebiusKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setNebiusKey: vi.fn(async () => ({ has_key: true, enabled: true })),
@@ -137,6 +142,8 @@ vi.mock("@/lib/api/providers", () => ({
     setOpenRouterKey,
     getZaiKey,
     setZaiKey,
+    getHumminKey,
+    setHumminKey,
     searchOpenRouterModels,
     getNebiusKey,
     setNebiusKey,
@@ -446,6 +453,8 @@ describe("AIRoutingCard", () => {
     setOpenRouterKey.mockClear();
     getZaiKey.mockClear();
     setZaiKey.mockClear();
+    getHumminKey.mockClear();
+    setHumminKey.mockClear();
     searchOpenRouterModels.mockClear();
     getNebiusKey.mockClear();
     setNebiusKey.mockClear();
@@ -1098,7 +1107,9 @@ describe("AIRoutingCard", () => {
       ).toBeInTheDocument();
 
       const intakeRow = mixRowFor("intake-1");
-      expect(within(intakeRow).getByText("Kimi (Moonshot)")).toBeInTheDocument();
+      expect(
+        within(intakeRow).getByText("Kimi (Moonshot)"),
+      ).toBeInTheDocument();
 
       const prReviewerRow = mixRowFor("pr-reviewer-1");
       expect(
@@ -1146,7 +1157,9 @@ describe("AIRoutingCard", () => {
 
       const intakeRow = mixRowFor("intake-1");
       expect(within(intakeRow).getByText("Codex (OpenAI)")).toBeInTheDocument();
-      expect(within(intakeRow).getByText("Gemini (Google)")).toBeInTheDocument();
+      expect(
+        within(intakeRow).getByText("Gemini (Google)"),
+      ).toBeInTheDocument();
 
       const prReviewerRow = mixRowFor("pr-reviewer-1");
       expect(
@@ -1729,6 +1742,97 @@ describe("AIRoutingCard", () => {
       expect(screen.queryByText("Saved")).not.toBeInTheDocument();
       // The failed input is preserved so the operator can retry.
       expect((input as HTMLInputElement).value).toBe("nebius-secret");
+    });
+  });
+
+  describe("Hummin mode button", () => {
+    it("applies mode='hummin' on confirm when the key is set", async () => {
+      getHumminKey.mockResolvedValueOnce({ has_key: true, enabled: true });
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      // Key-gated — wait for the key status before clicking.
+      const humminButton = await waitFor(() => {
+        const button = screen.getByText("Hummin (GLM)").closest("button")!;
+        expect(button).not.toBeDisabled();
+        return button;
+      });
+
+      fireEvent.click(humminButton);
+
+      await waitFor(() =>
+        expect(applyMode).toHaveBeenCalledWith({ mode: "hummin" }),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("is disabled while the key is not saved", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      expect(screen.getByText("Hummin (GLM)").closest("button")).toBeDisabled();
+    });
+
+    it("round-trips: a hummin mode snapshot from GET highlights the Hummin button", async () => {
+      getHumminKey.mockResolvedValueOnce({ has_key: true, enabled: true });
+      getMode.mockResolvedValueOnce({ mode: "hummin", assignments: [] });
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("Hummin (GLM)").closest("button"),
+        ).not.toBeDisabled(),
+      );
+      expect(screen.getByText("Hummin (GLM)").closest("button")).toHaveClass(
+        "border-primary",
+      );
+    });
+  });
+
+  describe("Z.ai mode button", () => {
+    it("applies mode='zai' on confirm when the key is set", async () => {
+      getZaiKey.mockResolvedValueOnce({ has_key: true, enabled: true });
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      const zaiButton = await waitFor(() => {
+        const button = screen.getByText("Z.ai GLM").closest("button")!;
+        expect(button).not.toBeDisabled();
+        return button;
+      });
+
+      fireEvent.click(zaiButton);
+
+      await waitFor(() =>
+        expect(applyMode).toHaveBeenCalledWith({ mode: "zai" }),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("is disabled while the key is not saved", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      expect(screen.getByText("Z.ai GLM").closest("button")).toBeDisabled();
+    });
+
+    it("round-trips: a zai mode snapshot from GET highlights the Z.ai button", async () => {
+      getZaiKey.mockResolvedValueOnce({ has_key: true, enabled: true });
+      getMode.mockResolvedValueOnce({ mode: "zai", assignments: [] });
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("Z.ai GLM").closest("button"),
+        ).not.toBeDisabled(),
+      );
+      expect(screen.getByText("Z.ai GLM").closest("button")).toHaveClass(
+        "border-primary",
+      );
     });
   });
 });
