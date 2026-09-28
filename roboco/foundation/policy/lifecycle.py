@@ -788,6 +788,48 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
 }
 
 
+def assignee_can_act(role: Role, status: Status) -> bool:
+    """True when ``role`` has at least one way to act on a task in ``status``.
+
+    Derived FROM the tables above — never a parallel capability map: a role
+    can act on a status iff the status is in its CLAIM_RULES entry (the
+    claim path) or any atomic action whose source status is ``status``
+    allows the role (the act-in-place path: complete from
+    awaiting_pm_review, ceo_approve from awaiting_ceo_approval, resume
+    from paused, ...). Terminal statuses are exempt — there is nothing
+    left to act on, so any assignee is coherent. This is the predicate the
+    assignment paths (delegate / reassign / admin set) consult before
+    planting an assignee on a task it could never drive (the 54e30535
+    wedge: a product-owner id on a delivery task).
+    """
+    if status in (Status.COMPLETED, Status.CANCELLED):
+        return True
+    if status in CLAIM_RULES.get(role, frozenset()):
+        return True
+    # "claim" and "cancel" are excluded here: "claim"'s allowed_roles/
+    # source_statuses are the UNION across roles (the per-role narrowing IS
+    # CLAIM_RULES, already consulted above), and "cancel" is a near-universal
+    # escape hatch (PM/CEO from almost any status) — scanning it would make
+    # any cancellable task "actable" for its cancellers, which is not delivery
+    # capability. All other actions are role-accurate as declared.
+    return any(
+        role in spec.allowed_roles and status in spec.source_statuses
+        for name, spec in _ATOMIC_ACTIONS.items()
+        if name not in ("claim", "cancel")
+    )
+
+
+def assignee_capability_gap(role: Role, status: Status) -> str | None:
+    """Capability-naming refusal reason, or ``None`` when the role can act."""
+    if assignee_can_act(role, status):
+        return None
+    return (
+        f"role '{role.value}' has no action on status '{status.value}' — it"
+        " cannot claim or act on a task in that state; assign a role with a"
+        f" claim/action edge on '{status.value}'"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Team rules (predecessor canon: PERMISSIONS.md "Team-Based Restrictions")
 # Per-slug. None means "any team" (cross-cell or board roles).

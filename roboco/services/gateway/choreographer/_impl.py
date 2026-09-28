@@ -30,7 +30,7 @@ from roboco.foundation.policy.content import (
     validate_findings,
 )
 from roboco.foundation.policy.content.validators import reject_trivial
-from roboco.services.base import UnauthorizedError
+from roboco.services.base import AssigneeCapabilityError, UnauthorizedError
 from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
@@ -5350,16 +5350,32 @@ class Choreographer:
                 task_id=task_id,
                 verb="reassign",
             )
-        after = await self.task.reassign_active_claim(
-            task_id, UUID(AGENT_UUIDS[new_assignee])
-        )
-        if after is None:
+        after: Any = None
+        rejection: Envelope | None = None
+        try:
+            after = await self.task.reassign_active_claim(
+                task_id, UUID(AGENT_UUIDS[new_assignee])
+            )
+        except AssigneeCapabilityError as exc:
+            # The target assignee's role cannot act on the task's current
+            # status — refused with the missing capability named.
+            rejection = Envelope.not_authorized(
+                message=exc.message,
+                remediate=(
+                    "reassign to an agent whose role can act on the task's"
+                    f" current status ({t.status})"
+                ),
+                context_briefing=briefing,
+            )
+        if rejection is None and after is None:
+            rejection = Envelope.invalid_state(
+                message=f"cannot reassign from status {t.status}",
+                remediate="only a claimed / in_progress task can be reassigned",
+                context_briefing=briefing,
+            )
+        if rejection is not None:
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"cannot reassign from status {t.status}",
-                    remediate="only a claimed / in_progress task can be reassigned",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+                rejection.with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="reassign",
@@ -7743,7 +7759,7 @@ class Choreographer:
         have gotten from the upfront completeness check.
         """
         from roboco.foundation.policy.task_completeness import TaskCompletenessError
-        from roboco.services.base import ValidationError
+        from roboco.services.base import AssigneeCapabilityError, ValidationError
 
         parent_task_id = parent.id
         try:
@@ -7759,6 +7775,23 @@ class Choreographer:
                         "re-issue delegate(...) with corrected fields: "
                         f"{', '.join(exc.missing)}. Each field's required "
                         "shape is in `field_hints`."
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=parent, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
+        except AssigneeCapabilityError as exc:
+            # The delegated assignee's role cannot act on the status the
+            # subtask will hold — refused at creation with the missing
+            # capability named (the 54e30535 wedge shape).
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=exc.message,
+                    remediate=(
+                        "re-issue delegate(...) with an assignee whose role"
+                        " can claim/act on the subtask's target status"
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=parent, role=role_str),
