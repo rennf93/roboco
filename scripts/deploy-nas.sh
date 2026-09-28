@@ -245,33 +245,51 @@ else
   echo "[deploy] --skip-build: trusting existing images (fixpoint still recovers missing)"
 fi
 
-if [ "$SKIP_BUILD" -eq 0 ]; then
-  # The -live (interactive chat) images are spawned by the orchestrator at
-  # runtime, never referenced by a compose service, so the passes above never
-  # see them - they silently rotted (roboco-agent-hummin-live served Sep 18
-  # code for 10 days while the orchestrator moved ahead, 2026-09-28 intake
-  # outage). Build them here, same content gate as the rest of the matrix.
-  # AFTER the compose pass: each -live Dockerfile builds FROM a base agent
-  # image that pass just refreshed (and HASH_LABEL/record_fresh exist here).
-  echo "[deploy] ensuring images: live-chat pass (runtime-spawned, not in compose)..."
-  for df in docker/agent-*-live.Dockerfile; do
-    [ -e "$df" ] || continue
-    name="${df#docker/}"
-    name="${name%.Dockerfile}" # e.g. agent-hummin-live
-    img="roboco-$name"
-    if image_fresh "$img" "$name"; then
-      echo "[deploy] $img up to date, skipping"
-      continue
-    fi
-    echo "[deploy] building $img (live chat) ..."
-    if docker build -q -t "$img:latest" $HASH_LABEL -f "$df" . ||
-       docker build -q -t "$img:latest" $HASH_LABEL -f "$df" .; then
-      record_fresh
-    else
-      echo "[deploy] WARNING: build failed for $img" >&2
-    fi
-  done
-fi
+# The -live (interactive chat) images are spawned by the orchestrator at
+# runtime, never referenced by a compose service, so the compose passes never
+# see them - they silently rotted (roboco-agent-hummin-live served Sep 18 code
+# for 10 days while the orchestrator moved ahead, 2026-09-28 intake outage).
+# Every -live Dockerfile builds FROM a provider agent image, so a live build is
+# only attempted when that base exists locally: after a wipe the fixpoint below
+# rebuilds the bases first, and a base that survived all its rounds is a loud,
+# named skip instead of a cryptic docker.io "pull access denied" (2026-09-28
+# Deploy #2: the live pass sat between the content and fixpoint passes, ran
+# while the wiped provider bases were still missing, and every FROM fell
+# through to docker.io). Callers must run after HASH_LABEL is set (it stamps
+# the builds); $name is set globally because record_fresh reads it.
+
+live_base_of() { # live_base_of <dockerfile> -> the FROM target
+  awk '/^FROM/{print $2; exit}' "$1"
+}
+
+live_build_one() { # live_build_one <dockerfile> <gate|missing>
+  local df="$1" mode="$2" img base
+  name="${df#docker/}"
+  name="${name%.Dockerfile}" # e.g. agent-hummin-live
+  img="roboco-$name"
+  if [ "$mode" = missing ] && docker image inspect "$img" >/dev/null 2>&1; then
+    return 0 # present: only the content gate rebuilds stale live images
+  fi
+  if image_fresh "$img" "$name"; then
+    echo "[deploy] $img up to date, skipping"
+    return 0
+  fi
+  base=$(live_base_of "$df")
+  if [ "${base#roboco-}" != "$base" ] &&
+     ! docker image inspect "$base" >/dev/null 2>&1; then
+    echo "[deploy] WARNING: $img deferred: base $base missing (fixpoint must build it first)" >&2
+    return 1
+  fi
+  echo "[deploy] building $img (live chat) ..."
+  if docker build -q -t "$img:latest" $HASH_LABEL -f "$df" . ||
+     docker build -q -t "$img:latest" $HASH_LABEL -f "$df" .; then
+    record_fresh
+    return 0
+  fi
+  echo "[deploy] WARNING: build failed for $img" >&2
+  return 1
+}
+
 echo "[deploy] ensuring images: fixpoint pass (wipe recovery: retry anything still missing)..."
 for round in 1 2 3 4 5 6; do
   built=0
@@ -311,8 +329,34 @@ for round in 1 2 3 4 5 6; do
         ;;
     esac
   done < <("${COMPOSE[@]}" config --images)
+  # -live images are not in compose config --images: recover them in the same
+  # rounds, so a live-chat spawn never finds its image missing after this
+  # deploy (and --skip-build still recovers them after a wipe).
+  for df in docker/agent-*-live.Dockerfile; do
+    [ -e "$df" ] || continue
+    name="${df#docker/}"
+    name="${name%.Dockerfile}"
+    img="roboco-$name"
+    docker image inspect "$img" >/dev/null 2>&1 && continue
+    if live_build_one "$df" missing &&
+       docker image inspect "$img" >/dev/null 2>&1; then
+      built=$((built + 1))
+    fi
+  done
   [ "$built" -eq 0 ] && break
 done
+
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  # AFTER the fixpoint, not wedged between the content and fixpoint passes
+  # (see live_build_one above): every provider base is by now rebuilt or
+  # loudly failed, so a live build here either succeeds, skips as fresh, or
+  # skips with a named missing base.
+  echo "[deploy] ensuring images: live-chat pass (runtime-spawned, not in compose)..."
+  for df in docker/agent-*-live.Dockerfile; do
+    [ -e "$df" ] || continue
+    live_build_one "$df" gate || true
+  done
+fi
 
 echo "[deploy] ensuring images: reconciliation..."
 while IFS= read -r img; do
@@ -322,6 +366,13 @@ while IFS= read -r img; do
     echo "[deploy] WARNING: $img still missing after pull+build passes" >&2
   fi
 done < <("${COMPOSE[@]}" config --images)
+for df in docker/agent-*-live.Dockerfile; do
+  [ -e "$df" ] || continue
+  name="${df#docker/}"
+  name="${name%.Dockerfile}"
+  docker image inspect "roboco-$name" >/dev/null 2>&1 ||
+    echo "[deploy] WARNING: roboco-$name still missing after pull+build passes (live-chat spawns will fail)" >&2
+done
 
 echo "[deploy] bringing up $COLOR ..."
 # Named-service up: starts ONLY this generation (+ its dependencies: core,
