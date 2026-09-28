@@ -131,7 +131,10 @@ target-version = "py313"
 src = ["src"]
 # .decomp: the 2026-09-06 orchestrator god-class decomposition's own analysis
 # scripts + method_map.json (never imported by roboco/), kept for audit trail.
-exclude = ["vulture_whitelist.py", ".venv", "alembic", ".decomp"]
+# .worktrees: per-task worktrees under every agent clone root; the pre-submit
+# quality gate lints the clone root, so a stale sibling run's WIP here must
+# never fail a dev's gate (be-dev-2's 5db9054b, 2026-09-28).
+exclude = ["vulture_whitelist.py", ".venv", "alembic", ".decomp", ".worktrees"]
 
 [tool.ruff.lint]
 select = [

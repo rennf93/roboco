@@ -2282,6 +2282,24 @@ class Settings(BaseSettings):
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
         ),
     )
+    # Reaper window for stale REVIEW claims (awaiting_qa / awaiting_doc /
+    # awaiting_pr_review rows whose active_claimant went silent). Deliberately
+    # MUCH longer than stale_claim_reap_seconds: a reviewer fires no gateway
+    # verb between claim_review and its pass/fail decision (the review itself
+    # is bash/gh inside the container), so the claim's heartbeat legitimately
+    # freezes at claim time for the whole review. 3600s aligns with
+    # claude_stuck_kill_seconds - a claimant silent that long while ACTIVE is
+    # wedged by the #73 doctrine anyway, and a dead run must not strand the
+    # single-claimant lock for hours (fe-qa held 99f61c8c 13.5h on 2026-09-28
+    # because the i_am_idle release only fires on a CLEAN exit).
+    review_claim_reap_seconds: int = Field(
+        default=3600,
+        ge=300,
+        description=(
+            "Reaper-only stale review-claim threshold (seconds); "
+            "override via ROBOCO_REVIEW_CLAIM_REAP_SECONDS"
+        ),
+    )
     # A GROK agent that wedges — an idle model call / stream with no gateway
     # verb — is ACTIVE-yet-silent, so the heartbeat reaper's live-container skip
     # would shield its task forever (the grok CLI emits no SDK budget signal and

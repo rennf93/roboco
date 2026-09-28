@@ -891,6 +891,16 @@ class DispatchBreakerEngine(_Base):
         candidates = await svc.list_in_progress_or_claimed()
         for t in candidates:
             await self._reap_one_stale_claim(svc, t, dispatch_paused, candidates)
+        # awaiting_* review claims are invisible to the sweep above (they are
+        # neither claimed nor in_progress) - without this second pass a
+        # claimant that DIED mid-review strands the single-claimant lock
+        # forever (fe-qa held 99f61c8c for 13.5h on 2026-09-28). Same reaper,
+        # longer TTL, claim-fields-only release.
+        review_claims = await svc.list_all_open_review_claims()
+        for t in review_claims:
+            await self._reap_one_stale_review_claim(
+                svc, t, dispatch_paused, candidates + review_claims
+            )
 
     def _heartbeat_is_stale(self, ts: Any, ttl_seconds: int) -> bool:
         """True when a claim's heartbeat is missing, or its active-time age
@@ -1034,6 +1044,120 @@ class DispatchBreakerEngine(_Base):
             # above was already killed regardless).
             return
         await self._unclaim_stale_claim(svc, t, ts)
+
+    async def _reap_one_stale_review_claim(
+        self,
+        svc: "TaskService",
+        t: Any,
+        dispatch_paused: bool,
+        candidates: list[Any],
+    ) -> None:
+        """Decide skip-vs-release for one awaiting_* review claim.
+
+        Backstop for the gap ``list_open_review_claims`` documents: an agent
+        that DIES mid-review (breaker, OOM, container loss) never calls
+        ``i_am_idle``, so the exit-release never fires and the single-claimant
+        lock strands the task (fe-qa held 99f61c8c for 13.5h on 2026-09-28
+        exactly this way). Mirrors ``_reap_one_stale_claim`` with three
+        review-specific differences: the TTL is the much longer
+        ``_review_claim_heartbeat_ttl`` (a reviewer legitimately fires no
+        gateway verb between claim_review and its pass/fail decision, so the
+        claim's heartbeat freezes at claim time for the whole review), the
+        release clears only the claim fields (status stays awaiting_*), and
+        the parked proof ("busy on a fresher claim elsewhere") runs BEFORE the
+        wedged/stuck-kill machinery so a container healthily working another
+        task is never killed over a stale second review claim.
+        """
+        ts = t.last_heartbeat_at
+        if not self._heartbeat_is_stale(ts, self._review_claim_heartbeat_ttl):
+            return
+        if self._assignee_is_provider_parked(t):
+            return
+        owner = getattr(t, "assigned_to", None) or getattr(t, "claimed_by", None)
+        if owner is not None:
+            owner_slug = self._resolve_agent_slug(str(owner))
+            if not self._is_claim_in_flight(owner_slug) and self._agent_busy_elsewhere(
+                owner_slug, t, candidates
+            ):
+                # Parked: the claimant is alive and working a fresher claim,
+                # so this review claim is abandoned by choice, not wedged.
+                # A release only helps if a re-claim can follow, so the
+                # dispatch pause defers it like the code-claim unclaim.
+                if dispatch_paused:
+                    return
+                await self._release_stale_review_claim(svc, t, ts)
+                return
+        if await self._should_skip_live_reap(t, ts):
+            return
+        if dispatch_paused:
+            return
+        await self._release_stale_review_claim(svc, t, ts)
+
+    async def _release_stale_review_claim(
+        self, svc: "TaskService", t: Any, ts: datetime | None
+    ) -> None:
+        """Release one stale review claim back to its review queue.
+
+        try/except so a single bad row doesn't abort the dispatch tick - the
+        reaper must keep ticking even if one release somehow fails. The
+        released claim leaves ``list_all_open_review_claims`` (its
+        ``active_claimant_id`` is cleared), so a later tick never
+        re-considers it and cannot double-notify.
+        """
+        from roboco.utils.converters import require_uuid
+
+        task_id = require_uuid(t.id)
+        released_agent = getattr(t, "assigned_to", None) or getattr(
+            t, "claimed_by", None
+        )
+        try:
+            await svc.release_review_claim_for_reaper(task_id)
+            logger.warning(
+                "stale review claim released",
+                task_id=str(task_id),
+                last_heartbeat=ts.isoformat() if ts else None,
+            )
+        except Exception as exc:
+            logger.error(
+                "stale review claim release failed; continuing",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return
+        await self._notify_stale_review_claim_released(
+            task_id, released_agent, ts, getattr(t, "title", None)
+        )
+
+    async def _notify_stale_review_claim_released(
+        self,
+        task_id: "UUID",
+        released_agent: Any,
+        last_heartbeat: datetime | None,
+        task_title: str | None = None,
+    ) -> None:
+        """Best-effort coordination notification for a released review claim.
+
+        Mirrors ``_notify_stale_claim_reaped``: the reviewer (and the CEO)
+        must learn the claim moved, but a notification failure must never
+        wedge the reaper tick. Best-effort: any error is logged and swallowed.
+        """
+        if released_agent is None:
+            return
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_stale_review_claim_released_notification(
+                task_id=str(task_id),
+                released_agent=str(released_agent),
+                last_heartbeat=last_heartbeat.isoformat() if last_heartbeat else None,
+                task_title=task_title,
+            )
+        except Exception as exc:
+            logger.error(
+                "stale review claim notification failed; continuing",
+                task_id=str(task_id),
+                error=str(exc),
+            )
 
     async def _unclaim_stale_claim(
         self, svc: "TaskService", t: Any, ts: datetime | None

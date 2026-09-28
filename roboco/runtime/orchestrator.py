@@ -1613,6 +1613,12 @@ class AgentOrchestrator(
         # Tests bypass `__init__` via `__new__` and set _claim_heartbeat_ttl
         # directly; production never uses _task_svc from __init__.
         self._claim_heartbeat_ttl: int = settings.stale_claim_reap_seconds
+        # Longer window for stale REVIEW claims (awaiting_* rows): a reviewer
+        # legitimately fires no gateway verb between claim_review and its
+        # pass/fail decision, so the claim's heartbeat freezes at claim time
+        # for the whole review. Aligned with claude_stuck_kill_seconds; see
+        # _reap_one_stale_review_claim.
+        self._review_claim_heartbeat_ttl: int = settings.review_claim_reap_seconds
         # Short debounce for closure respawn of a recently-paused parent —
         # NOT the reaper window. See _is_recently_paused.
         self._closure_recently_paused_ttl: int = (

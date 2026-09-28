@@ -68,6 +68,7 @@ class AgentOrchestratorSelf(Protocol):
     _board_dispatched: set[tuple[str, str]]
     _board_review_ceo_notified: set[str]
     _claim_heartbeat_ttl: int
+    _review_claim_heartbeat_ttl: int
     _closure_recently_paused_ttl: int
     _dispatch_wake: asyncio.Event
     _gate_ci_status_cache: dict[tuple[str, int], tuple[float, str | None]]
