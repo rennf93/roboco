@@ -21,7 +21,7 @@ release only helps if a re-claim can follow).
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -50,8 +50,12 @@ def _task(task_id: UUID | None = None, **over: Any) -> Any:
     return type("T", (), base)()
 
 
-def _orch() -> AgentOrchestrator:
-    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+def _orch() -> Any:
+    # Any-typed: the harness swaps orchestrator METHODS for AsyncMocks
+    # (notification/kill/skip spies), which mypy's method-assign would
+    # otherwise reject on the strongly-typed engine - the __new__ harness
+    # pattern used across the reaper suites is deliberately duck-typed.
+    orch = cast("Any", AgentOrchestrator.__new__(AgentOrchestrator))
     orch._instances = {}
     orch._claim_heartbeat_ttl = 600
     orch._review_claim_heartbeat_ttl = TTL
@@ -240,8 +244,10 @@ async def test_sweep_wires_the_review_pass() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _service_with(task: Any) -> tuple[TaskService, AsyncMock]:
-    svc = TaskService.__new__(TaskService)
+def _service_with(task: Any) -> tuple[Any, AsyncMock]:
+    # Any-typed for the same method-assign reason as _orch (get is swapped
+    # for an AsyncMock).
+    svc = cast("Any", TaskService.__new__(TaskService))
     flush = AsyncMock()
     svc.session = type("S", (), {"flush": flush})()
     svc.get = AsyncMock(return_value=task)
@@ -297,7 +303,7 @@ async def test_service_release_noop_on_non_review_status() -> None:
 
 @pytest.mark.asyncio
 async def test_service_release_noop_on_missing_task() -> None:
-    svc = TaskService.__new__(TaskService)
+    svc = cast("Any", TaskService.__new__(TaskService))
     flush = AsyncMock()
     svc.session = type("S", (), {"flush": flush})()
     svc.get = AsyncMock(return_value=None)
