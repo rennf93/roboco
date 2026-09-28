@@ -57,6 +57,22 @@ class TaskAlreadyCompletedError(Exception):
     """The proposal is already COMPLETED (published) and can't be rejected."""
 
 
+class ReleaseRejectRefused(Exception):
+    """The reject was refused fail-closed while acquiring the release mutex.
+
+    ``status`` reuses approve()'s structured refusal vocabulary so the CEO sees
+    the real cause: ``redis_unavailable`` (fix Redis, then retry) is distinct
+    from ``already_in_progress`` (a concurrent approve is mid-execute — wait
+    for it and retry). Previously reject() returned bare ``None`` for both,
+    collapsing them into one ambiguous 409.
+    """
+
+    def __init__(self, status: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
 # Redis mutex guarding the ~40min release execute against concurrent
 # approves. The TTL only backstops a crash; a background heartbeat refreshes
 # it while the execute owns the lock, and a fencing token makes the release
@@ -514,6 +530,11 @@ class ReleaseProposalService(BaseService):
         reject button/request was queued; cancelling a published release
         would lie about the release's real, already-public state.
 
+        Raises :class:`ReleaseRejectRefused` (fail-closed, like approve) when
+        the lock can't be acquired — ``redis_unavailable`` or
+        ``already_in_progress`` — so callers surface the real reason instead
+        of a bare-None ambiguity.
+
         Acquires the same release mutex ``approve()`` holds (same key, same
         non-blocking acquire style) so a reject can't interleave with a
         concurrent in-flight approve — an unguarded write here used to be
@@ -536,9 +557,23 @@ class ReleaseProposalService(BaseService):
             lock_token = await self._acquire_release_lock(lock_key)
         except ReleaseLockUnavailable as exc:
             logger.error("release reject lock unavailable (redis down): %s", exc)
-            return None
+            raise ReleaseRejectRefused(
+                status="redis_unavailable",
+                detail=(
+                    "Redis is unavailable so the release mutex can't be acquired"
+                    " (fail-closed: the reject did not land). Restore Redis and"
+                    " retry — this is not a concurrent-approve conflict."
+                ),
+            ) from exc
         if lock_token is None:
-            return None  # a concurrent approve is mid-execute; refuse the reject
+            raise ReleaseRejectRefused(
+                status="already_in_progress",
+                detail=(
+                    "A release execute is already in progress for this proposal "
+                    "(concurrent approve holds the mutex; reject refused). Wait "
+                    "for it to finish and retry."
+                ),
+            )
         try:
             # Re-read under the lock: a concurrent approve may have committed
             # COMPLETED between the pre-lock check and here.
@@ -553,7 +588,16 @@ class ReleaseProposalService(BaseService):
                 )
             markers.set_release_required_changes(locked, required_changes)
             locked.status = TaskStatus.CANCELLED
-            await self.session.flush()
+            # Commit while still holding the release lock so CANCELLED is
+            # durable before release — the mirror of approve()'s
+            # commit-under-lock (READ COMMITTED never sees another session's
+            # flushed-but-uncommitted write): a racing approve could acquire
+            # the lock the instant we drop it, re-read a non-cancelled row in
+            # _approve_precheck, pass its CANCELLED guard, and launch the
+            # fail-closed executor on a proposal the CEO explicitly rejected.
+            # Only the status + required-changes marker ride this commit; the
+            # caller's own commit afterwards is a no-op.
+            await self.session.commit()
             return locked
         finally:
             await self._release_release_lock(lock_key, lock_token)
