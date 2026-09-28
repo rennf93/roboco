@@ -8,6 +8,7 @@ Handles cross-agent learning by:
 - Managing learning visibility and scope
 """
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -27,6 +28,11 @@ from roboco.models.optimal import IndexType, SearchResult
 _HUMAN_ONLY_ROLES = (_Role.CEO, _Role.PROMPTER, _Role.SECRETARY)
 
 logger = structlog.get_logger()
+
+# Hard cap on the in-memory learning-notification queue: appends beyond it
+# evict the OLDEST entries. The NotificationTable rows written by
+# _persist_notifications remain the durable record, so eviction is safe.
+_NOTIFICATION_QUEUE_MAXLEN = 256
 
 
 class LearningScope(Enum):
@@ -107,7 +113,9 @@ class LearningPropagationService:
     def __init__(self) -> None:
         """Initialize LearningPropagationService."""
         self._optimal_service: Any = None
-        self._notification_queue: list[LearningNotification] = []
+        self._notification_queue: deque[LearningNotification] = deque(
+            maxlen=_NOTIFICATION_QUEUE_MAXLEN
+        )
 
     async def initialize(self, optimal_service: Any) -> None:
         """
@@ -296,7 +304,10 @@ class LearningPropagationService:
         summary: str,
         reason: str,
     ) -> None:
-        """Append in-memory LearningNotification rows (read by get_pending)."""
+        """Append in-memory LearningNotification rows (read by get_pending).
+
+        The deque's maxlen evicts the oldest entry on overflow.
+        """
         from datetime import UTC, datetime
         from uuid import uuid4
 
@@ -497,6 +508,12 @@ class LearningPropagationService:
                 and notification.target_agent_id == agent_id
             ):
                 notification.acknowledged = True
+                # Acknowledged entries have no reader; drop them so they
+                # don't occupy queue slots until restart.
+                self._notification_queue = deque(
+                    (n for n in self._notification_queue if not n.acknowledged),
+                    maxlen=_NOTIFICATION_QUEUE_MAXLEN,
+                )
                 return True
         return False
 
