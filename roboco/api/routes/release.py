@@ -21,6 +21,8 @@ from roboco.api.schemas.release import (
 from roboco.api.utils.release import _require_ceo, _to_response
 from roboco.security import guard_deco
 from roboco.services.release_proposal import (
+    ReleaseRejectRefused,
+    TaskAlreadyCompletedError,
     dispatch_approve,
     get_release_proposal_service,
 )
@@ -113,16 +115,23 @@ async def reject_release_proposal(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
         )
-    revised = await svc.reject(cast("UUID", task.id), data.required_changes)
-    if revised is None:
-        # A concurrent approve is mid-execute (holds the release mutex) or
-        # Redis is unreachable — reject fails closed rather than racing it.
+    try:
+        revised = await svc.reject(cast("UUID", task.id), data.required_changes)
+    except TaskAlreadyCompletedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except ReleaseRejectRefused as exc:
+        # Fail-closed: surface the ACTUAL refusal reason (redis down vs a
+        # concurrent approve mid-execute) instead of one ambiguous 409.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Reject refused: a release approve is in progress or Redis is"
-                " unavailable. Retry once it clears."
-            ),
+            detail=f"Reject refused ({exc.status}): {exc.detail}",
+        ) from exc
+    if revised is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Release proposal not found",
         )
     await db.commit()
     return await _to_response(revised, db)

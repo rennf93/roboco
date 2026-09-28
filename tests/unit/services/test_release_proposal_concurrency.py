@@ -6,6 +6,7 @@ sees the lock held and refuses instead of racing on the writable clone.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -539,3 +540,171 @@ async def test_heartbeat_lock_loss_cancels_execute_fail_closed(
     assert execute_started.is_set()  # execute did start, then was cancelled
     # Fail-closed: the proposal is NOT marked COMPLETED.
     assert task.status != TaskStatus.COMPLETED.value
+
+
+class _CommitVisibilityRow:
+    """A proposal row whose status write is only visible cross-session on
+    commit — models READ COMMITTED, where a flushed-but-uncommitted write is
+    invisible to every other session (the exact visibility rule the
+    commit-under-lock pattern exists for)."""
+
+    def __init__(self, state: dict[str, Any]) -> None:
+        self._state = state
+        self.id = uuid4()
+        self.source = "release_manager"
+        self.project_id = None
+
+    @property
+    def status(self) -> Any:
+        return self._state["committed"]
+
+    @status.setter
+    def status(self, value: Any) -> None:
+        # A pending write: flushed at most, NOT yet visible to session B.
+        self._state["pending"] = value
+
+
+@pytest.mark.asyncio
+async def test_reject_commits_under_lock_so_racing_approve_refuses() -> None:
+    """Two-session interleaving: reject must COMMIT its CANCELLED write while
+    still holding the release mutex (the mirror of approve()'s documented
+    commit-under-lock). Pre-fix reject only flushed and released the lock, so
+    a racing approve (session B, e.g. the background executor task) re-read a
+    non-cancelled row in _approve_precheck, passed the CANCELLED guard, and
+    launched the fail-closed executor on a CEO-rejected proposal."""
+    state: dict[str, Any] = {
+        "committed": TaskStatus.AWAITING_CEO_APPROVAL.value,
+        "pending": None,
+    }
+    row = _CommitVisibilityRow(state)
+    fake_redis = _FakeRedis()
+
+    # Session A (the reject request): its commit is what makes the CANCELLED
+    # write visible to session B — a flush never does under READ COMMITTED.
+    session_a = MagicMock()
+
+    def _commit_a() -> None:
+        if state["pending"] is not None:
+            state["committed"] = state["pending"]
+
+    session_a.commit = AsyncMock(side_effect=_commit_a)
+    session_a.flush = AsyncMock()
+    session_a.expire = MagicMock()
+
+    # Session B (the racing approve) reads committed state only.
+    session_b = _session()
+
+    task_svc = MagicMock()
+    task_svc.get = AsyncMock(return_value=row)
+    executor = MagicMock()
+    executor.execute = AsyncMock(
+        return_value=ReleaseResult(
+            status="published",
+            version="0.13.0",
+            files_changed=[],
+            commit_sha=None,
+            release_url=None,
+            detail="ok",
+        )
+    )
+    markers_mod = MagicMock()
+    markers_mod.get_release_report = MagicMock(return_value=_REPORT)
+    markers_mod.set_release_required_changes = MagicMock()
+    report = MagicMock()
+    report.proposed_version = "0.13.0"
+
+    patches = [
+        patch(
+            "roboco.services.release_proposal.get_task_service",
+            return_value=task_svc,
+        ),
+        patch(
+            "roboco.services.release_proposal.get_release_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch("roboco.services.release_proposal.markers", markers_mod),
+        patch("roboco.services.release_proposal.report_from_dict", return_value=report),
+        patch(
+            "roboco.services.release_proposal.redis.from_url", return_value=fake_redis
+        ),
+    ]
+
+    with contextlib.ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        # 1. Session A rejects: sets CANCELLED and (post-fix) commits while
+        # holding the lock; the lock is released by the finally.
+        reject_svc = ReleaseProposalService(session_a)
+        rejected = await reject_svc.reject(row.id, "Tighten the CHANGELOG.")
+        # 2. Session B's approve races in the request-commit window: it
+        # re-reads the row AFTER reject released the mutex but — pre-fix —
+        # BEFORE session A's request-level commit landed.
+        approve_svc = ReleaseProposalService(session_b)
+        result = await approve_svc.approve(row.id)
+
+    assert rejected is not None
+    assert rejected.status == TaskStatus.CANCELLED
+    assert state["committed"] == TaskStatus.CANCELLED
+    # The race is closed: the racing approve MUST refuse (already_rejected)
+    # and MUST NOT launch the ~40min fail-closed executor.
+    assert result is not None
+    assert result.status == "already_rejected"
+    executor.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reject_redis_down_raises_structured_refusal() -> None:
+    """Redis-unreachable reject raises the structured ``redis_unavailable``
+    refusal (approve()'s vocabulary) instead of returning a bare ``None`` that
+    collapses into one ambiguous 409."""
+    task = _task()
+    broken_redis = MagicMock()
+    broken_redis.set = AsyncMock(side_effect=ConnectionError("redis down"))
+    broken_redis.aclose = AsyncMock()
+
+    task_svc = MagicMock()
+    task_svc.get = AsyncMock(return_value=task)
+    markers_mod = MagicMock()
+
+    svc = ReleaseProposalService(_session())
+    with (
+        patch(
+            "roboco.services.release_proposal.get_task_service", return_value=task_svc
+        ),
+        patch("roboco.services.release_proposal.markers", markers_mod),
+        patch(
+            "roboco.services.release_proposal.redis.from_url", return_value=broken_redis
+        ),
+        pytest.raises(rp.ReleaseRejectRefused) as excinfo,
+    ):
+        await svc.reject(task.id, "Tighten the CHANGELOG.")
+
+    assert excinfo.value.status == "redis_unavailable"
+    assert "Redis is unavailable" in excinfo.value.detail
+
+
+@pytest.mark.asyncio
+async def test_reject_lock_held_raises_structured_refusal() -> None:
+    """A lock-held reject (a concurrent approve mid-execute) raises the
+    structured ``already_in_progress`` refusal, not a bare ``None``."""
+    task = _task()
+    fake_redis = _FakeRedis(held=True)
+
+    task_svc = MagicMock()
+    task_svc.get = AsyncMock(return_value=task)
+    markers_mod = MagicMock()
+
+    svc = ReleaseProposalService(_session())
+    with (
+        patch(
+            "roboco.services.release_proposal.get_task_service", return_value=task_svc
+        ),
+        patch("roboco.services.release_proposal.markers", markers_mod),
+        patch(
+            "roboco.services.release_proposal.redis.from_url", return_value=fake_redis
+        ),
+        pytest.raises(rp.ReleaseRejectRefused) as excinfo,
+    ):
+        await svc.reject(task.id, "Tighten the CHANGELOG.")
+
+    assert excinfo.value.status == "already_in_progress"
