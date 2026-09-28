@@ -455,6 +455,12 @@ def main(argv: list[str] | None = None) -> int:
     base_url = os.environ.get("NEBIUS_BASE_URL", settings.nebius_base_url)
 
     config = render_config(role, model, base_url, mcp_path)
+    # The agent image does not pre-create opencode's global config home, so
+    # the render must mkdir the parent itself (the openrouter twin's #1110
+    # regression - this port predates it and every Nebius-routed spawn exited
+    # 1 on FileNotFoundError before the CLI started). The plugin write below
+    # already mkdirs its own parents.
+    OPENCODE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     OPENCODE_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
     write_bash_guard_plugin()
     return 0
