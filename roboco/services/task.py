@@ -11281,12 +11281,11 @@ class TaskService(BaseService):
         ``qa_claim`` / ``doc_claim`` / ``pr_gate_claim`` / ``claim_pr_review``
         keep the task in its awaiting_* status and mark ownership via
         ``active_claimant_id``; only the decision verb (pass_review /
-        fail_review, i_documented, pr_pass / pr_fail) clears it. A claimant
-        that walks away via ``i_am_idle`` while this is non-empty strands the
-        claim: competing claimants are rejected, so the task is unreviewable
-        by anyone else and the respawn breaker eventually stops re-spawning
-        the role - the lane wedges behind the awaiting_* task (fe-qa, 2026-
-        09-28).
+        fail_review, i_documented, pr_pass / pr_fail) clears it. While the
+        lock is held, competing claimants are rejected, so an abandoned claim
+        makes the task unreviewable by anyone else. Note the stale-claim
+        reaper cannot backstop this: it sweeps only claimed / in_progress
+        rows, never the awaiting_* review statuses.
         """
         query = select(TaskTable).where(
             TaskTable.active_claimant_id == agent_id,
@@ -11301,6 +11300,39 @@ class TaskService(BaseService):
         query = self.fifo_order(query)
         result = await self.session.execute(query)
         return list(result.scalars().all())
+
+    async def release_review_claims(self, agent_id: UUID) -> list[UUID]:
+        """Release every open review claim the agent still holds, returning
+        each task to its review queue unclaimed.
+
+        The deliberate opposite of blocking the agent's exit: an agent that
+        walks away from an unsubmitted review (i_am_idle) must not strand the
+        single-claimant lock - but it must not be forced to produce a verdict
+        either (a cornered reviewer rubber-stamps, and a fail_review it
+        cannot honestly write misroutes junk findings to the developer).
+        Clearing the claim lets any QA / documenter / gate reviewer re-claim;
+        a claimant that idles out instead of reviewing keeps hitting the
+        orchestrator's respawn breaker, which is the designed escalation.
+
+        Clears the claim fields (``active_claimant_id`` / ``claimed_by`` /
+        ``claimed_at`` / ``last_heartbeat_at``) exactly as the decision verbs
+        clear ``active_claimant_id``; ``assigned_to`` is left alone so the
+        dispatcher keeps routing the task to the assigned reviewer. Status is
+        untouched (still awaiting_* - the review queue itself). Returns the
+        released task ids.
+        """
+        released: list[UUID] = []
+        for task in await self.list_open_review_claims(agent_id):
+            task.active_claimant_id = cast("Any", None)
+            task.claimed_by = cast("Any", None)
+            task.claimed_at = cast("Any", None)
+            task.last_heartbeat_at = cast("Any", None)
+            tid = to_python_uuid(task.id)
+            if tid is not None:
+                released.append(tid)
+        if released:
+            await self.session.flush()
+        return released
 
     async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None:
         """Return a gateway-shaped view of the agent (DB + config derived).

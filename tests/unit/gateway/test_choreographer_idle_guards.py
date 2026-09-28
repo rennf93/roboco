@@ -375,62 +375,18 @@ async def test_pending_ack_notifications_skips_role_lookup_when_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_am_idle_softblocks_on_open_qa_claim() -> None:
-    """A QA holding an open review claim (claimed via claim_review, no
-    pass/fail submitted yet) is soft-blocked out of idling: idling would
-    strand the claim and wedge the lane behind the awaiting_qa task
-    (fe-qa walked away from 99f61c8c's review exactly this way, 2026-09-28).
-    The remediation names the task and the exact decision verbs."""
+async def test_i_am_idle_releases_open_qa_claim_and_proceeds() -> None:
+    """A QA idling with an unsubmitted review claim RELEASES the claim back
+    to the review queue and the idle proceeds. fe-qa idled out of
+    99f61c8c's review (2026-09-28) and the held single-claimant lock made
+    the task unreviewable by anyone else, wedging the FE lane. Blocking the
+    exit was rejected: a reviewer that cannot honestly decide must be able
+    to leave without rubber-stamping, so the release is unconditional and
+    the respawn breaker stays the escalation for repeat no-op runs."""
     agent_id = uuid4()
     claimed_id = uuid4()
-    claim = MagicMock(id=claimed_id, status="awaiting_qa")
     task_svc = AsyncMock()
-    task_svc.list_open_review_claims.return_value = [claim]
-    task_svc.list_assigned_for_agent.return_value = []
-    task_svc.list_in_progress_for_agent.return_value = []
-    deps = _make_deps(task=task_svc)
-    c = Choreographer(deps)
-
-    env = await c.i_am_idle(agent_id)
-    body = env.as_dict()
-    assert body["error"] is None
-    assert body["status"] == "idle_with_open_claim"
-    assert str(claimed_id) in body["next"]
-    assert "pass_review" in body["next"]
-    assert "fail_review" in body["next"]
-    task_svc.mark_agent_idle.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_i_am_idle_open_claim_remediation_names_doc_and_gate_verbs() -> None:
-    """The decision-verb remediation follows the claimed status: a documenter
-    is pointed at i_documented, a PR reviewer at pr_pass/pr_fail."""
-    agent_id = uuid4()
-    doc_claim = MagicMock(id=uuid4(), status="awaiting_documentation")
-    gate_claim = MagicMock(id=uuid4(), status="awaiting_pr_review")
-    task_svc = AsyncMock()
-    task_svc.list_open_review_claims.return_value = [doc_claim, gate_claim]
-    task_svc.list_assigned_for_agent.return_value = []
-    task_svc.list_in_progress_for_agent.return_value = []
-    deps = _make_deps(task=task_svc)
-    c = Choreographer(deps)
-
-    env = await c.i_am_idle(agent_id)
-    body = env.as_dict()
-    assert body["status"] == "idle_with_open_claim"
-    assert "i_documented" in body["next"]
-    assert "pr_pass" in body["next"]
-    assert "pr_fail" in body["next"]
-    task_svc.mark_agent_idle.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_i_am_idle_proceeds_when_no_open_claims() -> None:
-    """No open review claim: the gate stays transparent and the idle
-    proceeds to the normal teardown path."""
-    agent_id = uuid4()
-    task_svc = AsyncMock()
-    task_svc.list_open_review_claims.return_value = []
+    task_svc.release_review_claims.return_value = [claimed_id]
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_in_progress_for_agent.return_value = []
     deps = _make_deps(task=task_svc)
@@ -440,5 +396,46 @@ async def test_i_am_idle_proceeds_when_no_open_claims() -> None:
     body = env.as_dict()
     assert body["error"] is None
     assert body["status"] == "idle"
-    task_svc.list_open_review_claims.assert_awaited_once_with(agent_id)
+    task_svc.release_review_claims.assert_awaited_once_with(agent_id)
+    assert str(claimed_id) in body["next"]
+    assert "review queue" in body["next"]
+    task_svc.mark_agent_idle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_release_names_every_released_task() -> None:
+    """All released claims (across QA / doc / gate lanes) are named in the
+    exit message so the agent's own record shows what left its hands."""
+    agent_id = uuid4()
+    qa_task, doc_task, gate_task = uuid4(), uuid4(), uuid4()
+    task_svc = AsyncMock()
+    task_svc.release_review_claims.return_value = [qa_task, doc_task, gate_task]
+    task_svc.list_assigned_for_agent.return_value = []
+    task_svc.list_in_progress_for_agent.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["status"] == "idle"
+    for tid in (qa_task, doc_task, gate_task):
+        assert str(tid) in body["next"]
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_skips_release_when_no_open_claims() -> None:
+    """No open review claim: no release call, plain idle."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.release_review_claims.return_value = []
+    task_svc.list_assigned_for_agent.return_value = []
+    task_svc.list_in_progress_for_agent.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["status"] == "idle"
+    assert "released" not in body["next"]
     task_svc.mark_agent_idle.assert_awaited_once()

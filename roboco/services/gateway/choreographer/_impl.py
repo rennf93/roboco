@@ -6192,10 +6192,17 @@ class Choreographer:
            orchestrator's PM-closure dispatcher can wake them when subtasks
            finish, instead of leaving the parent stuck at ``in_progress``
            forever.
-        4. Bail with ``idle_with_open_claim`` when the caller still holds an
-           open specialized claim (QA / doc / PR review) with no decision
-           submitted: idling would strand the claim, and the task becomes
-           unreviewable by anyone else.
+        4. Release every open specialized claim (QA / doc / PR review) the
+           caller has not closed with a decision, back to its review queue.
+           Deliberately a release, NOT a gate: idling must never be
+           conditional on submitting a verdict, because a reviewer that
+           cannot honestly decide would either be trapped (the decision
+           gates can refuse, and the stale-claim reaper never sweeps
+           awaiting_* rows to free it) or cornered into rubber-stamping. The
+           lane un-wedges because competing claimants are only rejected
+           while the lock is held; a claimant that repeatedly idles out
+           instead of reviewing still trips the orchestrator's respawn
+           breaker, which is the designed escalation.
         """
         briefing = await self._briefing_for(agent_id, None)
         pending_ack = await self._pending_ack_notifications(agent_id, briefing)
@@ -6206,21 +6213,14 @@ class Choreographer:
                 next=self._idle_with_unread_next(briefing, pending_ack),
                 context_briefing=briefing,
             )
-        # Same soft-block shape as the inbox gate, one lane over: a caller
-        # holding an OPEN review claim (qa_claim / doc_claim / pr review) has
-        # not submitted the decision that closes it, and idling out strands
-        # the claim (competing claimants are rejected, the respawn breaker
-        # then stops re-spawning the role, and the lane wedges behind the
-        # awaiting_* task). fe-qa idled out exactly this way with task
-        # 99f61c8c's review unsubmitted (2026-09-28).
-        open_claims = list(await self.task.list_open_review_claims(agent_id) or [])
-        if open_claims:
-            return Envelope.ok(
-                status="idle_with_open_claim",
-                task_id=None,
-                next=self._idle_with_open_claim_next(open_claims),
-                context_briefing=briefing,
-            )
+        # A caller holding an OPEN review claim (qa_claim / doc_claim /
+        # pr review) without a submitted decision releases it here. fe-qa
+        # idled out of 99f61c8c's review exactly once and the held
+        # single-claimant lock made the task unreviewable by anyone else -
+        # the FE lane wedged behind it (2026-09-28). Releasing beats both
+        # alternatives: stranding the lock, or a soft-block that can never
+        # be satisfied when the decision verbs themselves refuse.
+        released_ids = list(await self.task.release_review_claims(agent_id) or [])
         # Pre-idle guards, evaluated in order — the first that returns an
         # Envelope short-circuits to a rejection (kept as a loop so adding a
         # guard doesn't push this verb over the return-count bound).
@@ -6250,6 +6250,18 @@ class Choreographer:
             )
         else:
             next_msg = "container will shut down"
+        if released_ids:
+            # Name the release so the agent's journal reflects reality: the
+            # tasks went back to their review queues unclaimed, they did not
+            # quietly stay "its" reviews.
+            joined = ", ".join(str(tid) for tid in released_ids)
+            next_msg = (
+                f"{next_msg}; released your unsubmitted review claim(s) on"
+                f" {joined} back to the review queue - the next reviewer"
+                " claims them fresh; submit pass_review/fail_review (or the"
+                " lane's decision verb) before idling next time if you want"
+                " the verdict to be yours"
+            )
         if idle_hint:
             next_msg = f"{next_msg}; {idle_hint}"
         # The agent truly disengages here (container shuts down) — unlike
@@ -6306,40 +6318,6 @@ class Choreographer:
     # The decision verb pair (or single verb) each claimed awaiting_* status
     # waits on. Keyed by str(status), the same awaiting_* values
     # ``list_open_review_claims`` filters on.
-    _OPEN_CLAIM_DECISION_VERBS: ClassVar[dict[str, str]] = {
-        "awaiting_qa": (
-            "pass_review(task_id='{id}') or fail_review(task_id='{id}', issues=[...])"
-        ),
-        "awaiting_documentation": "i_documented(task_id='{id}')",
-        "awaiting_pr_review": (
-            "pr_pass(task_id='{id}') or pr_fail(task_id='{id}', issues=[...])"
-        ),
-    }
-
-    @classmethod
-    def _idle_with_open_claim_next(cls, claims: list[Any]) -> str:
-        """Build the ``idle_with_open_claim`` remediation: name each held
-        claim's task and the exact decision verb pair that closes it, so the
-        caller never has to guess state. A claimant that genuinely cannot
-        complete the review still exits through the decision verb: the
-        failure becomes a structured finding on the ledger (routed, visible,
-        waivable per doctrine) instead of a silently stranded claim."""
-        parts = [
-            "you still hold the review you claimed; submit the decision,"
-            " then retry i_am_idle():"
-        ]
-        for t in claims:
-            template = cls._OPEN_CLAIM_DECISION_VERBS.get(str(t.status))
-            if template:
-                parts.append(f" {template.format(id=t.id)};")
-            else:
-                parts.append(f" submit the decision verb for task {t.id};")
-        parts.append(
-            " if you cannot complete the review, fail it with the blocker as"
-            " an issue: a structured finding beats a stranded claim"
-        )
-        return "".join(parts)
-
     async def _pending_assignment_guard(
         self, agent_id: UUID, briefing: dict[str, Any]
     ) -> Envelope | None:
