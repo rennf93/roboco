@@ -18,6 +18,7 @@ from roboco.foundation.identity import (
     is_human_only_role,
     role_for_slug_or_none,
 )
+from roboco.foundation.policy.lane import transitive_dependents
 from roboco.models.runtime import (
     SpawnGitContext,
 )
@@ -1301,13 +1302,10 @@ class DispatchClaimEngine(_Base):
         Equal sequences tie-break by ``created_at``, mirroring the merge
         barrier, so a dev's wave-tied queue keeps a deterministic order.
         """
-        if str(task.get("task_type") or "") != "code":
+        lane = self._lane_context(task)
+        if lane is None:
             return False
-        parent_id = task.get("parent_task_id")
-        seq = task.get("sequence")
-        owner = task.get("assigned_to") or task.get("claimed_by")
-        if not parent_id or seq is None or not owner:
-            return False
+        parent_id, seq, owner, task_created = lane
         from uuid import UUID
 
         from roboco.db.base import get_session_factory
@@ -1328,30 +1326,15 @@ class DispatchClaimEngine(_Base):
             )
             return False
         task_id = str(task.get("id"))
-        task_created = task.get("created_at")
-        # A sibling that (transitively, within the sibling set) depends on this
-        # task is ordered AFTER it by the dependency guard, never before it in
-        # the lane. Counting such a sibling as "earlier" via the equal-sequence
-        # created-at tiebreak — which happens when a PM wires the dependency
-        # opposite to creation order — makes each guard wait on the other: the
-        # dependency guard holds the sibling on this task while this barrier
-        # holds this task on the sibling. A silent, permanent wedge (be-dev-2
-        # starved for a day on exactly this shape, 2026-09-27). Dependency
-        # order outranks the created-at tiebreak.
+        # Siblings that (transitively) depend on this task are ordered AFTER
+        # it by the dependency guard — counting them as "earlier" via the
+        # created-at tiebreak wedges the two guards against each other
+        # (be-dev-2, 2026-09-27). See roboco.foundation.policy.lane.
         dep_map = {
             str(sib.id): {str(d) for d in (getattr(sib, "dependency_ids", None) or ())}
             for sib in siblings
         }
-        dependents: set[str] = set()
-        changed = True
-        while changed:
-            changed = False
-            for sib_id, deps in dep_map.items():
-                if sib_id in dependents:
-                    continue
-                if task_id in deps or deps & dependents:
-                    dependents.add(sib_id)
-                    changed = True
+        dependents = transitive_dependents(dep_map, task_id)
         return any(
             self._is_earlier_live_lane_sibling(
                 sib,
@@ -1364,6 +1347,20 @@ class DispatchClaimEngine(_Base):
             for sib in siblings
             if str(sib.id) not in dependents
         )
+
+    @staticmethod
+    def _lane_context(task: dict[str, Any]) -> tuple[Any, Any, Any, Any] | None:
+        """(parent_id, sequence, owner, created_at) when the lane barrier
+        applies to ``task``, else ``None``: only ``code`` leaves with a
+        parent, a sequence, and an assignee (or claimant) are lane-ordered."""
+        if str(task.get("task_type") or "") != "code":
+            return None
+        parent_id = task.get("parent_task_id")
+        seq = task.get("sequence")
+        owner = task.get("assigned_to") or task.get("claimed_by")
+        if not parent_id or seq is None or not owner:
+            return None
+        return parent_id, seq, owner, task.get("created_at")
 
     @staticmethod
     def _is_earlier_live_lane_sibling(

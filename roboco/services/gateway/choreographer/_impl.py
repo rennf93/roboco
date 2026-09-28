@@ -6239,6 +6239,24 @@ class Choreographer:
         idle_hint = await self._idle_legitimacy_hint(agent_id)
         paused_ids = await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
+        next_msg = self._idle_next_message(paused_ids, released_ids, idle_hint)
+        # The agent truly disengages here (container shuts down) — unlike
+        # the idle_with_unread early return above, which sends it right
+        # back to work, so no teardown fires there.
+        await self._teardown_sandbox_best_effort(agent_id)
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next=next_msg,
+            context_briefing=briefing,
+        )
+
+    @staticmethod
+    def _idle_next_message(
+        paused_ids: list[Any], released_ids: list[Any], idle_hint: str | None
+    ) -> str:
+        """Compose i_am_idle's ``next``: how to resume paused work, which
+        review claims went back to their queues, and any legitimacy hint."""
         if paused_ids:
             # Tell the agent how to come back to these tasks. Without this,
             # an agent respawned for a paused task has no signal that
@@ -6264,16 +6282,7 @@ class Choreographer:
             )
         if idle_hint:
             next_msg = f"{next_msg}; {idle_hint}"
-        # The agent truly disengages here (container shuts down) — unlike
-        # the idle_with_unread early return above, which sends it right
-        # back to work, so no teardown fires there.
-        await self._teardown_sandbox_best_effort(agent_id)
-        return Envelope.ok(
-            status="idle",
-            task_id=None,
-            next=next_msg,
-            context_briefing=briefing,
-        )
+        return next_msg
 
     async def _pending_ack_notifications(
         self, agent_id: UUID, briefing: dict[str, Any]
@@ -6354,19 +6363,11 @@ class Choreographer:
         pending = await self._pending_blocking_idle(agent, pending)
         if not pending:
             return None
-        claimable: list[Any] = []
-        for t in pending:
-            if await self.task.is_pending_claim_blocked(t.id) is True:
-                continue
-            claimable.append(t)
+        claimable = await self._claimable_pending(pending)
         if not claimable:
             return None
         first = claimable[0]
-        verb = (
-            "i_will_plan"
-            if agent and agent.role in ("cell_pm", "main_pm")
-            else ("i_will_work_on")
-        )
+        verb = self._pending_claim_verb(agent)
         return Envelope.invalid_state(
             message=(
                 f"You have task {first.id} assigned but never claimed; "
@@ -6378,6 +6379,25 @@ class Choreographer:
             ),
             context_briefing=briefing,
         )
+
+    async def _claimable_pending(self, pending: list[Any]) -> list[Any]:
+        """Pending tasks the claim gate would actually admit right now: a leaf
+        held by the dependency/sequence reachability gate must not block the
+        exit (demanding a claim the gate will refuse is the same "gate A
+        refuses action, gate B refuses exit" trap as the lane-held leaf)."""
+        claimable: list[Any] = []
+        for t in pending:
+            if await self.task.is_pending_claim_blocked(t.id) is True:
+                continue
+            claimable.append(t)
+        return claimable
+
+    @staticmethod
+    def _pending_claim_verb(agent: Any) -> str:
+        """The claim verb for the caller's kind: PMs plan, everyone else works."""
+        if agent and agent.role in ("cell_pm", "main_pm"):
+            return "i_will_plan"
+        return "i_will_work_on"
 
     async def _pending_blocking_idle(self, agent: Any, pending: list[Any]) -> list[Any]:
         """Pending tasks that should block i_am_idle, after role exemptions.
@@ -7419,16 +7439,24 @@ class Choreographer:
             if new_type == "code":
                 # A distinct queue item is fine; a rephrased repeat of an open
                 # sibling is not.
-                sib_title = cls._norm_title(str(getattr(sibling, "title", "") or ""))
-                if (
-                    norm_new
-                    and sib_title
-                    and cls._titles_are_duplicates(norm_new, sib_title)
-                ):
-                    return cls._same_assignee_dup_envelope(
-                        new_type, new_assignee, sibling
-                    )
+                rejection = cls._code_queue_dup_rejection(
+                    norm_new, new_type, new_assignee, sibling
+                )
+                if rejection is not None:
+                    return rejection
                 continue
+            return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
+        return None
+
+    @classmethod
+    def _code_queue_dup_rejection(
+        cls, norm_new: str, new_type: str, new_assignee: str, sibling: Any
+    ) -> Envelope | None:
+        """The duplicate envelope when an open code sibling rephrases
+        ``norm_new``; ``None`` for a distinct queue item (Spec 3 lets a dev
+        own a queue, so same-type alone must not reject)."""
+        sib_title = cls._norm_title(str(getattr(sibling, "title", "") or ""))
+        if norm_new and sib_title and cls._titles_are_duplicates(norm_new, sib_title):
             return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
         return None
 

@@ -52,6 +52,7 @@ from roboco.foundation.policy.content.validators import (
     ContentValidationError,
     reject_trivial,
 )
+from roboco.foundation.policy.lane import transitive_dependents
 from roboco.foundation.policy.lifecycle import (
     _ORG_WIDE_ROLES as _SPEC_ORG_WIDE_ROLES,
 )
@@ -10447,30 +10448,30 @@ class TaskService(BaseService):
         )
         terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
         rows = list(result.all())
-        # A sibling that (transitively, within the sibling set) depends on this
-        # task is ordered AFTER it by the dependency guard, never before it in
-        # the lane. Counting such a sibling as "earlier" via the equal-sequence
-        # created-at tiebreak — which happens when a PM wires the dependency
-        # opposite to creation order — makes the claim gate refuse this task
-        # while the dependency gate refuses the sibling: the dispatch side
-        # spawns, the claim side refuses, and the dev burns every verb bouncing
-        # between the two (be-dev-2, 2026-09-27). Dependency order outranks the
-        # created-at tiebreak, mirroring the dispatch barrier's exclusion.
+        # Siblings that (transitively) depend on this task are ordered AFTER
+        # it by the dependency guard — counting them as "earlier" via the
+        # created-at tiebreak wedges the claim gate against the dispatch
+        # barrier (be-dev-2, 2026-09-27). See roboco.foundation.policy.lane.
         dep_map = {
             str(row.id): {str(d) for d in (row.dependency_ids or ())} for row in rows
         }
-        dependents: set[str] = set()
-        changed = True
-        while changed:
-            changed = False
-            for sib_id, deps in dep_map.items():
-                if sib_id in dependents:
-                    continue
-                if str(task.id) in deps or deps & dependents:
-                    dependents.add(sib_id)
-                    changed = True
+        dependents = transitive_dependents(dep_map, str(task.id))
+        return self._has_earlier_lane_row(
+            rows, seq, task.created_at, terminal, dependents
+        )
+
+    @staticmethod
+    def _has_earlier_lane_row(
+        rows: list[Any],
+        seq: int,
+        created_at: Any,
+        terminal: set[Any],
+        dependents: set[str],
+    ) -> bool:
+        """True if any lane row is an earlier (lower sequence, or an equal
+        sequence created first) non-terminal sibling outside ``dependents``."""
         return any(
-            ((row.sequence or 0), row.created_at) < (seq, task.created_at)
+            ((row.sequence or 0), row.created_at) < (seq, created_at)
             and row.status not in terminal
             and str(row.id) not in dependents
             for row in rows
