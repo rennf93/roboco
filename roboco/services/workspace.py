@@ -159,6 +159,29 @@ def _own_and_grant_rw(entry: str) -> int:
     return failed
 
 
+_CHOWN_SAMPLE_LIMIT = 10
+
+
+def _count_chown_failures(entries: Iterator[str]) -> tuple[int, list[str]]:
+    """Own every entry; return (failure count, first few failing paths).
+
+    The count backs the ``failures`` field of the chown warnings; the sample
+    paths make them actionable. On a host where the remedy is host-side
+    (userns remap, ACL, a stray root-owned tree), a bare count says nothing
+    about WHICH directory to repair - the 2026-09-28 NAS scan had 31
+    warnings that could not be traced to the fe-cell dirs they were
+    silently breaking.
+    """
+    failed = 0
+    samples: list[str] = []
+    for entry in entries:
+        if _own_and_grant_rw(entry):
+            failed += 1
+            if len(samples) < _CHOWN_SAMPLE_LIMIT:
+                samples.append(entry)
+    return failed, samples
+
+
 def _iter_ownable_entries(workspace: Path) -> Iterator[str]:
     """Yield the workspace root then every entry, pruning the heavy trees.
 
@@ -217,8 +240,8 @@ def _ensure_agent_owned(workspace: Path) -> None:
     if _root_already_owned(workspace):
         return
 
-    failed_chowns = sum(
-        _own_and_grant_rw(entry) for entry in _iter_ownable_entries(workspace)
+    failed_chowns, failed_samples = _count_chown_failures(
+        _iter_ownable_entries(workspace)
     )
 
     if failed_chowns:
@@ -228,6 +251,7 @@ def _ensure_agent_owned(workspace: Path) -> None:
             "config or run agents as root on this host.",
             workspace=str(workspace),
             failures=failed_chowns,
+            failed_entries=failed_samples,
         )
     else:
         _write_owned_marker(workspace)
@@ -242,20 +266,23 @@ def _own_install_outputs(workspace: Path) -> None:
     ``_PRUNE_DIRS`` on the assumption the agent created them, so it never
     chowns what the install just wrote as root.
     """
-    failed = 0
-    for name in (".venv", "venv", "node_modules"):
-        entry = workspace / name
-        if entry.is_symlink():
-            # Worktrees symlink .venv to the clone root's shared .venv
-            # (_link_shared_venv). Own the link itself, never the target.
-            failed += _own_and_grant_rw(str(entry))
-            continue
-        if not entry.is_dir():
-            continue
-        failed += _own_and_grant_rw(str(entry))
-        for root, dirs, files in os.walk(entry, followlinks=False):
-            for child in (*dirs, *files):
-                failed += _own_and_grant_rw(str(Path(root) / child))
+
+    def _output_entries() -> Iterator[str]:
+        for name in (".venv", "venv", "node_modules"):
+            entry = workspace / name
+            if entry.is_symlink():
+                # Worktrees symlink .venv to the clone root's shared .venv
+                # (_link_shared_venv). Own the link itself, never the target.
+                yield str(entry)
+                continue
+            if not entry.is_dir():
+                continue
+            yield str(entry)
+            for root, dirs, files in os.walk(entry, followlinks=False):
+                for child in (*dirs, *files):
+                    yield str(Path(root) / child)
+
+    failed, failed_samples = _count_chown_failures(_output_entries())
 
     if failed:
         logger.warning(
@@ -264,6 +291,7 @@ def _own_install_outputs(workspace: Path) -> None:
             "agents as root on this host.",
             workspace=str(workspace),
             failures=failed,
+            failed_entries=failed_samples,
         )
 
 
@@ -417,8 +445,8 @@ def _ensure_git_dir_owned(workspace: Path) -> None:
     if not clone_root.exists():
         return
 
-    failed_chowns = sum(
-        _own_and_grant_rw(entry) for entry in _iter_git_dir_entries(clone_root)
+    failed_chowns, failed_samples = _count_chown_failures(
+        _iter_git_dir_entries(clone_root)
     )
 
     if failed_chowns:
@@ -428,6 +456,7 @@ def _ensure_git_dir_owned(workspace: Path) -> None:
             "config or run agents as root on this host.",
             workspace=str(clone_root),
             failures=failed_chowns,
+            failed_entries=failed_samples,
         )
 
 
