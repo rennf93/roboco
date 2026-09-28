@@ -170,6 +170,34 @@ while IFS= read -r img; do
   # handles it (or the build step above already did).
 done < <("${COMPOSE[@]}" config --images)
 
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  # The -live (interactive chat) images are spawned by the orchestrator at
+  # runtime, never referenced by a compose service, so the pass above never
+  # sees them - they silently rotted (roboco-agent-hummin-live served Sep 18
+  # code for 10 days while the orchestrator moved ahead, 2026-09-28 intake
+  # outage). Build them here, same content gate as the rest of the matrix.
+  # They run AFTER the compose pass: each -live Dockerfile builds FROM its
+  # base agent image, which the pass above just refreshed.
+  echo "[deploy] ensuring images: live-chat pass (runtime-spawned, not in compose)..."
+  for df in docker/agent-*-live.Dockerfile; do
+    [ -e "$df" ] || continue
+    name="${df#docker/}"
+    name="${name%.Dockerfile}" # e.g. agent-hummin-live
+    img="roboco-$name"
+    if image_fresh "$img" "$name"; then
+      echo "[deploy] $img up to date, skipping"
+      continue
+    fi
+    echo "[deploy] building $img (live chat) ..."
+    if docker build -q -t "$img:latest" $HASH_LABEL -f "$df" . ||
+       docker build -q -t "$img:latest" $HASH_LABEL -f "$df" .; then
+      record_fresh
+    else
+      echo "[deploy] WARNING: build failed for $img" >&2
+    fi
+  done
+fi
+
 echo "[deploy] ensuring images: content-gated build pass (only stale or missing)..."
 # Provenance stamp: a CONTENT hash of the checkout, deliberately NOT a git
 # ref (the deploy checkout carries no branch identity). Stamped on builds so
