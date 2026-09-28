@@ -18,6 +18,8 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import httpx
+
 
 def _write_usage(path: Path, **fields: object) -> None:
     payload = {
@@ -140,7 +142,7 @@ async def test_active_token_sweep_reads_usage_json_quietly(
     orch._instances = {"fe-qa": AgentInstance(agent_id="fe-qa", config=cfg)}
 
     result = await orch._resolve_active_tokens(
-        cast("object", None),  # the usage-json route never touches the client
+        cast("httpx.AsyncClient", None),  # usage-json route never touches the client
         "fe-qa",
     )
     assert result is None
