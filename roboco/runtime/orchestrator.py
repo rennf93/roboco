@@ -1969,8 +1969,23 @@ class AgentOrchestrator(
     # AGENT SPAWNING
     # =========================================================================
 
+    # QA reviews run bash/git in the task project's clone, so QA needs the
+    # same per-agent workspace resolution as developers. MISSING from this
+    # set, _resolve_workspace_cwd returned None for qa-role spawns and the
+    # manifest builder fell back to its hardcoded "roboco" path — a
+    # nonexistent directory every review tool then errored on (live
+    # 2026-09-28: fe-qa/be-qa unable to review anything, evidence() and all
+    # roboco_git_* read-only tools failing, respawn breakers tripping).
+    # pr_reviewer reads diffs in the same clones and is included for the
+    # same reason.
     _ROLES_WITH_AGENT_WORKSPACE: ClassVar[frozenset[str]] = frozenset(
-        {"developer", "product_owner", "head_marketing"}
+        {
+            "developer",
+            "qa",
+            "pr_reviewer",
+            "product_owner",
+            "head_marketing",
+        }
     )
     _ROLES_WITH_CELL_WORKSPACE: ClassVar[frozenset[str]] = frozenset({"documenter"})
 
