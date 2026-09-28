@@ -47,6 +47,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   AlertTriangle,
   Bot,
+  Brain,
   Cloud,
   Cpu,
   Gauge,
@@ -130,14 +131,12 @@ const AGENT_GROUP_DEFS: {
     title: "Intake / Secretary / PR Review",
     titleHint:
       "On-demand CEO-facing roles (Intake, Secretary) plus the root PR reviewer — reviews root→master PRs and inbound external/fork PRs.",
+    // Every provider powers the interactive Intake/Secretary chats since
+    // 2026-09-17 (the provider-generic live driver), so this group's
+    // per-agent picker renders the FULL catalog - no exclusions.
     select: getSupportAgents,
   },
 ];
-
-// Every provider powers the interactive Intake/Secretary chats since
-// 2026-09-17 (the provider-generic live driver), so this group's per-agent
-// picker renders the FULL catalog - no exclusions.
-const INTERACTIVE_ONLY_GROUP_TITLE = "Intake / Secretary / PR Review";
 
 // Stable within-group ordering (PM/lead first, devs, QA, doc, reviewer last)
 // so the picker doesn't churn alphabetically as the live roster loads —
@@ -484,15 +483,13 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Codex? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary chat on Codex too."
+          "Intake and Secretary chat on Codex too.",
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "codex" });
-      toast.success(
-        "Role/global routing now on Codex, pins/overrides kept",
-      );
+      toast.success("Role/global routing now on Codex, pins/overrides kept");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -503,15 +500,13 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Gemini? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary chat on Gemini too."
+          "Intake and Secretary chat on Gemini too.",
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "gemini" });
-      toast.success(
-        "Role/global routing now on Gemini, pins/overrides kept",
-      );
+      toast.success("Role/global routing now on Gemini, pins/overrides kept");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -522,15 +517,13 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Kimi? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary chat on Kimi too."
+          "Intake and Secretary chat on Kimi too.",
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "kimi" });
-      toast.success(
-        "Role/global routing now on Kimi, pins/overrides kept",
-      );
+      toast.success("Role/global routing now on Kimi, pins/overrides kept");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -566,8 +559,7 @@ export function AIRoutingCard() {
     if (
       !confirm(
         "Switch every agent to OpenRouter? Per-agent pins and complexity " +
-          "overrides are kept; other role/global assignments are replaced. " +
-          "V1: delivery roles only, not Intake/Secretary.",
+          "overrides are kept; other role/global assignments are replaced.",
       )
     )
       return;
@@ -592,8 +584,7 @@ export function AIRoutingCard() {
     if (
       !confirm(
         "Switch every agent to Nebius? Per-agent pins and complexity " +
-          "overrides are kept; other role/global assignments are replaced. " +
-          "V1: delivery roles only, not Intake/Secretary.",
+          "overrides are kept; other role/global assignments are replaced.",
       )
     )
       return;
@@ -1083,12 +1074,11 @@ export function AIRoutingCard() {
         </CardTitle>
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
-          <code className="px-1"> ~/.claude </code> auth; Grok (xAI), Ollama
-          Cloud, OpenRouter, and Nebius use the API keys you save below; Codex,
-          Gemini, and Kimi authenticate via their own mounted CLI subscriptions
-          (no key needed) — V1: delivery roles only, not Intake/Secretary;
-          Self-Hosted connects to any OpenAI-compatible endpoint you run
-          locally.
+          <code className="px-1"> ~/.claude </code>
+          auth; Grok (xAI), Ollama Cloud, OpenRouter, Nebius, Z.ai, and hummin
+          use the API keys you save below; Codex, Gemini, and Kimi authenticate
+          via their own mounted CLI subscriptions (no key needed); Self-Hosted
+          connects to any OpenAI-compatible endpoint you run locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -1234,7 +1224,7 @@ export function AIRoutingCard() {
 
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Nebius / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
+          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Z.ai / Hummin / Ollama / OpenRouter / Nebius / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
@@ -1265,7 +1255,7 @@ export function AIRoutingCard() {
               active={currentMode === "codex"}
               onClick={flipToCodex}
               disabled={applyMode.isPending}
-              labelHint="Codex authenticates via a mounted ~/.codex subscription (ChatGPT, no API key) — always available once the CLI is logged in on the host. V1: delivery roles only, not offered for Intake/Secretary."
+              labelHint="Codex authenticates via a mounted ~/.codex subscription (ChatGPT, no API key) — always available once the CLI is logged in on the host."
             />
             <ModeButton
               icon={<Gem className="h-4 w-4" />}
@@ -1274,7 +1264,7 @@ export function AIRoutingCard() {
               active={currentMode === "gemini"}
               onClick={flipToGemini}
               disabled={applyMode.isPending}
-              labelHint="Gemini authenticates via a mounted ~/.gemini OAuth login (no API key) — always available once the CLI is logged in on the host. V1: delivery roles only, not offered for Intake/Secretary."
+              labelHint="Gemini authenticates via a mounted ~/.gemini OAuth login (no API key) — always available once the CLI is logged in on the host."
             />
             <ModeButton
               icon={<Moon className="h-4 w-4" />}
@@ -1283,7 +1273,7 @@ export function AIRoutingCard() {
               active={currentMode === "kimi"}
               onClick={flipToKimi}
               disabled={applyMode.isPending}
-              labelHint="Kimi authenticates via a shared, symlinked-in ~/.kimi-code subscription credential (Moonshot, no API key) — always available once the CLI is logged in on the host. V1: delivery roles only, not offered for Intake/Secretary."
+              labelHint="Kimi authenticates via a shared, symlinked-in ~/.kimi-code subscription credential (Moonshot, no API key) — always available once the CLI is logged in on the host."
             />
             <ModeButton
               icon={<Sparkles className="h-4 w-4" />}
@@ -1308,7 +1298,7 @@ export function AIRoutingCard() {
               active={currentMode === "openrouter"}
               onClick={flipToOpenRouter}
               disabled={applyMode.isPending || !hasOpenRouterKey}
-              labelHint="One key unlocks hundreds of models on OpenRouter — GLM, DeepSeek, Qwen, Claude, GPT and more. Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
+              labelHint="One key unlocks hundreds of models on OpenRouter — GLM, DeepSeek, Qwen, Claude, GPT and more. Pick a model in the search picker below."
             />
             <ModeButton
               icon={<Cloud className="h-4 w-4" />}
@@ -1321,7 +1311,20 @@ export function AIRoutingCard() {
               active={currentMode === "nebius"}
               onClick={flipToNebius}
               disabled={applyMode.isPending || !hasNebiusKey}
-              labelHint="One key unlocks Nebius AI Studio's hosted open models (DeepSeek, Qwen, Llama and more). Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
+              labelHint="One key unlocks Nebius AI Studio's hosted open models (DeepSeek, Qwen, Llama and more). Pick a model in the search picker below."
+            />
+            <ModeButton
+              icon={<Brain className="h-4 w-4" />}
+              label="Z.ai GLM"
+              description={
+                hasZaiKey
+                  ? "Every agent uses GLM via the Z.ai Anthropic-compatible endpoint."
+                  : "Save the Z.ai API key first."
+              }
+              active={currentMode === "zai"}
+              onClick={flipToZai}
+              disabled={applyMode.isPending || !hasZaiKey}
+              labelHint="Z.ai exposes an Anthropic-compatible endpoint, so agents run through the built-in Claude Code spawn with the endpoint injected — the OLLAMA_CLOUD shape. For the GLM-native hummin CLI instead, use the Hummin button."
             />
             <ModeButton
               icon={<Sparkles className="h-4 w-4" />}
@@ -1334,7 +1337,7 @@ export function AIRoutingCard() {
               active={currentMode === "hummin"}
               onClick={flipToHummin}
               disabled={applyMode.isPending || !hasHumminKey}
-              labelHint="The GLM go-to: the GLM-native hummin CLI headless in Docker, key injected as ZAI_API_KEY. GLM 5.3 / 5.3 Flash / 5.3 Highspeed in the Mix picker. V1: delivery roles only, not offered for Intake/Secretary."
+              labelHint="The GLM go-to: the GLM-native hummin CLI headless in Docker, key injected as ZAI_API_KEY. GLM 5.3 / 5.3 Flash / 5.3 Highspeed in the Mix picker. For the Z.ai Anthropic-compatible endpoint instead, use the Z.ai GLM button."
             />
             <ModeButton
               icon={<Server className="h-4 w-4" />}
@@ -1398,23 +1401,29 @@ export function AIRoutingCard() {
               Codex agents run on OpenAI&apos;s official Codex CLI (ChatGPT
               subscription, mounted ~/.codex); the same command /
               secret-exfiltration guard, prompt-injection guard, and per-agent
-              cost cap apply. V1: delivery roles only — not available for
-              Intake/Secretary.
+              cost cap apply.
             </p>
           ) : null}
           {currentMode === "gemini" || currentMode === "mix" ? (
             <p className="text-xs text-muted-foreground">
               Gemini agents run on Google&apos;s official gemini CLI (OAuth
-              login, mounted ~/.gemini); the same guards apply. V1: delivery
-              roles only — not available for Intake/Secretary.
+              login, mounted ~/.gemini); the same guards apply.
             </p>
           ) : null}
           {currentMode === "kimi" || currentMode === "mix" ? (
             <p className="text-xs text-muted-foreground">
               Kimi agents run on Moonshot&apos;s official kimi (kimi-code) CLI
               (subscription auth, shared ~/.kimi-code credential); the same
-              guards apply. V1: delivery roles only — not available for
-              Intake/Secretary.
+              guards apply.
+            </p>
+          ) : null}
+          {currentMode === "zai" || currentMode === "hummin" ? (
+            <p className="text-xs text-muted-foreground">
+              GLM agents route via Z.ai — the Z.ai GLM button through the
+              Anthropic-compatible endpoint (Claude Code spawn), the Hummin
+              button through the GLM-native hummin CLI. The same command /
+              secret-exfiltration guard, prompt-injection guard, and per-agent
+              cost cap all apply.
             </p>
           ) : null}
           {currentMode === "openrouter" || currentMode === "mix" ? (
@@ -1422,8 +1431,7 @@ export function AIRoutingCard() {
               OpenRouter agents run on the opencode CLI; one API key unlocks
               hundreds of models (GLM, DeepSeek, Qwen, Claude, GPT and more).
               The same command / secret-exfiltration guard, prompt-injection
-              guard, and per-agent cost cap all apply. V1: delivery roles only —
-              not available for Intake/Secretary.
+              guard, and per-agent cost cap all apply.
             </p>
           ) : null}
           {currentMode === "nebius" || currentMode === "mix" ? (
@@ -1431,8 +1439,7 @@ export function AIRoutingCard() {
               Nebius agents run on the opencode CLI; one API key unlocks Nebius
               AI Studio&apos;s hosted open models (DeepSeek, Qwen, Llama and
               more). The same command / secret-exfiltration guard,
-              prompt-injection guard, and per-agent cost cap all apply. V1:
-              delivery roles only, not available for Intake/Secretary.
+              prompt-injection guard, and per-agent cost cap all apply.
             </p>
           ) : null}
         </section>
