@@ -1631,6 +1631,27 @@ class SpawnExitEngine(_Base):
             **diagnostics,
         )
 
+    async def _fresh_or_prior_git_context(
+        self, task_id: str | None, agent_id: str
+    ) -> Any:
+        """The CURRENT task's git context, falling back to the prior instance's.
+
+        Re-resolving from the task on every respawn (crash-retry, rate-limit
+        resume) prevents a STALE context from regenerating a manifest that
+        points at a nonexistent workspace: a project renamed or deleted since
+        the original spawn would otherwise wedge the agent in an
+        error-loop-crash cycle no dispatcher spawn can fix (live 2026-09-28:
+        fe-qa/be-qa crash-restarted for hours with slug "roboco" while the DB
+        project is "roboco-api" — every review tool errored on the
+        nonexistent path). The prior context is the fallback only when the
+        task no longer resolves.
+        """
+        fresh = await self._git_context_from_task_id(task_id) if task_id else None
+        if fresh is not None:
+            return fresh
+        prior = self._instances.get(agent_id)
+        return prior.config.git_context if prior and prior.config else None
+
     async def _crash_retry_or_escalate(self, agent_id: str, instance: Any) -> None:
         """A crashed (non-graceful) agent: auto-restart up to a cap, then escalate.
 
@@ -1657,7 +1678,9 @@ class SpawnExitEngine(_Base):
             await self.spawn_agent(
                 agent_id=agent_id,
                 task_id=instance.current_task_id,
-                git_context=(instance.config.git_context if instance.config else None),
+                git_context=self._fresh_or_prior_git_context(
+                    instance.current_task_id, agent_id
+                ),
                 spawned_by="_crash_retry_or_escalate",
             )
         elif instance.error_count == max_retries:

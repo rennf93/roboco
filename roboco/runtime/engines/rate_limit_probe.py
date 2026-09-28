@@ -89,11 +89,7 @@ class RateLimitProbeEngine(_Base):
 
         # Generate resume prompt
         resume_prompt = self._generate_resume_prompt(record, resolution)
-
-        # Preserve the original git_context from the prior instance so the
-        # respawned agent keeps the same workspace mount path.
-        prior = self._instances.get(agent_id)
-        prior_git_context = prior.config.git_context if prior and prior.config else None
+        git_context = self._fresh_or_prior_git_context(record.task_id, agent_id)
 
         # Respawn FIRST, then tear down the record only once a container actually
         # launched. The old order deleted the record (in-memory + durable) before
@@ -109,7 +105,7 @@ class RateLimitProbeEngine(_Base):
                 agent_id=agent_id,
                 initial_prompt=resume_prompt,
                 task_id=record.task_id,
-                git_context=prior_git_context,
+                git_context=git_context,
                 spawned_by="resolve_wait",
             )
         except Exception:
