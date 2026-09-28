@@ -8,10 +8,11 @@ of folding everything into output.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from roboco.models.runtime import AgentInstance
+from roboco.runtime.engines import spawn_exit as spawn_exit_module
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
@@ -90,3 +91,57 @@ async def test_resolve_final_turns_tools_routes_hummin_to_usage_json(
 
     turns, tool_calls = await orch._resolve_final_turns_tools("be-dev-1")
     assert (turns, tool_calls) == (3, 0)
+
+
+def test_hummin_usage_zero_read_warns_only_at_finalize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The zero-read warning is a FINALIZE signal: the per-tick sweep sampler
+    reads the same usage.json with warn_on_zero=False (a zero mid-run is the
+    expected state for a one-shot CLI whose capture is written post-run), so
+    the warning must fire only on the default (finalize) call, and it must
+    name the path it tried, not just the mount."""
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(orch, "_hummin_usage_json", lambda _aid: None)
+    seen: list[dict] = []
+
+    class _SpyLogger:
+        def warning(self, event: str, **kw: object) -> None:
+            seen.append({"event": event, **kw})
+
+    monkeypatch.setattr(spawn_exit_module, "logger", _SpyLogger())
+
+    assert orch._hummin_usage_tokens("fe-qa") == (0, 0, 0, 0)
+    assert len(seen) == 1
+    assert "usage_path" in seen[0]
+
+    assert orch._hummin_usage_tokens("fe-qa", warn_on_zero=False) == (0, 0, 0, 0)
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_active_token_sweep_reads_usage_json_quietly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sweep sampler's usage.json read passes warn_on_zero=False: the
+    live snapshot treats a zero as 'no data yet', never as an anomaly."""
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    seen: dict[str, object] = {}
+
+    def _quiet_tokens(
+        agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
+        seen["agent_id"] = agent_id
+        seen["warn_on_zero"] = warn_on_zero
+        return (0, 0, 0, 0)
+
+    monkeypatch.setattr(orch, "_hummin_usage_tokens", _quiet_tokens)
+    cfg = type("C", (), {"provider_type": "hummin"})()
+    orch._instances = {"fe-qa": AgentInstance(agent_id="fe-qa", config=cfg)}
+
+    result = await orch._resolve_active_tokens(
+        cast("object", None),  # the usage-json route never touches the client
+        "fe-qa",
+    )
+    assert result is None
+    assert seen == {"agent_id": "fe-qa", "warn_on_zero": False}

@@ -554,7 +554,9 @@ class SpawnExitEngine(_Base):
             return None
         return data if isinstance(data, dict) else None
 
-    def _grok_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+    def _grok_usage_tokens(
+        self, agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
         """A GROK agent's token usage from its ``usage.json``.
 
         grok reports a single cumulative total with no input/output split, so it
@@ -570,7 +572,7 @@ class SpawnExitEngine(_Base):
                 total = int(data.get("total_tokens", 0))
             except (TypeError, ValueError):
                 total = 0
-        if not total:
+        if warn_on_zero and not total:
             logger.warning(
                 "GROK agent finalized with no readable usage "
                 "(0 tokens / $0) — check the data dir mount",
@@ -677,7 +679,9 @@ class SpawnExitEngine(_Base):
         except (TypeError, ValueError):
             return None
 
-    def _codex_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+    def _codex_usage_tokens(
+        self, agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
         """An OPENAI agent's token usage from its ``usage.json``.
 
         Unlike grok's single cumulative total, codex reports a real
@@ -698,7 +702,7 @@ class SpawnExitEngine(_Base):
                 )
             except (TypeError, ValueError):
                 tokens = (0, 0, 0, 0)
-        if not tokens[0] and not tokens[1]:
+        if warn_on_zero and not tokens[0] and not tokens[1]:
             logger.warning(
                 "OPENAI (codex) agent finalized with no readable usage "
                 "(0 tokens / $0) — check the data dir mount",
@@ -720,7 +724,9 @@ class SpawnExitEngine(_Base):
         except (TypeError, ValueError):
             return 0
 
-    def _kimi_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+    def _kimi_usage_tokens(
+        self, agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
         """A KIMI agent's token usage from its ``usage.json``.
 
         Kimi's ``wire.jsonl`` carries a real, already-disjoint 4-bucket split
@@ -741,7 +747,7 @@ class SpawnExitEngine(_Base):
                 )
             except (TypeError, ValueError):
                 tokens = (0, 0, 0, 0)
-        if not tokens[0] and not tokens[1]:
+        if warn_on_zero and not tokens[0] and not tokens[1]:
             logger.warning(
                 "KIMI agent finalized with no readable usage "
                 "(0 tokens / $0) — check the sessions dir mount",
@@ -764,7 +770,9 @@ class SpawnExitEngine(_Base):
         except (TypeError, ValueError):
             return 0
 
-    def _hummin_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+    def _hummin_usage_tokens(
+        self, agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
         """A HUMMIN agent's token usage from its ``usage.json``.
 
         hummin's ``--mode json`` run log carries a real, already-disjoint
@@ -786,11 +794,12 @@ class SpawnExitEngine(_Base):
                 )
             except (TypeError, ValueError):
                 tokens = (0, 0, 0, 0)
-        if not tokens[0] and not tokens[1]:
+        if warn_on_zero and not tokens[0] and not tokens[1]:
             logger.warning(
                 "HUMMIN agent finalized with no readable usage "
                 "(0 tokens / $0) — check the usage dir mount",
                 agent_id=agent_id,
+                usage_path=str(self._hummin_usage_root() / agent_id / "usage.json"),
             )
         return tokens
 
@@ -809,7 +818,9 @@ class SpawnExitEngine(_Base):
         except (TypeError, ValueError):
             return 0
 
-    def _openrouter_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+    def _openrouter_usage_tokens(
+        self, agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
         """An OPENROUTER agent's token usage from its ``usage.json``.
 
         OpenRouter's capture (see ``openrouter_cli_usage``) splits the
@@ -831,7 +842,7 @@ class SpawnExitEngine(_Base):
                 )
             except (TypeError, ValueError):
                 tokens = (0, 0, 0, 0)
-        if not tokens[0] and not tokens[1]:
+        if warn_on_zero and not tokens[0] and not tokens[1]:
             logger.warning(
                 "OPENROUTER agent finalized with no readable usage "
                 "(0 tokens / $0) - check the usage dir mount",
@@ -839,7 +850,9 @@ class SpawnExitEngine(_Base):
             )
         return tokens
 
-    def _nebius_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+    def _nebius_usage_tokens(
+        self, agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
         """A NEBIUS agent's token usage from its ``usage.json``.
 
         Nebius's capture (see ``nebius_cli_usage``) splits the
@@ -861,7 +874,7 @@ class SpawnExitEngine(_Base):
                 )
             except (TypeError, ValueError):
                 tokens = (0, 0, 0, 0)
-        if not tokens[0] and not tokens[1]:
+        if warn_on_zero and not tokens[0] and not tokens[1]:
             logger.warning(
                 "NEBIUS agent finalized with no readable usage "
                 "(0 tokens / $0) - check the usage dir mount",
@@ -869,7 +882,9 @@ class SpawnExitEngine(_Base):
             )
         return tokens
 
-    def _gemini_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+    def _gemini_usage_tokens(
+        self, agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
         """A GEMINI agent's token usage from its ``usage.json``.
 
         The entrypoint's usage capture already priced each model's real
@@ -886,7 +901,7 @@ class SpawnExitEngine(_Base):
                 total = int(data.get("total_tokens", 0))
             except (TypeError, ValueError):
                 total = 0
-        if not total:
+        if warn_on_zero and not total:
             logger.warning(
                 "GEMINI agent finalized with no readable usage "
                 "(0 tokens / $0) — check the data dir mount",
