@@ -1008,7 +1008,8 @@ class Choreographer:
 
     async def _drop_dependency_held(self, tasks: list[Any]) -> list[Any]:
         """Drop PENDING/NEEDS_REVISION tasks the claim gate would refuse
-        right now — an unmet dependency or a same-parent sequence hold.
+        right now — an unmet dependency, a same-parent sequence hold, or an
+        earlier non-terminal sibling holding the dev's lane.
 
         ``give_me_work``'s ``list_assigned_for_agent`` fallback spans every
         active status with no hold filter, so without this a held task
@@ -1017,27 +1018,33 @@ class Choreographer:
         after the first claim) was still offered here and only bounced at
         claim time — the give_me_work/i_will_work_on offer-then-reject loop
         the 2026-07-24 incident hit on the needs_revision path.
-        ``is_pending_claim_blocked`` wraps the EXACT predicate
-        ``TaskService.claim()`` enforces (dependency + sequence), so this
-        can't drift from the claim gate. Scoped to PENDING and
-        NEEDS_REVISION — the only statuses that guard reads
-        (``_claim_blocked_by_sequencing``); every other status already
-        passed it at an earlier claim. ``is True`` (not a bare truthy
-        check) keeps this inert under partial test mocks (an unstubbed
-        AsyncMock method returns a truthy mock object, not a real bool) —
-        mirrors ``_pending_not_lane_held``'s identical ``is not True`` guard.
+        ``is_pending_claim_blocked`` wraps the dependency + sequence half of
+        what ``TaskService.claim()`` enforces; the lane half
+        (``has_earlier_incomplete_code_sibling``, enforced by the
+        choreographer's ``_lane_claim_guard``) is checked here too — without
+        it the pre-assigned branch dropped a lane-held leaf only for the
+        assigned-row fallback to re-offer the same leaf (2026-09-28 churn
+        scan). ``is True`` / ``is not True`` (not bare truthy checks) keep
+        this inert under partial test mocks (an unstubbed AsyncMock method
+        returns a truthy mock object, not a real bool) — mirrors
+        ``_pending_not_lane_held``'s identical mock-safety guard.
+        Scoped to PENDING and NEEDS_REVISION — the only statuses the claim
+        guards re-read; every other status already passed them at an earlier
+        claim.
         """
         offerable: list[Any] = []
         for task in tasks:
-            if (
-                str(task.status)
-                in (
-                    "pending",
-                    "needs_revision",
-                )
-                and await self._deps.task.is_pending_claim_blocked(task.id) is True
+            if str(task.status) in (
+                "pending",
+                "needs_revision",
             ):
-                continue
+                if await self._deps.task.is_pending_claim_blocked(task.id) is True:
+                    continue
+                if (
+                    await self._deps.task.has_earlier_incomplete_code_sibling(task)
+                    is True
+                ):
+                    continue
             offerable.append(task)
         return offerable
 
