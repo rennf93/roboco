@@ -1409,7 +1409,7 @@ class InteractiveSessionsEngine(_Base):
         session_id: str,
         text: str,
         *,
-        attempts: int = 30,
+        attempts: int = 150,
         delay: float = 1.0,
         persist: bool = False,
     ) -> None:
@@ -1422,6 +1422,13 @@ class InteractiveSessionsEngine(_Base):
         durably records the turn in ``prompter_messages`` once delivered, so the
         first message survives a restart exactly like every later one
         (``send_message`` already does this for turn 2+).
+
+        150 attempts (~2.5 min) instead of 30: the hummin-live container's
+        measured boot on the NAS is 20-40s, but the spawn itself can queue
+        behind workspace prep for 100s+ (2026-09-28 03:21 session: the
+        receiver came up 7.9s AFTER the old 30s window gave up and the chat
+        was declared dead). On exhaustion the relay is closed WITH an error
+        frame so the panel shows why the chat died instead of hanging silent.
         """
         from roboco.services.prompter_live import get_live_registry
 
@@ -1436,6 +1443,15 @@ class InteractiveSessionsEngine(_Base):
             "Intake first message never delivered (receiver never came up)",
             session_id=session_id,
         )
+        session = registry.get(session_id)
+        if session is not None and not session.closed:
+            registry.close_by_agent(
+                session.agent_id,
+                error=(
+                    "The intake agent did not come up in time. Start a new"
+                    " chat to retry."
+                ),
+            )
 
     async def _persist_intake_first_message(self, session_id: str, text: str) -> None:
         """Durably record a live intake session's opening human turn.

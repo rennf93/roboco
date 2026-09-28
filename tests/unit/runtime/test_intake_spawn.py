@@ -1064,6 +1064,62 @@ class TestSpawnGuarded:
         assert closed == ["sess-B"]
 
 
+class TestDeliverWhenReadyExhaustion:
+    """First-message delivery that never lands must close the relay WITH a
+    reason. The 2026-09-28 03:21 session: the receiver came up 7.9s after
+    the delivery window gave up, the orchestrator only logged a warning, and
+    the panel hung on a silent stream until the CEO stopped the chat by
+    hand."""
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_closes_relay_with_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        registry = prompter_live.get_live_registry()
+        registry.open("sess-D", INTAKE_AGENT_ID)
+
+        async def _never(_sid: str, _text: str) -> bool:
+            return False
+
+        closed_with: list[tuple[str, str | None]] = []
+        real_close = registry.close_by_agent
+
+        def _spy(agent_id: str, *, error: str | None = None) -> list[str]:
+            closed_with.append((agent_id, error))
+            return real_close(agent_id, error=error)
+
+        monkeypatch.setattr(registry, "deliver", _never)
+        monkeypatch.setattr(registry, "close_by_agent", _spy)
+
+        await orch._deliver_when_ready(
+            "sess-D", "hello", attempts=2, delay=0, persist=False
+        )
+
+        assert closed_with, "exhaustion must close the relay, not leave it hanging"
+        agent_id, error = closed_with[0]
+        assert agent_id == INTAKE_AGENT_ID
+        assert error is not None and "new chat" in error
+        assert registry.get("sess-D") is None, "session must be popped on close"
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_with_no_session_is_quiet(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A session already closed/reaped before exhaustion: no error path
+        may raise (the closing raced us)."""
+        orch = _make_minimal_orchestrator()
+        registry = prompter_live.get_live_registry()
+
+        async def _never(_sid: str, _text: str) -> bool:
+            return False
+
+        monkeypatch.setattr(registry, "deliver", _never)
+        await orch._deliver_when_ready(
+            "sess-missing", "hello", attempts=1, delay=0, persist=False
+        )
+
+
 class TestConcurrentSpawnSerialization:
     """Two concurrent intake starts must serialize — the intake agent id is a
     single fixed id, so two ``docker run --name roboco-agent-prompter`` calls and
