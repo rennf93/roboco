@@ -13,10 +13,10 @@
 | awaiting_pm_review | cancelled | cancel | cell_pm, ceo, main_pm |
 | awaiting_pm_review | completed | complete | cell_pm, main_pm |
 | awaiting_pm_review | needs_revision | request_changes | cell_pm, main_pm |
-| awaiting_pr_review | awaiting_pm_review | pr_pass | pr_reviewer |
+| awaiting_pr_review | awaiting_pm_review | pr_pass | devops, pr_reviewer |
 | awaiting_pr_review | cancelled | cancel | cell_pm, ceo, main_pm |
-| awaiting_pr_review | claimed | claim | pr_reviewer |
-| awaiting_pr_review | needs_revision | pr_fail | pr_reviewer |
+| awaiting_pr_review | claimed | claim | devops, pr_reviewer |
+| awaiting_pr_review | needs_revision | pr_fail | devops, pr_reviewer |
 | awaiting_qa | awaiting_documentation | qa_pass | qa |
 | awaiting_qa | cancelled | cancel | cell_pm, ceo, main_pm |
 | awaiting_qa | claimed | claim | qa |
