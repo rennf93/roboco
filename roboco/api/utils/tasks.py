@@ -15,6 +15,7 @@ from roboco.db.tables import TaskTable
 from roboco.exceptions import GitError
 from roboco.models.base import AgentRole, TaskStatus
 from roboco.services.base import (
+    AssigneeCapabilityError,
     NotFoundError,
     ServiceError,
     UnauthorizedError,
@@ -221,6 +222,11 @@ def _translate_error(e: ServiceError) -> HTTPException:
     if isinstance(e, NotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
     if isinstance(e, UnauthorizedError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+    if isinstance(e, AssigneeCapabilityError):
+        # Capability-naming refusal: an assignment whose role cannot act on
+        # the task's status — the not_authorized category per the lifecycle
+        # spec, not a generic 400.
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
     if isinstance(e, ValidationError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)

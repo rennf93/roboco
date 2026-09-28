@@ -73,6 +73,7 @@ from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionCreate
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import (
+    AssigneeCapabilityError,
     BaseService,
     ConflictError,
     NotFoundError,
@@ -4014,6 +4015,14 @@ class TaskService(BaseService):
             )
 
         old_parent_id = getattr(task, "parent_task_id", None)
+        # Capability backstop on the admin task-set path (PATCH assigned_to):
+        # a genuine reassignment may not plant an assignee whose role cannot
+        # act on the task's current status. No-op clears and same-value sets
+        # pass through. Checked BEFORE the field loop so a refusal never
+        # leaves the session dirty.
+        new_assignee = updates.get("assigned_to")
+        if new_assignee is not None and new_assignee != task.assigned_to:
+            self._refuse_incapable_assignee(task.status, new_assignee)
         for key, value in updates.items():
             if hasattr(task, key) and value is not None:
                 setattr(task, key, value)
@@ -11947,6 +11956,32 @@ class TaskService(BaseService):
         if prior_claimant is not None and prior_claimant != effective_assignee:
             task.active_claimant_id = cast("Any", None)
 
+    def _refuse_incapable_assignee(self, status: Any, new_assignee: Any) -> None:
+        """Refuse an assignment whose role cannot act on the target status.
+
+        Capability is derived from the lifecycle role-transition map
+        (``CLAIM_RULES`` + the atomic action specs) — never a parallel
+        system; see ``lifecycle.assignee_capability_gap``. Terminal
+        statuses and unknown (non-seeded) assignee UUIDs pass through;
+        the existing identity guards own those.
+        """
+        from roboco.foundation.identity import role_for_uuid_or_none
+        from roboco.foundation.policy import lifecycle as lifecycle_spec
+
+        if new_assignee is None:
+            return
+        role = role_for_uuid_or_none(new_assignee)
+        if role is None:
+            return
+        task_status = lifecycle_spec.Status(str(getattr(status, "value", status)))
+        gap = lifecycle_spec.assignee_capability_gap(role, task_status)
+        if gap is not None:
+            raise AssigneeCapabilityError(
+                f"ASSIGNEE_INCAPABLE: {gap}",
+                role=role.value,
+                status=task_status.value,
+            )
+
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
@@ -12013,6 +12048,11 @@ class TaskService(BaseService):
             )
             if redirect.dev_notes_line is not None:
                 task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
+
+        # Capability backstop: the (post-redirect) assignee's role must have
+        # at least one action on the task's current status — otherwise the
+        # task sits assigned but unactable (the 54e30535 wedge shape).
+        self._refuse_incapable_assignee(task.status, effective_assignee)
 
         task.assigned_to = (
             cast("Any", effective_assignee) if effective_assignee else None
@@ -12232,6 +12272,10 @@ class TaskService(BaseService):
             )
             if redirect.dev_notes_line is not None:
                 task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
+
+        # Capability backstop (mirrors `reassign`): the post-redirect claimant
+        # must be able to act on a claimed/in_progress task.
+        self._refuse_incapable_assignee(task.status, effective_assignee)
 
         old_assignee = cast("UUID | None", task.claimed_by)
         now = datetime.now(UTC)
@@ -13515,6 +13559,10 @@ class TaskService(BaseService):
             adds_migration=req.adds_migration,
             touches_shared=req.touches_shared,
         )
+        # Capability backstop at delegation-creation time: the assignee's role
+        # must be able to act on the status the subtask will hold (PENDING when
+        # assigned). Refuses the 54e30535 wedge shape before the row exists.
+        self._refuse_incapable_assignee(prepared.status, prepared.assigned_to)
         return await self.create(prepared)
 
 

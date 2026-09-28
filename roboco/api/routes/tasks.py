@@ -82,7 +82,11 @@ from roboco.services.attestation import (
     render_attestation_markdown,
 )
 from roboco.services.audit import get_audit_service
-from roboco.services.base import ServiceError
+from roboco.services.base import (
+    AssigneeCapabilityError,
+    ServiceError,
+    ValidationError,
+)
 from roboco.services.gateway.choreographer.collision import build_collision_context
 from roboco.services.governance import get_governance_service
 from roboco.services.journal import get_journal_service
@@ -808,7 +812,14 @@ async def update_task(
             ),
         )
 
-    task = await service.update(task_id, **updates)
+    try:
+        task = await service.update(task_id, **updates)
+    except AssigneeCapabilityError as e:
+        # Capability-naming refusal: the PATCH would plant an assignee whose
+        # role cannot act on the task's current status (not_authorized).
+        raise _translate_error(e) from e
+    except ValidationError as e:
+        raise _translate_error(e) from e
     if not task:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
