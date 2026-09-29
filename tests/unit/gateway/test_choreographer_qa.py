@@ -46,6 +46,9 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
 
 
 _EXPECTED_PR_NUMBER = 8
+# The loop-shaped re-claim: evidence is NOT rebuilt from the 2nd
+# consecutive same-agent re-claim on.
+_LOOP_RECLAIM_COUNT = 2
 _EXPECTED_PR_URL = "https://github.com/x/y/pull/8"
 _EXPECTED_FINDINGS_COUNT = 2
 
@@ -816,3 +819,65 @@ async def test_fail_review_survives_savepoint_flush_failure() -> None:
     warning = body.get("warning") or ""
     assert "notification failed" in warning
     assert "RuntimeError" in warning
+
+
+@pytest.mark.asyncio
+async def test_claim_review_reclaim_steers_to_verdict() -> None:
+    """Same-agent re-claim: warning + verdict verbs, never a fresh review.
+
+    The 2026-09-29 fleet loop: fe-qa re-claimed one awaiting_qa task 385x,
+    re-attaching ~20k tokens of inline evidence each pass, and never issued
+    the verdict. A re-claim must return the lean steering envelope instead.
+    """
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        assigned_to=qa_id,
+        active_claimant_id=qa_id,
+        orchestration_markers={},
+        pr_number=_EXPECTED_PR_NUMBER,
+        pr_url=_EXPECTED_PR_URL,
+        commits=[],
+        team="backend",
+        branch_name="feature/backend/abc--def",
+        work_session_id=uuid4(),
+        documents=[],
+        dev_notes="implemented x",
+        acceptance_criteria=["AC1"],
+        acceptance_criteria_status=[
+            {"criterion": "AC1", "referencing_artifact_id": "abc123"},
+        ],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="qa", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    _stub_empty_ledger(task_svc.session)
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+    # Evidence legs stubbed: the FIRST re-claim is a durability retry and
+    # must still carry the evidence (the prior attempt may have died
+    # mid-assembly); only repeats 2+ go lean.
+    ev_mock = MagicMock()
+    ev_mock.as_dict.return_value = {"pr_number": _EXPECTED_PR_NUMBER}
+    c._build_qa_claim_evidence = AsyncMock(return_value=ev_mock)
+
+    env1 = await c.claim_review(qa_id, task_id)
+    b1 = env1.as_dict()
+    assert b1["error"] is None
+    assert "ALREADY hold" in b1["warning"]
+    assert "pass_review" in b1["next"]
+    assert "fail_review" in b1["next"]
+    assert b1["evidence"]["pr_number"] == _EXPECTED_PR_NUMBER
+    task_svc.qa_claim.assert_not_awaited()
+    assert t.orchestration_markers["qa_reclaim_count"] == 1
+
+    env2 = await c.claim_review(qa_id, task_id)
+    b2 = env2.as_dict()
+    assert "re-claim #2" in b2["warning"]
+    assert b2["evidence"] == {}
+    assert t.orchestration_markers["qa_reclaim_count"] == _LOOP_RECLAIM_COUNT
+    c._build_qa_claim_evidence.assert_awaited_once()

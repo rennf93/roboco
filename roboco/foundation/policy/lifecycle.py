@@ -871,10 +871,22 @@ def _next_hint_continue_delegating(t: Any) -> str:
     )
 
 
-def _next_hint_qa_review(_t: Any) -> str:
+def _next_hint_qa_review(t: Any) -> str:
+    # Name the real verdict verbs with their real parameters and the exact
+    # task id: GLM-flash QA sessions pattern-match the short forms
+    # ("pass(notes)") onto whatever verb they last emitted and loop
+    # claim_review/give_me_work instead of ever issuing the verdict
+    # (2026-09-29 fleet wedge: 385 consecutive claim_review calls, zero
+    # pass_review calls). Spell the verdict call out in full.
+    task_id = getattr(t, "id", None)
     return (
-        "review the diff. Then call pass(notes) to accept or fail(issues) to"
-        " request changes."
+        "review the diff once, then issue ONE verdict (never re-claim):"
+        f" pass_review(task_id='{task_id}', notes='...',"
+        " criteria_verified=[{'criterion': '<AC id or exact text>',"
+        " 'evidence': '<how you verified it>'}, ...]) to accept, or"
+        f" fail_review(task_id='{task_id}',"
+        " findings=[{'file': '...', 'severity': '...', 'expected': '...',"
+        " 'actual': '...'}, ...]) to request changes"
     )
 
 
