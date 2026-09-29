@@ -32,6 +32,7 @@ import tarfile
 import tempfile
 import time
 from collections.abc import Iterator
+from itertools import chain
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
@@ -525,6 +526,41 @@ _DEP_INSTALL_MARKER = ".git/.roboco-dep-install"
 # target repo's tracked tree. JSON: {"python": "3.14", "status": "ok"}.
 _TOOLCHAIN_MARKER = ".git/.roboco-toolchain"
 
+# Staged-venv re-sync (worktree lockfile divergence). The shared clone-root
+# .venv is built once at clone time and worktrees symlink ../../.venv, but the
+# clone root is parked — its lockfile (and so the digest in the install
+# marker) never changes, while each task worktree carries the CURRENT
+# lockfile from origin. On ensure, the worktree's lockfile digest is compared
+# to the marker; on mismatch a fresh venv is built at a digest-named staged
+# path and the .venv symlink atomically flipped onto it. The previous venv
+# directory is RETAINED (running interpreters in sibling worktrees hold open
+# handles) and only pruned after _VENV_RETENTION_SECONDS.
+_VENV_STAGED_PREFIX = ".venv-staged-"
+_VENV_PREV_PREFIX = ".venv-prev-"
+_VENV_RETENTION_SECONDS = 24 * 3600
+# Serializes staged builds within one orchestrator process so two concurrent
+# ensures don't race inside the same staged directory. Cross-process races
+# degrade to a duplicated build into the same digest-named path — wasteful,
+# not incorrect (uv tolerates it; the flip is idempotent).
+_VENV_SWAP_LOCK = asyncio.Lock()
+
+
+def _prune_retired_venvs(clone_root: Path) -> None:
+    """Delete retired staged/previous venv dirs older than the retention
+    window (best-effort)."""
+    now = time.time()
+    retired = chain(
+        clone_root.glob(f"{_VENV_STAGED_PREFIX}*"),
+        clone_root.glob(f"{_VENV_PREV_PREFIX}*"),
+    )
+    for entry in retired:
+        try:
+            if now - entry.stat().st_mtime > _VENV_RETENTION_SECONDS:
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            continue
+
+
 # pytest exit codes the runnability smoke interprets. A collection error (2) is
 # the interpreter-mismatch signature (imports fail under the wrong Python); 0/5
 # mean the suite is runnable; anything else is inconclusive (never 'broken').
@@ -831,6 +867,10 @@ class WorkspaceService:
                     f"git worktree add failed for {branch}: {res.stderr.strip()}"
                 )
         self._link_shared_venv(worktree, clone_root)
+        # Re-sync the shared venv when THIS worktree's lockfile diverges from
+        # what the venv was last built from (staged build + atomic flip, so a
+        # concurrently active sibling is never broken mid-task).
+        await self.ensure_venv_matches_worktree(clone_root, worktree)
         await asyncio.to_thread(_ensure_agent_owned, worktree)
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
@@ -1065,6 +1105,7 @@ class WorkspaceService:
             clone_root, worktree, branch, project_slug, can_author=can_author
         )
         self._link_shared_venv(worktree, clone_root)
+        await self.ensure_venv_matches_worktree(clone_root, worktree)
         await asyncio.to_thread(_ensure_agent_owned, worktree)
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
@@ -2038,6 +2079,83 @@ class WorkspaceService:
         return any_ok
 
     @staticmethod
+    def _flip_shared_venv(clone_root: Path, staged: Path) -> None:
+        """Atomically point the shared ``clone_root/.venv`` at ``staged``.
+
+        The old venv directory is never deleted here — running interpreters in
+        sibling worktrees hold open handles into it (retired dirs are pruned
+        later by ``_prune_retired_venvs``). A legacy REAL directory (pre-stage
+        layout) can't be replaced by a symlink atomically, so it is renamed
+        aside first; the microsecond window before the symlink exists is
+        benign because processes keep their already-open handles.
+        """
+        venv = clone_root / ".venv"
+        if venv.is_symlink():
+            tmp = clone_root / f".venv-swap-{os.getpid()}"
+            if os.path.lexists(tmp):
+                tmp.unlink()
+            tmp.symlink_to(staged.name)
+            tmp.replace(venv)
+            return
+        if venv.exists():
+            venv.rename(clone_root / f"{_VENV_PREV_PREFIX}{int(time.time())}")
+        venv.symlink_to(staged.name)
+
+    async def ensure_venv_matches_worktree(
+        self, clone_root: Path, worktree: Path
+    ) -> bool:
+        """Re-sync the shared dev venv when the worktree's lockfiles diverge.
+
+        The clone-root install marker records the digest of the lockfiles the
+        shared venv was LAST built from (clone-time on a fresh clone, or the
+        last worktree that triggered a re-sync — last-provisioned-wins for
+        divergent siblings, never a per-ensure ping-pong). Any marker that
+        doesn't equal the worktree digest — including a stale or old-format
+        one — counts as a mismatch so exactly one re-sync fires after this
+        ships. On mismatch, ``uv sync --extra dev`` runs from the WORKTREE
+        (its lockfile) into a digest-named staged dir via
+        ``UV_PROJECT_ENVIRONMENT``, then the shared ``.venv`` symlink flips.
+        Non-uv commands (pnpm/npm) install straight into the worktree.
+
+        Returns True when a re-sync ran (at least one command succeeded).
+        """
+        digest = _lockfile_digest(worktree)
+        if digest is None:
+            return False
+        if self._dep_install_cache_hit(clone_root, digest):
+            return False
+        commands = _detect_dep_commands(
+            worktree, target_python=self._resolve_toolchain_target(worktree)
+        )
+        if not commands:
+            return False
+        async with _VENV_SWAP_LOCK:
+            # Re-check under the lock: a concurrent ensure may have landed.
+            if self._dep_install_cache_hit(clone_root, digest):
+                return False
+            staged = clone_root / f"{_VENV_STAGED_PREFIX}{digest[:12]}"
+            any_ok = False
+            for label, argv in commands:
+                overrides = (
+                    {"UV_PROJECT_ENVIRONMENT": str(staged)}
+                    if argv[:2] == ["uv", "sync"]
+                    else None
+                )
+                ok = await self._run_dep_install(
+                    worktree, label, argv, env_overrides=overrides
+                )
+                any_ok = any_ok or ok
+            if not any_ok:
+                # Failed install: leave the marker alone so the next ensure
+                # retries (same policy as install_dev_deps).
+                return False
+            self._flip_shared_venv(clone_root, staged)
+            with contextlib.suppress(OSError):
+                (clone_root / _DEP_INSTALL_MARKER).write_text(digest)
+            await asyncio.to_thread(_prune_retired_venvs, clone_root)
+            return True
+
+    @staticmethod
     def _resolve_toolchain_target(workspace: Path) -> str | None:
         """The Python version to provision with, or None (flag off / nothing
         declared → today's behavior)."""
@@ -2135,17 +2253,25 @@ class WorkspaceService:
             return False
 
     @staticmethod
-    async def _run_dep_install(workspace: Path, label: str, argv: list[str]) -> bool:
+    async def _run_dep_install(
+        workspace: Path,
+        label: str,
+        argv: list[str],
+        env_overrides: dict[str, str] | None = None,
+    ) -> bool:
         """Run one dep-install command; log and swallow all failures.
 
         Returns True only when the tool exists and exited 0.
         """
 
         def _run() -> subprocess.CompletedProcess[str]:
+            env = _uv_subprocess_env(workspace)
+            if env_overrides:
+                env.update(env_overrides)
             return subprocess.run(
                 argv,
                 cwd=str(workspace),
-                env=_uv_subprocess_env(workspace),
+                env=env,
                 capture_output=True,
                 text=True,
                 timeout=settings.workspace_dep_install_timeout_seconds,
