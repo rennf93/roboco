@@ -302,6 +302,18 @@ class TaskUpdate(BaseModel):
 # =============================================================================
 
 
+class WedgeCycleEntry(BaseModel):
+    """One recorded actor/verb/timestamp entry of a task's wedge cycle.
+
+    Rendered from audit_log transition rows; only populated for a task whose
+    wedge ledger has tripped (empty list otherwise).
+    """
+
+    actor: str
+    verb: str
+    timestamp: datetime
+
+
 class TaskResponse(BaseModel):
     """Task response model with full detail."""
 
@@ -417,6 +429,14 @@ class TaskResponse(BaseModel):
     stalled_reason: str | None = None
     stalled_since: datetime | None = None
 
+    # Stuck-state surfacing, read-only over the wedge ledger marker
+    # (roboco/services/wedge_ledger.py). Populated by TaskService.stuck_state
+    # on the detail and main list/summary payloads; defaults elsewhere rather
+    # than a misleading 0 (the spend_usd precedent).
+    active_time_since_progress: float | None = None
+    open_wedge_strikes: int = 0
+    wedge_cycle: list[WedgeCycleEntry] = []
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -455,6 +475,11 @@ class TaskSummaryResponse(BaseModel):
     completed_at: datetime | None = None
     board_review_complete: bool = False
     description_snippet: str | None = None
+
+    # Stuck-state surfacing (same contract as TaskResponse; see its comment).
+    active_time_since_progress: float | None = None
+    open_wedge_strikes: int = 0
+    wedge_cycle: list[WedgeCycleEntry] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -498,6 +523,19 @@ def task_list_to_summary_response(
 ) -> list[TaskSummaryResponse]:
     """Convert list of TaskTable to trimmed summaries."""
     return [task_to_summary_response(t) for t in tasks]
+
+
+def apply_stuck_state(
+    response: TaskResponse | TaskSummaryResponse,
+    stuck: dict[str, Any],
+) -> None:
+    """Copy a TaskService.stuck_state result onto a response payload.
+
+    Pure serialization — the computation and DB reads live in the service.
+    """
+    response.active_time_since_progress = stuck["active_time_since_progress"]
+    response.open_wedge_strikes = stuck["open_wedge_strikes"]
+    response.wedge_cycle = [WedgeCycleEntry(**e) for e in stuck["wedge_cycle"]]
 
 
 class ProgressRequest(BaseModel):

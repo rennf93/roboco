@@ -6,6 +6,7 @@ Handles status transitions, assignments, and queries.
 """
 
 import asyncio
+import importlib
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -304,6 +305,22 @@ def _append_missing(values: list[Any] | None, item: Any) -> list[Any]:
     """
     vals = values or []
     return vals if item in vals else [*vals, item]
+
+
+def _parse_marker_ts(value: Any) -> datetime | None:
+    """Parse an ISO timestamp stored in an orchestration marker payload.
+
+    Naive datetimes are assumed UTC (SQLite tests, legacy rows); a missing or
+    malformed value reads as absent so the caller falls through to its next
+    anchor.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _task_type_is_code(task_type: Any) -> bool:
@@ -3942,6 +3959,120 @@ class TaskService(BaseService):
                     stalled_seconds=stalled_seconds,
                 )
             )
+        return entries
+
+    async def stuck_state(self, task: TaskTable) -> dict[str, Any]:
+        """Stuck-state surfacing for one task — see ``stuck_states``."""
+        return (await self.stuck_states([task]))[cast("UUID", task.id)]
+
+    async def stuck_states(self, tasks: list[TaskTable]) -> dict[UUID, dict[str, Any]]:
+        """Read-only stuck-state fields over the wedge ledger marker.
+
+        Single source of truth for strikes is the ledger marker written by
+        ``roboco/services/wedge_ledger.py`` (``get_wedge_state``) — this never
+        re-counts strikes itself. ``active_time_since_progress`` is uptime-
+        adjusted (fleet downtime discounted via ``UptimeLedger``, wall clock
+        only if the audit trail is unreadable): anchored on the marker's
+        ``last_progress_at`` when present, else ``tripped_at``, else the task
+        row's own timestamps. ``wedge_cycle`` exists only for a tripped task
+        and is rendered from audit_log transition rows.
+        """
+        # Loaded via importlib: the wedge-ledger slice is a sibling branch;
+        # until it lands in this base the fields degrade to honest defaults
+        # (no strikes, no cycle) instead of 500ing every task read.
+        try:
+            wedge_ledger: Any = importlib.import_module("roboco.services.wedge_ledger")
+        except ModuleNotFoundError:
+            wedge_ledger = None
+        get_wedge_state = (
+            wedge_ledger.get_wedge_state
+            if wedge_ledger is not None
+            else lambda _task: {}
+        )
+
+        now = datetime.now(UTC)
+        ledger = await self._load_uptime_ledger(now)
+        out: dict[UUID, dict[str, Any]] = {}
+        for task in tasks:
+            task_id = cast("UUID", task.id)
+            state = get_wedge_state(task)
+            strikes = state.get("strikes")
+            open_strikes = (
+                sum(int(v) for v in strikes.values() if isinstance(v, int | float))
+                if isinstance(strikes, dict)
+                else 0
+            )
+            moved_at = (
+                _parse_marker_ts(state.get("last_progress_at"))
+                or _parse_marker_ts(state.get("tripped_at"))
+                or task.updated_at
+                or task.created_at
+            )
+            if moved_at is not None and moved_at.tzinfo is None:
+                moved_at = moved_at.replace(tzinfo=UTC)
+            active: float | None = None
+            if moved_at is not None:
+                if ledger is not None:
+                    active = max(ledger.active_seconds(moved_at, now), 0.0)
+                else:
+                    active = max((now - moved_at).total_seconds(), 0.0)
+            cycle = (
+                await self._wedge_cycle_entries(task_id) if state.get("tripped") else []
+            )
+            out[task_id] = {
+                "active_time_since_progress": active,
+                "open_wedge_strikes": open_strikes,
+                "wedge_cycle": cycle,
+            }
+        return out
+
+    async def _wedge_cycle_entries(
+        self, task_id: UUID, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Render the recorded actor/verb/timestamp cycle from audit_log.
+
+        Pure presentation of transition rows (the ledger marker owns the
+        strike accounting); rejector-attributed duplicates of a single
+        transition (``task.qa_fail`` etc.) are excluded so the cycle shows
+        each real transition once. Oldest entry first, capped at ``limit``.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        result = await self.session.execute(
+            select(AuditLogTable)
+            .where(
+                AuditLogTable.target_type == "task",
+                AuditLogTable.target_id == task_id,
+                AuditLogTable.event_type.like("task.%"),
+                AuditLogTable.event_type.notin_(
+                    [
+                        "task.qa_fail",
+                        "task.pr_fail",
+                        "task.request_changes",
+                        "task.ceo_reject",
+                    ]
+                ),
+            )
+            .order_by(AuditLogTable.timestamp.desc())
+            .limit(limit)
+        )
+        rows = list(result.scalars().all())
+        entries: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            details = row.details if isinstance(row.details, dict) else {}
+            from_status = details.get("from_status")
+            to_status = details.get("to_status")
+            verb = (
+                f"{from_status}->{to_status}"
+                if from_status and to_status
+                else row.event_type
+            )
+            actor = (
+                details.get("agent_role")
+                or (str(row.agent_id) if row.agent_id else None)
+                or "system"
+            )
+            entries.append({"actor": actor, "verb": verb, "timestamp": row.timestamp})
         return entries
 
     async def record_section_note(
