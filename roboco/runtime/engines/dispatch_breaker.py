@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,18 @@ from roboco.runtime.orchestrator import (
     logger,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
+
+# Work-signal window for the review-claim liveness check: how far back the
+# container log is scanned for tool activity. Generous enough to cover a
+# legitimate long edit/test cycle; far shorter than a review should ever
+# run completely silent.
+_WORK_SIGNAL_WINDOW_SECONDS = 1800
+# A run whose recent tool calls are this dominated by ONE tool (typically
+# give_me_work) or by tool errors is thrash, not work - the breaker must
+# treat it as a strike, not shield it.
+_THRASH_SINGLE_TOOL_RATIO = 0.8
+_THRASH_ERROR_RATIO = 0.5
+_MIN_CALLS_FOR_RATIO = 8
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -1296,52 +1309,115 @@ class DispatchBreakerEngine(_Base):
         )
 
     async def _gate_should_skip_for_live_review(self, task: dict[str, Any]) -> bool:
-        """True when the spawn targets a live in-progress review.
+        """True when the spawn targets a review that is producing actual work.
 
-        An awaiting_* task whose claimant still has a fresh heartbeat is being
-        actively reviewed; spawning again would only churn, and counting a
-        strike for the non-advance trips the breaker mid-review. The task
-        status travel as a plain string in the dispatcher's task dicts.
+        An awaiting_* task advances nothing until its pass/fail decision, so
+        spawns during a long review look unproductive to a status-only
+        counter. Whether the review is genuinely in progress is decided by
+        the claimant's TOOL ACTIVITY, not its heartbeat: a working reviewer
+        (varied successful tool calls - reading diffs, running tests, taking
+        notes) is spared, while a thrash loop (one verb repeated, errors
+        dominating - the 2026-09-29 be-qa evidence loop) or a silent
+        container accrues strikes and trips. The heartbeat is deliberately
+        NOT consulted: it freezes during long local work (false dead) and
+        advances under give_me_work spam (false alive). The task status
+        travels as a plain string in the dispatcher's task dicts.
         """
         status = str(getattr(task.get("status"), "value", task.get("status")))
-        return status.startswith("awaiting_") and await self._review_claim_is_live(
-            task.get("id")
-        )
+        if not status.startswith("awaiting_"):
+            return False
+        claimant = await self._review_claimant_slug(task.get("id"))
+        if claimant is None:
+            return False
+        return await self._agent_work_signal(claimant) == "working"
 
-    async def _review_claim_is_live(self, task_id: Any) -> bool:
-        """True when an awaiting_* task still has a live claimant.
+    async def _review_claimant_slug(self, task_id: Any) -> str | None:
+        """The current claimant's agent slug for an awaiting_* task, or None.
 
-        "Live" = ``active_claimant_id`` set and its heartbeat within the
-        review-claim TTL (``_review_claim_heartbeat_ttl``, the same window
-        the stale-review-claim reaper uses). Best-effort: a DB failure
-        counts the claim as not live so the breaker's strike logic stays
-        authoritative rather than silently disabling itself.
+        Best-effort: a DB failure returns None so the breaker's strike logic
+        stays authoritative rather than silently disabling itself.
         """
         from sqlalchemy import select
 
         from roboco.db.base import get_session_factory
-        from roboco.db.tables import TaskTable
+        from roboco.db.tables import AgentTable, TaskTable
 
-        ttl = timedelta(seconds=getattr(self, "_review_claim_heartbeat_ttl", 3600))
-        cutoff = datetime.now(UTC) - ttl
         try:
+            from uuid import UUID as _UUID
+
+            task_uuid = task_id if isinstance(task_id, _UUID) else _UUID(str(task_id))
             factory = get_session_factory()
             async with factory() as db:
                 row = await db.execute(
-                    select(TaskTable.active_claimant_id).where(
-                        TaskTable.id == task_id,
-                        TaskTable.last_heartbeat_at >= cutoff,
-                    )
+                    select(AgentTable.slug)
+                    .join(TaskTable, TaskTable.active_claimant_id == AgentTable.id)
+                    .where(TaskTable.id == task_uuid)
                 )
-                claimant = row.scalar_one_or_none()
+                return row.scalar_one_or_none()
         except Exception as e:
             logger.error(
-                "review-claim liveness check failed; counting normally",
+                "review-claim claimant lookup failed; counting normally",
                 task_id=str(task_id),
                 error=str(e),
             )
-            return False
-        return claimant is not None
+            return None
+
+    async def _container_log_text(self, agent_slug: str) -> str:
+        """The agent container's recent log stream, or "" on any failure.
+
+        Bounded to the work-signal window so a long-running agent's log
+        volume cannot stall the dispatch tick.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "logs",
+            "--since",
+            f"{_WORK_SIGNAL_WINDOW_SECONDS}s",
+            f"roboco-agent-{agent_slug}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_EXEC_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            return ""
+        return stdout.decode("utf-8", errors="replace")
+
+    async def _agent_work_signal(self, agent_slug: str) -> str:
+        """Classify the agent container's recent activity: work, thrash, idle.
+
+        Scans the container log's recent tool-call stream. "working" = varied
+        successful tool calls (a review reading diffs, running tests, noting
+        progress). "thrashing" = calls dominated by ONE tool or by errors -
+        a retry loop burning tokens while accomplishing nothing (the
+        2026-09-29 be-qa evidence loop: 976 give_me_work calls, 795 tool
+        errors, verdict never fired). "idle" = no container or zero tool
+        events in the window. A deliberate ``sleep`` is itself a tool event,
+        so a chosen wait inside an otherwise varied run still reads as
+        working-quietly. Best-effort: any docker failure yields "idle" so
+        the strike logic stays authoritative.
+        """
+        text = await self._container_log_text(agent_slug)
+        starts = text.count('"toolName":"')
+        if starts == 0:
+            return "idle"
+        tool_names = re.findall(r'"toolName":"([a-zA-Z_]+)"', text)
+        top_tool = max(set(tool_names), key=tool_names.count)
+        if (
+            starts >= _MIN_CALLS_FOR_RATIO
+            and tool_names.count(top_tool) / starts > _THRASH_SINGLE_TOOL_RATIO
+        ):
+            return "thrashing"
+        tool_errors = text.count("Error executing tool")
+        if (
+            starts >= _MIN_CALLS_FOR_RATIO
+            and tool_errors / starts > _THRASH_ERROR_RATIO
+        ):
+            return "thrashing"
+        return "working"
 
     async def _pm_tracing_gap_reset(
         self,

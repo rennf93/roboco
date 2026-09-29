@@ -26,7 +26,6 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
-import roboco.db.base as db_base
 from roboco.models.base import TaskStatus
 from roboco.models.runtime import WaitingRecord
 from roboco.runtime.orchestrator import AgentOrchestrator
@@ -333,35 +332,64 @@ def _gate_orch() -> Any:
     return orch
 
 
+_AT_TRIP = 3  # one strike below the trip threshold
+_ONE_STRIKE = 2
+
+
 def _gate_task() -> dict[str, Any]:
     return {"id": str(uuid4()), "status": "awaiting_qa"}
 
 
 @pytest.mark.asyncio
-async def test_gate_skips_without_strike_while_review_claim_live() -> None:
-    """An awaiting_qa task with a live review claim: the spawn is skipped and
-    NO strike accrues - a long review must not trip the breaker mid-review."""
+async def test_gate_skips_without_strike_while_review_showing_work() -> None:
+    """An awaiting_qa task whose claimant is producing varied tool work: the
+    spawn is skipped and NO strike accrues - a long review must not trip the
+    breaker mid-review, regardless of its frozen claim heartbeat."""
     orch = _gate_orch()
     task = _gate_task()
     orch._pm_respawn_tracker[("fe-qa", task["id"])] = {
-        "count": 3,
+        "count": _AT_TRIP,
         "last_status": "awaiting_qa",
         "last_check": datetime.now(UTC),
         "seen_statuses": ["awaiting_qa"],
     }
-    orch._review_claim_is_live = AsyncMock(return_value=True)
+    orch._review_claimant_slug = AsyncMock(return_value="fe-qa")
+    orch._agent_work_signal = AsyncMock(return_value="working")
 
     gated = await orch._pm_respawn_should_gate("fe-qa", task)
 
     assert gated is True
-    assert orch._pm_respawn_tracker[("fe-qa", task["id"])]["count"] == 3  # noqa: PLR2004
+    assert orch._pm_respawn_tracker[("fe-qa", task["id"])]["count"] == _AT_TRIP
     orch._pm_trip_stall_notice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_gate_counts_strike_when_review_claim_dead() -> None:
-    """A dead review claim falls through to the strike logic - the breaker
-    stays authoritative for genuinely unproductive spawn loops."""
+async def test_gate_counts_strike_when_review_is_thrashing() -> None:
+    """A claimant stuck in a retry loop (one verb dominating, errors
+    everywhere - the be-qa evidence loop) is NOT shielded: the breaker must
+    trip on thrash even though the repeated gateway verbs keep the heartbeat
+    nominally fresh."""
+    orch = _gate_orch()
+    task = _gate_task()
+    orch._pm_respawn_tracker[("be-qa", task["id"])] = {
+        "count": _AT_TRIP,
+        "last_status": "awaiting_qa",
+        "last_check": datetime.now(UTC),
+        "seen_statuses": ["awaiting_qa"],
+    }
+    orch._review_claimant_slug = AsyncMock(return_value="be-qa")
+    orch._agent_work_signal = AsyncMock(return_value="thrashing")
+
+    gated = await orch._pm_respawn_should_gate("be-qa", task)
+
+    assert gated is True  # tripped: thrash is a strike, and it was the last one
+    assert orch._pm_respawn_tracker[("be-qa", task["id"])]["count"] == _AT_TRIP + 1
+
+
+@pytest.mark.asyncio
+async def test_gate_counts_strike_when_review_container_idle() -> None:
+    """A claimant with an idle container (gone, or zero tool events in the
+    window) is not working: the strike path applies."""
     orch = _gate_orch()
     task = _gate_task()
     orch._pm_respawn_tracker[("fe-qa", task["id"])] = {
@@ -370,7 +398,8 @@ async def test_gate_counts_strike_when_review_claim_dead() -> None:
         "last_check": datetime.now(UTC),
         "seen_statuses": ["awaiting_qa"],
     }
-    orch._review_claim_is_live = AsyncMock(return_value=False)
+    orch._review_claimant_slug = AsyncMock(return_value="fe-qa")
+    orch._agent_work_signal = AsyncMock(return_value="idle")
 
     gated = await orch._pm_respawn_should_gate("fe-qa", task)
 
@@ -379,49 +408,101 @@ async def test_gate_counts_strike_when_review_claim_dead() -> None:
 
 
 @pytest.mark.asyncio
-async def test_review_claim_is_live_requires_fresh_heartbeat() -> None:
-    """_review_claim_is_live: claimant + heartbeat within TTL = live; a stale
-    or missing heartbeat is not live even with a claimant id set."""
-
-    def _factory(db: Any) -> Any:
-        class _Result:
-            def __init__(self, value: Any) -> None:
-                self._value = value
-
-            def scalar_one_or_none(self) -> Any:
-                return self._value
-
-        class _DB:
-            async def execute(self, *_a: Any, **_k: Any) -> _Result:
-                return _Result(db)
-
-        return _DB
-
+async def test_gate_not_gated_for_non_review_status() -> None:
+    """The work-signal guard only arms on awaiting_* tasks - a claimed
+    in_progress code task keeps the legacy strike behavior untouched and
+    never even consults the claimant's tool signal."""
     orch = _gate_orch()
-    orch._review_claim_heartbeat_ttl = 3600
-    fresh = datetime.now(UTC)
-    frozen = datetime.now(UTC) - timedelta(hours=2)
+    task = {"id": str(uuid4()), "status": "in_progress"}
+    orch._pm_respawn_tracker[("be-dev-1", task["id"])] = {
+        "count": 1,
+        "last_status": "in_progress",
+        "last_check": datetime.now(UTC),
+        "seen_statuses": ["in_progress"],
+    }
+    slug_lookup = AsyncMock(return_value="be-dev-1")
+    orch._review_claimant_slug = slug_lookup
 
-    # Build a session-factory stand-in whose async context manager yields
-    # the stub DB returning the given claimant value.
+    gated = await orch._pm_respawn_should_gate("be-dev-1", task)
 
-    def _patch(monkeypatch: pytest.MonkeyPatch, claimant: Any) -> None:
-        class _Ctx:
-            async def __aenter__(self) -> Any:
-                return _factory(claimant)
+    assert gated is False
+    slug_lookup.assert_not_awaited()
 
-            async def __aexit__(self, *_a: Any) -> None:
-                return None
 
-        def _session_factory() -> Any:
-            return _Ctx
+@pytest.mark.asyncio
+async def test_work_signal_thrashes_on_single_tool_domination() -> None:
+    """_agent_work_signal: >= 80% of recent calls being ONE tool (the be-qa
+    give_me_work spam) classifies as thrashing even with zero errors."""
+    orch = _gate_orch()
+    log_lines = []
+    for _ in range(20):
+        log_lines.append(
+            '{"type":"tool_execution_start","toolName":"mcp_roboco_flow_give_me_work"}'
+        )
+    for name in ("bash", "read", "note"):
+        log_lines.append(f'{{"type":"tool_execution_start","toolName":"{name}"}}')
+    orch._container_log_text = AsyncMock(return_value="\n".join(log_lines))
 
-        monkeypatch.setattr(db_base, "get_session_factory", _session_factory)
+    assert await orch._agent_work_signal("be-qa") == "thrashing"
 
-    with pytest.MonkeyPatch.context() as mp:
-        _patch(mp, uuid4())
-        assert await orch._review_claim_is_live(uuid4()) is True
-    with pytest.MonkeyPatch.context() as mp:
-        _patch(mp, None)
-        assert await orch._review_claim_is_live(uuid4()) is False
-    del fresh, frozen
+
+@pytest.mark.asyncio
+async def test_work_signal_thrashes_on_error_dominance() -> None:
+    """_agent_work_signal: errors dominating the recent calls (the be-qa
+    evidence loop) classify as thrashing even with varied tool names."""
+    orch = _gate_orch()
+    log_lines = []
+    for name in (
+        "evidence",
+        "bash",
+        "read",
+        "note",
+        "give_me_work",
+        "evidence",
+        "bash",
+        "read",
+        "note",
+        "give_me_work",
+    ):
+        log_lines.append(f'{{"type":"tool_execution_start","toolName":"{name}"}}')
+    text = "\n".join(log_lines)
+    for _ in range(8):
+        text += "\nError executing tool evidence"
+    orch._container_log_text = AsyncMock(return_value=text)
+
+    assert await orch._agent_work_signal("be-qa") == "thrashing"
+
+
+@pytest.mark.asyncio
+async def test_work_signal_working_on_varied_success() -> None:
+    """Varied tools, low error rate -> working (a real review in flight)."""
+    orch = _gate_orch()
+    log_lines = []
+    for name in (
+        "bash",
+        "read",
+        "note",
+        "bash",
+        "git_diff",
+        "evidence",
+        "bash",
+        "read",
+        "note",
+        "bash",
+    ):
+        log_lines.append(f'{{"type":"tool_execution_start","toolName":"{name}"}}')
+    text = "\n".join(log_lines) + "\nError executing tool evidence"
+    orch._container_log_text = AsyncMock(return_value=text)
+
+    assert await orch._agent_work_signal("fe-qa") == "working"
+
+
+@pytest.mark.asyncio
+async def test_work_signal_idle_without_tool_events() -> None:
+    """No tool events in the window -> idle (nothing is happening)."""
+    orch = _gate_orch()
+    orch._container_log_text = AsyncMock(
+        return_value='{"type":"turn_start"}\nsome prose output'
+    )
+
+    assert await orch._agent_work_signal("fe-qa") == "idle"
