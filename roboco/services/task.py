@@ -11254,6 +11254,12 @@ class TaskService(BaseService):
     # task_id auto-attached (otherwise the C8 + tracing gates never see
     # the agent's decisions and the agent spirals).
     _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]] = {
+        # PENDING belongs here: board-program tasks (decisions_audit et al)
+        # are worked WITHOUT claiming and sit pending their whole life - the
+        # auditor's note() on such a task auto-attached nothing, the
+        # complete-at-note seam never saw the task id, and a9739b1c could
+        # not advance for days (2026-09-29).
+        TaskStatus.PENDING,
         TaskStatus.CLAIMED,
         TaskStatus.IN_PROGRESS,
         TaskStatus.VERIFYING,
