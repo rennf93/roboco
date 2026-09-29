@@ -2406,8 +2406,16 @@ async def test_emit_status_transition_audit_writes_in_session_atomically() -> No
     assert row.details["team"] == "backend"
     # The claiming agent is attributed (resolved from claimed_by).
     assert row.agent_id == task.claimed_by
-    # No fire-and-forget audit task was spawned (the old decoupled path).
-    assert svc._background_tasks == prior_bg
+    # No fire-and-forget AUDIT task was spawned (the old decoupled path).
+    # The wedge-ledger check is a sanctioned post-transition hook (coroner
+    # pattern), so filter it out by coroutine function before comparing.
+    leftover = {
+        bg
+        for bg in svc._background_tasks
+        if getattr(getattr(bg, "get_coro", lambda: None)(), "__name__", "")
+        != "run_wedge_ledger_check"
+    }
+    assert leftover == prior_bg
 
 
 # ---------------------------------------------------------------------------
