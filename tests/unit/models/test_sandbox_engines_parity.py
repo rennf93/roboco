@@ -50,3 +50,18 @@ def test_sandbox_info_emit_env_aggregates_every_engine() -> None:
     flat = " ".join(SandboxInfo(services=services).emit_env())
     for name in SANDBOX_ENGINES:
         assert _ENV_HOST_PREFIX[name] in flat
+
+
+def test_redis_run_command_enables_module_load() -> None:
+    """MODULE LOAD is default-disabled since Redis 7 (enable-module-command).
+
+    Without the flag every kitchen-sink provision dies in verify with the
+    misleading \"image may be missing the extension/module files\" (the
+    enable step's redis-cli exits 0 even on the ERR reply). Reproduced and
+    fixed 2026-09-29.
+    """
+    engine = SANDBOX_ENGINES["redis"]
+    cmd = engine.run_command("pw")
+    assert "--enable-module-command" in cmd
+    assert cmd[cmd.index("--enable-module-command") + 1] == "yes"
+    assert cmd[cmd.index("--requirepass") + 1] == "pw"

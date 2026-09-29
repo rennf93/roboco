@@ -324,7 +324,19 @@ class _RedisEngine(SandboxEngine):
         return []
 
     def run_command(self, password: str) -> list[str]:
-        return ["redis-server", "--requirepass", password]
+        # --enable-module-command: MODULE LOAD is disabled by default since
+        # Redis 7. Without it every kitchen-sink MODULE LOAD dies with
+        # "MODULE command not allowed", redis-cli still exits 0 on the ERR
+        # reply so the enable step never raises, and the verify step reports
+        # the misleading "image may be missing the extension/module files"
+        # (2026-09-29: every QA redis sandbox provision failed on this).
+        return [
+            "redis-server",
+            "--requirepass",
+            password,
+            "--enable-module-command",
+            "yes",
+        ]
 
     def ready_probe(self, password: str) -> list[str]:
         return ["redis-cli", "-a", password, "ping"]
