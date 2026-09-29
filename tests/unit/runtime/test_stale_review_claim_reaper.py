@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
+import roboco.db.base as db_base
 from roboco.models.base import TaskStatus
 from roboco.models.runtime import WaitingRecord
 from roboco.runtime.orchestrator import AgentOrchestrator
@@ -311,3 +312,116 @@ async def test_service_release_noop_on_missing_task() -> None:
     await svc.release_review_claim_for_reaper(uuid4())
 
     flush.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Breaker: a live review claim is progress, not a strike
+# (fe-qa tripped on 372eac39 on 2026-09-29 while actively reviewing)
+# ---------------------------------------------------------------------------
+
+
+def _gate_orch() -> Any:
+    orch = _orch()
+    orch._pm_respawn_tracker = {}
+    orch._PM_RESPAWN_MAX_UNPRODUCTIVE = 3
+    orch._schedule_respawn_persist = lambda *_a, **_k: None
+    orch._respawn_status_change_resets = lambda *_a, **_k: False
+    orch._pm_tracing_gap_reset = AsyncMock(return_value=False)
+    orch._pm_cooldown_gate = lambda *_a, **_k: None  # sync in production
+    orch._pm_respawn_spawn_anyway = AsyncMock(return_value=False)
+    orch._pm_trip_stall_notice = AsyncMock()
+    return orch
+
+
+def _gate_task() -> dict[str, Any]:
+    return {"id": str(uuid4()), "status": "awaiting_qa"}
+
+
+@pytest.mark.asyncio
+async def test_gate_skips_without_strike_while_review_claim_live() -> None:
+    """An awaiting_qa task with a live review claim: the spawn is skipped and
+    NO strike accrues - a long review must not trip the breaker mid-review."""
+    orch = _gate_orch()
+    task = _gate_task()
+    orch._pm_respawn_tracker[("fe-qa", task["id"])] = {
+        "count": 3,
+        "last_status": "awaiting_qa",
+        "last_check": datetime.now(UTC),
+        "seen_statuses": ["awaiting_qa"],
+    }
+    orch._review_claim_is_live = AsyncMock(return_value=True)
+
+    gated = await orch._pm_respawn_should_gate("fe-qa", task)
+
+    assert gated is True
+    assert orch._pm_respawn_tracker[("fe-qa", task["id"])]["count"] == 3  # noqa: PLR2004
+    orch._pm_trip_stall_notice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gate_counts_strike_when_review_claim_dead() -> None:
+    """A dead review claim falls through to the strike logic - the breaker
+    stays authoritative for genuinely unproductive spawn loops."""
+    orch = _gate_orch()
+    task = _gate_task()
+    orch._pm_respawn_tracker[("fe-qa", task["id"])] = {
+        "count": 1,
+        "last_status": "awaiting_qa",
+        "last_check": datetime.now(UTC),
+        "seen_statuses": ["awaiting_qa"],
+    }
+    orch._review_claim_is_live = AsyncMock(return_value=False)
+
+    gated = await orch._pm_respawn_should_gate("fe-qa", task)
+
+    assert gated is False
+    assert orch._pm_respawn_tracker[("fe-qa", task["id"])]["count"] == 2  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_review_claim_is_live_requires_fresh_heartbeat() -> None:
+    """_review_claim_is_live: claimant + heartbeat within TTL = live; a stale
+    or missing heartbeat is not live even with a claimant id set."""
+
+    def _factory(db: Any) -> Any:
+        class _Result:
+            def __init__(self, value: Any) -> None:
+                self._value = value
+
+            def scalar_one_or_none(self) -> Any:
+                return self._value
+
+        class _DB:
+            async def execute(self, *_a: Any, **_k: Any) -> _Result:
+                return _Result(db)
+
+        return _DB
+
+    orch = _gate_orch()
+    orch._review_claim_heartbeat_ttl = 3600
+    fresh = datetime.now(UTC)
+    frozen = datetime.now(UTC) - timedelta(hours=2)
+
+    # Build a session-factory stand-in whose async context manager yields
+    # the stub DB returning the given claimant value.
+
+    def _patch(monkeypatch: pytest.MonkeyPatch, claimant: Any) -> None:
+        class _Ctx:
+            async def __aenter__(self) -> Any:
+                return _factory(claimant)
+
+            async def __aexit__(self, *_a: Any) -> None:
+                return None
+
+        def _session_factory() -> Any:
+            return _Ctx
+
+        monkeypatch.setattr(db_base, "get_session_factory", _session_factory)
+
+    with pytest.MonkeyPatch.context() as mp:
+        _patch(mp, uuid4())
+        assert await orch._review_claim_is_live(uuid4()) is True
+    with pytest.MonkeyPatch.context() as mp:
+        _patch(mp, None)
+        assert await orch._review_claim_is_live(uuid4()) is False
+    del fresh, frozen

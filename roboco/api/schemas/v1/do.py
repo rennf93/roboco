@@ -421,7 +421,12 @@ class NotifyRequest(BaseModel):
 
 
 class EvidenceRequest(BaseModel):
-    task_id: UUID
+    # str, NOT UUID: agents frequently pass the 8-char short id the prompts
+    # and task cards display (#372eac39 style); a UUID-typed field 422s those
+    # before any handler runs, and the failed-evidence loop is what wedged
+    # be-qa's review on 2026-09-28 (795 evidence errors, verdict never fired).
+    # The actions layer resolves the prefix against the tasks table.
+    task_id: str
 
 
 class RequestSandboxRequest(BaseModel):
@@ -515,7 +520,8 @@ class ReadMessagesRequest(BaseModel):
 class TaskTimeRequest(BaseModel):
     """Task to compute real, uptime-adjusted elapsed times for."""
 
-    task_id: UUID
+    # str, NOT UUID - same short-id rationale as EvidenceRequest.
+    task_id: str
 
 
 class PreflightDiffRequest(BaseModel):

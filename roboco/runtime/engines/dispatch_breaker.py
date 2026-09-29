@@ -1277,6 +1277,72 @@ class DispatchBreakerEngine(_Base):
         )
         return False
 
+    def _init_respawn_record(
+        self,
+        agent_slug: str,
+        key: tuple[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> None:
+        """First-seen (agent, task): open the strike record at count 1."""
+        self._pm_respawn_tracker[key] = {
+            "count": 1,
+            "last_status": current_status,
+            "last_check": now,
+            "seen_statuses": [current_status],
+        }
+        self._schedule_respawn_persist(
+            agent_slug, str(key[1]), self._pm_respawn_tracker[key]
+        )
+
+    async def _gate_should_skip_for_live_review(self, task: dict[str, Any]) -> bool:
+        """True when the spawn targets a live in-progress review.
+
+        An awaiting_* task whose claimant still has a fresh heartbeat is being
+        actively reviewed; spawning again would only churn, and counting a
+        strike for the non-advance trips the breaker mid-review. The task
+        status travel as a plain string in the dispatcher's task dicts.
+        """
+        status = str(getattr(task.get("status"), "value", task.get("status")))
+        return status.startswith("awaiting_") and await self._review_claim_is_live(
+            task.get("id")
+        )
+
+    async def _review_claim_is_live(self, task_id: Any) -> bool:
+        """True when an awaiting_* task still has a live claimant.
+
+        "Live" = ``active_claimant_id`` set and its heartbeat within the
+        review-claim TTL (``_review_claim_heartbeat_ttl``, the same window
+        the stale-review-claim reaper uses). Best-effort: a DB failure
+        counts the claim as not live so the breaker's strike logic stays
+        authoritative rather than silently disabling itself.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_session_factory
+        from roboco.db.tables import TaskTable
+
+        ttl = timedelta(seconds=getattr(self, "_review_claim_heartbeat_ttl", 3600))
+        cutoff = datetime.now(UTC) - ttl
+        try:
+            factory = get_session_factory()
+            async with factory() as db:
+                row = await db.execute(
+                    select(TaskTable.active_claimant_id).where(
+                        TaskTable.id == task_id,
+                        TaskTable.last_heartbeat_at >= cutoff,
+                    )
+                )
+                claimant = row.scalar_one_or_none()
+        except Exception as e:
+            logger.error(
+                "review-claim liveness check failed; counting normally",
+                task_id=str(task_id),
+                error=str(e),
+            )
+            return False
+        return claimant is not None
+
     async def _pm_tracing_gap_reset(
         self,
         agent_slug: str,
@@ -1378,37 +1444,13 @@ class DispatchBreakerEngine(_Base):
         record = self._pm_respawn_tracker.get(key)
         now = datetime.now(UTC)
         if record is None:
-            self._pm_respawn_tracker[key] = {
-                "count": 1,
-                "last_status": current_status,
-                "last_check": now,
-                "seen_statuses": [current_status],
-            }
-            self._schedule_respawn_persist(
-                agent_slug, str(task_id), self._pm_respawn_tracker[key]
-            )
+            self._init_respawn_record(agent_slug, key, current_status, now)
             return False
-        if record.get("last_status") != current_status and (
-            self._respawn_status_change_resets(key, record, current_status, now)
-        ):
-            return False
-        # ponytail: helpers hold the two resettable sub-loops (tracing-gap,
-        # cooldown); main fn just routes. Inline again if either grows a
-        # second distinct reset path.
-        if await self._pm_tracing_gap_reset(
-            agent_slug, task_id, record, current_status, now
-        ):
-            return False
-        # Already tripped on a PREVIOUS tick (notified flipped): the count is
-        # frozen past the threshold and last_check is frozen at the trip tick,
-        # so a deploy that fixed the underlying loop (auth/prompt/schema) can
-        # self-heal after a cooldown instead of wedging until manual DB
-        # surgery. A still-wedged task re-trips after the threshold (bounded
-        # re-burn: ~3 spawns per cooldown window); a fixed one advances and
-        # the status-change path fully resets the counter.
-        gate = self._pm_cooldown_gate(agent_slug, task_id, record, now)
-        if gate is not None:
-            return gate
+        verdict = await self._respawn_pre_increment_verdict(
+            task, record, key, current_status, now
+        )
+        if verdict is not None:
+            return verdict
         record["count"] += 1
         record["last_check"] = now
         self._schedule_respawn_persist(agent_slug, str(task_id), record)
@@ -1426,6 +1468,49 @@ class DispatchBreakerEngine(_Base):
                 agent_slug, task_id, current_status, record
             )
         return tripped and not spawn_anyway
+
+    async def _respawn_pre_increment_verdict(
+        self,
+        task: dict[str, Any],
+        record: dict[str, Any],
+        key: tuple[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool | None:
+        """Verdicts decided BEFORE a strike accrues.
+
+        Returns True (skip the spawn entirely), False (allow the spawn
+        without counting a strike), or None (no pre-increment decision -
+        the caller counts the strike). Paths, in order:
+
+        - status changed with a reset budget left: forward progress, allow.
+        - live review claim: an awaiting_* task being actively reviewed
+          advances nothing until the pass/fail decision, so every spawn
+          during a long review otherwise accrues a strike and trips the
+          breaker mid-review (live 2026-09-29: fe-qa tripped on 372eac39
+          while actively reviewing with a fresh claim heartbeat). Skip
+          WITHOUT a strike while the claim is live.
+        - tracing_gap: a rule-following retry through the verb chain,
+          reset up to the tracing budget.
+        - cooldown: an already-tripped pair stays gated through its
+          cooldown window, then re-arms (a fixed task advances and the
+          status-change path fully resets the counter).
+        """
+        agent_slug, task_id = key
+        if record.get("last_status") != current_status and (
+            self._respawn_status_change_resets(key, record, current_status, now)
+        ):
+            return False
+        if await self._gate_should_skip_for_live_review(task):
+            return True
+        if await self._pm_tracing_gap_reset(
+            agent_slug, task_id, record, current_status, now
+        ):
+            return False
+        gate = self._pm_cooldown_gate(agent_slug, task_id, record, now)
+        if gate is not None:
+            return gate
+        return None
 
     async def _pm_respawn_spawn_anyway(
         self,

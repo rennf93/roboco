@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urlparse
+from uuid import UUID
 
 import structlog
 
@@ -55,13 +56,17 @@ from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from uuid import UUID
 
+    from roboco.db.tables import TaskTable
     from roboco.foundation.identity import Team
     from roboco.foundation.policy.board_programs import BoardProgram
 
 
 logger = structlog.get_logger()
+
+# Shortest task reference the DO tools resolve (task cards render 8-char
+# prefixes); anything shorter is not identifiable.
+_MIN_TASK_REF_HEX_CHARS = 8
 
 
 def _merge_resumption_fields(
@@ -5599,11 +5604,96 @@ class ContentActions:
         assigned = await self.task.list_assigned_for_agent(agent_id)
         return any(task.id in (a.dependency_ids or []) for a in assigned)
 
+    async def _resolve_task_ref(self, task_ref: str) -> UUID | Envelope:
+        """Resolve a task reference to a full UUID, or return an error Envelope.
+
+        Agents are shown short ids everywhere (task cards, prompts, subjects
+        render ``#372eac39`` style) and pass them back to the DO tools. A
+        strict ``task_id: UUID`` schema 422s those before any handler runs -
+        the failed-evidence loop that wedged be-qa's review on 2026-09-28
+        (795 evidence errors, verdict never fired) was exactly this. Full
+        UUIDs pass through; a hex prefix of at least 8 chars resolves by
+        lookup; ambiguity and misses return the error Envelope the caller
+        must propagate.
+        """
+        ref = str(task_ref).strip()
+        try:
+            return UUID(ref)
+        except ValueError:
+            pass
+        hex_prefix = ref.removeprefix("#").strip()
+        if len(hex_prefix) < _MIN_TASK_REF_HEX_CHARS or any(
+            c not in "0123456789abcdefABCDEF" for c in hex_prefix
+        ):
+            return Envelope.incomplete_input(
+                missing=["task_id"],
+                field_hints={
+                    "task_id": (
+                        "pass the full UUID or the 8+ char hex prefix shown "
+                        "on the task card"
+                    )
+                },
+                remediate="retry with the full task UUID from the envelope",
+            )
+        from sqlalchemy import String, select
+
+        from roboco.db.tables import TaskTable
+
+        result = await self.task.session.execute(
+            select(TaskTable.id).where(
+                TaskTable.id.cast(String).ilike(f"{hex_prefix}%")
+            )
+        )
+        matches = [row[0] for row in result.all()]
+        if not matches:
+            return Envelope.not_found(message=f"no task matches {task_ref!r}")
+        if len(matches) > 1:
+            return Envelope.incomplete_input(
+                missing=["task_id"],
+                field_hints={
+                    "task_id": (
+                        f"{task_ref!r} is ambiguous: {len(matches)} tasks "
+                        "share this prefix - pass more characters or the "
+                        "full UUID"
+                    )
+                },
+                remediate="retry with the full task UUID from the envelope",
+            )
+        return cast("UUID", matches[0])
+
+    async def _evidence_task_or_error(
+        self, task_id: UUID | str, agent_id: UUID
+    ) -> TaskTable | Envelope:
+        """Resolve the evidence target and run its read-authorization checks.
+
+        Short-id resolution (``_resolve_task_ref``), existence, and the
+        ownership rule: reads are allowed for the assignee, an unassigned
+        task, a board co-reviewer of a shared coordination task, OR a caller
+        whose own work depends on this task - strict ownership only blocks
+        snooping an unrelated, actively-owned task. Returns the TaskTable or
+        the error Envelope to propagate.
+        """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if (
+            t.assigned_to is not None
+            and t.assigned_to != agent_id
+            and not await self._board_may_co_review(agent_id, t)
+            and not await self._is_caller_dependency(agent_id, t)
+        ):
+            return _ownership_violation(task_id)
+        return cast("TaskTable", t)
+
     async def evidence(
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
     ) -> Envelope:
         """Inspect a task's PR diff, commits, files.
 
@@ -5612,6 +5702,9 @@ class ContentActions:
         unassigned, the caller co-reviews a shared board task, or the task is a
         dependency the caller is waiting on — strict ownership only blocks
         snooping an unrelated, actively-owned task.
+
+        ``task_id`` accepts the full UUID or the 8+ char hex prefix the task
+        cards display (``#372eac39`` style) - see ``_resolve_task_ref``.
 
         ``files_changed`` and ``pr_diff_summary`` are pulled from git (against
         the branch's parent — the authoritative source) rather than the latest
@@ -5638,20 +5731,11 @@ class ContentActions:
         reads were sequential before the pool-release commit was added),
         so latency is unchanged in practice.
         """
-        t = await self.task.get(task_id)
-        if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
-        # Reads are allowed for the assignee, an unassigned task, a board
-        # co-reviewer of a shared coordination task, OR a caller whose own work
-        # depends on this task. Strict ownership only blocks snooping an
-        # unrelated, actively-owned task.
-        if (
-            t.assigned_to is not None
-            and t.assigned_to != agent_id
-            and not await self._board_may_co_review(agent_id, t)
-            and not await self._is_caller_dependency(agent_id, t)
-        ):
-            return _ownership_violation(task_id)
+        task_or_error = await self._evidence_task_or_error(task_id, agent_id)
+        if isinstance(task_or_error, Envelope):
+            return task_or_error
+        t = task_or_error
+        task_id = cast("UUID", t.id)
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id, include_ancestors=True
         )
@@ -7093,7 +7177,7 @@ class ContentActions:
             root_id, root = root.parent_task_id, parent
         return root_id, root.created_at
 
-    async def task_time(self, *, agent_id: UUID, task_id: UUID) -> Envelope:
+    async def task_time(self, *, agent_id: UUID, task_id: UUID | str) -> Envelope:
         """Real, uptime-adjusted elapsed times for a task.
 
         Read-only telemetry, no ownership check, any allowed role may call
@@ -7103,8 +7187,15 @@ class ContentActions:
         down or dispatch paused as neglect. This returns both: ``wall_seconds``
         (naive) and ``active_seconds`` (fleet-uptime-adjusted, via
         ``UptimeLedger``), plus the downtime windows that explain the gap.
+
+        ``task_id`` accepts the full UUID or the 8+ char hex prefix the task
+        cards display - see ``_resolve_task_ref``.
         """
         del agent_id  # read-only telemetry, no ownership check
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
