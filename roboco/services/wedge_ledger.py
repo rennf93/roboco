@@ -55,7 +55,10 @@ def progress_fingerprint(
 
 
 def evaluate_arrival(
-    ledger: dict[str, Any], to_status: str, fp: list[int]
+    ledger: dict[str, Any],
+    to_status: str,
+    fp: list[int],
+    now: str | None = None,
 ) -> dict[str, Any]:
     """Pure: fold one status arrival into the ledger; returns the updated
     ledger dict.
@@ -72,12 +75,20 @@ def evaluate_arrival(
     }
     prior_fp = ledger.get("progress_fp")
     if prior_fp is not None and list(prior_fp) != fp:
-        return {"progress_fp": fp, "strikes": {}, "tripped": False}
+        return {
+            "progress_fp": fp,
+            "strikes": {},
+            "tripped": False,
+            # Stamped on every fingerprint movement so readers get
+            # active_time_since_progress without replaying the audit log.
+            "last_progress_at": now or datetime.now(UTC).isoformat(),
+        }
     strikes[to_status] = strikes.get(to_status, 0) + 1
     return {
         "progress_fp": fp,
         "strikes": strikes,
         "tripped": bool(ledger.get("tripped")),
+        "last_progress_at": ledger.get("last_progress_at"),
     }
 
 
@@ -96,6 +107,7 @@ def get_wedge_state(task: Any) -> dict[str, Any]:
         "tripped": bool(ledger.get("tripped")),
         "tripped_at": ledger.get("tripped_at"),
         "tripped_strikes": int(ledger.get("tripped_strikes") or 0),
+        "last_progress_at": ledger.get("last_progress_at"),
     }
 
 
@@ -222,6 +234,12 @@ class WedgeLedgerService:
             }
             for row in reversed(result.scalars().all())
         ]
+
+    async def wedge_cycle(self, task_id: UUID) -> list[dict[str, Any]]:
+        """Public read of the rebuilt transition cycle (actor, role,
+        transition, timestamp — oldest last) for downstream surfaces
+        (e.g. the stuck-state task payload)."""
+        return await self._transition_cycle(task_id)
 
 
 def _task_table() -> Any:

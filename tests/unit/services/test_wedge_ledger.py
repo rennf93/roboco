@@ -226,6 +226,7 @@ def test_get_wedge_state_fills_defaults_for_an_unmarked_task() -> None:
         "tripped": False,
         "tripped_at": None,
         "tripped_strikes": 0,
+        "last_progress_at": None,
     }
 
 
