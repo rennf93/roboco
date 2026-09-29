@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import re
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -45,6 +46,18 @@ if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
+
+
+@dataclass(frozen=True)
+class _OwnedClaimContext:
+    """Everything `_reap_owned_review_claim` needs for one stale claim."""
+
+    svc: "TaskService"
+    t: Any
+    ts: datetime | None
+    owner_slug: str
+    dispatch_paused: bool
+    candidates: list[Any]
 
 
 class DispatchBreakerEngine(_Base):
@@ -1088,23 +1101,49 @@ class DispatchBreakerEngine(_Base):
             return
         owner = getattr(t, "assigned_to", None) or getattr(t, "claimed_by", None)
         if owner is not None:
-            owner_slug = self._resolve_agent_slug(str(owner))
-            if not self._is_claim_in_flight(owner_slug) and self._agent_busy_elsewhere(
-                owner_slug, t, candidates
-            ):
-                # Parked: the claimant is alive and working a fresher claim,
-                # so this review claim is abandoned by choice, not wedged.
-                # A release only helps if a re-claim can follow, so the
-                # dispatch pause defers it like the code-claim unclaim.
-                if dispatch_paused:
-                    return
-                await self._release_stale_review_claim(svc, t, ts)
-                return
+            await self._reap_owned_review_claim(
+                _OwnedClaimContext(
+                    svc=svc,
+                    t=t,
+                    ts=ts,
+                    owner_slug=self._resolve_agent_slug(str(owner)),
+                    dispatch_paused=dispatch_paused,
+                    candidates=candidates or [],
+                )
+            )
+            return
         if await self._should_skip_live_reap(t, ts):
             return
         if dispatch_paused:
             return
         await self._release_stale_review_claim(svc, t, ts)
+
+    async def _reap_owned_review_claim(self, ctx: "_OwnedClaimContext") -> None:
+        """Decide the fate of a stale review claim whose owner is known.
+
+        - Parked proof (a fresher claim elsewhere among the candidates):
+          abandoned by choice - release, deferred by the dispatch pause.
+        - Work-signal check: a live container shields claims ONLY while its
+          tool stream shows real work; idle or thrashing means THIS claim is
+          abandoned (the container-level skip would otherwise protect every
+          claim the agent ever took - live 2026-09-29: fe-qa's container was
+          up reviewing 372eac39 while its 16h-dead claim on 99f61c8c stayed
+          held because _should_skip_live_reap saw a RUNNING container).
+        - A working container defers the release this tick, same as the
+          dispatch pause: give the reviewer the window.
+        """
+        if not self._is_claim_in_flight(ctx.owner_slug) and self._agent_busy_elsewhere(
+            ctx.owner_slug, ctx.t, ctx.candidates
+        ):
+            if ctx.dispatch_paused:
+                return
+            await self._release_stale_review_claim(ctx.svc, ctx.t, ctx.ts)
+            return
+        if await self._agent_work_signal(ctx.owner_slug) == "working":
+            return
+        if ctx.dispatch_paused:
+            return
+        await self._release_stale_review_claim(ctx.svc, ctx.t, ctx.ts)
 
     async def _release_stale_review_claim(
         self, svc: "TaskService", t: Any, ts: datetime | None

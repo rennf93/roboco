@@ -183,19 +183,18 @@ async def test_provider_parked_claimant_untouched() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_claimant_skip_wins_when_not_parked() -> None:
-    """A live claimant holding ONLY this stale claim is left to the
-    wedged/stuck-kill machinery (_should_skip_live_reap) - not silently
-    released out from under a container the registry still tracks."""
+async def test_live_claimant_deferred_while_container_works() -> None:
+    """A claimant whose container runs and whose tool stream shows work is
+    deferred (never released out from under a live reviewer); the work
+    signal decides BEFORE the container-level skip would."""
     orch = _orch()
-    skip = AsyncMock(return_value=True)
-    orch._should_skip_live_reap = skip
+    orch._review_claimant_slug = AsyncMock(return_value="fe-qa")
+    orch._agent_work_signal = AsyncMock(return_value="working")
     claim = _task()
     svc = _svc()
 
     await orch._reap_one_stale_review_claim(svc, claim, False, [claim])
 
-    skip.assert_awaited_once()
     svc.release_review_claim_for_reaper.assert_not_awaited()
 
 
@@ -506,3 +505,56 @@ async def test_work_signal_idle_without_tool_events() -> None:
     )
 
     assert await orch._agent_work_signal("fe-qa") == "idle"
+
+
+@pytest.mark.asyncio
+async def test_dead_second_claim_released_even_while_container_works_another_task() -> (
+    None
+):
+    """The live-container skip is container-level; without the work-signal
+    check a RUNNING container shielded fe-qa's 16h-dead claim on 99f61c8c
+    while it reviewed 372eac39 (2026-09-29). An idle/thrashing-classified
+    claimant must not shield the stale claim."""
+    orch = _orch()
+    orch._notify_stale_review_claim_released = AsyncMock()
+    now = datetime.now(UTC)
+    stale = _task(last_heartbeat_at=now - STALE)
+    fresh = _task(
+        assigned_to="fe-qa",
+        claimed_by="fe-qa",
+        claimed_at=now - timedelta(minutes=5),
+        last_heartbeat_at=now,
+    )
+    svc = _svc()
+    # claimant lookup succeeds, container WORKS (its other review)...
+    orch._review_claimant_slug = AsyncMock(return_value="fe-qa")
+    # ...but the parked check cannot prove it (no in_progress sibling in the
+    # candidate set), so the stale-claim path runs the work-signal classifier.
+    orch._agent_work_signal = AsyncMock(return_value="idle")
+    skip_live = AsyncMock(return_value=True)  # container-level skip WOULD fire
+    orch._should_skip_live_reap = skip_live
+
+    await orch._reap_one_stale_review_claim(svc, stale, False, [stale, fresh])
+
+    svc.release_review_claim_for_reaper.assert_awaited_once_with(stale.id)
+    skip_live.assert_not_awaited()  # decided by the work signal, not the skip
+
+
+@pytest.mark.asyncio
+async def test_working_container_defers_release_of_stale_second_claim() -> None:
+    """The mirror case: the claimant's tool stream shows genuine work, so the
+    stale claim is deferred this tick (give the reviewer the window) instead
+    of released - same disposition as the dispatch pause."""
+    orch = _orch()
+    now = datetime.now(UTC)
+    stale = _task(last_heartbeat_at=now - STALE)
+    svc = _svc()
+    orch._review_claimant_slug = AsyncMock(return_value="fe-qa")
+    orch._agent_work_signal = AsyncMock(return_value="working")
+    skip_live = AsyncMock(return_value=True)
+    orch._should_skip_live_reap = skip_live
+
+    await orch._reap_one_stale_review_claim(svc, stale, False, [stale])
+
+    svc.release_review_claim_for_reaper.assert_not_awaited()
+    skip_live.assert_not_awaited()
