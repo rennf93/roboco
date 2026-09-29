@@ -2139,6 +2139,15 @@ class Settings(BaseSettings):
         ge=2,
         description="How many recent tool calls to inspect for loop detection",
     )
+    wedge_ledger_threshold: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Task-scoped wedge ledger: re-arrivals at one status with no "
+            "progress-fingerprint movement before the task force-blocks for "
+            "a human (aligned with the #685 oscillation trip threshold)"
+        ),
+    )
     agent_stop_attempt_allowance: int = Field(
         default=1,
         ge=1,

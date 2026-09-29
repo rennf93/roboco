@@ -1038,6 +1038,35 @@ def mark_oscillation_tripped(task: HasMarkers) -> None:
     )
 
 
+# --- task-scoped wedge ledger -----------------------------------------------
+# Generalization of the escalate_up/unblock oscillation breaker above: a
+# task that keeps RETURNING to a status it previously held with no movement
+# in the same progress fingerprint ([commit_count, revision_count,
+# terminal_children] — the identical triple, never a second fingerprint)
+# is wedged no matter which verbs or actors drove the round trips. Counting
+# is STATUS-keyed, not actor-keyed: the ledger records one strike per
+# re-arrival at a status while the fingerprint is static, and any of the
+# three signals moving clears every counter. Payload:
+# {"progress_fp": [int, int, int], "strikes": {status: int}, "tripped": bool,
+#  "tripped_at": iso-or-absent, "tripped_strikes": int}. The strike logic
+# and DB writes live in roboco/services/wedge_ledger.py; this is storage only.
+
+WEDGE_LEDGER = "wedge_ledger"
+
+
+def get_wedge_ledger(task: HasMarkers) -> dict[str, Any]:
+    val = get_marker(task, WEDGE_LEDGER)
+    return dict(val) if isinstance(val, dict) else {}
+
+
+def set_wedge_ledger(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, WEDGE_LEDGER, payload)
+
+
+def clear_wedge_ledger(task: HasMarkers) -> None:
+    clear_marker(task, WEDGE_LEDGER)
+
+
 # --- PR-base / parent-topology drift ----------------------------------------
 # Recorded by the ``parent_task_id`` re-parent write-through
 # (``TaskService.recheck_topology_after_reparent``) when
