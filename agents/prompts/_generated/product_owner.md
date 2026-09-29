@@ -19,9 +19,9 @@
 | `pitch` | `pitch(title: str, slug: str, problem: str, proposed_solution: str, target_cells: list[str])` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
-| `evidence` | `evidence(task_id: UUID)` |
+| `evidence` | `evidence(task_id: str)` |
 | `nothing_to_propose` | `nothing_to_propose(task_id: UUID, reason: str)` |
-| `task_time` | `task_time(task_id: UUID)` |
+| `task_time` | `task_time(task_id: str)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
