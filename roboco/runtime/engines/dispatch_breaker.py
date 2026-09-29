@@ -525,11 +525,19 @@ class DispatchBreakerEngine(_Base):
         then mount a fresh credential. Best-effort, throttled, and serial (run
         once per dispatch tick) so concurrent refreshes can't rotate the
         refresh-token out from under each other. Never breaks the loop.
+
+        Failures back off exponentially (60s doubling, 1h cap) instead of
+        re-POSTing the same dead grant every tick — a revoked refresh token
+        (``rejected``) can never succeed again, and hammering auth.x.ai with
+        it every 60s is pure log noise (2026-09-29 fleet wedge). A
+        ``rejected`` status parks the check for an hour; a fresh ``grok
+        login`` on the host is picked up on the next unparked tick.
         """
         now = datetime.now(UTC)
         next_check = getattr(self, "_grok_auth_next_check", None)
         if next_check is not None and now < next_check:
             return
+        streak = getattr(self, "_grok_auth_fail_streak", 0)
         self._grok_auth_next_check = now + timedelta(seconds=60)
         try:
             from roboco.llm.providers import grok_auth
@@ -537,12 +545,28 @@ class DispatchBreakerEngine(_Base):
 
             auth_path = Path(GROK_AUTH_HOST_PATH) / "auth.json"
             status = await asyncio.to_thread(grok_auth.refresh_if_stale, auth_path)
-            if status == "refreshed":
-                logger.info("grok auth token refreshed")
-            elif status == "failed":
-                logger.warning(
-                    "grok auth refresh failed; agents may hit an expired token"
-                )
+            if status in {"fresh", "refreshed"}:
+                self._grok_auth_fail_streak = 0
+                if status == "refreshed":
+                    logger.info("grok auth token refreshed")
+                return
+            self._grok_auth_fail_streak = streak + 1
+            if status == "rejected":
+                # Credential is dead: retry no more than hourly until a
+                # re-issued auth.json lands. The warning already fired once
+                # from grok_auth with the remediation.
+                self._grok_auth_next_check = now + timedelta(seconds=3600)
+            else:
+                backoff = min(60 * (2**self._grok_auth_fail_streak), 3600)
+                self._grok_auth_next_check = now + timedelta(seconds=backoff)
+            logger.warning(
+                "grok auth refresh failed; agents may hit an expired token",
+                status=status,
+                fail_streak=self._grok_auth_fail_streak,
+                retry_in_seconds=(
+                    3600 if status == "rejected" else backoff
+                ),
+            )
         except Exception as exc:
             logger.error("grok auth refresh hook error", error=str(exc))
 
@@ -552,12 +576,15 @@ class DispatchBreakerEngine(_Base):
         Same rationale as the grok refresh: the per-agent mount is read-only,
         so the orchestrator refreshes the host ``auth.json`` itself before the
         access JWT expires. Best-effort, throttled, and serial (run once per
-        dispatch tick). Never breaks the loop.
+        dispatch tick). Never breaks the loop. Same exponential backoff on
+        failure and hourly parking on a definitive ``rejected`` (dead
+        credential; see ``_refresh_grok_auth``).
         """
         now = datetime.now(UTC)
         next_check = getattr(self, "_codex_auth_next_check", None)
         if next_check is not None and now < next_check:
             return
+        streak = getattr(self, "_codex_auth_fail_streak", 0)
         self._codex_auth_next_check = now + timedelta(seconds=60)
         try:
             from roboco.llm.providers import codex_auth
@@ -565,12 +592,25 @@ class DispatchBreakerEngine(_Base):
 
             auth_path = Path(CODEX_AUTH_HOST_PATH) / "auth.json"
             status = await asyncio.to_thread(codex_auth.refresh_if_stale, auth_path)
-            if status == "refreshed":
-                logger.info("codex auth token refreshed")
-            elif status == "failed":
-                logger.warning(
-                    "codex auth refresh failed; agents may hit an expired token"
-                )
+            if status in {"fresh", "refreshed"}:
+                self._codex_auth_fail_streak = 0
+                if status == "refreshed":
+                    logger.info("codex auth token refreshed")
+                return
+            self._codex_auth_fail_streak = streak + 1
+            if status == "rejected":
+                self._codex_auth_next_check = now + timedelta(seconds=3600)
+            else:
+                backoff = min(60 * (2**self._codex_auth_fail_streak), 3600)
+                self._codex_auth_next_check = now + timedelta(seconds=backoff)
+            logger.warning(
+                "codex auth refresh failed; agents may hit an expired token",
+                status=status,
+                fail_streak=self._codex_auth_fail_streak,
+                retry_in_seconds=(
+                    3600 if status == "rejected" else backoff
+                ),
+            )
         except Exception as exc:
             logger.error("codex auth refresh hook error", error=str(exc))
 

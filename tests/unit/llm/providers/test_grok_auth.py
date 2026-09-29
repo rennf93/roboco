@@ -10,6 +10,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from roboco.llm.providers import grok_auth as ga
 
 if TYPE_CHECKING:
@@ -263,3 +264,35 @@ def test_concurrent_refresh_does_not_double_rotate_single_use_token(
     # Both callers succeeded (one refreshed, the other saw it and returned fresh).
     assert all(r in ("refreshed", "fresh") for r in results)
     assert "refreshed" in results
+
+
+def test_refresh_definitive_400_returns_rejected(tmp_path: Path) -> None:
+    """HTTP 400/401/403 = the credential itself is dead: status 'rejected'.
+
+    Callers use this to stop hammering the token endpoint (the refresh
+    token is single-use; xAI has invalidated it and no retry can succeed).
+    """
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+
+    def _reject(_url: str, _form: dict[str, str]) -> dict[str, Any]:
+        req = httpx.Request("POST", "https://auth.x.ai/oauth2/token")
+        resp = httpx.Response(400, request=req, json={"error": "invalid_grant"})
+        raise httpx.HTTPStatusError("400 Bad Request", request=req, response=resp)
+
+    assert ga.refresh_if_stale(path, post=_reject) == "rejected"
+    creds = next(iter(json.loads(path.read_text()).values()))
+    assert creds["key"] == "old-access"  # original credential preserved
+
+
+def test_refresh_5xx_stays_transient_failed(tmp_path: Path) -> None:
+    """A 5xx is transient: status 'failed' (exponential backoff upstream)."""
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+
+    def _boom(_url: str, _form: dict[str, str]) -> dict[str, Any]:
+        req = httpx.Request("POST", "https://auth.x.ai/oauth2/token")
+        resp = httpx.Response(503, request=req, json={"error": "unavailable"})
+        raise httpx.HTTPStatusError("503", request=req, response=resp)
+
+    assert ga.refresh_if_stale(path, post=_boom) == "failed"

@@ -264,6 +264,20 @@ def _do_refresh(
             },
         )
     except Exception as exc:
+        # 400/401/403 is definitive: the token endpoint rejected the
+        # credential itself (invalid_grant / invalid_client). No retry can
+        # ever succeed — the refresh token is single-use and xAI has
+        # invalidated it. The "rejected" status lets the caller stop
+        # hammering the endpoint every dispatch tick.
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if status_code in (400, 401, 403):
+            logger.warning(
+                "grok auth refresh token REJECTED by the token endpoint "
+                f"(HTTP {status_code}); the credential is dead — re-run grok "
+                "login on the host to re-issue auth.json",
+                status_code=status_code,
+            )
+            return "rejected"
         logger.warning("grok auth refresh request failed", error=str(exc))
         return "failed"
     if not token.get("access_token"):
@@ -315,7 +329,9 @@ def refresh_if_stale(
 
     Returns a status string: ``fresh`` (still valid, nothing done), ``refreshed``
     (a new token was written), ``missing`` (no auth.json), ``no_refresh_token``
-    (no usable credential entry), or ``failed`` (the refresh request errored).
+    (no usable credential entry), ``rejected`` (the token endpoint definitively
+    refused the credential — HTTP 400/401/403; only a fresh ``grok login`` can
+    recover), or ``failed`` (transient error: network, timeout, 5xx).
     Best-effort: never raises.
     """
     bundle = _load(auth_path)

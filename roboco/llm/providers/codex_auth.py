@@ -208,6 +208,18 @@ def _do_refresh(
             },
         )
     except Exception as exc:
+        # 400/401/403 is definitive: the endpoint refused the credential
+        # itself. No retry can succeed until a fresh login re-issues
+        # auth.json. "rejected" lets the caller park the refresh loop.
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if status_code in (400, 401, 403):
+            logger.warning(
+                "codex auth refresh token REJECTED by the token endpoint "
+                f"(HTTP {status_code}); the credential is dead — re-run the "
+                "codex login flow on the host to re-issue auth.json",
+                status_code=status_code,
+            )
+            return "rejected"
         logger.warning("codex auth refresh request failed", error=str(exc))
         return "failed"
     if not token.get("access_token"):

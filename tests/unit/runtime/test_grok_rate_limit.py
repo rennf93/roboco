@@ -10,11 +10,14 @@ Claude session/overload paths get the same loop-break for free.
 
 from __future__ import annotations
 
+import types
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from roboco.llm.providers import grok_auth as ga_mod
 from roboco.models.runtime import AgentInstance
+from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
 from roboco.runtime.orchestrator import (
     _GROK_AUTH_EXIT_CODE,
     _GROK_RATE_LIMIT_EXIT_CODE,
@@ -319,3 +322,58 @@ async def test_grok_repark_backoff_caps(monkeypatch: pytest.MonkeyPatch) -> None
         r == max_expected for r in tracker.retry_afters[_GROK_REPARK_BACKOFF_CAP:]
     )
     assert max(tracker.retry_afters) == max_expected
+
+
+# Two consecutive transient failures: backoff doubled twice.
+_TRANSIENT_STREAK_TWO = 2
+
+
+@pytest.mark.asyncio
+async def test_grok_refresh_backoff_rejected_parks_an_hour(monkeypatch) -> None:
+    """A dead credential (rejected) parks the refresh check for an hour.
+
+    The old loop re-POSTed the same revoked grant every 60s forever
+    (2026-09-29 dispatcher logs: a 400 from auth.x.ai every minute).
+    """
+    dummy = types.SimpleNamespace(_grok_auth_next_check=None, _grok_auth_fail_streak=0)
+    monkeypatch.setattr(ga_mod, "refresh_if_stale", lambda _path: "rejected")
+
+    await DispatchBreakerEngine._refresh_grok_auth(dummy)
+
+    assert dummy._grok_auth_fail_streak == 1
+    assert dummy._grok_auth_next_check - datetime.now(UTC) > timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+async def test_grok_refresh_backoff_transient_doubles(monkeypatch) -> None:
+    """Transient failures back off exponentially (60s -> 120s -> ...)."""
+    dummy = types.SimpleNamespace(_grok_auth_next_check=None, _grok_auth_fail_streak=0)
+    monkeypatch.setattr(ga_mod, "refresh_if_stale", lambda _path: "failed")
+
+    await DispatchBreakerEngine._refresh_grok_auth(dummy)
+    first = dummy._grok_auth_next_check - datetime.now(UTC)
+    # 60s * 2**1 = 120s on the first failure.
+    assert timedelta(seconds=115) < first < timedelta(seconds=125)
+
+    # Second consecutive failure (once the parked check comes due): the
+    # backoff doubles.
+    dummy._grok_auth_next_check = datetime.now(UTC) - timedelta(seconds=1)
+    await DispatchBreakerEngine._refresh_grok_auth(dummy)
+    second = dummy._grok_auth_next_check - datetime.now(UTC)
+    assert timedelta(seconds=235) < second < timedelta(seconds=245)
+    assert dummy._grok_auth_fail_streak == _TRANSIENT_STREAK_TWO
+
+
+@pytest.mark.asyncio
+async def test_grok_refresh_success_resets_streak(monkeypatch) -> None:
+    """A successful refresh clears the failure streak and next check is 60s."""
+    dummy = types.SimpleNamespace(
+        _grok_auth_next_check=None, _grok_auth_fail_streak=3
+    )
+    monkeypatch.setattr(ga_mod, "refresh_if_stale", lambda _path: "refreshed")
+
+    await DispatchBreakerEngine._refresh_grok_auth(dummy)
+
+    assert dummy._grok_auth_fail_streak == 0
+    gap = dummy._grok_auth_next_check - datetime.now(UTC)
+    assert timedelta(seconds=55) < gap < timedelta(seconds=65)
