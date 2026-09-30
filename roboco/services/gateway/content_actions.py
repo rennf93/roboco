@@ -147,6 +147,12 @@ _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 # foundation.policy.communications. Derived as string frozensets here so
 # the existing call sites that compare strings keep working.
 _COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter", "devops"})
+# Roles whose verb surface carries no claim verb: they are assigned tasks
+# but can never satisfy an active-claim gate. Journal notes from these
+# roles on a task with NO active claimant are allowed (see
+# ContentActions._active_claim_violation). Extend only for roles with that
+# same documented shape.
+_CLAIMLESS_NOTE_ROLES: frozenset[str] = frozenset({"auditor"})
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
@@ -863,7 +869,11 @@ class ContentActions:
             await self.task.heartbeat(task_id)
 
     async def _active_claim_violation(
-        self, agent_id: UUID, task: Any
+        self,
+        agent_id: UUID,
+        task: Any,
+        *,
+        allow_unclaimed: bool = False,
     ) -> Envelope | None:
         """Refuse a content write when the caller is not the active claimant.
 
@@ -872,13 +882,40 @@ class ContentActions:
         is cleared the moment its claim is released. Only the holder of the
         active claim may write. A board co-reviewer on a coordination task is
         exempt (it shares the task with the other board member by design).
+
+        ``allow_unclaimed`` narrows the strict rule for journal-style notes
+        to CLAIM-LESS ROLES (the auditor): dispatch assigns them tasks, but
+        they have no claim verb, so the claim gate is unsatisfiable by
+        construction and every note bounced forever (a9739b1c, 2026-09-29).
+        When no claimant exists there is no one to race. A REAPED assignee
+        is NOT covered — it had a claim and lost it, and the reap doctrine
+        says it must not keep posting; the caller's role decides.
         """
         claimant = getattr(task, "active_claimant_id", None)
         if claimant == agent_id:
             return None
+        if (
+            allow_unclaimed
+            and claimant is None
+            and task.assigned_to == agent_id
+            and await self._caller_is_claimless_role(agent_id)
+        ):
+            return None
         if await self._board_may_co_review(agent_id, task):
             return None
         return _not_active_claimant(task.id)
+
+    async def _caller_is_claimless_role(self, agent_id: UUID) -> bool:
+        """True for roles that can never hold a claim (read-only observers).
+
+        The auditor observes and journals but its verb surface carries no
+        claim verb, so demanding an active claim from it is demanding the
+        impossible. Extend ``_CLAIMLESS_NOTE_ROLES`` only for roles with
+        that same documented shape.
+        """
+        agent = await self.task.agent_for(agent_id)
+        role = str(getattr(agent, "role", "")) if agent is not None else ""
+        return role in _CLAIMLESS_NOTE_ROLES
 
     @staticmethod
     def _reject_soup(value: str, *, field: str, min_chars: int = 3) -> Envelope | None:
@@ -1078,7 +1115,11 @@ class ContentActions:
         return role in self._BOARD_ROLES
 
     async def _verify_explicit_task_ownership(
-        self, agent_id: UUID, task_id: UUID
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        *,
+        allow_unclaimed: bool = False,
     ) -> Envelope | None:
         """Gate Set D: refuse content posts on tasks the caller does not own.
 
@@ -1108,9 +1149,13 @@ class ContentActions:
             return _ownership_violation(task_id)
         # assigned_to is stale across a reap/handoff (persists until
         # reassignment; active_claimant_id is cleared on release). Require
-        # the active claim so a reaped agent can't keep posting.
+        # the active claim so a reaped agent can't keep posting — except on
+        # the allow_unclaimed paths (journal notes from a claim-less
+        # assignee; see _active_claim_violation).
         if t.assigned_to == agent_id:
-            return await self._active_claim_violation(agent_id, t)
+            return await self._active_claim_violation(
+                agent_id, t, allow_unclaimed=allow_unclaimed
+            )
         return None
 
     async def note(
@@ -1236,7 +1281,12 @@ class ContentActions:
         if rej := self._reject_structured_soup(scope, structured):
             return rej
         if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+            # allow_unclaimed: journal notes are append-only observability;
+            # a claim-less assignee (read-only roles like the auditor) must
+            # still be able to record them. See _active_claim_violation.
+            if reject := await self._verify_explicit_task_ownership(
+                agent_id, task_id, allow_unclaimed=True
+            ):
                 return reject
         else:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
@@ -1563,7 +1613,12 @@ class ContentActions:
                 context_briefing={},
             )
         if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+            # allow_unclaimed: same rationale as the journal-note path —
+            # section writes are append-only, and a claim-less assignee
+            # (auditor) must still record its section.
+            if reject := await self._verify_explicit_task_ownership(
+                agent_id, task_id, allow_unclaimed=True
+            ):
                 return reject
         else:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
