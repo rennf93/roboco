@@ -393,8 +393,14 @@ wait_healthy roboco-decisions
 wait_healthy roboco-ollama-init exit0
 
 echo "[deploy] schema migrations (idempotent)..."
-"${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head ||
-  echo "[deploy] WARNING: alembic failed; traffic NOT flipped, investigate before flipping"
+# The flip is GATED on migrations: the message below used to say "traffic
+# NOT flipped" and then flip anyway - a failed upgrade deployed the new
+# color against an unmigrated schema (the exact deploy-bites-back class
+# this script exists to prevent). Old color keeps serving; re-run deploys.
+if ! "${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head; then
+  echo "[deploy] FATAL: alembic upgrade failed; traffic NOT switched (old color still serving). Investigate, then re-run." >&2
+  exit 1
+fi
 
 echo "[deploy] switching traffic to $COLOR..."
 mkdir -p front
