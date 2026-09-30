@@ -1527,7 +1527,7 @@ class ContentActions:
         )
 
     async def curate_vault(
-        self, *, agent_id: UUID, task_id: UUID, narrative: str
+        self, *, agent_id: UUID, task_id: UUID | str, narrative: str
     ) -> Envelope:
         """Auditor-only: write a root task-tree's vault narrative section.
 
@@ -1535,6 +1535,10 @@ class ContentActions:
         resolved fresh) with ``narrative`` filling the ``## Narrative``
         section a deterministic write otherwise leaves as a placeholder.
         """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         role = await self._caller_role(agent_id)
         if role not in _CURATE_VAULT_ROLES:
             return Envelope.not_authorized(
@@ -5326,7 +5330,7 @@ class ContentActions:
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         reason: str,
     ) -> Envelope:
         """The explicit "this cycle found nothing worth proposing" exit for
@@ -5376,6 +5380,10 @@ class ContentActions:
                 context_briefing={},
             )
 
+        resolved_ref = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved_ref, Envelope):
+            return resolved_ref
+        task_id = resolved_ref
         resolved = await self._resolve_nothing_to_propose_task(agent_id, task_id)
         if isinstance(resolved, Envelope):
             return resolved
@@ -6897,11 +6905,35 @@ class ContentActions:
             )
         return None
 
+    async def _progress_precheck(
+        self, message: str, task_id: UUID | str
+    ) -> Envelope | UUID:
+        """The two early guards (soup check + short-ref resolution) folded
+        into one preflight so the verb body stays under the return bound.
+        Returns the rejection Envelope or the resolved task UUID."""
+        if rej := self._reject_soup(message, field="progress update", min_chars=5):
+            return rej
+        return await self._resolve_task_ref(str(task_id))
+
+    async def _pr_update_precheck(
+        self,
+        title: str | None,
+        body: str | None,
+        reviewers: list[str] | None,
+        task_id: UUID | str,
+    ) -> Envelope | UUID:
+        """The two early guards (input check + short-ref resolution) folded
+        into one preflight so the verb body stays under the return bound.
+        Returns the rejection Envelope or the resolved task UUID."""
+        if rej := self._pr_update_input_check(title, body, reviewers):
+            return rej
+        return await self._resolve_task_ref(str(task_id))
+
     async def progress(
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         message: str,
         plan_step: str | None = None,
         percentage: int | None = None,
@@ -6924,8 +6956,10 @@ class ContentActions:
         the single-claimant guard so a reaped/handed-off assignee cannot
         keep writing.
         """
-        if rej := self._reject_soup(message, field="progress update", min_chars=5):
-            return rej
+        guard = await self._progress_precheck(message, task_id)
+        if isinstance(guard, Envelope):
+            return guard
+        task_id = guard
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -7073,7 +7107,7 @@ class ContentActions:
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         title: str | None = None,
         body: str | None = None,
         reviewers: list[str] | None = None,
@@ -7097,8 +7131,10 @@ class ContentActions:
             invalid_state — schema-level check is the first line of
             defense; this guard catches direct gateway calls)
         """
-        if rej := self._pr_update_input_check(title, body, reviewers):
-            return rej
+        guard = await self._pr_update_precheck(title, body, reviewers, task_id)
+        if isinstance(guard, Envelope):
+            return guard
+        task_id = guard
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -7305,7 +7341,9 @@ class ContentActions:
             context_briefing={},
         )
 
-    async def preflight_diff(self, *, agent_id: UUID, task_id: UUID) -> Envelope:
+    async def preflight_diff(
+        self, *, agent_id: UUID, task_id: UUID | str
+    ) -> Envelope:
         """Decisions agent lane 6.4 (spec): the pre-submit self-check.
 
         The Choreographer composes the whole state server-side from the task
@@ -7314,6 +7352,10 @@ class ContentActions:
         the audit. Advisory by design: the agent decides; it never blocks
         or waives ``i_am_done`` (self-review exclusion, spec 5).
         """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -7426,7 +7468,7 @@ class ContentActions:
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         test_name: str,
         error_excerpt: str = "",
     ) -> Envelope:
@@ -7439,6 +7481,10 @@ class ContentActions:
         the envelope says ``unknown`` and the agent proceeds exactly as
         today (debug first).
         """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")

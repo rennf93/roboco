@@ -402,7 +402,10 @@ class NothingToProposeRequest(BaseModel):
     (one board role can own several open cycles from different programs at
     once) — which program/role it resolves against comes from THAT task."""
 
-    task_id: UUID
+        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     reason: str = Field(..., min_length=1)
 
 
@@ -488,7 +491,10 @@ class ProgressRequest(BaseModel):
     Populates the panel's Progress tab.
     """
 
-    task_id: UUID
+        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     message: str = Field(..., min_length=1)
     plan_step: str | None = Field(
         default=None,
@@ -529,7 +535,10 @@ class PreflightDiffRequest(BaseModel):
     task context: the diff, criteria, and questions are composed
     server-side (spec 6.4)."""
 
-    task_id: UUID
+        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
 
 
 class TriageFailureRequest(BaseModel):
@@ -537,7 +546,10 @@ class TriageFailureRequest(BaseModel):
     the error excerpt; changed files, retry state, and flake history are
     composed server-side."""
 
-    task_id: UUID
+        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     test_name: str
     error_excerpt: str = ""
 
@@ -558,7 +570,10 @@ class PRUpdateRequest(BaseModel):
     mapping, otherwise the slugs go through as-is.
     """
 
-    task_id: UUID
+        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     title: str | None = None
     body: str | None = None
     reviewers: list[str] | None = None
@@ -604,5 +619,8 @@ class ArchivePlaybookRequest(BaseModel):
 class CurateVaultRequest(BaseModel):
     """Auditor writes a root task-tree's vault narrative section."""
 
-    task_id: UUID
+        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     narrative: str = Field(..., min_length=1)
