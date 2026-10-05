@@ -96,11 +96,13 @@ jobs:
           curl -fsSL --retry 3 -o /tmp/llama.tar.gz \
             "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_REF}/llama-${LLAMA_CPP_REF}-bin-ubuntu-x64.tar.gz"
           tar -xzf /tmp/llama.tar.gz -C llama-bin
-          find llama-bin -maxdepth 2 -type f -name 'llama-server' -o -name '*.so' | head
+          find llama-bin -maxdepth 2 -type f \( -name 'llama-server' -o -name '*.so' \) | head
 
       - name: Start the laya llama-server (the cheap tier, for real)
         run: |
-          LLAMA_DIR="$(find llama-bin -maxdepth 1 -type d -name 'llama-*' | head -1)"
+          # -mindepth 1: without it find matches the llama-bin root itself
+          # (it also globs llama-*), so LLAMA_DIR resolves to the wrong dir.
+          LLAMA_DIR="$(find llama-bin -mindepth 1 -maxdepth 1 -type d -name 'llama-*' | head -1)"
           LD_LIBRARY_PATH="$LLAMA_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             "$LLAMA_DIR/llama-server" \
             --model "models/${LAYA_GGUF_FILE}" \

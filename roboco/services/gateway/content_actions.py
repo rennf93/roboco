@@ -7341,9 +7341,7 @@ class ContentActions:
             context_briefing={},
         )
 
-    async def preflight_diff(
-        self, *, agent_id: UUID, task_id: UUID | str
-    ) -> Envelope:
+    async def preflight_diff(self, *, agent_id: UUID, task_id: UUID | str) -> Envelope:
         """Decisions agent lane 6.4 (spec): the pre-submit self-check.
 
         The Choreographer composes the whole state server-side from the task

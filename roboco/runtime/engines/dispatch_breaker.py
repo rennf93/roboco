@@ -563,9 +563,7 @@ class DispatchBreakerEngine(_Base):
                 "grok auth refresh failed; agents may hit an expired token",
                 status=status,
                 fail_streak=self._grok_auth_fail_streak,
-                retry_in_seconds=(
-                    3600 if status == "rejected" else backoff
-                ),
+                retry_in_seconds=(3600 if status == "rejected" else backoff),
             )
         except Exception as exc:
             logger.error("grok auth refresh hook error", error=str(exc))
@@ -607,9 +605,7 @@ class DispatchBreakerEngine(_Base):
                 "codex auth refresh failed; agents may hit an expired token",
                 status=status,
                 fail_streak=self._codex_auth_fail_streak,
-                retry_in_seconds=(
-                    3600 if status == "rejected" else backoff
-                ),
+                retry_in_seconds=(3600 if status == "rejected" else backoff),
             )
         except Exception as exc:
             logger.error("codex auth refresh hook error", error=str(exc))

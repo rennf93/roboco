@@ -402,7 +402,7 @@ class NothingToProposeRequest(BaseModel):
     (one board role can own several open cycles from different programs at
     once) — which program/role it resolves against comes from THAT task."""
 
-        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
     # cards and prompts display 8-char hex prefixes; a UUID-typed field
     # 422s them before any handler runs.
     task_id: str
@@ -491,7 +491,7 @@ class ProgressRequest(BaseModel):
     Populates the panel's Progress tab.
     """
 
-        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
     # cards and prompts display 8-char hex prefixes; a UUID-typed field
     # 422s them before any handler runs.
     task_id: str
@@ -535,7 +535,7 @@ class PreflightDiffRequest(BaseModel):
     task context: the diff, criteria, and questions are composed
     server-side (spec 6.4)."""
 
-        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
     # cards and prompts display 8-char hex prefixes; a UUID-typed field
     # 422s them before any handler runs.
     task_id: str
@@ -546,7 +546,7 @@ class TriageFailureRequest(BaseModel):
     the error excerpt; changed files, retry state, and flake history are
     composed server-side."""
 
-        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
     # cards and prompts display 8-char hex prefixes; a UUID-typed field
     # 422s them before any handler runs.
     task_id: str
@@ -570,7 +570,7 @@ class PRUpdateRequest(BaseModel):
     mapping, otherwise the slugs go through as-is.
     """
 
-        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
     # cards and prompts display 8-char hex prefixes; a UUID-typed field
     # 422s them before any handler runs.
     task_id: str
@@ -619,7 +619,7 @@ class ArchivePlaybookRequest(BaseModel):
 class CurateVaultRequest(BaseModel):
     """Auditor writes a root task-tree's vault narrative section."""
 
-        # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
     # cards and prompts display 8-char hex prefixes; a UUID-typed field
     # 422s them before any handler runs.
     task_id: str
