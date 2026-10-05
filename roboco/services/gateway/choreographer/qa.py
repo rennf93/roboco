@@ -106,6 +106,55 @@ def _extract_original_developer(task: Any) -> str | None:
 class QAMixin(_Base):
     """QA-role verbs."""
 
+    def _review_spec_context(self, agent: Any, qa_agent_id: UUID, t: Any) -> Any:
+        """The spec Context claim_review evaluates against: actor identity,
+        team, and the original developer the task came in from (used by the
+        spec's self-review block)."""
+        return spec_module.Context(
+            actor_id=qa_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+
+    async def _reclaim_warning_and_evidence(
+        self, qa_agent_id: UUID, t: Any, task_id: UUID
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Same-agent re-claim. Two shapes live here and the counter tells
+        them apart. Durability retry (count 1): the prior attempt
+        committed the claim but died before the agent could use the
+        evidence — re-attach it (that is what the retry is FOR, pinned by
+        test_claim_review_same_agent_retry_returns_evidence) with a
+        gentle steer. Loop re-claim (count 2+): the 2026-09-29 fleet
+        wedge, fe-qa re-claiming one task 385x — lean envelope, evidence
+        never rebuilt (the ~20k re-attach is the loop's fuel), firm
+        verdict steer."""
+        count = int(markers.get_marker(t, markers.QA_RECLAIM_COUNT, 0) or 0) + 1
+        markers.set_marker(t, markers.QA_RECLAIM_COUNT, count)
+        await self.task.session.commit()
+        if count == 1:
+            ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
+            return (
+                (
+                    "you ALREADY hold this review claim; the evidence below"
+                    " is re-attached in case your prior attempt was cut off."
+                    " Do NOT call claim_review again — issue the verdict:"
+                    " pass_review(...) to accept or fail_review(...) to"
+                    " request changes."
+                ),
+                ev.as_dict(),
+            )
+        return (
+            (
+                "claim_review ignored: you ALREADY hold this review claim"
+                f" (re-claim #{count}). No new review started, evidence"
+                " NOT rebuilt. Issue the verdict now — pass_review(...)"
+                " to accept or fail_review(...) to request changes — or"
+                " unclaim(...) to release the claim."
+            ),
+            None,
+        )
+
     async def claim_review(self, qa_agent_id: UUID, task_id: UUID) -> Envelope:
         """QA agent claims task in awaiting_qa for review.
 
@@ -148,12 +197,7 @@ class QAMixin(_Base):
                 task_id=task_id,
                 verb="claim_review",
             )
-        spec_ctx = spec_module.Context(
-            actor_id=qa_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
-            original_developer_slug=_extract_original_developer(t),
-        )
+        spec_ctx = self._review_spec_context(agent, qa_agent_id, t)
         decision = spec_module.can_invoke_intent(role, "claim_review", t, spec_ctx)
         if not decision.allowed:
             return await self._emit_rejection(
@@ -190,40 +234,14 @@ class QAMixin(_Base):
         if claim_rejection is not None:
             return claim_rejection
 
-        # Same-agent re-claim. Two shapes live here and the counter tells
-        # them apart. Durability retry (count 1): the prior attempt
-        # committed the claim but died before the agent could use the
-        # evidence — re-attach it (that is what the retry is FOR, pinned by
-        # test_claim_review_same_agent_retry_returns_evidence) with a
-        # gentle steer. Loop re-claim (count 2+): the 2026-09-29 fleet
-        # wedge, fe-qa re-claiming one task 385x — lean envelope, evidence
-        # never rebuilt (the ~20k re-attach is the loop's fuel), firm
-        # verdict steer.
+        # Same-agent re-claim shaping (durability retry vs fleet-loop lean
+        # envelope) lives in ``_reclaim_warning_and_evidence``.
         warning: str | None = None
         evidence: dict[str, Any] | None
         if reclaimed:
-            count = int(markers.get_marker(t, markers.QA_RECLAIM_COUNT, 0) or 0) + 1
-            markers.set_marker(t, markers.QA_RECLAIM_COUNT, count)
-            await self.task.session.commit()
-            if count == 1:
-                ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
-                evidence = ev.as_dict()
-                warning = (
-                    "you ALREADY hold this review claim; the evidence below"
-                    " is re-attached in case your prior attempt was cut off."
-                    " Do NOT call claim_review again — issue the verdict:"
-                    " pass_review(...) to accept or fail_review(...) to"
-                    " request changes."
-                )
-            else:
-                evidence = None
-                warning = (
-                    "claim_review ignored: you ALREADY hold this review claim"
-                    f" (re-claim #{count}). No new review started, evidence"
-                    " NOT rebuilt. Issue the verdict now — pass_review(...)"
-                    " to accept or fail_review(...) to request changes — or"
-                    " unclaim(...) to release the claim."
-                )
+            warning, evidence = await self._reclaim_warning_and_evidence(
+                qa_agent_id, t, task_id
+            )
         else:
             ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
             evidence = ev.as_dict()
@@ -271,16 +289,20 @@ class QAMixin(_Base):
         if to_python_uuid(t.active_claimant_id) != qa_agent_id:
             claimed = await self.task.qa_claim(qa_agent_id, task_id)
             if claimed is None:
-                return t, await self._emit_rejection(
-                    Envelope.not_authorized(
-                        message="this review task is already claimed by another agent",
-                        remediate="give_me_work for the next available task",
-                        context_briefing=briefing,
-                    ).with_introspection(task=t, role=role_str),
-                    agent_id=qa_agent_id,
-                    task_id=task_id,
-                    verb="claim_review",
-                ), False
+                return (
+                    t,
+                    await self._emit_rejection(
+                        Envelope.not_authorized(
+                            message="this review task is already claimed by another agent",  # noqa: E501
+                            remediate="give_me_work for the next available task",
+                            context_briefing=briefing,
+                        ).with_introspection(task=t, role=role_str),
+                        agent_id=qa_agent_id,
+                        task_id=task_id,
+                        verb="claim_review",
+                    ),
+                    False,
+                )
             t = claimed
             markers.clear_marker(t, markers.QA_RECLAIM_COUNT)
             await self.task.mark_evidence_inspected(task_id)
