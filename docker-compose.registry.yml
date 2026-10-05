@@ -471,6 +471,17 @@ services:
     image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-decisions:${ROBOCO_VERSION:-latest}
     container_name: roboco-decisions
     restart: unless-stopped
+    environment:
+      # Per-deploy RAM knobs. The 19GB Clef GGUF is the heavy tenant (mmap'd
+      # from the baked image, paged into RAM as the model touches it); the
+      # Laya backend is ~450MB. On a box that cannot hold Clef, set
+      # ROBOCO_SIDECAR_CLEF_ENABLED=false: the container serves the cheap
+      # Laya backend only and the orchestrator's tier ladder follows /health
+      # automatically (no config change above the sidecar). Both backends
+      # idle at ~zero CPU - llama.cpp is event-driven, inference only runs
+      # on a POST.
+      CLEF_ENABLED: ${ROBOCO_SIDECAR_CLEF_ENABLED:-true}
+      LAYA_ENABLED: ${ROBOCO_SIDECAR_LAYA_ENABLED:-true}
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3).status == 200 else 1)"]
       interval: 15s
