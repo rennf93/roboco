@@ -2,15 +2,19 @@
 
 The resolution chain (spec section 1), evaluated cheaply and in-process on
 every call: master flag off -> tier 3 (no verdict, the pre-Decisions
-floor). Laya tier enabled (default) and the ``roboco-decisions`` sidecar healthy
--> tier 1. Laya disabled by config or unhealthy -> OpenRouter IF opted in
-AND the AI Provider screen has a key -> tier 2. OpenRouter opted in but the
-key MISSING -> ONE ack-required CEO notification per boot (a missing key is
-config, not an incident) -> fall back to Laya if available, else the floor.
+floor). Clef tier enabled (default) and the sidecar's Clef backend healthy
+-> tier 1 (the sweet-spot default). Clef disabled/unhealthy -> the cheap
+self-hosted Laya backend IF enabled and healthy. Both self-hosted backends
+unavailable -> OpenRouter (Jev, the expensive option) IF opted in AND the
+AI Provider screen has a key. OpenRouter opted in but the key MISSING ->
+ONE ack-required CEO notification per boot (a missing key is config, not
+an incident) -> fall back to the self-hosted backends if available, else
+the floor.
 
 The selected tier is stamped into every ``session_id`` and every log line
-so shadow data stays attributable per backend (Laya is the calibration
-baseline; the OpenRouter fallback is stamped separately).
+so shadow data stays attributable per backend (Clef is the default
+serving tier; Laya is the cheap baseline; the OpenRouter fallback is
+stamped separately).
 """
 
 from __future__ import annotations
@@ -35,11 +39,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Cached sidecar health (spec 4): a GET /health probe with a 30s TTL instead
-# of a probe per call. An unhealthy sidecar resolves to the OpenRouter tier
-# (if opted in) or the floor for the cache window.
+# Cached sidecar per-backend health (spec 4): a GET /health probe with a 30s
+# TTL instead of a probe per call. The probe returns one body covering BOTH
+# self-hosted backends ({"clef": {...ok...}, "laya": {...ok...}}), so one
+# fetch feeds two cache entries. An unhealthy backend resolves past its tier
+# (unhealthy Clef -> the cheap Laya tier; both unhealthy -> OpenRouter if
+# opted in, or the floor) for the cache window.
 _HEALTH_TTL_SECONDS = 30.0
 _health_cache: dict[str, tuple[float, bool]] = {}
+_HEALTH_BODY_CACHE_KEY = "sidecar-health-body"
 
 # Cached OpenRouter fallback key (60s TTL): when the sidecar is unhealthy
 # and the fallback is opted in, every decision call would otherwise pay a
@@ -60,7 +68,10 @@ async def resolve_endpoint(session: AsyncSession) -> DecisionsEndpoint | None:
     if not settings.decisions_enabled:
         return None
 
-    if settings.decisions_tier_laya_enabled and await _sidecar_healthy():
+    if settings.decisions_tier_clef_enabled and await _backend_healthy("clef"):
+        return _clef_endpoint()
+
+    if settings.decisions_tier_laya_enabled and await _backend_healthy("laya"):
         return _laya_endpoint()
 
     openrouter = await _openrouter_endpoint(session)
@@ -69,7 +80,8 @@ async def resolve_endpoint(session: AsyncSession) -> DecisionsEndpoint | None:
 
     # The fallback is opted in but has no key (config, not an incident): one
     # ack-required CEO notification per boot naming the exact fix screen,
-    # then resolve to Laya for the process lifetime if it is available.
+    # then resolve to the self-hosted backends for the process lifetime if
+    # they are available.
     if (
         settings.decisions_tier_openrouter_enabled
         and not _BOOT_STATE["openrouter_key_warning_sent"]
@@ -84,7 +96,7 @@ async def check_openrouter_fallback_at_startup(session: AsyncSession) -> None:
     """Spec 4 startup key check: if the OpenRouter fallback is OPTED IN but
     the AI Provider screen has no OpenRouter key, fire the ONE ack-required
     CEO notification at boot, naming the exact fix screen, and resolve to
-    the Laya tier for the process lifetime. Shares the lazy path's
+    the self-hosted tiers for the process lifetime. Shares the lazy path's
     once-per-boot marker, so the two can never double-fire. Never raises
     (callers still wrap it: startup must never fail because of it)."""
     if not settings.decisions_enabled or not settings.decisions_tier_openrouter_enabled:
@@ -97,16 +109,26 @@ async def check_openrouter_fallback_at_startup(session: AsyncSession) -> None:
     _BOOT_STATE["openrouter_key_warning_sent"] = True
     logger.warning(
         "decisions OpenRouter fallback opted in with no key at startup; "
-        "resolving to the Laya tier for the process lifetime"
+        "resolving to the self-hosted tiers for the process lifetime"
     )
     await _notify_ceo_missing_openrouter_key(session)
+
+
+def _clef_endpoint() -> DecisionsEndpoint:
+    return DecisionsEndpoint(
+        tier="clef",
+        base_url=settings.decisions_base_url,
+        model=settings.decisions_model,
+        timeout_s=settings.decisions_clef_timeout_s,
+        api_key=None,
+    )
 
 
 def _laya_endpoint() -> DecisionsEndpoint:
     return DecisionsEndpoint(
         tier="laya",
         base_url=settings.decisions_base_url,
-        model=settings.decisions_model,
+        model=settings.decisions_laya_model,
         timeout_s=settings.decisions_timeout_s,
         api_key=None,
     )
@@ -162,28 +184,67 @@ async def _openrouter_api_key(session: AsyncSession) -> str | None:
     return api_key
 
 
-async def _sidecar_healthy() -> bool:
-    """Cached GET /health probe (30s TTL). Network trouble counts as
-    unhealthy for the window; never raises."""
+async def _backend_healthy(tier: str) -> bool:
+    """Cached per-backend GET /health probe (30s TTL, one HTTP fetch feeds
+    both tiers' cache entries). Network trouble counts as unhealthy for the
+    window; never raises. A legacy sidecar body without per-backend detail
+    (pre-Clef image) counts as healthy for whichever tier is probed: the
+    deploy swaps image and orchestrator together, and fail-open beats
+    fail-stuck during the overlap."""
     base = settings.decisions_base_url.rstrip("/")
     now = time.monotonic()
-    cached = _health_cache.get(base)
+    cached = _health_cache.get(tier)
     if cached is not None and now - cached[0] < _HEALTH_TTL_SECONDS:
         return cached[1]
-    healthy = False
+    body = await _probe_health_body(base)
+    ok = _tier_ok_from_body(body, tier)
+    _health_cache[tier] = (now, ok)
+    if not ok:
+        logger.warning(
+            "roboco-decisions backend unhealthy; decisions resolve past this tier",
+            tier=tier,
+            base_url=base,
+        )
+    return ok
+
+
+async def _probe_health_body(base: str) -> dict | None:
+    """One GET /health returning the parsed JSON body (or ``None``). The
+    body is also cached so the second tier's probe in the same window never
+    re-fetches."""
+    now = time.monotonic()
+    cached = _health_cache.get(_HEALTH_BODY_CACHE_KEY)
+    if cached is not None and now - cached[0] < _HEALTH_TTL_SECONDS:
+        return cached[1]
+    body = None
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.get(f"{base}/health")
-            healthy = response.status_code == httpx.codes.OK
-    except (httpx.HTTPError, OSError) as exc:
+            acceptable = (httpx.codes.OK, httpx.codes.SERVICE_UNAVAILABLE)
+            if response.status_code in acceptable:
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    body = parsed
+    except (httpx.HTTPError, ValueError, OSError) as exc:
         logger.debug("roboco-decisions health probe failed", error=str(exc))
-    _health_cache[base] = (now, healthy)
-    if not healthy:
-        logger.warning(
-            "roboco-decisions sidecar unhealthy; decisions resolve past the Laya tier",
-            base_url=base,
-        )
-    return healthy
+    _health_cache[_HEALTH_BODY_CACHE_KEY] = (now, body)
+    return body
+
+
+def _tier_ok_from_body(body: dict | None, tier: str) -> bool:
+    """Read one tier's health out of a /health body. Missing tier detail
+    (legacy body, backend disabled) counts as UNhealthy for a per-tier
+    probe only when the body explicitly names the tier as not ok; a body
+    with no per-tier shape at all is the legacy contract "sidecar is up =
+    serve"."""
+    if body is None:
+        return False
+    detail = body.get(tier)
+    if detail is None:
+        return not any(key in body for key in ("clef", "laya"))
+    if isinstance(detail, dict):
+        return bool(detail.get("ok", False))
+    return bool(detail)
 
 
 def reset_health_cache() -> None:

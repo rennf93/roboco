@@ -143,9 +143,10 @@ async def _apply_flag_overrides() -> None:
 async def _check_decisions_openrouter_key_at_startup() -> None:
     """Decisions spec 4 startup key check: OpenRouter fallback opted in but
     no OpenRouter key on the AI Provider screen means ONE ack-required CEO
-    notification naming the fix screen, and the resolver stays on the Laya
-    tier for the process lifetime. Best-effort: a failure here must never
-    block startup, the per-call lazy check still exists as a backstop."""
+    notification naming the fix screen, and the resolver stays on the
+    self-hosted tiers (Clef, then Laya) for the process lifetime.
+    Best-effort: a failure here must never block startup, the per-call lazy
+    check still exists as a backstop."""
     try:
         async with get_session_factory()() as decisions_db:
             await check_openrouter_fallback_at_startup(decisions_db)
@@ -194,7 +195,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Decisions (spec 4): if the OpenRouter fallback is opted in but the AI
     # Provider screen has no key, alert the CEO once now and resolve to the
-    # Laya tier for the process lifetime. Best-effort: never blocks startup.
+    # self-hosted tiers for the process lifetime. Best-effort: never blocks
+    # startup.
     await _check_decisions_openrouter_key_at_startup()
 
     # Initialize Phase 2 services

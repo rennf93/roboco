@@ -2812,7 +2812,7 @@ class DecisionLogTable(Base):
     # The action the caller took (or would have taken, in shadow).
     action: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
-    # Fallback-tier spend (Laya is 0 by construction).
+    # Fallback-tier spend (self-hosted tiers are 0 by construction).
     cost: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (

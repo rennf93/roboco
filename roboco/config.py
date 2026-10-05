@@ -365,13 +365,15 @@ class Settings(BaseSettings):
     # ==========================================================================
     # A small orchestrator-side service that answers TYPED questions (choice /
     # score / noul) with calibrated confidence at decision points that would
-    # otherwise be a full LLM call or a hardcoded heuristic. Two tiers behind
-    # one wire format: the self-hosted Laya sidecar (roboco-decisions container,
-    # built-in default, no key, no spend) and the OpenRouter Decisions API
-    # (opt-in fallback). With the master flag off, every call site does exactly
-    # what it did before this service existed; decisions can only add
-    # behavior, never subtract, and nothing ever materializes on a verdict
-    # alone. See docs/internal/decisions-spec.md.
+    # otherwise be a full LLM call or a hardcoded heuristic. Three tiers behind
+    # one wire format, all served by the roboco-decisions sidecar or the
+    # OpenRouter Decisions API: Clef (self-hosted 27B, built-in sweet-spot
+    # default, no key, no spend), Laya (self-hosted 421M, the cheap option,
+    # fallback when the Clef backend is unhealthy) and Jev via OpenRouter
+    # (opt-in, the expensive option). With the master flag off, every call
+    # site does exactly what it did before this service existed; decisions
+    # can only add behavior, never subtract, and nothing ever materializes on
+    # a verdict alone. See docs/internal/decisions-spec.md.
     decisions_enabled: bool = Field(
         default=False,
         description=(
@@ -382,11 +384,22 @@ class Settings(BaseSettings):
         ),
     )
     decisions_model: str = Field(
-        default="convaiinnovations/laya",
+        default="ggml-org/Clef-GGUF:Q4_K_M",
         description=(
-            "Checkpoint id reported to the Decisions backend. Vendor-neutral "
-            "by doctrine: the model slug appears only here, and swapping "
-            "checkpoint weights must never change anything above the client."
+            "Model id reported to the Decisions backend for the default tier. "
+            "For the self-hosted sidecar this doubles as the routing hint: "
+            "the sidecar routes a request to its Clef or Laya llama.cpp "
+            "backend by the model id on the wire. Vendor-neutral by "
+            "doctrine: swapping model weights must never change anything "
+            "above the client."
+        ),
+    )
+    decisions_laya_model: str = Field(
+        default="ggml-org/Laya-GGUF",
+        description=(
+            "Model id reported to the Decisions backend for the cheap "
+            "self-hosted Laya tier (routed to the sidecar's Laya llama.cpp "
+            "backend)."
         ),
     )
     decisions_base_url: str = Field(
@@ -398,12 +411,22 @@ class Settings(BaseSettings):
             "client stays one implementation."
         ),
     )
+    decisions_tier_clef_enabled: bool = Field(
+        default=True,
+        description=(
+            "Serve decisions from the self-hosted sidecar's Clef backend "
+            "(27B llama.cpp, the BUILT-IN sweet-spot default tier) when it "
+            "is healthy. Inert until the roboco-decisions container exists "
+            "and the master flag is on."
+        ),
+    )
     decisions_tier_laya_enabled: bool = Field(
         default=True,
         description=(
-            "Serve decisions from the self-hosted sidecar when it is healthy. "
-            "The BUILT-IN default tier. Inert until the roboco-decisions container "
-            "exists and the master flag is on."
+            "Serve decisions from the self-hosted sidecar's Laya backend "
+            "(421M llama.cpp, the CHEAP option) when the Clef backend is "
+            "disabled or unhealthy. Inert until the roboco-decisions "
+            "container exists and the master flag is on."
         ),
     )
     decisions_tier_openrouter_enabled: bool = Field(
@@ -419,8 +442,18 @@ class Settings(BaseSettings):
         default=5.0,
         gt=0,
         description=(
-            "Per-call timeout for the local CPU sidecar (single attempt, no "
-            "retries; sweep cadence is the natural backoff)."
+            "Per-call timeout for the cheap self-hosted Laya tier (single "
+            "attempt, no retries; sweep cadence is the natural backoff)."
+        ),
+    )
+    decisions_clef_timeout_s: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the default self-hosted Clef tier (single "
+            "attempt, no retries). The 27B forward pass over a capped state "
+            "is CPU prefill-bound: seconds on typical pilot states, tens of "
+            "seconds worst case. Measure on the real deploy before tuning."
         ),
     )
     decisions_openrouter_timeout_s: float = Field(
