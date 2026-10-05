@@ -113,8 +113,15 @@ jobs:
             [roboco-orchestrator]=docker/orchestrator.Dockerfile
             [roboco-panel]=docker/panel.Dockerfile
             [roboco-video-renderer]=docker/video-renderer.Dockerfile
-            # Decisions sidecar (the built-in Laya tier of the Decisions service): CPU-only
-            # onnxruntime, checkpoint baked at the pinned HF revision.
+            # Decisions sidecar (the self-hosted tiers of the Decisions
+            # service): CPU-only llama.cpp, two backends behind one proxy
+            # (Clef 27B sweet-spot default + Laya 421M cheap option). The
+            # Clef GGUF is 19GB, which is not CI-feasible (runner disk), so
+            # the published image bakes the LAYA tier only (FETCH_CLEF_WEIGHTS
+            # carve-out in the build loop below): clef-routed decisions
+            # degrade to the healthy Laya backend through /health. The
+            # Clef-baked default image is a NAS/Mac-side build (docker build
+            # --build-arg FETCH_CLEF_WEIGHTS=true, the Dockerfile default).
             [roboco-decisions]=docker/decisions.Dockerfile
             [roboco-sandbox-pg]=docker/sandbox-pg.Dockerfile
             [roboco-agent-pm]=docker/agent-pm.Dockerfile
@@ -156,7 +163,14 @@ jobs:
           )
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"
-            docker build -f "${IMAGES[$name]}" $(regtags "${name}") .
+            if [ "${name}" = "roboco-decisions" ]; then
+              # See the map comment above: the 19GB Clef GGUF is not
+              # CI-feasible; the published image bakes the Laya tier only.
+              docker build -f "${IMAGES[$name]}" \
+                --build-arg FETCH_CLEF_WEIGHTS=false $(regtags "${name}") .
+            else
+              docker build -f "${IMAGES[$name]}" $(regtags "${name}") .
+            fi
             echo "::endgroup::"
           done
 

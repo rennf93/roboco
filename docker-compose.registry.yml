@@ -487,8 +487,11 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      # Weights are baked into the image; the start period covers the 19GB
-      # Clef GGUF loading into RAM from disk.
+      # The PUBLISHED image bakes the cheap Laya tier only (the 19GB Clef
+      # GGUF is not CI-feasible; see release.yml) and loads in seconds. The
+      # start period stays generous because a Clef-baked image (a NAS/Mac-
+      # side docker build with FETCH_CLEF_WEIGHTS=true, the Dockerfile
+      # default) legitimately needs the full window for the cold load.
       start_period: 180s
 
   # --------------------------------------------------------------------------
