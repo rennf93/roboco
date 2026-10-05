@@ -9,13 +9,13 @@ name: Decisions sidecar
 # dead-ended the Laya tier - invisible to mocked adapters, caught live.
 #
 # Two jobs, both fail loudly:
-#   live-contract — venv-based: download the llama-b11361 ubuntu release
+#   live-contract, venv-based: download the llama-b11361 ubuntu release
 #     binary, serve the pinned Laya-GGUF through llama-server on 8111, run
 #     the proxy with CLEF_ENABLED=false, drive
 #     tests/integration/test_decisions_sidecar_live.py: /health shows laya
 #     ok + clef disabled, a laya-routed POST returns a real inference, and a
 #     clef-routed POST 503s cleanly. NEVER fetches the 19GB clef GGUF.
-#   image-build — builds docker/decisions.Dockerfile (validating the
+#   image-build, docker-based: builds docker/decisions.Dockerfile (validating the
 #     multi-stage llama.cpp build + weight fetch the NAS image build
 #     performs) with FETCH_CLEF_WEIGHTS=false and smokes the served
 #     container. Pushes only (not pull_request). The default-weight build
@@ -112,7 +112,7 @@ jobs:
             --no-webui \
             --metrics > /tmp/llama-laya.log 2>&1 &
           echo $! > /tmp/llama-laya.pid
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8111/health > /tmp/llama-health.json 2>/dev/null; then
               cat /tmp/llama-health.json
               exit 0
@@ -123,7 +123,7 @@ jobs:
           cat /tmp/llama-laya.log
           exit 1
 
-      - name: Start the sidecar proxy (clef disabled: no 19GB tier in CI)
+      - name: Start the sidecar proxy (clef disabled, no 19GB tier in CI)
         run: |
           CLEF_ENABLED=false \
             uv run python docker/decisions/server.py > /tmp/sidecar.log 2>&1 &
@@ -131,7 +131,7 @@ jobs:
 
       - name: Wait for /health and assert the degraded shape
         run: |
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8100/health > /tmp/health.json 2>/dev/null; then
               break
             fi
@@ -216,15 +216,15 @@ jobs:
       - name: Build the sidecar image (llama.cpp build + weight fetch)
         run: |
           docker build -f docker/decisions.Dockerfile \
-            --build-arg LLAMA_CPP_REF=${LLAMA_CPP_REF} \
-            --build-arg LAYA_HF_REVISION=${LAYA_HF_REVISION} \
-            --build-arg FETCH_CLEF_WEIGHTS=false \
+            --build-arg "LLAMA_CPP_REF=${LLAMA_CPP_REF}" \
+            --build-arg "LAYA_HF_REVISION=${LAYA_HF_REVISION}" \
+            --build-arg "FETCH_CLEF_WEIGHTS=false" \
             -t roboco-decisions:ci .
 
       - name: Run the image
         run: |
           docker run -d --name sidecar -e CLEF_ENABLED=false -p 8100:8100 roboco-decisions:ci
-          for i in $(seq 1 90); do
+          for _ in $(seq 1 90); do
             if curl -fsS http://127.0.0.1:8100/health > /tmp/health.json 2>/dev/null; then
               cat /tmp/health.json
               exit 0

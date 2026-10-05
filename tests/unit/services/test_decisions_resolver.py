@@ -233,7 +233,7 @@ class TestHealthBodyParsing:
             async def __aexit__(self, *a: object) -> None:
                 return None
 
-            async def get(self, url: str):
+            async def get(self, url: str) -> MagicMock:
                 nonlocal fetches
                 fetches += 1
                 response = MagicMock()

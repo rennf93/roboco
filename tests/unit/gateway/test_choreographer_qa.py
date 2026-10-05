@@ -822,7 +822,9 @@ async def test_fail_review_survives_savepoint_flush_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_claim_review_reclaim_steers_to_verdict() -> None:
+async def test_claim_review_reclaim_steers_to_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Same-agent re-claim: warning + verdict verbs, never a fresh review.
 
     The 2026-09-29 fleet loop: fe-qa re-claimed one awaiting_qa task 385x,
@@ -863,7 +865,8 @@ async def test_claim_review_reclaim_steers_to_verdict() -> None:
     # mid-assembly); only repeats 2+ go lean.
     ev_mock = MagicMock()
     ev_mock.as_dict.return_value = {"pr_number": _EXPECTED_PR_NUMBER}
-    c._build_qa_claim_evidence = AsyncMock(return_value=ev_mock)
+    evidence_mock = AsyncMock(return_value=ev_mock)
+    monkeypatch.setattr(c, "_build_qa_claim_evidence", evidence_mock)
 
     env1 = await c.claim_review(qa_id, task_id)
     b1 = env1.as_dict()
@@ -880,4 +883,4 @@ async def test_claim_review_reclaim_steers_to_verdict() -> None:
     assert "re-claim #2" in b2["warning"]
     assert b2["evidence"] == {}
     assert t.orchestration_markers["qa_reclaim_count"] == _LOOP_RECLAIM_COUNT
-    c._build_qa_claim_evidence.assert_awaited_once()
+    evidence_mock.assert_awaited_once()

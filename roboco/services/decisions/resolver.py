@@ -47,6 +47,9 @@ logger = structlog.get_logger(__name__)
 # opted in, or the floor) for the cache window.
 _HEALTH_TTL_SECONDS = 30.0
 _health_cache: dict[str, tuple[float, bool]] = {}
+# The raw /health body cache (one fetch feeds both tiers' probes). A
+# separate dict: its values are parsed bodies, not booleans.
+_health_body_cache: dict[str, tuple[float, dict | None]] = {}
 _HEALTH_BODY_CACHE_KEY = "sidecar-health-body"
 
 # Cached OpenRouter fallback key (60s TTL): when the sidecar is unhealthy
@@ -213,7 +216,7 @@ async def _probe_health_body(base: str) -> dict | None:
     body is also cached so the second tier's probe in the same window never
     re-fetches."""
     now = time.monotonic()
-    cached = _health_cache.get(_HEALTH_BODY_CACHE_KEY)
+    cached = _health_body_cache.get(_HEALTH_BODY_CACHE_KEY)
     if cached is not None and now - cached[0] < _HEALTH_TTL_SECONDS:
         return cached[1]
     body = None
@@ -227,7 +230,7 @@ async def _probe_health_body(base: str) -> dict | None:
                     body = parsed
     except (httpx.HTTPError, ValueError, OSError) as exc:
         logger.debug("roboco-decisions health probe failed", error=str(exc))
-    _health_cache[_HEALTH_BODY_CACHE_KEY] = (now, body)
+    _health_body_cache[_HEALTH_BODY_CACHE_KEY] = (now, body)
     return body
 
 
@@ -248,9 +251,10 @@ def _tier_ok_from_body(body: dict | None, tier: str) -> bool:
 
 
 def reset_health_cache() -> None:
-    """Test hook: drop the cached probe, the cached fallback key, and the
-    boot warning marker."""
+    """Test hook: drop the cached probes, the cached body, the cached
+    fallback key, and the boot warning marker."""
     _health_cache.clear()
+    _health_body_cache.clear()
     _api_key_cache.clear()
     _BOOT_STATE["openrouter_key_warning_sent"] = False
 
