@@ -1,8 +1,9 @@
-"""The one Decisions HTTP client, serving both tiers.
+"""The one Decisions HTTP client, serving all tiers.
 
 ``roboco-decisions`` (the self-hosted sidecar) mirrors the OpenRouter Decisions
 wire shape at ``/api/alpha/decisions``, so a single ``DecisionsClient``
-covers the Laya tier (no auth, internal bridge) and the OpenRouter fallback
+covers the self-hosted Clef tier (default, no auth, internal bridge), the
+cheap self-hosted Laya tier (same transport) and the OpenRouter fallback
 (bearer key, alpha endpoint). The resolver (``resolver.py``) picks the
 endpoint per call; this module only knows how to ask and parse.
 
@@ -49,25 +50,34 @@ _EXCERPT_CAP_CHARS = 2_000
 _DESC_CAP_CHARS = 4_000
 _DEFAULT_CAP_CHARS = 4_000
 
-# Stage-2 budget, Laya tier only: the default-serving Laya checkpoint
-# (convaiinnovations/laya, typed-decisions subfolder) is a 1024-token
-# ModernBERT with head_max_len=256, leaving roughly 768 tokens for state +
-# question text. This budget's 1800 chars serialize to roughly 450-600
-# tokens, fitting under that ceiling with headroom for the render
-# template. Anything still large after the per-key caps silently
-# truncates to mush inside the model, so the total budget is enforced
-# deterministically here. The per-key caps above stay stage 1 for BOTH
-# tiers (they are the billing guard for the OpenRouter fallback); this
-# stage-2 pass runs after them, laya only, and is charged for the
-# question text too (same context). When the questions alone exhaust the
-# budget, the state keeps the floor below so a few short fields still
-# mean something instead of arriving as pure mush. CAVEAT: the budget is
-# calibrated to the typed-decisions checkpoint; repointing
-# settings.decisions_model at the repo-root english checkpoint (512-token
-# context, head 192 - the overlong-truncation failure the Hummin gate
-# hit) requires halving this constant.
+# Stage-2 budget, Laya tier only: the Laya checkpoint (ggml-org/Laya-GGUF,
+# from convaiinnovations/laya typed-decisions) is a 1024-token ModernBERT
+# with head_max_len=256, leaving roughly 768 tokens for state + question
+# text. This budget's 1800 chars serialize to roughly 450-600 tokens,
+# fitting under that ceiling with headroom for the render template.
+# Anything still large after the per-key caps silently truncates to mush
+# inside the model, so the total budget is enforced deterministically
+# here. The per-key caps above stay stage 1 for BOTH tiers (they are the
+# billing guard for the OpenRouter fallback); this stage-2 pass runs after
+# them, laya only, and is charged for the question text too (same
+# context). When the questions alone exhaust the budget, the state keeps
+# the floor below so a few short fields still mean something instead of
+# arriving as pure mush.
 _LAYA_STATE_BUDGET_CHARS = 1_800
 _LAYA_MIN_STATE_BUDGET_CHARS = 240
+
+# Stage-2 budget, Clef tier: the 27B decision model runs a 16384-token
+# context on the sidecar's llama.cpp backend and reads the FULL rubric
+# tail (the failure that motivated the swap from the 1024-token Laya
+# checkpoint - a one-line rubric edit moved a score 0.13 -> 0.96 on Clef
+# in the Hummin calibration). 40k chars serialize to roughly 10-13k
+# tokens, leaving headroom for questions + the render template under the
+# 16k ceiling. The same deterministic budget pass as Laya runs here; only
+# the constant differs. Clef's own median readout is model-native
+# calibrated (single forward pass, softmax per question), so no
+# temperature refit rides this swap.
+_CLEF_STATE_BUDGET_CHARS = 40_000
+_CLEF_MIN_STATE_BUDGET_CHARS = 240
 
 # Keys whose informative content sits at the END of the text (CI logs,
 # tracebacks): keep the tail. Everything else keeps the head.
@@ -83,7 +93,7 @@ _CIRCUIT_OPEN_SECONDS = 300.0
 class DecisionsEndpoint:
     """A concrete Decisions backend the resolver selected for one call."""
 
-    tier: str  # "laya" | "openrouter"
+    tier: str  # "clef" | "laya" | "openrouter"
     base_url: str
     model: str
     timeout_s: float
@@ -164,7 +174,7 @@ _BUDGET_HEAD_SUFFIX = " ...[truncated]"
 
 
 def cap_state_to_budget(state: object, budget: int) -> object:
-    """Stage-2 total-budget cap (Laya tier only): while the serialized state
+    """Stage-2 total-budget cap (self-hosted tiers): while the serialized state
     exceeds ``budget`` chars, truncate the currently-longest string value
     (re-walking each pass is fine at these sizes) until under budget or
     nothing shrinkable remains. Truncation keeps the "...[truncated]" style
@@ -286,26 +296,30 @@ class DecisionsClient:
 
         # Two cap stages (spec 3.1): the per-key caps run first for BOTH
         # tiers - they are the billing guard for the OpenRouter fallback.
-        # The Laya tier additionally gets the deterministic total-budget
-        # pass, because its tiny model context turns any state still large
-        # after stage 1 into mush before a single verdict is rendered. The
-        # budget accounts for the QUESTION text too (it rides in the same
-        # ~1024-token context): the state gets whatever is left after the
+        # Both self-hosted tiers additionally get the deterministic
+        # total-budget pass (per-tier constant), because a model context
+        # turns any state still large after stage 1 into mush before a
+        # single verdict is rendered - Clef just tolerates ~22x more of it.
+        # The budget accounts for the QUESTION text too (it rides in the
+        # same context): the state gets whatever is left after the
         # serialized questions, so a wide batch shrinks the state instead
         # of silently overflowing the model. Questions are never truncated
         # themselves (a half instruction can invert a verdict); the floor
         # just keeps a few short fields alive when the questions alone
         # exhaust the budget.
         capped_state = cap_state(state)
-        if endpoint.tier == "laya":
+        if endpoint.tier in ("laya", "clef"):
             question_chars = len(
                 json.dumps(questions_payload, ensure_ascii=False, default=str)
             )
-            state_budget = max(
-                _LAYA_STATE_BUDGET_CHARS - question_chars,
-                _LAYA_MIN_STATE_BUDGET_CHARS,
+            total, floor = (
+                (_LAYA_STATE_BUDGET_CHARS, _LAYA_MIN_STATE_BUDGET_CHARS)
+                if endpoint.tier == "laya"
+                else (_CLEF_STATE_BUDGET_CHARS, _CLEF_MIN_STATE_BUDGET_CHARS)
             )
-            capped_state = cap_state_to_budget(capped_state, state_budget)
+            capped_state = cap_state_to_budget(
+                capped_state, max(total - question_chars, floor)
+            )
         state_json = json.dumps(capped_state, ensure_ascii=False, default=str)
 
         body = {

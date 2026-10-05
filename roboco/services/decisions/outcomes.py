@@ -68,7 +68,8 @@ CI_HARD_RED = "ci_hard_red"
 UPDATE_CAUSED_FAILURES = "update_caused_failures"
 UPDATE_RAN_CLEAN = "update_ran_clean"
 
-# Gold label shapes mirror the laya fine-tune corpus: per question key,
+# Gold label shapes mirror the laya fine-tune corpus (the export format
+# the serving checkpoints' fine-tune loops consume): per question key,
 # a probability map over the question's outcomes.
 #   noul:   {"true": p, "false": 1-p}   (the instruction's proposition)
 #   choice: {option_key: p, ...}

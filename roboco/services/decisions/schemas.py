@@ -87,7 +87,7 @@ class DecisionResult(BaseModel):
     needs (active tier, session id, full raw payload for logs).
 
     ``state`` and ``questions`` are stamped by the client with EXACTLY what
-    was sent on the wire (post per-key caps and post Laya total-budget
+    was sent on the wire (post per-key caps and post the tier's total-budget
     pass), so the persisted decision_log row carries the training corpus
     inputs: what the model saw, not what the caller originally passed.
     Both stay ``None`` on results built outside the client (tests, manual

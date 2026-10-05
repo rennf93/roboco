@@ -88,6 +88,7 @@ x-orchestrator-env: &orchestrator-env
   # .env / Settings -> Feature Flags.
   ROBOCO_DECISIONS_ENABLED: ${ROBOCO_DECISIONS_ENABLED:-false}
   ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-decisions:8100}
+  ROBOCO_DECISIONS_TIER_CLEF_ENABLED: ${ROBOCO_DECISIONS_TIER_CLEF_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
   # Spawn the PRE-BUILT agent images from the same registry instead of
@@ -457,9 +458,11 @@ services:
       start_period: 10s
 
   # --------------------------------------------------------------------------
-  # Decisions sidecar (the built-in Laya tier of the Decisions service) - CPU-only typed
-  # decisions over the official onnxruntime path. Inert until
-  # ROBOCO_DECISIONS_ENABLED goes on; shipping it changes nothing by
+  # Decisions sidecar (the built-in self-hosted tiers of the Decisions
+  # service) - CPU-only typed decisions over llama.cpp: a 27B Clef backend
+  # (sweet-spot default) and a 421M Laya backend (cheap fallback), each a
+  # llama-server speaking the System One protocol behind one proxy. Inert
+  # until ROBOCO_DECISIONS_ENABLED goes on; shipping it changes nothing by
   # itself. No DB, no git, no credentials. NO `networks:` key: joins the
   # implicit default network (roboco_default) next to ollama, NEVER
   # roboco_data, and never exposed through nginx or on a host port.
@@ -473,9 +476,9 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      # Weights are baked into the image; the start period only covers
-      # checkpoint load from disk + the calibration check.
-      start_period: 60s
+      # Weights are baked into the image; the start period covers the 19GB
+      # Clef GGUF loading into RAM from disk.
+      start_period: 180s
 
   # --------------------------------------------------------------------------
   # Agent image pre-pull (one-shot). Each pulls its published image then exits,

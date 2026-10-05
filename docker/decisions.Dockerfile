@@ -1,152 +1,154 @@
 # =============================================================================
-# Decisions sidecar (the built-in Laya tier of the Decisions service) - CPU-only
+# Decisions sidecar (the self-hosted tier of the Decisions service) - CPU-only
 # =============================================================================
-# Runs Laya (Convai Innovations' typed-decision models, Apache-2.0: library
-# github.com/NandhaKishorM/laya, weights convaiinnovations/laya, the
-# "typed-decisions" checkpoint) through the library's OFFICIAL onnxruntime
-# path (laya.onnx_agent.ONNXAgent; onnxruntime for inference) and mirrors the
-# OpenRouter Decisions wire shape at POST /api/alpha/decisions so
-# roboco/services/decisions/client.py speaks ONE implementation against both
-# tiers (docs/internal/decisions-spec.md sections 8 Stage 0.5 and 10).
+# Runs TWO llama.cpp decision servers behind the FastAPI proxy in
+# docker/decisions/server.py, mirroring the OpenRouter Decisions wire shape
+# at POST /api/alpha/decisions so roboco/services/decisions/client.py speaks
+# ONE implementation against the self-hosted tiers and the OpenRouter
+# fallback tier (docs/internal/decisions-spec.md sections 8 Stage 0.5 and 10).
+# Decision-model support is llama.cpp PR #29818; the FIRST tag carrying the
+# /v1/systemone endpoint is b11361 (b11352 predates the merge), so the pin
+# below is b11361.
 #
-# WHY THE BUILDER STAGE (verified against upstream v0.3.20 and live,
-# 2026-09-26): the typed-decisions HF subfolder ships model.safetensors +
-# rl_agent_config.json + encoder/ + tokenizer/ but NO ONNX file, and
-# ONNXAgent refuses to load without one ("run export_onnx.py first"). The
-# builder therefore exports laya.onnx (+ its external .data file) from the
-# torch checkpoint with upstream's own export script at the SAME pin as the
-# library, then drops the torch weights: the runtime stage serves through
-# onnxruntime and never runs torch inference (torch stays installed only
-# because laya's own package imports it at load time).
+#   - clef (default sweet spot): ggml-org/Clef-GGUF, a 27B decision model
+#     (Apache-2.0), Q4_K_M GGUF ~19.2GB, ctx 16384;
+#   - laya (cheap option): ggml-org/Laya-GGUF, a 421M ModernBERT decision
+#     model (Apache-2.0), Q8_0 GGUF ~449MB, ctx 4096.
 #
-# The export is fp32 (upstream's script has no quantization flag at this
-# pin): laya.onnx ~3.5MB of graph + laya.onnx.data ~1.7GB of external
-# weights, ~1-2GB RAM at inference - the spec's documented envelope. When
-# upstream ships int8 export, flip it HERE and nothing else changes.
+# The builder stage compiles llama-server CPU-only from the pinned tag; the
+# weight-fetch stage curls both GGUFs from the Hugging Face resolve URLs
+# pinned to full commit hashes. PRODUCTION BUILDS MUST KEEP THE FULL HASH
+# PINS: a moving "main" would bake different weights per build. No torch, no
+# onnxruntime, no laya pip package, no convaiinnovations/laya weights: the
+# ONNX era is gone, llama.cpp owns inference, and the model-native
+# calibration temperatures ride the GGUF metadata (no rl_agent_config.json
+# gate anywhere anymore).
+#
+# FETCH_CLEF_WEIGHTS=false exists for CI only: the image-build job validates
+# the multi-stage build and smokes the laya tier without pulling 19GB of
+# clef onto a shared runner (it runs the container with CLEF_ENABLED=false).
+# Production builds keep the default (true) and bake both weights.
 # =============================================================================
 
-FROM python:3.13-slim-bookworm AS builder
+FROM ubuntu:24.04 AS builder
 
-# LAYA_HF_REVISION pins the Hugging Face revision of the convaiinnovations/laya
-# checkpoint baked into the image below. PRODUCTION BUILDS MUST PIN THE FULL
-# COMMIT HASH: the default "main" tracks the moving branch, so two builds of
-# this Dockerfile can bake different weights. Build with e.g.
-#   docker build -f docker/decisions.Dockerfile --build-arg LAYA_HF_REVISION=<hash> .
-ARG LAYA_HF_REVISION=main
-
-# LAYA_LIB_TAG pins the laya LIBRARY revision installed in BOTH stages (the
-# weights pin above covers only the checkpoint) and the export script pulled
-# from the same tag, so loader, exporter, and runtime code can never drift
-# apart. Defaults to the v0.3.20 release tag (the version the Hummin gate's
-# calibration baseline was measured on; runtime fixes only, checkpoints
-# unchanged). PRODUCTION BUILDS SHOULD STILL PIN THE FULL COMMIT HASH: a tag
-# can be re-pointed upstream. server.py's _load_agent docstring depends on
-# ONNXAgent's signature at the pinned revision, so bump the pins together and
-# re-verify that docstring on every bump. Build with e.g.
-#   docker build -f docker/decisions.Dockerfile --build-arg LAYA_LIB_TAG=<ref> .
-ARG LAYA_LIB_TAG=v0.3.20
+# LLAMA_CPP_REF pins the llama.cpp source the serving binary is built from.
+# PRODUCTION BUILDS SHOULD PIN THE FULL TAG: a tag can be re-pointed
+# upstream, but b-tags are immutable release markers. The default is the
+# first release tag carrying /v1/systemone (see header).
+ARG LLAMA_CPP_REF=b11361
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
         git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" https://github.com/ggml-org/llama.cpp .
+
+# CPU-only build per docs/build.md at the pin: GGML_NATIVE=ON optimizes for
+# the build host's instruction set (the NAS image never leaves that host),
+# no CUDA/Vulkan/BLAS, static llama libs (BUILD_SHARED_LIBS=OFF), no tests
+# or examples, and no embedded web UI (LLAMA_BUILD_UI defaults OFF and the
+# entrypoint runs llama-server with --no-webui).
+RUN cmake -S . -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_NATIVE=ON \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=OFF \
+    && cmake --build build --target llama-server -j"$(nproc)"
+
+# ----------------------------------------------------------------------------
+# Weight fetch: both GGUFs from the HF resolve URLs, pinned to full commit
+# hashes. Kept in its own stage so a builder/toolchain change never re-dlds
+# 19GB and a weight re-pin never recompiles llama.cpp.
+# ----------------------------------------------------------------------------
+FROM debian:bookworm-slim AS weights
+
+# CLEF_HF_REVISION pins the ggml-org/Clef-GGUF revision (2026-10-02).
+ARG CLEF_HF_REVISION=5f70656b6670c65eb85ad07a11efe211b5f211bd
+ARG CLEF_GGUF_QUANT=Q4_K_M
+# LAYA_HF_REVISION pins the ggml-org/Laya-GGUF revision; Q8_0 (~449MB) is
+# the smallest F16/Q8 file in that repo (BF16 is ~844MB).
+ARG LAYA_HF_REVISION=22265007700297ba9e128297e82540cf28c5d7d4
+ARG FETCH_CLEF_WEIGHTS=true
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
-
-# Builder deps: torch from the CPU index FIRST (so the resolver keeps the
-# CPU wheel instead of pulling the CUDA build to satisfy laya's core dep),
-# then laya with the [onnx] extra (onnx + onnxruntime) and onnxscript
-# (required by torch>=2.13's ONNX exporter, verified live: without it
-# export fails with ModuleNotFoundError). huggingface_hub pulls the
-# checkpoint at build time.
-RUN uv pip install --system --no-cache \
-        torch \
-        --index-url https://download.pytorch.org/whl/cpu
-RUN uv pip install --system --no-cache \
-        "laya[onnx] @ git+https://github.com/NandhaKishorM/laya.git@${LAYA_LIB_TAG}" \
-        onnxscript \
-        huggingface_hub
-
-# Bake the typed-decisions checkpoint at build, pinned to LAYA_HF_REVISION
-# (see the ARG above). Only the typed-decisions subfolder is downloaded.
-RUN python - <<'EOF'
-import os
-
-from huggingface_hub import snapshot_download
-
-snapshot_download(
-    repo_id="convaiinnovations/laya",
-    revision=os.environ["LAYA_HF_REVISION"],
-    local_dir="/models",
-    allow_patterns=["typed-decisions/**"],
-)
-EOF
-
-# Export the ONNX graph + external weights from the torch checkpoint with
-# upstream's export script at the SAME tag as the installed library, then
-# drop the torch weights (nothing in the runtime reads them).
-RUN curl -fsSL \
-        "https://raw.githubusercontent.com/NandhaKishorM/laya/${LAYA_LIB_TAG}/scripts/export_onnx.py" \
-        -o /tmp/export_onnx.py \
-    && python /tmp/export_onnx.py \
-        --model /models/typed-decisions \
-        --output /models/typed-decisions/laya.onnx \
-    && rm /models/typed-decisions/model.safetensors
+RUN set -eux; \
+    clef_gguf="/models/Clef-${CLEF_GGUF_QUANT}.gguf"; \
+    if [ "${FETCH_CLEF_WEIGHTS}" = "true" ]; then \
+      curl -fsSL --retry 3 \
+        -o "$clef_gguf" \
+        "https://huggingface.co/ggml-org/Clef-GGUF/resolve/${CLEF_HF_REVISION}/Clef-${CLEF_GGUF_QUANT}.gguf"; \
+      [ -s "$clef_gguf" ]; \
+    fi; \
+    curl -fsSL --retry 3 \
+      -o /models/Laya-Q8_0.gguf \
+      "https://huggingface.co/ggml-org/Laya-GGUF/resolve/${LAYA_HF_REVISION}/Laya-Q8_0.gguf"; \
+    [ -s /models/Laya-Q8_0.gguf ]
 
 # ----------------------------------------------------------------------------
-# Runtime: onnxruntime inference only. torch is still installed (laya's own
-# package imports it at load time - laya.agent._fix_tokenizer_config runs on
-# every ONNXAgent construction), but never used for inference.
+# Runtime: python + the proxy, the llama-server binary, the GGUFs. NO torch,
+# NO onnxruntime, NO laya pip package, NO huggingface weights of
+# convaiinnovations/laya.
 # ----------------------------------------------------------------------------
-FROM python:3.13-slim-bookworm
+FROM python:3.12-slim-bookworm
 
-ARG LAYA_LIB_TAG=v0.3.20
-
+# llama-server's CPU backend uses OpenMP (GGML_OPENMP=ON): libgomp1 at
+# runtime, matching llama.cpp's own runtime image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git \
-        ca-certificates \
+        libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
+# Same install pattern as the pre-swap Dockerfile (uv pip --system, unpinned).
+# httpx is the proxy's async upstream transport; fastapi + uvicorn serve the
+# wire.
 RUN uv pip install --system --no-cache \
-        torch \
-        --index-url https://download.pytorch.org/whl/cpu
-RUN uv pip install --system --no-cache \
-        "laya[onnx] @ git+https://github.com/NandhaKishorM/laya.git@${LAYA_LIB_TAG}" \
         fastapi \
-        uvicorn \
-        huggingface_hub
+        httpx \
+        uvicorn
 
-COPY --from=builder /models /models
+COPY --from=builder /src/build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=weights /models /models
 
-# Checkpoint context math (verified against upstream + live, 2026-09): the
-# typed-decisions checkpoint is a 1024-token ModernBERT with
-# head_max_len=256, leaving roughly 768 tokens for state + question text -
-# the client's 1800-char total budget (~450-600 tokens) fits under it. Do
-# NOT repoint LAYA_SUBFOLDER at the repo-root english checkpoint without
-# halving that budget: it is a 512-token model (head 192), and overlong
-# reads silently truncate the rubric tail - the exact failure mode the
-# Hummin gate hit before it measured checkpoints. Calibration note: the
-# checkpoint ships fitted temperatures (choice/score/noul vector + per-
-# option-count buckets), and the server refuses to serve without them; the
-# choice:11+ bucket value is below upstream's clamp floor, so 12+-option
-# choices carry clamped-uncalibrated confidences - one more reason the
-# tool-spotlight pilot caps its option band at 20 and gates at 0.7. AMP
-# note: upstream documents AMP dtype as a probability-drift source (bf16
-# moves probabilities up to 0.073 vs fp32); if a calibration offset shows
-# up on this CPU sidecar, investigate LAYA_CPU_AMP before refitting.
-ENV LAYA_MODEL_ID=convaiinnovations/laya \
-    LAYA_SUBFOLDER=typed-decisions \
-    LAYA_MODELS_DIR=/models \
-    LAYA_HOST=0.0.0.0 \
-    LAYA_PORT=8100 \
+ARG CLEF_GGUF_QUANT=Q4_K_M
+
+ENV CLEF_MODEL_ID=ggml-org/Clef-GGUF:Q4_K_M \
+    LAYA_MODEL_ID=ggml-org/Laya-GGUF \
+    CLEF_GGUF_PATH=/models/Clef-${CLEF_GGUF_QUANT}.gguf \
+    LAYA_GGUF_PATH=/models/Laya-Q8_0.gguf \
+    CLEF_UPSTREAM_URL=http://127.0.0.1:8110 \
+    LAYA_UPSTREAM_URL=http://127.0.0.1:8111 \
+    UPSTREAM_TIMEOUT_S=120.0 \
+    CLEF_CTX_SIZE=16384 \
+    LAYA_CTX_SIZE=4096 \
+    LLAMA_THREADS=0 \
+    DECISIONS_HOST=0.0.0.0 \
+    DECISIONS_PORT=8100 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 COPY docker/decisions/server.py /app/server.py
+COPY docker/decisions/entrypoint.sh /app/entrypoint.sh
+RUN chmod 0755 /app/entrypoint.sh /usr/local/bin/llama-server
+
+# Same probe contract compose pins: python stdlib urllib against /health,
+# 200 = healthy. The image's start-period is longer than compose's 60s
+# because a standalone run also loads the 19GB clef GGUF from disk before
+# /health can answer 200.
+HEALTHCHECK --interval=15s --timeout=5s --retries=5 --start-period=180s \
+    CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3).status == 200 else 1)"]
 
 EXPOSE 8100
 
-CMD ["python", "server.py"]
+CMD ["/app/entrypoint.sh"]
