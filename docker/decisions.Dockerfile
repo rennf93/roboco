@@ -83,6 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
+    install -d -m 0755 /models; \
     clef_gguf="/models/Clef-${CLEF_GGUF_QUANT}.gguf"; \
     if [ "${FETCH_CLEF_WEIGHTS}" = "true" ]; then \
       curl -fsSL --retry 3 \
