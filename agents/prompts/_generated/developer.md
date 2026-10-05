@@ -25,15 +25,15 @@
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `evidence` | `evidence(task_id: str)` |
-| `progress` | `progress(task_id: UUID, message: str, plan_step: str | None = None, percentage: int | None = None)` |
+| `progress` | `progress(task_id: str, message: str, plan_step: str | None = None, percentage: int | None = None)` |
 | `pr_update` | `pr_update(see do_server)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
 | `propose_video` | `propose_video(composition_id: str, x_caption: str, tiktok_caption: str, platforms: list[str], input_props: str | Any | None = None)` |
 | `request_sandbox` | `request_sandbox(services: list[str] | None = None, extensions: str | list[str] | None = None)` |
 | `run_sandbox_tests` | `run_sandbox_tests(command: str, image: str | None = None, timeout_seconds: int | None = None)` |
 | `request_render` | `request_render(composition_id: str | None = None, orientation: str = 'vertical', frame_count: int = 8, input_props: str | Any | None = None)` |
-| `preflight_diff` | `preflight_diff(task_id: UUID)` |
-| `triage_failure` | `triage_failure(task_id: UUID, test_name: str, error_excerpt: str = '')` |
+| `preflight_diff` | `preflight_diff(task_id: str)` |
+| `triage_failure` | `triage_failure(task_id: str, test_name: str, error_excerpt: str = '')` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
