@@ -30,7 +30,11 @@
 # Production builds keep the default (true) and bake both weights.
 # =============================================================================
 
-FROM ubuntu:24.04 AS builder
+# The builder uses the SAME base as the runtime stage: a binary compiled
+# against ubuntu 24.04's glibc 2.39 does not load on Debian bookworm
+# (glibc 2.36, GLIBC_2.38 not found - the first image-build run died
+# exactly there). Same distro, same toolchain ABI, zero question marks.
+FROM python:3.12-slim-bookworm AS builder
 
 # LLAMA_CPP_REF pins the llama.cpp source the serving binary is built from.
 # PRODUCTION BUILDS SHOULD PIN THE FULL TAG: a tag can be re-pointed
@@ -86,12 +90,12 @@ RUN set -eux; \
     install -d -m 0755 /models; \
     clef_gguf="/models/Clef-${CLEF_GGUF_QUANT}.gguf"; \
     if [ "${FETCH_CLEF_WEIGHTS}" = "true" ]; then \
-      curl -fsSL --retry 3 \
+      curl -fsSL --http1.1 --retry 3 \
         -o "$clef_gguf" \
         "https://huggingface.co/ggml-org/Clef-GGUF/resolve/${CLEF_HF_REVISION}/Clef-${CLEF_GGUF_QUANT}.gguf"; \
       [ -s "$clef_gguf" ]; \
     fi; \
-    curl -fsSL --retry 3 \
+    curl -fsSL --http1.1 --retry 3 \
       -o /models/Laya-Q8_0.gguf \
       "https://huggingface.co/ggml-org/Laya-GGUF/resolve/${LAYA_HF_REVISION}/Laya-Q8_0.gguf"; \
     [ -s /models/Laya-Q8_0.gguf ]
