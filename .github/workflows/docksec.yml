@@ -1,0 +1,83 @@
+name: DockSec
+
+on:
+  push:
+    branches: [master, slave]
+    paths:
+      - 'docker/orchestrator.Dockerfile'
+      - 'docker/panel.Dockerfile'
+      - 'docker/agent-base.Dockerfile'
+      - 'docker/video-renderer.Dockerfile'
+      - 'docker/decisions.Dockerfile'
+      - 'docker/sandbox-pg.Dockerfile'
+      - '.github/workflows/docksec.yml'
+  pull_request:
+    paths:
+      - 'docker/orchestrator.Dockerfile'
+      - 'docker/panel.Dockerfile'
+      - 'docker/agent-base.Dockerfile'
+      - 'docker/video-renderer.Dockerfile'
+      - 'docker/decisions.Dockerfile'
+      - 'docker/sandbox-pg.Dockerfile'
+      - '.github/workflows/docksec.yml'
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan ${{ matrix.dockerfile }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile:
+          - docker/orchestrator.Dockerfile
+          - docker/panel.Dockerfile
+          - docker/agent-base.Dockerfile
+          - docker/video-renderer.Dockerfile
+          - docker/decisions.Dockerfile
+          - docker/sandbox-pg.Dockerfile
+    env:
+      DOCKERFILE: ${{ matrix.dockerfile }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Run DockSec
+        uses: OWASP/DockSec@d52c8e928552dc39003abda21ac6bc4662b06c39 # v2026.9.21
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+          scan_only: 'true'
+          sarif: 'true'
+          output_dir: ${{ github.workspace }}/docksec-results
+
+      - name: Point SARIF at the real file path
+        # DockSec records the scanned file by name only ("orchestrator.Dockerfile"), which Code
+        # Scanning would look up at the repo root. Rewrite it to the actual path so alerts land
+        # on the file.
+        run: |
+          mkdir sarif-out
+          for f in docksec-results/*.sarif; do
+            jq --arg p "$DOCKERFILE" \
+              '(.runs[].results[].locations[].physicalLocation.artifactLocation.uri) = $p' \
+              "$f" > "sarif-out/$(basename "$f")"
+          done
+
+      - name: Upload SARIF to Code Scanning
+        # Not `if: always()`: on a fork pull_request, GITHUB_TOKEN is read-only and this
+        # upload would fail every time, turning a routine fork contribution into a red
+        # required check. Skip it there instead of forcing a failure.
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@3ea06614dafe36dec890db3446326e0d40ce53d4 # v3
+        with:
+          sarif_file: sarif-out
+          category: docksec-${{ matrix.dockerfile }}
