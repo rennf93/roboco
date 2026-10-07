@@ -120,8 +120,9 @@ Pluggable external search/fetch for the Board + PM roles (`cell_pm`, `main_pm`, 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ROBOCO_RESEARCH_ENABLED` | `true` | Master switch. Ships default-**on** (unlike most feature flags): the `roboco-search` MCP server is mounted for the four research roles unless explicitly disabled. Panel-toggleable. Both NAS composes also set `ROBOCO_RESEARCH_ENABLED:-true` explicitly (redundant with the code default, but keeps the deploy's env self-documenting). |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | Adapter: `tavily` (LLM-native cited results + extract), `brave` (independent index, no fetch endpoint), `exa` (neural search + contents), or `null` (always-empty stub). Swapping providers is a config change only. |
-| `ROBOCO_RESEARCH_API_KEY` | (unset) | API key for the selected provider. Server-side only. Unset ⇒ graceful `NullProvider` (empty results, never a hard fail). |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | Adapter: `tavily` (LLM-native cited results + extract), `brave` (independent index, no fetch endpoint), `exa` (neural search + contents), `searxng` (self-hosted metasearch, keyless, no fetch endpoint, needs `ROBOCO_RESEARCH_SEARXNG_BASE_URL`), or `null` (always-empty stub). Swapping providers is a config change only. |
+| `ROBOCO_RESEARCH_API_KEY` | (unset) | API key for the selected provider. Server-side only. Unset ⇒ graceful `NullProvider` (empty results, never a hard fail). Not used by `searxng`, which keys off the base URL instead. |
+| `ROBOCO_RESEARCH_SEARXNG_BASE_URL` | (unset) | Base URL of the self-hosted SearXNG instance for the `searxng` adapter (e.g. `http://roboco-searxng:8080`, the container defined in the compose files). The instance must list `application/json` in its `search.formats` (the shipped `deploy/searxng/settings.yml` does). Unset with `searxng` selected ⇒ `NullProvider`. |
 | `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | Hard cap (1-20) on `web_search` results per call. |
 | `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | Hard cap on characters `web_fetch` returns; content past this is truncated. |
 | `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | Per-request timeout for outbound provider HTTP calls. |

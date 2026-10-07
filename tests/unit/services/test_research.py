@@ -23,6 +23,7 @@ from roboco.services.research import (
     ResearchUnsupportedError,
     SearchOutcome,
     SearchProvider,
+    SearXNGProvider,
     TavilyProvider,
     build_provider,
     get_research_service,
@@ -41,6 +42,10 @@ _FETCH_CAP = 20
 
 def _client(handler: Handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _noop(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200)
 
 
 # --------------------------------------------------------------------------- #
@@ -186,6 +191,68 @@ async def test_exa_search_and_fetch() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# SearXNG
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_searxng_search_parses_results_and_answers() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "searxng.internal"
+        assert request.url.path == "/search"
+        assert request.url.params["format"] == "json"
+        assert request.url.params["q"] == _QUERY
+        return httpx.Response(
+            200,
+            json={
+                "query": _QUERY,
+                "answers": ["42"],
+                "results": [
+                    {
+                        "title": "A",
+                        "url": "https://a.test",
+                        "content": "sa",
+                        "score": 0.9,
+                    },
+                    {"title": "B", "url": "https://b.test", "content": "sb"},
+                ],
+            },
+        )
+
+    client = _client(handler)
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal:8080/", timeout=5.0, client=client
+    )
+    out = await provider.search(_QUERY, _N_RESULTS)
+    assert out.provider == "searxng"
+    assert out.answer == "42"
+    assert [h.url for h in out.hits] == ["https://a.test", "https://b.test"]
+    assert out.hits[0].score == _TOP_SCORE
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_is_unsupported() -> None:
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal",
+        timeout=5.0,
+        client=_client(lambda _r: httpx.Response(200)),
+    )
+    with pytest.raises(ResearchUnsupportedError):
+        await provider.fetch("https://x.test", 100)
+
+
+@pytest.mark.asyncio
+async def test_searxng_configured_keys_off_base_url() -> None:
+    configured = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=_client(_noop)
+    )
+    unconfigured = SearXNGProvider(base_url="", timeout=5.0, client=_client(_noop))
+    assert configured.configured is True
+    assert unconfigured.configured is False
+
+
+# --------------------------------------------------------------------------- #
 # Error handling
 # --------------------------------------------------------------------------- #
 
@@ -244,12 +311,18 @@ def test_build_provider_selects_by_name() -> None:
     assert isinstance(build_provider("tavily", "k", 5.0), TavilyProvider)
     assert isinstance(build_provider("brave", "k", 5.0), BraveProvider)
     assert isinstance(build_provider("exa", "k", 5.0), ExaProvider)
+    assert isinstance(
+        build_provider("searxng", None, 5.0, searxng_base_url="http://s:8080"),
+        SearXNGProvider,
+    )
     assert isinstance(build_provider("null", "k", 5.0), NullProvider)
 
 
 def test_build_provider_null_when_no_key_or_unknown() -> None:
     assert isinstance(build_provider("tavily", None, 5.0), NullProvider)
     assert isinstance(build_provider("mystery", "k", 5.0), NullProvider)
+    # SearXNG degrades like every provider when its base URL is missing.
+    assert isinstance(build_provider("searxng", None, 5.0), NullProvider)
 
 
 # --------------------------------------------------------------------------- #
@@ -312,3 +385,15 @@ def test_get_research_service_uses_settings(monkeypatch: pytest.MonkeyPatch) -> 
     service = get_research_service()
     assert service.provider_name == "null"
     assert service.configured is False
+
+
+def test_get_research_service_searxng_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "research_provider", "searxng")
+    monkeypatch.setattr(
+        settings, "research_searxng_base_url", "http://roboco-searxng:8080"
+    )
+    service = get_research_service()
+    assert service.provider_name == "searxng"
+    assert service.configured is True

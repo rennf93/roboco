@@ -759,19 +759,30 @@ class Settings(BaseSettings):
     )
     research_provider: str = Field(
         default="tavily",
-        pattern="^(tavily|brave|exa|null)$",
+        pattern="^(tavily|brave|exa|searxng|null)$",
         description=(
             "Web-search provider adapter. 'tavily' (LLM-native cited results "
             "+ extract), 'brave' (independent index; no fetch), 'exa' "
-            "(neural search + contents), or 'null' (always-empty stub). "
-            "Swapping providers is a config change only."
+            "(neural search + contents), 'searxng' (self-hosted metasearch, "
+            "no API key, no fetch), or 'null' (always-empty stub). Swapping "
+            "providers is a config change only."
         ),
     )
     research_api_key: str | None = Field(
         default=None,
         description=(
             "API key for the selected research provider. Server-side only — "
-            "never reaches an agent container. Unset => NullProvider."
+            "never reaches an agent container. Unset => NullProvider. Not "
+            "used by 'searxng', which keys off research_searxng_base_url."
+        ),
+    )
+    research_searxng_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Base URL of the self-hosted SearXNG instance (e.g. "
+            "http://roboco-searxng:8080) for the 'searxng' provider. The "
+            "instance must allow the JSON format in its search.formats. "
+            "Server-side only; set/unset together with research_provider."
         ),
     )
     research_max_results: int = Field(

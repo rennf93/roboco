@@ -128,3 +128,29 @@ def test_nginx_mounts_front_include_dir_in_every_compose() -> None:
             "front/active-upstreams.conf is missing from the repo; the nginx "
             "include would 404 it and crash-loop roboco-nginx"
         )
+
+
+def test_searxng_service_is_internal_only_with_settings_mount() -> None:
+    """The SearXNG container (keyless metasearch for the research capability)
+    is internal-only by design: an open metasearch proxy exposed on a host
+    port or via nginx is abuse bait, and its JSON+limiter-off settings file
+    must ship with the repo or the instance boots with JSON disabled and the
+    provider gets HTTP 403s. Both compose files must therefore carry the
+    service with zero published ports and the settings bind mount."""
+    for name in _COMPOSE_FILES:
+        compose = yaml.safe_load((_REPO_ROOT / name).read_text())
+        service = compose["services"].get("searxng")
+        assert service is not None, f"{name}: searxng service missing"
+        assert not service.get("ports"), (
+            f"{name}: searxng must publish no host ports - it is internal-only"
+        )
+        volumes = [str(v) for v in (service.get("volumes") or [])]
+        assert any(v.startswith("./deploy/searxng/settings.yml") for v in volumes), (
+            f"{name}: searxng must mount ./deploy/searxng/settings.yml or the "
+            "instance boots with format=json disabled (403s on every search)"
+        )
+        # The mounted file must actually exist so a clean clone boots clean.
+        assert (_REPO_ROOT / "deploy" / "searxng" / "settings.yml").is_file(), (
+            "deploy/searxng/settings.yml is missing from the repo; the "
+            "searxng bind mount would be empty"
+        )
