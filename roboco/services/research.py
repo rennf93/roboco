@@ -285,6 +285,60 @@ class ExaProvider(SearchProvider):
         return _truncated_fetch(url, content, max_chars, self.name)
 
 
+class SearXNGProvider(SearchProvider):
+    """SearXNG: self-hosted metasearch aggregator, no API key.
+
+    Talks to a private instance's JSON endpoint (``/search?format=json``),
+    which must list ``application/json`` in the instance's ``search.formats``.
+    Configuration is the base URL only; ``configured`` keys off the URL, not
+    an API key. No content-extraction endpoint exists, so ``fetch`` follows
+    the Brave 501 pattern.
+    """
+
+    name = "searxng"
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        super().__init__(api_key=None, timeout=timeout, client=client)
+        self._base_url = base_url.rstrip("/")
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._base_url)
+
+    async def search(self, query: str, max_results: int) -> SearchOutcome:
+        body = await self._request_json(
+            "GET",
+            f"{self._base_url}/search",
+            params={"q": query, "format": "json"},
+        )
+        hits = [
+            SearchHit(
+                title=str(item.get("title", "")),
+                url=str(item.get("url", "")),
+                snippet=str(item.get("content", "") or item.get("snippet", "")),
+                score=_as_float(item.get("score")),
+            )
+            for item in body.get("results", [])
+            if isinstance(item, dict)
+        ]
+        answers = body.get("answers")
+        answer = (
+            next((str(a) for a in answers if a), None)
+            if isinstance(answers, list)
+            else None
+        )
+        # SearXNG has no result-count request parameter, so the cap is
+        # applied client-side after the fetch.
+        return SearchOutcome(
+            query=query, hits=hits[:max_results], answer=answer, provider=self.name
+        )
+
+
 class NullProvider(SearchProvider):
     """Graceful stub used when no provider key is configured.
 
@@ -319,8 +373,20 @@ def build_provider(
     api_key: str | None,
     timeout: float,
     client: httpx.AsyncClient | None = None,
+    searxng_base_url: str | None = None,
 ) -> SearchProvider:
-    """Construct the adapter for ``name`` — NullProvider when unconfigured."""
+    """Construct the adapter for ``name``: NullProvider when unconfigured.
+
+    SearXNG is the keyless exception: it needs a base URL instead of an API
+    key, so it is constructed (and gated on that URL) before the shared
+    ``api_key`` path below.
+    """
+    if name == "searxng":
+        if searxng_base_url:
+            return SearXNGProvider(
+                base_url=searxng_base_url, timeout=timeout, client=client
+            )
+        return NullProvider(api_key=None, timeout=timeout, client=client)
     if name == "null" or not api_key:
         return NullProvider(api_key=None, timeout=timeout, client=client)
     provider_cls = _PROVIDERS.get(name)
@@ -397,6 +463,7 @@ def get_research_service(
         settings.research_api_key,
         settings.research_timeout_seconds,
         client=client,
+        searxng_base_url=settings.research_searxng_base_url,
     )
     return ResearchService(
         provider,

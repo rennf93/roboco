@@ -195,6 +195,7 @@ x-orchestrator-env: &orchestrator-env
   # never reaches the container and both stay inert regardless.
   ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
   ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
+  ROBOCO_RESEARCH_SEARXNG_BASE_URL: ${ROBOCO_RESEARCH_SEARXNG_BASE_URL:-}
   ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
   ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
   # Spawn preflight — inert in practice (every real delivery role is
@@ -392,6 +393,26 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # Self-hosted metasearch for the web-research capability (keyless
+  # alternative to Tavily/Brave/Exa). Internal-only: no host port, never
+  # proxied by nginx. JSON format + limiter-off live in
+  # deploy/searxng/settings.yml. ~150-300 MB RAM, no GPU.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: roboco-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-roboco-internal-searxng}
+      SEARXNG_BASE_URL: http://roboco-searxng:8080/
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   ollama-init:
     image: curlimages/curl:latest

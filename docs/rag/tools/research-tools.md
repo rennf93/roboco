@@ -28,7 +28,11 @@ web_fetch(url="https://example.com/pricing", max_chars=5000)
 | `url` | yes | The page to extract readable content from. |
 | `max_chars` | no | Cap on returned characters, clamped server-side to `ROBOCO_RESEARCH_FETCH_MAX_CHARS` (default 20000). |
 
-Only works with providers that support content extraction (Tavily, Exa) — the response's `truncated` field tells you whether the content was cut at the cap. Brave has no extraction endpoint; calling `web_fetch` against it returns a "does not support web_fetch" error (HTTP 501 at the route, surfaced as an error envelope to the tool).
+Only works with providers that support content extraction (Tavily, Exa); the response's `truncated` field tells you whether the content was cut at the cap. Brave and SearXNG have no extraction endpoint; calling `web_fetch` against them returns a "does not support web_fetch" error (HTTP 501 at the route, surfaced as an error envelope to the tool).
+
+## Self-hosted provider (SearXNG)
+
+`ROBOCO_RESEARCH_PROVIDER=searxng` uses the self-hosted SearXNG container (`roboco-searxng`, defined in the compose files) instead of a paid API. It needs **no API key**: set `ROBOCO_RESEARCH_SEARXNG_BASE_URL` (e.g. `http://roboco-searxng:8080`) and it is live. It is a metasearch aggregator (Google, Bing, DuckDuckGo, Brave, ...) run inside the deployment's own network: no external search account, no per-query cost. Because there is no extraction endpoint, `web_fetch` follows the 501 pattern above. Without the base URL configured, the provider degrades to the same always-empty behavior as `null`.
 
 ## Cite-and-persist rules
 

@@ -112,9 +112,8 @@ def create_search_mcp_server(agent_id: str) -> MCPServer:
         """Fetch the readable content of a specific web page.
 
         Uses the configured provider's content-extraction endpoint, so it works
-        only with providers that support extraction (Tavily, Exa). Content is
-        truncated to the server's character cap.
-
+        only with providers that support extraction (Tavily, Exa; SearXNG and
+        Brave do not). Content is truncated to the server's character cap.
         Args:
             url: The page URL to extract.
             max_chars: Optional cap on returned characters (clamped server-side).

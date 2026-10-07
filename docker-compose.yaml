@@ -238,6 +238,7 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_RESEARCH_ENABLED: ${ROBOCO_RESEARCH_ENABLED:-true}
   ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
   ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
+  ROBOCO_RESEARCH_SEARXNG_BASE_URL: ${ROBOCO_RESEARCH_SEARXNG_BASE_URL:-}
   ROBOCO_PROVISIONING_ENABLED: ${ROBOCO_PROVISIONING_ENABLED:-true}
   ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
   ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
@@ -583,6 +584,34 @@ services:
         curl -sf http://ollama:11434/api/tags | grep -q "qwen3-embedding" || { echo "FATAL: qwen3-embedding missing and could not be pulled"; exit 1; }
         curl -sf http://ollama:11434/api/tags | grep -q "glm-5.3" || { echo "FATAL: glm-5.3 missing and could not be pulled"; exit 1; }
         echo "=== All models ready! ==="
+
+  # ==========================================================================
+  # SearXNG - Self-hosted metasearch for the web-research capability
+  # ==========================================================================
+  # Keyless alternative to Tavily/Brave/Exa (set
+  # ROBOCO_RESEARCH_PROVIDER=searxng + ROBOCO_RESEARCH_SEARXNG_BASE_URL to
+  # use it). Internal-only by design: no host port, never proxied by nginx:
+  # an exposed open metasearch instance is abuse bait. The JSON format and
+  # limiter-off live in deploy/searxng/settings.yml. The secret guards the
+  # instance's own cookies only; on an internal bridge with no auth surface
+  # the default is harmless, but override SEARXNG_SECRET in .env if the
+  # container is ever exposed deliberately.
+  # Resource note: ~150-300 MB RAM, one uwsgi worker, no GPU.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: roboco-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-roboco-internal-searxng}
+      SEARXNG_BASE_URL: http://roboco-searxng:8080/
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   # ==========================================================================
   # Video Renderer - sidecar for the video-generation engine (renders
