@@ -232,14 +232,71 @@ async def test_searxng_search_parses_results_and_answers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_searxng_fetch_is_unsupported() -> None:
+async def test_searxng_fetch_extracts_readability_text_locally() -> None:
+    html = (
+        "<html><head><title>t</title></head><body>"
+        "<nav>menu menu</nav><article><h1>Head</h1>"
+        "<p>Hello readable world.</p></article></body></html>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "93.184.216.34"
+        return httpx.Response(200, text=html)
+
+    client = _client(handler)
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=client
+    )
+    out = await provider.fetch("https://93.184.216.34/page", 1000)
+    assert "Hello readable world." in out.content
+    assert out.truncated is False
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_truncates_to_cap() -> None:
+    html = f"<html><body><p>{'word ' * 200}</p></body></html>"
+    client = _client(lambda _r: httpx.Response(200, text=html))
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=client
+    )
+    out = await provider.fetch("https://93.184.216.34/page", _TRUNC_CAP)
+    assert len(out.content) == _TRUNC_CAP
+    assert out.truncated is True
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_non_2xx_raises() -> None:
+    client = _client(lambda _r: httpx.Response(404, text="gone"))
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=client
+    )
+    with pytest.raises(ResearchError):
+        await provider.fetch("https://93.184.216.34/page", 100)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8000/api",  # loopback
+        "http://169.254.169.254/latest/meta-data",  # cloud metadata
+        "http://roboco-postgres:5432/",  # internal name, unresolvable/RFC1918
+        "ftp://93.184.216.34/file",  # non-http scheme
+    ],
+)
+async def test_searxng_fetch_refuses_non_public_urls(url: str) -> None:
     provider = SearXNGProvider(
         base_url="http://searxng.internal",
         timeout=5.0,
-        client=_client(lambda _r: httpx.Response(200)),
+        client=_client(
+            lambda _r: httpx.Response(200, text="<html><body>x</body></html>")
+        ),
     )
-    with pytest.raises(ResearchUnsupportedError):
-        await provider.fetch("https://x.test", 100)
+    with pytest.raises(ResearchError):
+        await provider.fetch(url, 100)
 
 
 @pytest.mark.asyncio
@@ -385,6 +442,12 @@ def test_get_research_service_uses_settings(monkeypatch: pytest.MonkeyPatch) -> 
     service = get_research_service()
     assert service.provider_name == "null"
     assert service.configured is False
+
+
+def test_default_provider_is_self_hosted_searxng() -> None:
+    """The stock stack ships keyless: the default provider is the bundled
+    SearXNG container, not a paid API. Compose env defaults mirror this."""
+    assert settings.research_provider == "searxng"
 
 
 def test_get_research_service_searxng_from_settings(
