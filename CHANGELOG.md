@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Self-hosted SearXNG web research (the new default provider).** The research capability (Board + PM `web_search` / `web_fetch`) no longer requires a paid API: a keyless `searxng` provider talks to a bundled `roboco-searxng` container (all three compose files, internal-only, no host port, no nginx route; `deploy/searxng/settings.yml` enables `format=json` and disables the public-instance limiter; ~150-300 MB RAM). `web_fetch` on SearXNG downloads the page server-side and extracts readable text locally via trafilatura, guarded against SSRF: agent-supplied URLs must resolve to public addresses, so the orchestrator's internal network (DB, Redis, metadata) is unreachable through it. Tavily/Brave/Exa remain opt-in paid fallbacks via `.env`.
+
 ## [0.31.0] - 2026-09-17
 
 ### Added

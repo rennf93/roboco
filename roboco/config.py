@@ -758,14 +758,16 @@ class Settings(BaseSettings):
         ),
     )
     research_provider: str = Field(
-        default="tavily",
+        default="searxng",
         pattern="^(tavily|brave|exa|searxng|null)$",
         description=(
-            "Web-search provider adapter. 'tavily' (LLM-native cited results "
-            "+ extract), 'brave' (independent index; no fetch), 'exa' "
-            "(neural search + contents), 'searxng' (self-hosted metasearch, "
-            "no API key, no fetch), or 'null' (always-empty stub). Swapping "
-            "providers is a config change only."
+            "Web-search provider adapter. 'searxng' (DEFAULT: self-hosted "
+            "metasearch via the bundled roboco-searxng container, no API "
+            "key, needs research_searxng_base_url), 'tavily' (LLM-native "
+            "cited results + extract; opt-in paid fallback), 'brave' "
+            "(independent index; no fetch), 'exa' (neural search + "
+            "contents), or 'null' (always-empty stub). Swapping providers "
+            "is a config change only."
         ),
     )
     research_api_key: str | None = Field(
@@ -781,8 +783,9 @@ class Settings(BaseSettings):
         description=(
             "Base URL of the self-hosted SearXNG instance (e.g. "
             "http://roboco-searxng:8080) for the 'searxng' provider. The "
-            "instance must allow the JSON format in its search.formats. "
-            "Server-side only; set/unset together with research_provider."
+            "compose files default this to the bundled roboco-searxng "
+            "container so the stock stack is live out of the box. Server-"
+            "side only; set/unset together with research_provider."
         ),
     )
     research_max_results: int = Field(
