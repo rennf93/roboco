@@ -228,17 +228,17 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_STRATEGY_ENGINE_ENABLED: ${ROBOCO_STRATEGY_ENGINE_ENABLED:-true}
   ROBOCO_INTERNAL_PR_ENABLED: ${ROBOCO_INTERNAL_PR_ENABLED:-true}
   # Remaining default-OFF capabilities, ARMED here (personal deploy): web
-  # research (inert without ROBOCO_RESEARCH_API_KEY → empty results — the
-  # two lines below are what actually gets the .env key/provider into the
-  # container; without them .env values never reach it), pitch
+  # research (live by default via the bundled searxng container; the
+  # three lines below are what actually gets the .env key/provider/URL into
+  # the container; without them .env values never reach it), pitch
   # auto-provisioning (inert until a pitch is approved + a git token is
   # set — same deal for ROBOCO_PROVISIONING_TOKEN/_ORG below), and
   # transcript pruning (retention maintenance). All left OFF in the
   # registry compose. Override any via .env.
   ROBOCO_RESEARCH_ENABLED: ${ROBOCO_RESEARCH_ENABLED:-true}
   ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
-  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
-  ROBOCO_RESEARCH_SEARXNG_BASE_URL: ${ROBOCO_RESEARCH_SEARXNG_BASE_URL:-}
+  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-searxng}
+  ROBOCO_RESEARCH_SEARXNG_BASE_URL: ${ROBOCO_RESEARCH_SEARXNG_BASE_URL:-http://roboco-searxng:8080}
   ROBOCO_PROVISIONING_ENABLED: ${ROBOCO_PROVISIONING_ENABLED:-true}
   ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
   ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
@@ -588,9 +588,9 @@ services:
   # ==========================================================================
   # SearXNG - Self-hosted metasearch for the web-research capability
   # ==========================================================================
-  # Keyless alternative to Tavily/Brave/Exa (set
-  # ROBOCO_RESEARCH_PROVIDER=searxng + ROBOCO_RESEARCH_SEARXNG_BASE_URL to
-  # use it). Internal-only by design: no host port, never proxied by nginx:
+  # The DEFAULT research provider (config default is searxng; the orchestrator
+  # env block points ROBOCO_RESEARCH_SEARXNG_BASE_URL at this container).
+  # Tavily/Brave/Exa remain opt-in via .env. Internal-only by design: no host port, never proxied by nginx:
   # an exposed open metasearch instance is abuse bait. The JSON format and
   # limiter-off live in deploy/searxng/settings.yml. The secret guards the
   # instance's own cookies only; on an internal bridge with no auth surface

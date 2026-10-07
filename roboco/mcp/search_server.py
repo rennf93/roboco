@@ -111,9 +111,9 @@ def create_search_mcp_server(agent_id: str) -> MCPServer:
     async def web_fetch(url: str, max_chars: int | None = None) -> dict[str, Any]:
         """Fetch the readable content of a specific web page.
 
-        Uses the configured provider's content-extraction endpoint, so it works
-        only with providers that support extraction (Tavily, Exa; SearXNG and
-        Brave do not). Content is truncated to the server's character cap.
+        Uses the configured provider's content extraction: a remote endpoint
+        (Tavily, Exa) or SearXNG's local extractor. Brave has none. Content
+        is truncated to the server's character cap.
         Args:
             url: The page URL to extract.
             max_chars: Optional cap on returned characters (clamped server-side).

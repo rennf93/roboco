@@ -194,8 +194,8 @@ x-orchestrator-env: &orchestrator-env
   # the key/token passthrough — without them a real value set in .env
   # never reaches the container and both stay inert regardless.
   ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
-  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
-  ROBOCO_RESEARCH_SEARXNG_BASE_URL: ${ROBOCO_RESEARCH_SEARXNG_BASE_URL:-}
+  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-searxng}
+  ROBOCO_RESEARCH_SEARXNG_BASE_URL: ${ROBOCO_RESEARCH_SEARXNG_BASE_URL:-http://roboco-searxng:8080}
   ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
   ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
   # Spawn preflight — inert in practice (every real delivery role is
