@@ -13,7 +13,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "hyperframes": "0.7.36",
+    "hyperframes": "0.7.111",
     "vitest": "^4.0.0"
   }
 }
