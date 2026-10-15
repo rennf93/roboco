@@ -297,7 +297,7 @@ class SearXNGProvider(SearchProvider):
     """SearXNG: self-hosted metasearch aggregator, no API key.
 
     Search talks to a private instance's JSON endpoint
-    (``/search?format=json``), which must list ``application/json`` in the
+    (``/search?format=json``), which must list ``json`` in the
     instance's ``search.formats``. Configuration is the base URL only;
     ``configured`` keys off the URL, not an API key.
 
