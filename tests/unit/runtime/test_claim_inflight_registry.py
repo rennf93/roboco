@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.runtime.orchestrator import AgentOrchestrator, AgentReadinessError
 
 
@@ -368,8 +369,6 @@ async def test_claim_task_for_agent_returns_true_on_200() -> None:
 
 @pytest.mark.asyncio
 async def test_claim_task_for_agent_uses_slow_verb_timeout() -> None:
-    from roboco.config import settings
-
     orch = _orch()
     client = AsyncMock()
     client.post = AsyncMock(return_value=_Resp(200))
