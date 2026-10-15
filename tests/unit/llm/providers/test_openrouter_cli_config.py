@@ -402,7 +402,9 @@ def test_render_config_sets_mcp_timeout_above_slow_verb_budget() -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
         json.dump(_SAMPLE_MCP, fh)
     cfg = oc.render_config("developer", "m", "https://x/v1", fh.name)
-    assert (
-        cfg["experimental"]["mcp_timeout"]
-        == (oc.settings.flow_verb_slow_timeout_seconds + 60) * 1000
-    )
+    budget_ms = (oc.settings.flow_verb_slow_timeout_seconds + 60) * 1000
+    assert cfg["experimental"]["mcp_timeout"] == budget_ms
+    # opencode's per-server default (5000 ms) also bounds startup; the gateway
+    # servers need longer, so every server carries the full budget.
+    assert cfg["mcp"]
+    assert all(block["timeout"] == budget_ms for block in cfg["mcp"].values())

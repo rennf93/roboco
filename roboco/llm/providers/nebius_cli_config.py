@@ -427,17 +427,18 @@ def render_config(
     }
     mcp = render_mcp_block(_load_mcp_config(mcp_config_path))
     if mcp:
+        # Claim verbs take minutes: outlast the flow server's slow-verb budget
+        # plus headroom. On opencode v1.19.0 a per-server ``timeout`` overrides
+        # ``experimental.mcp_timeout`` for tool calls AND bounds startup, and it
+        # defaults to 5000 ms (https://opencode.ai/config.json). The four gateway
+        # servers need ~11s to come up together on the NAS (2026-10-15), so at
+        # the default every one was marked failed and the agent ran with no
+        # gateway tools. Same budget per server and under the deprecated key.
+        budget_ms = (settings.flow_verb_slow_timeout_seconds + 60) * 1000
+        for block in mcp.values():
+            block["timeout"] = budget_ms
         config["mcp"] = mcp
-        # On opencode v1.19.0 (packages/opencode/src/mcp/index.ts) a per-server
-        # ``timeout`` overrides ``experimental.mcp_timeout`` for tool calls, and
-        # ``mcp_timeout`` is marked deprecated in https://opencode.ai/config.json
-        # (newer core uses mcp timeout.execution, default 12h). We set only
-        # ``experimental.mcp_timeout`` and no per-server ``timeout``, so calls get
-        # this long budget (claim verbs take minutes: outlast the flow server's
-        # slow-verb budget plus headroom); a per-server ``timeout`` would cap them.
-        config["experimental"] = {
-            "mcp_timeout": (settings.flow_verb_slow_timeout_seconds + 60) * 1000
-        }
+        config["experimental"] = {"mcp_timeout": budget_ms}
     return config
 
 
