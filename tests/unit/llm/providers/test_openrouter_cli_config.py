@@ -161,9 +161,10 @@ def test_render_mcp_block_passthrough_with_env() -> None:
         "-m",
         "roboco.mcp.flow_server",
     ]
-    assert flow["env"]["ROBOCO_AGENT_TOKEN"] == "tok-123"
+    assert flow["environment"]["ROBOCO_AGENT_TOKEN"] == "tok-123"
+    assert "env" not in flow
     do = rendered["roboco-do"]
-    assert "env" not in do  # no env in source → no env in rendered
+    assert "env" not in do and "environment" not in do
 
 
 def test_render_mcp_block_empty_servers() -> None:
@@ -390,3 +391,18 @@ def test_main_check_flag_fails_when_key_missing(
     monkeypatch.setattr(oc, "OPENCODE_CONFIG_PATH", tmp_path / "opencode.json")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     assert oc.main(["--check"]) == 1
+
+
+def test_render_config_sets_mcp_timeout_above_slow_verb_budget() -> None:
+    cfg = oc.render_config("developer", "m", "https://x/v1", "/nonexistent.json")
+    assert "experimental" not in cfg  # no mcp servers -> no override
+    import json
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(_SAMPLE_MCP, fh)
+    cfg = oc.render_config("developer", "m", "https://x/v1", fh.name)
+    assert (
+        cfg["experimental"]["mcp_timeout"]
+        == (oc.settings.flow_verb_slow_timeout_seconds + 60) * 1000
+    )

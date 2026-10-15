@@ -97,14 +97,42 @@ fi
 RUN_LOG="/tmp/openrouter-run.jsonl"
 ERR_LOG="/tmp/openrouter-run.err"
 
+# opencode's `run` exits as soon as a model turn makes no tool call, so an
+# agent that stops talking before a terminal gateway verb would just exit
+# (the Claude runtime blocks that stop; opencode has no equivalent). After a
+# clean rc 0 with no terminal verb in RUN_LOG, re-run up to 2 more times with
+# `--continue` (resume the last session) and a nudge. Logs are appended so the
+# usage + sniff reads below see every run. Verb names mirror _TERMINAL_TOOLS
+# in roboco/agent_sdk/server.py plus the PM/reviewer verbs; opencode names MCP
+# tools `<server>_<tool>`, so the JSONL carries `"tool":"roboco-flow_<verb>"`.
+# A terminal call the gateway REJECTED still counts (opencode emits tool_use for
+# any completed call), so no retry follows it.
+TERMINAL_RE='"tool": ?"roboco-(flow|do)_(i_am_idle|i_am_done|i_am_blocked|i_documented|unclaim|pass_review|fail_review|pr_pass|pr_fail|complete|submit_up|submit_root|escalate_up|escalate_to_ceo)"'
+run_opencode() {  # $1 = prompt; $2 = optional "--continue" (also appends to RUN_LOG)
+  local extra=() append=()
+  if [ -n "${2:-}" ]; then extra=("$2"); append=(-a); fi
+  opencode run "$1" "${extra[@]}" \
+    --agent roboco \
+    --model "${ROBOCO_AGENT_MODEL:-openrouter/anthropic/claude-sonnet-4}" \
+    --auto \
+    --format json \
+    < /dev/null 2>> "$ERR_LOG" | tee "${append[@]}" "$RUN_LOG"
+  return "${PIPESTATUS[0]}"
+}
+
+: > "$ERR_LOG"
 set +e
-opencode run "${ROBOCO_INITIAL_PROMPT:-}" \
-  --agent roboco \
-  --model "${ROBOCO_AGENT_MODEL:-openrouter/anthropic/claude-sonnet-4}" \
-  --auto \
-  --format json \
-  < /dev/null 2> "$ERR_LOG" | tee "$RUN_LOG"
-run_rc=${PIPESTATUS[0]}
+run_opencode "${ROBOCO_INITIAL_PROMPT:-}"
+run_rc=$?
+for _ in 1 2; do
+  if [ "$run_rc" -ne 0 ] || grep -Eq "$TERMINAL_RE" "$RUN_LOG"; then break; fi
+  # Do not hit a rate-limited or key-broken provider again; the sniff below maps it.
+  SNIFF="$( (cd /app && python -m roboco.llm.providers.openrouter_cli_sniff "$RUN_LOG" "$ERR_LOG") 2>/dev/null || true)"
+  if [ "$SNIFF" = "rate_limit" ] || [ "$SNIFF" = "auth" ]; then break; fi
+  echo "[openrouter] no terminal verb called - continuing the session." >&2
+  run_opencode "Continue: call the next gateway verb named in the last envelope's next or remediate; stop only after a terminal verb." --continue
+  run_rc=$?
+done
 set -e
 [ -s "$ERR_LOG" ] && cat "$ERR_LOG" >&2
 

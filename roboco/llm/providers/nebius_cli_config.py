@@ -309,7 +309,11 @@ def render_mcp_block(mcp_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         }
         env = spec.get("env") or {}
         if env:
-            block["env"] = {str(k): str(v) for k, v in env.items()}
+            # opencode reads ``environment`` for local MCP servers, NOT ``env``
+            # (https://opencode.ai/docs/mcp-servers, local options table:
+            # "environment  Object  Environment variables to set when running
+            # the server"). Under ``env`` the servers start with no identity.
+            block["environment"] = {str(k): str(v) for k, v in env.items()}
         servers[str(name)] = block
     return servers
 
@@ -424,6 +428,16 @@ def render_config(
     mcp = render_mcp_block(_load_mcp_config(mcp_config_path))
     if mcp:
         config["mcp"] = mcp
+        # On opencode v1.19.0 (packages/opencode/src/mcp/index.ts) a per-server
+        # ``timeout`` overrides ``experimental.mcp_timeout`` for tool calls, and
+        # ``mcp_timeout`` is marked deprecated in https://opencode.ai/config.json
+        # (newer core uses mcp timeout.execution, default 12h). We set only
+        # ``experimental.mcp_timeout`` and no per-server ``timeout``, so calls get
+        # this long budget (claim verbs take minutes: outlast the flow server's
+        # slow-verb budget plus headroom); a per-server ``timeout`` would cap them.
+        config["experimental"] = {
+            "mcp_timeout": (settings.flow_verb_slow_timeout_seconds + 60) * 1000
+        }
     return config
 
 

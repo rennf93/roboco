@@ -20,6 +20,7 @@ from roboco.config import settings
 from roboco.llm.providers import NebiusProvider, ProviderError, SpawnResult
 from roboco.llm.providers import nebius as nebius_module
 from roboco.models.runtime import OrchestratorAgentConfig
+from roboco.seeds.initial_data import AGENT_UUIDS
 
 
 def test_nebius_cli_model_is_a_real_settings_field() -> None:
@@ -224,7 +225,7 @@ async def test_nebius_spawn_wires_gateway_env_and_image_last() -> None:
         result = await provider.spawn(_config())
     cmd = list(exec_mock.call_args.args)
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
-    assert "ROBOCO_AGENT_ID=be-dev-1" in cmd
+    assert f"ROBOCO_AGENT_ID={AGENT_UUIDS['be-dev-1']}" in cmd
     # The env carries the opencode model REF (opencode's own provider id
     # prefixing the bare catalog id) - the entrypoint passes it straight to
     # --model; unprefixed, opencode resolves it against its built-in
