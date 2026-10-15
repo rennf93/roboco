@@ -18,10 +18,16 @@ COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
+# UV_COMPILE_BYTECODE: every spawn is a fresh container, so without shipped
+# .pyc each agent's four MCP gateway servers recompile the whole venv + roboco
+# in parallel at startup (a cold flow_server import measured 8.5s on the NAS,
+# 2026-10-15). opencode starts its model loop without waiting for them and
+# marked all four failed - the agent ran with no gateway tools.
 ENV UV_HTTP_TIMEOUT=300 \
     UV_CONCURRENT_DOWNLOADS=4 \
     UV_LINK_MODE=copy \
-    UV_PYTHON_PREFERENCE=only-system
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_COMPILE_BYTECODE=1
 
 # Use base-image Python so venv symlinks stay valid after COPY to runner
 # (uv's managed python at /root/.local/share/uv/python isn't carried across).
@@ -30,6 +36,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY roboco /app/roboco
 RUN uv sync --frozen --no-dev
+# The project installs editable (the runner copies /app/roboco itself), so
+# UV_COMPILE_BYTECODE skips it: compile it here. unchecked-hash keeps the .pyc
+# valid across the COPY --from below regardless of mtimes.
+RUN python -m compileall -q --invalidation-mode unchecked-hash /app/roboco
 
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner
