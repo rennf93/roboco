@@ -65,9 +65,21 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_MINIO_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
   ROBOCO_MINIO_BUCKET: ${ROBOCO_MINIO_BUCKET:-roboco-video-renders}
   ROBOCO_MINIO_REGION: ${ROBOCO_MINIO_REGION:-us-east-1}
-  # Token Factory Sandboxes: dev/QA run_sandbox_tests in Nebius microVMs (Operations page in the console).
+  # Nebius Token Factory (opt-in): agents route to Nebius only after the key
+  # is saved and Nebius mode or pins are applied in the panel. Token Factory
+  # Sandboxes (dev/QA run_sandbox_tests in Nebius microVMs) stay OFF unless
+  # set true; the project id is the console's aiproject- id. Defaults mirror
+  # roboco/config.py.
+  ROBOCO_NEBIUS_BASE_URL: ${ROBOCO_NEBIUS_BASE_URL:-https://api.tokenfactory.nebius.com/v1}
+  ROBOCO_NEBIUS_CLI_MODEL: ${ROBOCO_NEBIUS_CLI_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+  ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS: ${ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS:-60}
+  ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS: ${ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS:-60}
   ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED:-false}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL:-https://api.tokenfactory.nebius.com/sandboxes}
   ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID:-}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE:-tag:python:3.13}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS:-900}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES:-67108864}
   # Host paths for spawning agent containers (required for Docker-in-Docker)
   # IMPORTANT: These must be ABSOLUTE paths on the host filesystem
   ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
