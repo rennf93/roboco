@@ -103,3 +103,14 @@ def test_generic_api_websocket_and_panel_locations_pin_their_variables() -> None
         block_end = conf.index("}", start)
         block = conf[start:block_end]
         assert var in block
+
+
+def test_active_upstreams_contains_set_directives() -> None:
+    """The active-upstreams include must contain exactly three set directives
+    for $active_panel, $active_orchestrator, $active_dispatcher and no
+    upstream blocks."""
+    include_path = Path(__file__).parents[2] / "front" / "active-upstreams.conf"
+    content = include_path.read_text()
+    assert "upstream " not in content, "no upstream blocks allowed"
+    for var in ("active_panel", "active_orchestrator", "active_dispatcher"):
+        assert f"set ${var} " in content, f"missing set directive for {var}"
