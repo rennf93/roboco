@@ -201,7 +201,7 @@ class InteractiveSessionsEngine(_Base):
         import tempfile
 
         server_name = "roboco-secretary" if role == "secretary" else "roboco-intake"
-        module = f"roboco.mcp.{server_name}"
+        module = f"roboco.mcp.{role if role == 'secretary' else 'intake'}_server"
         env: dict[str, str] = {
             "ROBOCO_API_URL": api_url,
             "ROBOCO_AGENT_ID": os.environ.get("ROBOCO_AGENT_ID", ""),

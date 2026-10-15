@@ -118,6 +118,9 @@ class HeadlessCliTurnSession:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=self._cwd,
+                # opencode resolves its project root from $PWD before the
+                # process cwd; the entrypoint's `cd /app` leaves PWD=/app.
+                env={**os.environ, "PWD": self._cwd},
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 # hummin's --mode json emits ONE JSONL line per protocol

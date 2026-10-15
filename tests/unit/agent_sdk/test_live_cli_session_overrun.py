@@ -11,6 +11,7 @@ spawn and the drain loop degrades gracefully on any residual overflow."""
 from __future__ import annotations
 
 import asyncio
+from typing import NoReturn
 
 import pytest
 from roboco.agent_sdk.grok_cli_session import GrokCliSession, _StreamAssembler
@@ -67,3 +68,24 @@ async def test_grok_drain_survives_limit_overrun() -> None:
 
     assert [c.kind for c in chunks] == []
     assert reader.readline_calls == _OVERRUN_THEN_EOF_CALLS
+
+
+@pytest.mark.asyncio
+async def test_live_subprocess_pwd_matches_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_exec(*_argv: object, **kwargs: object) -> NoReturn:
+        captured.update(kwargs)
+        raise OSError("stop")
+
+    monkeypatch.setenv("PWD", "/app")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    session = HeadlessCliTurnSession(argv_builder=lambda p: ["x", p], cwd="/ws/repo")
+    [c async for c in session.send("hi")]
+
+    assert captured["cwd"] == "/ws/repo"
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["PWD"] == "/ws/repo"
