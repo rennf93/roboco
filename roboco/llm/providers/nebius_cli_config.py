@@ -423,10 +423,18 @@ def render_config(
     mcp_config_path: str,
 ) -> dict[str, Any]:
     """Render the full ``opencode.json`` config as a dict."""
+    provider = render_provider_block(base_url)
+    # opencode only resolves ids its built-in catalog lists, and that catalog
+    # lags the live endpoint (Nemotron 3 Nano is served but unlisted, so a
+    # Nano-routed agent died at startup with ProviderModelNotFoundError).
+    # Declaring the agent's own model makes any served id resolvable.
+    model_id = opencode_model_ref(model).removeprefix("nebius/")
+    if model_id:
+        provider["nebius"]["models"] = {model_id: {}}
     config: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
         "agent": {"roboco": render_agent_block(role, model)},
-        "provider": render_provider_block(base_url),
+        "provider": provider,
     }
     mcp = render_mcp_block(_load_mcp_config(mcp_config_path))
     if mcp:

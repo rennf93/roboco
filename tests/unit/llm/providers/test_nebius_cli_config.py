@@ -415,3 +415,17 @@ def test_render_config_sets_mcp_timeout_above_slow_verb_budget() -> None:
     # servers need longer, so every server carries the full budget.
     assert cfg["mcp"]
     assert all(block["timeout"] == budget_ms for block in cfg["mcp"].values())
+
+
+def test_render_config_declares_the_agent_model() -> None:
+    """opencode only resolves catalog-listed ids; the agent's own model is
+    declared so a served-but-unlisted id (Nemotron 3 Nano) still resolves."""
+    config = oc.render_config(
+        "documenter",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+        "https://api.tokenfactory.nebius.com/v1",
+        "/nonexistent.json",
+    )
+    assert config["provider"]["nebius"]["models"] == {
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B": {}
+    }
