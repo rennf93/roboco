@@ -6,9 +6,9 @@
 # at POST /api/alpha/decisions so roboco/services/decisions/client.py speaks
 # ONE implementation against the self-hosted tiers and the OpenRouter
 # fallback tier (docs/internal/decisions-spec.md sections 8 Stage 0.5 and 10).
-# Decision-model support is llama.cpp PR #29818; the FIRST tag carrying the
-# /v1/systemone endpoint is b11361 (b11352 predates the merge), so the pin
-# below is b11361.
+# Decision-model support is llama.cpp PR #29818 (/v1/systemone, first in
+# b11361), but the clef ARCHITECTURE is PR #29831, first in b11371: b11361
+# dies with "unknown model architecture: 'clef'". The pin below is b11371.
 #
 #   - clef (default sweet spot): ggml-org/Clef-GGUF, a 27B decision model
 #     (Apache-2.0), Q4_K_M GGUF ~19.2GB, ctx 16384;
@@ -39,8 +39,8 @@ FROM python:3.12-slim-bookworm AS builder
 # LLAMA_CPP_REF pins the llama.cpp source the serving binary is built from.
 # PRODUCTION BUILDS SHOULD PIN THE FULL TAG: a tag can be re-pointed
 # upstream, but b-tags are immutable release markers. The default is the
-# first release tag carrying /v1/systemone (see header).
-ARG LLAMA_CPP_REF=b11361
+# first release tag carrying the clef architecture (see header).
+ARG LLAMA_CPP_REF=b11371
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
