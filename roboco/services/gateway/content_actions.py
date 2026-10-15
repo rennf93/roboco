@@ -6146,20 +6146,79 @@ class ContentActions:
         return api_key, None
 
     @staticmethod
-    async def _git_archive_workspace(root: Path, archive: Path) -> tuple[bool, str]:
-        """One ``git archive`` attempt of the committed HEAD; (ok, stderr)."""
+    async def _git_capture(root: Path, *args: str) -> tuple[bool, str, str]:
+        """One git invocation in ``root``; (ok, stdout, stderr)."""
         proc = await asyncio.create_subprocess_exec(
             "git",
-            "archive",
-            "--format=tar.gz",
-            f"-o{archive}",
-            "HEAD",
+            *args,
             cwd=root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
-        return proc.returncode == 0, stderr.decode(errors="replace").strip()[:300]
+        out, err = await proc.communicate()
+        return (
+            proc.returncode == 0,
+            out.decode(errors="replace").strip(),
+            err.decode(errors="replace").strip()[:300],
+        )
+
+    @staticmethod
+    async def _git_archive_workspace(
+        root: Path, archive: Path, ref: str = "HEAD"
+    ) -> tuple[bool, str]:
+        """One ``git archive`` attempt of the committed ``ref``; (ok, stderr)."""
+        ok, _, err = await ContentActions._git_capture(
+            root, "archive", "--format=tar.gz", f"-o{archive}", ref
+        )
+        return ok, err
+
+    async def _sandbox_tests_ref(
+        self, agent_id: UUID, root: Path, branch: str | None
+    ) -> tuple[Path, str, Envelope | None]:
+        """(archive root, ref). A developer's worktree sits on the task
+        branch, so HEAD is right. QA's clone root is never moved onto it
+        (claims leave HEAD alone), so when HEAD is on a different branch the
+        branch is fetched through the workspace service (project token,
+        agent ownership) and FETCH_HEAD of the clone it fetched into is
+        archived. No branch: HEAD."""
+        if not branch:
+            return root, "HEAD", None
+        ok, head, _ = await ContentActions._git_capture(
+            root, "rev-parse", "--abbrev-ref", "HEAD"
+        )
+        if ok and head == branch:
+            return root, "HEAD", None
+        fetched: Path | None = None
+        err = ""
+        try:
+            fetched = await self.workspace.fetch_branch_for_inspection(
+                agent_id=agent_id, branch_name=branch
+            )
+            # The helper only logs a non-zero fetch, so confirm FETCH_HEAD
+            # names this branch (a failed fetch leaves a stale one behind).
+            ok, fh, err = await ContentActions._git_capture(
+                fetched, "rev-parse", "--git-path", "FETCH_HEAD"
+            )
+            if ok:
+                fh_path = Path(fh) if Path(fh).is_absolute() else fetched / fh
+                ok = f"branch '{branch}' of" in fh_path.read_text()
+                err = err or "fetch did not update FETCH_HEAD"
+        except Exception as exc:
+            ok, err = False, str(exc)
+        if not ok or fetched is None:
+            return (
+                root,
+                "HEAD",
+                Envelope.invalid_state(
+                    message=f"could not fetch task branch {branch} from origin: {err}",
+                    remediate=(
+                        "the developer must push the branch (i_am_done pushes it); "
+                        "retry run_sandbox_tests once it is on origin"
+                    ),
+                    context_briefing={},
+                ),
+            )
+        return fetched, "FETCH_HEAD", None
 
     async def _sandbox_tests_root(
         self, agent_id: UUID, agent_slug: str, task: Any, project: Any
@@ -6212,16 +6271,16 @@ class ContentActions:
 
     @staticmethod
     async def _sandbox_tests_archive(
-        root: Path,
+        root: Path, ref: str = "HEAD"
     ) -> tuple[Path | None, Envelope | None]:
-        """Archive the committed HEAD of ``root`` into a random-named temp
+        """Archive the committed ``ref`` of ``root`` into a random-named temp
         tarball (mkstemp: unpredictable on the shared orchestrator host,
         never cross-task colliding) and enforce the upload ceiling; the
         caller owns unlinking the path."""
         fd, archive_name = tempfile.mkstemp(prefix="roboco-sandbox-", suffix=".tar.gz")
         os.close(fd)
         archive = Path(archive_name)
-        ok, stderr = await ContentActions._git_archive_workspace(root, archive)
+        ok, stderr = await ContentActions._git_archive_workspace(root, archive, ref)
         if not ok:
             with contextlib.suppress(OSError):
                 archive.unlink(missing_ok=True)
@@ -6330,7 +6389,12 @@ class ContentActions:
                 remediate="retry run_sandbox_tests",
                 context_briefing={},
             )
-        archive, rejection = await self._sandbox_tests_archive(root)
+        root, ref, rejection = await self._sandbox_tests_ref(
+            agent_id, root, getattr(t, "branch_name", None)
+        )
+        if rejection is not None:
+            return rejection
+        archive, rejection = await self._sandbox_tests_archive(root, ref)
         if rejection is not None or archive is None:
             return rejection or Envelope.invalid_state(
                 message="workspace archive could not be created",

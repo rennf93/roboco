@@ -1122,7 +1122,7 @@ def run_sandbox_tests(
     server-side, uploaded to the Sandboxes API, extracted inside a
     disposable microVM (millisecond boot, destroyed after the run), and
     ``command`` executes at the archive root - e.g. ``pytest -q`` or
-    ``make test``. ``image`` (default ``tag:python:3.12``) and
+    ``make test``. ``image`` (default ``tag:python:3.13``) and
     ``timeout_seconds`` (default 900, cap 3600) override the settings. The
     envelope's ``evidence.sandbox`` carries ``exit_code``, ``stdout_tail``/
     ``stderr_tail``, metered ``cost``/``elapsed_time``, and the sandbox

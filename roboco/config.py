@@ -2710,7 +2710,9 @@ class Settings(BaseSettings):
         ),
     )
     token_factory_sandboxes_image: str = Field(
-        default="tag:python:3.12",
+        # 3.13: pyproject requires-python >=3.13, so a 3.12 sandbox cannot run
+        # this repo's own tests (tag listed in the console's Sandboxes > Images).
+        default="tag:python:3.13",
         description=(
             "Default sandbox image ref (the agent may override per call); "
             "override via ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE"

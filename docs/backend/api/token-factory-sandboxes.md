@@ -23,7 +23,7 @@ Dev/QA-scoped gateway verb that executes a task's test suite inside a Nebius Tok
 | `token_factory_sandboxes_enabled` | `ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED` | `false` (also on the panel's Feature Flags card) |
 | `token_factory_sandboxes_base_url` | `ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL` | `https://api.tokenfactory.nebius.com/sandboxes` |
 | `token_factory_sandboxes_project_id` | `ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID` | empty - MUST be set, the API 400s without the `Project` header |
-| `token_factory_sandboxes_image` | `ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE` | `tag:python:3.12` |
+| `token_factory_sandboxes_image` | `ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE` | `tag:python:3.13` (this repo requires Python >=3.13) |
 | `token_factory_sandboxes_timeout_seconds` | `ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS` | `900` |
 | `token_factory_sandboxes_max_archive_bytes` | `ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES` | `67108864` (64 MiB) |
 
@@ -39,7 +39,7 @@ The Sandboxes API authenticates with the SAME stored Nebius API key as the infer
 ## Live verification status (2026-09-15, beta access granted - FULLY VERIFIED)
 
 - Bearer auth with the stored Nebius key + the `Project` header (the console's `aiproject-...` project id): VERIFIED.
-- Image catalog: `GET /v1/images` lists 100+ tagged images; the configured default `tag:python:3.12` exists (runs Python 3.12.13).
+- Image catalog: `GET /v1/images` lists 100+ tagged images; `tag:python:3.12` exists (runs Python 3.12.13). The default moved to `tag:python:3.13` on 2026-10-15 (listed in the console's Sandboxes > Images alongside `python:3.14` and `astral/uv:python3.13-trixie`; not yet run end to end).
 - Instance spawn: VERIFIED (201 + host-rooted `Location: /sandboxes/v1/operations/<uuid>` header).
 - Operation polling and the result contract: VERIFIED (`metadata.result.state.exit_code`, `stdout.value`, `resources.cost`/`elapsed_time`).
 - The full client flow (upload -> spawn -> extraction -> command run -> poll -> flatten) verified end to end with this exact client: exit 0, stdout intact, metered cost about 0.0003 per echo-scale run.
