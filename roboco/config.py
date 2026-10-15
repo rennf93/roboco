@@ -1775,7 +1775,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = Field(
         default="",
         description=(
-            "MinIO endpoint, e.g. http://roboco-minio:9000. Empty = disabled "
+            "S3 endpoint, e.g. http://roboco-rustfs:9000. Empty = disabled "
             "(FileResponse fallback)."
         ),
     )
