@@ -367,6 +367,21 @@ async def test_claim_task_for_agent_returns_true_on_200() -> None:
 
 
 @pytest.mark.asyncio
+async def test_claim_task_for_agent_uses_slow_verb_timeout() -> None:
+    from roboco.config import settings
+
+    orch = _orch()
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=_Resp(200))
+
+    await orch._claim_task_for_agent(client, "t1", "be-dev-1")
+
+    assert client.post.call_args.kwargs["timeout"] == float(
+        settings.flow_verb_slow_timeout_seconds
+    )
+
+
+@pytest.mark.asyncio
 async def test_claim_task_for_agent_returns_false_on_rejection() -> None:
     orch = _orch()
     client = AsyncMock()

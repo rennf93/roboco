@@ -467,6 +467,10 @@ class DispatchClaimEngine(_Base):
             resp = await client.post(
                 f"{self._api_url}/tasks/{task_id}/claim",
                 json={"agent_id": agent_id},
+                # A cold-workspace claim clones + installs deps synchronously
+                # server-side (clone 300s + install 600s), bounded by the
+                # slow-verb wall; the client's 30s default would abandon it.
+                timeout=float(settings.flow_verb_slow_timeout_seconds),
             )
             if resp.status_code == http_status.HTTP_200_OK:
                 logger.info(
