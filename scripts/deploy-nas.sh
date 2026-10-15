@@ -216,8 +216,8 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
           # Bare blue names are built by their own deploy run.
           orchestrator|panel) continue ;;
         esac
-        df="docker/${name%-blue}.Dockerfile"
-        df="${df%-green}.Dockerfile"
+        df="${name%-blue}"
+        df="docker/${df%-green}.Dockerfile"
         if [ ! -f "$df" ]; then
           continue # registry-pulled or compose-shared image (e.g. dispatcher)
         fi
