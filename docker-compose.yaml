@@ -57,10 +57,10 @@ x-orchestrator-env: &orchestrator-env
   # Its decisions transient gate is what the decisions SHADOW list above
   # logs, and the sweep's outcome labeler turns those logged verdicts into
   # labeled fine-tuning rows against real CI outcomes.
-  # MinIO object storage for rendered videos (use container name). Empty
+  # S3 object storage (RustFS) for rendered videos (use container name). Empty
   # endpoint = disabled (FileResponse fallback); armed here for the NAS
   # deploy, left OFF in docker-compose.registry.yml.
-  ROBOCO_MINIO_ENDPOINT: http://roboco-minio:9000
+  ROBOCO_MINIO_ENDPOINT: http://roboco-rustfs:9000
   ROBOCO_MINIO_ACCESS_KEY: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
   ROBOCO_MINIO_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
   ROBOCO_MINIO_BUCKET: ${ROBOCO_MINIO_BUCKET:-roboco-video-renders}
@@ -472,61 +472,60 @@ services:
         condition: service_healthy
 
   # ==========================================================================
-  # MinIO - Object storage for rendered videos (NAS default-on; registry OFF)
+  # RustFS - S3 object storage for rendered videos (NAS default-on; registry OFF)
   # ==========================================================================
-  # MinIO withdrew anonymous community distribution (verified 2026-09-25):
-  # docker.io and quay.io deny every tag and dl.min.io binaries 410. This
-  # digest is RELEASE.2025-09-07T16-13-09Z, the final community release
-  # (AGPLv3), already cached on the NAS. Fresh hosts cannot pull it and must
-  # import it once from any host that has it:
-  #   docker save 14cea493d9a34 | docker load
-  # mc is bundled in this image, so minio-init below reuses it instead of
-  # the (equally unpullable) separate mc image.
-  minio:
-    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    container_name: roboco-minio
+  # Replaces MinIO, whose images are gone from docker.io (404) and quay.io.
+  # RustFS (Apache-2.0) speaks the same S3 API, so roboco's minio-py client
+  # and the ROBOCO_MINIO_* settings work unchanged. 1.0.1 multi-arch digest.
+  # Own volume: the image runs as uid 10001 and cannot write MinIO's
+  # root-owned data dir.
+  rustfs:
+    image: rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+    container_name: roboco-rustfs
     restart: unless-stopped
-    # data-only network — keeps MinIO off the agent mesh; the multi-homed
-    # orchestrator reaches it via its data NIC. Host ports for debugging.
+    # data-only network: keeps object storage off the agent mesh; the
+    # multi-homed orchestrator reaches it via its data NIC. Host ports for
+    # debugging.
     networks:
       - data
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
-      MINIO_ROOT_PASSWORD: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      RUSTFS_ACCESS_KEY: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
+      RUSTFS_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
     ports:
       - "19000:9000"
       - "19001:9001"
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
 
-  # MinIO bucket init - one-shot, mirrors the ollama-init pattern: depends on
-  # minio healthy, creates the bucket idempotently, then exits. `|| true`
-  # covers re-runs (bucket already exists).
-  minio-init:
-    # Same image as the minio service above: it bundles mc, and the
-    # standalone quay.io/minio/mc image is no longer anonymously pullable.
-    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    container_name: roboco-minio-init
+  # Bucket init - one-shot, mirrors the ollama-init pattern: depends on
+  # rustfs healthy, creates the bucket idempotently, then exits. `|| true`
+  # covers re-runs (bucket already exists). aws-cli 2.38.1 multi-arch digest.
+  rustfs-init:
+    image: amazon/aws-cli@sha256:733d5be1015825e4038c6016f3fa9954868ddee1f611b73be795a9cc2e706bfd
+    container_name: roboco-rustfs-init
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
     networks:
       - data
     entrypoint: ["/bin/sh", "-c"]
     # Note: $$ escapes $ for docker-compose variable substitution so the
-    # container's own env vars reach mc.
+    # container's own env vars reach aws.
     command:
-      - mc alias set local http://roboco-minio:9000 $$ROBOCO_MINIO_ACCESS_KEY $$ROBOCO_MINIO_SECRET_KEY && mc mb -p local/$$ROBOCO_MINIO_BUCKET || true
+      - aws --endpoint-url http://roboco-rustfs:9000 s3 mb s3://$$ROBOCO_MINIO_BUCKET || true
     environment:
-      ROBOCO_MINIO_ACCESS_KEY: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
-      ROBOCO_MINIO_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      AWS_ACCESS_KEY_ID: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
+      AWS_SECRET_ACCESS_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      AWS_DEFAULT_REGION: ${ROBOCO_MINIO_REGION:-us-east-1}
       ROBOCO_MINIO_BUCKET: ${ROBOCO_MINIO_BUCKET:-roboco-video-renders}
     restart: "no"
 
@@ -1314,6 +1313,6 @@ networks:
     name: roboco_render
 
 volumes:
-  # Named volume for MinIO — keeps rendered-video storage out of the
+  # Named volume for RustFS: keeps rendered-video storage out of the
   # ${ROBOCO_DATA_DIR} bind-mount sprawl; docker-managed durable store.
-  minio-data:
+  rustfs-data:

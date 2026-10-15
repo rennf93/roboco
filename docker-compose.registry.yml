@@ -42,11 +42,11 @@
 #     defaults (graceful-degrade routing, guard off) are the safer posture.
 #   - Host path defaults differ (/opt/roboco vs /volume1/roboco, ${HOME}
 #     instead of a hardcoded /home/renzof) — registry targets a generic host.
-#   - MinIO (object storage for rendered videos) is intentionally omitted —
-#     NAS default-on, registry default-off (see the comment near the
-#     orchestrator's MinIO env block below and docs/rag/architecture/
-#     minio-storage.md). No consumer requires it; the media route falls
-#     back to local-disk FileResponse when unconfigured.
+#   - RustFS (S3 object storage for rendered videos, replaces MinIO) is
+#     intentionally omitted: NAS default-on, registry default-off (see the
+#     comment near the orchestrator's ROBOCO_MINIO_* note below and
+#     docs/rag/architecture/minio-storage.md). No consumer requires it; the
+#     media route falls back to local-disk FileResponse when unconfigured.
 #   - The video-renders bind mount is commented out here (video engine ships
 #     OFF); uncomment alongside ROBOCO_VIDEO_ENGINE_ENABLED=true.
 # ============================================================================
@@ -239,11 +239,12 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_CLOUD_AUTH_PASSWORD: ${ROBOCO_CLOUD_AUTH_PASSWORD:-}
   ROBOCO_CLOUD_AUTH_SECRET: ${ROBOCO_CLOUD_AUTH_SECRET:-}
   ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE: ${ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE:-2592000}
-  # MinIO object storage for rendered videos is intentionally omitted from
-  # this registry compose (NAS default-on, registry default-off — the
-  # established pattern). The minio/minio-init services are absent here and
-  # ROBOCO_MINIO_* is left unset, so minio_endpoint defaults to empty and the
-  # media route falls back to FileResponse. Arm via a custom override file.
+  # RustFS (S3 object storage for rendered videos, replaces MinIO) is
+  # intentionally omitted from this registry compose (NAS default-on,
+  # registry default-off, the established pattern). The rustfs/rustfs-init
+  # services are absent here and ROBOCO_MINIO_* is left unset, so
+  # minio_endpoint defaults to empty and the media route falls back to
+  # FileResponse. Arm via a custom override file.
 
 x-orchestrator-volumes: &orchestrator-volumes
   - /var/run/docker.sock:/var/run/docker.sock
