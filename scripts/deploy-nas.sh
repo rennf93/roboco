@@ -11,12 +11,14 @@
 # green services carry profiles: [green]. The ACTIVE color lives only in
 # front/active-upstreams.conf, applied to the running nginx with
 # `nginx -s reload`. The stopped color = the rollback (re-run with its
-# color). Never `down -v`: the minio named volume is the only thing a
-# volumes prune would delete.
+# color). Never `down -v`: the rustfs-data named volume (rendered-video
+# object storage, replaced MinIO 2026-10-15) is the only thing a volumes
+# prune would delete.
 #
 # Two NAS-compose landmines baked into this script:
 # 1. `up --wait` aborts when a one-shot container completes, even exit 0
-#    (minio-init killed a run mid-deploy while everything was healthy) ->
+#    (minio-init, now rustfs-init, killed a run mid-deploy while everything
+#    was healthy) ->
 #    `up -d` + poll docker health per container instead.
 # 2. If nginx ever started before front/active-upstreams.conf existed,
 #    docker bind-mounts a DIRECTORY at that path; the script detects and
@@ -26,7 +28,12 @@
 
 set -euo pipefail
 
-cd "${STACK_DIR:-/volume1/roboco}"
+# Default to the checkout this script lives in, never a hardcoded path: a copy
+# at /volume1/roboco-panel run without STACK_DIR used to cd into production's
+# /volume1/roboco and deploy ITS compose (2026-10-15).
+STACK_DIR="${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cd "$STACK_DIR"
+echo "[deploy] stack dir: $STACK_DIR"
 
 COLOR=blue
 SKIP_BUILD=0
@@ -97,7 +104,7 @@ echo "[deploy] app/$COLOR: content-gated image builds..."
 # Dockerfile and entrypoint, at the cost of a docker-only change rebuilding
 # the matrix - rare, and always safe.
 # ---------------------------------------------------------------------------
-CACHE_DIR="${STACK_DIR:-/volume1/roboco}/.deploy-cache"
+CACHE_DIR="$STACK_DIR/.deploy-cache"
 mkdir -p "$CACHE_DIR"
 
 hash_paths() { # hash_paths <paths...> -> 16-hex over every file's bytes
@@ -379,18 +386,23 @@ echo "[deploy] bringing up $COLOR ..."
 # agent builders). Blue (no-profile) is in every model, so a plain
 # `--profile green up` would reconcile blue too - recreating it with new
 # code and destroying rollback honesty. nginx joins the blue list (first
-# deploy) and is ensured for green (it is the reload target).
+# deploy) and is ensured for green (it is the reload target). rustfs, its
+# bucket one-shot and searxng are named explicitly: no app service depends_on
+# them, so a named-service up would otherwise never start the store
+# ROBOCO_MINIO_ENDPOINT points at or the default research provider.
 if [ "$COLOR" = "green" ]; then
-  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green decisions
+  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green decisions rustfs rustfs-init searxng
   "${COMPOSE[@]}" up -d nginx
 else
-  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions nginx
+  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions rustfs rustfs-init searxng nginx
 fi
 wait_healthy "roboco-orchestrator-$COLOR"
 wait_healthy roboco-postgres
 wait_healthy roboco-ollama
 wait_healthy roboco-decisions
 wait_healthy roboco-ollama-init exit0
+wait_healthy roboco-rustfs
+wait_healthy roboco-rustfs-init exit0
 
 echo "[deploy] schema migrations (idempotent)..."
 # The flip is GATED on migrations: the message below used to say "traffic
