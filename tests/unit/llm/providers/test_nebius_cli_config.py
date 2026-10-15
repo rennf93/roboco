@@ -140,6 +140,8 @@ def test_render_provider_block_has_api_env_npm() -> None:
     block = oc.render_provider_block("https://api.tokenfactory.nebius.com/v1")
     provider = block["nebius"]
     assert provider["api"] == "https://api.tokenfactory.nebius.com/v1"
+    # opencode reads the endpoint from options.baseURL, not api
+    assert provider["options"]["baseURL"] == "https://api.tokenfactory.nebius.com/v1"
     assert provider["name"] == "Nebius"
     assert "NEBIUS_API_KEY" in provider["env"]
     assert provider["npm"] == oc._NEBIUS_PROVIDER_NPM

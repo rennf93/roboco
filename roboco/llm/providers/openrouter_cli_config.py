@@ -292,6 +292,9 @@ def render_provider_block(base_url: str) -> dict[str, dict[str, Any]]:
             "name": "OpenRouter",
             "env": list(_OPENROUTER_PROVIDER_ENV),
             "npm": _OPENROUTER_PROVIDER_NPM,
+            # opencode routes by options.baseURL; ``api`` alone is ignored for
+            # this built-in provider id (live-verified 2026-10-15).
+            "options": {"baseURL": base_url},
         }
     }
 

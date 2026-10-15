@@ -139,6 +139,8 @@ def test_render_provider_block_has_api_env_npm() -> None:
     block = oc.render_provider_block("https://openrouter.ai/api/v1")
     provider = block["openrouter"]
     assert provider["api"] == "https://openrouter.ai/api/v1"
+    # opencode reads the endpoint from options.baseURL, not api
+    assert provider["options"]["baseURL"] == "https://openrouter.ai/api/v1"
     assert provider["name"] == "OpenRouter"
     assert "OPENROUTER_API_KEY" in provider["env"]
     assert provider["npm"] == oc._OPENROUTER_PROVIDER_NPM
