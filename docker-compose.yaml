@@ -987,6 +987,25 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent Nebius Image Builder (Token Factory via the opencode CLI).
+  # Builds the image a Nebius-routed spawn runs; routing to Nebius stays
+  # opt-in (key + Nebius mode or pins). Without it no compose service
+  # references roboco-agent-nebius, so deploy-nas.sh never builds it and
+  # the -live pass defers on its base.
+  # ==========================================================================
+  agent-nebius-image:
+    build:
+      context: .
+      dockerfile: docker/agent-nebius.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
+    image: roboco-agent-nebius
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Nebius image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Agent Hummin Image Builder (GLM family via the GLM-native hummin CLI).
   # One-shot delivery roles only (V1) — no interactive prompter/secretary
   # variant exists, contrast the Grok images above. hummin has no MCP client,
