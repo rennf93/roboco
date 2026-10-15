@@ -64,6 +64,31 @@ if TYPE_CHECKING:
 else:
     _Base = object
 
+# The compose mount ${ROBOCO_DATA_DIR}/mcp-configs:/app/mcp-configs, whose host
+# side is DATA_HOST_PATH/mcp-configs (same dir spawn_config writes agent configs).
+_LIVE_MCP_WRITE_DIR = Path("/app/mcp-configs")
+
+
+def _live_agent_model(provider_type: str, model: str) -> str:
+    """``ROBOCO_AGENT_MODEL`` for a live chat: the value the provider's delivery
+    spawn passes (nebius.py / openrouter.py: the opencode ref of the routed
+    model; hummin.py: the routed model; codex / gemini / kimi: their pinned CLI
+    model). Empty means the CLI's own default."""
+    from roboco.llm.providers import nebius_cli_config, openrouter_cli_config
+
+    if provider_type == "nebius":
+        return nebius_cli_config.opencode_model_ref(model) if model else ""
+    if provider_type == "openrouter":
+        return openrouter_cli_config.opencode_model_ref(model) if model else ""
+    if provider_type == "hummin":
+        return model or settings.hummin_cli_model
+    pinned = {
+        "openai": settings.codex_cli_model,
+        "gemini": settings.gemini_cli_model,
+        "kimi": settings.kimi_cli_model,
+    }
+    return pinned.get(provider_type, "")
+
 
 def _interactive_api_url() -> str:
     """Base URL the live intake/secretary containers reach the backend on.
@@ -232,14 +257,21 @@ class InteractiveSessionsEngine(_Base):
                 }
             }
         }
-        if PROJECT_HOST_PATH:
-            base = Path(DATA_HOST_PATH) / "mcp-configs"
+        # Two paths when containerized, as for the agent mcp-configs and the
+        # manifests: write into this container's /app/mcp-configs mount, hand
+        # the docker daemon the host side of that same mount. Writing to the
+        # host path from inside the container never reaches the host, and the
+        # daemon then bind-mounts an empty directory over /app/mcp-config.json.
+        name = f"live-{role}-{session_id}.json"
+        if DATA_HOST_PATH:
+            write_dir = _LIVE_MCP_WRITE_DIR
         else:
-            base = Path(tempfile.gettempdir()) / "roboco-mcp-configs"
-        base.mkdir(parents=True, exist_ok=True)
-        host_path = base / f"live-{role}-{session_id}.json"
-        host_path.write_text(_json.dumps(config), encoding="utf-8")
-        return str(host_path)
+            write_dir = Path(tempfile.gettempdir()) / "roboco-mcp-configs"
+        write_dir.mkdir(parents=True, exist_ok=True)
+        (write_dir / name).write_text(_json.dumps(config), encoding="utf-8")
+        if DATA_HOST_PATH:
+            return f"{DATA_HOST_PATH}/mcp-configs/{name}"
+        return str(write_dir / name)
 
     @staticmethod
     def _grok_usage_dir(agent_id: str) -> Path:
@@ -1310,6 +1342,9 @@ class InteractiveSessionsEngine(_Base):
                     role, session_id, spec.api_url
                 )
                 cmd.extend(["-v", f"{mcp_host_path}:/app/mcp-config.json:ro"])
+            agent_model = _live_agent_model(provider_type, spec.model)
+            if agent_model:
+                cmd.extend(["-e", f"ROBOCO_AGENT_MODEL={agent_model}"])
             cmd.extend(["-e", f"ROBOCO_LIVE_PROVIDER={provider_type}"])
             return
         if spec.provider_type == ModelProvider.GROK.value:
