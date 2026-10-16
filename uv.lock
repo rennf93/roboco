@@ -2852,7 +2852,7 @@ requires-dist = [
     { name = "fastapi-guard", specifier = ">=8.0.0" },
     { name = "fastapi-users", extras = ["sqlalchemy"] },
     { name = "fastapi-users-db-sqlalchemy" },
-    { name = "guard-core", extras = ["redis"], specifier = ">=4.0.1" },
+    { name = "guard-core", extras = ["redis"], specifier = ">=4.0.3" },
     { name = "hiredis" },
     { name = "httpx" },
     { name = "httpx", marker = "extra == 'dev'" },
