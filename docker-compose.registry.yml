@@ -869,8 +869,10 @@ services:
       # roboco-panel-blue" after the include already said green).
       # Registry installs clone the repo, so ./front ships with it; missing
       # this mount made fresh `make quickstart` crash-loop nginx on the
-      # include (#1111).
-      - ./front:/etc/nginx/front:ro
+      # include (#1111). This stack has one color, so it mounts the
+      # front/registry/ include, whose `set` targets are the plain container
+      # names below (front/active-upstreams.conf names the NAS's -blue ones).
+      - ./front/registry:/etc/nginx/front:ro
     depends_on:
       - panel
       - orchestrator

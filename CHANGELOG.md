@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`make quickstart` boots nginx again.** `deploy/nginx.conf` includes `front/active-upstreams.conf` inside its `server {}` block, where only `set` directives are valid, but the committed file still held `upstream {}` blocks, so `nginx -t` failed (`"upstream" directive is not allowed here`) and `roboco-nginx` crash-looped on every fresh registry install. Its targets were also the NAS's `-blue` containers, which the registry stack never starts. The seed file now holds the three `set` directives `scripts/deploy-nas.sh` writes, and `docker-compose.registry.yml` mounts a new `front/registry/` include that points at the registry's own `roboco-panel`/`roboco-orchestrator`/`roboco-dispatcher` containers. A regression test resolves every compose file's include against the containers that compose runs.
+
 ### Added
 
 - **Self-hosted SearXNG web research (the new default provider).** The research capability (Board + PM `web_search` / `web_fetch`) no longer requires a paid API: a keyless `searxng` provider talks to a bundled `roboco-searxng` container (all three compose files, internal-only, no host port, no nginx route; `deploy/searxng/settings.yml` enables `format=json` and disables the public-instance limiter; ~150-300 MB RAM). `web_fetch` on SearXNG downloads the page server-side and extracts readable text locally via trafilatura, guarded against SSRF: agent-supplied URLs must resolve to public addresses, so the orchestrator's internal network (DB, Redis, metadata) is unreachable through it. Tavily/Brave/Exa remain opt-in paid fallbacks via `.env`.
