@@ -2,6 +2,24 @@
 
 This file provides guidance to AI Agents when working with code in this repository. It keeps only what a session cannot derive from the code. Subsystem doctrine lives in `.claude/rules/*.md` and auto-loads when you touch the matching paths (index at the end).
 
+# Development Rules
+
+**A GOOD FUNCTION NAME IS SELF-EXPLANATORY. IF THE FUNCTION ONLY TAKES CARE OF A SINGLE THINGS, THEN EVEN BETTER BECAUSE THE NAME IS GOING TO BE THE ONLY DOCUMENTATION YOU NEED.**
+**DOING THINGS WRONGLY COST TWICE. DO THINGS RIGHT AT FIRST, AND YOU DON'T PAY THE PRICE**
+**ASK QUESTIONS BEFORE YOU DO ANYTHING**
+**YOU ARE NOT ALLOWED TO MAKE ASSUMPTIONS**
+**IGNORING != FIXING**
+**PRE-EXISTING ERRORS ARE STILL EXISTING ERRORS. I DON'T CARE IF THEY ARE PRE-EXISTING, THEY SHOULDN'T EXIST**
+**HELPING MY PROMPTS**:
+```text
+I want the deepest version of the tasks, not bigger ones but rather:
+
+1. Say what a top professional in this field would do that I'm not asking for.
+2. Name the rawest material they would start from instead of what's being digested for me.
+3. Name the specific methods and tools they would use/implement.
+4. Say what, other than you or me, would show the result is right. Then rewrite my prompts to ask for exactly that.
+```
+
 ## Licensing
 
 RoboCo is licensed under **AGPL-3.0** (see `LICENSE`). Copyright (c) 2026 Renzo Franceschini. Do NOT reintroduce an MIT or other license reference anywhere (README, headers, package metadata). The project is AGPL.
