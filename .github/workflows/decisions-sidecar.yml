@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload the logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sidecar-logs
           path: |
@@ -272,7 +272,7 @@ jobs:
 
       - name: Upload the container log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: container-log
           path: |
