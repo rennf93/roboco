@@ -78,7 +78,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Cache the Laya-GGUF weights
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: models
           key: laya-gguf-${{ env.LAYA_HF_REVISION }}-${{ env.LAYA_GGUF_FILE }}
