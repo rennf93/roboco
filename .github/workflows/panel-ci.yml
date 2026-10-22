@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           # The release-readiness smoke test calls ``git describe --tags`` to
           # find the most recent release tag. ``actions/checkout``'s default
