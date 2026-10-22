@@ -45,7 +45,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           # Need origin/master reachable to diff this branch's Dockerfiles
           # against the pre-change baseline for the size-delta report below.
@@ -214,7 +214,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Build agent-base (devops FROM target)
         run: docker build -f docker/agent-base.Dockerfile -t roboco-agent-base .
