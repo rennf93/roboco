@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -910,7 +910,7 @@ wheels = [
 
 [[package]]
 name = "fastapi-guard"
-version = "8.0.2"
+version = "8.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -918,9 +918,9 @@ dependencies = [
     { name = "starlette" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/c9/fc9e751b6bc906587ce44bd17ba12d6beb872ddfae4881f571bdd8ee2973/fastapi_guard-8.0.2.tar.gz", hash = "sha256:4f1b862dd95b902c0fd5bbce8caa6fb33d18d0deb3dbd391111c5cddb26a8e84", size = 66612, upload-time = "2026-09-26T13:20:55.294Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/2a/6d9600c4a9c2c5186bb272d9e1d8a587df3ea2ed7ca1867e8db81346c23a/fastapi_guard-8.1.2.tar.gz", hash = "sha256:33e7097fc0438319da9670d187916367bcba31c793f4251e7a5b45905e3b4897", size = 73502, upload-time = "2026-10-17T19:14:09.322Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/c7/f949c9832310d4d89225cbe0381460a04ab97e14cb21f9435049819abe41/fastapi_guard-8.0.2-py3-none-any.whl", hash = "sha256:0c7e2cc8d268cf884082ab6577bcada4d9134bf04e26abdca9c62391f6cc42d9", size = 32716, upload-time = "2026-09-26T13:20:54.223Z" },
+    { url = "https://files.pythonhosted.org/packages/51/6b/ff5fbe8839401ee9989663db62c059f97d0f214c0f045fbf63ea9d37b43c/fastapi_guard-8.1.2-py3-none-any.whl", hash = "sha256:0d0cca1fd82f835609e8612d1366cbe42940609080e6a80957285d06edefc99f", size = 38852, upload-time = "2026-10-17T19:14:07.64Z" },
 ]
 
 [[package]]
@@ -2033,14 +2033,14 @@ wheels = [
 
 [[package]]
 name = "opentelemetry-api"
-version = "1.45.0"
+version = "1.45.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/dc/e12c1fe1ed8a7b7149777127b1a0e12ce5bd5a81d97408bedc2128c260f5/opentelemetry_api-1.45.0.tar.gz", hash = "sha256:711ede81773c8025c2c03dac0450bc89f3d30aea6eabcc815c570d4e35a963f7", size = 72115, upload-time = "2026-09-25T12:32:28.399Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/02/6e0ae9cc61bd3169d401077b507b3ebc344745171e1051ab430be012dcd9/opentelemetry_api-1.45.1.tar.gz", hash = "sha256:aa38ed19bcc084ba42782a73255b3582283eced7ad6dddbd6695189e69adfb75", size = 72804, upload-time = "2026-10-06T17:32:58.133Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/b9/040d1a1c7836922828e6480cd2366bb8fe0ebf75b413d2bb51a9b0e7f78f/opentelemetry_api-1.45.0-py3-none-any.whl", hash = "sha256:80e068aba7cd56c8b58512d6a36f8d25cb1dfaa0c0a4cc1c938ccf9f362d9cb3", size = 60020, upload-time = "2026-09-25T12:32:03.192Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/41/f7dcf80b81ee8e71c1a2b59f14208bc723edbd89ed027a73b175abf6348e/opentelemetry_api-1.45.1-py3-none-any.whl", hash = "sha256:b31553efa588ae44bc306f863c785c5333a9ecc091248c6ee68b4b6c87fdedfb", size = 60256, upload-time = "2026-10-06T17:32:33.506Z" },
 ]
 
 [[package]]
@@ -2850,10 +2850,10 @@ requires-dist = [
     { name = "factory-boy", marker = "extra == 'dev'" },
     { name = "faker", marker = "extra == 'dev'" },
     { name = "fastapi" },
-    { name = "fastapi-guard", specifier = ">=8.0.2" },
+    { name = "fastapi-guard", specifier = ">=8.1.2" },
     { name = "fastapi-users", extras = ["sqlalchemy"] },
     { name = "fastapi-users-db-sqlalchemy" },
-    { name = "guard-core", extras = ["redis"], specifier = ">=4.3.1" },
+    { name = "guard-core", extras = ["redis"], specifier = ">=4.4.0" },
     { name = "hiredis" },
     { name = "httpx" },
     { name = "httpx", marker = "extra == 'dev'" },
