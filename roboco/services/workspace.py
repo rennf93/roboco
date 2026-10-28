@@ -1199,6 +1199,91 @@ class WorkspaceService:
         if self._safe_to_reset(worktree, branch):
             self._worktree_git(worktree, ["reset", "--hard", origin_ref], check=False)
 
+    async def refresh_base_clone_checkout(
+        self, clone_root: Path, project_slug: str
+    ) -> None:
+        """Spawn-time refresh of the base clone's own checkout — #692 family.
+
+        The per-task worktree heal (:meth:`_refresh_present_worktree`) leaves
+        the clone root's own checkout untouched, and that checkout can sit
+        arbitrarily far behind origin (a live reader clone was ~19 wall hours
+        behind ``origin/slave``), so raw file reads disagree with the
+        origin-preferring git-log reader (#690). Called from the SAME spawn
+        chokepoint as :meth:`ensure_worktree_self_heal`, for NON-author roles
+        only (see ``foundation.identity.WORKTREE_AUTHOR_ROLES`` — roles
+        holding the gateway's ``commit`` verb are self-maintaining authors
+        whose base checkout is left exactly as it is).
+
+        Best-effort throughout, mirroring the worktree heal: fetch FIRST (a
+        stale clone's origin refs cannot be assumed current), then classify
+        the checkout's branch against ``origin/<branch>`` — strictly behind
+        or diverged resets to origin (``reset --hard`` is exactly a
+        fast-forward when strictly behind; readers never author, so no
+        legitimate local edits exist to lose), in-sync or strictly ahead is
+        left alone. A detached HEAD, an unknown current branch, a failed
+        fetch, or an unresolvable ``origin/<branch>`` each skip with a log —
+        a spawn must never break over a refresh.
+        """
+        current = self._worktree_git(
+            clone_root, ["branch", "--show-current"], check=False
+        )
+        branch = current.stdout.strip() if current.returncode == 0 else ""
+        if not branch:
+            logger.info(
+                "refresh_base_clone_checkout: detached/unknown HEAD, skipping",
+                clone_root=str(clone_root),
+            )
+            return
+        before = self._worktree_git(
+            clone_root, ["rev-parse", "HEAD"], check=False
+        ).stdout.strip()
+        await self._fetch_branch_ref(clone_root, branch, project_slug)
+        origin_ref = f"origin/{branch}"
+        if (
+            self._worktree_git(
+                clone_root,
+                ["rev-parse", "--verify", "--quiet", origin_ref],
+                check=False,
+            ).returncode
+            != 0
+        ):
+            return  # fetch failed, or the branch has no upstream counterpart
+        ahead = self._worktree_git(
+            clone_root, ["rev-list", "--count", f"{origin_ref}..HEAD"], check=False
+        )
+        behind = self._worktree_git(
+            clone_root, ["rev-list", "--count", f"HEAD..{origin_ref}"], check=False
+        )
+        if ahead.returncode != 0 or behind.returncode != 0:
+            return
+        if behind.stdout.strip() == "0":
+            if ahead.stdout.strip() != "0":
+                logger.info(
+                    "refresh_base_clone_checkout: checkout strictly ahead of "
+                    "origin, skipping (conservative — never rewrite local refs)",
+                    clone_root=str(clone_root),
+                    branch=branch,
+                )
+            return  # in-sync, or strictly ahead — nothing to do
+        reset = self._worktree_git(
+            clone_root, ["reset", "--hard", origin_ref], check=False
+        )
+        after = (
+            self._worktree_git(
+                clone_root, ["rev-parse", "HEAD"], check=False
+            ).stdout.strip()
+            if reset.returncode == 0
+            else "<reset failed>"
+        )
+        logger.info(
+            "refresh_base_clone_checkout: checkout refreshed to origin",
+            clone_root=str(clone_root),
+            branch=branch,
+            was="behind" if ahead.stdout.strip() == "0" else "diverged",
+            before_tip=before,
+            after_tip=after,
+        )
+
     async def remove_worktree(self, clone_root: Path, worktree: Path) -> None:
         """Remove a per-task worktree (cancel / terminal / reaper evict).
 
