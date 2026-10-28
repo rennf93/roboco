@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `complete()` retried after an interrupted merge now self-heals instead of wedging on CEO-manual reconciliation (PR #1120).** When a first `cell_pm_complete` died between the irreversible forge merge and the work-session write (live incident: task 05ac303f / PR #955, a 120s gateway timeout after the GitHub merge succeeded), the retry's H7 idempotent pre-check (`is_pr_merged_for_task`) skipped `pr_merge` — the only writer of `pr_status='merged'` — so the session stayed `open` with `merge_commit` None, `_finalize_cell_complete`'s PR-merged guard failed, and the remediate told the PM to escalate to the CEO. The H7 already-merged branch now calls the new `GitService.reconcile_already_merged_pr(task_id, actor_agent_id=...)`, which re-reads the PR from the forge (`get_pr`), and only if it reports `merged` runs the same `WorkSessionService.merge_pr` bookkeeping `pr_merge` uses (`pr_status='merged'`) and returns the forge's `merge_commit_sha`. The choreographer threads that sha into `_finalize_cell_complete` (so the merge entry lands on `task.commits` and the guard passes) and writes a `gateway.pr_merge_backfilled` audit event (`pr_number`, `merge_commit_sha`, note `merge record backfilled from forge state`; audit-write failure is logged, never blocks completion). Indeterminate state — task/project missing, no `pr_number`, forge HTTP error, PR not actually merged — returns None and leaves the session untouched; nothing is guessed, and the retry stays possible. An unmerged PR still takes the normal `pr_merge` path (regression-tested: `pr_merge` awaited, no reconcile call, no audit row). No migration. Distinct from the H7 already-merged 405 fix, which closed the respawn loop but not this bookkeeping gap. Tests: `tests/unit/gateway/test_choreographer_pm.py`, `tests/unit/services/test_git.py`.
+
 ## [0.31.0] - 2026-09-17
 
 ### Added

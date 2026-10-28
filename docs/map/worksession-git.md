@@ -90,6 +90,7 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `GitService.merge_pr_for_task` | method | git.py:3046 | Role-gated merge + recorded-PR verification + auto-complete |
 | `GitService._assert_merge_role` | method | git.py:2989 | PM/CEO approval-chain role gate |
 | `GitService.pr_merge` | method | git.py:3616 | Gateway merge: project_id-scoped, parent row lock, 409 retry, CEO-only default guard |
+| `GitService.reconcile_already_merged_pr` | method | git.py (after `is_pr_merged_for_task`) | Interrupted-complete backfill: forge `get_pr` → if merged, `merge_pr` session bookkeeping (`pr_status='merged'`) → returns forge `merge_commit_sha`; None on any indeterminate lookup. Called from `cell_pm_complete`'s H7 already-merged branch, which writes the `gateway.pr_merge_backfilled` audit event |
 | `GitService._merge_with_retry` | method | git.py:3555 | Single 409 retry + already-merged disambiguation → MergeConflictError |
 | `GitService._lock_parent_task_for_merge` | method | git.py:3503 | SELECT FOR UPDATE on parent task (sibling merge serialization) |
 | `GitService._resolve_merger_id` | static | git.py:3530 | merged_by attribution: actor→assigned→created→UUID(0) |

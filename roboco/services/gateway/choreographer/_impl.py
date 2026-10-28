@@ -9085,6 +9085,35 @@ class Choreographer:
                     return await self._handle_ceo_only_merge_refusal(
                         exc, pm_agent_id, task_id, t, target
                     )
+            else:
+                # Interrupted-complete gap: a prior attempt died after the
+                # irreversible forge merge but before its work-session write,
+                # and this H7 skip also skips pr_merge — the only writer of
+                # pr_status="merged". Backfill the session from forge state
+                # so the retry self-heals instead of wedging on the
+                # PR-merged guard's CEO-manual reconciliation.
+                merge_commit = await self.git.reconcile_already_merged_pr(
+                    task_id, actor_agent_id=pm_agent_id
+                )
+                if merge_commit:
+                    try:
+                        await self.audit.log_event(
+                            event_type="gateway.pr_merge_backfilled",
+                            agent_id=pm_agent_id,
+                            task_id=task_id,
+                            details={
+                                "pr_number": t.pr_number,
+                                "merge_commit_sha": merge_commit,
+                                "note": "merge record backfilled from forge state",
+                            },
+                            severity="info",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "audit.log_event failed",
+                            error=str(exc),
+                            verb="cell_pm_complete",
+                        )
         return await self._finalize_cell_complete(
             pm_agent_id, task_id, t, notes, merge_commit
         )
