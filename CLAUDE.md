@@ -2,6 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It keeps only what a session cannot derive from the code. Subsystem doctrine lives in `.claude/rules/*.md` and auto-loads when you touch the matching paths (index at the end).
 
+## Development Rules
+
+**A GOOD FUNCTION NAME IS SELF-EXPLANATORY. IF THE FUNCTION ONLY TAKES CARE OF A SINGLE THINGS, THEN EVEN BETTER BECAUSE THE NAME IS GOING TO BE THE ONLY DOCUMENTATION YOU NEED.**
+**DOING THINGS WRONGLY COST TWICE. DO THINGS RIGHT AT FIRST, AND YOU DON'T PAY THE PRICE**
+**ASK QUESTIONS BEFORE YOU DO ANYTHING**
+**YOU ARE NOT ALLOWED TO MAKE ASSUMPTIONS**
+**IGNORING != FIXING**
+**PRE-EXISTING ERRORS ARE STILL EXISTING ERRORS. I DON'T CARE IF THEY ARE PRE-EXISTING, THEY SHOULDN'T EXIST**
+**HELPING MY PROMPTS**:
+```text
+I want the deepest version of the tasks, not bigger ones but rather:
+
+1. Say what a top professional in this field would do that I'm not asking for.
+2. Name the rawest material they would start from instead of what's being digested for me.
+3. Name the specific methods and tools they would use/implement.
+4. Say what, other than you or me, would show the result is right. Then rewrite my prompts to ask for exactly that.
+5. Follow that same rewritten prompt upon my approval of said rewritten prompt.
+```
+
 ## Licensing
 
 RoboCo is licensed under **AGPL-3.0** (see `LICENSE`). Copyright (c) 2026 Renzo Franceschini. Do NOT reintroduce an MIT or other license reference anywhere (README, headers, package metadata). The project is AGPL.
@@ -137,3 +156,8 @@ If the orchestrator is pegged at high CPU and nobody can say why, profile it liv
 ## Blueprint Reference
 
 User-facing documentation is the docs site at **[docs.roboco.tech](https://docs.roboco.tech)** (the `roboco-website` repo). In this repo, `docs/rag/` is the agent-facing RAG corpus and `docs/map/` the agent-facing codebase map, both auto-indexed into the KB at startup (`OptimalService.AUTO_INDEX_DIRS`); `docs/internal/` holds specs and working notes; `docs-redirects/` keeps the old Pages URLs resolving.
+
+<!-- entire-agent:begin -->
+Read .entire/agent-guide.md for this repository's workflow, source inspection, and verification guidance.
+@.entire/agent-guide.md
+<!-- entire-agent:end -->
