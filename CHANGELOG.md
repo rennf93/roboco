@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Non-author base clones refresh to origin at spawn (#692 family).** A reader clone's own checkout could sit far behind origin (one was ~19h stale), so raw file reads disagreed with the origin-preferring git-log reader (#690). `WorkspaceService.refresh_base_clone_checkout`, called from `SpawnLaunchEngine._ensure_worktree_before_spawn` for every spawn, fetches first, then resets a strictly-behind or diverged checkout to `origin/<branch>` and logs before/after tips. Author roles (those holding the `commit` verb) and unresolvable roles are never touched; strictly-ahead and detached checkouts are skipped; failures are best-effort and never break a spawn. See `docs/backend/services/base-clone-spawn-refresh.md`.
+
 ## [0.31.0] - 2026-09-17
 
 ### Added
