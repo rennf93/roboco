@@ -462,6 +462,47 @@ class SpawnLaunchEngine(_Base):
         self._instances[agent_id] = instance
         return config, instance, agent_settings_path
 
+    async def _maybe_refresh_base_clone(
+        self, *, project_slug: str, team: str, agent_id: str
+    ) -> None:
+        """Refresh a non-author agent's base-clone checkout at spawn (#692
+        family — extends the per-task worktree heal, no parallel path).
+
+        A reader clone's own checkout can sit arbitrarily far behind origin
+        (a live one was ~19 wall hours behind), so raw file reads disagreed
+        with the origin-preferring git-log reader (#690). 'Non-author' is
+        capability-based: roles holding the gateway's ``commit`` verb
+        (``foundation.identity.WORKTREE_AUTHOR_ROLES``) are self-maintaining
+        authors and are NEVER touched; when in doubt (an unresolvable role)
+        we treat as author, skip, and log. Best-effort: a failure logs and
+        moves on, never breaking a spawn.
+        """
+        role = get_agent_role(agent_id)
+        if is_worktree_author_role(role):
+            return
+        if role == "unknown":
+            logger.info(
+                "base-clone refresh: unresolvable role, treating as author, skipping",
+                agent_id=agent_id,
+            )
+            return
+        clone_root = Path(_agent_workspace_path(project_slug, team, agent_id))
+        from roboco.db.base import get_db_context
+        from roboco.services.workspace import WorkspaceService
+
+        try:
+            async with get_db_context() as db:
+                await WorkspaceService(db).refresh_base_clone_checkout(
+                    clone_root, project_slug
+                )
+        except Exception as e:  # best-effort — a refresh must never break a spawn
+            logger.warning(
+                "base-clone refresh failed (best-effort)",
+                agent_id=agent_id,
+                clone_root=str(clone_root),
+                error=str(e),
+            )
+
     async def _ensure_worktree_before_spawn(
         self,
         git_context: SpawnGitContext | None,
@@ -496,6 +537,12 @@ class SpawnLaunchEngine(_Base):
         a missing ``-w``. A transient failure (DB/other) aborts without
         releasing — the next tick retries the same claim.
         """
+        # Base-clone refresh (non-author roles only — see the helper) runs on
+        # EVERY spawn, including branchless coordination/board ones, which are
+        # pure readers and used to early-return with a frozen clone.
+        await self._maybe_refresh_base_clone(
+            project_slug=project_slug, team=team, agent_id=agent_id
+        )
         if not (git_context and git_context.task_short_id and git_context.branch_name):
             return
         clone_root = Path(_agent_workspace_path(project_slug, team, agent_id))
