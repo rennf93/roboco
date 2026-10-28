@@ -4,5 +4,19 @@
     "primary": {
       "type": "git-refs"
     }
+  },
+  "redaction": {
+    "betterleaks": {
+      "enabled": true
+    },
+    "goredact": {
+      "enabled": true
+    },
+    "pii": {
+      "enabled": true,
+      "email": true,
+      "phone": false,
+      "address": false
+    }
   }
 }

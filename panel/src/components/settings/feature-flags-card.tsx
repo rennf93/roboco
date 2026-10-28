@@ -67,6 +67,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Enforce per-project monthly and per-task cost caps (USD). A claim is refused once a project's monthly budget is reached; an active task whose own explicitly-set budget is breached is stopped and blocked, and you're notified. Set the caps on the project edit dialog and a task's detail page — a project/task with no cap set is never capped.",
   devops_enabled:
     "Routes infra tasks to the floating DevOps agent (devops-1): PM delegation + board materialization pre-assignment spawn it, and it authors through the normal developer lifecycle (PR before QA). Off by default: the agent is seeded but inert: nothing spawns it.",
+  entire_enabled:
+    "Records each agent's Claude Code session with Entire (entire.io) so every task commit carries a redacted transcript checkpoint, pushed with the branch. Off by default: Entire's hooks do nothing in agent containers.",
   rag_auto_update_enabled:
     "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled:
@@ -151,6 +153,8 @@ const FLAG_TOOLTIPS: Record<string, string> = {
   task_budgets_enabled: "Caps agent spend per project (monthly) and per task.",
   devops_enabled:
     "Spawns the floating DevOps agent (devops-1) for assigned infra work.",
+  entire_enabled:
+    "Attaches each agent's redacted session transcript to its commits.",
   rag_auto_update_enabled:
     "Keeps the RAG knowledge index automatically refreshed.",
   transcript_prune_enabled:

@@ -106,15 +106,20 @@ def _mock_settings() -> dict[str, object]:
         "agent_loop_threshold": 5,
         "agent_loop_window": 10,
         "agent_stop_attempt_allowance": 2,
+        "entire_enabled": False,
         "manifest_host_dir": "/tmp/manifests",
         "workspaces_root": "/data/workspaces",
     }
 
 
-def _build_cmd(container_name: str, config: OrchestratorAgentConfig) -> list[str]:
+def _build_cmd(
+    container_name: str,
+    config: OrchestratorAgentConfig,
+    **settings_overrides: object,
+) -> list[str]:
     """Call _build_mount_args with all external I/O patched out."""
     hosts = _minimal_hosts()
-    attrs = _mock_settings()
+    attrs = {**_mock_settings(), **settings_overrides}
     with (
         patch("roboco.runtime.engines.spawn_launch.settings") as mock_settings,
         patch("roboco.runtime.orchestrator.Path.exists", return_value=False),
@@ -360,3 +365,22 @@ class TestMcpStartupTimeoutEnv:
         assert "MCP_TIMEOUT=120000" in cmd, (
             f"MCP_TIMEOUT missing from docker run env. Full cmd: {cmd}"
         )
+
+
+class TestEntireEnv:
+    """The image's `entire` wrapper reads ROBOCO_ENTIRE_ENABLED on every hook
+    call, and Entire's anonymous analytics stay off in every container."""
+
+    def test_flag_off_reaches_the_container_as_false(self) -> None:
+        cmd = _build_cmd("roboco-agent-be-dev-1", _make_dev_config())
+        assert "ROBOCO_ENTIRE_ENABLED=false" in cmd
+
+    def test_flag_on_reaches_the_container_as_true(self) -> None:
+        cmd = _build_cmd(
+            "roboco-agent-be-dev-1", _make_dev_config(), entire_enabled=True
+        )
+        assert "ROBOCO_ENTIRE_ENABLED=true" in cmd
+
+    def test_entire_telemetry_is_opted_out(self) -> None:
+        cmd = _build_cmd("roboco-agent-be-dev-1", _make_dev_config())
+        assert "ENTIRE_TELEMETRY_OPTOUT=1" in cmd

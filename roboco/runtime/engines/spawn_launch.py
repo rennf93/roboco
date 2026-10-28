@@ -1006,6 +1006,12 @@ class SpawnLaunchEngine(_Base):
             f"ROBOCO_AGENT_LOOP_WINDOW={settings.agent_loop_window}",
             "-e",
             f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
+            "-e",
+            # Read by the image's `entire` wrapper on every hook call: off =>
+            # Entire's Claude Code hooks are silent no-ops in this container.
+            f"ROBOCO_ENTIRE_ENABLED={'true' if settings.entire_enabled else 'false'}",
+            "-e",
+            "ENTIRE_TELEMETRY_OPTOUT=1",
         ]
         return env
 
@@ -1702,7 +1708,7 @@ class SpawnLaunchEngine(_Base):
                         )
                 router = get_model_routing_service(db)
                 return await router.resolve_for_agent(agent_id, complexity=complexity)
-        except Exception as e:  # pragma: no cover
+        except Exception as e:
             role = get_agent_role(agent_id) or ""
             short = ROLE_MODEL_MAP.get(role, "sonnet")
             logger.warning(
@@ -1945,7 +1951,8 @@ class SpawnLaunchEngine(_Base):
             state=AgentState.OFFLINE,
             config=AgentConfig(
                 agent_id=agent_id,
-                blueprint_path=Path(),  # not launching — no blueprint written
+                # Not launching, so no blueprint was written.
+                blueprint_path=Path(),
                 model=route.model_name,
                 provider_type=route.provider_type.value,
                 provider_base_url=route.base_url,

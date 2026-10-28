@@ -743,6 +743,19 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Entire (entire.io) session checkpoints for the fleet. The agent images
+    # ship a pinned Entire CLI behind a wrapper that reads this flag at spawn;
+    # off => the wrapper turns every Entire hook into a silent no-op.
+    entire_enabled: bool = Field(
+        default=False,
+        description=(
+            "Records each agent's Claude Code session with Entire so every "
+            "task commit carries a redacted transcript checkpoint. Off => "
+            "Entire's hooks are no-ops in every agent container."
+        ),
+    )
+
+    # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)
     # ==========================================================================
     # Calls go agent -> roboco-search MCP -> /api/research/* -> ResearchService

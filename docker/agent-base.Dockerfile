@@ -64,6 +64,32 @@ RUN npm install -g @anthropic-ai/claude-code \
     && npm cache clean --force \
     && rm -rf /root/.npm /tmp/*
 
+# Entire CLI (entire.io): records Claude Code sessions as git checkpoints.
+# Pinned by version AND by sha256 written here (not fetched from the release,
+# so a tampered release can't swap both). The real binary sits off PATH; the
+# `entire` on PATH is RoboCo's wrapper, which no-ops every Entire hook unless
+# the container was spawned with ROBOCO_ENTIRE_ENABLED=true.
+ARG ENTIRE_VERSION=0.12.2
+ARG ENTIRE_SHA256_AMD64=bfc5c8d5b599f328775b89b735db020c963e307b6a324fc30ce371fe8fa789e8
+ARG ENTIRE_SHA256_ARM64=f08a1b8c6352d3f78076268dc67b0b273d7f62dbab94b15aec028e7b4257ad0c
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+        amd64) ENTIRE_SHA256="$ENTIRE_SHA256_AMD64" ;; \
+        arm64) ENTIRE_SHA256="$ENTIRE_SHA256_ARM64" ;; \
+        *) echo "unsupported TARGETARCH: '$TARGETARCH'" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --connect-timeout 15 --retry 5 --retry-all-errors --retry-delay 2 \
+        "https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_${TARGETARCH}.tar.gz" \
+        -o /tmp/entire.tar.gz \
+    && printf '%s  %s\n' "${ENTIRE_SHA256}" /tmp/entire.tar.gz > /tmp/entire.sha256 \
+    && sha256sum -c /tmp/entire.sha256 \
+    && mkdir -p /usr/local/lib/entire \
+    && tar -xzf /tmp/entire.tar.gz -C /usr/local/lib/entire entire git-remote-entire \
+    && ln -s /usr/local/lib/entire/git-remote-entire /usr/local/bin/git-remote-entire \
+    && rm -rf /tmp/*
+COPY docker/scripts/entire-wrapper.sh /usr/local/bin/entire
+RUN chmod 0755 /usr/local/bin/entire /usr/local/lib/entire/entire /usr/local/lib/entire/git-remote-entire
+
 RUN useradd -m -s /bin/bash agent
 
 # uv is required at runtime: mcp-config.json spawns every MCP server via
