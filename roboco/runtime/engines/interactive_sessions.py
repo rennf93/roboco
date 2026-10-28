@@ -49,6 +49,7 @@ from roboco.runtime.orchestrator import (
     get_agent_image,
     logger,
 )
+from roboco.utils.docker_env import docker_cli_env, docker_options_without_env_values
 
 if TYPE_CHECKING:
     # Also bound into this module's real (non-TYPE_CHECKING) globals at
@@ -1416,9 +1417,17 @@ class InteractiveSessionsEngine(_Base):
         return cmd
 
     async def _run_container_cmd(self, cmd: list[str]) -> str:
-        """Run a detached `docker run` and return the container id."""
+        """Run a detached `docker run` and return the container id.
+
+        Both builders end the argv with the image (no container command
+        follows), so everything before it is docker options whose ``-e``
+        values move into the CLI's environment.
+        """
+        options, env_values = docker_options_without_env_values(cmd[:-1])
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
+            *options,
+            cmd[-1],
+            env=docker_cli_env(env_values),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

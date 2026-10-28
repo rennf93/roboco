@@ -242,13 +242,14 @@ jobs:
     env:
       ROBOCO_REGISTRY: ghcr.io/rennf93
       ROBOCO_VERSION: ${{ needs.publish-images.outputs.version }}
-      # docker-compose.registry.yml hard-requires these three non-empty
+      # docker-compose.registry.yml hard-requires these four non-empty
       # (`${VAR:?...}` on the orchestrator/nginx services) just to
       # INTERPOLATE the file — `pull` never touches their runtime values, so
       # placeholders are enough to get past that gate (see scripts/bootstrap.sh
       # for what a real deploy generates here).
       ROBOCO_ENCRYPTION_KEY: pull-smoke-placeholder-not-a-real-key
       ROBOCO_AGENT_AUTH_SECRET: pull-smoke-placeholder-not-a-real-secret
+      ROBOCO_REDIS_PASSWORD: pull-smoke-placeholder-not-a-real-password
       ROBOCO_PANEL_AGENT_TOKEN: pull-smoke-placeholder-not-a-real-token
 
     steps:

@@ -19,6 +19,10 @@ from roboco.config import settings
 from roboco.llm.providers import GeminiCliProvider, ProviderError, SpawnResult
 from roboco.llm.providers import gemini as gemini_module
 from roboco.models.runtime import OrchestratorAgentConfig
+from tests.unit.docker_cli_calls import (
+    docker_argv_env_assignments,
+    docker_run_cmd_with_env_values,
+)
 
 
 def test_gemini_cli_model_is_a_real_settings_field() -> None:
@@ -152,7 +156,7 @@ async def test_gemini_spawn_no_anthropic_leak() -> None:
             _config(provider_base_url="https://ignored", provider_auth_token="ignored"),
             initial_prompt="do the work",
         )
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # The provider endpoint must NOT be injected as an Anthropic var.
     assert not any(c.startswith("ANTHROPIC_BASE_URL=") for c in cmd)
     assert not any(c.startswith("ANTHROPIC_AUTH_TOKEN=") for c in cmd)
@@ -169,7 +173,9 @@ async def test_gemini_spawn_wires_gateway_env_and_image_last() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         result = await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
+    # Values ride the docker CLI's env, never argv (/proc/<pid>/cmdline).
+    assert docker_argv_env_assignments(exec_mock.call_args) == []
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert "ROBOCO_AGENT_ID=be-dev-1" in cmd
     assert "ROBOCO_AGENT_MODEL=gemini-2.5-pro" in cmd
@@ -209,7 +215,7 @@ async def test_gemini_spawn_adds_compose_labels_before_image(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "com.docker.compose.service=be-dev-1" in cmd
     assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
         "roboco-agent-gemini:test"
@@ -227,7 +233,7 @@ async def test_gemini_spawn_mounts_auth_when_present(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     expected = f"{_isolate_gemini_auth}:/home/agent/.gemini-auth-ro:ro"
     assert expected in cmd
 
@@ -240,7 +246,7 @@ async def test_gemini_spawn_omits_auth_mount_when_absent() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any("/home/agent/.gemini-auth-ro" in c for c in cmd)
 
 
@@ -270,7 +276,7 @@ async def test_gemini_spawn_prompt_is_injection_safe() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config(), initial_prompt=nasty)
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # Passed only as an env value, never as a bare argv token.
     assert f"ROBOCO_INITIAL_PROMPT={nasty}" in cmd
     assert nasty not in cmd

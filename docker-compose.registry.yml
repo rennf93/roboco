@@ -63,6 +63,7 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_DATABASE_NAME: roboco
   ROBOCO_REDIS_HOST: roboco-redis
   ROBOCO_REDIS_PORT: 6379
+  ROBOCO_REDIS_PASSWORD: ${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}
   ROBOCO_HOST: 0.0.0.0
   ROBOCO_PORT: 8000
   ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
@@ -347,11 +348,16 @@ services:
     image: redis:8-alpine
     container_name: roboco-redis
     restart: unless-stopped
-    # data-only network — see postgres. Redis has no auth, so network
-    # membership is its ONLY containment against agent containers.
+    # data-only network — see postgres.
     networks:
       - data
-    command: redis-server --appendonly yes
+    # requirepass: membership of the data network is NOT the only way in —
+    # the published port below is reachable from the LAN and, through the
+    # host's bridge gateway, from every container (agents included).
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}"]
+    environment:
+      # redis-cli (the healthcheck below) authenticates from this.
+      REDISCLI_AUTH: ${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}
     ports:
       - "16379:6379"
     volumes:
@@ -817,6 +823,7 @@ services:
       ROBOCO_DATABASE_NAME: roboco
       ROBOCO_REDIS_HOST: roboco-redis
       ROBOCO_REDIS_PORT: 6379
+      ROBOCO_REDIS_PASSWORD: ${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}
       ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
       ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
       ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud

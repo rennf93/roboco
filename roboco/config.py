@@ -13,7 +13,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, computed_field, field_validator, model_validator
@@ -240,9 +240,16 @@ class Settings(BaseSettings):
     @property
     def redis_url(self) -> str:
         """Redis connection URL."""
-        if self.redis_password:
-            return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
-        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        return self.redis_url_for_db(self.redis_db)
+
+    def redis_url_for_db(self, db: int) -> str:
+        """Redis connection URL for ``db``, carrying the password when one is set.
+
+        The password is URL-quoted so a hand-picked one containing ``@`` or
+        ``/`` still parses (a generated hex password is unaffected).
+        """
+        auth = f":{quote(self.redis_password, safe='')}@" if self.redis_password else ""
+        return f"redis://{auth}{self.redis_host}:{self.redis_port}/{db}"
 
     # ==========================================================================
     # RAG (in-house engine with pgvector)

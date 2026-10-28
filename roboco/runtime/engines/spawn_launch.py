@@ -62,6 +62,7 @@ from roboco.runtime.orchestrator import (
     logger,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.utils.docker_env import docker_cli_env, docker_options_without_env_values
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -1395,10 +1396,12 @@ class SpawnLaunchEngine(_Base):
         else:
             self._append_gate_env(cmd)
         cmd.extend(await compose_label_args(config.agent_id))
+        cmd, env_values = docker_options_without_env_values(cmd)
         self._append_image_and_claude_args(cmd, config, initial_prompt)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            env=docker_cli_env(env_values),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

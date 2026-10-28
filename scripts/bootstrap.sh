@@ -148,6 +148,8 @@ if [ -f "$ENV_FILE" ]; then
         "Generate: python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
     require_nonempty_env_var ROBOCO_AGENT_AUTH_SECRET \
         "Generate: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+    require_nonempty_env_var ROBOCO_REDIS_PASSWORD \
+        "Redis now runs with requirepass. Generate: python3 -c 'import secrets; print(secrets.token_hex(32))'"
     require_nonempty_env_var ROBOCO_PANEL_AGENT_TOKEN \
         "Mint with 'make panel-token' (after ROBOCO_AGENT_AUTH_SECRET is set) — see .env.example. Required even with cloud auth armed; docker-compose.registry.yml refuses an empty value either way."
     require_host_path_var ROBOCO_HOST_PROJECT_DIR \
@@ -158,7 +160,7 @@ else
     [ -f "$ENV_EXAMPLE" ] || fail "${ENV_EXAMPLE} not found — can't scaffold a fresh ${ENV_FILE}."
 
     command -v python3 >/dev/null 2>&1 \
-        || fail "python3 not found on PATH — required to generate the secrets a fresh ${ENV_FILE} needs (ROBOCO_ENCRYPTION_KEY, ROBOCO_AGENT_AUTH_SECRET, ROBOCO_PANEL_AGENT_TOKEN). Install python3, or copy ${ENV_EXAMPLE} to ${ENV_FILE} yourself and fill those in (see the generation one-liners documented next to each in ${ENV_EXAMPLE}; ROBOCO_PANEL_AGENT_TOKEN can also be minted later with 'make panel-token' once ROBOCO_AGENT_AUTH_SECRET is set)."
+        || fail "python3 not found on PATH — required to generate the secrets a fresh ${ENV_FILE} needs (ROBOCO_ENCRYPTION_KEY, ROBOCO_AGENT_AUTH_SECRET, ROBOCO_REDIS_PASSWORD, ROBOCO_PANEL_AGENT_TOKEN). Install python3, or copy ${ENV_EXAMPLE} to ${ENV_FILE} yourself and fill those in (see the generation one-liners documented next to each in ${ENV_EXAMPLE}; ROBOCO_PANEL_AGENT_TOKEN can also be minted later with 'make panel-token' once ROBOCO_AGENT_AUTH_SECRET is set)."
 
     cp "$ENV_EXAMPLE" "$ENV_FILE"
     log "Created ${ENV_FILE} from ${ENV_EXAMPLE}."
@@ -181,6 +183,10 @@ else
     if ! AGENT_AUTH_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"; then
         rm -f "$ENV_FILE"
         fail "Could not generate ROBOCO_AGENT_AUTH_SECRET (python3 -c 'import secrets; ...' failed above). ${ENV_FILE} removed — re-run once fixed."
+    fi
+    if ! REDIS_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"; then
+        rm -f "$ENV_FILE"
+        fail "Could not generate ROBOCO_REDIS_PASSWORD (python3 -c 'import secrets; ...' failed above). ${ENV_FILE} removed — re-run once fixed."
     fi
 
     # docker-compose.registry.yml's nginx service hard-requires
@@ -206,6 +212,7 @@ print(hmac.new(secret, msg, hashlib.sha256).hexdigest())
 
     sed -i.bak "s/^ROBOCO_ENCRYPTION_KEY=$/ROBOCO_ENCRYPTION_KEY=${ENCRYPTION_KEY}/" "$ENV_FILE"
     sed -i.bak "s/^ROBOCO_AGENT_AUTH_SECRET=$/ROBOCO_AGENT_AUTH_SECRET=${AGENT_AUTH_SECRET}/" "$ENV_FILE"
+    sed -i.bak "s/^ROBOCO_REDIS_PASSWORD=$/ROBOCO_REDIS_PASSWORD=${REDIS_PASSWORD}/" "$ENV_FILE"
     sed -i.bak "s/^ROBOCO_PANEL_AGENT_TOKEN=$/ROBOCO_PANEL_AGENT_TOKEN=${PANEL_TOKEN}/" "$ENV_FILE"
 
     # Pin the host paths to THIS checkout (see require_host_path_var above for
@@ -220,7 +227,7 @@ print(hmac.new(secret, msg, hashlib.sha256).hexdigest())
         "$ENV_FILE"
     rm -f "${ENV_FILE}.bak"
 
-    log "Generated ROBOCO_ENCRYPTION_KEY, ROBOCO_AGENT_AUTH_SECRET, and ROBOCO_PANEL_AGENT_TOKEN into ${ENV_FILE}."
+    log "Generated ROBOCO_ENCRYPTION_KEY, ROBOCO_AGENT_AUTH_SECRET, ROBOCO_REDIS_PASSWORD, and ROBOCO_PANEL_AGENT_TOKEN into ${ENV_FILE}."
     log "Pinned ROBOCO_HOST_PROJECT_DIR=${REPO_ROOT} and ROBOCO_HOST_DATA_DIR=${REPO_ROOT}/data (host-side bind-mount sources for spawned agents)."
     log "Edit ${ENV_FILE} now if you want a pinned ROBOCO_VERSION, Grok, or other optional settings — quickstart won't touch it again."
 
