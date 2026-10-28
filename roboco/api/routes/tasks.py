@@ -44,6 +44,7 @@ from roboco.api.schemas.tasks import (
     TaskUpdate,
     TeamTasksQuery,
     ValidTransitionsResponse,
+    apply_stuck_state,
     enrich_task_with_context,
     finding_to_response,
     findings_summary,
@@ -304,7 +305,12 @@ async def list_tasks(
     else:
         tasks = await service.list_all(limit)
 
-    return task_list_to_response(tasks)
+    responses = task_list_to_response(tasks)
+    stuck = await service.stuck_states(tasks)
+    for response in responses:
+        if response.id in stuck:
+            apply_stuck_state(response, stuck[response.id])
+    return responses
 
 
 @router.get("/summary", response_model=list[TaskSummaryResponse])
@@ -340,9 +346,7 @@ async def list_tasks_summary(
         tasks = await service.search_tasks(
             q, team=effective_team, status=status, limit=limit
         )
-        return task_list_to_summary_response(tasks)
-
-    if effective_team and status:
+    elif effective_team and status:
         tasks = await service.list_by_team(effective_team, status, limit)
     elif effective_team:
         tasks = await service.list_by_team(effective_team, limit=limit)
@@ -351,7 +355,12 @@ async def list_tasks_summary(
     else:
         tasks = await service.list_all(limit)
 
-    return task_list_to_summary_response(tasks)
+    responses = task_list_to_summary_response(tasks)
+    stuck = await service.stuck_states(tasks)
+    for response in responses:
+        if response.id in stuck:
+            apply_stuck_state(response, stuck[response.id])
+    return responses
 
 
 @router.get("/my", response_model=list[TaskResponse])
@@ -700,6 +709,8 @@ async def get_task(
 
     # Enrich with work session and project context
     response = await enrich_task_with_context(response, db)
+
+    apply_stuck_state(response, await service.stuck_state(task))
 
     # Gated the same as the budgets feature: an extra DB read, so only pay
     # for it when the panel can actually make use of it (ROBOCO_TASK_BUDGETS_ENABLED).
