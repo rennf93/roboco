@@ -30,7 +30,6 @@ package's shared session-scoped ``e2e_stack`` fixture.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import os
 import sys
 import types
@@ -321,7 +320,13 @@ class _ScriptedBenchSpawner:
         # driving any arc.
         os.environ["ROBOCO_ORCHESTRATOR_URL"] = self._stack.base_url
         for name in ("roboco.mcp.do_server", "roboco.mcp.flow_server"):
-            module = sys.modules.get(name) or importlib.import_module(name)
+            module = sys.modules.get(name)
+            if module is None:
+                # Not imported yet: the harness imports it later (with the
+                # agent env it needs at import time, ROBOCO_AGENT_ID) and it
+                # reads the URL set above. Importing it here first raised
+                # KeyError whenever this module ran without an earlier arc.
+                continue
             if getattr(module, "ORCHESTRATOR_URL", None) != self._stack.base_url:
                 # Module dict (not a plain attribute) — mypy flags a ModuleType
                 # attribute assignment and B010 flags setattr-with-constant.
