@@ -323,6 +323,37 @@ def _parse_marker_ts(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _open_strike_count(state: dict[str, Any]) -> int:
+    """Sum the wedge ledger marker's per-status strike counters."""
+    strikes = state.get("strikes")
+    if not isinstance(strikes, dict):
+        return 0
+    return sum(int(v) for v in strikes.values() if isinstance(v, int | float))
+
+
+def _active_since_progress(
+    task: Any, state: dict[str, Any], ledger: Any, now: datetime
+) -> float | None:
+    """Uptime-adjusted seconds since the ledger's last progress movement.
+
+    Anchors on ``last_progress_at``, then ``tripped_at``, then the task row's
+    own timestamps; wall clock only when no uptime ledger is readable.
+    """
+    moved_at = (
+        _parse_marker_ts(state.get("last_progress_at"))
+        or _parse_marker_ts(state.get("tripped_at"))
+        or task.updated_at
+        or task.created_at
+    )
+    if moved_at is None:
+        return None
+    if moved_at.tzinfo is None:
+        moved_at = moved_at.replace(tzinfo=UTC)
+    if ledger is not None:
+        return float(max(ledger.active_seconds(moved_at, now), 0.0))
+    return max((now - moved_at).total_seconds(), 0.0)
+
+
 def _task_type_is_code(task_type: Any) -> bool:
     """True when ``task_type`` is ``TaskType.CODE`` (enum member or its value).
 
@@ -3996,33 +4027,16 @@ class TaskService(BaseService):
         for task in tasks:
             task_id = cast("UUID", task.id)
             state = get_wedge_state(task)
-            strikes = state.get("strikes")
-            open_strikes = (
-                sum(int(v) for v in strikes.values() if isinstance(v, int | float))
-                if isinstance(strikes, dict)
-                else 0
-            )
-            moved_at = (
-                _parse_marker_ts(state.get("last_progress_at"))
-                or _parse_marker_ts(state.get("tripped_at"))
-                or task.updated_at
-                or task.created_at
-            )
-            if moved_at is not None and moved_at.tzinfo is None:
-                moved_at = moved_at.replace(tzinfo=UTC)
-            active: float | None = None
-            if moved_at is not None:
-                if ledger is not None:
-                    active = max(ledger.active_seconds(moved_at, now), 0.0)
-                else:
-                    active = max((now - moved_at).total_seconds(), 0.0)
-            cycle = (
-                await self._wedge_cycle_entries(task_id) if state.get("tripped") else []
-            )
             out[task_id] = {
-                "active_time_since_progress": active,
-                "open_wedge_strikes": open_strikes,
-                "wedge_cycle": cycle,
+                "active_time_since_progress": _active_since_progress(
+                    task, state, ledger, now
+                ),
+                "open_wedge_strikes": _open_strike_count(state),
+                "wedge_cycle": (
+                    await self._wedge_cycle_entries(task_id)
+                    if state.get("tripped")
+                    else []
+                ),
             }
         return out
 

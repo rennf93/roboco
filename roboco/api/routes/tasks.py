@@ -346,14 +346,7 @@ async def list_tasks_summary(
         tasks = await service.search_tasks(
             q, team=effective_team, status=status, limit=limit
         )
-        responses = task_list_to_summary_response(tasks)
-        stuck = await service.stuck_states(tasks)
-        for response in responses:
-            if response.id in stuck:
-                apply_stuck_state(response, stuck[response.id])
-        return responses
-
-    if effective_team and status:
+    elif effective_team and status:
         tasks = await service.list_by_team(effective_team, status, limit)
     elif effective_team:
         tasks = await service.list_by_team(effective_team, limit=limit)
