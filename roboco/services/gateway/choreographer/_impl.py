@@ -4167,8 +4167,28 @@ class Choreographer:
         t = await self.task.get(task_id)
         if t is None:
             return envelope
+        if verb == "i_will_plan":
+            # Write-then-gate (see _ensure_pm_decision): the plan i_will_plan
+            # just persisted IS the PM's planning rationale. The prompted order
+            # note(scope='decision') -> i_will_plan could never work, since
+            # note refuses a write before the claim exists, and PMs idled on
+            # the resulting tracing_gap instead (live 2026-10-28: main-pm
+            # paused four fresh roots in ten minutes this way).
+            await self._ensure_pm_decision(
+                agent_id, task_id, self._planning_rationale(t)
+            )
         gap = await self._check_claim_journal_at_claim(verb, agent_id, task_id, t)
         return gap if gap is not None else envelope
+
+    @staticmethod
+    def _planning_rationale(t: Any) -> str | None:
+        """The PM's planning rationale off the task's persisted plan: a rich
+        plan's ``approach``, else a plain plan's ``text``."""
+        plan = getattr(t, "plan", None)
+        if not isinstance(plan, dict):
+            return None
+        rationale = plan.get("approach") or plan.get("text")
+        return str(rationale) if rationale else None
 
     async def _check_claim_journal_at_claim(
         self, verb: str, agent_id: UUID, task_id: UUID, t: Any
