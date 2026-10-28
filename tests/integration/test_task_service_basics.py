@@ -29,6 +29,7 @@ from roboco.services.base import ConflictError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import select, text
+from structlog.testing import capture_logs
 
 from tests.integration.conftest import cleanup_project_durable_rows
 
@@ -3496,3 +3497,28 @@ async def test_mark_pr_created_audit_attributed_to_developer(
     assert transition[0].agent_id == dev_id, (
         f"audit agent_id={transition[0].agent_id} != dev {dev_id} (L30)"
     )
+
+
+@pytest.mark.asyncio
+async def test_claim_probe_reports_a_dependency_hold_without_the_claim_warning(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The dispatcher re-probes every held task each tick; only a refused
+    claim should log "Cannot claim task - unmet dependencies" (live
+    2026-10-28: 221 such warnings in 100 minutes, all from the probe)."""
+    svc = task_setup["svc"]
+    dependency = await svc.create(_req(task_setup, title="still open"))
+    dependency.status = TaskStatus.IN_PROGRESS
+    held = await svc.create(_req(task_setup, title="waits on it"))
+    held.dependency_ids = [dependency.id]
+    held.branch_name = "feature/backend/ffff6666"
+    await db_session.flush()
+    warning = "Cannot claim task - unmet dependencies"
+
+    with capture_logs() as probe_logs:
+        assert await svc.is_pending_claim_blocked(held.id) is True
+    with capture_logs() as claim_logs:
+        assert await svc.claim(held.id, task_setup["agent_id"]) is None
+
+    assert not [e for e in probe_logs if e["event"] == warning]
+    assert [e for e in claim_logs if e["event"] == warning]
