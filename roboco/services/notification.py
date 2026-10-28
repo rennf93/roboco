@@ -215,6 +215,44 @@ class NotificationService:
             )
         )
 
+    async def send_wedge_blocked_notification(
+        self,
+        *,
+        task_id: str,
+        strikes: int,
+        cycle: str,
+        to_agent: str = "ceo",
+        db_session: AsyncSession | None = None,
+        task_title: str | None = None,
+    ) -> None:
+        """Alert the CEO that the task-scoped wedge ledger tripped.
+
+        Unlike the per-unblock oscillation alert, the body carries the FULL
+        cycle — one line per status hop with the actor, verb, and timestamp —
+        so the CEO sees the shape of the mixed-verb loop, not just that one
+        exists.
+        """
+        display = task_display(task_title, task_id)
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.BLOCKER_ESCALATION,
+                priority=NotificationPriority.HIGH,
+                from_agent="system",
+                to_agents=[to_agent],
+                subject=f"Task {display} wedge-blocked ({strikes}x, no progress)",
+                body=(
+                    f"Task {display} returned to already-held statuses {strikes} "
+                    "times with no progress-fingerprint movement (commits, "
+                    "revision_count, terminal children) across mixed verbs and "
+                    "actors, and has been force-blocked for a human to resolve. "
+                    "Full cycle, oldest first:\n"
+                    f"{cycle}"
+                ),
+                related_task_id=task_id,
+            ),
+            db_session=db_session,
+        )
+
     async def send_oscillation_blocked_notification(
         self,
         *,

@@ -93,10 +93,20 @@ class VerbRunner:
                 "re-issue your claim verb."
             )
         intent = spec._INTENT_VERBS[intent_name]
-        pr_waived = await self._run_pre_side_effects(
-            intent, task, agent, precomputed_ahead
-        )
-        task = await self._run_composed_actions(intent, task, agent, context, pr_waived)
+        # Bind the verb name so the sync transition chokepoint
+        # (TaskService._record_wedge_cycle) can attribute each status hop to
+        # the verb that caused it — the wedge ledger's CEO payload needs the
+        # verb, and TaskService itself never knows it.
+        structlog.contextvars.bind_contextvars(verb=intent_name)
+        try:
+            pr_waived = await self._run_pre_side_effects(
+                intent, task, agent, precomputed_ahead
+            )
+            task = await self._run_composed_actions(
+                intent, task, agent, context, pr_waived
+            )
+        finally:
+            structlog.contextvars.unbind_contextvars("verb")
         # A TRAILING None (the last composed action returned None because its
         # source-status check failed under a concurrent transition) is the
         # verb's own result and flows out as the runner's return value. The

@@ -1038,6 +1038,100 @@ def mark_oscillation_tripped(task: HasMarkers) -> None:
     )
 
 
+# --- task-scoped wedge ledger ----------------------------------------------
+# Generalizes the per-unblock oscillation breaker (#685) to EVERY status
+# transition, whatever verb or actor caused it. The September mixed-verb loop
+# (unblock-OK -> complete not_authorized -> escalate bounce -> pool reclaim)
+# accrued zero strikes because no single verb owned the cycle; this ledger
+# counts status-keyed returns instead. ``_emit_status_transition_audit`` (the
+# single transition chokepoint) appends one cycle entry per hop — status,
+# actor role/id, verb (when running under the gateway's verb context),
+# timestamp — capped at WEDGE_CYCLE_CAP, and schedules the async evaluator
+# (roboco/services/wedge_ledger.py) that compares the SAME #685 progress
+# fingerprint (commit count, revision_count, terminal children — never a
+# second fingerprint): any component moving clears the strike counter (real
+# forward motion), a revisit of an already-held status with the fingerprint
+# static accrues one strike. Past the threshold the task is force-BLOCKED for
+# a human and the CEO notification carries the full cycle — actors, verbs,
+# timestamps — so the shape of the loop is visible, not just its existence.
+# Payload: {"strikes": int, "progress_fp": [int, int, int] | None,
+#           "tripped": bool, "evaluated": int, "cycle": [...]}.
+
+WEDGE_LEDGER = "wedge_ledger"
+WEDGE_CYCLE_CAP = 40
+
+
+def get_wedge_ledger(task: HasMarkers) -> dict[str, Any]:
+    val = get_marker(task, WEDGE_LEDGER)
+    if not isinstance(val, dict):
+        return {
+            "strikes": 0,
+            "progress_fp": None,
+            "tripped": False,
+            "evaluated": 0,
+            "cycle": [],
+        }
+    return {
+        "strikes": int(val.get("strikes") or 0),
+        "progress_fp": (
+            list(val["progress_fp"])
+            if isinstance(val.get("progress_fp"), list)
+            else None
+        ),
+        "tripped": bool(val.get("tripped")),
+        "evaluated": int(val.get("evaluated") or 0),
+        "cycle": (list(val["cycle"]) if isinstance(val.get("cycle"), list) else []),
+    }
+
+
+def append_wedge_cycle_entry(task: HasMarkers, entry: dict[str, Any]) -> None:
+    """Record one status hop in the ledger's cycle trail (sync, atomic with
+    the transition — the evaluator runs later on a fresh session). Oldest
+    entries beyond WEDGE_CYCLE_CAP are dropped; ``evaluated`` is shifted so
+    the evaluator never re-processes dropped entries."""
+    ledger = get_wedge_ledger(task)
+    cycle = ledger["cycle"] + [entry]
+    dropped = max(0, len(cycle) - WEDGE_CYCLE_CAP)
+    set_marker(
+        task,
+        WEDGE_LEDGER,
+        {
+            "strikes": ledger["strikes"],
+            "progress_fp": ledger["progress_fp"],
+            "tripped": ledger["tripped"],
+            "evaluated": max(0, ledger["evaluated"] - dropped),
+            "cycle": cycle[-WEDGE_CYCLE_CAP:],
+        },
+    )
+
+
+def set_wedge_strike_state(
+    task: HasMarkers, *, strikes: int, progress_fp: list[int]
+) -> None:
+    ledger = get_wedge_ledger(task)
+    set_marker(
+        task,
+        WEDGE_LEDGER,
+        {
+            "strikes": strikes,
+            "progress_fp": progress_fp,
+            "tripped": ledger["tripped"],
+            "evaluated": ledger["evaluated"],
+            "cycle": ledger["cycle"],
+        },
+    )
+
+
+def is_wedge_tripped(task: HasMarkers) -> bool:
+    return bool(get_wedge_ledger(task)["tripped"])
+
+
+def mark_wedge_tripped(task: HasMarkers) -> None:
+    ledger = get_wedge_ledger(task)
+    ledger["tripped"] = True
+    set_marker(task, WEDGE_LEDGER, ledger)
+
+
 # --- PR-base / parent-topology drift ----------------------------------------
 # Recorded by the ``parent_task_id`` re-parent write-through
 # (``TaskService.recheck_topology_after_reparent``) when

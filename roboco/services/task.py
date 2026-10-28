@@ -898,6 +898,20 @@ _CORONER_BOUNCE_THRESHOLD = 3
 _module_log = structlog.get_logger()
 
 
+async def _evaluate_wedge_ledger_hook(task_id: UUID) -> None:
+    """Best-effort wedge-ledger evaluation for one transition hop.
+
+    Scheduled via ``asyncio.create_task`` from the SYNC
+    ``_emit_status_transition_audit`` chokepoint on a fresh session (same
+    pattern as ``_fire_coroner_bounce_hook``): the progress fingerprint needs
+    the async terminal-children COUNT. ``evaluate_wedge_transition`` is
+    cursor-deduped and swallows its own errors, so a scheduling race only
+    delays a strike to the next hop — it can never double-count one."""
+    from roboco.services.wedge_ledger import evaluate_wedge_transition
+
+    await evaluate_wedge_transition(task_id)
+
+
 async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
     """Best-effort Coroner autopsy trigger for a task's 3rd bounce.
 
@@ -1463,6 +1477,59 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+        self._record_wedge_cycle(
+            task,
+            to_status=to_status,
+            agent_role=agent_role,
+            agent_id=resolved_audit_agent_id,
+        )
+
+    def _record_wedge_cycle(
+        self,
+        task: TaskTable,
+        *,
+        to_status: str,
+        agent_role: str | None,
+        agent_id: str | None,
+    ) -> None:
+        """Append one hop to the task-scoped wedge ledger and schedule its
+        async evaluation. Runs at the single transition chokepoint, so it
+        counts status-keyed returns across ANY verb and actor — the shape the
+        per-unblock oscillation breaker (#685) structurally missed (the
+        September mixed-verb loop accrued zero strikes on it). Blocked hops
+        are not recorded: a block is the ledger's own outcome (or a human
+        escalation), not a wedge hop, and skipping it also keeps the
+        evaluator's force-block from feeding back into the trail. The
+        evaluation runs fire-and-forget on a fresh session (coroner-hook
+        pattern) because the progress fingerprint needs the async
+        terminal-children COUNT; it is cursor-deduped on the marker, so the
+        accepted small race can only delay, never double-count, a strike.
+        Verb comes from the gateway verb runner's structlog context when one
+        is bound; direct panel/admin transitions record ``null``."""
+        if to_status == TaskStatus.BLOCKED.value:
+            return
+        verb: str | None = structlog.contextvars.get_contextvars().get("verb")
+        markers.append_wedge_cycle_entry(
+            task,
+            {
+                "status": to_status,
+                "agent_role": agent_role,
+                "agent_id": agent_id,
+                "verb": verb,
+                "ts": datetime.now(UTC).isoformat(),
+            },
+        )
+        try:
+            bg_task = asyncio.create_task(
+                _evaluate_wedge_ledger_hook(cast("UUID", task.id))
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            _module_log.warning(
+                "wedge ledger: evaluation scheduling failed (best-effort)",
+                task_id=str(task.id),
+            )
 
     @staticmethod
     def _clear_stale_stalled_marker(task: TaskTable) -> None:

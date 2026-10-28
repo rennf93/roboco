@@ -549,12 +549,19 @@ def _prune_retired_venvs(clone_root: Path) -> None:
     """Delete retired staged/previous venv dirs older than the retention
     window (best-effort)."""
     now = time.time()
+    live: Path | None = None
+    venv = clone_root / ".venv"
+    if venv.is_symlink():
+        with contextlib.suppress(OSError):
+            live = venv.resolve()
     retired = chain(
         clone_root.glob(f"{_VENV_STAGED_PREFIX}*"),
         clone_root.glob(f"{_VENV_PREV_PREFIX}*"),
     )
     for entry in retired:
         try:
+            if live is not None and entry.resolve() == live:
+                continue
             if now - entry.stat().st_mtime > _VENV_RETENTION_SECONDS:
                 shutil.rmtree(entry, ignore_errors=True)
         except OSError:
@@ -2036,6 +2043,13 @@ class WorkspaceService:
         if not settings.workspace_install_dev_deps:
             return False
 
+        # A symlinked .venv is a staged venv owned by
+        # ensure_venv_matches_worktree (it holds the worktree digest in the
+        # shared marker); a clone-root install here would miss the marker and
+        # `uv sync` through the symlink, undoing the re-sync.
+        if (workspace / ".venv").is_symlink():
+            return False
+
         # When toolchain matching is on, provision against the target project's
         # declared Python (uv resolves + fetches it) instead of the system 3.13.
         target_python = self._resolve_toolchain_target(workspace)
@@ -2091,11 +2105,17 @@ class WorkspaceService:
         """
         venv = clone_root / ".venv"
         if venv.is_symlink():
+            old = venv.resolve()
             tmp = clone_root / f".venv-swap-{os.getpid()}"
             if os.path.lexists(tmp):
                 tmp.unlink()
             tmp.symlink_to(staged.name)
             tmp.replace(venv)
+            # Retirement timestamp: the retention window runs from the flip
+            # away, not from when the dir was built.
+            if old != staged.resolve() and old.exists():
+                with contextlib.suppress(OSError):
+                    os.utime(old)
             return
         if venv.exists():
             venv.rename(clone_root / f"{_VENV_PREV_PREFIX}{int(time.time())}")

@@ -2246,6 +2246,20 @@ class Settings(BaseSettings):
         ge=60,
         description="Claim heartbeat staleness threshold (seconds)",
     )
+    # Task-scoped wedge ledger (roboco/services/wedge_ledger.py): returns to an
+    # already-held status with no movement in the #685 progress fingerprint
+    # (commits, revision_count, terminal children) accrue a strike regardless
+    # of verb or actor; past this many strikes the task is force-blocked for a
+    # human with the full cycle in the CEO notification. Default is aligned
+    # with the #685 oscillation trip threshold (_OSCILLATION_TRIP_THRESHOLD).
+    wedge_ledger_strike_threshold: int = Field(
+        default=5,
+        ge=2,
+        description=(
+            "Progress-less returns to an already-held status before a task is "
+            "force-blocked for a human (wedge ledger)"
+        ),
+    )
     # Debounce for respawning a PM to CLOSE a paused parent once its subtasks
     # are terminal. It guards only the narrow i_am_idle race (the parent
     # auto-pauses, then the agent is marked IDLE + its container tears down) —

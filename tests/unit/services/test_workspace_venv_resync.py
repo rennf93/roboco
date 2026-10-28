@@ -14,6 +14,8 @@ These tests use fakes for the install subprocess — no network, no real uv.
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -154,6 +156,13 @@ async def test_bumped_lockfile_installs_newly_pinned_version(
 
     assert ran is True
     assert marker.read_text() == new_digest
+    call = recorder.await_args
+    assert call is not None
+    # Install ran from the BUMPED worktree with uv sync --extra dev, so it
+    # resolves against that worktree's uv.lock.
+    assert call.args[0] == bumped
+    assert call.args[2][:4] == ["uv", "sync", "--extra", "dev"]
+    assert "7.8.2" in (bumped / "uv.lock").read_text()
     venv = root / ".venv"
     staged = Path(venv.parent / venv.readlink())
     assert staged.name == f".venv-staged-{new_digest[:12]}"
@@ -255,3 +264,51 @@ async def test_failed_install_leaves_marker_for_retry(tmp_path: Path) -> None:
 
     assert ran is False
     assert (root / _DEP_INSTALL_MARKER).read_text() == "old"
+
+
+async def test_prune_never_deletes_live_venv_a_b_a(tmp_path: Path) -> None:
+    """A -> B -> A: the aged staged dir the symlink points at again is live
+    and must survive the prune; the retired B is touched at flip time."""
+    root = _clone_root(tmp_path)
+    wt_a = _worktree(root, "a", 'version = "A"\n')
+    wt_b = _worktree(root, "b", 'version = "B"\n')
+    svc = _service()
+    recorder = _fake_install_recorder()
+    with patch.object(WorkspaceService, "_run_dep_install", recorder):
+        await svc.ensure_venv_matches_worktree(root, wt_a)
+        await svc.ensure_venv_matches_worktree(root, wt_b)
+        digest_a = _lockfile_digest(wt_a)
+        assert digest_a is not None
+        staged_a = root / f".venv-staged-{digest_a[:12]}"
+        # Age A well past retention while it is retired.
+        old = time.time() - 3 * 24 * 3600
+        os.utime(staged_a, (old, old))
+        await svc.ensure_venv_matches_worktree(root, wt_a)
+
+    assert (root / ".venv").resolve() == staged_a.resolve()
+    assert (staged_a / "bin" / "python").exists()  # live, not pruned
+    digest_b = _lockfile_digest(wt_b)
+    assert digest_b is not None
+    staged_b = root / f".venv-staged-{digest_b[:12]}"
+    assert staged_b.exists()  # just retired: window runs from the flip
+
+
+async def test_clone_root_install_does_not_undo_resync(tmp_path: Path) -> None:
+    """After a re-sync, install_dev_deps(clone_root) must not reinstall or
+    touch the staged venv even though the parked root lockfile differs."""
+    root = _clone_root(tmp_path)
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (root / "uv.lock").write_text('version = "clone-time"\n')
+    worktree = _worktree(root, "t1", 'version = "new"\n')
+    svc = _service()
+    recorder = _fake_install_recorder()
+    with patch.object(WorkspaceService, "_run_dep_install", recorder):
+        assert await svc.ensure_venv_matches_worktree(root, worktree) is True
+        assert recorder.await_count == 1
+        staged = (root / ".venv").resolve()
+        marker = (root / _DEP_INSTALL_MARKER).read_text()
+        assert await svc.install_dev_deps(root) is False
+
+    assert recorder.await_count == 1
+    assert (root / ".venv").resolve() == staged
+    assert (root / _DEP_INSTALL_MARKER).read_text() == marker
