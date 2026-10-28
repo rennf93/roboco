@@ -54,3 +54,47 @@ def test_check_fails_on_a_hard_wrapped_file(tmp_path: Path) -> None:
     )
     assert result.returncode == 1
     assert "hard-wrapped prose" in result.stdout
+
+
+def test_apply_leaves_a_tool_managed_block_verbatim(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.md"
+    sample.write_text(
+        "A paragraph outside the block that\n"
+        "is hard-wrapped and must be joined.\n"
+        "\n"
+        "<!-- some-tool:begin -->\n"
+        "Line the tool owns.\n"
+        "@another/line/the/tool/owns.md\n"
+        "<!-- some-tool:end -->\n"
+    )
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--apply"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sample.read_text() == (
+        "A paragraph outside the block that is hard-wrapped and must be joined.\n"
+        "\n"
+        "<!-- some-tool:begin -->\n"
+        "Line the tool owns.\n"
+        "@another/line/the/tool/owns.md\n"
+        "<!-- some-tool:end -->\n"
+    )
+
+
+def test_check_skips_the_tool_owned_entire_directory(tmp_path: Path) -> None:
+    (tmp_path / ".entire").mkdir()
+    (tmp_path / ".entire" / "agent-guide.md").write_text(
+        "A tool-generated guide that has been\nhard-wrapped by the tool that owns it.\n"
+    )
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--check"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
