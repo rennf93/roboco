@@ -1238,13 +1238,15 @@ class PRGateMixin(_Base):
             )
         return None
 
-    async def _resolve_ci_status(self, task_id: UUID, t: Any) -> dict[str, Any] | None:
-        """Best-effort CI-status lookup for the assembled PR's head commit.
+    async def _resolve_ci_status(
+        self, task_id: UUID, t: Any, *, strict: bool = False
+    ) -> dict[str, Any] | None:
+        """CI-status lookup for the assembled PR's head commit.
 
-        Returns ``None`` on ANY configuration gap or lookup failure (no
-        resolvable slug/PR number, a raised exception, or a caller returning
-        something other than the documented ``dict[str, Any]`` shape) so
-        ``_ci_status_guard`` fails open on every one of them uniformly.
+        Returns ``None`` on a configuration gap (no resolvable slug/PR number)
+        or a non-dict result. A raised ``get_pr_ci_status`` is swallowed to
+        ``None`` for best-effort callers, but re-raised when ``strict`` so
+        ``_ci_status_guard`` can refuse rather than fail open.
         """
         pr_number = getattr(t, "pr_number", None)
         try:
@@ -1262,6 +1264,8 @@ class PRGateMixin(_Base):
             logger.exception(
                 "ci status guard: get_pr_ci_status raised", task_id=str(task_id)
             )
+            if strict:
+                raise
             return None
         return status if isinstance(status, dict) else None
 
@@ -1293,12 +1297,30 @@ class PRGateMixin(_Base):
         through with an evidence note (parity with ``no_ci_configured``); if
         some remain, they alone drive the block message.
         """
-        status = await self._resolve_ci_status(task_id, t)
-        if status is None:
-            # A configuration gap or lookup failure — never mistaken for a CI
-            # signal, so the guard fails open rather than blocking.
+        try:
+            status = await self._resolve_ci_status(task_id, t, strict=True)
+        except Exception as exc:
+            return (
+                await self._emit_rejection(
+                    Envelope.invalid_state(
+                        message=f"CI status lookup failed: {exc}",
+                        remediate=(
+                            "retry pr_pass (the CI lookup error is transient); "
+                            "pr_fail stays available regardless"
+                        ),
+                        context_briefing=briefing,
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=reviewer_agent_id,
+                    task_id=task_id,
+                    verb="pr_pass",
+                ),
+                None,
+            )
+        state = status.get("state") if status is not None else None
+        if status is None or state == "success":
+            # None is a configuration gap (no slug / PR number) — never
+            # mistaken for a CI signal, so the guard passes through.
             return None, None
-        state = status.get("state")
         if state == "failure":
             status, scope_note = self._scope_gate_codeql_failure(t, status)
             state = status.get("state")
@@ -1309,8 +1331,6 @@ class PRGateMixin(_Base):
                 if drift_env is not None:
                     return drift_env, None
                 return None, scope_note
-        if state == "success":
-            return None, None
         if state == "no_ci_configured":
             return None, "no CI configured on this project"
         message, remediate = self._ci_status_block_message(state, status)
