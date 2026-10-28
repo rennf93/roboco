@@ -11,7 +11,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { ChevronDown, X, AlertOctagon, AlertCircle } from "lucide-react";
+import {
+  ChevronDown,
+  X,
+  AlertOctagon,
+  AlertCircle,
+  AlertTriangle,
+} from "lucide-react";
 import { HelpTip } from "@/components/ui/help-tip";
 
 interface TaskFiltersProps {
@@ -39,6 +45,10 @@ interface TaskFiltersProps {
   onStalledChange?: (value: boolean) => void;
   stalledCount?: number;
   stalledError?: boolean;
+  // Stuck-only toggle: the page passes `stuck` to the backend list query, so
+  // this component only reflects/toggles the flag.
+  stuckFilter?: boolean;
+  onStuckChange?: (value: boolean) => void;
 }
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -96,6 +106,8 @@ export function TaskFilters({
   onStalledChange,
   stalledCount,
   stalledError = false,
+  stuckFilter = false,
+  onStuckChange,
 }: TaskFiltersProps) {
   const toggleStatus = (status: TaskStatus) => {
     if (statusFilter.includes(status)) {
@@ -452,6 +464,23 @@ export function TaskFilters({
                 </Button>
               </HelpTip>
             )}
+
+            {/* Stuck-only toggle (optional) */}
+            {onStuckChange && (
+              <HelpTip label="Open tasks with wedge strikes or blocked for a human decision">
+                <Button
+                  type="button"
+                  variant={stuckFilter ? "default" : "outline"}
+                  aria-pressed={stuckFilter}
+                  onClick={() => onStuckChange(!stuckFilter)}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                    Stuck
+                  </span>
+                </Button>
+              </HelpTip>
+            )}
           </div>
         </div>
 
@@ -461,7 +490,8 @@ export function TaskFilters({
           taskTypeFilter.length > 0 ||
           projectFilter.length > 0 ||
           productFilter.length > 0 ||
-          stalledFilter) && (
+          stalledFilter ||
+          stuckFilter) && (
           <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t">
             {statusFilter.map((status) => (
               <Badge key={status} variant="secondary" className="gap-1">
@@ -523,6 +553,18 @@ export function TaskFilters({
                 </HelpTip>
               </Badge>
             ))}
+            {stuckFilter && onStuckChange && (
+              <Badge variant="secondary" className="gap-1">
+                Stuck
+                <HelpTip label="Remove this filter">
+                  <X
+                    className="h-3 w-3 cursor-pointer hover:text-destructive"
+                    onClick={() => onStuckChange(false)}
+                    aria-label="Remove Stuck filter"
+                  />
+                </HelpTip>
+              </Badge>
+            )}
             {stalledFilter && onStalledChange && (
               <Badge variant="secondary" className="gap-1">
                 Stalled
@@ -540,7 +582,8 @@ export function TaskFilters({
               taskTypeFilter.length > 0 ||
               projectFilter.length > 0 ||
               productFilter.length > 0 ||
-              stalledFilter) && (
+              stalledFilter ||
+              stuckFilter) && (
               <HelpTip label="Removes every active filter above, restoring the unfiltered task list.">
                 <Button
                   variant="ghost"
@@ -553,6 +596,7 @@ export function TaskFilters({
                     clearProjects();
                     clearProducts();
                     onStalledChange?.(false);
+                    onStuckChange?.(false);
                   }}
                 >
                   Clear all
