@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -78,7 +78,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Cache the Laya-GGUF weights
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: models
           key: laya-gguf-${{ env.LAYA_HF_REVISION }}-${{ env.LAYA_GGUF_FILE }}
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload the logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sidecar-logs
           path: |
@@ -210,7 +210,7 @@ jobs:
     timeout-minutes: 60
     if: github.event_name != 'pull_request'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       # FETCH_CLEF_WEIGHTS=false: the 19GB clef GGUF stays NAS-side. This
       # job validates the multi-stage build machinery (llama.cpp compile at
@@ -272,7 +272,7 @@ jobs:
 
       - name: Upload the container log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: container-log
           path: |

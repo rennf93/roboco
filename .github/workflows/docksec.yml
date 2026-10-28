@@ -48,7 +48,7 @@ jobs:
       DOCKERFILE: ${{ matrix.dockerfile }}
     steps:
       - name: Checkout
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -77,7 +77,7 @@ jobs:
         # upload would fail every time, turning a routine fork contribution into a red
         # required check. Skip it there instead of forcing a failure.
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@3ea06614dafe36dec890db3446326e0d40ce53d4 # v3
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v3
         with:
           sarif_file: sarif-out
           category: docksec-${{ matrix.dockerfile }}
