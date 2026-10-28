@@ -9,12 +9,29 @@
 # already-installed browser via `--executable-path` keeps this image at one
 # browser, not two (see the 0.19.0 lean-images CHANGELOG note this Dockerfile
 # is scoped against).
+#
+# The path is the headless shell's own executable, found under the browsers
+# directory. It used to come from Playwright's `chromium.executable_path`,
+# which names FULL Chromium (chromium-<rev>/chrome-linux64/chrome) - a browser
+# these images never install - so the MCP server was handed a binary that
+# does not exist and the QA agents' browser tool could not launch.
+#
+# `--print-executable-path` prints the resolved path and exits, so the image
+# smoke workflow checks exactly what this wrapper would run.
 set -euo pipefail
+shopt -s nullglob
 
-CHROMIUM_PATH="$(/app/.venv/bin/python -c '
-from playwright.sync_api import sync_playwright
-with sync_playwright() as p:
-    print(p.chromium.executable_path)
-')"
+browsers_dir="${PLAYWRIGHT_BROWSERS_PATH:-/app/.playwright}"
+candidates=("$browsers_dir"/chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell)
 
-exec playwright-mcp --executable-path "$CHROMIUM_PATH" --headless --isolated
+if [ "${#candidates[@]}" -ne 1 ] || [ ! -x "${candidates[0]}" ]; then
+  echo "playwright-mcp-entrypoint: expected exactly one executable chromium-headless-shell under $browsers_dir, found ${#candidates[@]}: ${candidates[*]:-none}" >&2
+  exit 1
+fi
+
+if [ "${1:-}" = "--print-executable-path" ]; then
+  echo "${candidates[0]}"
+  exit 0
+fi
+
+exec playwright-mcp --executable-path "${candidates[0]}" --headless --isolated
