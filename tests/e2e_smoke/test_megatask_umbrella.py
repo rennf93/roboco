@@ -387,23 +387,9 @@ def test_megatask_umbrella_sequenced_close(e2e_stack: E2EStack) -> None:
             ],
         )
 
-    # Real choreography (mirrors dev_arc's claim-time note): the composed
-    # claim succeeds and stays; the post-claim tracing gate demands the
-    # claim-time journal:decision; the retry short-circuits as re-entry.
-    expect_error(_plan_rs2(), "tracing_gap", "main_pm i_will_plan RS2 first attempt")
-    expect_ok(
-        main_pm.do(
-            "note",
-            scope="decision",
-            task_id=str(rs2_id),
-            text=(
-                "Wave 1 (RS1) is completed and merged to master; wave 2 "
-                "(RS2) repeats the identical backend-cell delegation on its "
-                "own root branch against the same project."
-            ),
-        ),
-        "main_pm decision note at claim",
-    )
+    # The composed claim succeeds and i_will_plan records its own plan as the
+    # claim-time journal:decision (write-then-gate), so the post-claim gate
+    # passes on the first call.
     expect_ok(
         _plan_rs2(),
         "main_pm i_will_plan RS2 after RS1 terminal",
