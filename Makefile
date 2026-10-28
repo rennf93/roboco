@@ -310,7 +310,13 @@ quality: sync
 	# pinned to the CPU wheel and NEVER loaded at runtime — the stack uses Ollama
 	# over HTTP for all embeddings/LLM, so the vulnerable JIT path is unreachable.
 	# Documented waiver; revisit when a fixed torch ships.
-	@uv run pip-audit --ignore-vuln CVE-2025-3000
+	# Retried: the audit fetches the vulnerability database over the network,
+	# and a dropped connection ("Connection reset by peer") failed slave's CI
+	# on 2026-10-28 with no finding. A real finding fails all three attempts.
+	@for attempt in 1 2 3; do \
+		uv run pip-audit --ignore-vuln CVE-2025-3000 && exit 0; \
+		echo "pip-audit attempt $$attempt/3 failed"; sleep 15; \
+	done; exit 1
 	@echo "==> deptry (dependency hygiene)"
 	@uv run deptry roboco/
 	@echo "==> alembic upgrade --sql (migrations parse)"
