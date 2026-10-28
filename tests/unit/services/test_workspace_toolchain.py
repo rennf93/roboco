@@ -8,7 +8,6 @@ marker the gates read. When off, provisioning is exactly today's behavior.
 
 from __future__ import annotations
 
-import subprocess
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,9 +16,10 @@ from roboco.services.workspace import (
     WorkspaceService,
     _detect_dep_commands,
 )
+from roboco.services.workspace_container import WorkspaceContainerResult
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
 _PY = '[project]\nname = "x"\nrequires-python = ">=3.14,<3.15"\n'
@@ -51,15 +51,19 @@ def test_detect_dep_commands_no_python_is_unchanged(tmp_path: Path) -> None:
     assert commands[0][1] == ["uv", "sync", "--extra", "dev"]
 
 
-def _fake_run_factory(
+def _fake_container_factory(
     captured: list[list[str]], *, collect_rc: int
-) -> Callable[..., subprocess.CompletedProcess[str]]:
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        captured.append(argv)
-        rc = collect_rc if "--collect-only" in argv else 0
-        return subprocess.CompletedProcess(argv, returncode=rc, stdout="", stderr="")
+) -> Callable[..., Awaitable[WorkspaceContainerResult]]:
+    """Stands in for the throwaway workspace container the install + smoke use."""
 
-    return _fake_run
+    async def _fake_container(
+        _cwd: Path, argv: list[str], **_kw: object
+    ) -> WorkspaceContainerResult:
+        captured.append(list(argv))
+        rc = collect_rc if "--collect-only" in argv else 0
+        return WorkspaceContainerResult(rc, "", "")
+
+    return _fake_container
 
 
 @pytest.mark.asyncio
@@ -73,10 +77,9 @@ async def test_provisions_target_python_and_records_ok(tmp_path: Path) -> None:
     with (
         patch("roboco.services.workspace.settings.toolchain_match_enabled", True),
         patch(
-            "roboco.services.workspace.subprocess.run",
-            side_effect=_fake_run_factory(captured, collect_rc=0),
+            "roboco.services.workspace.run_in_workspace_container",
+            new=_fake_container_factory(captured, collect_rc=0),
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         await svc.install_dev_deps(ws)
 
@@ -97,12 +100,9 @@ async def test_records_broken_on_collection_error(tmp_path: Path) -> None:
     with (
         patch("roboco.services.workspace.settings.toolchain_match_enabled", True),
         patch(
-            "roboco.services.workspace.subprocess.run",
-            side_effect=_fake_run_factory(
-                captured, collect_rc=2
-            ),  # pytest collect error
+            "roboco.services.workspace.run_in_workspace_container",
+            new=_fake_container_factory(captured, collect_rc=2),  # pytest collect error
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         await svc.install_dev_deps(ws)
 
@@ -120,10 +120,9 @@ async def test_flag_off_is_unchanged_no_marker(tmp_path: Path) -> None:
     with (
         patch("roboco.services.workspace.settings.toolchain_match_enabled", False),
         patch(
-            "roboco.services.workspace.subprocess.run",
-            side_effect=_fake_run_factory(captured, collect_rc=0),
+            "roboco.services.workspace.run_in_workspace_container",
+            new=_fake_container_factory(captured, collect_rc=0),
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         await svc.install_dev_deps(ws)
 

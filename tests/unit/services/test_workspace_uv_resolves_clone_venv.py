@@ -19,7 +19,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from roboco.services.workspace import WorkspaceService, _uv_subprocess_env
+from roboco.services.workspace import WorkspaceService, _uv_container_env
+from roboco.services.workspace_container import _entry_script
 
 pytestmark = pytest.mark.skipif(
     shutil.which("uv") is None, reason="uv CLI not installed"
@@ -134,17 +135,16 @@ async def test_clone_root_stays_on_default_after_worktree_add(clone: Path) -> No
     assert _git(wt2, "branch", "--show-current").strip() == "feature/b"
 
 
-def test_uv_subprocess_env_strips_app_venv_pin(tmp_path, monkeypatch):
-    # The orchestrator runs uv with cwd= a workspace clone, so the env it
-    # passes must NOT carry the image-baked VIRTUAL_ENV=/app/.venv (or the
-    # UV_PROJECT_ENVIRONMENT MCP pin) — uv would warn "does not match project
-    # .venv, will be ignored" on every sync. uv discovers the clone .venv via
-    # cwd either way; stripping is noise-only and keeps per-project isolation.
+def test_uv_container_strips_app_venv_pin(tmp_path, monkeypatch):
+    # The install container starts from the orchestrator's image, whose env
+    # carries VIRTUAL_ENV=/app/.venv (and the UV_PROJECT_ENVIRONMENT MCP pin):
+    # uv would warn "does not match project .venv, will be ignored" on every
+    # sync. The entry script unsets both; the env handed in never adds them.
     clone = tmp_path / "clone"
     clone.mkdir()
     monkeypatch.setenv("VIRTUAL_ENV", "/app/.venv")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/app/.venv")
-    env = _uv_subprocess_env(clone)
-    assert "VIRTUAL_ENV" not in env
-    assert "UV_PROJECT_ENVIRONMENT" not in env
-    assert env["UV_PYTHON_INSTALL_DIR"] == str(clone / ".uv-python")
+    env = _uv_container_env(clone)
+    assert env == {"UV_PYTHON_INSTALL_DIR": str(clone / ".uv-python")}
+    script = _entry_script(60, merge_stderr=False)
+    assert "env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT" in script

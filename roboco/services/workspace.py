@@ -45,6 +45,11 @@ from roboco.logging import get_logger
 from roboco.models.base import Team
 from roboco.models.env_branches import head_branch
 from roboco.services.toolchain import resolve_target_python
+from roboco.services.workspace_container import (
+    WorkspaceContainerError,
+    run_in_workspace_container,
+)
+from roboco.utils.workspace_paths import clone_root_of as _resolve_clone_root
 
 logger = get_logger(__name__)
 
@@ -65,9 +70,9 @@ _AGENT_UID = int(os.environ.get("ROBOCO_AGENT_UID", "1000"))
 _AGENT_GID = int(os.environ.get("ROBOCO_AGENT_GID", "1000"))
 
 # Large, gitignored, agent-regenerated trees we never need to chown here,
-# either absent or already agent-owned (the agent created them), EXCEPT when
-# install_dev_deps just wrote them as root; _own_install_outputs covers that
-# case separately. Walking node_modules alone cost 2.7-15.5s per git op, so
+# either absent or already agent-owned (the agent created them, or the dev-deps
+# install wrote them in a container running as the agent uid). Walking
+# node_modules alone cost 2.7-15.5s per git op, so
 # pruning them keeps the ownership walk fast while still handing the agent
 # every tracked file + .git.
 _PRUNE_DIRS = frozenset(
@@ -257,58 +262,6 @@ def _ensure_agent_owned(workspace: Path) -> None:
         _write_owned_marker(workspace)
 
 
-def _own_install_outputs(workspace: Path) -> None:
-    """Chown the root-run dev-deps install output the main ownership walk misses.
-
-    ``install_dev_deps`` runs ``uv sync`` / ``pnpm install`` / ``npm ci`` as
-    root, writing straight into ``.venv``, ``venv``, and ``node_modules``. The
-    main walk (``_iter_ownable_entries``) prunes those same names via
-    ``_PRUNE_DIRS`` on the assumption the agent created them, so it never
-    chowns what the install just wrote as root.
-    """
-
-    def _output_entries() -> Iterator[str]:
-        for name in (".venv", "venv", "node_modules"):
-            entry = workspace / name
-            if entry.is_symlink():
-                # Worktrees symlink .venv to the clone root's shared .venv
-                # (_link_shared_venv). Own the link itself, never the target.
-                yield str(entry)
-                continue
-            if not entry.is_dir():
-                continue
-            yield str(entry)
-            for root, dirs, files in os.walk(entry, followlinks=False):
-                for child in (*dirs, *files):
-                    yield str(Path(root) / child)
-
-    failed, failed_samples = _count_chown_failures(_output_entries())
-
-    if failed:
-        logger.warning(
-            "Some chowns failed while owning install outputs, agent writes "
-            "may still fail. Check docker user-namespace config or run "
-            "agents as root on this host.",
-            workspace=str(workspace),
-            failures=failed,
-            failed_entries=failed_samples,
-        )
-
-
-def _resolve_clone_root(workspace: Path) -> Path:
-    """The clone root for a workspace or one of its linked worktrees.
-
-    ``.venv`` and ``.uv-python`` live at the clone root and are shared by every
-    worktree under ``{clone_root}/.worktrees/{id}/``. Given a worktree path,
-    return its clone root; given the clone root itself, return it unchanged.
-    Pure path logic keyed on the ``.worktrees`` layout from ``get_worktree_path``
-    — no git call needed.
-    """
-    if workspace.parent.name == ".worktrees":
-        return workspace.parent.parent
-    return workspace
-
-
 # Sentinel filename recording "the last full _ensure_agent_owned pass over
 # this clone found zero wrong-owned entries". Lives under `.git/` — git
 # never tracks its own metadata dir, so this needs no .gitignore entry and
@@ -460,31 +413,22 @@ def _ensure_git_dir_owned(workspace: Path) -> None:
         )
 
 
-def _uv_subprocess_env(workspace: Path) -> dict[str, str]:
-    """Env for a uv subprocess run by the orchestrator (root).
+def _uv_container_env(workspace: Path) -> dict[str, str]:
+    """Env a uv command gets in the throwaway workspace container.
 
     Pins ``UV_PYTHON_INSTALL_DIR`` to ``<clone_root>/.uv-python`` so a non-system
-    Python (e.g. 3.14) uv fetches lands INSIDE the workspace bind mount — not in
-    ``/root/.local/share/uv/python`` (root-owned, ``/root`` is 0700, outside the
-    mount). The workspace ``.venv/bin/python`` then symlinks to an agent-owned
-    CPython on the shared volume, which ``_ensure_agent_owned`` chowns (``.uv-python``
-    is not in ``_PRUNE_DIRS``), so the agent (uid 1000) can traverse it. Without
-    this every ``uv run`` died on ``Permission denied`` canonicalizing the venv
-    symlink (live be-dev-1 brick). Per-workspace → per-project isolation intact.
+    Python (e.g. 3.14) uv fetches lands INSIDE the workspace bind mount, where
+    the agent container (same uid) can traverse it: the workspace
+    ``.venv/bin/python`` symlinks into it. Without this every ``uv run`` died on
+    ``Permission denied`` canonicalizing the venv symlink (live be-dev-1
+    brick). Per-workspace → per-project isolation intact.
 
     Worktree-aware (F123): when the CWD is a per-task worktree, resolve up to the
     clone root so the shared ``.uv-python`` is reused instead of re-fetching a
-    managed CPython per worktree.
+    managed CPython per worktree. The image's own ``/app/.venv`` pins are
+    dropped by the container's entry script.
     """
-    env = dict(os.environ)
-    clone_root = _resolve_clone_root(workspace)
-    env["UV_PYTHON_INSTALL_DIR"] = str(clone_root / ".uv-python")
-    # Drop the image-baked /app/.venv pin so uv discovers THIS clone's .venv,
-    # not the orchestrator gateway venv — it only caused a "will be ignored"
-    # warning (uv already used the clone .venv via cwd discovery). No behavior change.
-    env.pop("VIRTUAL_ENV", None)
-    env.pop("UV_PROJECT_ENVIRONMENT", None)
-    return env
+    return {"UV_PYTHON_INSTALL_DIR": str(_resolve_clone_root(workspace) / ".uv-python")}
 
 
 # Thin wrapper around time.monotonic so tests can patch _monotonic without
@@ -560,6 +504,23 @@ _TOOLCHAIN_MARKER = ".git/.roboco-toolchain"
 _PYTEST_OK = 0
 _PYTEST_NO_TESTS_COLLECTED = 5
 _PYTEST_COLLECTION_ERROR = 2
+
+
+def _give_scratch_tree_to_agent_uid(root: Path) -> None:
+    """Chown a scratch tree this process just built to the agent uid/gid.
+
+    Only for trees under ``private_data_root``, which no agent container
+    mounts: nothing in them can be swapped for a symlink, but ``lchown`` and
+    ``followlinks=False`` keep that true even for links the clone itself
+    carries. An unprivileged process already owns what it built.
+    """
+    if os.geteuid() != 0:
+        return
+    uid, gid = settings.agent_uid, settings.agent_gid
+    os.lchown(root, uid, gid)
+    for parent, dirs, files in os.walk(root, followlinks=False):
+        for name in (*dirs, *files):
+            os.lchown(Path(parent) / name, uid, gid)
 
 
 def _lockfile_digest(workspace: Path) -> str | None:
@@ -2020,9 +1981,11 @@ class WorkspaceService:
         Idempotent: hashes the lockfiles and skips the install when they
         match the marker written by the previous successful run. Detects the
         ecosystem (Python `uv sync`, Node/TS `pnpm install`/`npm ci`) and
-        runs each install from the workspace root. Best-effort — failures are
-        logged, never raised, so a missing toolchain on the host or a flaky
-        registry can't break the agent's clone.
+        runs each install from the workspace root, in a throwaway container as
+        the agent uid: an install runs the clone's build backend and package
+        scripts. Best-effort — failures are logged, never raised, so a missing
+        toolchain, a container that cannot start or a flaky registry can't
+        break the agent's clone.
 
         Returns True when an install ran (and at least one command
         succeeded), False when skipped (cache hit, disabled, or nothing to
@@ -2050,10 +2013,6 @@ class WorkspaceService:
             await self._record_toolchain(workspace, target_python, only_if_missing=True)
             return False
 
-        # The install runs as root and writes .venv / node_modules outside the
-        # git chokepoints, so a live owned-marker would make the repair walk
-        # below skip the freshly root-owned files. Invalidate before running.
-        invalidate_owned_marker(workspace)
         any_ok = False
         for label, argv in commands:
             ok = await self._run_dep_install(workspace, label, argv)
@@ -2065,11 +2024,6 @@ class WorkspaceService:
             with contextlib.suppress(OSError):
                 (workspace / _DEP_INSTALL_MARKER).write_text(digest)
 
-        # The install runs as root (orchestrator). The main walk below prunes
-        # .venv / node_modules as agent-created, so own those trees first,
-        # then hand the rest of the freshly written workspace to the agent.
-        await asyncio.to_thread(_own_install_outputs, workspace)
-        await asyncio.to_thread(_ensure_agent_owned, workspace)
         await self._record_toolchain(workspace, target_python)
         return any_ok
 
@@ -2105,8 +2059,10 @@ class WorkspaceService:
 
         Returns ``ok`` (collected, or no tests), ``broken`` (collection/import
         error — the interpreter-mismatch signature), or ``unknown`` (pytest
-        absent, tool missing, timeout — never block on these). Precision over
-        recall: only a genuine collection error reports ``broken``.
+        absent, tool missing, timeout, no container — never block on these).
+        Precision over recall: only a genuine collection error reports
+        ``broken``. Collection imports the clone's own conftest/tests, so it
+        runs in a throwaway container as the agent uid.
         """
         argv = [
             "uv",
@@ -2120,20 +2076,16 @@ class WorkspaceService:
             "-q",
         ]
 
-        def _run() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                argv,
-                cwd=str(workspace),
-                env=_uv_subprocess_env(workspace),
-                capture_output=True,
-                text=True,
-                timeout=settings.workspace_dep_install_timeout_seconds,
-                check=False,
-            )
-
         try:
-            result = await asyncio.to_thread(_run)
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            result = await run_in_workspace_container(
+                workspace,
+                argv,
+                timeout=settings.workspace_dep_install_timeout_seconds,
+                env=_uv_container_env(workspace),
+            )
+        except (WorkspaceContainerError, OSError):
+            return "unknown"
+        if result.timed_out:
             return "unknown"
         if result.returncode in (_PYTEST_OK, _PYTEST_NO_TESTS_COLLECTED):
             return "ok"
@@ -2172,42 +2124,27 @@ class WorkspaceService:
 
     @staticmethod
     async def _run_dep_install(workspace: Path, label: str, argv: list[str]) -> bool:
-        """Run one dep-install command; log and swallow all failures.
+        """Run one dep-install command in a throwaway workspace container.
 
-        Returns True only when the tool exists and exited 0.
+        The install executes the clone's build backend / package scripts,
+        which any agent can rewrite, so it never runs here as root. Logs and
+        swallows every failure; returns True only when it exited 0.
         """
-
-        def _run() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                argv,
-                cwd=str(workspace),
-                env=_uv_subprocess_env(workspace),
-                capture_output=True,
-                text=True,
-                timeout=settings.workspace_dep_install_timeout_seconds,
-                check=False,
-            )
-
         logger.info(
             "Installing workspace dev dependencies",
             workspace=str(workspace),
             command=label,
         )
         try:
-            result = await asyncio.to_thread(_run)
-        except FileNotFoundError:
-            # The tool (uv/pnpm/npm) isn't on the orchestrator's PATH. Log and
-            # continue — the agent can still install on the fly inside its
-            # container, which has the toolchain.
-            logger.warning(
-                "Dev-deps install tool not found on host; skipping",
-                workspace=str(workspace),
-                command=label,
+            result = await run_in_workspace_container(
+                workspace,
+                argv,
+                timeout=settings.workspace_dep_install_timeout_seconds,
+                env=_uv_container_env(workspace),
             )
-            return False
-        except (subprocess.TimeoutExpired, OSError) as exc:
+        except (WorkspaceContainerError, OSError) as exc:
             logger.warning(
-                "Dev-deps install failed",
+                "Dev-deps install container could not start; skipping",
                 workspace=str(workspace),
                 command=label,
                 error=str(exc),
@@ -2219,6 +2156,7 @@ class WorkspaceService:
                 "Dev-deps install returned non-zero",
                 workspace=str(workspace),
                 command=label,
+                timed_out=result.timed_out,
                 stderr=result.stderr.strip()[:2000],
             )
             return False
@@ -2248,6 +2186,12 @@ class WorkspaceService:
         upgrade operates on the independent local copy and never touches the
         read clone, so holding the lock past the clone would only block
         conventions reads for the upgrade duration.
+
+        The upgrade resolves (and may build) the project's dependencies, and
+        its ``git status`` reads a ``.git`` that code just ran in, so both run
+        in a throwaway workspace container as the agent uid. The throwaway
+        clone lives under ``private_data_root`` (orchestrator-only, and a path
+        the Docker daemon can bind) and is handed to that uid first.
         """
         command = str(getattr(project, "dep_update_command", None) or "").strip()
         if not command:
@@ -2265,7 +2209,9 @@ class WorkspaceService:
         lock_paths = list(
             getattr(project, "dep_update_paths", None) or _DEP_LOCK_DEFAULTS
         )
-        tmp = Path(tempfile.mkdtemp(prefix="dep-probe-"))
+        scratch_root = Path(settings.private_data_root) / "scratch"
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="dep-probe-", dir=scratch_root))
         try:
             clone_dir = tmp / "repo"
             timeout = settings.workspace_dep_install_timeout_seconds
@@ -2274,9 +2220,8 @@ class WorkspaceService:
                 await asyncio.to_thread(
                     self._clone_local_into, read_clone, clone_dir, timeout
                 )
-            return await asyncio.to_thread(
-                self._probe_lockfile_on_clone, clone_dir, command, lock_paths
-            )
+            await asyncio.to_thread(_give_scratch_tree_to_agent_uid, tmp)
+            return await self._probe_lockfile_on_clone(clone_dir, command, lock_paths)
         except Exception as exc:
             logger.warning(
                 "dep-update probe failed; not originating",
@@ -2312,47 +2257,37 @@ class WorkspaceService:
         )
 
     @staticmethod
-    def _probe_lockfile_on_clone(
+    async def _probe_lockfile_on_clone(
         clone_dir: Path, command: str, lock_paths: list[str]
     ) -> bool:
-        """Run the upgrade on the independent local clone + report dirty (in a thread).
+        """Run the upgrade on the independent local clone + report dirty.
 
-        Runs the upgrade with no shell (``shlex.split``); a non-zero upgrade
-        yields False (fail-safe, don't originate on a broken probe). The lock is
-        NOT held here — the clone is a full independent copy and the upgrade
-        never touches the read clone.
+        Both steps run in a throwaway workspace container as the agent uid.
+        The upgrade runs with no shell (``shlex.split``); a non-zero upgrade
+        yields False (fail-safe, don't originate on a broken probe). The lock
+        is NOT held here — the clone is a full independent copy and the
+        upgrade never touches the read clone. A container that cannot start
+        raises; the caller logs it and does not originate.
         """
         timeout = settings.workspace_dep_install_timeout_seconds
-        # Scrub the inherited venv pin: under `uv run` the orchestrator's
-        # process tree carries VIRTUAL_ENV=<its own venv>, and a uv-based
-        # dep_update_command would target THAT venv instead of the throwaway
-        # clone's. Same hazard _uv_subprocess_env guards for installs.
-        probe_env = dict(os.environ)
-        probe_env.pop("VIRTUAL_ENV", None)
-        probe_env.pop("UV_PROJECT_ENVIRONMENT", None)
-        upgrade = subprocess.run(
+        upgrade = await run_in_workspace_container(
+            clone_dir,
             shlex.split(command),
-            cwd=str(clone_dir),
-            env=probe_env,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
+            env=_uv_container_env(clone_dir),
         )
         if upgrade.returncode != 0:
             logger.warning(
                 "dep-update probe: upgrade command non-zero; not originating",
                 command=command,
+                timed_out=upgrade.timed_out,
                 stderr=upgrade.stderr.strip()[:2000],
             )
             return False
-        status = subprocess.run(
+        status = await run_in_workspace_container(
+            clone_dir,
             ["git", "status", "--porcelain", "--", *lock_paths],
-            cwd=str(clone_dir),
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
         return bool(status.stdout.strip())
 

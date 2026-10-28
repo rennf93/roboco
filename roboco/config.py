@@ -1971,6 +1971,68 @@ class Settings(BaseSettings):
             "minutes; the default clone timeout is too short for this."
         ),
     )
+    agent_uid: int = Field(
+        default=1000,
+        description=(
+            "uid of the `agent` user in the agent images (Debian `useradd` "
+            "default). Workspace files belong to it, and every throwaway "
+            "workspace container runs as it."
+        ),
+    )
+    agent_gid: int = Field(
+        default=1000,
+        description="Primary gid of the `agent` user in the agent images.",
+    )
+    host_data_dir: str = Field(
+        default="",
+        description=(
+            "Host path of the data dir the compose files mount under /data "
+            "(ROBOCO_HOST_DATA_DIR). Bind mounts for containers the "
+            "orchestrator starts over the Docker socket name host paths, so "
+            "/data/workspaces/... is translated through it. Empty = the "
+            "orchestrator runs on the host itself (local dev)."
+        ),
+    )
+    private_data_root: str = Field(
+        default="/data/private",
+        description=(
+            "Orchestrator-only data dir, never mounted into an agent "
+            "container (agents mount ALL of /data/workspaces read-write). "
+            "Holds scratch trees the orchestrator builds itself."
+        ),
+    )
+    workspace_container_image: str | None = Field(
+        default=None,
+        description=(
+            "Image of the throwaway container that runs a workspace's own "
+            "code: the quality gate, codegen, dependency installs, the "
+            "toolchain smoke and the dep-update probe. Unset = the image this "
+            "orchestrator runs, read from its own container, so the toolchain "
+            "is the one these commands used when they ran here as root. Set "
+            "it when the orchestrator is not itself in a container."
+        ),
+    )
+    workspace_container_network: str = Field(
+        default="bridge",
+        description=(
+            "Docker network for the throwaway workspace container. The "
+            "default `bridge` reaches package registries but not RoboCo's "
+            "networks (no API, no Postgres/Redis by name)."
+        ),
+    )
+    workspace_container_memory: str = Field(
+        default="4g",
+        description="`docker run --memory` for the throwaway workspace container.",
+    )
+    workspace_container_cpus: str = Field(
+        default="2",
+        description="`docker run --cpus` for the throwaway workspace container.",
+    )
+    workspace_container_pids_limit: int = Field(
+        default=4096,
+        ge=64,
+        description="`docker run --pids-limit` for the throwaway workspace container.",
+    )
 
     # ==========================================================================
     # Agent container images (spawn source)

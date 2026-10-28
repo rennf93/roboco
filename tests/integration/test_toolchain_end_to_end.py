@@ -8,7 +8,6 @@ provisioned against the requires-python interpreter; a collection error records
 
 from __future__ import annotations
 
-import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -17,9 +16,10 @@ import pytest
 from roboco.config import settings
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.workspace import WorkspaceService
+from roboco.services.workspace_container import WorkspaceContainerResult
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
 # requires-python needs 3.14 but the pin says 3.13 — the resolver must ignore
@@ -56,13 +56,17 @@ def _choreographer_for(status: str | None) -> Choreographer:
     return Choreographer(ChoreographerDeps(**base))
 
 
-def _fake_run(
+def _fake_container(
     captured: list[list[str]], *, collect_rc: int
-) -> Callable[..., subprocess.CompletedProcess[str]]:
-    def _run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        captured.append(argv)
+) -> Callable[..., Awaitable[WorkspaceContainerResult]]:
+    """Stands in for the throwaway workspace container the install + smoke use."""
+
+    async def _run(
+        _cwd: Path, argv: list[str], **_kw: object
+    ) -> WorkspaceContainerResult:
+        captured.append(list(argv))
         rc = collect_rc if "--collect-only" in argv else 0
-        return subprocess.CompletedProcess(argv, returncode=rc, stdout="", stderr="")
+        return WorkspaceContainerResult(rc, "", "")
 
     return _run
 
@@ -79,10 +83,9 @@ async def test_broken_env_provisions_then_blocks_the_gate(
     with (
         patch("roboco.services.workspace.settings.toolchain_match_enabled", True),
         patch(
-            "roboco.services.workspace.subprocess.run",
-            side_effect=_fake_run(captured, collect_rc=2),  # collection/import error
+            "roboco.services.workspace.run_in_workspace_container",
+            new=_fake_container(captured, collect_rc=2),  # collection/import error
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         await svc.install_dev_deps(ws)
 
@@ -110,10 +113,9 @@ async def test_ok_env_provisions_and_gate_proceeds(
     with (
         patch("roboco.services.workspace.settings.toolchain_match_enabled", True),
         patch(
-            "roboco.services.workspace.subprocess.run",
-            side_effect=_fake_run(captured, collect_rc=0),
+            "roboco.services.workspace.run_in_workspace_container",
+            new=_fake_container(captured, collect_rc=0),
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         await svc.install_dev_deps(ws)
 
@@ -134,10 +136,9 @@ async def test_flag_off_provisions_today_and_never_blocks(
     with (
         patch("roboco.services.workspace.settings.toolchain_match_enabled", False),
         patch(
-            "roboco.services.workspace.subprocess.run",
-            side_effect=_fake_run(captured, collect_rc=2),
+            "roboco.services.workspace.run_in_workspace_container",
+            new=_fake_container(captured, collect_rc=2),
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         await svc.install_dev_deps(ws)
 

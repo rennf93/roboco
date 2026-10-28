@@ -298,6 +298,10 @@ x-orchestrator-volumes: &orchestrator-volumes
   - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
   - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
   - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+  # Orchestrator-only data (never mounted into an agent container, which
+  # mounts ALL of /data/workspaces read-write): scratch clones the
+  # orchestrator builds itself and hands to a throwaway workspace container.
+  - ${ROBOCO_DATA_DIR:-./data}/private:/data/private
   # Per-agent GROK usage capture (usage.json -> finalizer).
   - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
   # Per-agent CODEX usage capture — same shape as grok-usage above.
