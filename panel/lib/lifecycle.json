@@ -10,6 +10,11 @@
       "needs_revision",
       "pending"
     ],
+    "devops": [
+      "awaiting_pr_review",
+      "needs_revision",
+      "pending"
+    ],
     "documenter": [
       "awaiting_documentation",
       "pending"
@@ -31,6 +36,17 @@
   "intents": [
     {
       "allowed_roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "composes": [],
+      "description": "Close a zero-diff leaf: a delegated child whose findings a merged sibling already fixed, so no legitimate diff remains and i_am_done/complete can never accept it. Refuses a target with any children of its own (not a leaf), any commit ahead of its base, or an open PR - those go through the normal review path, not this. `reason` is recorded as your journal:decision and on the task's audit trail. Cell PM: only your own coordination task's children. Main PM: any root's descendant.",
+      "name": "cancel_leaf",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
         "documenter"
       ],
       "composes": [],
@@ -41,6 +57,7 @@
     },
     {
       "allowed_roles": [
+        "devops",
         "pr_reviewer"
       ],
       "composes": [],
@@ -150,6 +167,7 @@
       "allowed_roles": [
         "cell_pm",
         "developer",
+        "devops",
         "documenter",
         "main_pm",
         "pr_reviewer",
@@ -177,7 +195,8 @@
     },
     {
       "allowed_roles": [
-        "developer"
+        "developer",
+        "devops"
       ],
       "composes": [
         "submit_verification",
@@ -193,6 +212,7 @@
         "auditor",
         "cell_pm",
         "developer",
+        "devops",
         "documenter",
         "head_marketing",
         "main_pm",
@@ -227,8 +247,7 @@
       ],
       "composes": [
         "claim",
-        "set_plan",
-        "start"
+        "set_plan"
       ],
       "description": "PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.",
       "name": "i_will_plan",
@@ -237,12 +256,12 @@
     },
     {
       "allowed_roles": [
-        "developer"
+        "developer",
+        "devops"
       ],
       "composes": [
         "claim",
-        "set_plan",
-        "start"
+        "set_plan"
       ],
       "description": "Claim a task, set the plan, and transition to in_progress. Atomic - preconditions checked before any state mutation.",
       "name": "i_will_work_on",
@@ -251,7 +270,8 @@
     },
     {
       "allowed_roles": [
-        "developer"
+        "developer",
+        "devops"
       ],
       "composes": [],
       "description": "Push the branch and open a PR. Atomic - preconditions (assignee, >=1 commit, no prior PR) checked BEFORE any git operation. After success, call i_am_done.",
@@ -288,6 +308,7 @@
     },
     {
       "allowed_roles": [
+        "devops",
         "pr_reviewer"
       ],
       "composes": [
@@ -300,6 +321,7 @@
     },
     {
       "allowed_roles": [
+        "devops",
         "pr_reviewer"
       ],
       "composes": [
@@ -317,6 +339,16 @@
       "composes": [],
       "description": "Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved \u2014 the new developer continues the work-in-progress. No status change.",
       "name": "reassign",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "devops"
+      ],
+      "composes": [],
+      "description": "Record the DevOps infra-review verdict (pass) on an assembled-PR gate task WITHOUT transitioning it: the primary reviewer's pr_pass then composes. Use pr_fail instead to reject the PR.",
+      "name": "record_devops_review",
       "pre_side_effects": [],
       "side_effects": []
     },
@@ -379,7 +411,8 @@
     },
     {
       "allowed_roles": [
-        "developer"
+        "developer",
+        "devops"
       ],
       "composes": [],
       "description": "Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base \u2014 e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned \u2014 resolve by hand, commit, then sync_branch again. Pass stash=True to auto-stash uncommitted changes instead of refusing DIRTY_WORKSPACE; they are restored after the rebase.",
@@ -428,6 +461,7 @@
       "allowed_roles": [
         "cell_pm",
         "developer",
+        "devops",
         "documenter",
         "main_pm",
         "pr_reviewer",
@@ -550,6 +584,7 @@
     {
       "action": "pr_pass",
       "roles": [
+        "devops",
         "pr_reviewer"
       ],
       "source": "awaiting_pr_review",
@@ -568,6 +603,7 @@
     {
       "action": "claim",
       "roles": [
+        "devops",
         "pr_reviewer"
       ],
       "source": "awaiting_pr_review",
@@ -576,6 +612,7 @@
     {
       "action": "pr_fail",
       "roles": [
+        "devops",
         "pr_reviewer"
       ],
       "source": "awaiting_pr_review",
