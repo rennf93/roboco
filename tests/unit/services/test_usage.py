@@ -613,7 +613,7 @@ class TestGetByModel:
     async def test_pct_of_total_sums_to_100(self) -> None:
         rows = [
             _make_row(
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 tokens_input=600,
                 tokens_output=600,
                 tokens_cache_read=0,
@@ -646,7 +646,7 @@ class TestGetByModel:
     async def test_result_contains_model_field(self) -> None:
         rows = [
             _make_row(
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 tokens_input=100,
                 tokens_output=100,
                 tokens_cache_read=0,
@@ -656,7 +656,7 @@ class TestGetByModel:
         ]
         svc = _service_with_execute(_result_fetchall(rows))
         result = await svc.get_by_model()
-        assert result[_ZERO]["model"] == "claude-sonnet-5"
+        assert result[_ZERO]["model"] == "claude-sonnet-5-5"
 
     @pytest.mark.asyncio
     async def test_result_includes_cache_fields_and_hit_rate(self) -> None:
@@ -664,7 +664,7 @@ class TestGetByModel:
         _cache_write = 100
         rows = [
             _make_row(
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 tokens_input=_INPUT_TOKENS,
                 tokens_output=200,
                 tokens_cache_read=_CACHE_READ_TOKENS,
@@ -687,7 +687,7 @@ class TestGetByModel:
         _expected_total = 600 + 600 + _cache_read + _cache_write  # 1600
         rows = [
             _make_row(
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 tokens_input=600,
                 tokens_output=600,
                 tokens_cache_read=_cache_read,
@@ -704,7 +704,7 @@ class TestGetByModel:
         """pct_of_total still sums to 100% when models have cache tokens."""
         rows = [
             _make_row(
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 tokens_input=500,
                 tokens_output=500,
                 tokens_cache_read=200,

@@ -2569,12 +2569,12 @@ class Settings(BaseSettings):
         ),
     )
     # The default OpenRouter model id (provider/model form, e.g.
-    # "anthropic/claude-sonnet-5") passed to `opencode run --model` when the
+    # "anthropic/claude-sonnet-5.5") passed to `opencode run --model` when the
     # routing assignment does not pin a specific model. The live catalog is
     # searched on demand (GET /providers/openrouter/models) and the picked
     # model id is stored via provider_type_override — this is only the floor.
     openrouter_cli_model: str = Field(
-        default="anthropic/claude-sonnet-5",
+        default="anthropic/claude-sonnet-5.5",
         description=(
             "Default OpenRouter model id (provider/model) passed to opencode "
             "when no per-assignment model is pinned. Override via "

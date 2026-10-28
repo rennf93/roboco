@@ -236,7 +236,9 @@ async def test_session_metrics_by_day_buckets_by_display_timezone(
     (winter, CET = UTC+1) — the exact 'evening activity lands on the wrong
     display day' bug this fix targets."""
     started = datetime(2026, 1, 15, 23, 30, tzinfo=UTC)
-    session_row = _spawn_session(started_at=started, model="claude-sonnet-5", cost=1.23)
+    session_row = _spawn_session(
+        started_at=started, model="claude-sonnet-5-5", cost=1.23
+    )
     db_session.add(session_row)
     await db_session.flush()
 

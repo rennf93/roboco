@@ -23,7 +23,7 @@ TOKENS_CACHE_READ = 4_000_000
 
 def _active_orch() -> tuple[AgentOrchestrator, AgentInstance]:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    cfg = type("C", (), {"provider_type": "anthropic", "model": "claude-sonnet-5"})()
+    cfg = type("C", (), {"provider_type": "anthropic", "model": "claude-sonnet-5-5"})()
     inst = AgentInstance(agent_id="be-dev-1", state=AgentState.ACTIVE, config=cfg)
     inst.container_id = "cid"
     orch._instances = {"be-dev-1": inst}

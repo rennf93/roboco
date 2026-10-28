@@ -44,7 +44,7 @@ Parity notes (where opencode's runtime model differs from kimi's):
     permission globs cannot reach.
   * **model ref** — opencode resolves a ``--model`` / ``agent.model`` value
     against its own ``provider/model`` grammar. The orchestrator hands over
-    a BARE OpenRouter catalog id (``anthropic/claude-sonnet-4``), which
+    a BARE OpenRouter catalog id (``anthropic/claude-sonnet-5-5``), which
     opencode would resolve against its built-in ``anthropic`` provider
     (expecting ``ANTHROPIC_API_KEY``, never set here). :func:`opencode_model_ref`
     prefixes the rendered agent block's ``model`` with opencode's own
@@ -252,7 +252,7 @@ def opencode_model_ref(model: str) -> str:
     ``ANTHROPIC_API_KEY``, never set in this image) and the run cannot
     authenticate (live-verified). Prefixing with opencode's own provider id
     from the rendered ``provider.openrouter`` block routes every call through
-    OpenRouter: ``openrouter/anthropic/claude-sonnet-4``. Idempotent — an
+    OpenRouter: ``openrouter/anthropic/claude-sonnet-5-5``. Idempotent — an
     already-prefixed ref passes through untouched (the provider injects the
     prefixed ref into ``ROBOCO_AGENT_MODEL`` and the renderer re-derives it).
     """

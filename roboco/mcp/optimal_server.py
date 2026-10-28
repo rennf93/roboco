@@ -405,7 +405,7 @@ def _register_utility_tools(mcp: MCPServer, client: ApiClient) -> None:
     @mcp.tool()
     async def roboco_tokens_estimate(
         content: str,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-5-5",
     ) -> dict[str, Any]:
         """
         Estimate token count for content.
@@ -414,7 +414,7 @@ def _register_utility_tools(mcp: MCPServer, client: ApiClient) -> None:
 
         Args:
             content: Text content to estimate
-            model: Model to estimate for (default: claude-sonnet-4)
+            model: Model to estimate for (default: claude-sonnet-5-5)
 
         Returns:
             Token count estimate

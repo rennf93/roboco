@@ -91,7 +91,7 @@ fi
 # workspace-write + full-auto); `--agent roboco` selects the rendered agent
 # block; `--model` is the opencode model REF (opencode's own provider id
 # prefixing the bare OpenRouter catalog id, e.g.
-# "openrouter/anthropic/claude-sonnet-4" — unprefixed, opencode resolves the
+# "openrouter/anthropic/claude-sonnet-5-5" — unprefixed, opencode resolves the
 # value against its built-in anthropic provider, which needs ANTHROPIC_API_KEY
 # and can never authenticate) the orchestrator passes via ROBOCO_AGENT_MODEL.
 RUN_LOG="/tmp/openrouter-run.jsonl"
@@ -113,7 +113,7 @@ run_opencode() {  # $1 = prompt; $2 = optional "--continue" (also appends to RUN
   if [ -n "${2:-}" ]; then extra=("$2"); append=(-a); fi
   opencode run "$1" "${extra[@]}" \
     --agent roboco \
-    --model "${ROBOCO_AGENT_MODEL:-openrouter/anthropic/claude-sonnet-4}" \
+    --model "${ROBOCO_AGENT_MODEL:-openrouter/anthropic/claude-sonnet-5-5}" \
     --auto \
     --format json \
     < /dev/null 2>> "$ERR_LOG" | tee "${append[@]}" "$RUN_LOG"

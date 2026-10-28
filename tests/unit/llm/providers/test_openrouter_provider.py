@@ -24,10 +24,10 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 
 def test_openrouter_cli_model_is_a_real_settings_field() -> None:
     assert settings.openrouter_cli_model == openrouter_module._OPENROUTER_CLI_MODEL
-    assert settings.openrouter_cli_model == "anthropic/claude-sonnet-5"
+    assert settings.openrouter_cli_model == "anthropic/claude-sonnet-5.5"
 
 
-_OPENROUTER_MODEL = "anthropic/claude-sonnet-5"
+_OPENROUTER_MODEL = "anthropic/claude-sonnet-5-5"
 
 
 def _config(
@@ -214,7 +214,7 @@ async def test_openrouter_spawn_wires_gateway_env_and_image_last() -> None:
     # prefixing the bare catalog id) — the entrypoint passes it straight to
     # --model; unprefixed, opencode resolves it against its built-in
     # anthropic provider and the run cannot authenticate.
-    assert "ROBOCO_AGENT_MODEL=openrouter/anthropic/claude-sonnet-5" in cmd
+    assert "ROBOCO_AGENT_MODEL=openrouter/anthropic/claude-sonnet-5-5" in cmd
     # Usage capture: per-agent data dir mounted + the entrypoint's usage file.
     assert host.data_dirs_ensured == ["be-dev-1"]
     assert "/host/data/openrouter-usage/be-dev-1:/home/agent/.opencode-usage" in cmd
@@ -227,7 +227,7 @@ async def test_openrouter_spawn_wires_gateway_env_and_image_last() -> None:
     assert host.remove_stop_reasons == ["pre_spawn_stale_clear"]
     assert result == SpawnResult(
         instance_id="roboco-agent-be-dev-1",
-        extra={"container_id": "cid", "model": "anthropic/claude-sonnet-5"},
+        extra={"container_id": "cid", "model": "anthropic/claude-sonnet-5-5"},
     )
 
 

@@ -91,13 +91,13 @@ def test_unknown_role_gets_every_deny_category() -> None:
 
 def test_opencode_model_ref_prefixes_bare_catalog_id() -> None:
     assert (
-        oc.opencode_model_ref("anthropic/claude-sonnet-4")
-        == "openrouter/anthropic/claude-sonnet-4"
+        oc.opencode_model_ref("anthropic/claude-sonnet-5-5")
+        == "openrouter/anthropic/claude-sonnet-5-5"
     )
 
 
 def test_opencode_model_ref_is_idempotent() -> None:
-    ref = "openrouter/anthropic/claude-sonnet-4"
+    ref = "openrouter/anthropic/claude-sonnet-5-5"
     assert oc.opencode_model_ref(ref) == ref
 
 
@@ -107,11 +107,11 @@ def test_opencode_model_ref_tolerates_empty() -> None:
 
 
 def test_render_agent_block_carries_prompt_mode_model_permission() -> None:
-    block = oc.render_agent_block("developer", "anthropic/claude-sonnet-4")
+    block = oc.render_agent_block("developer", "anthropic/claude-sonnet-5-5")
     assert block["mode"] == "primary"
     # The block's model is the opencode REF (prefixed), matching the
     # entrypoint's --model value — both must route through OpenRouter.
-    assert block["model"] == "openrouter/anthropic/claude-sonnet-4"
+    assert block["model"] == "openrouter/anthropic/claude-sonnet-5-5"
     assert "permission" in block
     assert "tools" in block
     # The prompt is loaded from the system prompt path; empty string if absent.
@@ -119,8 +119,8 @@ def test_render_agent_block_carries_prompt_mode_model_permission() -> None:
 
 
 def test_render_agent_block_model_ref_is_idempotent_for_prefixed_input() -> None:
-    block = oc.render_agent_block("developer", "openrouter/anthropic/claude-sonnet-4")
-    assert block["model"] == "openrouter/anthropic/claude-sonnet-4"
+    block = oc.render_agent_block("developer", "openrouter/anthropic/claude-sonnet-5-5")
+    assert block["model"] == "openrouter/anthropic/claude-sonnet-5-5"
 
 
 def test_render_agent_block_permission_vararies_by_role() -> None:
@@ -265,7 +265,7 @@ def test_render_config_has_schema_agent_provider_mcp() -> None:
         mcp_path = f.name
     config = oc.render_config(
         "developer",
-        "anthropic/claude-sonnet-4",
+        "anthropic/claude-sonnet-5-5",
         "https://openrouter.ai/api/v1",
         mcp_path,
     )
@@ -330,7 +330,7 @@ def test_main_writes_opencode_json(
     monkeypatch.setattr(oc, "SYSTEM_PROMPT_PATH", system_prompt)
     monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
     monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp_path))
-    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "anthropic/claude-sonnet-4")
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "anthropic/claude-sonnet-5-5")
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
     assert oc.main([]) == 0
@@ -340,7 +340,7 @@ def test_main_writes_opencode_json(
     # The agent block's model is the opencode REF — the same value the
     # entrypoint passes to --model (both route through OpenRouter).
     assert (
-        rendered["agent"]["roboco"]["model"] == "openrouter/anthropic/claude-sonnet-4"
+        rendered["agent"]["roboco"]["model"] == "openrouter/anthropic/claude-sonnet-5-5"
     )
     assert rendered["agent"]["roboco"]["prompt"] == "blueprint"
     assert "openrouter" in rendered["provider"]
@@ -370,7 +370,7 @@ def test_main_creates_missing_config_dir(
     monkeypatch.setattr(oc, "SYSTEM_PROMPT_PATH", system_prompt)
     monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
     monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp_path))
-    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "anthropic/claude-sonnet-4")
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "anthropic/claude-sonnet-5-5")
 
     assert oc.main([]) == 0
     assert config_path.exists()
@@ -417,10 +417,10 @@ def test_render_config_declares_the_agent_model() -> None:
     declared so a served-but-unlisted id (Nemotron 3 Nano) still resolves."""
     config = oc.render_config(
         "documenter",
-        "anthropic/claude-sonnet-4",
+        "anthropic/claude-sonnet-5-5",
         "https://openrouter.ai/api/v1",
         "/nonexistent.json",
     )
     assert config["provider"]["openrouter"]["models"] == {
-        "anthropic/claude-sonnet-4": {}
+        "anthropic/claude-sonnet-5-5": {}
     }
