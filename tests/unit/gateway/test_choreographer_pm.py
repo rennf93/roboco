@@ -1397,6 +1397,109 @@ async def test_cell_pm_complete_unmerged_pr_still_merges_normally() -> None:
     deps.audit.log_event.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_cell_pm_complete_retry_after_interrupted_first_attempt_self_heals() -> (
+    None
+):
+    """Live incident (task 05ac303f / PR #955): the first complete() times out
+    in pr_merge AFTER the forge merge landed (session write lost). The retry
+    sees the PR merged on the forge, backfills the session from forge state and
+    completes cleanly — no CEO escalation — with the backfill audited."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=955,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=parent_id,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    parent = MagicMock(
+        id=parent_id, branch_name="feature/main_pm/abc", parent_task_id=None
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    # Attempt 1: not yet merged, pr_merge times out (merge landed server-side).
+    # Attempt 2: the forge now reports the PR merged.
+    git_svc.is_pr_merged_for_task.side_effect = [False, True]
+    git_svc.pr_merge.side_effect = TimeoutError("gateway client timeout")
+    git_svc.reconcile_already_merged_pr.return_value = "forge-merge-sha-955"
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    with pytest.raises(TimeoutError):
+        await c.cell_pm_complete(pm_id, task_id, notes="first attempt, merge times out")
+    task_svc.cell_pm_complete.assert_not_awaited()
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="retry after the timeout")
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    git_svc.pr_merge.assert_awaited_once()  # the retry did not re-merge
+    git_svc.reconcile_already_merged_pr.assert_awaited_once_with(
+        task_id, actor_agent_id=pm_id
+    )
+    assert (
+        task_svc.cell_pm_complete.await_args.kwargs["merge_commit"]
+        == "forge-merge-sha-955"
+    )
+    audit_kwargs = deps.audit.log_event.await_args.kwargs
+    assert audit_kwargs["event_type"] == "gateway.pr_merge_backfilled"
+    assert audit_kwargs["details"]["merge_commit_sha"] == "forge-merge-sha-955"
+    assert audit_kwargs["details"]["pr_number"] == t.pr_number
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_no_audit_when_forge_state_unreconcilable() -> None:
+    """If reconcile_already_merged_pr cannot determine a merge sha (returns
+    None), no backfill audit is written and complete proceeds with no sha —
+    the backfill is never guessed."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=parent_id,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    parent = MagicMock(
+        id=parent_id, branch_name="feature/main_pm/abc", parent_task_id=None
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = True
+    git_svc.reconcile_already_merged_pr.return_value = None
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    await c.cell_pm_complete(pm_id, task_id, notes="merged but sha unknown on forge")
+    git_svc.pr_merge.assert_not_awaited()
+    assert task_svc.cell_pm_complete.await_args.kwargs["merge_commit"] is None
+    deps.audit.log_event.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # H6: cell_pm_complete survives parent-advance failure
 # ---------------------------------------------------------------------------
