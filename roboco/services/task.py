@@ -4015,10 +4015,8 @@ class TaskService(BaseService):
             wedge_ledger: Any = importlib.import_module("roboco.services.wedge_ledger")
         except ModuleNotFoundError:
             wedge_ledger = None
-        get_wedge_state = (
-            wedge_ledger.get_wedge_state
-            if wedge_ledger is not None
-            else lambda _task: {}
+        get_wedge_state: Any = getattr(wedge_ledger, "get_wedge_state", None) or (
+            lambda _task: {}
         )
 
         now = datetime.now(UTC)
