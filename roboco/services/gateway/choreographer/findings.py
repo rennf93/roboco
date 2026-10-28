@@ -207,18 +207,46 @@ def unknown_finding_criteria(task: Any, findings: list[Finding]) -> list[str]:
     return unmatched_criteria(task, criteria)
 
 
+_CRITERION_CHOICE_TEXT_CHARS = 140
+
+
+def _criterion_choices(task: Any) -> list[str]:
+    """Each acceptance criterion as ``"<id> = <text>"`` (text alone when the
+    task predates criterion ids), the text clipped to keep the envelope small.
+    """
+    ids = list(getattr(task, "acceptance_criteria_ids", None) or [])
+    texts = list(getattr(task, "acceptance_criteria", None) or [])
+    choices = []
+    for idx, text in enumerate(texts):
+        clipped = (
+            text
+            if len(text) <= _CRITERION_CHOICE_TEXT_CHARS
+            else text[: _CRITERION_CHOICE_TEXT_CHARS - 1] + "…"
+        )
+        choices.append(f"{ids[idx]} = {clipped}" if idx < len(ids) else clipped)
+    return choices
+
+
 def criterion_mismatch_rejection(task: Any, unknown: list[str]) -> Envelope:
-    """Rejection envelope for one or more unresolvable finding criteria."""
-    valid = list(getattr(task, "acceptance_criteria_ids", None) or [])
+    """Rejection envelope for one or more unresolvable finding criteria.
+
+    Names every acceptance criterion by id AND text. Listing only the opaque
+    ids left the reviewer guessing which id was which, so it resent another
+    paraphrase (live 2026-10-28: 12 QA fail / pr_fail / request_changes
+    rejections in under two hours, criteria abbreviated with "..." or quoting
+    a constraint such as "All changes confined to the panel/ subtree").
+    """
+    choices = "; ".join(_criterion_choices(task))
     return Envelope.invalid_state(
         message=(
-            f"finding criterion not found on this task: {unknown!r}. Valid "
-            f"criterion ids: {valid!r}"
+            f"finding criterion not found on this task: {unknown!r}. This "
+            f"task's acceptance criteria (id = text): {choices}"
         ),
         remediate=(
-            "each finding's `criterion` must match one of the task's "
-            "acceptance criteria (by id or exact text) — omit `criterion` "
-            "if the finding is not tied to a specific one"
+            "set each finding's `criterion` to one of the ids above (or its "
+            "exact, unabbreviated text), or omit `criterion` when the finding "
+            "is not about one acceptance criterion; constraints such as file "
+            "scope or `make gate` are not acceptance criteria"
         ),
     )
 
