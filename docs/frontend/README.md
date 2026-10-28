@@ -13,6 +13,7 @@ Documentation for the Frontend Cell team.
   - [Page-scoped refresh provider](./components/page-refresh-provider.md) — `PageRefreshProvider` callback registry that lets the navbar refresh button re-fetch only the current page.
   - [Project selector](./components/project-selector.md) — `ProjectSelector` dropdown for picking a project, with optional filtering by team and video-engine enablement.
   - [Portfolio cards](./components/portfolio-cards.md) — `PortfolioCards` CEO-only per-project metrics cards (five metrics, endpoint-order sort, `/tasks?project=` drill-down) with the `CeoGate`/`panel-role` gating seam and the known slug-vs-`project_id` drill-down follow-up.
+  - [Review-path outage banner](./components/review-path-outage-banner.md) — read-only `ReviewPathOutageBanner` driven by a 30s poll of `GET /api/system-health/review-path`, with the frozen contract fields and the 404-to-`null` degradation while the backend surface is unmerged.
 - `/hooks/` - Hook documentation
 - `/qa/` - QA-related docs
 
