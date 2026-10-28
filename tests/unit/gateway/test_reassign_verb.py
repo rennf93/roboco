@@ -15,7 +15,10 @@ from uuid import UUID, uuid4
 import pytest
 from roboco.models.base import AgentStatus, TaskStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
-from roboco.services.gateway.choreographer._impl import Choreographer
+from roboco.services.gateway.choreographer._impl import (
+    Choreographer,
+    ChoreographerDeps,
+)
 from roboco.services.task import TaskService
 
 _BE_PM = UUID(AGENT_UUIDS["be-pm"])
@@ -75,6 +78,51 @@ def test_allows_claimed_status() -> None:
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# _reassign_guard — the target developer's own single-active-task rule
+# ---------------------------------------------------------------------------
+
+
+def _choreographer(held: object | None) -> tuple[Choreographer, AsyncMock]:
+    probe = AsyncMock(return_value=held)
+    deps = MagicMock(task=MagicMock(held_task_blocking_claim=probe))
+    return Choreographer(cast("ChoreographerDeps", deps)), probe
+
+
+@pytest.mark.asyncio
+async def test_reassign_guard_refuses_a_developer_still_holding_work() -> None:
+    """Live 2026-10-28: be-pm handed 6d4baecf to be-dev-2 while be-dev-2 held
+    a blocked and a paused task; its own i_will_work_on then refused it."""
+    held = MagicMock(id=uuid4(), status=TaskStatus.PAUSED)
+    chor, probe = _choreographer(held)
+    task_id = uuid4()
+
+    env = await chor._reassign_guard(_task(), _BE_PM, task_id, "be-dev-2")
+
+    assert env is not None
+    assert env.error == "invalid_state"
+    assert f"be-dev-2 still holds paused task {held.id}" in (env.message or "")
+    probe.assert_awaited_once_with(UUID(AGENT_UUIDS["be-dev-2"]), task_id)
+
+
+@pytest.mark.asyncio
+async def test_reassign_guard_allows_a_free_developer() -> None:
+    chor, _probe = _choreographer(None)
+
+    assert await chor._reassign_guard(_task(), _BE_PM, uuid4(), "be-dev-2") is None
+
+
+@pytest.mark.asyncio
+async def test_reassign_guard_checks_the_cell_before_the_target_load() -> None:
+    chor, probe = _choreographer(None)
+
+    env = await chor._reassign_guard(_task(), _BE_PM, uuid4(), "fe-dev-1")
+
+    assert env is not None
+    assert env.error == "not_authorized"
+    probe.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

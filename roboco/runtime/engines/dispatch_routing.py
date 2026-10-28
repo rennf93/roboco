@@ -277,6 +277,12 @@ class DispatchRoutingEngine(_Base):
         target = self._resolve_routing_target(routing, task)
         if target == "main-pm" and self._is_code_task(task):
             return await self._cell_pm_for_stranded_code_task(task)
+        # A running-container check alone picks a dev that may still hold
+        # claimed / blocked / paused work; route to one that holds none.
+        if routing == "dev" and target in self._cell_candidates(
+            task.get("team"), "dev"
+        ):
+            return await self._free_cell_dev(task)
         return target
 
     def _creator_route_should_skip(
