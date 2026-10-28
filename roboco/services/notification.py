@@ -269,6 +269,59 @@ class NotificationService:
             db_session=db_session,
         )
 
+    async def send_wedge_blocked_notification(
+        self,
+        *,
+        task_id: str,
+        strikes: int,
+        status: str,
+        cycle: list[dict[str, Any]],
+        to_agent: str = "ceo",
+        db_session: AsyncSession | None = None,
+        task_title: str | None = None,
+    ) -> None:
+        """Alert the CEO that the task-scoped wedge ledger tripped.
+
+        Raised from ``WedgeLedgerService`` once re-arrivals at one status
+        with no progress-fingerprint movement cross the threshold — across
+        ANY mix of actors and verbs (the September mixed-verb loop the
+        per-unblock oscillation breaker never saw). The body carries the
+        full transition cycle — actor, role, transition, timestamp — so
+        the CEO sees the shape of the loop, not just that one exists.
+        """
+        logger.info(
+            "Sending wedge-blocked notification",
+            task_id=task_id,
+            strikes=strikes,
+            status=status,
+            cycle_len=len(cycle),
+        )
+        display = task_display(task_title, task_id)
+        lines = [
+            f"{c.get('timestamp') or '?'}  {c.get('actor') or '?'}"
+            f" ({c.get('actor_role') or '?'})  "
+            f"{c.get('from_status') or '?'} -> {c.get('to_status') or '?'}"
+            for c in cycle
+        ]
+        body = (
+            f"Task {display} returned to status '{status}' {strikes} times "
+            "with no progress (no new commits, revisions, or terminal "
+            "children) across mixed actors and verbs, and has been "
+            "force-blocked for a human. Full cycle (oldest last):\n" + "\n".join(lines)
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.BLOCKER_ESCALATION,
+                priority=NotificationPriority.HIGH,
+                from_agent="system",
+                to_agents=[to_agent],
+                subject=f"Task {display} wedged ({strikes}x no-progress cycle)",
+                body=body,
+                related_task_id=task_id,
+            ),
+            db_session=db_session,
+        )
+
     async def send_qa_ready_notification(
         self,
         task_id: str,
