@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release `reject()` now commits CANCELLED while still holding the release mutex, closing a reject-vs-approve race that could execute a CEO-rejected proposal.** `reject()` only flushed its write and released the Redis mutex before the request-level commit landed; under READ COMMITTED a racing `approve()` could acquire the mutex, re-read the still-non-cancelled row in `_approve_precheck`, and launch the fail-closed executor on a proposal the CEO had rejected. `reject()` now re-reads the proposal under the lock and commits CANCELLED plus the required-changes marker before release, mirroring `approve()`'s commit-under-lock. Refusals are structured instead of ambiguous: a new `ReleaseRejectRefused` carries `redis_unavailable` or `already_in_progress` (the vocabulary `approve()` already uses), the reject route returns 409 with `Reject refused (<status>): <detail>` (and also maps `TaskAlreadyCompletedError` to 409 rather than an unhandled 500), and the Telegram reject path renders a readable refusal. A two-session interleaving regression test fails on the old code and passes on the fix.
+
 ## [0.31.0] - 2026-09-17
 
 ### Added

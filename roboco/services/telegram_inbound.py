@@ -57,11 +57,12 @@ from roboco.services.dogfood_service import get_dogfood_service
 from roboco.services.mirror_service import get_mirror_service
 from roboco.services.pest_control_service import get_pest_control_service
 from roboco.services.project import get_project_service
-from roboco.services.release_proposal import TaskAlreadyCompletedError as _ReleaseDone
 from roboco.services.release_proposal import (
+    ReleaseRejectRefused,
     dispatch_approve,
     get_release_proposal_service,
 )
+from roboco.services.release_proposal import TaskAlreadyCompletedError as _ReleaseDone
 from roboco.services.roadmap_service import get_roadmap_service
 from roboco.services.scales_service import get_scales_service
 from roboco.services.settings import get_settings_service
@@ -1523,6 +1524,8 @@ class TelegramInboundEngine(BaseService):
             )
         except _ReleaseDone as exc:
             return False, str(exc)
+        except ReleaseRejectRefused as exc:
+            return False, f"Release reject refused ({exc.status}): {exc.detail}"
         if result is None:
             return False, f"No such open release proposal: {id8}"
         self._mark_audit("release", task_id, "reject")

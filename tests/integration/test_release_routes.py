@@ -426,6 +426,9 @@ async def test_reject_refused_while_approve_lock_held(
             json={"required_changes": "Tighten the CHANGELOG wording."},
         )
     assert resp.status_code == HTTPStatus.CONFLICT
+    # The refusal surfaces the ACTUAL reason — a concurrent approve holds the
+    # mutex — not the old ambiguous "in progress or Redis is unavailable".
+    assert "already_in_progress" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

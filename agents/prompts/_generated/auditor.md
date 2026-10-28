@@ -19,7 +19,6 @@
 | `evidence` | `evidence(task_id: UUID)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `read_a2a` | `read_a2a(see do_server)` |
-| `task_time` | `task_time(task_id: UUID)` |
 | `approve_playbook` | `approve_playbook(playbook_id: UUID)` |
 | `reject_playbook` | `reject_playbook(playbook_id: UUID, reason: str)` |
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
