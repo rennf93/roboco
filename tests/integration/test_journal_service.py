@@ -480,6 +480,76 @@ async def test_create_entry_integrity_error_returns_none(
 
 
 # ---------------------------------------------------------------------------
+# Writes inside a caller's SAVEPOINT (gateway verbs) never commit for it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_decision_inside_caller_savepoint_leaves_its_transaction_open(
+    journal_setup: dict,
+) -> None:
+    """Regression: a PM verb records its decision inside ``begin_nested()``
+    (``Choreographer._ensure_pm_decision``), and both the first-journal create
+    and the entry insert called ``session.commit()`` there. That closed the
+    caller's whole transaction under its open savepoint, durably committing
+    everything the verb had staged, and the next statement raised "Can't
+    operate on closed transaction inside context manager" (live on cell-PM
+    ``unblock`` and main-PM ``escalate_up``)."""
+    svc = journal_setup["svc"]
+    session = svc.session
+    session.sync_session.autoflush = False  # as get_session_factory() builds it
+
+    async with session.begin_nested():
+        entry = await svc.write_decision(
+            agent_id=journal_setup["agent_id"],
+            task_id=journal_setup["task_id"],
+            content="Unblock: the upstream dependency landed.",
+        )
+
+    assert entry is not None
+    assert session.in_transaction()
+    # The caller still owns the commit: rolling it back discards the entry.
+    await session.rollback()
+    assert await session.get(JournalEntryTable, entry.id) is None
+
+
+@pytest.mark.asyncio
+async def test_create_entry_integrity_error_inside_caller_savepoint_propagates(
+    journal_setup: dict,
+) -> None:
+    """Inside a caller's savepoint the IntegrityError propagates so that
+    savepoint rolls the entry back; the old ``session.rollback()`` here
+    discarded the caller's entire outer transaction instead."""
+    svc = journal_setup["svc"]
+    session = svc.session
+    session.sync_session.autoflush = False  # as get_session_factory() builds it
+    journal = await svc.get_or_create_journal(journal_setup["agent_id"])
+    await session.execute(
+        update(JournalTable)
+        .where(JournalTable.id == journal.id)
+        .values(latest_summary="staged before the savepoint")
+    )
+
+    with pytest.raises(_IE):
+        async with session.begin_nested():
+            await svc.create_entry(
+                JournalEntryCreate(
+                    journal_id=journal.id,
+                    type=JournalEntryType.GENERAL,
+                    title="orphan",
+                    content="x",
+                    task_id=uuid4(),  # no such task: FK violation at flush
+                )
+            )
+
+    assert session.in_transaction()
+    staged = await session.execute(
+        select(JournalTable.latest_summary).where(JournalTable.id == journal.id)
+    )
+    assert staged.scalar_one() == "staged before the savepoint"
+
+
+# ---------------------------------------------------------------------------
 # create_entry — LEARNING type triggers record_learning side effect
 # ---------------------------------------------------------------------------
 

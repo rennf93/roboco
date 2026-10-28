@@ -35,11 +35,10 @@ from roboco.services.task import (
     TaskService,
     _CompletionSnapshot,
 )
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest_asyncio.fixture
@@ -466,12 +465,23 @@ async def test_index_decisions_swallows_errors(
 # ---------------------------------------------------------------------------
 
 
+def _route_background_sessions_to_test_db(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point ``get_session_factory()`` (background work's sessions) at the test DB."""
+    factory = async_sessionmaker(
+        bind=db_session.bind, class_=AsyncSession, expire_on_commit=False
+    )
+    monkeypatch.setattr("roboco.db.base.get_session_factory", lambda: factory)
+
+
 @pytest.mark.asyncio
 async def test_index_docs_with_paths_calls_index(
-    task_setup: dict, monkeypatch: pytest.MonkeyPatch
+    task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Docs are enqueued for the indexer worker, not indexed inline."""
     svc = task_setup["svc"]
+    _route_background_sessions_to_test_db(db_session, monkeypatch)
     mock_enqueue = AsyncMock()
     monkeypatch.setattr(
         "roboco.services.optimal_brain.indexer_worker.enqueue_index_request",
@@ -496,9 +506,10 @@ async def test_index_docs_with_paths_calls_index(
 
 @pytest.mark.asyncio
 async def test_index_docs_swallows_errors(
-    task_setup: dict, monkeypatch: pytest.MonkeyPatch
+    task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc = task_setup["svc"]
+    _route_background_sessions_to_test_db(db_session, monkeypatch)
     monkeypatch.setattr(
         "roboco.services.optimal_brain.indexer_worker.enqueue_index_request",
         AsyncMock(side_effect=RuntimeError("oops")),
@@ -528,7 +539,7 @@ async def test_capture_workspace_docs_lands_missing_doc(
     monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
 
     await svc._capture_workspace_docs(
-        task.id, [{"path": "guide.md"}], task_setup["agent_id"]
+        db_session, task.id, [{"path": "guide.md"}], task_setup["agent_id"]
     )
 
     assert (tmp_path / "guide.md").read_text(encoding="utf-8") == "# Guide\ncontent\n"
@@ -557,11 +568,57 @@ async def test_capture_workspace_docs_skips_doc_already_on_server(
     monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
 
     await svc._capture_workspace_docs(
-        task.id, [{"path": "api.md"}], task_setup["agent_id"]
+        db_session, task.id, [{"path": "api.md"}], task_setup["agent_id"]
     )
 
     assert (tmp_path / "api.md").read_text(encoding="utf-8") == "already here"
     fake_git.read_file_at_branch.assert_not_awaited()
+
+
+class _RequestSessionGone:
+    """Stands in for the request's session once the request moved on."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(
+            f"background docs capture used the request session ({name})"
+        )
+
+
+@pytest.mark.asyncio
+async def test_index_docs_background_works_through_its_own_session(
+    task_setup: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Regression: the fire-and-forget capture ran on the request's session,
+    which the request keeps using inside its own savepoint and then commits and
+    closes; the capture died with "Can't operate on closed transaction inside
+    context manager" (logged as "Failed to index docs") and workspace-authored
+    docs never reached RAG."""
+    svc = task_setup["svc"]
+    monkeypatch.setattr("roboco.services.docs.DOCS_BASE_PATH", tmp_path)
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abc"
+    await db_session.commit()
+
+    _route_background_sessions_to_test_db(db_session, monkeypatch)
+    fake_git = MagicMock()
+    fake_git.read_file_at_branch = AsyncMock(return_value="# Guide\ncontent\n")
+    monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
+    mock_enqueue = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.optimal_brain.indexer_worker.enqueue_index_request",
+        mock_enqueue,
+    )
+    svc.session = _RequestSessionGone()
+
+    await svc._index_docs_background(
+        task.id, [{"path": "guide.md"}], task_setup["agent_id"]
+    )
+
+    assert (tmp_path / "guide.md").read_text(encoding="utf-8") == "# Guide\ncontent\n"
+    mock_enqueue.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

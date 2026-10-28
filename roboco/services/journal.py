@@ -116,6 +116,23 @@ class JournalService(BaseService):
 
         return await get_agent_slug(self.session, agent_id)
 
+    async def _commit_unless_inside_caller_savepoint(self) -> None:
+        """Commit, or only flush while a caller's SAVEPOINT is open.
+
+        Gateway verbs write the journal inside ``session.begin_nested()``
+        (e.g. ``Choreographer._ensure_pm_decision``) so a failed write rolls
+        back to the savepoint instead of poisoning the shared request session.
+        A ``commit()`` there closes the caller's whole transaction from under
+        its open savepoint, durably committing everything the verb had staged,
+        and the next statement raises "Can't operate on closed transaction
+        inside context manager". Inside a savepoint the caller owns the commit;
+        the flush still makes the row visible to the rest of the request.
+        """
+        if self.session.in_nested_transaction():
+            await self.session.flush()
+        else:
+            await self.session.commit()
+
     # =========================================================================
     # JOURNAL CRUD
     # =========================================================================
@@ -151,7 +168,7 @@ class JournalService(BaseService):
         # Create new journal
         new_journal = JournalTable(agent_id=agent_id)
         self.session.add(new_journal)
-        await self.session.commit()
+        await self._commit_unless_inside_caller_savepoint()
         await self.session.refresh(new_journal)
 
         self.log.info(
@@ -226,7 +243,9 @@ class JournalService(BaseService):
 
         Returns:
             The created entry, or None if the referenced task/journal
-            no longer exists (e.g. after a runtime reset).
+            no longer exists (e.g. after a runtime reset). Inside a caller's
+            savepoint that IntegrityError propagates instead, so the
+            caller's savepoint rolls it back.
         """
         from sqlalchemy.exc import IntegrityError
 
@@ -262,8 +281,12 @@ class JournalService(BaseService):
             journal_row.entries_by_type = entries_by_type
 
         try:
-            await self.session.commit()
+            await self._commit_unless_inside_caller_savepoint()
         except IntegrityError as e:
+            if self.session.in_nested_transaction():
+                # Session.rollback() would discard the caller's entire outer
+                # transaction; its savepoint owns this rollback instead.
+                raise
             await self.session.rollback()
             self.log.warning(
                 "Journal entry skipped - referenced row was deleted",

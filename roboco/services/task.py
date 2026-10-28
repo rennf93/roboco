@@ -5715,14 +5715,25 @@ class TaskService(BaseService):
         documents: list[dict[str, Any]],
         actor_agent_id: UUID | None = None,
     ) -> None:
-        """Enqueue documentation from a completed doc task (fire-and-forget)."""
+        """Enqueue documentation from a completed doc task (fire-and-forget).
+
+        Runs with its own DB session. It is spawned while ``docs_complete``'s
+        request is still in flight, and that request keeps using ``self.session``
+        (inside the verb runner's savepoint) and then commits and closes it;
+        sharing it failed the capture with "Can't operate on closed transaction
+        inside context manager", so workspace-authored docs never reached RAG.
+        """
+        from roboco.db.base import get_session_factory
         from roboco.services.optimal_brain.indexer_worker import enqueue_index_request
 
         try:
             # Land any workspace-authored docs server-side first, so the
             # indexer (which reads /app/docs) can see docs the agent wrote with
             # Edit/Write in its own clone rather than through roboco_docs_write.
-            await self._capture_workspace_docs(task_id, documents, actor_agent_id)
+            async with get_session_factory()() as session:
+                await self._capture_workspace_docs(
+                    session, task_id, documents, actor_agent_id
+                )
 
             # Extract doc paths from documents array and resolve to absolute paths
             doc_paths: list[str] = []
@@ -5760,6 +5771,7 @@ class TaskService(BaseService):
 
     async def _capture_workspace_docs(
         self,
+        session: AsyncSession,
         task_id: UUID,
         documents: list[dict[str, Any]],
         actor_agent_id: UUID | None,
@@ -5778,10 +5790,10 @@ class TaskService(BaseService):
 
         from roboco.services.git import get_git_service
 
-        task = await self.get(task_id)
+        task = await session.get(TaskTable, task_id)
         if task is None or not task.branch_name:
             return
-        git = get_git_service(self.session)
+        git = get_git_service(session)
         for d in documents:
             rel_path = d.get("path")
             # git show needs a repo-relative path; an absolute path can't be
