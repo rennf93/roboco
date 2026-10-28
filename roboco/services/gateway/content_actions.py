@@ -1070,12 +1070,23 @@ class ContentActions:
         generic git failure the agent should inspect and retry.
         """
         text = str(exc)
-        if files and (
+        nothing_staged = (
             "no changes added to commit" in text or "nothing to commit" in text
-        ):
+        )
+        if files and nothing_staged:
             remediate = (
                 f"the files list {files!r} matched no modified paths; omit "
                 "files to stage all changes, or pass the exact modified paths"
+            )
+        elif nothing_staged:
+            # Live 2026-10-28: 8 of 11 failed commits were this, each answered
+            # with "inspect and retry", and agents retried the same empty
+            # commit.
+            remediate = (
+                "your task workspace has no changes to commit: either the work "
+                "is already committed (check the branch log, then continue with "
+                "open_pr / i_am_done), or your edits were made outside this "
+                "task's workspace and must be re-applied there"
             )
         else:
             remediate = "inspect the git error above and retry"
