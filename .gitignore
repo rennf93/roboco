@@ -79,8 +79,7 @@ dmypy.json
 # Private keys (e.g. a GitHub App key dropped next to .env)
 *.pem
 
-# scripts/deploy-nas.sh state, written into the stack directory on every deploy
-.deploy-cache/
+# scripts/deploy-nas.sh rollback copy of the blue/green switch (.deploy-cache/ is below)
 front/active-upstreams.conf.prev
 
 # Agent skills installed per machine (`npx skills add ...`), like .claude/skills/*
