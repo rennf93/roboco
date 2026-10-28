@@ -343,11 +343,11 @@ class DispatchRoutingEngine(_Base):
         agent_id = await self._get_routing_target(routing, task)
 
         if not agent_id:
-            logger.warning(
-                "No routing target found",
-                task_id=task.get("id"),
-                routing=routing,
-            )
+            # Dev routing returns None on purpose while every cell dev is busy
+            # or still holds work (logged at debug where that is decided);
+            # only a target that cannot be resolved at all deserves a warning.
+            log = logger.debug if routing == "dev" else logger.warning
+            log("No routing target found", task_id=task.get("id"), routing=routing)
             return
 
         # Board work is a two-reviewer gate (PO + Head of Marketing), not a

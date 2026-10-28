@@ -249,3 +249,23 @@ async def test_dev_routing_resolves_through_the_free_dev_check() -> None:
     ):
         assert await orch._get_routing_target("dev", task) == "be-dev-2"
     free.assert_awaited_once_with(task)
+
+
+@pytest.mark.parametrize(("routing", "warns"), [("dev", False), ("cell_pm", True)])
+@pytest.mark.asyncio
+async def test_a_deferred_dev_route_is_not_a_warning(routing: str, warns: bool) -> None:
+    """Every cell dev busy (or holding work) defers the task to the next tick
+    on purpose; only an unresolvable target is worth a warning (live
+    2026-10-28: 22 "No routing target found" warnings, all dev deferrals)."""
+    orch = _orch()
+    task = {"id": "t-1", "team": "backend", "task_type": "code"}
+    logger = MagicMock()
+    with (
+        patch.object(orch, "_pending_claim_blocked", new=AsyncMock(return_value=False)),
+        patch.object(orch, "_classify_task_routing", return_value=routing),
+        patch.object(orch, "_get_routing_target", new=AsyncMock(return_value=None)),
+        patch("roboco.runtime.engines.dispatch_routing.logger", logger),
+    ):
+        await orch._route_unassigned_pm_task(_CLIENT, task)
+
+    assert logger.warning.called is warns
