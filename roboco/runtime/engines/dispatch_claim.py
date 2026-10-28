@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from fastapi import status as http_status
 
@@ -1167,10 +1167,35 @@ class DispatchClaimEngine(_Base):
             resolved = self._resolve_agent_slug(str(claimant))
             if resolved != str(claimant):
                 return resolved
+        if self._gate_reviewer_already_on(task):
+            return None
         team = task.get("team")
         if team in ("backend", "frontend", "ux_ui"):
             return self._select_agent_for_cell(team, "pr_reviewer")
         return "pr-reviewer-1"
+
+    _LIVE_INSTANCE_STATES: ClassVar[frozenset[AgentState]] = frozenset(
+        {AgentState.STARTING, AgentState.ACTIVE, AgentState.WAITING_SHORT}
+    )
+
+    def _gate_reviewer_already_on(self, task: dict[str, Any]) -> bool:
+        """A reviewer's container is up on this gate task, not yet claimed.
+
+        ``claim_gate_review`` sets ``active_claimant_id`` only once the spawned
+        reviewer has booted, so for the first ticks after a spawn the task
+        looks unreviewed. The primary reviewer then reads as busy and the
+        overflow ``cell-pr-reviewer-2`` was sent onto the SAME task (live
+        2026-10-28: be-pr-reviewer at 06:34:21 and cell-pr-reviewer-2 at
+        06:34:35 on 300472d1; the loser's claim, notes and DMs were refused
+        for twelve minutes of respawns).
+        """
+        task_id = str(task.get("id"))
+        return any(
+            instance.current_task_id == task_id
+            and instance.state in self._LIVE_INSTANCE_STATES
+            and get_agent_role(slug) == "pr_reviewer"
+            for slug, instance in self._instances.items()
+        )
 
     async def _sync_gate_reviewer_assignment(
         self, task: dict[str, Any], reviewer: str
