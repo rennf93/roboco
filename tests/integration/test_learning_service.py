@@ -196,7 +196,7 @@ async def test_cell_scope_notifies_author_team_excludes_cross_cell(
     durable, observable outcome — never on in-memory queue internals.
     """
     author = _make_agent(AgentRole.DEVELOPER)
-    peer = _make_agent(AgentRole.QA)  # same cell, different role
+    peer = _make_agent(AgentRole.QA)
     cross_cell = _make_agent(AgentRole.DEVELOPER, team=Team.FRONTEND)
     shared_session.add_all([author, peer, cross_cell])
     await shared_session.flush()
@@ -241,7 +241,7 @@ async def test_org_scope_notifies_all_other_agents(
         RecordLearningParams(
             agent_id=cast("uuid.UUID", author.id),
             agent_role="developer",
-            content="x" * 250,  # >200 chars to exercise the truncation branch
+            content="x" * 250,
             learning_type=LearningType.SOLUTION,
             scope=LearningScope.ORG,
         )
