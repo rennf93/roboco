@@ -3841,6 +3841,23 @@ class TaskService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def get_for_update(self, task_id: UUID) -> TaskTable | None:
+        """``get``, holding the task's row lock until the caller's transaction
+        ends.
+
+        For a read-modify-write of a JSON payload stored on the task, such as
+        a board program's per-item CEO decisions: without the lock two
+        overlapping requests both read the old payload and the later write
+        silently drops the earlier one's change. ``of=TaskTable`` scopes the
+        lock to tasks (``project`` is lazy="joined"; see ``claim``).
+        """
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        return result.scalar_one_or_none()
+
     async def mark_stalled(self, task_id: UUID, reason: str) -> None:
         """Set the durable stalled marker (see `roboco.models.base.StalledReason`).
 
