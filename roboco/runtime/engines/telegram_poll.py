@@ -34,12 +34,18 @@ class TelegramPollEngine(_Base):
         if not (settings.telegram_enabled and settings.telegram_inbound_enabled):
             return
         interval = settings.telegram_poll_interval_seconds
-        self._record_loop_heartbeat("telegram_poll", interval)
+        # A healthy cycle sleeps `interval` and then long-polls for up to
+        # telegram_poll_timeout_seconds, so heartbeats land ~30s apart. The
+        # liveness watchdog (2x the registered cadence) must measure that,
+        # not the bare sleep, or it reports "stalled" on every healthy cycle
+        # (live 2026-10-28: every ~30s for the whole run).
+        cadence = interval + settings.telegram_poll_timeout_seconds
+        self._record_loop_heartbeat("telegram_poll", cadence)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_telegram_poll_cycle()
-                self._record_loop_heartbeat("telegram_poll", interval)
+                self._record_loop_heartbeat("telegram_poll", cadence)
             except asyncio.CancelledError:
                 break
             except Exception:
