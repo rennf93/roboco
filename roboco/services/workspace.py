@@ -64,10 +64,12 @@ _REF_OBJECT_ID_RE = re.compile(r"\A[0-9a-f]{40}\Z|\A[0-9a-f]{64}\Z")
 _AGENT_UID = int(os.environ.get("ROBOCO_AGENT_UID", "1000"))
 _AGENT_GID = int(os.environ.get("ROBOCO_AGENT_GID", "1000"))
 
-# Large, gitignored, agent-regenerated trees we never need to chown — they are
-# either absent or already agent-owned (the agent created them), and walking
-# node_modules alone cost 2.7-15.5s per git op. Pruning them keeps the
-# ownership walk fast while still handing the agent every tracked file + .git.
+# Large, gitignored, agent-regenerated trees we never need to chown here,
+# either absent or already agent-owned (the agent created them), EXCEPT when
+# install_dev_deps just wrote them as root; _own_install_outputs covers that
+# case separately. Walking node_modules alone cost 2.7-15.5s per git op, so
+# pruning them keeps the ownership walk fast while still handing the agent
+# every tracked file + .git.
 _PRUNE_DIRS = frozenset(
     {
         "node_modules",
@@ -229,6 +231,40 @@ def _ensure_agent_owned(workspace: Path) -> None:
         )
     else:
         _write_owned_marker(workspace)
+
+
+def _own_install_outputs(workspace: Path) -> None:
+    """Chown the root-run dev-deps install output the main ownership walk misses.
+
+    ``install_dev_deps`` runs ``uv sync`` / ``pnpm install`` / ``npm ci`` as
+    root, writing straight into ``.venv``, ``venv``, and ``node_modules``. The
+    main walk (``_iter_ownable_entries``) prunes those same names via
+    ``_PRUNE_DIRS`` on the assumption the agent created them, so it never
+    chowns what the install just wrote as root.
+    """
+    failed = 0
+    for name in (".venv", "venv", "node_modules"):
+        entry = workspace / name
+        if entry.is_symlink():
+            # Worktrees symlink .venv to the clone root's shared .venv
+            # (_link_shared_venv). Own the link itself, never the target.
+            failed += _own_and_grant_rw(str(entry))
+            continue
+        if not entry.is_dir():
+            continue
+        failed += _own_and_grant_rw(str(entry))
+        for root, dirs, files in os.walk(entry, followlinks=False):
+            for child in (*dirs, *files):
+                failed += _own_and_grant_rw(str(Path(root) / child))
+
+    if failed:
+        logger.warning(
+            "Some chowns failed while owning install outputs, agent writes "
+            "may still fail. Check docker user-namespace config or run "
+            "agents as root on this host.",
+            workspace=str(workspace),
+            failures=failed,
+        )
 
 
 def _resolve_clone_root(workspace: Path) -> Path:
@@ -773,6 +809,9 @@ class WorkspaceService:
         ``reset --hard`` + ``checkout -b`` that clobbered a still-active root.
         """
         if not (worktree.exists() and (worktree / ".git").is_file()):
+            # Stale registrations (checkout dir deleted out-of-band while the
+            # admin dir survives) make `worktree add` fatal — prune first.
+            self._worktree_git(clone_root, ["worktree", "prune"], check=False)
             self._park_clone_root_off_branch(clone_root, branch)
             branch_exists = (
                 self._worktree_git(
@@ -796,19 +835,68 @@ class WorkspaceService:
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
     async def ensure_worktree_for_resume(
-        self, clone_root: Path, worktree: Path, branch: str
+        self,
+        clone_root: Path,
+        worktree: Path,
+        branch: str,
+        project_slug: str | None = None,
     ) -> None:
         """Re-add a pruned/evicted worktree on resume (no ``-b`` — branch exists).
 
         Committed work survives in the branch ref; only the working tree was
         removed (reaper / cancel / disk pressure). Idempotent: a present
-        worktree is a no-op.
+        worktree is a no-op. A missing local ``refs/heads/{branch}`` (cleaned
+        up while the worktree was evicted) is recovered from ``origin`` first
+        (token-aware when ``project_slug`` resolves), never fatals with
+        "invalid reference". ``project_slug`` is optional: callers that know
+        it get an authenticated fetch; the rest fall back to unauthenticated.
         """
         if not (worktree.exists() and (worktree / ".git").is_file()):
+            # Stale registrations (checkout dir deleted out-of-band while the
+            # admin dir survives) make `worktree add` fatal — prune first.
+            self._worktree_git(clone_root, ["worktree", "prune"], check=False)
             self._park_clone_root_off_branch(clone_root, branch)
-            res = self._worktree_git(
-                clone_root, ["worktree", "add", str(worktree), branch], check=False
+            add_args = ["worktree", "add", str(worktree), branch]
+            local = self._worktree_git(
+                clone_root,
+                ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+                check=False,
             )
+            if local.returncode != 0:
+                # Live wedge (2026-08-31): a commit/claim-time re-add hit a
+                # clone whose local branch ref was already deleted (`worktree
+                # add` fataled "invalid reference"; the fresh-claim path
+                # recreates refs, this path never did). Recover the SAME way
+                # ensure_worktree_self_heal does: fetch + create the local ref
+                # from origin/<branch>; a never-pushed branch falls back to -b
+                # from origin/HEAD (no pushed work to lose).
+                await self._fetch_branch_ref(clone_root, branch, project_slug)
+                remote = self._worktree_git(
+                    clone_root,
+                    [
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        f"refs/remotes/origin/{branch}",
+                    ],
+                    check=False,
+                )
+                if remote.returncode == 0:
+                    self._worktree_git(
+                        clone_root,
+                        ["branch", branch, f"refs/remotes/origin/{branch}"],
+                        check=False,
+                    )
+                else:
+                    add_args = [
+                        "worktree",
+                        "add",
+                        str(worktree),
+                        "-b",
+                        branch,
+                        "origin/HEAD",
+                    ]
+            res = self._worktree_git(clone_root, add_args, check=False)
             if res.returncode != 0:
                 raise WorkspaceError(
                     f"git worktree re-add failed for {branch}: {res.stderr.strip()}"
@@ -818,7 +906,7 @@ class WorkspaceService:
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
     async def _fetch_branch_ref(
-        self, clone_root: Path, branch: str, project_slug: str
+        self, clone_root: Path, branch: str, project_slug: str | None
     ) -> None:
         """Token-aware ``git fetch origin <branch>`` into clone_root. Best-effort.
 
@@ -831,9 +919,13 @@ class WorkspaceService:
         from roboco.utils.crypto import EncryptionError
 
         project_service = get_project_service(self.session)
-        project = await project_service.get_by_slug(project_slug)
+        project = (
+            await project_service.get_by_slug(project_slug)
+            if project_slug is not None
+            else None
+        )
         git_token: str | None = None
-        if project is not None:
+        if project is not None and project_slug is not None:
             try:
                 git_token = await project_service.get_decrypted_token_by_slug(
                     project_slug
@@ -1462,6 +1554,8 @@ class WorkspaceService:
         git_url: str | None = None,
         default_branch: str = "main",
         force: bool = False,
+        *,
+        skip_refresh: bool = False,
     ) -> Path:
         """
         Ensure workspace exists, cloning if necessary.
@@ -1481,6 +1575,11 @@ class WorkspaceService:
             force: When True, bypass the 30s refresh-fetch TTL cache and
                 always run ``git fetch origin`` on a healthy workspace.
                 Defaults to False so existing callers are unaffected.
+            skip_refresh: When True, skip the refresh-fetch entirely on a
+                healthy workspace. Used by the supersede branch-cut path,
+                which fetches ``refs/pull/{n}/head`` (not an existing local
+                branch), so the 60s origin refresh is wasted I/O. The clone
+                path (workspace does not exist) still runs.
 
         Returns:
             Path to the workspace directory
@@ -1525,7 +1624,9 @@ class WorkspaceService:
                 # -math.inf as default means "never fetched" — guarantees
                 # the first call always runs the fetch regardless of clock value.
                 last_fetch = self._fetch_cache.get(str(workspace), -math.inf)
-                if force or (now - last_fetch) >= _FETCH_CACHE_TTL_SECONDS:
+                if not skip_refresh and (
+                    force or (now - last_fetch) >= _FETCH_CACHE_TTL_SECONDS
+                ):
                     # Repair broken-ref debris first so the fetch (and the
                     # agent's later `git diff/log origin/...`) doesn't trip on a
                     # ref left corrupt by an interrupted recovery.
@@ -1635,6 +1736,17 @@ class WorkspaceService:
 
         ``force`` bypasses the 30s refresh TTL (conventions reads must reflect
         the current head-branch HEAD, not a stale one).
+
+        The token DB read in each branch below is immediately followed by
+        ``_release_pool_connection`` - the actual clone/fetch that follows is
+        a real network+subprocess call (a fresh clone can take a while), and
+        without the release the connection this method's own DB read just
+        checked out would sit held for the whole of it. A caller that already
+        resolved its own project/token before calling in (e.g. a background
+        engine that released before this call) still only pays for one more
+        DB read here, not an extra hold: this method's read replaces
+        whatever the caller released, and is itself released again before
+        the slow work starts.
         """
         from roboco.services.project import get_project_service
 
@@ -1653,6 +1765,7 @@ class WorkspaceService:
                 last = _read_clone_synced.get(str(workspace), -math.inf)
                 if force or (now - last) >= _READ_CLONE_FETCH_TTL_SECONDS:
                     token = await self._read_clone_token(project_service, project_slug)
+                    await self._release_pool_connection()
                     await asyncio.to_thread(self._prune_broken_refs, workspace)
                     await asyncio.to_thread(
                         self._sync_read_clone,
@@ -1668,6 +1781,7 @@ class WorkspaceService:
             git_token = await self._resolve_git_token(
                 project_service, project_slug, git_url
             )
+            await self._release_pool_connection()
             await self._clone_repo(
                 workspace, git_url, default_branch, git_token, agent=None
             )
@@ -1678,6 +1792,21 @@ class WorkspaceService:
             )
             _read_clone_synced[str(workspace)] = _monotonic()
             return workspace
+
+    async def _release_pool_connection(self) -> None:
+        """End the current transaction so its pool connection is returned.
+
+        Mirrors content_actions.evidence()'s pool-release commit: the next
+        read/write reopens a fresh transaction on demand. A poisoned session
+        rolls back instead - ending the transaction is the point, either way
+        works.
+        """
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.session.commit()
+        except PendingRollbackError:
+            await self.session.rollback()
 
     @staticmethod
     async def _read_clone_token(project_service: Any, project_slug: str) -> str | None:
@@ -1970,6 +2099,10 @@ class WorkspaceService:
             await self._record_toolchain(workspace, target_python, only_if_missing=True)
             return False
 
+        # The install runs as root and writes .venv / node_modules outside the
+        # git chokepoints, so a live owned-marker would make the repair walk
+        # below skip the freshly root-owned files. Invalidate before running.
+        invalidate_owned_marker(workspace)
         any_ok = False
         for label, argv in commands:
             ok = await self._run_dep_install(workspace, label, argv)
@@ -1981,8 +2114,10 @@ class WorkspaceService:
             with contextlib.suppress(OSError):
                 (workspace / _DEP_INSTALL_MARKER).write_text(digest)
 
-        # The install runs as root (orchestrator); hand the freshly written
-        # .venv / node_modules back to the agent user.
+        # The install runs as root (orchestrator). The main walk below prunes
+        # .venv / node_modules as agent-created, so own those trees first,
+        # then hand the rest of the freshly written workspace to the agent.
+        await asyncio.to_thread(_own_install_outputs, workspace)
         await asyncio.to_thread(_ensure_agent_owned, workspace)
         await self._record_toolchain(workspace, target_python)
         return any_ok

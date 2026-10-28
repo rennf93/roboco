@@ -308,7 +308,6 @@ async def test_base_clone_refresh_skips_unknown_role_conservatively() -> None:
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
     ):
         await orch._maybe_refresh_base_clone(
-            clone_root=Path("/tmp/clone"),
             project_slug="roboco-api",
             team="backend",
             agent_id="no-such-agent-slug",
@@ -331,7 +330,6 @@ async def test_base_clone_refresh_failure_never_breaks_spawn() -> None:
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
     ):
         await orch._maybe_refresh_base_clone(
-            clone_root=Path("/tmp/clone"),
             project_slug="roboco-api",
             team="backend",
             agent_id="be-qa",
