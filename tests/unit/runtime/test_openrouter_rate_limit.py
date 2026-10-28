@@ -22,7 +22,9 @@ from roboco.runtime.orchestrator import (
 
 def _openrouter_instance(provider_type: str = "openrouter") -> AgentInstance:
     cfg = type(
-        "C", (), {"provider_type": provider_type, "model": "anthropic/claude-sonnet-5"}
+        "C",
+        (),
+        {"provider_type": provider_type, "model": "anthropic/claude-sonnet-5-5"},
     )()
     inst = AgentInstance(agent_id="be-dev-1", state=AgentState.ACTIVE, config=cfg)
     inst.current_task_id = "task-1"

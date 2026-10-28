@@ -11,6 +11,7 @@ import httpx
 import pytest
 import roboco.config as cfg
 from roboco.services.decisions.client import (
+    _CLEF_STATE_BUDGET_CHARS,
     _LAYA_STATE_BUDGET_CHARS,
     DecisionsClient,
     DecisionsEndpoint,
@@ -30,6 +31,13 @@ _LAYA = DecisionsEndpoint(
     base_url="http://roboco-decisions:8100",
     model="convaiinnovations/laya",
     timeout_s=5.0,
+)
+
+_CLEF = DecisionsEndpoint(
+    tier="clef",
+    base_url="http://roboco-decisions:8100",
+    model="ggml-org/Clef-GGUF:Q4_K_M",
+    timeout_s=60.0,
 )
 
 _OK_PAYLOAD = {
@@ -212,6 +220,20 @@ async def test_no_auth_header_for_laya_tier() -> None:
     assert captured["auth"] is None
 
 
+@pytest.mark.asyncio
+async def test_no_auth_header_for_clef_tier() -> None:
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("Authorization")
+        return httpx.Response(200, json=_OK_PAYLOAD)
+
+    client = _client_with(handler)
+    await client.decide(_CLEF, {}, {}, "s")
+    await client.aclose()
+    assert captured["auth"] is None
+
+
 class TestTokenCaps:
     def test_diff_capped_head(self) -> None:
         state = {"diff": "x" * 20_000}
@@ -344,9 +366,9 @@ class TestLayaBudget:
 
     @pytest.mark.asyncio
     async def test_openrouter_tier_keeps_per_key_caps_only(self) -> None:
-        # The budget pass is laya-only: the OpenRouter fallback keeps its
-        # per-key billing caps (here 4k for task_description), far over the
-        # laya budget, intact for the bigger fallback model.
+        # The budget pass is self-hosted-only: the OpenRouter fallback keeps
+        # its per-key billing caps (here 4k for task_description), far over
+        # the laya budget, intact for the bigger fallback model.
         captured = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -358,7 +380,51 @@ class TestLayaBudget:
         await client.aclose()
         sent = cast("str", captured["state"]["task_description"])
         assert len(sent) <= 4_100
-        assert len(sent) > _LAYA_STATE_BUDGET_CHARS
+
+
+class TestClefBudget:
+    """The clef tier runs the same deterministic budget pass with the
+    27B model's 16384-token context: ~22x the laya state budget, still
+    bounded so no call site can overflow the sidecar."""
+
+    @pytest.mark.asyncio
+    async def test_clef_tier_applies_budget_pass(self) -> None:
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["state"] = json.loads(request.read())["state"]
+            return httpx.Response(200, json=_OK_PAYLOAD)
+
+        client = _client_with(handler)
+        await client.decide(_CLEF, {"task_description": "z" * 90_000}, {}, "s")
+        await client.aclose()
+        assert (
+            len(json.dumps(captured["state"], ensure_ascii=False, default=str))
+            <= _CLEF_STATE_BUDGET_CHARS
+        )
+
+    @pytest.mark.asyncio
+    async def test_clef_budget_far_exceeds_laya(self) -> None:
+        """A wide multi-diff state survives nearly whole under clef's budget
+        but collapses to the laya floor: clef reads the context laya
+        truncates to mush. (Stage-1 per-key caps run first for both tiers,
+        so each diff key tops out at 8k.)"""
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["state"] = json.loads(request.read())["state"]
+            return httpx.Response(200, json=_OK_PAYLOAD)
+
+        state = {f"diff_{i}": "z" * 5_000 for i in range(6)}
+        client = _client_with(handler)
+        await client.decide(_LAYA, state, {}, "s")
+        laya_size = len(json.dumps(captured["state"], ensure_ascii=False, default=str))
+        await client.decide(_CLEF, state, {}, "s")
+        clef_size = len(json.dumps(captured["state"], ensure_ascii=False, default=str))
+        await client.aclose()
+        assert laya_size <= _LAYA_STATE_BUDGET_CHARS
+        assert clef_size <= _CLEF_STATE_BUDGET_CHARS
+        assert clef_size > _LAYA_STATE_BUDGET_CHARS
 
 
 def test_flag_off_client_still_parses_but_resolver_gates(

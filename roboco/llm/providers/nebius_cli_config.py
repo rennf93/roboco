@@ -279,6 +279,9 @@ def render_provider_block(base_url: str) -> dict[str, dict[str, Any]]:
             "name": "Nebius",
             "env": list(_NEBIUS_PROVIDER_ENV),
             "npm": _NEBIUS_PROVIDER_NPM,
+            # opencode routes by options.baseURL; ``api`` alone is ignored for
+            # this built-in provider id (live-verified 2026-10-15).
+            "options": {"baseURL": base_url},
         }
     }
 
@@ -309,7 +312,11 @@ def render_mcp_block(mcp_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         }
         env = spec.get("env") or {}
         if env:
-            block["env"] = {str(k): str(v) for k, v in env.items()}
+            # opencode reads ``environment`` for local MCP servers, NOT ``env``
+            # (https://opencode.ai/docs/mcp-servers, local options table:
+            # "environment  Object  Environment variables to set when running
+            # the server"). Under ``env`` the servers start with no identity.
+            block["environment"] = {str(k): str(v) for k, v in env.items()}
         servers[str(name)] = block
     return servers
 
@@ -416,14 +423,33 @@ def render_config(
     mcp_config_path: str,
 ) -> dict[str, Any]:
     """Render the full ``opencode.json`` config as a dict."""
+    provider = render_provider_block(base_url)
+    # opencode only resolves ids its built-in catalog lists, and that catalog
+    # lags the live endpoint (Nemotron 3 Nano is served but unlisted, so a
+    # Nano-routed agent died at startup with ProviderModelNotFoundError).
+    # Declaring the agent's own model makes any served id resolvable.
+    model_id = opencode_model_ref(model).removeprefix("nebius/")
+    if model_id:
+        provider["nebius"]["models"] = {model_id: {}}
     config: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
         "agent": {"roboco": render_agent_block(role, model)},
-        "provider": render_provider_block(base_url),
+        "provider": provider,
     }
     mcp = render_mcp_block(_load_mcp_config(mcp_config_path))
     if mcp:
+        # Claim verbs take minutes: outlast the flow server's slow-verb budget
+        # plus headroom. On opencode v1.19.0 a per-server ``timeout`` overrides
+        # ``experimental.mcp_timeout`` for tool calls AND bounds startup, and it
+        # defaults to 5000 ms (https://opencode.ai/config.json). The four gateway
+        # servers need ~11s to come up together on the NAS (2026-10-15), so at
+        # the default every one was marked failed and the agent ran with no
+        # gateway tools. Same budget per server and under the deprecated key.
+        budget_ms = (settings.flow_verb_slow_timeout_seconds + 60) * 1000
+        for block in mcp.values():
+            block["timeout"] = budget_ms
         config["mcp"] = mcp
+        config["experimental"] = {"mcp_timeout": budget_ms}
     return config
 
 
@@ -455,6 +481,12 @@ def main(argv: list[str] | None = None) -> int:
     base_url = os.environ.get("NEBIUS_BASE_URL", settings.nebius_base_url)
 
     config = render_config(role, model, base_url, mcp_path)
+    # The agent image does not pre-create opencode's global config home, so
+    # the render must mkdir the parent itself (the openrouter twin's #1110
+    # regression - this port predates it and every Nebius-routed spawn exited
+    # 1 on FileNotFoundError before the CLI started). The plugin write below
+    # already mkdirs its own parents.
+    OPENCODE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     OPENCODE_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
     write_bash_guard_plugin()
     return 0

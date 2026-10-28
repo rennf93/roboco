@@ -26,6 +26,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from roboco.config import settings
 from roboco.models.base import ModelProvider
 from roboco.runtime.orchestrator import (
     _INTERACTIVE_UNSUPPORTED_PROVIDERS,
@@ -224,6 +225,44 @@ class TestLiveChatsSpawnOnEveryProvider:
         cmd = run_calls[0]
         assert cmd[-1] == image
         assert env_name in cmd
+
+    @pytest.mark.parametrize(
+        "provider,model_env",
+        [
+            (ModelProvider.NEBIUS, "nebius/whatever"),
+            (ModelProvider.OPENROUTER, "openrouter/whatever"),
+            (ModelProvider.HUMMIN, "whatever"),
+            (ModelProvider.OPENAI, settings.codex_cli_model),
+            (ModelProvider.GEMINI, settings.gemini_cli_model),
+            (ModelProvider.KIMI, settings.kimi_cli_model),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_intake_gets_the_model_its_delivery_twin_gets(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: ModelProvider,
+        model_env: str,
+    ) -> None:
+        """The routed model reaches the live CLI the way the delivery spawn
+        passes it; without it an AGENT_SLUG pin on intake-1 is silently ignored
+        and the CLI runs its own default."""
+        _ROUTE_STATE["provider"] = provider
+        orch = _make_minimal_orchestrator()
+        run_calls = _mock_live_spawn(orch, monkeypatch)
+        monkeypatch.setattr(orch, "_resolve_agent_route", _route)
+
+        registry = prompter_live.get_live_registry()
+        registry.open("sess-live-model", INTAKE_AGENT_ID)
+        await orch._spawn_intake_container_guarded(
+            "sess-live-model",
+            project_slug="roboco",
+            product_id=None,
+            initial_message=None,
+        )
+
+        assert len(run_calls) == 1
+        assert f"ROBOCO_AGENT_MODEL={model_env}" in run_calls[0]
 
     @pytest.mark.parametrize(
         "provider,image",

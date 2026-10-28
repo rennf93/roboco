@@ -820,19 +820,48 @@ class ModelRoutingService(BaseService):
         assignments = await self.list_assignments()
         if not assignments:
             return "anthropic"
-        mode_rows = [
+        mode = self._single_provider_mode(self._mode_authored_rows(assignments))
+        if mode is not None:
+            return mode
+        return "mix"
+
+    @staticmethod
+    def _mode_authored_rows(assignments: list[Any]) -> list[Any]:
+        """The rows that define a mode: the GLOBAL default plus plain ROLE
+        tiers. AGENT_SLUG pins and compound ROLE":"complexity" overrides are
+        operator layers that survive every mode switch, never define it."""
+        return [
             a
             for a in assignments
             if a.scope == AssignmentScope.GLOBAL
             or (a.scope == AssignmentScope.ROLE and ":" not in (a.scope_value or ""))
         ]
+
+    @staticmethod
+    def _single_provider_mode(
+        mode_rows: list[Any],
+    ) -> (
+        Literal[
+            "grok",
+            "codex",
+            "gemini",
+            "kimi",
+            "openrouter",
+            "nebius",
+            "zai",
+            "hummin",
+            "ollama",
+            "self_hosted",
+        ]
+        | None
+    ):
+        """The mode label when every mode-authored row points at one provider,
+        else ``None`` (the "mix" case)."""
         if any(a.scope == AssignmentScope.GLOBAL for a in mode_rows):
             provider_types = {a.provider.type for a in mode_rows}
             if len(provider_types) == 1:
-                mode = _SINGLE_GLOBAL_MODE_BY_PROVIDER.get(provider_types.pop())
-                if mode is not None:
-                    return mode
-        return "mix"
+                return _SINGLE_GLOBAL_MODE_BY_PROVIDER.get(provider_types.pop())
+        return None
 
     async def set_ollama_api_key(self, api_key: str) -> ProviderConfigTable:
         """Set / clear the Ollama Cloud provider's API key.

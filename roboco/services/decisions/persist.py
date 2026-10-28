@@ -13,8 +13,9 @@ in 106) without ever blocking, failing, or slowing a decision path:
 
 Each row carries the question inputs EXACTLY as sent on the wire (the
 client stamps its post-cap state and question payload onto the result), so
-a row plus a ground-truth outcome is one fine-tunable example for the Laya
-checkpoint. ``record_outcome`` is the labeled-row writer: outcome
+a row plus a ground-truth outcome is one fine-tunable example for the
+serving checkpoint (Clef default, Laya cheap). ``record_outcome`` is the
+labeled-row writer: outcome
 producers (e.g. the self-heal recurrence check) attach what actually
 happened to every unlabeled row of one (pilot, session_id) subject.
 
@@ -46,9 +47,10 @@ _FLUSH_DELAY_S = 5.0
 _BATCH_SIZE = 200
 
 # Defensive serialized-size cap per corpus input (state, questions). The
-# client's own caps bound the laya tier near 2k chars and the fallback
-# tier's per-key caps near 8k, so this only bites a future call path that
-# skips the client; the payload is dropped rather than stored oversize
+# client's own caps bound the self-hosted tiers near 2k (laya) / 40k (clef)
+# chars and the fallback tier's per-key caps near 8k, so this only bites a
+# future call path that skips the client; the payload is dropped rather
+# than stored oversize
 # (a marked stub keeps the row honest about why inputs are missing).
 _CORPUS_INPUT_CAP_CHARS = 64_000
 

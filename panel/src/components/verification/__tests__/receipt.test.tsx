@@ -74,13 +74,13 @@ describe("ReviewerChainList", () => {
         round: 1,
         role: "qa",
         agent_slug: "fe-qa",
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5-5",
         started_at: "2026-09-01T00:00:00Z",
       },
     ];
     render(<ReviewerChainList data={data} isLoading={false} />);
     expect(screen.getByText("Round 1")).toBeInTheDocument();
     expect(screen.getByText("fe-qa")).toBeInTheDocument();
-    expect(screen.getByText("claude-sonnet-4-5")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet-5-5")).toBeInTheDocument();
   });
 });

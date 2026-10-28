@@ -522,6 +522,12 @@ _CORPUS_STRING = (
 # nothing real for an authenticated internal gateway.
 _IDENTIFIER_FIELDS = frozenset(
     {
+        # task-id references are identifiers, not free text: the payload
+        # builder must use a safe value there or the mesh WAF correctly
+        # blocks the corpus string and the no-false-positive test fails
+        # (task_id became a str field for short-id resolution, 6fbf40fb).
+        "task_id",
+        "source_task_id",
         "slug",
         "team",
         "feature_slug",

@@ -31,7 +31,7 @@ from roboco.services.task import TaskService
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-_MODEL = "claude-sonnet-5"
+_MODEL = "claude-sonnet-5-5"
 
 
 async def _seed_project(session: AsyncSession) -> tuple[UUID, UUID]:

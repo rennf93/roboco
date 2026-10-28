@@ -44,7 +44,7 @@ Parity notes (where opencode's runtime model differs from kimi's):
     permission globs cannot reach.
   * **model ref** — opencode resolves a ``--model`` / ``agent.model`` value
     against its own ``provider/model`` grammar. The orchestrator hands over
-    a BARE OpenRouter catalog id (``anthropic/claude-sonnet-4``), which
+    a BARE OpenRouter catalog id (``anthropic/claude-sonnet-5-5``), which
     opencode would resolve against its built-in ``anthropic`` provider
     (expecting ``ANTHROPIC_API_KEY``, never set here). :func:`opencode_model_ref`
     prefixes the rendered agent block's ``model`` with opencode's own
@@ -252,7 +252,7 @@ def opencode_model_ref(model: str) -> str:
     ``ANTHROPIC_API_KEY``, never set in this image) and the run cannot
     authenticate (live-verified). Prefixing with opencode's own provider id
     from the rendered ``provider.openrouter`` block routes every call through
-    OpenRouter: ``openrouter/anthropic/claude-sonnet-4``. Idempotent — an
+    OpenRouter: ``openrouter/anthropic/claude-sonnet-5-5``. Idempotent — an
     already-prefixed ref passes through untouched (the provider injects the
     prefixed ref into ``ROBOCO_AGENT_MODEL`` and the renderer re-derives it).
     """
@@ -292,6 +292,9 @@ def render_provider_block(base_url: str) -> dict[str, dict[str, Any]]:
             "name": "OpenRouter",
             "env": list(_OPENROUTER_PROVIDER_ENV),
             "npm": _OPENROUTER_PROVIDER_NPM,
+            # opencode routes by options.baseURL; ``api`` alone is ignored for
+            # this built-in provider id (live-verified 2026-10-15).
+            "options": {"baseURL": base_url},
         }
     }
 
@@ -322,7 +325,11 @@ def render_mcp_block(mcp_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         }
         env = spec.get("env") or {}
         if env:
-            block["env"] = {str(k): str(v) for k, v in env.items()}
+            # opencode reads ``environment`` for local MCP servers, NOT ``env``
+            # (https://opencode.ai/docs/mcp-servers, local options table:
+            # "environment  Object  Environment variables to set when running
+            # the server"). Under ``env`` the servers start with no identity.
+            block["environment"] = {str(k): str(v) for k, v in env.items()}
         servers[str(name)] = block
     return servers
 
@@ -429,14 +436,33 @@ def render_config(
     mcp_config_path: str,
 ) -> dict[str, Any]:
     """Render the full ``opencode.json`` config as a dict."""
+    provider = render_provider_block(base_url)
+    # opencode only resolves ids its built-in catalog lists, and that catalog
+    # lags the live endpoint (Nemotron 3 Nano is served but unlisted, so a
+    # Nano-routed agent died at startup with ProviderModelNotFoundError).
+    # Declaring the agent's own model makes any served id resolvable.
+    model_id = opencode_model_ref(model).removeprefix("openrouter/")
+    if model_id:
+        provider["openrouter"]["models"] = {model_id: {}}
     config: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
         "agent": {"roboco": render_agent_block(role, model)},
-        "provider": render_provider_block(base_url),
+        "provider": provider,
     }
     mcp = render_mcp_block(_load_mcp_config(mcp_config_path))
     if mcp:
+        # Claim verbs take minutes: outlast the flow server's slow-verb budget
+        # plus headroom. On opencode v1.19.0 a per-server ``timeout`` overrides
+        # ``experimental.mcp_timeout`` for tool calls AND bounds startup, and it
+        # defaults to 5000 ms (https://opencode.ai/config.json). The four gateway
+        # servers need ~11s to come up together on the NAS (2026-10-15), so at
+        # the default every one was marked failed and the agent ran with no
+        # gateway tools. Same budget per server and under the deprecated key.
+        budget_ms = (settings.flow_verb_slow_timeout_seconds + 60) * 1000
+        for block in mcp.values():
+            block["timeout"] = budget_ms
         config["mcp"] = mcp
+        config["experimental"] = {"mcp_timeout": budget_ms}
     return config
 
 

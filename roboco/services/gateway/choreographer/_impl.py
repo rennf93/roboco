@@ -1008,7 +1008,8 @@ class Choreographer:
 
     async def _drop_dependency_held(self, tasks: list[Any]) -> list[Any]:
         """Drop PENDING/NEEDS_REVISION tasks the claim gate would refuse
-        right now — an unmet dependency or a same-parent sequence hold.
+        right now — an unmet dependency, a same-parent sequence hold, or an
+        earlier non-terminal sibling holding the dev's lane.
 
         ``give_me_work``'s ``list_assigned_for_agent`` fallback spans every
         active status with no hold filter, so without this a held task
@@ -1017,27 +1018,33 @@ class Choreographer:
         after the first claim) was still offered here and only bounced at
         claim time — the give_me_work/i_will_work_on offer-then-reject loop
         the 2026-07-24 incident hit on the needs_revision path.
-        ``is_pending_claim_blocked`` wraps the EXACT predicate
-        ``TaskService.claim()`` enforces (dependency + sequence), so this
-        can't drift from the claim gate. Scoped to PENDING and
-        NEEDS_REVISION — the only statuses that guard reads
-        (``_claim_blocked_by_sequencing``); every other status already
-        passed it at an earlier claim. ``is True`` (not a bare truthy
-        check) keeps this inert under partial test mocks (an unstubbed
-        AsyncMock method returns a truthy mock object, not a real bool) —
-        mirrors ``_pending_not_lane_held``'s identical ``is not True`` guard.
+        ``is_pending_claim_blocked`` wraps the dependency + sequence half of
+        what ``TaskService.claim()`` enforces; the lane half
+        (``has_earlier_incomplete_code_sibling``, enforced by the
+        choreographer's ``_lane_claim_guard``) is checked here too — without
+        it the pre-assigned branch dropped a lane-held leaf only for the
+        assigned-row fallback to re-offer the same leaf (2026-09-28 churn
+        scan). ``is True`` / ``is not True`` (not bare truthy checks) keep
+        this inert under partial test mocks (an unstubbed AsyncMock method
+        returns a truthy mock object, not a real bool) — mirrors
+        ``_pending_not_lane_held``'s identical mock-safety guard.
+        Scoped to PENDING and NEEDS_REVISION — the only statuses the claim
+        guards re-read; every other status already passed them at an earlier
+        claim.
         """
         offerable: list[Any] = []
         for task in tasks:
-            if (
-                str(task.status)
-                in (
-                    "pending",
-                    "needs_revision",
-                )
-                and await self._deps.task.is_pending_claim_blocked(task.id) is True
+            if str(task.status) in (
+                "pending",
+                "needs_revision",
             ):
-                continue
+                if await self._deps.task.is_pending_claim_blocked(task.id) is True:
+                    continue
+                if (
+                    await self._deps.task.has_earlier_incomplete_code_sibling(task)
+                    is True
+                ):
+                    continue
             offerable.append(task)
         return offerable
 
@@ -6185,6 +6192,17 @@ class Choreographer:
            orchestrator's PM-closure dispatcher can wake them when subtasks
            finish, instead of leaving the parent stuck at ``in_progress``
            forever.
+        4. Release every open specialized claim (QA / doc / PR review) the
+           caller has not closed with a decision, back to its review queue.
+           Deliberately a release, NOT a gate: idling must never be
+           conditional on submitting a verdict, because a reviewer that
+           cannot honestly decide would either be trapped (the decision
+           gates can refuse, and the stale-claim reaper never sweeps
+           awaiting_* rows to free it) or cornered into rubber-stamping. The
+           lane un-wedges because competing claimants are only rejected
+           while the lock is held; a claimant that repeatedly idles out
+           instead of reviewing still trips the orchestrator's respawn
+           breaker, which is the designed escalation.
         """
         briefing = await self._briefing_for(agent_id, None)
         pending_ack = await self._pending_ack_notifications(agent_id, briefing)
@@ -6195,6 +6213,14 @@ class Choreographer:
                 next=self._idle_with_unread_next(briefing, pending_ack),
                 context_briefing=briefing,
             )
+        # A caller holding an OPEN review claim (qa_claim / doc_claim /
+        # pr review) without a submitted decision releases it here. fe-qa
+        # idled out of 99f61c8c's review exactly once and the held
+        # single-claimant lock made the task unreviewable by anyone else -
+        # the FE lane wedged behind it (2026-09-28). Releasing beats both
+        # alternatives: stranding the lock, or a soft-block that can never
+        # be satisfied when the decision verbs themselves refuse.
+        released_ids = list(await self.task.release_review_claims(agent_id) or [])
         # Pre-idle guards, evaluated in order — the first that returns an
         # Envelope short-circuits to a rejection (kept as a loop so adding a
         # guard doesn't push this verb over the return-count bound).
@@ -6213,6 +6239,24 @@ class Choreographer:
         idle_hint = await self._idle_legitimacy_hint(agent_id)
         paused_ids = await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
+        next_msg = self._idle_next_message(paused_ids, released_ids, idle_hint)
+        # The agent truly disengages here (container shuts down) — unlike
+        # the idle_with_unread early return above, which sends it right
+        # back to work, so no teardown fires there.
+        await self._teardown_sandbox_best_effort(agent_id)
+        return Envelope.ok(
+            status="idle",
+            task_id=None,
+            next=next_msg,
+            context_briefing=briefing,
+        )
+
+    @staticmethod
+    def _idle_next_message(
+        paused_ids: list[Any], released_ids: list[Any], idle_hint: str | None
+    ) -> str:
+        """Compose i_am_idle's ``next``: how to resume paused work, which
+        review claims went back to their queues, and any legitimacy hint."""
         if paused_ids:
             # Tell the agent how to come back to these tasks. Without this,
             # an agent respawned for a paused task has no signal that
@@ -6224,18 +6268,21 @@ class Choreographer:
             )
         else:
             next_msg = "container will shut down"
+        if released_ids:
+            # Name the release so the agent's journal reflects reality: the
+            # tasks went back to their review queues unclaimed, they did not
+            # quietly stay "its" reviews.
+            joined = ", ".join(str(tid) for tid in released_ids)
+            next_msg = (
+                f"{next_msg}; released your unsubmitted review claim(s) on"
+                f" {joined} back to the review queue - the next reviewer"
+                " claims them fresh; submit pass_review/fail_review (or the"
+                " lane's decision verb) before idling next time if you want"
+                " the verdict to be yours"
+            )
         if idle_hint:
             next_msg = f"{next_msg}; {idle_hint}"
-        # The agent truly disengages here (container shuts down) — unlike
-        # the idle_with_unread early return above, which sends it right
-        # back to work, so no teardown fires there.
-        await self._teardown_sandbox_best_effort(agent_id)
-        return Envelope.ok(
-            status="idle",
-            task_id=None,
-            next=next_msg,
-            context_briefing=briefing,
-        )
+        return next_msg
 
     async def _pending_ack_notifications(
         self, agent_id: UUID, briefing: dict[str, Any]
@@ -6277,6 +6324,9 @@ class Choreographer:
             )
         return "".join(reasons).rstrip(";")
 
+    # The decision verb pair (or single verb) each claimed awaiting_* status
+    # waits on. Keyed by str(status), the same awaiting_* values
+    # ``list_open_review_claims`` filters on.
     async def _pending_assignment_guard(
         self, agent_id: UUID, briefing: dict[str, Any]
     ) -> Envelope | None:
@@ -6313,19 +6363,11 @@ class Choreographer:
         pending = await self._pending_blocking_idle(agent, pending)
         if not pending:
             return None
-        claimable: list[Any] = []
-        for t in pending:
-            if await self.task.is_pending_claim_blocked(t.id) is True:
-                continue
-            claimable.append(t)
+        claimable = await self._claimable_pending(pending)
         if not claimable:
             return None
         first = claimable[0]
-        verb = (
-            "i_will_plan"
-            if agent and agent.role in ("cell_pm", "main_pm")
-            else ("i_will_work_on")
-        )
+        verb = self._pending_claim_verb(agent)
         return Envelope.invalid_state(
             message=(
                 f"You have task {first.id} assigned but never claimed; "
@@ -6337,6 +6379,25 @@ class Choreographer:
             ),
             context_briefing=briefing,
         )
+
+    async def _claimable_pending(self, pending: list[Any]) -> list[Any]:
+        """Pending tasks the claim gate would actually admit right now: a leaf
+        held by the dependency/sequence reachability gate must not block the
+        exit (demanding a claim the gate will refuse is the same "gate A
+        refuses action, gate B refuses exit" trap as the lane-held leaf)."""
+        claimable: list[Any] = []
+        for t in pending:
+            if await self.task.is_pending_claim_blocked(t.id) is True:
+                continue
+            claimable.append(t)
+        return claimable
+
+    @staticmethod
+    def _pending_claim_verb(agent: Any) -> str:
+        """The claim verb for the caller's kind: PMs plan, everyone else works."""
+        if agent and agent.role in ("cell_pm", "main_pm"):
+            return "i_will_plan"
+        return "i_will_work_on"
 
     async def _pending_blocking_idle(self, agent: Any, pending: list[Any]) -> list[Any]:
         """Pending tasks that should block i_am_idle, after role exemptions.
@@ -7378,16 +7439,24 @@ class Choreographer:
             if new_type == "code":
                 # A distinct queue item is fine; a rephrased repeat of an open
                 # sibling is not.
-                sib_title = cls._norm_title(str(getattr(sibling, "title", "") or ""))
-                if (
-                    norm_new
-                    and sib_title
-                    and cls._titles_are_duplicates(norm_new, sib_title)
-                ):
-                    return cls._same_assignee_dup_envelope(
-                        new_type, new_assignee, sibling
-                    )
+                rejection = cls._code_queue_dup_rejection(
+                    norm_new, new_type, new_assignee, sibling
+                )
+                if rejection is not None:
+                    return rejection
                 continue
+            return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
+        return None
+
+    @classmethod
+    def _code_queue_dup_rejection(
+        cls, norm_new: str, new_type: str, new_assignee: str, sibling: Any
+    ) -> Envelope | None:
+        """The duplicate envelope when an open code sibling rephrases
+        ``norm_new``; ``None`` for a distinct queue item (Spec 3 lets a dev
+        own a queue, so same-type alone must not reject)."""
+        sib_title = cls._norm_title(str(getattr(sibling, "title", "") or ""))
+        if norm_new and sib_title and cls._titles_are_duplicates(norm_new, sib_title):
             return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
         return None
 

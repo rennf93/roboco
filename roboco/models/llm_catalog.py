@@ -187,4 +187,4 @@ def provider_type_for_model(model_name: str) -> ModelProvider | None:
 # caller doesn't override. Minimax M3 wins as the generalist because it has
 # the strongest reasoning/tool-use profile and can fall back to coding/writing
 # adequately if a role ends up mapped to the global default.
-OLLAMA_DEFAULT_MODEL: str = "kimi-k2.7-code:cloud"
+OLLAMA_DEFAULT_MODEL: str = "kimi-k3.1-code:cloud"

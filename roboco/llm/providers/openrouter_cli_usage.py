@@ -49,7 +49,7 @@ USAGE_OUT_PATH = Path(
     or Path(tempfile.gettempdir()) / "roboco-openrouter-usage.json"
 )
 
-_DEFAULT_MODEL = "anthropic/claude-sonnet-4"
+_DEFAULT_MODEL = "anthropic/claude-sonnet-5-5"
 _STEP_FINISH = "step_finish"
 
 

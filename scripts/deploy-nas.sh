@@ -11,12 +11,14 @@
 # green services carry profiles: [green]. The ACTIVE color lives only in
 # front/active-upstreams.conf, applied to the running nginx with
 # `nginx -s reload`. The stopped color = the rollback (re-run with its
-# color). Never `down -v`: the minio named volume is the only thing a
-# volumes prune would delete.
+# color). Never `down -v`: the rustfs-data named volume (rendered-video
+# object storage, replaced MinIO 2026-10-15) is the only thing a volumes
+# prune would delete.
 #
 # Two NAS-compose landmines baked into this script:
 # 1. `up --wait` aborts when a one-shot container completes, even exit 0
-#    (minio-init killed a run mid-deploy while everything was healthy) ->
+#    (minio-init, now rustfs-init, killed a run mid-deploy while everything
+#    was healthy) ->
 #    `up -d` + poll docker health per container instead.
 # 2. If nginx ever started before front/active-upstreams.conf existed,
 #    docker bind-mounts a DIRECTORY at that path; the script detects and
@@ -26,7 +28,12 @@
 
 set -euo pipefail
 
-cd "${STACK_DIR:-/volume1/roboco}"
+# Default to the checkout this script lives in, never a hardcoded path: a copy
+# at /volume1/roboco-panel run without STACK_DIR used to cd into production's
+# /volume1/roboco and deploy ITS compose (2026-10-15).
+STACK_DIR="${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cd "$STACK_DIR"
+echo "[deploy] stack dir: $STACK_DIR"
 
 COLOR=blue
 SKIP_BUILD=0
@@ -97,7 +104,7 @@ echo "[deploy] app/$COLOR: content-gated image builds..."
 # Dockerfile and entrypoint, at the cost of a docker-only change rebuilding
 # the matrix - rare, and always safe.
 # ---------------------------------------------------------------------------
-CACHE_DIR="${STACK_DIR:-/volume1/roboco}/.deploy-cache"
+CACHE_DIR="$STACK_DIR/.deploy-cache"
 mkdir -p "$CACHE_DIR"
 
 hash_paths() { # hash_paths <paths...> -> 16-hex over every file's bytes
@@ -209,8 +216,8 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
           # Bare blue names are built by their own deploy run.
           orchestrator|panel) continue ;;
         esac
-        df="docker/${name%-blue}.Dockerfile"
-        df="${df%-green}.Dockerfile"
+        df="${name%-blue}"
+        df="docker/${df%-green}.Dockerfile"
         if [ ! -f "$df" ]; then
           continue # registry-pulled or compose-shared image (e.g. dispatcher)
         fi
@@ -244,6 +251,52 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
 else
   echo "[deploy] --skip-build: trusting existing images (fixpoint still recovers missing)"
 fi
+
+# The -live (interactive chat) images are spawned by the orchestrator at
+# runtime, never referenced by a compose service, so the compose passes never
+# see them - they silently rotted (roboco-agent-hummin-live served Sep 18 code
+# for 10 days while the orchestrator moved ahead, 2026-09-28 intake outage).
+# Every -live Dockerfile builds FROM a provider agent image, so a live build is
+# only attempted when that base exists locally: after a wipe the fixpoint below
+# rebuilds the bases first, and a base that survived all its rounds is a loud,
+# named skip instead of a cryptic docker.io "pull access denied" (2026-09-28
+# Deploy #2: the live pass sat between the content and fixpoint passes, ran
+# while the wiped provider bases were still missing, and every FROM fell
+# through to docker.io). Callers must run after HASH_LABEL is set (it stamps
+# the builds); $name is set globally because record_fresh reads it.
+
+live_base_of() { # live_base_of <dockerfile> -> the FROM target
+  awk '/^FROM/{print $2; exit}' "$1"
+}
+
+live_build_one() { # live_build_one <dockerfile> <gate|missing>
+  local df="$1" mode="$2" img base
+  name="${df#docker/}"
+  name="${name%.Dockerfile}" # e.g. agent-hummin-live
+  img="roboco-$name"
+  if [ "$mode" = missing ] && docker image inspect "$img" >/dev/null 2>&1; then
+    return 0 # present: only the content gate rebuilds stale live images
+  fi
+  if image_fresh "$img" "$name"; then
+    echo "[deploy] $img up to date, skipping"
+    return 0
+  fi
+  base=$(live_base_of "$df")
+  if [ "${base#roboco-}" != "$base" ] &&
+     ! docker image inspect "$base" >/dev/null 2>&1; then
+    echo "[deploy] WARNING: $img deferred: base $base missing (fixpoint must build it first)" >&2
+    return 1
+  fi
+  echo "[deploy] building $img (live chat) ..."
+  if docker build -q -t "$img:latest" $HASH_LABEL -f "$df" . ||
+     docker build -q -t "$img:latest" $HASH_LABEL -f "$df" .; then
+    record_fresh
+    return 0
+  fi
+  echo "[deploy] WARNING: build failed for $img" >&2
+  return 1
+}
+
 echo "[deploy] ensuring images: fixpoint pass (wipe recovery: retry anything still missing)..."
 for round in 1 2 3 4 5 6; do
   built=0
@@ -283,8 +336,34 @@ for round in 1 2 3 4 5 6; do
         ;;
     esac
   done < <("${COMPOSE[@]}" config --images)
+  # -live images are not in compose config --images: recover them in the same
+  # rounds, so a live-chat spawn never finds its image missing after this
+  # deploy (and --skip-build still recovers them after a wipe).
+  for df in docker/agent-*-live.Dockerfile; do
+    [ -e "$df" ] || continue
+    name="${df#docker/}"
+    name="${name%.Dockerfile}"
+    img="roboco-$name"
+    docker image inspect "$img" >/dev/null 2>&1 && continue
+    if live_build_one "$df" missing &&
+       docker image inspect "$img" >/dev/null 2>&1; then
+      built=$((built + 1))
+    fi
+  done
   [ "$built" -eq 0 ] && break
 done
+
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  # AFTER the fixpoint, not wedged between the content and fixpoint passes
+  # (see live_build_one above): every provider base is by now rebuilt or
+  # loudly failed, so a live build here either succeeds, skips as fresh, or
+  # skips with a named missing base.
+  echo "[deploy] ensuring images: live-chat pass (runtime-spawned, not in compose)..."
+  for df in docker/agent-*-live.Dockerfile; do
+    [ -e "$df" ] || continue
+    live_build_one "$df" gate || true
+  done
+fi
 
 echo "[deploy] ensuring images: reconciliation..."
 while IFS= read -r img; do
@@ -294,28 +373,46 @@ while IFS= read -r img; do
     echo "[deploy] WARNING: $img still missing after pull+build passes" >&2
   fi
 done < <("${COMPOSE[@]}" config --images)
+for df in docker/agent-*-live.Dockerfile; do
+  [ -e "$df" ] || continue
+  name="${df#docker/}"
+  name="${name%.Dockerfile}"
+  docker image inspect "roboco-$name" >/dev/null 2>&1 ||
+    echo "[deploy] WARNING: roboco-$name still missing after pull+build passes (live-chat spawns will fail)" >&2
+done
 
 echo "[deploy] bringing up $COLOR ..."
 # Named-service up: starts ONLY this generation (+ its dependencies: core,
 # agent builders). Blue (no-profile) is in every model, so a plain
 # `--profile green up` would reconcile blue too - recreating it with new
 # code and destroying rollback honesty. nginx joins the blue list (first
-# deploy) and is ensured for green (it is the reload target).
+# deploy) and is ensured for green (it is the reload target). rustfs, its
+# bucket one-shot and searxng are named explicitly: no app service depends_on
+# them, so a named-service up would otherwise never start the store
+# ROBOCO_MINIO_ENDPOINT points at or the default research provider.
 if [ "$COLOR" = "green" ]; then
-  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green decisions
+  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green decisions rustfs rustfs-init searxng
   "${COMPOSE[@]}" up -d nginx
 else
-  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions nginx
+  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions rustfs rustfs-init searxng nginx
 fi
 wait_healthy "roboco-orchestrator-$COLOR"
 wait_healthy roboco-postgres
 wait_healthy roboco-ollama
 wait_healthy roboco-decisions
 wait_healthy roboco-ollama-init exit0
+wait_healthy roboco-rustfs
+wait_healthy roboco-rustfs-init exit0
 
 echo "[deploy] schema migrations (idempotent)..."
-"${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head ||
-  echo "[deploy] WARNING: alembic failed; traffic NOT flipped, investigate before flipping"
+# The flip is GATED on migrations: the message below used to say "traffic
+# NOT flipped" and then flip anyway - a failed upgrade deployed the new
+# color against an unmigrated schema (the exact deploy-bites-back class
+# this script exists to prevent). Old color keeps serving; re-run deploys.
+if ! "${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head; then
+  echo "[deploy] FATAL: alembic upgrade failed; traffic NOT switched (old color still serving). Investigate, then re-run." >&2
+  exit 1
+fi
 
 echo "[deploy] switching traffic to $COLOR..."
 mkdir -p front

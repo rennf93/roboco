@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urlparse
+from uuid import UUID
 
 import structlog
 
@@ -55,13 +56,17 @@ from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from uuid import UUID
 
+    from roboco.db.tables import TaskTable
     from roboco.foundation.identity import Team
     from roboco.foundation.policy.board_programs import BoardProgram
 
 
 logger = structlog.get_logger()
+
+# Shortest task reference the DO tools resolve (task cards render 8-char
+# prefixes); anything shorter is not identifiable.
+_MIN_TASK_REF_HEX_CHARS = 8
 
 
 def _merge_resumption_fields(
@@ -142,6 +147,12 @@ _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 # foundation.policy.communications. Derived as string frozensets here so
 # the existing call sites that compare strings keep working.
 _COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter", "devops"})
+# Roles whose verb surface carries no claim verb: they are assigned tasks
+# but can never satisfy an active-claim gate. Journal notes from these
+# roles on a task with NO active claimant are allowed (see
+# ContentActions._active_claim_violation). Extend only for roles with that
+# same documented shape.
+_CLAIMLESS_NOTE_ROLES: frozenset[str] = frozenset({"auditor"})
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
@@ -858,7 +869,11 @@ class ContentActions:
             await self.task.heartbeat(task_id)
 
     async def _active_claim_violation(
-        self, agent_id: UUID, task: Any
+        self,
+        agent_id: UUID,
+        task: Any,
+        *,
+        allow_unclaimed: bool = False,
     ) -> Envelope | None:
         """Refuse a content write when the caller is not the active claimant.
 
@@ -867,13 +882,40 @@ class ContentActions:
         is cleared the moment its claim is released. Only the holder of the
         active claim may write. A board co-reviewer on a coordination task is
         exempt (it shares the task with the other board member by design).
+
+        ``allow_unclaimed`` narrows the strict rule for journal-style notes
+        to CLAIM-LESS ROLES (the auditor): dispatch assigns them tasks, but
+        they have no claim verb, so the claim gate is unsatisfiable by
+        construction and every note bounced forever (a9739b1c, 2026-09-29).
+        When no claimant exists there is no one to race. A REAPED assignee
+        is NOT covered — it had a claim and lost it, and the reap doctrine
+        says it must not keep posting; the caller's role decides.
         """
         claimant = getattr(task, "active_claimant_id", None)
         if claimant == agent_id:
             return None
+        if (
+            allow_unclaimed
+            and claimant is None
+            and task.assigned_to == agent_id
+            and await self._caller_is_claimless_role(agent_id)
+        ):
+            return None
         if await self._board_may_co_review(agent_id, task):
             return None
         return _not_active_claimant(task.id)
+
+    async def _caller_is_claimless_role(self, agent_id: UUID) -> bool:
+        """True for roles that can never hold a claim (read-only observers).
+
+        The auditor observes and journals but its verb surface carries no
+        claim verb, so demanding an active claim from it is demanding the
+        impossible. Extend ``_CLAIMLESS_NOTE_ROLES`` only for roles with
+        that same documented shape.
+        """
+        agent = await self.task.agent_for(agent_id)
+        role = str(getattr(agent, "role", "")) if agent is not None else ""
+        return role in _CLAIMLESS_NOTE_ROLES
 
     @staticmethod
     def _reject_soup(value: str, *, field: str, min_chars: int = 3) -> Envelope | None:
@@ -1073,7 +1115,11 @@ class ContentActions:
         return role in self._BOARD_ROLES
 
     async def _verify_explicit_task_ownership(
-        self, agent_id: UUID, task_id: UUID
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        *,
+        allow_unclaimed: bool = False,
     ) -> Envelope | None:
         """Gate Set D: refuse content posts on tasks the caller does not own.
 
@@ -1103,9 +1149,13 @@ class ContentActions:
             return _ownership_violation(task_id)
         # assigned_to is stale across a reap/handoff (persists until
         # reassignment; active_claimant_id is cleared on release). Require
-        # the active claim so a reaped agent can't keep posting.
+        # the active claim so a reaped agent can't keep posting — except on
+        # the allow_unclaimed paths (journal notes from a claim-less
+        # assignee; see _active_claim_violation).
         if t.assigned_to == agent_id:
-            return await self._active_claim_violation(agent_id, t)
+            return await self._active_claim_violation(
+                agent_id, t, allow_unclaimed=allow_unclaimed
+            )
         return None
 
     async def note(
@@ -1231,7 +1281,12 @@ class ContentActions:
         if rej := self._reject_structured_soup(scope, structured):
             return rej
         if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+            # allow_unclaimed: journal notes are append-only observability;
+            # a claim-less assignee (read-only roles like the auditor) must
+            # still be able to record them. See _active_claim_violation.
+            if reject := await self._verify_explicit_task_ownership(
+                agent_id, task_id, allow_unclaimed=True
+            ):
                 return reject
         else:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
@@ -1472,7 +1527,7 @@ class ContentActions:
         )
 
     async def curate_vault(
-        self, *, agent_id: UUID, task_id: UUID, narrative: str
+        self, *, agent_id: UUID, task_id: UUID | str, narrative: str
     ) -> Envelope:
         """Auditor-only: write a root task-tree's vault narrative section.
 
@@ -1480,6 +1535,10 @@ class ContentActions:
         resolved fresh) with ``narrative`` filling the ``## Narrative``
         section a deterministic write otherwise leaves as a placeholder.
         """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         role = await self._caller_role(agent_id)
         if role not in _CURATE_VAULT_ROLES:
             return Envelope.not_authorized(
@@ -1558,7 +1617,12 @@ class ContentActions:
                 context_briefing={},
             )
         if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+            # allow_unclaimed: same rationale as the journal-note path —
+            # section writes are append-only, and a claim-less assignee
+            # (auditor) must still record its section.
+            if reject := await self._verify_explicit_task_ownership(
+                agent_id, task_id, allow_unclaimed=True
+            ):
                 return reject
         else:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
@@ -5266,7 +5330,7 @@ class ContentActions:
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         reason: str,
     ) -> Envelope:
         """The explicit "this cycle found nothing worth proposing" exit for
@@ -5316,6 +5380,10 @@ class ContentActions:
                 context_briefing={},
             )
 
+        resolved_ref = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved_ref, Envelope):
+            return resolved_ref
+        task_id = resolved_ref
         resolved = await self._resolve_nothing_to_propose_task(agent_id, task_id)
         if isinstance(resolved, Envelope):
             return resolved
@@ -5599,11 +5667,96 @@ class ContentActions:
         assigned = await self.task.list_assigned_for_agent(agent_id)
         return any(task.id in (a.dependency_ids or []) for a in assigned)
 
+    async def _resolve_task_ref(self, task_ref: str) -> UUID | Envelope:
+        """Resolve a task reference to a full UUID, or return an error Envelope.
+
+        Agents are shown short ids everywhere (task cards, prompts, subjects
+        render ``#372eac39`` style) and pass them back to the DO tools. A
+        strict ``task_id: UUID`` schema 422s those before any handler runs -
+        the failed-evidence loop that wedged be-qa's review on 2026-09-28
+        (795 evidence errors, verdict never fired) was exactly this. Full
+        UUIDs pass through; a hex prefix of at least 8 chars resolves by
+        lookup; ambiguity and misses return the error Envelope the caller
+        must propagate.
+        """
+        ref = str(task_ref).strip()
+        try:
+            return UUID(ref)
+        except ValueError:
+            pass
+        hex_prefix = ref.removeprefix("#").strip()
+        if len(hex_prefix) < _MIN_TASK_REF_HEX_CHARS or any(
+            c not in "0123456789abcdefABCDEF" for c in hex_prefix
+        ):
+            return Envelope.incomplete_input(
+                missing=["task_id"],
+                field_hints={
+                    "task_id": (
+                        "pass the full UUID or the 8+ char hex prefix shown "
+                        "on the task card"
+                    )
+                },
+                remediate="retry with the full task UUID from the envelope",
+            )
+        from sqlalchemy import String, select
+
+        from roboco.db.tables import TaskTable
+
+        result = await self.task.session.execute(
+            select(TaskTable.id).where(
+                TaskTable.id.cast(String).ilike(f"{hex_prefix}%")
+            )
+        )
+        matches = [row[0] for row in result.all()]
+        if not matches:
+            return Envelope.not_found(message=f"no task matches {task_ref!r}")
+        if len(matches) > 1:
+            return Envelope.incomplete_input(
+                missing=["task_id"],
+                field_hints={
+                    "task_id": (
+                        f"{task_ref!r} is ambiguous: {len(matches)} tasks "
+                        "share this prefix - pass more characters or the "
+                        "full UUID"
+                    )
+                },
+                remediate="retry with the full task UUID from the envelope",
+            )
+        return cast("UUID", matches[0])
+
+    async def _evidence_task_or_error(
+        self, task_id: UUID | str, agent_id: UUID
+    ) -> TaskTable | Envelope:
+        """Resolve the evidence target and run its read-authorization checks.
+
+        Short-id resolution (``_resolve_task_ref``), existence, and the
+        ownership rule: reads are allowed for the assignee, an unassigned
+        task, a board co-reviewer of a shared coordination task, OR a caller
+        whose own work depends on this task - strict ownership only blocks
+        snooping an unrelated, actively-owned task. Returns the TaskTable or
+        the error Envelope to propagate.
+        """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if (
+            t.assigned_to is not None
+            and t.assigned_to != agent_id
+            and not await self._board_may_co_review(agent_id, t)
+            and not await self._is_caller_dependency(agent_id, t)
+        ):
+            return _ownership_violation(task_id)
+        return cast("TaskTable", t)
+
     async def evidence(
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
     ) -> Envelope:
         """Inspect a task's PR diff, commits, files.
 
@@ -5612,6 +5765,9 @@ class ContentActions:
         unassigned, the caller co-reviews a shared board task, or the task is a
         dependency the caller is waiting on — strict ownership only blocks
         snooping an unrelated, actively-owned task.
+
+        ``task_id`` accepts the full UUID or the 8+ char hex prefix the task
+        cards display (``#372eac39`` style) - see ``_resolve_task_ref``.
 
         ``files_changed`` and ``pr_diff_summary`` are pulled from git (against
         the branch's parent — the authoritative source) rather than the latest
@@ -5638,20 +5794,11 @@ class ContentActions:
         reads were sequential before the pool-release commit was added),
         so latency is unchanged in practice.
         """
-        t = await self.task.get(task_id)
-        if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
-        # Reads are allowed for the assignee, an unassigned task, a board
-        # co-reviewer of a shared coordination task, OR a caller whose own work
-        # depends on this task. Strict ownership only blocks snooping an
-        # unrelated, actively-owned task.
-        if (
-            t.assigned_to is not None
-            and t.assigned_to != agent_id
-            and not await self._board_may_co_review(agent_id, t)
-            and not await self._is_caller_dependency(agent_id, t)
-        ):
-            return _ownership_violation(task_id)
+        task_or_error = await self._evidence_task_or_error(task_id, agent_id)
+        if isinstance(task_or_error, Envelope):
+            return task_or_error
+        t = task_or_error
+        task_id = cast("UUID", t.id)
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id, include_ancestors=True
         )
@@ -5999,20 +6146,79 @@ class ContentActions:
         return api_key, None
 
     @staticmethod
-    async def _git_archive_workspace(root: Path, archive: Path) -> tuple[bool, str]:
-        """One ``git archive`` attempt of the committed HEAD; (ok, stderr)."""
+    async def _git_capture(root: Path, *args: str) -> tuple[bool, str, str]:
+        """One git invocation in ``root``; (ok, stdout, stderr)."""
         proc = await asyncio.create_subprocess_exec(
             "git",
-            "archive",
-            "--format=tar.gz",
-            f"-o{archive}",
-            "HEAD",
+            *args,
             cwd=root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
-        return proc.returncode == 0, stderr.decode(errors="replace").strip()[:300]
+        out, err = await proc.communicate()
+        return (
+            proc.returncode == 0,
+            out.decode(errors="replace").strip(),
+            err.decode(errors="replace").strip()[:300],
+        )
+
+    @staticmethod
+    async def _git_archive_workspace(
+        root: Path, archive: Path, ref: str = "HEAD"
+    ) -> tuple[bool, str]:
+        """One ``git archive`` attempt of the committed ``ref``; (ok, stderr)."""
+        ok, _, err = await ContentActions._git_capture(
+            root, "archive", "--format=tar.gz", f"-o{archive}", ref
+        )
+        return ok, err
+
+    async def _sandbox_tests_ref(
+        self, agent_id: UUID, root: Path, branch: str | None
+    ) -> tuple[Path, str, Envelope | None]:
+        """(archive root, ref). A developer's worktree sits on the task
+        branch, so HEAD is right. QA's clone root is never moved onto it
+        (claims leave HEAD alone), so when HEAD is on a different branch the
+        branch is fetched through the workspace service (project token,
+        agent ownership) and FETCH_HEAD of the clone it fetched into is
+        archived. No branch: HEAD."""
+        if not branch:
+            return root, "HEAD", None
+        ok, head, _ = await ContentActions._git_capture(
+            root, "rev-parse", "--abbrev-ref", "HEAD"
+        )
+        if ok and head == branch:
+            return root, "HEAD", None
+        fetched: Path | None = None
+        err = ""
+        try:
+            fetched = await self.workspace.fetch_branch_for_inspection(
+                agent_id=agent_id, branch_name=branch
+            )
+            # The helper only logs a non-zero fetch, so confirm FETCH_HEAD
+            # names this branch (a failed fetch leaves a stale one behind).
+            ok, fh, err = await ContentActions._git_capture(
+                fetched, "rev-parse", "--git-path", "FETCH_HEAD"
+            )
+            if ok:
+                fh_path = Path(fh) if Path(fh).is_absolute() else fetched / fh
+                ok = f"branch '{branch}' of" in fh_path.read_text()
+                err = err or "fetch did not update FETCH_HEAD"
+        except Exception as exc:
+            ok, err = False, str(exc)
+        if not ok or fetched is None:
+            return (
+                root,
+                "HEAD",
+                Envelope.invalid_state(
+                    message=f"could not fetch task branch {branch} from origin: {err}",
+                    remediate=(
+                        "the developer must push the branch (i_am_done pushes it); "
+                        "retry run_sandbox_tests once it is on origin"
+                    ),
+                    context_briefing={},
+                ),
+            )
+        return fetched, "FETCH_HEAD", None
 
     async def _sandbox_tests_root(
         self, agent_id: UUID, agent_slug: str, task: Any, project: Any
@@ -6065,16 +6271,16 @@ class ContentActions:
 
     @staticmethod
     async def _sandbox_tests_archive(
-        root: Path,
+        root: Path, ref: str = "HEAD"
     ) -> tuple[Path | None, Envelope | None]:
-        """Archive the committed HEAD of ``root`` into a random-named temp
+        """Archive the committed ``ref`` of ``root`` into a random-named temp
         tarball (mkstemp: unpredictable on the shared orchestrator host,
         never cross-task colliding) and enforce the upload ceiling; the
         caller owns unlinking the path."""
         fd, archive_name = tempfile.mkstemp(prefix="roboco-sandbox-", suffix=".tar.gz")
         os.close(fd)
         archive = Path(archive_name)
-        ok, stderr = await ContentActions._git_archive_workspace(root, archive)
+        ok, stderr = await ContentActions._git_archive_workspace(root, archive, ref)
         if not ok:
             with contextlib.suppress(OSError):
                 archive.unlink(missing_ok=True)
@@ -6183,7 +6389,12 @@ class ContentActions:
                 remediate="retry run_sandbox_tests",
                 context_briefing={},
             )
-        archive, rejection = await self._sandbox_tests_archive(root)
+        root, ref, rejection = await self._sandbox_tests_ref(
+            agent_id, root, getattr(t, "branch_name", None)
+        )
+        if rejection is not None:
+            return rejection
+        archive, rejection = await self._sandbox_tests_archive(root, ref)
         if rejection is not None or archive is None:
             return rejection or Envelope.invalid_state(
                 message="workspace archive could not be created",
@@ -6758,11 +6969,35 @@ class ContentActions:
             )
         return None
 
+    async def _progress_precheck(
+        self, message: str, task_id: UUID | str
+    ) -> Envelope | UUID:
+        """The two early guards (soup check + short-ref resolution) folded
+        into one preflight so the verb body stays under the return bound.
+        Returns the rejection Envelope or the resolved task UUID."""
+        if rej := self._reject_soup(message, field="progress update", min_chars=5):
+            return rej
+        return await self._resolve_task_ref(str(task_id))
+
+    async def _pr_update_precheck(
+        self,
+        title: str | None,
+        body: str | None,
+        reviewers: list[str] | None,
+        task_id: UUID | str,
+    ) -> Envelope | UUID:
+        """The two early guards (input check + short-ref resolution) folded
+        into one preflight so the verb body stays under the return bound.
+        Returns the rejection Envelope or the resolved task UUID."""
+        if rej := self._pr_update_input_check(title, body, reviewers):
+            return rej
+        return await self._resolve_task_ref(str(task_id))
+
     async def progress(
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         message: str,
         plan_step: str | None = None,
         percentage: int | None = None,
@@ -6785,8 +7020,10 @@ class ContentActions:
         the single-claimant guard so a reaped/handed-off assignee cannot
         keep writing.
         """
-        if rej := self._reject_soup(message, field="progress update", min_chars=5):
-            return rej
+        guard = await self._progress_precheck(message, task_id)
+        if isinstance(guard, Envelope):
+            return guard
+        task_id = guard
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -6934,7 +7171,7 @@ class ContentActions:
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         title: str | None = None,
         body: str | None = None,
         reviewers: list[str] | None = None,
@@ -6958,8 +7195,10 @@ class ContentActions:
             invalid_state — schema-level check is the first line of
             defense; this guard catches direct gateway calls)
         """
-        if rej := self._pr_update_input_check(title, body, reviewers):
-            return rej
+        guard = await self._pr_update_precheck(title, body, reviewers, task_id)
+        if isinstance(guard, Envelope):
+            return guard
+        task_id = guard
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -7093,7 +7332,7 @@ class ContentActions:
             root_id, root = root.parent_task_id, parent
         return root_id, root.created_at
 
-    async def task_time(self, *, agent_id: UUID, task_id: UUID) -> Envelope:
+    async def task_time(self, *, agent_id: UUID, task_id: UUID | str) -> Envelope:
         """Real, uptime-adjusted elapsed times for a task.
 
         Read-only telemetry, no ownership check, any allowed role may call
@@ -7103,8 +7342,15 @@ class ContentActions:
         down or dispatch paused as neglect. This returns both: ``wall_seconds``
         (naive) and ``active_seconds`` (fleet-uptime-adjusted, via
         ``UptimeLedger``), plus the downtime windows that explain the gap.
+
+        ``task_id`` accepts the full UUID or the 8+ char hex prefix the task
+        cards display - see ``_resolve_task_ref``.
         """
         del agent_id  # read-only telemetry, no ownership check
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -7159,7 +7405,7 @@ class ContentActions:
             context_briefing={},
         )
 
-    async def preflight_diff(self, *, agent_id: UUID, task_id: UUID) -> Envelope:
+    async def preflight_diff(self, *, agent_id: UUID, task_id: UUID | str) -> Envelope:
         """Decisions agent lane 6.4 (spec): the pre-submit self-check.
 
         The Choreographer composes the whole state server-side from the task
@@ -7168,6 +7414,10 @@ class ContentActions:
         the audit. Advisory by design: the agent decides; it never blocks
         or waives ``i_am_done`` (self-review exclusion, spec 5).
         """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -7280,7 +7530,7 @@ class ContentActions:
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         test_name: str,
         error_excerpt: str = "",
     ) -> Envelope:
@@ -7293,6 +7543,10 @@ class ContentActions:
         the envelope says ``unknown`` and the agent proceeds exactly as
         today (debug first).
         """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")

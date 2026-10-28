@@ -31,37 +31,55 @@ x-orchestrator-env: &orchestrator-env
   # Decisions service (typed System One decisions). Master flag armed ON for
   # THIS (NAS/dev) deploy only - the registry compose ships it OFF: on the
   # user-facing side nothing serves a verdict until the CEO arms it
-  # (Settings -> Feature Flags + Decisions Pilots). The Laya tier (self-hosted,
-  # $0, roboco-decisions sidecar) is on-by-default once the master flag goes
-  # on; the OpenRouter fallback tier stays OPT-IN (a deliberate spend).
+  # (Settings -> Feature Flags + Decisions Pilots). The Clef tier (self-hosted
+  # 27B, $0, roboco-decisions sidecar) is the sweet-spot default and the Laya
+  # tier (self-hosted 421M, also $0) the cheap fallback, both on-by-default
+  # once the master flag goes on; the OpenRouter fallback tier (Jev, the
+  # expensive option) stays OPT-IN (a deliberate spend).
   # Pilot arming is a MIX per CEO decision 2026-09-23: cheap-failure /
   # advisory / add-only pilots ON; anything with an expensive wrong answer
   # (CEO-path routing, notification suppression, context dropping, lifecycle
   # choices) SHADOW - verdicts logged against real outcomes, behavior
   # unchanged. Per-pilot settings rows always win over these env defaults.
   # self_heal's gate joined SHADOW (CEO decision 2026-09-26): the ENGINE is
-  # armed fully below, but laya's transient verdict is logged, not acted on,
+  # armed fully below, but the transient verdict is logged, not acted on,
   # until a fine-tuned checkpoint clears the quality probe - shadow rows +
   # the sweep's outcome labeler are exactly the labeled training data.
   ROBOCO_DECISIONS_ENABLED: ${ROBOCO_DECISIONS_ENABLED:-true}
   ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-decisions:8100}
+  ROBOCO_DECISIONS_TIER_CLEF_ENABLED: ${ROBOCO_DECISIONS_TIER_CLEF_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
   ROBOCO_DECISIONS_PILOTS_ON: ${ROBOCO_DECISIONS_PILOTS_ON:-parking,preflight_diff,triage_failure,tool_spotlight,x_mention_triage,heal_severity,external_pr_triage,dep_update_risk,release_readiness,commit_intent,changelog_highlights,proactive_domain,idle_reaping,decision_note_sufficiency,park_cause,pre_send_completeness,findings_mapping,delta_brief,idle_legitimacy,review_queue_priority,branch_staleness,pm_closure_confidence,assembled_coherence,silent_exit}
   ROBOCO_DECISIONS_PILOTS_SHADOW: ${ROBOCO_DECISIONS_PILOTS_SHADOW:-self_heal,complexity,steer_gate,transcript_notes,plan_quality,injection_screen,intake_preroute,collision_edge,ci_watch_route,release_worthy,second_review_eligibility,segment_classify,vault_prefilter,notify_dedup,board_due_early,stranded_response,coroner_gate,secretary_nl,tg_freetext_gate,memory_distill_gate,context_pruning,budget_wrapup,board_evidence_skip,respawn_verdict,submit_now_confidence,lesson_prune}
   # Self-heal engine FULLY ARMED (CEO decision 2026-09-26): detect + notify +
   # originate (tasks still held for the CEO's Approve-&-Start, per doctrine).
-  # Its laya transient gate is what the decisions SHADOW list above logs, and
-  # the sweep's outcome labeler turns those logged verdicts into labeled
-  # fine-tuning rows against real CI outcomes.
-  # MinIO object storage for rendered videos (use container name). Empty
+  # Its decisions transient gate is what the decisions SHADOW list above
+  # logs, and the sweep's outcome labeler turns those logged verdicts into
+  # labeled fine-tuning rows against real CI outcomes.
+  # S3 object storage (RustFS) for rendered videos (use container name). Empty
   # endpoint = disabled (FileResponse fallback); armed here for the NAS
   # deploy, left OFF in docker-compose.registry.yml.
-  ROBOCO_MINIO_ENDPOINT: http://roboco-minio:9000
+  ROBOCO_MINIO_ENDPOINT: http://roboco-rustfs:9000
   ROBOCO_MINIO_ACCESS_KEY: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
   ROBOCO_MINIO_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
   ROBOCO_MINIO_BUCKET: ${ROBOCO_MINIO_BUCKET:-roboco-video-renders}
   ROBOCO_MINIO_REGION: ${ROBOCO_MINIO_REGION:-us-east-1}
+  # Nebius Token Factory (opt-in): agents route to Nebius only after the key
+  # is saved and Nebius mode or pins are applied in the panel. Token Factory
+  # Sandboxes (dev/QA run_sandbox_tests in Nebius microVMs) stay OFF unless
+  # set true; the project id is the console's aiproject- id. Defaults mirror
+  # roboco/config.py.
+  ROBOCO_NEBIUS_BASE_URL: ${ROBOCO_NEBIUS_BASE_URL:-https://api.tokenfactory.nebius.com/v1}
+  ROBOCO_NEBIUS_CLI_MODEL: ${ROBOCO_NEBIUS_CLI_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+  ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS: ${ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS:-60}
+  ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS: ${ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS:-60}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED:-false}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL:-https://api.tokenfactory.nebius.com/sandboxes}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID:-}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE:-tag:python:3.13}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS:-900}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES:-67108864}
   # Host paths for spawning agent containers (required for Docker-in-Docker)
   # IMPORTANT: These must be ABSOLUTE paths on the host filesystem
   ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
@@ -114,7 +132,7 @@ x-orchestrator-env: &orchestrator-env
   # when red, notifies the CEO and (with originate on) opens a PENDING fix
   # task that STOPS for the CEO's Approve-&-Start — it never self-deploys.
   # FULLY ARMED here (both toggles on; CEO decision 2026-09-26, training-data
-  # rollout): the sweep's outcome labeler grades the logged laya transient
+  # rollout): the sweep's outcome labeler grades the logged transient
   # verdicts against real CI outcomes, feeding the fine-tuning corpus (spec
   # section 12). Set PROJECT_SLUG to the registered project that IS RoboCo;
   # CI_WORKFLOW scopes the signal to the real CI workflow (RoboCo has several
@@ -225,16 +243,17 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_STRATEGY_ENGINE_ENABLED: ${ROBOCO_STRATEGY_ENGINE_ENABLED:-true}
   ROBOCO_INTERNAL_PR_ENABLED: ${ROBOCO_INTERNAL_PR_ENABLED:-true}
   # Remaining default-OFF capabilities, ARMED here (personal deploy): web
-  # research (inert without ROBOCO_RESEARCH_API_KEY → empty results — the
-  # two lines below are what actually gets the .env key/provider into the
-  # container; without them .env values never reach it), pitch
+  # research (live by default via the bundled searxng container; the
+  # three lines below are what actually gets the .env key/provider/URL into
+  # the container; without them .env values never reach it), pitch
   # auto-provisioning (inert until a pitch is approved + a git token is
   # set — same deal for ROBOCO_PROVISIONING_TOKEN/_ORG below), and
   # transcript pruning (retention maintenance). All left OFF in the
   # registry compose. Override any via .env.
   ROBOCO_RESEARCH_ENABLED: ${ROBOCO_RESEARCH_ENABLED:-true}
   ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
-  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
+  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-searxng}
+  ROBOCO_RESEARCH_SEARXNG_BASE_URL: ${ROBOCO_RESEARCH_SEARXNG_BASE_URL:-http://roboco-searxng:8080}
   ROBOCO_PROVISIONING_ENABLED: ${ROBOCO_PROVISIONING_ENABLED:-true}
   ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
   ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
@@ -468,61 +487,60 @@ services:
         condition: service_healthy
 
   # ==========================================================================
-  # MinIO - Object storage for rendered videos (NAS default-on; registry OFF)
+  # RustFS - S3 object storage for rendered videos (NAS default-on; registry OFF)
   # ==========================================================================
-  # MinIO withdrew anonymous community distribution (verified 2026-09-25):
-  # docker.io and quay.io deny every tag and dl.min.io binaries 410. This
-  # digest is RELEASE.2025-09-07T16-13-09Z, the final community release
-  # (AGPLv3), already cached on the NAS. Fresh hosts cannot pull it and must
-  # import it once from any host that has it:
-  #   docker save 14cea493d9a34 | docker load
-  # mc is bundled in this image, so minio-init below reuses it instead of
-  # the (equally unpullable) separate mc image.
-  minio:
-    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    container_name: roboco-minio
+  # Replaces MinIO, whose images are gone from docker.io (404) and quay.io.
+  # RustFS (Apache-2.0) speaks the same S3 API, so roboco's minio-py client
+  # and the ROBOCO_MINIO_* settings work unchanged. 1.0.1 multi-arch digest.
+  # Own volume: the image runs as uid 10001 and cannot write MinIO's
+  # root-owned data dir.
+  rustfs:
+    image: rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+    container_name: roboco-rustfs
     restart: unless-stopped
-    # data-only network — keeps MinIO off the agent mesh; the multi-homed
-    # orchestrator reaches it via its data NIC. Host ports for debugging.
+    # data-only network: keeps object storage off the agent mesh; the
+    # multi-homed orchestrator reaches it via its data NIC. Host ports for
+    # debugging.
     networks:
       - data
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
-      MINIO_ROOT_PASSWORD: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      RUSTFS_ACCESS_KEY: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
+      RUSTFS_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
     ports:
       - "19000:9000"
       - "19001:9001"
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
 
-  # MinIO bucket init - one-shot, mirrors the ollama-init pattern: depends on
-  # minio healthy, creates the bucket idempotently, then exits. `|| true`
-  # covers re-runs (bucket already exists).
-  minio-init:
-    # Same image as the minio service above: it bundles mc, and the
-    # standalone quay.io/minio/mc image is no longer anonymously pullable.
-    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    container_name: roboco-minio-init
+  # Bucket init - one-shot, mirrors the ollama-init pattern: depends on
+  # rustfs healthy, creates the bucket idempotently, then exits. `|| true`
+  # covers re-runs (bucket already exists). aws-cli 2.38.1 multi-arch digest.
+  rustfs-init:
+    image: amazon/aws-cli@sha256:733d5be1015825e4038c6016f3fa9954868ddee1f611b73be795a9cc2e706bfd
+    container_name: roboco-rustfs-init
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
     networks:
       - data
     entrypoint: ["/bin/sh", "-c"]
     # Note: $$ escapes $ for docker-compose variable substitution so the
-    # container's own env vars reach mc.
+    # container's own env vars reach aws.
     command:
-      - mc alias set local http://roboco-minio:9000 $$ROBOCO_MINIO_ACCESS_KEY $$ROBOCO_MINIO_SECRET_KEY && mc mb -p local/$$ROBOCO_MINIO_BUCKET || true
+      - aws --endpoint-url http://roboco-rustfs:9000 s3 mb s3://$$ROBOCO_MINIO_BUCKET || true
     environment:
-      ROBOCO_MINIO_ACCESS_KEY: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
-      ROBOCO_MINIO_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      AWS_ACCESS_KEY_ID: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
+      AWS_SECRET_ACCESS_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      AWS_DEFAULT_REGION: ${ROBOCO_MINIO_REGION:-us-east-1}
       ROBOCO_MINIO_BUCKET: ${ROBOCO_MINIO_BUCKET:-roboco-video-renders}
     restart: "no"
 
@@ -582,6 +600,34 @@ services:
         echo "=== All models ready! ==="
 
   # ==========================================================================
+  # SearXNG - Self-hosted metasearch for the web-research capability
+  # ==========================================================================
+  # The DEFAULT research provider (config default is searxng; the orchestrator
+  # env block points ROBOCO_RESEARCH_SEARXNG_BASE_URL at this container).
+  # Tavily/Brave/Exa remain opt-in via .env. Internal-only by design: no host port, never proxied by nginx:
+  # an exposed open metasearch instance is abuse bait. The JSON format and
+  # limiter-off live in deploy/searxng/settings.yml. The secret guards the
+  # instance's own cookies only; on an internal bridge with no auth surface
+  # the default is harmless, but override SEARXNG_SECRET in .env if the
+  # container is ever exposed deliberately.
+  # Resource note: ~150-300 MB RAM, one uwsgi worker, no GPU.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: roboco-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-roboco-internal-searxng}
+      SEARXNG_BASE_URL: http://roboco-searxng:8080/
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ==========================================================================
   # Video Renderer - sidecar for the video-generation engine (renders
   # motion/ compositions to MP4 with HyperFrames). Mirrors the ollama sidecar
   # pattern: a plain HTTP service the orchestrator talks to, nothing more.
@@ -618,14 +664,16 @@ services:
       start_period: 10s
 
   # ==========================================================================
-  # Decisions sidecar (the built-in Laya tier of the Decisions service) - CPU-only typed
-  # decisions over the official onnxruntime path. Mirrors the ollama sidecar
-  # pattern: a plain HTTP service the orchestrator talks to, nothing more.
-  # Inert until ROBOCO_DECISIONS_ENABLED goes on; shipping it changes
-  # nothing by itself. No DB, no git, no credentials - it only ever reads
-  # what it's POSTed. NO `networks:` key: joins the implicit default
-  # network (roboco_default) next to ollama, NEVER roboco_data, and never
-  # exposed through nginx or on a host port.
+  # Decisions sidecar (the built-in self-hosted tiers of the Decisions
+  # service) - CPU-only typed decisions over llama.cpp: a 27B Clef backend
+  # (sweet-spot default) and a 421M Laya backend (cheap fallback), each a
+  # llama-server speaking the System One protocol behind one proxy. Mirrors
+  # the ollama sidecar pattern: a plain HTTP service the orchestrator talks
+  # to, nothing more. Inert until ROBOCO_DECISIONS_ENABLED goes on; shipping
+  # it changes nothing by itself. No DB, no git, no credentials - it only
+  # ever reads what it's POSTed. NO `networks:` key: joins the implicit
+  # default network (roboco_default) next to ollama, NEVER roboco_data, and
+  # never exposed through nginx or on a host port.
   # ==========================================================================
   decisions:
     build:
@@ -634,14 +682,25 @@ services:
     image: roboco-decisions
     container_name: roboco-decisions
     restart: unless-stopped
+    environment:
+      # Per-deploy RAM knobs. The 19GB Clef GGUF is the heavy tenant (mmap'd
+      # from the baked image, paged into RAM as the model touches it); the
+      # Laya backend is ~450MB. On a box that cannot hold Clef, set
+      # ROBOCO_SIDECAR_CLEF_ENABLED=false: the container serves the cheap
+      # Laya backend only and the orchestrator's tier ladder follows /health
+      # automatically (no config change above the sidecar). Both backends
+      # idle at ~zero CPU - llama.cpp is event-driven, inference only runs
+      # on a POST.
+      CLEF_ENABLED: ${ROBOCO_SIDECAR_CLEF_ENABLED:-true}
+      LAYA_ENABLED: ${ROBOCO_SIDECAR_LAYA_ENABLED:-true}
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3).status == 200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 5
-      # Weights are baked into the image; the start period only covers
-      # checkpoint load from disk + the calibration check.
-      start_period: 60s
+      # Weights are baked into the image; the start period covers the 19GB
+      # Clef GGUF loading into RAM from disk.
+      start_period: 180s
 
   # ==========================================================================
   # Agent Base Image Builder (specialized images built on-demand by orchestrator)
@@ -923,6 +982,25 @@ services:
         roboco-agent-base: "service:agent-base-image"
     image: roboco-agent-openrouter
     entrypoint: ["/bin/sh", "-c", 'echo "Agent OpenRouter image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
+  # Agent Nebius Image Builder (Token Factory via the opencode CLI).
+  # Builds the image a Nebius-routed spawn runs; routing to Nebius stays
+  # opt-in (key + Nebius mode or pins). Without it no compose service
+  # references roboco-agent-nebius, so deploy-nas.sh never builds it and
+  # the -live pass defers on its base.
+  # ==========================================================================
+  agent-nebius-image:
+    build:
+      context: .
+      dockerfile: docker/agent-nebius.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
+    image: roboco-agent-nebius
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Nebius image built"']
     restart: "no"
     depends_on:
       - agent-base-image
@@ -1269,6 +1347,6 @@ networks:
     name: roboco_render
 
 volumes:
-  # Named volume for MinIO — keeps rendered-video storage out of the
+  # Named volume for RustFS: keeps rendered-video storage out of the
   # ${ROBOCO_DATA_DIR} bind-mount sprawl; docker-managed durable store.
-  minio-data:
+  rustfs-data:

@@ -25,11 +25,11 @@
 |------|-------------|
 | `commit` | `commit(message: str, files: list[str] | None = None)` |
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
-| `evidence` | `evidence(task_id: UUID)` |
+| `evidence` | `evidence(task_id: str)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `read_messages` | `read_messages()` |
 | `read_a2a` | `read_a2a(see do_server)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
-| `task_time` | `task_time(task_id: UUID)` |
+| `task_time` | `task_time(task_id: str)` |

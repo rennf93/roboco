@@ -382,11 +382,15 @@ class SweepsEngine(_Base):
         back to the durable transcript (the SDK can report zero mid-run, the
         same race the finalize path handles). Returns ``None`` when neither
         source has any usage yet. GROK / OPENAI (codex) / GEMINI / KIMI /
-        OPENROUTER have no SDK server or Claude transcript, so each routes
-        to its own ``usage.json`` — the same early return the finalize path
-        uses, so live USAGE_SNAPSHOT reflects those agents mid-run too (in
-        practice a one-shot run's usage.json is written only post-run, so
-        this is a no-op ``None`` until the run ends).
+        OPENROUTER / NEBIUS / HUMMIN have no SDK server or Claude transcript,
+        so each routes to its own ``usage.json``, the same early return the
+        finalize path uses, so live USAGE_SNAPSHOT reflects those agents
+        mid-run too (in practice a one-shot run's usage.json is written only
+        post-run, so this is a no-op ``None`` until the run ends). The read
+        is QUIET (``warn_on_zero=False``): a zero here is the expected mid-run
+        state, not a finalize anomaly. Warning every sweep tick spammed one
+        "check the usage dir mount" line per active CLI agent per minute
+        (263 of them on the NAS while every mount was healthy, 2026-09-28).
         """
         instance = self._instances.get(agent_id)
         provider = (
@@ -408,7 +412,7 @@ class SweepsEngine(_Base):
         }
         read_usage_json = usage_json_readers.get(provider) if provider else None
         if read_usage_json is not None:
-            cli_tokens = read_usage_json(agent_id)
+            cli_tokens = read_usage_json(agent_id, warn_on_zero=False)
             return cli_tokens if any(cli_tokens) else None
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:

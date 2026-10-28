@@ -1081,3 +1081,164 @@ async def test_devops_without_co_claim_still_blocked_on_gate_task() -> None:
     )
 
     assert env.error == "not_authorized"
+
+
+# ---------------------------------------------------------------------------
+# evidence: short task-id prefixes resolve instead of 422ing
+# (be-qa's 2026-09-28 review loop: 795 evidence errors on 8-char ids)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_evidence_accepts_short_task_id_prefix() -> None:
+    """An 8-char hex prefix resolves to the single matching task and the
+    review evidence builds normally."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    prefix = str(task_id)[:8]
+    task_svc = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.all.return_value = [(task_id,)]
+    task_svc.session = MagicMock()
+    task_svc.session.execute = AsyncMock(return_value=execute_result)
+    task_svc.session.commit = AsyncMock()
+    task_svc.get.return_value = MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        assigned_to=None,
+        branch_name="feature/x",
+        work_session_id=uuid4(),
+        commits=["sha1"],
+        pr_number=7,
+        pr_url="https://github.com/org/repo/pull/7",
+    )
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.return_value = ("diff --git a/x b/x", ["x"])
+    deps = _make_deps(task=task_svc, git=git_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.evidence(agent_id=agent_id, task_id=prefix)
+    body = env.as_dict()
+
+    assert body["error"] is None
+    assert body["task_id"] == str(task_id)
+    assert task_svc.session.execute.await_count >= 1  # resolver lookup ran
+
+
+@pytest.mark.asyncio
+async def test_evidence_ambiguous_prefix_reports_incomplete() -> None:
+    """Two tasks sharing a prefix -> incomplete_input naming the ambiguity,
+    not a silent pick."""
+    task_svc = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.all.return_value = [(uuid4(),), (uuid4(),)]
+    task_svc.session = MagicMock()
+    task_svc.session.execute = AsyncMock(return_value=execute_result)
+    deps = _make_deps(task=task_svc)
+    ca = ContentActions(deps)
+    agent_id = uuid4()
+
+    env = await ca.evidence(agent_id=agent_id, task_id="abcd1234")
+    body = env.as_dict()
+
+    assert body["error"] == "incomplete_input"
+    task_svc.get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_evidence_non_hex_ref_reports_incomplete() -> None:
+    """A non-hex, non-UUID ref -> incomplete_input without a DB hit."""
+    task_svc = AsyncMock()
+    deps = _make_deps(task=task_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.evidence(agent_id=uuid4(), task_id="not-a-ref")
+
+    assert env.as_dict()["error"] == "incomplete_input"
+    task_svc.session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_note_allows_unclaimed_assignee() -> None:
+    """Claim-less assignee may journal: the read-only-role case.
+
+    Dispatch assigns a task, but a claim-less role (the auditor) can never
+    satisfy the strict active-claim gate, so every note bounced forever
+    (a9739b1c, 2026-09-29). With no active claimant there is no one to
+    race; the assignee's journal write goes through.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = MagicMock(
+        id=task_id,
+        assigned_to=agent_id,
+        active_claimant_id=None,
+        status="pending",
+    )
+    task_svc.agent_for.return_value = MagicMock(role="auditor")
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="Audit observation: pilot-health review pass 3 is clean.",
+        scope="note",
+        task_id=task_id,
+    )
+    body = env.as_dict()
+
+    assert body["error"] is None
+    journal_svc.write_entry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_note_still_refuses_non_assignee_without_claim() -> None:
+    """allow_unclaimed never widens past the assignee (even an auditor)."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = MagicMock(
+        id=task_id,
+        assigned_to=uuid4(),
+        active_claimant_id=None,
+        status="pending",
+    )
+    deps = _make_deps(task=task_svc, journal=AsyncMock())
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="Should not land: I am not the assignee.",
+        scope="note",
+        task_id=task_id,
+    )
+
+    assert env.as_dict()["error"] == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_commit_still_requires_active_claim() -> None:
+    """Reaped assignee: journal notes pass the unclaimed gate, commits do not.
+
+    State-changing verbs keep the strict gate: allow_unclaimed is note-only.
+    """
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+    task_svc.get_active_task_for_agent.return_value = MagicMock(
+        id=uuid4(),
+        assigned_to=agent_id,
+        active_claimant_id=None,
+        status="in_progress",
+        branch_name="feature/backend/x",
+    )
+    deps = _make_deps(task=task_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.commit(agent_id=agent_id, message="fix: post-reap write")
+    body = env.as_dict()
+
+    assert body["error"] == "not_authorized"
+    assert "active claim" in body["message"]

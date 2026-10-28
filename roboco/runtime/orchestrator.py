@@ -1613,6 +1613,12 @@ class AgentOrchestrator(
         # Tests bypass `__init__` via `__new__` and set _claim_heartbeat_ttl
         # directly; production never uses _task_svc from __init__.
         self._claim_heartbeat_ttl: int = settings.stale_claim_reap_seconds
+        # Longer window for stale REVIEW claims (awaiting_* rows): a reviewer
+        # legitimately fires no gateway verb between claim_review and its
+        # pass/fail decision, so the claim's heartbeat freezes at claim time
+        # for the whole review. Aligned with claude_stuck_kill_seconds; see
+        # _reap_one_stale_review_claim.
+        self._review_claim_heartbeat_ttl: int = settings.review_claim_reap_seconds
         # Short debounce for closure respawn of a recently-paused parent —
         # NOT the reaper window. See _is_recently_paused.
         self._closure_recently_paused_ttl: int = (
@@ -1963,8 +1969,23 @@ class AgentOrchestrator(
     # AGENT SPAWNING
     # =========================================================================
 
+    # QA reviews run bash/git in the task project's clone, so QA needs the
+    # same per-agent workspace resolution as developers. MISSING from this
+    # set, _resolve_workspace_cwd returned None for qa-role spawns and the
+    # manifest builder fell back to its hardcoded "roboco" path — a
+    # nonexistent directory every review tool then errored on (live
+    # 2026-09-28: fe-qa/be-qa unable to review anything, evidence() and all
+    # roboco_git_* read-only tools failing, respawn breakers tripping).
+    # pr_reviewer reads diffs in the same clones and is included for the
+    # same reason.
     _ROLES_WITH_AGENT_WORKSPACE: ClassVar[frozenset[str]] = frozenset(
-        {"developer", "product_owner", "head_marketing"}
+        {
+            "developer",
+            "qa",
+            "pr_reviewer",
+            "product_owner",
+            "head_marketing",
+        }
     )
     _ROLES_WITH_CELL_WORKSPACE: ClassVar[frozenset[str]] = frozenset({"documenter"})
 

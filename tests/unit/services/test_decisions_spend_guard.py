@@ -145,6 +145,19 @@ async def test_laya_tier_never_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_clef_tier_never_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default self-hosted tier is $0 by construction, same as laya."""
+    monkeypatch.setattr(cfg.settings, "decisions_cost_alert_usd", 0.01)
+    alert = AsyncMock()
+    monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)
+
+    spend_guard.record_spend("clef", 0.0)
+    spend_guard.record_spend("clef", 1000.0)  # even a bogus nonzero cost
+    await spend_guard.drain_pending_alerts()
+    alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_none_cost_recorded_as_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     alert = AsyncMock()
     monkeypatch.setattr(spend_guard, "_send_ceo_alert", alert)

@@ -51,6 +51,7 @@ from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 from roboco.llm.providers.nebius_cli_config import opencode_model_ref
 from roboco.runtime.compose_labels import compose_label_args
+from roboco.seeds.initial_data import AGENT_UUIDS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -224,7 +225,9 @@ class NebiusProvider(AgentProvider):
         model = config.model or _NEBIUS_CLI_MODEL
         env: list[str] = [
             "-e",
-            f"ROBOCO_AGENT_ID={config.agent_id}",
+            # UUID, not slug: the agent token is signed over the UUID
+            # (see hummin.py), a slug here 401s every gateway call.
+            f"ROBOCO_AGENT_ID={AGENT_UUIDS.get(config.agent_id, config.agent_id)}",
             "-e",
             f"ROBOCO_AGENT_MODEL={opencode_model_ref(model)}",
             "-e",

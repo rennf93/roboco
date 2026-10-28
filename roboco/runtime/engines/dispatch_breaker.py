@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -20,6 +22,18 @@ from roboco.runtime.orchestrator import (
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
 
+# Work-signal window for the review-claim liveness check: how far back the
+# container log is scanned for tool activity. Generous enough to cover a
+# legitimate long edit/test cycle; far shorter than a review should ever
+# run completely silent.
+_WORK_SIGNAL_WINDOW_SECONDS = 1800
+# A run whose recent tool calls are this dominated by ONE tool (typically
+# give_me_work) or by tool errors is thrash, not work - the breaker must
+# treat it as a strike, not shield it.
+_THRASH_SINGLE_TOOL_RATIO = 0.8
+_THRASH_ERROR_RATIO = 0.5
+_MIN_CALLS_FOR_RATIO = 8
+
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -32,6 +46,18 @@ if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
+
+
+@dataclass(frozen=True)
+class _OwnedClaimContext:
+    """Everything `_reap_owned_review_claim` needs for one stale claim."""
+
+    svc: "TaskService"
+    t: Any
+    ts: datetime | None
+    owner_slug: str
+    dispatch_paused: bool
+    candidates: list[Any]
 
 
 class DispatchBreakerEngine(_Base):
@@ -499,11 +525,19 @@ class DispatchBreakerEngine(_Base):
         then mount a fresh credential. Best-effort, throttled, and serial (run
         once per dispatch tick) so concurrent refreshes can't rotate the
         refresh-token out from under each other. Never breaks the loop.
+
+        Failures back off exponentially (60s doubling, 1h cap) instead of
+        re-POSTing the same dead grant every tick — a revoked refresh token
+        (``rejected``) can never succeed again, and hammering auth.x.ai with
+        it every 60s is pure log noise (2026-09-29 fleet wedge). A
+        ``rejected`` status parks the check for an hour; a fresh ``grok
+        login`` on the host is picked up on the next unparked tick.
         """
         now = datetime.now(UTC)
         next_check = getattr(self, "_grok_auth_next_check", None)
         if next_check is not None and now < next_check:
             return
+        streak = getattr(self, "_grok_auth_fail_streak", 0)
         self._grok_auth_next_check = now + timedelta(seconds=60)
         try:
             from roboco.llm.providers import grok_auth
@@ -511,12 +545,26 @@ class DispatchBreakerEngine(_Base):
 
             auth_path = Path(GROK_AUTH_HOST_PATH) / "auth.json"
             status = await asyncio.to_thread(grok_auth.refresh_if_stale, auth_path)
-            if status == "refreshed":
-                logger.info("grok auth token refreshed")
-            elif status == "failed":
-                logger.warning(
-                    "grok auth refresh failed; agents may hit an expired token"
-                )
+            if status in {"fresh", "refreshed"}:
+                self._grok_auth_fail_streak = 0
+                if status == "refreshed":
+                    logger.info("grok auth token refreshed")
+                return
+            self._grok_auth_fail_streak = streak + 1
+            if status == "rejected":
+                # Credential is dead: retry no more than hourly until a
+                # re-issued auth.json lands. The warning already fired once
+                # from grok_auth with the remediation.
+                self._grok_auth_next_check = now + timedelta(seconds=3600)
+            else:
+                backoff = min(60 * (2**self._grok_auth_fail_streak), 3600)
+                self._grok_auth_next_check = now + timedelta(seconds=backoff)
+            logger.warning(
+                "grok auth refresh failed; agents may hit an expired token",
+                status=status,
+                fail_streak=self._grok_auth_fail_streak,
+                retry_in_seconds=(3600 if status == "rejected" else backoff),
+            )
         except Exception as exc:
             logger.error("grok auth refresh hook error", error=str(exc))
 
@@ -526,12 +574,15 @@ class DispatchBreakerEngine(_Base):
         Same rationale as the grok refresh: the per-agent mount is read-only,
         so the orchestrator refreshes the host ``auth.json`` itself before the
         access JWT expires. Best-effort, throttled, and serial (run once per
-        dispatch tick). Never breaks the loop.
+        dispatch tick). Never breaks the loop. Same exponential backoff on
+        failure and hourly parking on a definitive ``rejected`` (dead
+        credential; see ``_refresh_grok_auth``).
         """
         now = datetime.now(UTC)
         next_check = getattr(self, "_codex_auth_next_check", None)
         if next_check is not None and now < next_check:
             return
+        streak = getattr(self, "_codex_auth_fail_streak", 0)
         self._codex_auth_next_check = now + timedelta(seconds=60)
         try:
             from roboco.llm.providers import codex_auth
@@ -539,12 +590,23 @@ class DispatchBreakerEngine(_Base):
 
             auth_path = Path(CODEX_AUTH_HOST_PATH) / "auth.json"
             status = await asyncio.to_thread(codex_auth.refresh_if_stale, auth_path)
-            if status == "refreshed":
-                logger.info("codex auth token refreshed")
-            elif status == "failed":
-                logger.warning(
-                    "codex auth refresh failed; agents may hit an expired token"
-                )
+            if status in {"fresh", "refreshed"}:
+                self._codex_auth_fail_streak = 0
+                if status == "refreshed":
+                    logger.info("codex auth token refreshed")
+                return
+            self._codex_auth_fail_streak = streak + 1
+            if status == "rejected":
+                self._codex_auth_next_check = now + timedelta(seconds=3600)
+            else:
+                backoff = min(60 * (2**self._codex_auth_fail_streak), 3600)
+                self._codex_auth_next_check = now + timedelta(seconds=backoff)
+            logger.warning(
+                "codex auth refresh failed; agents may hit an expired token",
+                status=status,
+                fail_streak=self._codex_auth_fail_streak,
+                retry_in_seconds=(3600 if status == "rejected" else backoff),
+            )
         except Exception as exc:
             logger.error("codex auth refresh hook error", error=str(exc))
 
@@ -891,6 +953,16 @@ class DispatchBreakerEngine(_Base):
         candidates = await svc.list_in_progress_or_claimed()
         for t in candidates:
             await self._reap_one_stale_claim(svc, t, dispatch_paused, candidates)
+        # awaiting_* review claims are invisible to the sweep above (they are
+        # neither claimed nor in_progress) - without this second pass a
+        # claimant that DIED mid-review strands the single-claimant lock
+        # forever (fe-qa held 99f61c8c for 13.5h on 2026-09-28). Same reaper,
+        # longer TTL, claim-fields-only release.
+        review_claims = await svc.list_all_open_review_claims()
+        for t in review_claims:
+            await self._reap_one_stale_review_claim(
+                svc, t, dispatch_paused, candidates + review_claims
+            )
 
     def _heartbeat_is_stale(self, ts: Any, ttl_seconds: int) -> bool:
         """True when a claim's heartbeat is missing, or its active-time age
@@ -1035,6 +1107,146 @@ class DispatchBreakerEngine(_Base):
             return
         await self._unclaim_stale_claim(svc, t, ts)
 
+    async def _reap_one_stale_review_claim(
+        self,
+        svc: "TaskService",
+        t: Any,
+        dispatch_paused: bool,
+        candidates: list[Any],
+    ) -> None:
+        """Decide skip-vs-release for one awaiting_* review claim.
+
+        Backstop for the gap ``list_open_review_claims`` documents: an agent
+        that DIES mid-review (breaker, OOM, container loss) never calls
+        ``i_am_idle``, so the exit-release never fires and the single-claimant
+        lock strands the task (fe-qa held 99f61c8c for 13.5h on 2026-09-28
+        exactly this way). Mirrors ``_reap_one_stale_claim`` with three
+        review-specific differences: the TTL is the much longer
+        ``_review_claim_heartbeat_ttl`` (a reviewer legitimately fires no
+        gateway verb between claim_review and its pass/fail decision, so the
+        claim's heartbeat freezes at claim time for the whole review), the
+        release clears only the claim fields (status stays awaiting_*), and
+        the parked proof ("busy on a fresher claim elsewhere") runs BEFORE the
+        wedged/stuck-kill machinery so a container healthily working another
+        task is never killed over a stale second review claim.
+        """
+        ts = t.last_heartbeat_at
+        if not self._heartbeat_is_stale(ts, self._review_claim_heartbeat_ttl):
+            return
+        if self._assignee_is_provider_parked(t):
+            return
+        owner = getattr(t, "assigned_to", None) or getattr(t, "claimed_by", None)
+        if owner is not None:
+            await self._reap_owned_review_claim(
+                _OwnedClaimContext(
+                    svc=svc,
+                    t=t,
+                    ts=ts,
+                    owner_slug=self._resolve_agent_slug(str(owner)),
+                    dispatch_paused=dispatch_paused,
+                    candidates=candidates or [],
+                )
+            )
+            return
+        if await self._should_skip_live_reap(t, ts):
+            return
+        if dispatch_paused:
+            return
+        await self._release_stale_review_claim(svc, t, ts)
+
+    async def _reap_owned_review_claim(self, ctx: "_OwnedClaimContext") -> None:
+        """Decide the fate of a stale review claim whose owner is known.
+
+        - Parked proof (a fresher claim elsewhere among the candidates):
+          abandoned by choice - release, deferred by the dispatch pause.
+        - Work-signal check: a live container shields claims ONLY while its
+          tool stream shows real work; idle or thrashing means THIS claim is
+          abandoned (the container-level skip would otherwise protect every
+          claim the agent ever took - live 2026-09-29: fe-qa's container was
+          up reviewing 372eac39 while its 16h-dead claim on 99f61c8c stayed
+          held because _should_skip_live_reap saw a RUNNING container).
+        - A working container defers the release this tick, same as the
+          dispatch pause: give the reviewer the window.
+        """
+        if not self._is_claim_in_flight(ctx.owner_slug) and self._agent_busy_elsewhere(
+            ctx.owner_slug, ctx.t, ctx.candidates
+        ):
+            if ctx.dispatch_paused:
+                return
+            await self._release_stale_review_claim(ctx.svc, ctx.t, ctx.ts)
+            return
+        if await self._agent_work_signal(ctx.owner_slug) == "working":
+            return
+        if ctx.dispatch_paused:
+            return
+        await self._release_stale_review_claim(ctx.svc, ctx.t, ctx.ts)
+
+    async def _release_stale_review_claim(
+        self, svc: "TaskService", t: Any, ts: datetime | None
+    ) -> None:
+        """Release one stale review claim back to its review queue.
+
+        try/except so a single bad row doesn't abort the dispatch tick - the
+        reaper must keep ticking even if one release somehow fails. The
+        released claim leaves ``list_all_open_review_claims`` (its
+        ``active_claimant_id`` is cleared), so a later tick never
+        re-considers it and cannot double-notify.
+        """
+        from roboco.utils.converters import require_uuid
+
+        task_id = require_uuid(t.id)
+        released_agent = getattr(t, "assigned_to", None) or getattr(
+            t, "claimed_by", None
+        )
+        try:
+            await svc.release_review_claim_for_reaper(task_id)
+            logger.warning(
+                "stale review claim released",
+                task_id=str(task_id),
+                last_heartbeat=ts.isoformat() if ts else None,
+            )
+        except Exception as exc:
+            logger.error(
+                "stale review claim release failed; continuing",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return
+        await self._notify_stale_review_claim_released(
+            task_id, released_agent, ts, getattr(t, "title", None)
+        )
+
+    async def _notify_stale_review_claim_released(
+        self,
+        task_id: "UUID",
+        released_agent: Any,
+        last_heartbeat: datetime | None,
+        task_title: str | None = None,
+    ) -> None:
+        """Best-effort coordination notification for a released review claim.
+
+        Mirrors ``_notify_stale_claim_reaped``: the reviewer (and the CEO)
+        must learn the claim moved, but a notification failure must never
+        wedge the reaper tick. Best-effort: any error is logged and swallowed.
+        """
+        if released_agent is None:
+            return
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_stale_review_claim_released_notification(
+                task_id=str(task_id),
+                released_agent=str(released_agent),
+                last_heartbeat=last_heartbeat.isoformat() if last_heartbeat else None,
+                task_title=task_title,
+            )
+        except Exception as exc:
+            logger.error(
+                "stale review claim notification failed; continuing",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+
     async def _unclaim_stale_claim(
         self, svc: "TaskService", t: Any, ts: datetime | None
     ) -> None:
@@ -1153,6 +1365,135 @@ class DispatchBreakerEngine(_Base):
         )
         return False
 
+    def _init_respawn_record(
+        self,
+        agent_slug: str,
+        key: tuple[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> None:
+        """First-seen (agent, task): open the strike record at count 1."""
+        self._pm_respawn_tracker[key] = {
+            "count": 1,
+            "last_status": current_status,
+            "last_check": now,
+            "seen_statuses": [current_status],
+        }
+        self._schedule_respawn_persist(
+            agent_slug, str(key[1]), self._pm_respawn_tracker[key]
+        )
+
+    async def _gate_should_skip_for_live_review(self, task: dict[str, Any]) -> bool:
+        """True when the spawn targets a review that is producing actual work.
+
+        An awaiting_* task advances nothing until its pass/fail decision, so
+        spawns during a long review look unproductive to a status-only
+        counter. Whether the review is genuinely in progress is decided by
+        the claimant's TOOL ACTIVITY, not its heartbeat: a working reviewer
+        (varied successful tool calls - reading diffs, running tests, taking
+        notes) is spared, while a thrash loop (one verb repeated, errors
+        dominating - the 2026-09-29 be-qa evidence loop) or a silent
+        container accrues strikes and trips. The heartbeat is deliberately
+        NOT consulted: it freezes during long local work (false dead) and
+        advances under give_me_work spam (false alive). The task status
+        travels as a plain string in the dispatcher's task dicts.
+        """
+        status = str(getattr(task.get("status"), "value", task.get("status")))
+        if not status.startswith("awaiting_"):
+            return False
+        claimant = await self._review_claimant_slug(task.get("id"))
+        if claimant is None:
+            return False
+        return await self._agent_work_signal(claimant) == "working"
+
+    async def _review_claimant_slug(self, task_id: Any) -> str | None:
+        """The current claimant's agent slug for an awaiting_* task, or None.
+
+        Best-effort: a DB failure returns None so the breaker's strike logic
+        stays authoritative rather than silently disabling itself.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_session_factory
+        from roboco.db.tables import AgentTable, TaskTable
+
+        try:
+            from uuid import UUID as _UUID
+
+            task_uuid = task_id if isinstance(task_id, _UUID) else _UUID(str(task_id))
+            factory = get_session_factory()
+            async with factory() as db:
+                row = await db.execute(
+                    select(AgentTable.slug)
+                    .join(TaskTable, TaskTable.active_claimant_id == AgentTable.id)
+                    .where(TaskTable.id == task_uuid)
+                )
+                return row.scalar_one_or_none()
+        except Exception as e:
+            logger.error(
+                "review-claim claimant lookup failed; counting normally",
+                task_id=str(task_id),
+                error=str(e),
+            )
+            return None
+
+    async def _container_log_text(self, agent_slug: str) -> str:
+        """The agent container's recent log stream, or "" on any failure.
+
+        Bounded to the work-signal window so a long-running agent's log
+        volume cannot stall the dispatch tick.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "logs",
+            "--since",
+            f"{_WORK_SIGNAL_WINDOW_SECONDS}s",
+            f"roboco-agent-{agent_slug}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_EXEC_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            return ""
+        return stdout.decode("utf-8", errors="replace")
+
+    async def _agent_work_signal(self, agent_slug: str) -> str:
+        """Classify the agent container's recent activity: work, thrash, idle.
+
+        Scans the container log's recent tool-call stream. "working" = varied
+        successful tool calls (a review reading diffs, running tests, noting
+        progress). "thrashing" = calls dominated by ONE tool or by errors -
+        a retry loop burning tokens while accomplishing nothing (the
+        2026-09-29 be-qa evidence loop: 976 give_me_work calls, 795 tool
+        errors, verdict never fired). "idle" = no container or zero tool
+        events in the window. A deliberate ``sleep`` is itself a tool event,
+        so a chosen wait inside an otherwise varied run still reads as
+        working-quietly. Best-effort: any docker failure yields "idle" so
+        the strike logic stays authoritative.
+        """
+        text = await self._container_log_text(agent_slug)
+        starts = text.count('"toolName":"')
+        if starts == 0:
+            return "idle"
+        tool_names = re.findall(r'"toolName":"([a-zA-Z_]+)"', text)
+        top_tool = max(set(tool_names), key=tool_names.count)
+        if (
+            starts >= _MIN_CALLS_FOR_RATIO
+            and tool_names.count(top_tool) / starts > _THRASH_SINGLE_TOOL_RATIO
+        ):
+            return "thrashing"
+        tool_errors = text.count("Error executing tool")
+        if (
+            starts >= _MIN_CALLS_FOR_RATIO
+            and tool_errors / starts > _THRASH_ERROR_RATIO
+        ):
+            return "thrashing"
+        return "working"
+
     async def _pm_tracing_gap_reset(
         self,
         agent_slug: str,
@@ -1254,37 +1595,13 @@ class DispatchBreakerEngine(_Base):
         record = self._pm_respawn_tracker.get(key)
         now = datetime.now(UTC)
         if record is None:
-            self._pm_respawn_tracker[key] = {
-                "count": 1,
-                "last_status": current_status,
-                "last_check": now,
-                "seen_statuses": [current_status],
-            }
-            self._schedule_respawn_persist(
-                agent_slug, str(task_id), self._pm_respawn_tracker[key]
-            )
+            self._init_respawn_record(agent_slug, key, current_status, now)
             return False
-        if record.get("last_status") != current_status and (
-            self._respawn_status_change_resets(key, record, current_status, now)
-        ):
-            return False
-        # ponytail: helpers hold the two resettable sub-loops (tracing-gap,
-        # cooldown); main fn just routes. Inline again if either grows a
-        # second distinct reset path.
-        if await self._pm_tracing_gap_reset(
-            agent_slug, task_id, record, current_status, now
-        ):
-            return False
-        # Already tripped on a PREVIOUS tick (notified flipped): the count is
-        # frozen past the threshold and last_check is frozen at the trip tick,
-        # so a deploy that fixed the underlying loop (auth/prompt/schema) can
-        # self-heal after a cooldown instead of wedging until manual DB
-        # surgery. A still-wedged task re-trips after the threshold (bounded
-        # re-burn: ~3 spawns per cooldown window); a fixed one advances and
-        # the status-change path fully resets the counter.
-        gate = self._pm_cooldown_gate(agent_slug, task_id, record, now)
-        if gate is not None:
-            return gate
+        verdict = await self._respawn_pre_increment_verdict(
+            task, record, key, current_status, now
+        )
+        if verdict is not None:
+            return verdict
         record["count"] += 1
         record["last_check"] = now
         self._schedule_respawn_persist(agent_slug, str(task_id), record)
@@ -1302,6 +1619,49 @@ class DispatchBreakerEngine(_Base):
                 agent_slug, task_id, current_status, record
             )
         return tripped and not spawn_anyway
+
+    async def _respawn_pre_increment_verdict(
+        self,
+        task: dict[str, Any],
+        record: dict[str, Any],
+        key: tuple[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool | None:
+        """Verdicts decided BEFORE a strike accrues.
+
+        Returns True (skip the spawn entirely), False (allow the spawn
+        without counting a strike), or None (no pre-increment decision -
+        the caller counts the strike). Paths, in order:
+
+        - status changed with a reset budget left: forward progress, allow.
+        - live review claim: an awaiting_* task being actively reviewed
+          advances nothing until the pass/fail decision, so every spawn
+          during a long review otherwise accrues a strike and trips the
+          breaker mid-review (live 2026-09-29: fe-qa tripped on 372eac39
+          while actively reviewing with a fresh claim heartbeat). Skip
+          WITHOUT a strike while the claim is live.
+        - tracing_gap: a rule-following retry through the verb chain,
+          reset up to the tracing budget.
+        - cooldown: an already-tripped pair stays gated through its
+          cooldown window, then re-arms (a fixed task advances and the
+          status-change path fully resets the counter).
+        """
+        agent_slug, task_id = key
+        if record.get("last_status") != current_status and (
+            self._respawn_status_change_resets(key, record, current_status, now)
+        ):
+            return False
+        if await self._gate_should_skip_for_live_review(task):
+            return True
+        if await self._pm_tracing_gap_reset(
+            agent_slug, task_id, record, current_status, now
+        ):
+            return False
+        gate = self._pm_cooldown_gate(agent_slug, task_id, record, now)
+        if gate is not None:
+            return gate
+        return None
 
     async def _pm_respawn_spawn_anyway(
         self,

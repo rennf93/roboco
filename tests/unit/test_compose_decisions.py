@@ -1,10 +1,11 @@
-"""Compose contract for the roboco-decisions sidecar (the Laya tier of the
-Decisions service, docs/internal/decisions-spec.md sections 8 Stage 0.5
-and 10).
+"""Compose contract for the roboco-decisions sidecar (the self-hosted tiers
+of the Decisions service, docs/internal/decisions-spec.md sections 8
+Stage 0.5 and 10).
 
-The sidecar is an inert-until-armed HTTP service (Laya typed decisions over
-the official onnxruntime path, mirroring the OpenRouter Decisions wire
-shape). Its compose contract is deliberately narrow:
+The sidecar is an inert-until-armed HTTP service (Clef 27B + Laya 421M
+typed decisions over llama.cpp backends behind one proxy, mirroring the
+OpenRouter Decisions wire shape). Its compose contract is deliberately
+narrow:
 
 - it exists in BOTH compose files (build + registry), byte-consistent with
   how the video-renderer sidecar landed;
@@ -15,8 +16,8 @@ shape). Its compose contract is deliberately narrow:
 - it has a healthcheck (the resolver's cached probe depends on /health);
 - it is NOT exposed on host ports (internal bridge only, never through
   nginx either);
-- it carries a memory cap (int8 ONNX weights + onnxruntime fit in 1-2 GB;
-  the cap is the guardrail);
+- no memory cap, deliberately (the 19GB Clef GGUF loads into RAM; the
+  earlier low cap rendered the container useless and was removed);
 - the resolver URL env plumbing points at the container name on port 8100.
 
 The docker-compose.yml/.yaml byte-identity gate (make compose-sync) is
@@ -39,6 +40,7 @@ _SIDECAR_CONTAINER = "roboco-decisions"
 _DECISIONS_ENV_KEYS = (
     "ROBOCO_DECISIONS_ENABLED",
     "ROBOCO_DECISIONS_BASE_URL",
+    "ROBOCO_DECISIONS_TIER_CLEF_ENABLED",
     "ROBOCO_DECISIONS_TIER_LAYA_ENABLED",
     "ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED",
 )
@@ -121,6 +123,12 @@ def test_sidecar_resolver_url_points_at_container() -> None:
         assert "roboco-decisions:8100" in value and not any(
             banned in value for banned in ("127.0.0.1", "localhost", "0.0.0.0")
         ), f"{name}: ROBOCO_DECISIONS_BASE_URL must name the sidecar container"
+        assert env.get("ROBOCO_DECISIONS_TIER_CLEF_ENABLED") == (
+            "${ROBOCO_DECISIONS_TIER_CLEF_ENABLED:-true}"
+        ), f"{name}: the Clef tier is the built-in default and must default ON"
+        assert env.get("ROBOCO_DECISIONS_TIER_LAYA_ENABLED") == (
+            "${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}"
+        ), f"{name}: the cheap Laya tier is the built-in fallback and must default ON"
         assert env.get("ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED") == (
             "${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}"
         ), f"{name}: the OpenRouter fallback tier is OPT-IN and must default OFF"

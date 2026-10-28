@@ -111,6 +111,49 @@ async def test_give_me_work_lane_filter_inert_under_partial_mock() -> None:
 
 
 # ---------------------------------------------------------------------------
+# assigned-row fallback (bounced needs_revision): the lane barrier must hold
+# here too - pre-fix, the pre-assigned branch dropped a lane-held leaf only
+# for this fallback to re-offer it (offer-then-reject loop, 2026-09-28).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_give_me_work_assigned_fallback_skips_lane_held_needs_revision() -> None:
+    task_svc, agent_id = _dev_agent_task_svc()
+    bounced = MagicMock(id=uuid4(), status="needs_revision", title="rework-leaf")
+    task_svc.list_pending_for_agent.return_value = []
+    task_svc.list_assigned_for_agent.return_value = [bounced]
+    task_svc.is_pending_claim_blocked.return_value = False
+    task_svc.has_earlier_incomplete_code_sibling.return_value = True
+    deps = _make_deps(task_svc)
+    c = Choreographer(deps)
+
+    env = await c.give_me_work(agent_id)
+    body = env.as_dict()
+    assert body["status"] == "idle"
+    assert body["task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_give_me_work_bounced_needs_revision_offered_when_lane_clear() -> None:
+    """A needs_revision bounce whose lane is clear is still offered first -
+    the reviewer is waiting on it; the filter only drops positively
+    lane-held leaves."""
+    task_svc, agent_id = _dev_agent_task_svc()
+    bounced = MagicMock(id=uuid4(), status="needs_revision", title="rework-leaf")
+    task_svc.list_pending_for_agent.return_value = []
+    task_svc.list_assigned_for_agent.return_value = [bounced]
+    task_svc.is_pending_claim_blocked.return_value = False
+    task_svc.has_earlier_incomplete_code_sibling.return_value = False
+    deps = _make_deps(task_svc)
+    c = Choreographer(deps)
+
+    env = await c.give_me_work(agent_id)
+    body = env.as_dict()
+    assert body["task_id"] == str(bounced.id)
+
+
+# ---------------------------------------------------------------------------
 # _run_claim_guards: a direct claim of a lane-held code task is refused
 # ---------------------------------------------------------------------------
 

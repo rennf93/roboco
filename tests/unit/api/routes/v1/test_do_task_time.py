@@ -17,6 +17,7 @@ from roboco.services.gateway.content_actions import ContentActions
 
 _HTTP_200 = 200
 _HTTP_422 = 422
+_HTTP_OK = 200
 
 _AGENT_ID = str(uuid4())
 _TASK_ID = str(uuid4())
@@ -78,17 +79,35 @@ async def test_task_time_returns_measured_envelope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_task_time_rejects_non_uuid_task_id() -> None:
-    """A non-UUID task_id fails schema validation before ContentActions is called."""
+async def test_task_time_accepts_non_uuid_ref_for_downstream_resolution() -> None:
+    """A non-UUID task_id is no longer a 422: short refs (8+ hex chars) and
+    even malformed refs travel to ContentActions, whose resolver answers
+    with an incomplete_input envelope (2026-09-28: the strict UUID schema
+    422'd the short ids the task cards display and wedged be-qa's review)."""
     mock_actions = MagicMock(spec=ContentActions)
     mock_actions.task_time = AsyncMock(return_value=_make_envelope())
     client = TestClient(_build_app(mock_actions))
 
     resp = client.post(
         "/api/v1/do/task_time",
-        json={"task_id": "not-a-uuid"},
+        json={"task_id": "372eac39"},
         headers=_HEADERS,
     )
+
+    assert resp.status_code == _HTTP_OK
+    mock_actions.task_time.assert_awaited_once()
+    assert mock_actions.task_time.call_args.kwargs["task_id"] == "372eac39"
+
+
+@pytest.mark.asyncio
+async def test_task_time_missing_task_id_returns_422() -> None:
+    """A missing task_id still fails schema validation (the field is
+    required) before ContentActions is called."""
+    mock_actions = MagicMock(spec=ContentActions)
+    mock_actions.task_time = AsyncMock(return_value=_make_envelope())
+    client = TestClient(_build_app(mock_actions))
+
+    resp = client.post("/api/v1/do/task_time", json={}, headers=_HEADERS)
 
     assert resp.status_code == _HTTP_422
     mock_actions.task_time.assert_not_awaited()

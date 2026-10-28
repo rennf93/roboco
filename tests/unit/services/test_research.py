@@ -23,6 +23,7 @@ from roboco.services.research import (
     ResearchUnsupportedError,
     SearchOutcome,
     SearchProvider,
+    SearXNGProvider,
     TavilyProvider,
     build_provider,
     get_research_service,
@@ -41,6 +42,10 @@ _FETCH_CAP = 20
 
 def _client(handler: Handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _noop(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200)
 
 
 # --------------------------------------------------------------------------- #
@@ -186,6 +191,125 @@ async def test_exa_search_and_fetch() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# SearXNG
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_searxng_search_parses_results_and_answers() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "searxng.internal"
+        assert request.url.path == "/search"
+        assert request.url.params["format"] == "json"
+        assert request.url.params["q"] == _QUERY
+        return httpx.Response(
+            200,
+            json={
+                "query": _QUERY,
+                "answers": ["42"],
+                "results": [
+                    {
+                        "title": "A",
+                        "url": "https://a.test",
+                        "content": "sa",
+                        "score": 0.9,
+                    },
+                    {"title": "B", "url": "https://b.test", "content": "sb"},
+                ],
+            },
+        )
+
+    client = _client(handler)
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal:8080/", timeout=5.0, client=client
+    )
+    out = await provider.search(_QUERY, _N_RESULTS)
+    assert out.provider == "searxng"
+    assert out.answer == "42"
+    assert [h.url for h in out.hits] == ["https://a.test", "https://b.test"]
+    assert out.hits[0].score == _TOP_SCORE
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_extracts_readability_text_locally() -> None:
+    html = (
+        "<html><head><title>t</title></head><body>"
+        "<nav>menu menu</nav><article><h1>Head</h1>"
+        "<p>Hello readable world.</p></article></body></html>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "93.184.216.34"
+        return httpx.Response(200, text=html)
+
+    client = _client(handler)
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=client
+    )
+    out = await provider.fetch("https://93.184.216.34/page", 1000)
+    assert "Hello readable world." in out.content
+    assert out.truncated is False
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_truncates_to_cap() -> None:
+    html = f"<html><body><p>{'word ' * 200}</p></body></html>"
+    client = _client(lambda _r: httpx.Response(200, text=html))
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=client
+    )
+    out = await provider.fetch("https://93.184.216.34/page", _TRUNC_CAP)
+    assert len(out.content) == _TRUNC_CAP
+    assert out.truncated is True
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_non_2xx_raises() -> None:
+    client = _client(lambda _r: httpx.Response(404, text="gone"))
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=client
+    )
+    with pytest.raises(ResearchError):
+        await provider.fetch("https://93.184.216.34/page", 100)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8000/api",  # loopback
+        "http://169.254.169.254/latest/meta-data",  # cloud metadata
+        "http://roboco-postgres:5432/",  # internal name, unresolvable/RFC1918
+        "ftp://93.184.216.34/file",  # non-http scheme
+    ],
+)
+async def test_searxng_fetch_refuses_non_public_urls(url: str) -> None:
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal",
+        timeout=5.0,
+        client=_client(
+            lambda _r: httpx.Response(200, text="<html><body>x</body></html>")
+        ),
+    )
+    with pytest.raises(ResearchError):
+        await provider.fetch(url, 100)
+
+
+@pytest.mark.asyncio
+async def test_searxng_configured_keys_off_base_url() -> None:
+    configured = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=_client(_noop)
+    )
+    unconfigured = SearXNGProvider(base_url="", timeout=5.0, client=_client(_noop))
+    assert configured.configured is True
+    assert unconfigured.configured is False
+
+
+# --------------------------------------------------------------------------- #
 # Error handling
 # --------------------------------------------------------------------------- #
 
@@ -244,12 +368,18 @@ def test_build_provider_selects_by_name() -> None:
     assert isinstance(build_provider("tavily", "k", 5.0), TavilyProvider)
     assert isinstance(build_provider("brave", "k", 5.0), BraveProvider)
     assert isinstance(build_provider("exa", "k", 5.0), ExaProvider)
+    assert isinstance(
+        build_provider("searxng", None, 5.0, searxng_base_url="http://s:8080"),
+        SearXNGProvider,
+    )
     assert isinstance(build_provider("null", "k", 5.0), NullProvider)
 
 
 def test_build_provider_null_when_no_key_or_unknown() -> None:
     assert isinstance(build_provider("tavily", None, 5.0), NullProvider)
     assert isinstance(build_provider("mystery", "k", 5.0), NullProvider)
+    # SearXNG degrades like every provider when its base URL is missing.
+    assert isinstance(build_provider("searxng", None, 5.0), NullProvider)
 
 
 # --------------------------------------------------------------------------- #
@@ -312,3 +442,21 @@ def test_get_research_service_uses_settings(monkeypatch: pytest.MonkeyPatch) -> 
     service = get_research_service()
     assert service.provider_name == "null"
     assert service.configured is False
+
+
+def test_default_provider_is_self_hosted_searxng() -> None:
+    """The stock stack ships keyless: the default provider is the bundled
+    SearXNG container, not a paid API. Compose env defaults mirror this."""
+    assert settings.research_provider == "searxng"
+
+
+def test_get_research_service_searxng_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "research_provider", "searxng")
+    monkeypatch.setattr(
+        settings, "research_searxng_base_url", "http://roboco-searxng:8080"
+    )
+    service = get_research_service()
+    assert service.provider_name == "searxng"
+    assert service.configured is True

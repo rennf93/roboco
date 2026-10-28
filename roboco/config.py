@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.31.0"
+    app_version: str = "0.32.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -365,13 +365,15 @@ class Settings(BaseSettings):
     # ==========================================================================
     # A small orchestrator-side service that answers TYPED questions (choice /
     # score / noul) with calibrated confidence at decision points that would
-    # otherwise be a full LLM call or a hardcoded heuristic. Two tiers behind
-    # one wire format: the self-hosted Laya sidecar (roboco-decisions container,
-    # built-in default, no key, no spend) and the OpenRouter Decisions API
-    # (opt-in fallback). With the master flag off, every call site does exactly
-    # what it did before this service existed; decisions can only add
-    # behavior, never subtract, and nothing ever materializes on a verdict
-    # alone. See docs/internal/decisions-spec.md.
+    # otherwise be a full LLM call or a hardcoded heuristic. Three tiers behind
+    # one wire format, all served by the roboco-decisions sidecar or the
+    # OpenRouter Decisions API: Clef (self-hosted 27B, built-in sweet-spot
+    # default, no key, no spend), Laya (self-hosted 421M, the cheap option,
+    # fallback when the Clef backend is unhealthy) and Jev via OpenRouter
+    # (opt-in, the expensive option). With the master flag off, every call
+    # site does exactly what it did before this service existed; decisions
+    # can only add behavior, never subtract, and nothing ever materializes on
+    # a verdict alone. See docs/internal/decisions-spec.md.
     decisions_enabled: bool = Field(
         default=False,
         description=(
@@ -382,11 +384,22 @@ class Settings(BaseSettings):
         ),
     )
     decisions_model: str = Field(
-        default="convaiinnovations/laya",
+        default="ggml-org/Clef-GGUF:Q4_K_M",
         description=(
-            "Checkpoint id reported to the Decisions backend. Vendor-neutral "
-            "by doctrine: the model slug appears only here, and swapping "
-            "checkpoint weights must never change anything above the client."
+            "Model id reported to the Decisions backend for the default tier. "
+            "For the self-hosted sidecar this doubles as the routing hint: "
+            "the sidecar routes a request to its Clef or Laya llama.cpp "
+            "backend by the model id on the wire. Vendor-neutral by "
+            "doctrine: swapping model weights must never change anything "
+            "above the client."
+        ),
+    )
+    decisions_laya_model: str = Field(
+        default="ggml-org/Laya-GGUF",
+        description=(
+            "Model id reported to the Decisions backend for the cheap "
+            "self-hosted Laya tier (routed to the sidecar's Laya llama.cpp "
+            "backend)."
         ),
     )
     decisions_base_url: str = Field(
@@ -398,12 +411,22 @@ class Settings(BaseSettings):
             "client stays one implementation."
         ),
     )
+    decisions_tier_clef_enabled: bool = Field(
+        default=True,
+        description=(
+            "Serve decisions from the self-hosted sidecar's Clef backend "
+            "(27B llama.cpp, the BUILT-IN sweet-spot default tier) when it "
+            "is healthy. Inert until the roboco-decisions container exists "
+            "and the master flag is on."
+        ),
+    )
     decisions_tier_laya_enabled: bool = Field(
         default=True,
         description=(
-            "Serve decisions from the self-hosted sidecar when it is healthy. "
-            "The BUILT-IN default tier. Inert until the roboco-decisions container "
-            "exists and the master flag is on."
+            "Serve decisions from the self-hosted sidecar's Laya backend "
+            "(421M llama.cpp, the CHEAP option) when the Clef backend is "
+            "disabled or unhealthy. Inert until the roboco-decisions "
+            "container exists and the master flag is on."
         ),
     )
     decisions_tier_openrouter_enabled: bool = Field(
@@ -419,8 +442,18 @@ class Settings(BaseSettings):
         default=5.0,
         gt=0,
         description=(
-            "Per-call timeout for the local CPU sidecar (single attempt, no "
-            "retries; sweep cadence is the natural backoff)."
+            "Per-call timeout for the cheap self-hosted Laya tier (single "
+            "attempt, no retries; sweep cadence is the natural backoff)."
+        ),
+    )
+    decisions_clef_timeout_s: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the default self-hosted Clef tier (single "
+            "attempt, no retries). The 27B forward pass over a capped state "
+            "is CPU prefill-bound: seconds on typical pilot states, tens of "
+            "seconds worst case. Measure on the real deploy before tuning."
         ),
     )
     decisions_openrouter_timeout_s: float = Field(
@@ -725,20 +758,34 @@ class Settings(BaseSettings):
         ),
     )
     research_provider: str = Field(
-        default="tavily",
-        pattern="^(tavily|brave|exa|null)$",
+        default="searxng",
+        pattern="^(tavily|brave|exa|searxng|null)$",
         description=(
-            "Web-search provider adapter. 'tavily' (LLM-native cited results "
-            "+ extract), 'brave' (independent index; no fetch), 'exa' "
-            "(neural search + contents), or 'null' (always-empty stub). "
-            "Swapping providers is a config change only."
+            "Web-search provider adapter. 'searxng' (DEFAULT: self-hosted "
+            "metasearch via the bundled roboco-searxng container, no API "
+            "key, needs research_searxng_base_url), 'tavily' (LLM-native "
+            "cited results + extract; opt-in paid fallback), 'brave' "
+            "(independent index; no fetch), 'exa' (neural search + "
+            "contents), or 'null' (always-empty stub). Swapping providers "
+            "is a config change only."
         ),
     )
     research_api_key: str | None = Field(
         default=None,
         description=(
             "API key for the selected research provider. Server-side only — "
-            "never reaches an agent container. Unset => NullProvider."
+            "never reaches an agent container. Unset => NullProvider. Not "
+            "used by 'searxng', which keys off research_searxng_base_url."
+        ),
+    )
+    research_searxng_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Base URL of the self-hosted SearXNG instance (e.g. "
+            "http://roboco-searxng:8080) for the 'searxng' provider. The "
+            "compose files default this to the bundled roboco-searxng "
+            "container so the stock stack is live out of the box. Server-"
+            "side only; set/unset together with research_provider."
         ),
     )
     research_max_results: int = Field(
@@ -1728,7 +1775,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = Field(
         default="",
         description=(
-            "MinIO endpoint, e.g. http://roboco-minio:9000. Empty = disabled "
+            "S3 endpoint, e.g. http://roboco-rustfs:9000. Empty = disabled "
             "(FileResponse fallback)."
         ),
     )
@@ -2282,6 +2329,24 @@ class Settings(BaseSettings):
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
         ),
     )
+    # Reaper window for stale REVIEW claims (awaiting_qa / awaiting_doc /
+    # awaiting_pr_review rows whose active_claimant went silent). Deliberately
+    # MUCH longer than stale_claim_reap_seconds: a reviewer fires no gateway
+    # verb between claim_review and its pass/fail decision (the review itself
+    # is bash/gh inside the container), so the claim's heartbeat legitimately
+    # freezes at claim time for the whole review. 3600s aligns with
+    # claude_stuck_kill_seconds - a claimant silent that long while ACTIVE is
+    # wedged by the #73 doctrine anyway, and a dead run must not strand the
+    # single-claimant lock for hours (fe-qa held 99f61c8c 13.5h on 2026-09-28
+    # because the i_am_idle release only fires on a CLEAN exit).
+    review_claim_reap_seconds: int = Field(
+        default=3600,
+        ge=300,
+        description=(
+            "Reaper-only stale review-claim threshold (seconds); "
+            "override via ROBOCO_REVIEW_CLAIM_REAP_SECONDS"
+        ),
+    )
     # A GROK agent that wedges — an idle model call / stream with no gateway
     # verb — is ACTIVE-yet-silent, so the heartbeat reaper's live-container skip
     # would shield its task forever (the grok CLI emits no SDK budget signal and
@@ -2504,12 +2569,12 @@ class Settings(BaseSettings):
         ),
     )
     # The default OpenRouter model id (provider/model form, e.g.
-    # "anthropic/claude-sonnet-5") passed to `opencode run --model` when the
+    # "anthropic/claude-sonnet-5.5") passed to `opencode run --model` when the
     # routing assignment does not pin a specific model. The live catalog is
     # searched on demand (GET /providers/openrouter/models) and the picked
     # model id is stored via provider_type_override — this is only the floor.
     openrouter_cli_model: str = Field(
-        default="anthropic/claude-sonnet-5",
+        default="anthropic/claude-sonnet-5.5",
         description=(
             "Default OpenRouter model id (provider/model) passed to opencode "
             "when no per-assignment model is pinned. Override via "
@@ -2645,7 +2710,9 @@ class Settings(BaseSettings):
         ),
     )
     token_factory_sandboxes_image: str = Field(
-        default="tag:python:3.12",
+        # 3.13: pyproject requires-python >=3.13, so a 3.12 sandbox cannot run
+        # this repo's own tests (tag listed in the console's Sandboxes > Images).
+        default="tag:python:3.13",
         description=(
             "Default sandbox image ref (the agent may override per call); "
             "override via ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE"

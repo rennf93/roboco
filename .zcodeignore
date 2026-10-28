@@ -1,0 +1,164 @@
+# Claude Code
+.claude/scheduled_tasks.lock
+.claude/agents/*
+.claude/commands/*
+.claude/hooks/*
+.claude/scripts/*
+.claude/skills/*
+
+# Superpowers (session-private design + plans)
+docs/superpowers/
+
+# Python (anchored to repo root so the names don't shadow legitimate
+# subdirectories like panel/src/lib).
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+/.Python
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+.venv
+venv/
+ENV/
+env/
+# Per-workspace uv managed CPython (UV_PYTHON_INSTALL_DIR); lives in clone + worktrees
+.uv-python/
+
+# uv
+.uv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# import-linter (lint-imports)
+.import_linter_cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite3
+
+# Alembic
+alembic/versions/*.pyc
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+/data
+/#recycle
+.OLD/
+logos/
+
+# Panel (Next.js frontend)
+panel/node_modules/
+panel/.next/
+panel/out/
+panel/coverage/
+# pnpm content-addressable store — a dev once committed the ~115MB store and hit
+# GitHub's 100MB pre-receive limit (GH001), spiralling open_pr into a retry loop.
+# An ignored dir can't be staged by any `git add`, so this is the root fix.
+.pnpm-store/
+panel/tsconfig.tsbuildinfo
+panel/.env.local
+panel/.env.*.local
+
+# motion/ (HyperFrames compositions) + video-renderer (its render sidecar)
+motion/node_modules/
+# the trailing-slash form above only matches a directory — a tracked
+# symlink at this path (e.g. a container-absolute pnpm link) needs its own,
+# slash-less entry or it slips through `git add`/`git status` untracked.
+motion/node_modules
+video-renderer/node_modules/
+# hyperframes lint/preview generates index.html in each composition dir —
+# regenerated locally as needed, not tracked (the sidecar renders
+# <orientation>.html directly, never index.html)
+motion/compositions/*/index.html
+# Internal-only: strategy/scratch/reference dumps — never publish
+docs/internal/
+
+# MkDocs build output (published to gh-pages by CI; never committed to master)
+/site/
+.playwright-mcp/
+
+# Private per-repo uv cache (see Makefile UV_CACHE_DIR)
+.uv-cache/
+
+# Local uv python pin (machine-specific)
+.python-version
+
+.mimosa/
+.video_agent/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+site-packages/
+coverage/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

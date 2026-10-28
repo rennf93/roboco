@@ -42,11 +42,11 @@
 #     defaults (graceful-degrade routing, guard off) are the safer posture.
 #   - Host path defaults differ (/opt/roboco vs /volume1/roboco, ${HOME}
 #     instead of a hardcoded /home/renzof) — registry targets a generic host.
-#   - MinIO (object storage for rendered videos) is intentionally omitted —
-#     NAS default-on, registry default-off (see the comment near the
-#     orchestrator's MinIO env block below and docs/rag/architecture/
-#     minio-storage.md). No consumer requires it; the media route falls
-#     back to local-disk FileResponse when unconfigured.
+#   - RustFS (S3 object storage for rendered videos, replaces MinIO) is
+#     intentionally omitted: NAS default-on, registry default-off (see the
+#     comment near the orchestrator's ROBOCO_MINIO_* note below and
+#     docs/rag/architecture/minio-storage.md). No consumer requires it; the
+#     media route falls back to local-disk FileResponse when unconfigured.
 #   - The video-renders bind mount is commented out here (video engine ships
 #     OFF); uncomment alongside ROBOCO_VIDEO_ENGINE_ENABLED=true.
 # ============================================================================
@@ -88,6 +88,7 @@ x-orchestrator-env: &orchestrator-env
   # .env / Settings -> Feature Flags.
   ROBOCO_DECISIONS_ENABLED: ${ROBOCO_DECISIONS_ENABLED:-false}
   ROBOCO_DECISIONS_BASE_URL: ${ROBOCO_DECISIONS_BASE_URL:-http://roboco-decisions:8100}
+  ROBOCO_DECISIONS_TIER_CLEF_ENABLED: ${ROBOCO_DECISIONS_TIER_CLEF_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
   # Spawn the PRE-BUILT agent images from the same registry instead of
@@ -181,10 +182,12 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-false}
   ROBOCO_TELEGRAM_INBOUND_ENABLED: ${ROBOCO_TELEGRAM_INBOUND_ENABLED:-false}
   ROBOCO_TELEGRAM_MINIAPP_ENABLED: ${ROBOCO_TELEGRAM_MINIAPP_ENABLED:-false}
-  # Fable-mode (behavioral doctrine + turn-discipline hooks) and the
-  # sandboxed per-agent dev DB/Redis — both default OFF, conservative here.
+  # Fable-mode (behavioral doctrine + turn-discipline hooks) defaults OFF,
+  # conservative here. The sandboxed per-agent dev DB/Redis (local Docker
+  # sibling containers, provisioned on demand) defaults ON, as in the build
+  # compose, so dev/QA agents can test DB-backed projects out of the box.
   ROBOCO_FABLE_MODE_ENABLED: ${ROBOCO_FABLE_MODE_ENABLED:-false}
-  ROBOCO_SANDBOX_DB_ENABLED: ${ROBOCO_SANDBOX_DB_ENABLED:-false}
+  ROBOCO_SANDBOX_DB_ENABLED: ${ROBOCO_SANDBOX_DB_ENABLED:-true}
   # Strategy engine + internal PR review — both default OFF.
   ROBOCO_STRATEGY_ENGINE_ENABLED: ${ROBOCO_STRATEGY_ENGINE_ENABLED:-false}
   ROBOCO_INTERNAL_PR_ENABLED: ${ROBOCO_INTERNAL_PR_ENABLED:-false}
@@ -193,7 +196,8 @@ x-orchestrator-env: &orchestrator-env
   # the key/token passthrough — without them a real value set in .env
   # never reaches the container and both stay inert regardless.
   ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
-  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
+  ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-searxng}
+  ROBOCO_RESEARCH_SEARXNG_BASE_URL: ${ROBOCO_RESEARCH_SEARXNG_BASE_URL:-http://roboco-searxng:8080}
   ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
   ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
   # Spawn preflight — inert in practice (every real delivery role is
@@ -237,11 +241,27 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_CLOUD_AUTH_PASSWORD: ${ROBOCO_CLOUD_AUTH_PASSWORD:-}
   ROBOCO_CLOUD_AUTH_SECRET: ${ROBOCO_CLOUD_AUTH_SECRET:-}
   ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE: ${ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE:-2592000}
-  # MinIO object storage for rendered videos is intentionally omitted from
-  # this registry compose (NAS default-on, registry default-off — the
-  # established pattern). The minio/minio-init services are absent here and
-  # ROBOCO_MINIO_* is left unset, so minio_endpoint defaults to empty and the
-  # media route falls back to FileResponse. Arm via a custom override file.
+  # Nebius Token Factory (opt-in): agents route to Nebius only after the key
+  # is saved and Nebius mode or pins are applied in the panel. Token Factory
+  # Sandboxes (dev/QA run_sandbox_tests in Nebius microVMs) stay OFF unless
+  # set true; the project id is the console's aiproject- id. Defaults mirror
+  # roboco/config.py.
+  ROBOCO_NEBIUS_BASE_URL: ${ROBOCO_NEBIUS_BASE_URL:-https://api.tokenfactory.nebius.com/v1}
+  ROBOCO_NEBIUS_CLI_MODEL: ${ROBOCO_NEBIUS_CLI_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+  ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS: ${ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS:-60}
+  ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS: ${ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS:-60}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED:-false}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL:-https://api.tokenfactory.nebius.com/sandboxes}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID:-}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE:-tag:python:3.13}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS:-900}
+  ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES: ${ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES:-67108864}
+  # RustFS (S3 object storage for rendered videos, replaces MinIO) is
+  # intentionally omitted from this registry compose (NAS default-on,
+  # registry default-off, the established pattern). The rustfs/rustfs-init
+  # services are absent here and ROBOCO_MINIO_* is left unset, so
+  # minio_endpoint defaults to empty and the media route falls back to
+  # FileResponse. Arm via a custom override file.
 
 x-orchestrator-volumes: &orchestrator-volumes
   - /var/run/docker.sock:/var/run/docker.sock
@@ -392,6 +412,26 @@ services:
       retries: 5
       start_period: 10s
 
+  # Self-hosted metasearch for the web-research capability (keyless
+  # alternative to Tavily/Brave/Exa). Internal-only: no host port, never
+  # proxied by nginx. JSON format + limiter-off live in
+  # deploy/searxng/settings.yml. ~150-300 MB RAM, no GPU.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: roboco-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-roboco-internal-searxng}
+      SEARXNG_BASE_URL: http://roboco-searxng:8080/
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   ollama-init:
     image: curlimages/curl:latest
     container_name: roboco-ollama-init
@@ -457,9 +497,11 @@ services:
       start_period: 10s
 
   # --------------------------------------------------------------------------
-  # Decisions sidecar (the built-in Laya tier of the Decisions service) - CPU-only typed
-  # decisions over the official onnxruntime path. Inert until
-  # ROBOCO_DECISIONS_ENABLED goes on; shipping it changes nothing by
+  # Decisions sidecar (the built-in self-hosted tiers of the Decisions
+  # service) - CPU-only typed decisions over llama.cpp: a 27B Clef backend
+  # (sweet-spot default) and a 421M Laya backend (cheap fallback), each a
+  # llama-server speaking the System One protocol behind one proxy. Inert
+  # until ROBOCO_DECISIONS_ENABLED goes on; shipping it changes nothing by
   # itself. No DB, no git, no credentials. NO `networks:` key: joins the
   # implicit default network (roboco_default) next to ollama, NEVER
   # roboco_data, and never exposed through nginx or on a host port.
@@ -468,14 +510,28 @@ services:
     image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-decisions:${ROBOCO_VERSION:-latest}
     container_name: roboco-decisions
     restart: unless-stopped
+    environment:
+      # Per-deploy RAM knobs. The 19GB Clef GGUF is the heavy tenant (mmap'd
+      # from the baked image, paged into RAM as the model touches it); the
+      # Laya backend is ~450MB. On a box that cannot hold Clef, set
+      # ROBOCO_SIDECAR_CLEF_ENABLED=false: the container serves the cheap
+      # Laya backend only and the orchestrator's tier ladder follows /health
+      # automatically (no config change above the sidecar). Both backends
+      # idle at ~zero CPU - llama.cpp is event-driven, inference only runs
+      # on a POST.
+      CLEF_ENABLED: ${ROBOCO_SIDECAR_CLEF_ENABLED:-true}
+      LAYA_ENABLED: ${ROBOCO_SIDECAR_LAYA_ENABLED:-true}
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3).status == 200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 5
-      # Weights are baked into the image; the start period only covers
-      # checkpoint load from disk + the calibration check.
-      start_period: 60s
+      # The PUBLISHED image bakes the cheap Laya tier only (the 19GB Clef
+      # GGUF is not CI-feasible; see release.yml) and loads in seconds. The
+      # start period stays generous because a Clef-baked image (a NAS/Mac-
+      # side docker build with FETCH_CLEF_WEIGHTS=true, the Dockerfile
+      # default) legitimately needs the full window for the cold load.
+      start_period: 180s
 
   # --------------------------------------------------------------------------
   # Agent image pre-pull (one-shot). Each pulls its published image then exits,
@@ -813,8 +869,10 @@ services:
       # roboco-panel-blue" after the include already said green).
       # Registry installs clone the repo, so ./front ships with it; missing
       # this mount made fresh `make quickstart` crash-loop nginx on the
-      # include (#1111).
-      - ./front:/etc/nginx/front:ro
+      # include (#1111). This stack has one color, so it mounts the
+      # front/registry/ include, whose `set` targets are the plain container
+      # names below (front/active-upstreams.conf names the NAS's -blue ones).
+      - ./front/registry:/etc/nginx/front:ro
     depends_on:
       - panel
       - orchestrator

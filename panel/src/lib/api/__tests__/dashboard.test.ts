@@ -47,7 +47,7 @@ describe("dashboardApi.getTaskMetrics", () => {
           round: 1,
           role: "qa",
           agent_slug: "fe-qa",
-          model: "claude-sonnet-4-5",
+          model: "claude-sonnet-5-5",
           started_at: "2026-09-01T00:00:00Z",
         },
       ],

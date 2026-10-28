@@ -52,6 +52,7 @@ from roboco.foundation.policy.content.validators import (
     ContentValidationError,
     reject_trivial,
 )
+from roboco.foundation.policy.lane import transitive_dependents
 from roboco.foundation.policy.lifecycle import (
     _ORG_WIDE_ROLES as _SPEC_ORG_WIDE_ROLES,
 )
@@ -6146,11 +6147,61 @@ class TaskService(BaseService):
 
         The operation is named with ``_for_reaper`` so callers cannot
         accidentally use it as a regular unclaim path; uses ``agent_role=None``
-        because the system itself is performing the transition. Bypasses
-        ownership/role checks because the holder is provably dead (no
-        heartbeat past TTL).
+        because the system itself is performing the transition. Ownership/role
+        checks are bypassed because the holder is provably dead (no heartbeat
+        past TTL).
         """
-        await self._force_unclaim_to_pending(task_id, reason="reaper-unclaim")
+        released = await self._force_unclaim_to_pending(
+            task_id, reason="reaper-unclaim"
+        )
+        if released:
+            await self._remove_task_worktree_after_reaper(task_id)
+
+    async def _remove_task_worktree_after_reaper(self, task_id: UUID) -> None:
+        """Best-effort removal of the reaped task's per-task worktree.
+
+        The reaper is the mass source of stale per-task worktrees: a reaped
+        run's worktree is never revisited (the task re-claims fresh, possibly
+        on a different agent), so without this every clone root accumulates
+        dead ``.worktrees/<id>/`` checkouts - and the pre-submit quality gate
+        lints the whole clone root, failing an agent on a DEAD sibling run's
+        lint state (be-dev-2's 5db9054b blocked on 2026-09-28 with 6 ruff
+        violations from the reaped 91758921 worktree). Committed work is safe
+        on the task branch (``branch_name`` survives the unclaim); only the
+        dead run's uncommitted state is dropped. Never raises.
+        """
+        try:
+            task = await self.get(task_id)
+            if task is None or task.project_id is None:
+                return
+            assignee = task.assignee
+            if assignee is None or assignee.team is None or assignee.slug is None:
+                return
+            result = await self.session.execute(
+                select(ProjectTable).where(ProjectTable.id == task.project_id)
+            )
+            project = result.scalar_one_or_none()
+            if project is None:
+                return
+            from roboco.services.workspace import get_workspace_service
+
+            ws_service = get_workspace_service(self.session)
+            clone_root = ws_service.get_clone_root_path(
+                project.slug, assignee.team, assignee.slug
+            )
+            worktree = clone_root / ".worktrees" / str(task.id)[:8]
+            await ws_service.remove_worktree(clone_root, worktree)
+            self.log.info(
+                "reaped task worktree removed",
+                task_id=str(task_id),
+                worktree=str(worktree),
+            )
+        except Exception as e:
+            self.log.warning(
+                "reaper worktree cleanup skipped",
+                task_id=str(task_id),
+                error=str(e),
+            )
 
     async def release_dependency_blocked_claim(self, task_id: UUID) -> None:
         """Release a claimed/in_progress task whose dependency is still unmet.
@@ -10447,30 +10498,30 @@ class TaskService(BaseService):
         )
         terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
         rows = list(result.all())
-        # A sibling that (transitively, within the sibling set) depends on this
-        # task is ordered AFTER it by the dependency guard, never before it in
-        # the lane. Counting such a sibling as "earlier" via the equal-sequence
-        # created-at tiebreak — which happens when a PM wires the dependency
-        # opposite to creation order — makes the claim gate refuse this task
-        # while the dependency gate refuses the sibling: the dispatch side
-        # spawns, the claim side refuses, and the dev burns every verb bouncing
-        # between the two (be-dev-2, 2026-09-27). Dependency order outranks the
-        # created-at tiebreak, mirroring the dispatch barrier's exclusion.
+        # Siblings that (transitively) depend on this task are ordered AFTER
+        # it by the dependency guard — counting them as "earlier" via the
+        # created-at tiebreak wedges the claim gate against the dispatch
+        # barrier (be-dev-2, 2026-09-27). See roboco.foundation.policy.lane.
         dep_map = {
             str(row.id): {str(d) for d in (row.dependency_ids or ())} for row in rows
         }
-        dependents: set[str] = set()
-        changed = True
-        while changed:
-            changed = False
-            for sib_id, deps in dep_map.items():
-                if sib_id in dependents:
-                    continue
-                if str(task.id) in deps or deps & dependents:
-                    dependents.add(sib_id)
-                    changed = True
+        dependents = transitive_dependents(dep_map, str(task.id))
+        return self._has_earlier_lane_row(
+            rows, seq, task.created_at, terminal, dependents
+        )
+
+    @staticmethod
+    def _has_earlier_lane_row(
+        rows: list[Any],
+        seq: int,
+        created_at: Any,
+        terminal: set[Any],
+        dependents: set[str],
+    ) -> bool:
+        """True if any lane row is an earlier (lower sequence, or an equal
+        sequence created first) non-terminal sibling outside ``dependents``."""
         return any(
-            ((row.sequence or 0), row.created_at) < (seq, task.created_at)
+            ((row.sequence or 0), row.created_at) < (seq, created_at)
             and row.status not in terminal
             and str(row.id) not in dependents
             for row in rows
@@ -11203,6 +11254,12 @@ class TaskService(BaseService):
     # task_id auto-attached (otherwise the C8 + tracing gates never see
     # the agent's decisions and the agent spirals).
     _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]] = {
+        # PENDING belongs here: board-program tasks (decisions_audit et al)
+        # are worked WITHOUT claiming and sit pending their whole life - the
+        # auditor's note() on such a task auto-attached nothing, the
+        # complete-at-note seam never saw the task id, and a9739b1c could
+        # not advance for days (2026-09-29).
+        TaskStatus.PENDING,
         TaskStatus.CLAIMED,
         TaskStatus.IN_PROGRESS,
         TaskStatus.VERIFYING,
@@ -11273,6 +11330,122 @@ class TaskService(BaseService):
         query = self.fifo_order(query)
         result = await self.session.execute(query)
         return list(result.scalars().all())
+
+    async def list_open_review_claims(self, agent_id: UUID) -> list[TaskTable]:
+        """Tasks where the agent holds an OPEN specialized claim (QA / doc /
+        PR review) but has not yet submitted the decision that closes it.
+
+        ``qa_claim`` / ``doc_claim`` / ``pr_gate_claim`` / ``claim_pr_review``
+        keep the task in its awaiting_* status and mark ownership via
+        ``active_claimant_id``; only the decision verb (pass_review /
+        fail_review, i_documented, pr_pass / pr_fail) clears it. While the
+        lock is held, competing claimants are rejected, so an abandoned claim
+        makes the task unreviewable by anyone else. The stale-claim reaper
+        backstops this since the 2026-09-28 fleet triage: its review-claim
+        sweep (``list_all_open_review_claims`` +
+        ``release_review_claim_for_reaper``) releases claims whose claimant
+        went silent past ``review_claim_reap_seconds`` - a claimant that DIED
+        mid-review never reaches ``i_am_idle``, so the exit-release cannot
+        cover that case (fe-qa held 99f61c8c for 13.5h on 2026-09-28).
+        """
+        query = select(TaskTable).where(
+            TaskTable.active_claimant_id == agent_id,
+            TaskTable.status.in_(
+                (
+                    TaskStatus.AWAITING_QA,
+                    TaskStatus.AWAITING_DOCUMENTATION,
+                    TaskStatus.AWAITING_PR_REVIEW,
+                )
+            ),
+        )
+        query = self.fifo_order(query)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def release_review_claims(self, agent_id: UUID) -> list[UUID]:
+        """Release every open review claim the agent still holds, returning
+        each task to its review queue unclaimed.
+
+        The deliberate opposite of blocking the agent's exit: an agent that
+        walks away from an unsubmitted review (i_am_idle) must not strand the
+        single-claimant lock - but it must not be forced to produce a verdict
+        either (a cornered reviewer rubber-stamps, and a fail_review it
+        cannot honestly write misroutes junk findings to the developer).
+        Clearing the claim lets any QA / documenter / gate reviewer re-claim;
+        a claimant that idles out instead of reviewing keeps hitting the
+        orchestrator's respawn breaker, which is the designed escalation.
+
+        Clears the claim fields (``active_claimant_id`` / ``claimed_by`` /
+        ``claimed_at`` / ``last_heartbeat_at``) exactly as the decision verbs
+        clear ``active_claimant_id``; ``assigned_to`` is left alone so the
+        dispatcher keeps routing the task to the assigned reviewer. Status is
+        untouched (still awaiting_* - the review queue itself). Returns the
+        released task ids.
+        """
+        released: list[UUID] = []
+        for task in await self.list_open_review_claims(agent_id):
+            task.active_claimant_id = cast("Any", None)
+            task.claimed_by = cast("Any", None)
+            task.claimed_at = cast("Any", None)
+            task.last_heartbeat_at = cast("Any", None)
+            tid = to_python_uuid(task.id)
+            if tid is not None:
+                released.append(tid)
+        if released:
+            await self.session.flush()
+        return released
+
+    async def list_all_open_review_claims(self) -> list[TaskTable]:
+        """Every awaiting_* row with a held specialized claim, any claimant.
+
+        The stale-claim reaper's review-claim candidates - the awaiting_*
+        analogue of ``list_in_progress_or_claimed``. Returns the bare row
+        set; the reaper applies the heartbeat-TTL filter in Python because
+        the cutoff is a runtime decision tied to settings, not a column.
+        """
+        query = select(TaskTable).where(
+            TaskTable.active_claimant_id.is_not(None),
+            TaskTable.status.in_(
+                (
+                    TaskStatus.AWAITING_QA,
+                    TaskStatus.AWAITING_DOCUMENTATION,
+                    TaskStatus.AWAITING_PR_REVIEW,
+                )
+            ),
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def release_review_claim_for_reaper(self, task_id: UUID) -> None:
+        """Reaper-only release of ONE awaiting_* review claim.
+
+        The per-task counterpart of ``release_review_claims`` (which releases
+        every claim an agent holds at its clean ``i_am_idle`` exit): the
+        orchestrator's stale-claim reaper calls this for a single task whose
+        claimant went silent past ``review_claim_reap_seconds``. A claimant
+        that DIED mid-review (breaker, OOM, container loss) never reaches
+        ``i_am_idle``, so the exit-release cannot backstop it and the
+        single-claimant lock strands the task - every competing claimant is
+        rejected while the row stays claimed. Clears the claim fields exactly
+        as ``release_review_claims`` does; ``assigned_to`` is left alone so
+        the dispatcher keeps routing the task to the assigned reviewer, and
+        status is untouched (still awaiting_* - the review queue itself).
+        No-op when the row is missing or no longer in an awaiting_* state.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return
+        if task.status not in (
+            TaskStatus.AWAITING_QA,
+            TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.AWAITING_PR_REVIEW,
+        ):
+            return
+        task.active_claimant_id = cast("Any", None)
+        task.claimed_by = cast("Any", None)
+        task.claimed_at = cast("Any", None)
+        task.last_heartbeat_at = cast("Any", None)
+        await self.session.flush()
 
     async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None:
         """Return a gateway-shaped view of the agent (DB + config derived).

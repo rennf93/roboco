@@ -109,22 +109,89 @@ def test_nginx_mounts_front_include_dir_in_every_compose() -> None:
     bind pins the inode and the deploy script's atomic tmp+mv swap would never
     reach the running container."""
     for name in _COMPOSE_FILES:
-        compose = yaml.safe_load((_REPO_ROOT / name).read_text())
-        nginx = compose["services"].get("nginx")
-        assert nginx is not None, f"{name}: no nginx service found"
-        volumes = [str(v) for v in (nginx.get("volumes") or [])]
-        dir_mount = any(
-            v.startswith("./front:") and v.endswith(":/etc/nginx/front:ro")
-            for v in volumes
-        )
-        assert dir_mount, (
-            f"{name}: nginx must mount ./front:/etc/nginx/front:ro (directory "
-            "bind, not a file bind) or the active-upstreams include in "
-            "deploy/nginx.conf crash-loops the container on a fresh install"
-        )
+        source = _front_include_dir(name)
         # And the included file must actually exist in the repo, so the mount
         # is never empty on a clean clone.
-        assert (_REPO_ROOT / "front" / "active-upstreams.conf").is_file(), (
-            "front/active-upstreams.conf is missing from the repo; the nginx "
-            "include would 404 it and crash-loop roboco-nginx"
+        assert (_REPO_ROOT / source / "active-upstreams.conf").is_file(), (
+            f"{source}/active-upstreams.conf is missing from the repo; the "
+            "nginx include would 404 it and crash-loop roboco-nginx"
+        )
+
+
+def _front_include_dir(name: str) -> str:
+    """The repo directory `name`'s nginx mounts at /etc/nginx/front."""
+    compose = yaml.safe_load((_REPO_ROOT / name).read_text())
+    nginx = compose["services"].get("nginx")
+    assert nginx is not None, f"{name}: no nginx service found"
+    for volume in (str(v) for v in (nginx.get("volumes") or [])):
+        source, _, target = volume.partition(":")
+        if target == "/etc/nginx/front:ro" and source.startswith("./front"):
+            return source.removeprefix("./")
+    raise AssertionError(
+        f"{name}: nginx must mount a ./front directory at /etc/nginx/front:ro "
+        "(directory bind, not a file bind) or the active-upstreams include in "
+        "deploy/nginx.conf crash-loops the container on a fresh install"
+    )
+
+
+def test_active_upstreams_include_targets_this_composes_containers() -> None:
+    """`make quickstart` regression (2026-10-15): deploy/nginx.conf includes
+    the active-upstreams file INSIDE its server block, so the file must hold
+    `set` directives (an `upstream` block fails `nginx -t` there and
+    crash-loops roboco-nginx), define all three $active_* variables, and
+    point each at a container that compose actually runs. The registry stack
+    once mounted the NAS file, whose upstream blocks named -blue containers
+    the registry never starts."""
+    for name in _COMPOSE_FILES:
+        compose = yaml.safe_load((_REPO_ROOT / name).read_text())
+        containers = {
+            str(svc.get("container_name"))
+            for svc in compose["services"].values()
+            if svc.get("container_name")
+        }
+        include = _REPO_ROOT / _front_include_dir(name) / "active-upstreams.conf"
+        lines = [
+            line.split("#", 1)[0].strip() for line in include.read_text().splitlines()
+        ]
+        assert not any(line.startswith("upstream") for line in lines), (
+            f"{include}: `upstream` blocks are invalid inside the server block"
+        )
+        targets = {
+            var: value.rstrip(";")
+            for keyword, var, value in (
+                line.split(maxsplit=2) for line in lines if line.startswith("set ")
+            )
+            if keyword == "set"
+        }
+        for var in ("$active_panel", "$active_orchestrator", "$active_dispatcher"):
+            assert var in targets, f"{include}: missing `set {var}`"
+            host = targets[var].rsplit(":", 1)[0]
+            assert host in containers, (
+                f"{include}: {var} targets {host}, which {name} never starts"
+            )
+
+
+def test_searxng_service_is_internal_only_with_settings_mount() -> None:
+    """The SearXNG container (keyless metasearch for the research capability)
+    is internal-only by design: an open metasearch proxy exposed on a host
+    port or via nginx is abuse bait, and its JSON+limiter-off settings file
+    must ship with the repo or the instance boots with JSON disabled and the
+    provider gets HTTP 403s. Both compose files must therefore carry the
+    service with zero published ports and the settings bind mount."""
+    for name in _COMPOSE_FILES:
+        compose = yaml.safe_load((_REPO_ROOT / name).read_text())
+        service = compose["services"].get("searxng")
+        assert service is not None, f"{name}: searxng service missing"
+        assert not service.get("ports"), (
+            f"{name}: searxng must publish no host ports - it is internal-only"
+        )
+        volumes = [str(v) for v in (service.get("volumes") or [])]
+        assert any(v.startswith("./deploy/searxng/settings.yml") for v in volumes), (
+            f"{name}: searxng must mount ./deploy/searxng/settings.yml or the "
+            "instance boots with format=json disabled (403s on every search)"
+        )
+        # The mounted file must actually exist so a clean clone boots clean.
+        assert (_REPO_ROOT / "deploy" / "searxng" / "settings.yml").is_file(), (
+            "deploy/searxng/settings.yml is missing from the repo; the "
+            "searxng bind mount would be empty"
         )

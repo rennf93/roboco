@@ -1,6 +1,6 @@
 # RoboCo: Nebius x NVIDIA Hackathon Submission Notes
 
-RoboCo is an AI agentic company: a virtual organization of 25 AI agents plus 1 human CEO that operates as a complete software development workforce, with a formal org chart (Board, Main PM, four delivery cells), a task lifecycle with PR gates and QA review, and a Next.js control panel for the CEO. The project predates this hackathon's submission window (its first releases shipped in July 2026: v0.26.0 on 2026-07-20, and v0.29.0 on 2026-08-21), so this document isolates exactly what was significantly updated during the submission period (August 26 to October 30, 2026) for the Stage One review.
+RoboCo is an AI agentic company: a virtual organization of 26 AI agents plus 1 human CEO that operates as a complete software development workforce, with a formal org chart (Board, Main PM, four delivery cells, plus floating hands: a DevOps infra agent and a shared second cell PR reviewer), a task lifecycle with PR gates and QA review, and a Next.js control panel for the CEO. The project predates this hackathon's submission window (its first releases shipped in July 2026: v0.26.0 on 2026-07-20, and v0.29.0 on 2026-08-21), so this document isolates exactly what was significantly updated during the submission period (August 26 to October 30, 2026) for the Stage One review.
 
 ## TL;DR
 
@@ -8,6 +8,7 @@ RoboCo is an AI agentic company: a virtual organization of 25 AI agents plus 1 h
 - A major platform release, **v0.30.0 (2026-09-13)**, landed inside the window: 16 merged PRs covering a new live-catalog OpenRouter provider, a three-process deployment split of the backend, decomposition of the orchestrator into engine mixins, real WAF scanning of the agent gateway, a dedicated embedding/indexer worker, and more.
 - A post-release correctness pass (2026-09-14) fixed API-contract defects in the panel's provider settings UI.
 - **v0.31.0 (2026-09-17) shipped the hackathon stack in the released product**: the Nebius Token Factory provider, Nemotron levels parity, and the Token Factory Sandboxes QA verb merged to the mainline (PR #1103) and released on master, so a judge runs the shipped tag, not a submission branch.
+- Development did not stop at v0.31.0: the org grew a **dedicated DevOps agent with an infra review gate** (PRs #1109/#1114), a **typed Decisions service** shipped as its own container (PR #1115), and a **pre-demo verification pass (2026-09-28)** that live-reproduced and fixed a spawn-path defect in the published agent image before it could meet a judge (section 6).
 
 ## Track entry: Coding and Agentic Engineering
 
@@ -71,6 +72,13 @@ The same release cycle stress-tested the Sandboxes client for real: with beta Sa
 
 The pattern also generalizes beyond one submission: the same provider skeleton shipped twice more inside the window (hummin, the GLM-native CLI on the Z.ai GLM Coding Plan, and the Z.ai Anthropic-protocol path), so the provider layer now spans Anthropic, OpenRouter, Nebius Token Factory, Z.ai, hummin, Grok, Codex, Gemini, Kimi, Ollama Cloud, and self-hosted endpoints, all behind one routing surface.
 
+### 6. Post-v0.31.0: the fleet kept shipping inside the window (2026-09-18 to 2026-09-28)
+
+- **A dedicated DevOps agent joined the org (PRs #1109/#1114), taking headcount from 25 to 26.** `devops-1` is a floating infra engineer (flag-gated via `ROBOCO_DEVOPS_ENABLED`) on a pinned multi-arch toolchain image (docker CLI for compose validation only, never a socket; kubectl, helm, terraform, hadolint, yml/shell linters), with the full authoring verb set from claim through `i_am_done`, a delegation lane so PM materializers can route infra work to it, and its gate plus delegation lane covered by the live E2E smoke arcs (which caught four real gaps before landing). Alongside it, the **infra review gate**: a flag-gated devops co-claim that makes `pr_pass` blocking on a devops verdict for the current head SHA (re-arming on head advance) whenever a PR touches the project's declared infra globs, with the per-project infra declaration riding the conventions standard (defaults, curated replacement, or opt-out).
+- **The Decisions service (PR #1115)**: a typed decision-record sidecar - the fleet's System One, capturing structured decisions made during coordination instead of letting them evaporate in chat - deployed as its own container in every compose file with its own build and quality gate.
+- **A gateway correctness sweep (2026-09-27/28)** closed the wedges the live fleet exposed: idling now *releases* an unsubmitted review claim instead of blocking exit behind a verdict the reviewer could not honestly give, `i_am_idle` no longer demands claims the claim gate would refuse, delegate dedup catches rephrased duplicate titles (not just exact matches), and both per-dev lane barriers (dispatch-side and claim-side) learned to exclude transitive dependency successors so a PM wiring a dependency opposite to creation order can no longer deadlock a developer's queue.
+- **The pre-demo verification pass (2026-09-28)**: a standalone end-to-end smoke of the published `roboco-agent-nebius` image on the operator's Mac (no orchestrator needed) live-reproduced a real defect the release build carried - the opencode config render never created its parent directory, so every fresh Nebius spawn exited 1 before the CLI started (the Nebius port predated the OpenRouter twin's #1110 fix). Fixed on the mainline with the mirrored regression test, the whole ladder re-verified green (101 provider unit tests, the Token Factory catalog probe, a live developer-agent container run on `nvidia/nemotron-3-super-120b-a12b` that wrote its target file via one correct tool call at about 0.004 USD metered), and the slave branch's CI gate returned fully green. The fix ships in the next patch release, so the judge path below runs clean on the latest tag.
+
 ## How to run RoboCo on Nebius Token Factory (judge path)
 
 1. `git clone https://github.com/rennf93/roboco.git && cd roboco && make quickstart` (Docker + Compose; pulls pre-built images, bootstraps `.env`, waits for health). Full details in the README's "Running RoboCo" section.
@@ -79,6 +87,8 @@ The pattern also generalizes beyond one submission: the same provider skeleton s
 4. Click the **Nebius** mode button and confirm. The fleet-wide default model is `nvidia/nemotron-3-super-120b-a12b`; optionally narrow it in the **Nebius default model** search picker.
 5. Create a task for any cell. Every spawned agent runs on the opencode CLI against Token Factory on Nemotron; the per-agent usage readers meter tokens and cost, and rate-limited agents park and retry on Nebius's own backoff instead of failing.
 6. To see the NVIDIA-model requirement met with your own eyes, open the **Usage** page after the task completes: the per-session rows and the per-model aggregation name `nvidia/nemotron-3-super-120b-a12b` as the model that executed the work.
+
+Run the **latest published tag**: the 2026-09-28 pre-demo verification pass caught a spawn-path defect in the v0.31.0 agent-image build (section 6); the fix is merged to the mainline and shipping in the next patch release, and the steps above are verified end to end against the fixed build.
 
 ## License
 
