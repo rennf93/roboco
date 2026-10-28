@@ -515,7 +515,7 @@ describe("AIRoutingCard", () => {
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
-    expect(screen.getAllByText("not set")).toHaveLength(6); // Grok + Ollama + OpenRouter + Nebius + Z.ai + hummin
+    expect(screen.getAllByText("not set")).toHaveLength(6);
 
     const grokInput = screen.getByPlaceholderText("xai-…");
     fireEvent.change(grokInput, { target: { value: "xai-secret" } });
@@ -649,7 +649,7 @@ describe("AIRoutingCard", () => {
     ).toBe("closed");
 
     const notSetBadges = screen.getAllByText("not set");
-    expect(notSetBadges).toHaveLength(6); // Grok + Ollama + OpenRouter + Nebius + Z.ai + hummin
+    expect(notSetBadges).toHaveLength(6);
     for (const badge of notSetBadges) {
       expect(badge.getAttribute("data-state")).toBe("closed");
     }

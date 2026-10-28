@@ -1200,7 +1200,6 @@ export function AIRoutingCard() {
           {/* -------- OpenRouter key -------- */}
           <OpenRouterProviderKeyRow />
 
-          {/* -------- Z.ai key -------- */}
           <ZaiProviderKeyRow />
 
           {/* -------- Nebius key -------- */}
