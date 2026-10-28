@@ -24,6 +24,9 @@ export interface TaskFilters {
   // Server-side search over title, description, and id prefix — summaries
   // carry no description, so the search must happen on the backend.
   q?: string;
+  // Backend Stuck filter: exactly the non-terminal tasks carrying open wedge
+  // strikes or a blocked-for-human status. Never re-derived client-side.
+  stuck?: boolean;
 }
 
 // One board reviewer's decision-log entry for a task (PO or Head of Marketing).
@@ -278,6 +281,7 @@ export const tasksApi = {
     if (filters?.team) params.append("team", filters.team);
     if (filters?.limit) params.append("limit", String(filters.limit));
     if (filters?.q) params.append("q", filters.q);
+    if (filters?.stuck) params.append("stuck", "true");
 
     const url = "/tasks/summary?" + params.toString();
     const { data } = await api.get<TaskSummaryWire[]>(url);
