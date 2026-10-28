@@ -138,7 +138,14 @@ class GitHubProvider(GitProvider):
                 kwargs["timeout"] = timeout
             return cast("httpx.Response", await getattr(client, method)(url, **kwargs))
         owned_timeout = timeout if timeout is not None else _default_timeout()
-        async with httpx.AsyncClient(timeout=owned_timeout) as owned_client:
+        # GitHub answers a renamed / transferred repo with 301 (GET) or 307
+        # (writes) to its new location, and documents that clients follow
+        # it. Not following broke every API call for projects whose repos
+        # moved (live 2026-10-28: seven rennf93/* repos transferred to the
+        # Guard-Core org, so list_open_prs got a 301 on every poll).
+        async with httpx.AsyncClient(
+            timeout=owned_timeout, follow_redirects=True
+        ) as owned_client:
             return cast(
                 "httpx.Response", await getattr(owned_client, method)(url, **kwargs)
             )
