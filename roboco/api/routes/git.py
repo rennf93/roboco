@@ -62,6 +62,7 @@ from roboco.api.utils.git import (
     _parse_branch_line,
     _resolve_project_slug,
     _translate_error,
+    _translate_read_error,
 )
 from roboco.config import settings
 from roboco.exceptions import GitError
@@ -130,7 +131,7 @@ async def get_git_status(
             behind,
         ) = await git_service.get_status(workspace)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise _translate_read_error(e, agent.agent_id) from e
 
     return GitStatusResponse(
         project_slug=project_slug,
@@ -197,7 +198,7 @@ async def get_git_log(
             )
             return GitLogResponse(project_slug=project_slug, branch=branch, commits=[])
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise _translate_read_error(e, agent.agent_id) from e
 
     commits = []
     for line in log_result.stdout.strip().split("\n"):
@@ -253,7 +254,7 @@ async def list_branches(
 
         branch_result = await git_service._run_git(workspace, args)
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise _translate_read_error(e, agent.agent_id) from e
 
     branches = []
     for line in branch_result.stdout.strip().split("\n"):
@@ -316,7 +317,7 @@ async def get_git_diff(
             stage="diff",
         )
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise _translate_read_error(e, agent.agent_id) from e
 
     files_changed = stat_result.stdout.count("\n") - 1 if stat_result.stdout else 0
 
@@ -357,7 +358,7 @@ async def get_git_file(
             branch_name=branch, path=path, actor_agent_id=agent.agent_id
         )
     except _TranslatableError as e:
-        raise _translate_error(e) from e
+        raise _translate_read_error(e, agent.agent_id) from e
 
     if content is None:
         raise HTTPException(

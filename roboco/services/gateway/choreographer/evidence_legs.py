@@ -45,6 +45,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from roboco.exceptions import GitTimeoutError
+from roboco.services.review_path_health import (
+    record_review_path_failure,
+    record_review_path_success,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -104,8 +108,9 @@ async def run_bounded_leg[T](
     """
     timeout = budget.remaining()
     try:
-        return await asyncio.wait_for(coro, timeout=timeout)
+        result = await asyncio.wait_for(coro, timeout=timeout)
     except TimeoutError:
+        record_review_path_failure(task_id)
         gaps.append(
             f"{leg} unavailable: timed out after {timeout:.0f}s "
             f"(evidence-assembly budget) — {hint}"
@@ -119,6 +124,7 @@ async def run_bounded_leg[T](
         )
         return default
     except GitTimeoutError as exc:
+        record_review_path_failure(task_id)
         gaps.append(
             f"{leg} unavailable: a git command timed out after {exc.timeout}s "
             f"(git_command_timeout_seconds) — {hint}"
@@ -131,3 +137,8 @@ async def run_bounded_leg[T](
             bound="git_command_timeout",
         )
         return default
+    except Exception:
+        record_review_path_failure(task_id)
+        raise
+    record_review_path_success()
+    return result
