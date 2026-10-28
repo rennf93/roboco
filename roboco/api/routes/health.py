@@ -6,10 +6,15 @@ Endpoints for monitoring application health and readiness.
 
 from fastapi import APIRouter, status
 
-from roboco.api.schemas.health import HealthResponse, ReadinessResponse
+from roboco.api.schemas.health import (
+    HealthResponse,
+    ReadinessResponse,
+    ReviewPathHealthResponse,
+)
 from roboco.config import settings
 from roboco.services.health import check_database, check_redis
 from roboco.services.rag_index_failures import count_failures
+from roboco.services.review_path_health import get_review_path_tracker
 
 router = APIRouter()
 
@@ -29,6 +34,20 @@ async def health_check() -> HealthResponse:
         environment=settings.environment,
         failed_index_count=await count_failures(),
     )
+
+
+@router.get(
+    "/health/review-path",
+    response_model=ReviewPathHealthResponse,
+    summary="Review-path tool outage state",
+    description=(
+        "Whether evidence/git-readonly reads are failing across multiple tasks "
+        "(type 'review_path_tools'); recovered=true after an outage clears."
+    ),
+)
+async def review_path_health() -> ReviewPathHealthResponse:
+    """Panel-readable review-path outage state."""
+    return ReviewPathHealthResponse(**get_review_path_tracker().state())
 
 
 @router.get(

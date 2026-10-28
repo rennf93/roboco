@@ -587,6 +587,10 @@ class DispatchBreakerEngine(_Base):
             await self._reap_with_service(svc, dispatch_paused=dispatch_paused)
             await db.commit()
         await self._sandbox_janitor_sweep()
+        if settings.gateway_health_enabled:
+            from roboco.services.review_path_health import sweep_review_path_health
+
+            await sweep_review_path_health()
 
     def _assignee_has_active_instance(self, task: Any) -> bool:
         """True if the task's assignee currently holds a live (ACTIVE) container.
