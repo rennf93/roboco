@@ -2145,7 +2145,8 @@ class Settings(BaseSettings):
         description=(
             "Task-scoped wedge ledger: re-arrivals at one status with no "
             "progress-fingerprint movement before the task force-blocks for "
-            "a human (aligned with the #685 oscillation trip threshold)"
+            "a human. Trips when strikes exceed N (default 5 blocks on the "
+            "6th strike), aligned with the #685 oscillation trip threshold"
         ),
     )
     agent_stop_attempt_allowance: int = Field(
