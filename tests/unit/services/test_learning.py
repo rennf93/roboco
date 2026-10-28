@@ -8,6 +8,7 @@ tests.
 
 from __future__ import annotations
 
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +20,7 @@ from roboco.models import NotificationPriority, NotificationType
 from roboco.models.base import AgentRole
 from roboco.models.optimal import IndexType, SearchResult
 from roboco.services.learning import (
+    _NOTIFICATION_QUEUE_MAXLEN,
     Learning,
     LearningNotification,
     LearningPropagationService,
@@ -575,3 +577,100 @@ async def test_create_notifications_uses_one_bulk_insert_not_n(
     # Delivery invoked once per notification, commit ran once.
     assert delivery_mock.deliver.await_count == _N_RECIPIENTS
     assert db.committed is True
+
+
+def test_notification_queue_is_bounded_oldest_evicted(
+    svc: LearningPropagationService,
+) -> None:
+    """The in-memory queue is a bounded deque: appends past the cap evict
+    the OLDEST entries, so the queue can never grow without bound in the
+    orchestrator process.
+    """
+    assert isinstance(svc._notification_queue, deque)
+    assert svc._notification_queue.maxlen == _NOTIFICATION_QUEUE_MAXLEN
+
+    for i in range(_NOTIFICATION_QUEUE_MAXLEN + 10):
+        svc._notification_queue.append(
+            LearningNotification(
+                notification_id=f"lrn-notif-{i:04d}",
+                learning_id=f"lrn-{i:04d}",
+                target_agent_id=uuid4(),
+                learning_summary="s",
+                reason="r",
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+
+    assert len(svc._notification_queue) == _NOTIFICATION_QUEUE_MAXLEN
+    # The 10 oldest entries were evicted; the newest survive intact.
+    ids = [n.notification_id for n in svc._notification_queue]
+    assert ids[0] == f"lrn-notif-{10:04d}"
+    assert ids[-1] == f"lrn-notif-{_NOTIFICATION_QUEUE_MAXLEN + 9:04d}"
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_notification_prunes_acknowledged_entries(
+    svc: LearningPropagationService,
+) -> None:
+    """Acknowledging an entry prunes ALL acknowledged entries from the
+    queue, freeing their slots instead of leaving them until restart.
+    """
+
+    def _notif(nid: str, agent: UUID) -> LearningNotification:
+        return LearningNotification(
+            notification_id=nid,
+            learning_id="lrn-1",
+            target_agent_id=agent,
+            learning_summary="s",
+            reason="r",
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+
+    a1, a2 = uuid4(), uuid4()
+    kept_ack = _notif("n-ack-kept", a1)
+    target = _notif("n-target", a1)
+    pending = _notif("n-pending", a2)
+    svc._notification_queue.extend([kept_ack, target, pending])
+
+    # Pre-mark one entry acknowledged so the prune sweeps it too.
+    kept_ack.acknowledged = True
+
+    assert await svc.acknowledge_notification("n-target", a1) is True
+
+    ids = [n.notification_id for n in svc._notification_queue]
+    # The acked target AND the previously-acked entry are gone; pending stays.
+    assert ids == ["n-pending"]
+    assert await svc.get_pending_notifications(a1) == []
+
+    # Missing id still returns False and touches nothing.
+    length_before = len(svc._notification_queue)
+    assert await svc.acknowledge_notification("nope", a2) is False
+    assert len(svc._notification_queue) == length_before
+
+    # Pruning respects the cap: the deque is rebuilt with maxlen intact.
+    assert svc._notification_queue.maxlen == _NOTIFICATION_QUEUE_MAXLEN
+
+
+@pytest.mark.asyncio
+async def test_get_pending_notifications_still_filters_after_bounding(
+    svc: LearningPropagationService,
+) -> None:
+    """Bounding the queue does not change get_pending_notifications'
+    behavior: only unacknowledged entries for the requesting agent.
+    """
+    mine, other = uuid4(), uuid4()
+    for nid, agent in (("n-1", mine), ("n-2", other), ("n-3", mine)):
+        svc._notification_queue.append(
+            LearningNotification(
+                notification_id=nid,
+                learning_id="lrn-1",
+                target_agent_id=agent,
+                learning_summary="s",
+                reason="r",
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+    svc._notification_queue[2].acknowledged = True
+
+    pending = await svc.get_pending_notifications(mine)
+    assert [n.notification_id for n in pending] == ["n-1"]
