@@ -18,7 +18,9 @@ from uuid import UUID  # noqa: TC003  (pydantic needs the type at runtime)
 
 from pydantic import BaseModel, Field
 
+from roboco.config import settings
 from roboco.models.base import AssignmentScope, ModelProvider  # noqa: TC001
+from roboco.models.llm_catalog import OLLAMA_DEFAULT_MODEL
 from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:
@@ -372,6 +374,10 @@ class ModeResponse(BaseModel):
         "cost_tiered",
     ]
     assignments: list[AssignmentResponse]
+    codex_cli_model: str = Field(default_factory=lambda: settings.codex_cli_model)
+    gemini_cli_model: str = Field(default_factory=lambda: settings.gemini_cli_model)
+    kimi_cli_model: str = Field(default_factory=lambda: settings.kimi_cli_model)
+    ollama_default_model: str = OLLAMA_DEFAULT_MODEL
 
 
 # =============================================================================
