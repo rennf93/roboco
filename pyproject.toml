@@ -299,10 +299,6 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # lazy, call-time roboco.api.deps import the original used to dodge the
 # import cycle with deps.py, same rationale as roboco/api/deps.py above.
 "roboco/api/utils/v1_role_dep.py" = ["PLC0415"]
-# board_programs.py's to_response() defers importing BoardProgramResponse
-# from its route module — a genuine circular import (the route module
-# imports this module for its extracted helpers), not dodgeable by hoisting.
-"roboco/api/utils/board_programs.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
 # The e2e smoke harness defers every roboco import until the stack fixture
 # runs, so the default (skipped) suite never pays the app-surface import
@@ -401,11 +397,6 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # the api and dispatcher roles never pay for the KB worker's import graph at
 # process start.
 "roboco/bootstrap.py" = ["PLC0415"]
-# shipped_work_digest defers its DB-table and service imports to call time:
-# roboco/utils/__init__.py re-exports it, so top-level imports would load the
-# workspace and release-readiness service graph into every importer of
-# roboco.utils.
-"roboco/utils/shipped_work_digest.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior.
 # ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
 # for mypy's override check, so unused override-stub args can't be renamed.

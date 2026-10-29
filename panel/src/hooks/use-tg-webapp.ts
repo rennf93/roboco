@@ -2,30 +2,16 @@
 
 /**
  * React bindings for the Telegram WebApp bridge. The page bootstraps the
- * bridge once (real object or dev mock) and provides it here; components
- * reach native chrome (MainButton, BackButton) through these hooks and
- * never touch `window.Telegram` directly — that keeps every consumer
- * null-safe outside Telegram by construction.
+ * bridge once (real object or dev mock) and provides it through
+ * `TgWebAppProvider` (`@/components/providers/tg-webapp-provider`);
+ * components reach native chrome (MainButton, BackButton) through these
+ * hooks and never touch `window.Telegram` directly — that keeps every
+ * consumer null-safe outside Telegram by construction.
  */
 
-import { createContext, useContext, useEffect, useRef } from "react";
-import type { TelegramWebApp } from "./webapp";
-
-const TgWebAppContext = createContext<TelegramWebApp | null>(null);
-
-export function TgWebAppProvider({
-  webApp,
-  children,
-}: {
-  webApp: TelegramWebApp | null;
-  children: React.ReactNode;
-}) {
-  return (
-    <TgWebAppContext.Provider value={webApp}>
-      {children}
-    </TgWebAppContext.Provider>
-  );
-}
+import { useContext, useEffect, useRef } from "react";
+import { TgWebAppContext } from "@/components/providers/tg-webapp-provider";
+import type { TelegramWebApp } from "@/lib/telegram/webapp";
 
 /** The bootstrapped bridge, or null when rendered outside the provider
  * (tests) or before bootstrap resolves. */

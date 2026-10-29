@@ -6101,9 +6101,10 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
 | roboco/api/routes/x.py | X (Twitter) engine — CEO-only: list/approve/reject held draft posts + set/status OAuth 1.0a credentials. |
 | roboco/api/routes/roadmap.py | Board roadmap engine — CEO-only: list open cycles + per-item approve/reject. |
+| roboco/api/routes/maintenance_pause.py | Operator maintenance pause — CEO-only: list every scope's status (with `read_degraded_since`), pause one scope for N hours, resume it. Schemas in `api/schemas/maintenance_pause.py`; `require_ceo` + `to_response` in `api/utils/maintenance_pause.py`. |
 | roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` object, conditionally mounted (`telegram_miniapp_enabled` AND `cloud_auth_enabled`) directly inline in `app.py`'s `create_app()` (not by a helper function in this module or in `utils/telegram.py` — see the 2026-08-08 correction below); validates a Mini App's `initData` and mints the cloud-auth session cookie; the mount also installs its own unconditional `LoginRateLimiter`. |
 | roboco/api/routes/entire.py | Entire trails bridge CEO surface (`require_ceo_role`; schemas in `api/schemas/entire.py`): GET/POST `/entire/credentials` (write-only token, returns `has_token`; empty clears), GET `/entire/trails/status`, POST `/entire/trails/retry`. Mounted with `telegram_router` by `app.py`'s `_mount_bridge_routers` |
-| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
+| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert; `find_seed_user` is the one lookup of that row, shared with `/telegram/webapp-auth`), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
 | roboco/api/routes/v1/_role_dep.py | Thin: builds the module-level per-role guard instances (`require_dev`, `require_qa`, ...) from `_require_roles` + `require_any_authenticated_agent` from `_require_authenticated_agent()` — both re-imported, along with `envelope_to_response`/`_log_rejection`/`_require_authenticated_agent`, from `roboco/api/utils/v1_role_dep.py` (extracted 2026-08-08, see below). |
 | roboco/api/routes/v1/do.py | Content verbs `/api/v1/do/*` (commit/note/say/dm/evidence/playbook...). |
 | roboco/api/routes/v1/flow_dev.py | Developer flow verbs. |
@@ -6142,6 +6143,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET/POST | /api/playbooks, /{id}/{approve,reject,archive} | playbooks.py | agent context (Auditor/CEO) |
 | GET/POST | /api/x/posts, /posts/{id}/{approve,reject}, /credentials | x.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
+| GET/POST/DELETE | /api/maintenance-pause, /maintenance-pause/{scope} | maintenance_pause.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/telegram/credentials | telegram.py | `require_ceo_role` (agent context) |
 | GET/POST/DELETE | /api/providers/presets, /presets/{id}/apply, /presets/{id} | provider.py | agent context — save/apply/delete a named full routing snapshot (`docs/map/support-services.md`) |
 | GET/PUT/DELETE | /api/github-app/credentials ; GET /installations, /installations/{id}/repos | github_app.py | agent context — App id + private key CRUD, installation/repo listing for the panel's repo picker |
@@ -6264,7 +6266,7 @@ roboco/api/
 │   ├── backend.py               cookie transport + password-fingerprint-bound JWT strategy
 │   ├── manager.py                UserManager + get_user_db/get_user_manager DI chain
 │   ├── session.py               resolve_session_user (shared HTTP + WS cookie validation)
-│   ├── seed.py                  ensure_seed_user / ensure_seed_user_startup (single CEO row)
+│   ├── seed.py                  find_seed_user / ensure_seed_user / ensure_seed_user_startup (single CEO row)
 │   ├── routes.py                always-public /status + conditional login/logout mount
 │   └── login_limit.py           LoginRateLimiter (per-IP POST limit; path-keyed, shared with telegram.py webapp-auth)
 └── schemas/
@@ -8646,13 +8648,13 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `roboco/conventions/runner.py` | `run()` orchestrator: per-file dispatch by suffix, waiver filtering, `ValidatorCouldNotRun` on grammar failure | 107 |
 | `roboco/conventions/findings.py` | `Finding` frozen dataclass + `as_json()` (one JSONL line) | 27 |
 | `roboco/conventions/grammars.py` | Lazy cached tree-sitter parser construction per language; `GrammarUnavailable` | 57 |
-| `roboco/conventions/placement.py` | `check_placement` — map a file to its module, flag forbidden kinds (`no_<kind>s_in_<leaf>`) | 70 |
+| `roboco/conventions/placement.py` | `check_placement` — map a file to its module, flag forbidden kinds (`no_<kind>s_in_<leaf>`); `is_non_source_path` maps a test/docs file (`tests/`, `__tests__/`, `*.test.*`, `*.spec.*`, ...) to no module | 97 |
 | `roboco/conventions/classify_python.py` | Python top-level definition classifier → `model`/`route`/`helper`/`other` | 101 |
 | `roboco/conventions/classify_ts.py` | TypeScript/TSX top-level definition classifier → `model`/`route`/`component`/`other` | 159 |
 | `roboco/conventions/hygiene.py` | `check_hygiene` — inline-comment + lint/type-suppression findings; sanctioned-code allowlist | 139 |
-| `roboco/conventions/modularity.py` | `check_modularity` — cohesion (1 concern/file), thin routes, thin components, god class | 344 |
+| `roboco/conventions/modularity.py` | `check_modularity` — cohesion (1 concern/file), thin routes, thin components, god class; ambiguous DB method names (`add`/`add_all`/`merge`/`query`/`stream`) count only on a session-handle receiver, and only axios's request methods count as fetching | 386 |
 | `roboco/conventions/custom.py` | `check_custom` — project regex rules scoped by language with tsx→typescript dialect relation; `unrecognized_rule_languages` surfaces typo language tags | 85 |
-| `roboco/conventions/scan.py` | `derive_from_scan` — infer modules/languages/rules from a repo; `render_yaml`; CLAUDE.md token lifting | 318 |
+| `roboco/conventions/scan.py` | `derive_from_scan` — infer modules/languages/rules from a repo (drops candidate modules under `NON_SOURCE_SEGMENTS`); `render_yaml`; CLAUDE.md token lifting | 321 |
 
 ## Key Symbols
 
@@ -8691,23 +8693,24 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `Finding` | dataclass | `conventions/findings.py:13` | One violation; `as_json()` → compact JSONL |
 | `get_parser` | fn | `conventions/grammars.py:48` | Cached tree-sitter parser per language |
 | `GrammarUnavailable` | class | `conventions/grammars.py:16` | Raised when a grammar import fails |
-| `check_placement` | fn | `conventions/placement.py:23` | Placement findings for defs in a file's module |
-| `_module_for` | fn | `conventions/placement.py:37` | Most-specific module whose path is a directory prefix |
+| `check_placement` | fn | `conventions/placement.py:40` | Placement findings for defs in a file's module |
+| `is_non_source_path` | fn | `conventions/placement.py:54` | True for a file under a test/docs segment or named `*.test.*` / `*.spec.*`: never placement-enforced |
+| `_module_for` | fn | `conventions/placement.py:62` | Most-specific module whose path is a directory prefix; `None` for a non-source (test/docs) file |
 | `classify_definitions` (py) | fn | `conventions/classify_python.py:32` | Top-level Python defs → `(name, line, kind)` |
 | `classify_definitions` (ts) | fn | `conventions/classify_ts.py:36` | Top-level TS/TSX defs → `(name, line, kind)` |
 | `check_hygiene` | fn | `conventions/hygiene.py:58` | Inline-comment + suppression findings |
 | `_suppression_allowed` | fn | `conventions/hygiene.py:89` | True iff only sanctioned codes (TC001/2/3, prop-decorator) |
-| `check_modularity` | fn | `conventions/modularity.py:70` | Cohesion + thin routes + thin components + god class |
-| `_check_cohesion` | fn | `conventions/modularity.py:96` | >1 core kind in a file → `modular_cohesion` finding |
-| `_body_hits_db` | fn | `conventions/modularity.py:220` | Route body calls execute/scalars/select/... (thin_routes) |
-| `_component_fetches` | fn | `conventions/modularity.py:300` | Component body calls fetch/axios (thin_components) |
+| `check_modularity` | fn | `conventions/modularity.py:97` | Cohesion + thin routes + thin components + god class |
+| `_check_cohesion` | fn | `conventions/modularity.py:123` | >1 core kind in a file → `modular_cohesion` finding |
+| `_body_hits_db` | fn | `conventions/modularity.py:259` | Route body calls execute/scalars/select/... (thin_routes); `registry.stream(...)` / `service.query(...)` are not DB hits, `db.stream(...)` / `db.query(...)` are |
+| `_component_fetches` | fn | `conventions/modularity.py:338` | Component body calls `fetch(...)`, `axios(...)` or an axios request method (thin_components); `axios.isAxiosError` is not fetching |
 | `unrecognized_rule_languages` | fn | `conventions/custom.py:37` | Return language tags on a `CustomRule` that the validator never reports — flags typos in the conventions file |
 | `check_custom` | fn | `conventions/custom.py:56` | Project regex rule matches scoped by language |
 | `_rule_applies` | fn | `conventions/custom.py:45` | Language scoping with tsx→typescript dialect relation |
-| `derive_from_scan` | fn | `conventions/scan.py:100` | Infer modules/languages/rules/CLAUDE.md-lifted custom rules |
-| `_seed_rules` | fn | `conventions/scan.py:142` | Seed hygiene + placement + modularity rules (stack-scoped) |
-| `_lift_claude_md` | fn | `conventions/scan.py:223` | Lift imperative CLAUDE.md code-spans into warn custom rules |
-| `render_yaml` | fn | `conventions/scan.py:304` | Render a standard to commented YAML (round-trips via parse_yaml) |
+| `derive_from_scan` | fn | `conventions/scan.py:95` | Infer modules/languages/rules/CLAUDE.md-lifted custom rules |
+| `_seed_rules` | fn | `conventions/scan.py:137` | Seed hygiene + placement + modularity rules (stack-scoped) |
+| `_lift_claude_md` | fn | `conventions/scan.py:220` | Lift imperative CLAUDE.md code-spans into warn custom rules |
+| `render_yaml` | fn | `conventions/scan.py:307` | Render a standard to commented YAML (round-trips via parse_yaml) |
 | `DocsService` | class | `services/docs.py:154` | Documentation file management |
 | `DocsService.write_doc` | method | `services/docs.py:159` | Write/update a doc with RAG dedup + repo commit |
 | `DocsService.read_doc` | method | `services/docs.py:468` | Read a doc (role-gated, path-contained) |
@@ -8938,13 +8941,16 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/api/schemas/x.py` | `XPostResponse` + `XMentionRefModel` / `XFeatureRefModel` response shapes | 73 |
 | `roboco/foundation/policy/board_programs.py` | Board Program registry: `BoardProgram` dataclass, `PROGRAMS` (14 entries), `program_due`/`project_participates`/`validate_board_programs_field` (pure) | 295 |
 | `roboco/services/board_programs.py` | `BoardProgramEngine` — trigger/dedup/originate/LEARN over every registered program; `program_armed` settings-store chokepoint; `pick_rotation_target` for project-scoped round-robin | 566 |
-| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now` | 103 |
+| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now`, `GET /{key}/cycles` (LEARN history) | 116 |
+| `roboco/api/schemas/board_programs.py` | `BoardProgramResponse` / `BoardProgramCycleResponse` / `BoardProgramDecisionResponse` response shapes | 51 |
+| `roboco/api/utils/board_programs.py` | Route glue: `require_ceo`, `to_response` (engine state → `BoardProgramResponse`), `cycle_to_response` | 65 |
 | `roboco/services/pest_control_engine.py` | `PestControlEngine` — weekly+metric cron, project-scoped; evidence context (rework hotspots, recurring/waived findings) | 199 |
 | `roboco/services/spackle_engine.py` | `SpackleEngine` — biweekly cron, project-scoped gap-fill audit | 142 |
 | `roboco/services/scales_engine.py` | `ScalesEngine` — monthly cron, org-scoped portfolio rebalance; stale-backlog snapshot | 176 |
 | `roboco/services/dogfood_engine.py` | `DogfoodEngine` — event-only, project-scoped; real `_ORIGINATORS` binding (unlike Coroner's stub) | 152 |
 | `roboco/services/periscope_engine.py` | `PeriscopeEngine` — weekly cron, org-scoped market-research brief; `latest_brief_context` feeds Printer | 157 |
 | `roboco/services/megaphone_engine.py` | `MegaphoneEngine` — 3-day cron, org-scoped editorial calendar; shipped-this-week digest + Unreleased changelog | 191 |
+| `roboco/services/shipped_work_digest.py` | `shipped_work_digest` — "Completed this week" (COMPLETED tasks, last 7 days, capped at 15) + the CHANGELOG `## [Unreleased]` body from the RoboCo read clone; degrades to explicit lines, never raises; shared by Megaphone and the roadmap / Pest Control / Spackle prompts | 91 |
 | `roboco/services/mirror_engine.py` | `MirrorEngine` — quarterly cron, project-scoped messaging-drift audit | 143 |
 | `roboco/services/barfly_engine.py` | `BarflyEngine` — 2-day cron, org-scoped; screens X search candidates through `injection_guard`, marks seen | 223 |
 | `roboco/services/war_room_engine.py` | `WarRoomEngine` — event-triggered (`open_for_release` release hook + CEO run-now); campaign posts w/ `publish_after` | 231 |
@@ -9259,7 +9265,9 @@ product-strategy-research-pitch
 │   └── each: run_cycle + context builder; war_room_engine also exposes open_for_release (release-hook bypass of _ORIGINATORS); barfly_engine screens candidates through injection_guard
 ├── coroner_engine.py / sentinel_engine.py / librarian_engine.py — Auditor programs
 │   └── coroner_engine: open_for_incident is the ONLY real entry point (event-only, no run_cycle path through the loop); sentinel_engine/librarian_engine: run_cycle (CRON) + context builder
-└── api/routes/board_programs.py — CEO-only status + run-now routes
+├── api/routes/board_programs.py — CEO-only status + run-now + cycles routes
+├── api/schemas/board_programs.py — BoardProgramResponse / BoardProgramCycleResponse / BoardProgramDecisionResponse
+└── api/utils/board_programs.py — require_ceo + to_response / cycle_to_response
 ```
 
 ## Dependencies
@@ -9309,7 +9317,7 @@ product-strategy-research-pitch
   - `dashboard.py` — `get_product_service` / `get_project_service` for dashboard views.
   - `roadmap.py` — `GET /api/roadmap/cycles`, `POST /cycles/{id}/items/{id}/{approve,reject}` (CEO-only) → `get_roadmap_service`.
   - `x.py` — `GET /api/x/posts`, `POST /posts/{id}/{approve,reject}` (CEO-only) → `get_x_post_service`.
-  - `board_programs.py` — `GET /api/board-programs` (list all 14 with live status), `POST /api/board-programs/{key}/run-now` (CEO-only) → `get_board_program_engine`.
+  - `board_programs.py` — `GET /api/board-programs` (list all 14 with live status), `POST /api/board-programs/{key}/run-now`, `GET /api/board-programs/{key}/cycles` (LEARN history, newest first; all CEO-only) → `get_board_program_engine`.
 - **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`. `_roadmap_engine_loop` (orchestrator.py:7462) — same lifecycle shape, ticks every `roadmap_interval_seconds` (default weekly), calls `RoadmapEngine.run_cycle`; `_dispatch_roadmap_exploration` (orchestrator.py:10284) spawns the Product Owner once per open exploration task. `_x_mentions_poll_loop` (orchestrator.py:7509) ticks every `x_mentions_interval_seconds`, calls `XEngine.run_cycle`. `_x_feature_spotlight_loop` (orchestrator.py:7571) — same lifecycle shape, dormant unless BOTH `x_engine_enabled` AND `x_feature_spotlight_enabled`, ticks every `x_feature_spotlight_interval_seconds` (default 3 days), calls `XEngine.open_feature_spotlight_exploration`; `_dispatch_feature_spotlight_exploration` (orchestrator.py:10424) spawns the Head of Marketing once per open exploration task — `_dispatch_pm_work` routes `source=x_feature_exploration` to it BEFORE the generic `_BOARD_AGENTS` check (mirroring the roadmap source's own early branch), so it never falls into the two-reviewer board-review gate. `_board_program_loop` (orchestrator.py:9224) — same lifecycle shape, ticks on a floor interval (`_board_program_interval_seconds`: shortest registered program cadence, clamped 300s-3600s), calls `BoardProgramEngine.run_due_programs`; `_dispatch_board_program_exploration` (a module-level dict-dispatch function, not a method — orchestrator.py:948) routes each program's held exploration task to its own one-shot dispatcher (`_dispatch_pest_control_exploration`, `_dispatch_periscope_exploration`, etc.), each spawning its program's role solo, bypassing the two-reviewer board-review gate exactly like the roadmap/spotlight dispatchers already did.
 - **MCP mount (orchestrator spawn):** `roboco-search` MCP mounted into Board/PM agent containers only when `research_enabled` (orchestrator.py:2914); the MCP server calls the `/api/research/*` routes. `playwright` MCP mounted task-scoped (not role-blanket) for a `board_dogfood` spawn only, via `_is_dogfood_spawn` (orchestrator.py:3834).
 - **Event hooks (bypass the loop entirely):** `TaskService`'s bounce-into-`needs_revision` transition and cancel-after-work path both call `CoronerEngine.open_for_incident` directly (`services/task.py:812` / `:1392`); the orchestrator's budget-block path calls it too (`orchestrator.py:8311`); `StrategyEngine.run_cycle`'s `stranded_blocked` branch calls it a fourth way, through its own `_trigger_coroner_incident` helper (`strategy_engine.py:151`), which re-derives the most-stale stranded task on every strategy-engine tick rather than firing off a single state transition; `ReleaseProposalService.approve`'s publish-success branch calls `WarRoomEngine.open_for_release` (`services/release_proposal.py:330`) alongside the pre-existing `XEngine.draft_release_post` hook.
@@ -9639,7 +9647,8 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.25.0) is the s
 | `panel/src/components/tasks/` + `tasks/task-detail/` | task-table (row/card extraction into `memo`-wrapped `TaskTableRow`/`TaskTableCard`, `toggleExpand` stabilized via `useCallback` — pagination-based, not virtualized), create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector, task-detail tabs (overview/plan/progress/commits/sessions/notes/dependencies/**findings**), `mobile-task-board.tsx` (read-only, grouped-by-status phone board for the `/tg` cockpit; gained `tasks`/`onTaskPress` props for demo-mode + the task detail sheet) |
 | `panel/src/components/tg/` | The `/tg` cockpit's tabs — now **5-tab** bottom nav (`today` default + `approvals`/`board`/`chat`/`metrics`): `tg-today-tab.tsx` (the default-opening "Today" brief — spend hero with 7-day sparkline, quick-action ring, needs-you banner, live fleet avatars, velocity bars), `tg-approvals-tab.tsx` (native card stack over `approvals/` — 8-file subdirectory: `use-approval-queue.ts`, `primary-action.tsx`, `reject-form.tsx`, `release-detail.tsx`, `x-post-detail.tsx`, `video-post-detail.tsx`, `roadmap-item-detail.tsx`, `board-program-detail.tsx`; `use-approval-queue.ts` normalizes eight of the CEO-decision queues (Mirror and Playbook review remain desktop-only) — release proposal, X posts, video posts, roadmap items, plus proposed Pest Control / Spackle / Scales / Dogfood board-program items on the desktop queues' exact query keys, so phone and desktop share caches; "queue is clear" renders only when all eight are empty, and `anyFailed` spans all eight so an outage never reads as an empty queue), `tg-inbox-tab.tsx` (notifications + ack, `TgAvatar` sender tokens — a sub-page behind the header bell, not a tab bar entry), `tg-board-tab.tsx` (wraps `mobile-task-board.tsx` + the new `tg-task-sheet.tsx` detail sheet), `tg-chat-tab.tsx` (WS-live via `/ws/system`, 10s poll fallback only while the socket is down), `tg-metrics-tab.tsx` (676-line spend & delivery drilldown: period segmented control `1D`/`1W`/`1M`/`3M` via `TgSegmented`, `SpendHero` with `TgAreaChart` + `TgDeltaChip` trend, by-agent top-8 / by-team / by-model `ThinBarRow` breakdowns, delivery stats grid + efficiency stats grid, per-agent drilldown `TgSubPage` with member scorecard), `tg-format.tsx` (`fmtUsd`/`fmtTokens` formatting utilities imported by `tg-metrics-tab.tsx`), `ui.tsx` (shared visual-language primitives: `TgCircleAction`/`TgAvatar`/`TgSection`/`TgRow`/`TgRowIcon`/`TgStat`/`TgDeltaChip`/`TgSegmented`), `charts.tsx` (hand-rolled inline-SVG `Sparkline`/`DayBars`/`TgAreaChart`, no charting lib in the Mini App bundle), `tg-icons.tsx` (10-icon hand-drawn duotone set for hero surfaces, utility chrome stays lucide-react), `motion.tsx` (`useCountUp` numeral count-up hook + `TgSheet` bottom-sheet dialog wired to Telegram's native `BackButton`), `tg-task-sheet.tsx` (read-only task-detail bottom sheet: status/bounced-chip/ACs/up-to-5-open-findings/PR link) |
 | `panel/src/lib/telegram/webapp.ts` | Typed wrapper over the global `window.Telegram.WebApp` (`ready`/`expand`/`initData`, `TelegramThemeParams`/`MainButton`/`BackButton`/`HapticFeedback` interfaces); `waitForTelegramWebApp` polls (100ms, 1.5s timeout) for the CDN script since it loads `afterInteractive`; `createDevMockWebApp`/`isDevMockWebApp` back the `/tg?demo=1` dev-browser fallback; null-safe `haptics` const (no-ops outside Telegram) |
-| `panel/src/lib/telegram/{hooks.tsx,theme.ts,demo.ts,demo-data.ts}` | `hooks.tsx`: `TgWebAppProvider`/`useTgWebApp` context + `useMainButton`/`useBackButton` (declarative wrappers over Telegram's native buttons — no consumer touches `window.Telegram` directly). `theme.ts`: `applyTelegramTheme` maps `themeParams` → shadcn CSS vars, hex-only trust boundary, scoped to `#tg-shell` only (the desktop dashboard is untouched); `startTelegramThemeSync` re-applies on the bridge's `themeChanged` event. `demo.ts`/`demo-data.ts`: `isTgDemoMode()` (dev-only, `?demo=1`, dead-code-eliminated in prod) gates dynamically-imported `DEMO_TASKS`/`DEMO_NOTIFICATIONS`/`DEMO_RELEASE`/`DEMO_X_POSTS`/`DEMO_VIDEO_POSTS`/`DEMO_ROADMAP`/`DEMO_TODAY` fixtures |
+| `panel/src/components/providers/tg-webapp-provider.tsx` + `hooks/use-tg-webapp.ts` | `TgWebAppContext`/`TgWebAppProvider` (the bridge `/tg` bootstraps once); `useTgWebApp` + `useMainButton`/`useBackButton` (declarative wrappers over Telegram's native buttons — no consumer touches `window.Telegram` directly). Same provider/hook split as `page-refresh-provider.tsx` + `use-page-refresh.ts` |
+| `panel/src/lib/telegram/{theme.ts,demo.ts,demo-data.ts}` | `theme.ts`: `applyTelegramTheme` maps `themeParams` → shadcn CSS vars, hex-only trust boundary, scoped to `#tg-shell` only (the desktop dashboard is untouched); `startTelegramThemeSync` re-applies on the bridge's `themeChanged` event. `demo.ts`/`demo-data.ts`: `isTgDemoMode()` (dev-only, `?demo=1`, dead-code-eliminated in prod) gates dynamically-imported `DEMO_TASKS`/`DEMO_NOTIFICATIONS`/`DEMO_RELEASE`/`DEMO_X_POSTS`/`DEMO_VIDEO_POSTS`/`DEMO_ROADMAP`/`DEMO_TODAY` fixtures |
 | `panel/src/components/settings/` | feature-flags-card, `entire-trails-form.tsx` (Entire token, write-only, plus the trails queue: open/queued/stopped counts, last error, retry; nested in the `entire_trails_enabled` flag row; client `lib/api/entire.ts`), ai-routing-card, transcript-retention-card, self-hosted-section, `provider-key-card.tsx` (OpenRouter + Nebius key rows + status hooks, imported by ai-routing-card), `x-credentials-card.tsx` (write-only OAuth 1.0a secrets, mounted in `settings/page.tsx`) |
 | `panel/src/components/conventions/conventions-tab.tsx` | Per-project architecture map + health — now a page-level tab on `/projects/[id]/settings` (Wave C; was a cramped tab inside the deleted edit-project dialog) |
 | `panel/src/components/projects/settings/*.tsx` | Wave C card-per-concern settings surfaces (`identity-card`, `git-auth-card`, `placement-card`, `environments-card`, `cicd-commands-card`, `sandbox-card`, `budget-ops-card` (budget cap and the per-project opt-ins: CI-watch, video engine, Entire trails, dep-update, Board Programs), `save-bar.tsx`) backing `/projects/[id]/settings`, replacing the single ~1061-line `edit-project-dialog.tsx` (deleted) |
@@ -9649,6 +9658,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.25.0) is the s
 | `panel/src/components/projects/`, `products/`, `agents/`, `business/`, `auditor/`, `knowledge-base/`, `git/`, `journals/`, `work-sessions/`, `notifications/`, `rate-limit/`, `layout/`, `ui/` | Per-domain component groups (`projects/` and `products/` each export a `*-view.tsx` consumed by `workstation/page.tsx`, plus a `*-card-grid.tsx` reusing the sibling table's exported badge renderers; `agents/` similarly exports `agents-fleet-view.tsx` (`AgentsFleetView`) consumed by `agents/page.tsx`'s Fleet tab, plus `agent-card.tsx`'s DM quick-action button; `journals/` similarly exports `journals-view.tsx` (`JournalsView`) consumed by `agents/page.tsx`'s Journals tab); `ui/` = Radix-based primitives (dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown, `collapsible-section`) |
 | `panel/src/hooks/use-websocket.ts` | Shared `useWebSocket<T>(path, handlers?, isSystem?)` hook (auto-reconnect, heartbeat) |
 | `panel/src/hooks/use-{tasks,agents,projects,products,usage,prompter,secretary,dashboard,git,journals,notifications,knowledge-base,observability,work-sessions,providers,rate-limit-{sync,websocket}}.ts` | TanStack Query + zustand data hooks |
+| `panel/src/hooks/use-api-health.ts` | `useApiHealth` — polls `/health` (5s timeout, every 30s) → `checking`/`connected`/`disconnected`; the header's `ConnectionStatus` badge renders it |
 | `panel/src/hooks/use-a2a-live.ts` | `useA2AConversations` / `useA2AAdminPairs` / `useA2AMessages` (TanStack Query over `a2aApi`) + `useReplyAsCeo` / `useCreateCeoConversation` / `useSendCeoMessage` mutations; `a2aLiveKeys` query-key namespace |
 | `panel/src/lib/api/*.ts` | Per-domain axios clients (`client.ts` shared instance; `release.ts`, `playbooks.ts`, `prompter-live.ts`, `tasks.ts`, `settings.ts`, `usage.ts`, `cockpit.ts`, `a2a.ts`, `auth.ts` (status/login/logout), `x.ts` (post queue + credentials), `roadmap.ts` (cycles + item approve/reject), …) |
 | `panel/src/lib/websocket/connection.ts` | `WebSocketConnection` class + `getWebSocketUrl` |
@@ -9806,6 +9816,7 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 │   ├── tasks/ + tasks/task-detail/         (task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector; detail tabs: overview/plan/progress/commits/sessions/notes/dependencies/findings; mobile-task-board.tsx for /tg)
 │   ├── tg/                                 (tg-today-tab, tg-approvals-tab, tg-board-tab, tg-chat-tab, tg-metrics-tab, tg-tab-bar — the /tg cockpit's 5 tabs; tg-inbox-tab — sub-page behind the header bell, not a tab bar entry; ui.tsx, charts.tsx, tg-icons.tsx, tg-format.tsx, motion.tsx, tg-task-sheet.tsx shared primitives)
 │   │   └── approvals/                      (use-approval-queue, primary-action, reject-form, release-detail, x-post-detail, video-post-detail, roadmap-item-detail, board-program-detail — the native Approvals card stack over eight of the CEO-decision queues (Mirror and Playbook review remain desktop-only))
+│   ├── providers/                          (page-refresh-provider, auto-refresh-driver, tg-webapp-provider: context providers; their hooks live in src/hooks/)
 │   ├── settings/                           (feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section, x-credentials-card)
 │   ├── conventions/conventions-tab.tsx     (per-project architecture map + health)
 │   ├── projects/projects-view.tsx + project-card-grid.tsx, products/products-view.tsx + product-card-grid.tsx (Workstation tab panes; card grids reuse the sibling table's exported badge renderers)
@@ -9815,11 +9826,13 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 │   └── ui/                                 (Radix-based primitives: dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown)
 ├── src/hooks/
 │   ├── use-websocket.ts                    (shared useWebSocket<T>: auto-reconnect, heartbeat)
+│   ├── use-tg-webapp.ts                    (useTgWebApp / useMainButton / useBackButton over TgWebAppContext)
+│   ├── use-api-health.ts                   (useApiHealth: /health poll behind the header badge)
 │   └── use-{tasks,agents,projects,products,usage,prompter,secretary,dashboard,git,journals,notifications,knowledge-base,observability,work-sessions,providers,rate-limit-{sync,websocket}}.ts
 ├── src/lib/
 │   ├── api/*.ts                            (per-domain axios clients; client.ts shared instance; release, playbooks, prompter-live, tasks, settings, usage, cockpit, a2a, auth, x, roadmap, …)
 │   ├── websocket/connection.ts             (WebSocketConnection + getWebSocketUrl)
-│   ├── telegram/                           (webapp.ts wrapper + waitForTelegramWebApp poll; hooks.tsx TgWebAppProvider/useMainButton/useBackButton; theme.ts themeParams→#tg-shell CSS vars; demo.ts/demo-data.ts the ?demo=1 fixtures)
+│   ├── telegram/                           (webapp.ts wrapper + waitForTelegramWebApp poll; theme.ts themeParams→#tg-shell CSS vars; demo.ts/demo-data.ts the ?demo=1 fixtures)
 │   ├── stores/                             (scroll-restoration-store only; ui-store is sole-canonical in src/store/)
 │   └── {constants,utils,agent-definitions,agent-utils,repo-url,mock-data}.ts
 ├── src/proxy.ts                            (Next 16 rename of middleware.ts: gates (dashboard) behind cloud auth)

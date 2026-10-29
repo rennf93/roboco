@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
+import { TgWebAppProvider } from "@/components/providers/tg-webapp-provider";
 import {
-  TgWebAppProvider,
   useMainButton,
   useBackButton,
   type MainButtonOptions,
-} from "../hooks";
-import type { TelegramWebApp } from "../webapp";
+} from "../use-tg-webapp";
+import type { TelegramWebApp } from "@/lib/telegram/webapp";
 
 function fakeMainButton() {
   return {

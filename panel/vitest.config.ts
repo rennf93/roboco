@@ -8,7 +8,14 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     coverage: {
       provider: "v8",
-      include: ["src/lib/**", "src/store/**", "src/components/**"],
+      include: [
+        "src/app/**",
+        "src/components/**",
+        "src/hooks/**",
+        "src/lib/**",
+        "src/store/**",
+        "src/proxy.ts",
+      ],
       reporter: ["text", "lcov", "json-summary"],
     },
   },

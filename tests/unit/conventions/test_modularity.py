@@ -170,6 +170,34 @@ def test_thin_routes_still_flags_execute_unambiguous() -> None:
     assert "thin_routes" in rules
 
 
+def test_thin_routes_allows_non_session_stream_and_query() -> None:
+    # A live registry's `registry.stream(...)` and a service's own
+    # `service.query(...)` are delegation, not data access — must not trip.
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/x')\n"
+        "async def x(session_id):\n"
+        "    async for event in registry.stream(session_id):\n"
+        "        yield event\n"
+        "    service = await get_optimal_service()\n"
+        "    yield await service.query(query='q', context=None, top_k=5)\n"
+    )
+    assert "thin_routes" not in rules
+
+
+def test_thin_routes_still_flags_session_query() -> None:
+    # The legacy ORM `db.query(Model)` on a session handle still trips.
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/x')\n"
+        "def x(db):\n"
+        "    return db.query(User).all()\n"
+    )
+    assert "thin_routes" in rules
+
+
 # --- Thin components: data fetching belongs in a hook ----------------------- #
 
 
@@ -181,6 +209,32 @@ def test_thin_components_flags_fetch_in_component() -> None:
         "}\n"
     )
     assert "thin_components" in rules
+
+
+def test_thin_components_flags_axios_request_in_component() -> None:
+    for call in ("axios('/api/users')", "axios.get('/api/users')"):
+        rules = _ts(
+            "export function UserList() {\n"
+            f"  const data = {call};\n"
+            "  return <div>{data}</div>;\n"
+            "}\n"
+        )
+        assert "thin_components" in rules, call
+
+
+def test_thin_components_allows_axios_error_narrowing() -> None:
+    # axios.isAxiosError only narrows a caught error; nothing is fetched.
+    rules = _ts(
+        "export function MergeButton({ merge }) {\n"
+        "  const onClick = async () => {\n"
+        "    try { await merge(); } catch (err) {\n"
+        "      if (axios.isAxiosError(err)) { toast.error('failed'); }\n"
+        "    }\n"
+        "  };\n"
+        "  return <button onClick={onClick}>Merge</button>;\n"
+        "}\n"
+    )
+    assert "thin_components" not in rules
 
 
 def test_thin_components_clean_when_presentational() -> None:

@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { haptics } from "@/lib/telegram/webapp";
-import { useBackButton } from "@/lib/telegram/hooks";
+import { useBackButton } from "@/hooks/use-tg-webapp";
 
 function reducedMotion(): boolean {
   // No matchMedia (SSR, bare jsdom) counts as reduced — jump to the target.

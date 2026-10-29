@@ -39,9 +39,10 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
 | roboco/api/routes/x.py | X (Twitter) engine — CEO-only: list/approve/reject held draft posts + set/status OAuth 1.0a credentials. |
 | roboco/api/routes/roadmap.py | Board roadmap engine — CEO-only: list open cycles + per-item approve/reject. |
+| roboco/api/routes/maintenance_pause.py | Operator maintenance pause — CEO-only: list every scope's status (with `read_degraded_since`), pause one scope for N hours, resume it. Schemas in `api/schemas/maintenance_pause.py`; `require_ceo` + `to_response` in `api/utils/maintenance_pause.py`. |
 | roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` object, conditionally mounted (`telegram_miniapp_enabled` AND `cloud_auth_enabled`) directly inline in `app.py`'s `create_app()` (not by a helper function in this module or in `utils/telegram.py` — see the 2026-08-08 correction below); validates a Mini App's `initData` and mints the cloud-auth session cookie; the mount also installs its own unconditional `LoginRateLimiter`. |
 | roboco/api/routes/entire.py | Entire trails bridge CEO surface (`require_ceo_role`; schemas in `api/schemas/entire.py`): GET/POST `/entire/credentials` (write-only token, returns `has_token`; empty clears), GET `/entire/trails/status`, POST `/entire/trails/retry`. Mounted with `telegram_router` by `app.py`'s `_mount_bridge_routers` |
-| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
+| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert; `find_seed_user` is the one lookup of that row, shared with `/telegram/webapp-auth`), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
 | roboco/api/routes/v1/_role_dep.py | Thin: builds the module-level per-role guard instances (`require_dev`, `require_qa`, ...) from `_require_roles` + `require_any_authenticated_agent` from `_require_authenticated_agent()` — both re-imported, along with `envelope_to_response`/`_log_rejection`/`_require_authenticated_agent`, from `roboco/api/utils/v1_role_dep.py` (extracted 2026-08-08, see below). |
 | roboco/api/routes/v1/do.py | Content verbs `/api/v1/do/*` (commit/note/say/dm/evidence/playbook...). |
 | roboco/api/routes/v1/flow_dev.py | Developer flow verbs. |
@@ -80,6 +81,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET/POST | /api/playbooks, /{id}/{approve,reject,archive} | playbooks.py | agent context (Auditor/CEO) |
 | GET/POST | /api/x/posts, /posts/{id}/{approve,reject}, /credentials | x.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
+| GET/POST/DELETE | /api/maintenance-pause, /maintenance-pause/{scope} | maintenance_pause.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/telegram/credentials | telegram.py | `require_ceo_role` (agent context) |
 | GET/POST/DELETE | /api/providers/presets, /presets/{id}/apply, /presets/{id} | provider.py | agent context — save/apply/delete a named full routing snapshot (`docs/map/support-services.md`) |
 | GET/PUT/DELETE | /api/github-app/credentials ; GET /installations, /installations/{id}/repos | github_app.py | agent context — App id + private key CRUD, installation/repo listing for the panel's repo picker |
@@ -202,7 +204,7 @@ roboco/api/
 │   ├── backend.py               cookie transport + password-fingerprint-bound JWT strategy
 │   ├── manager.py                UserManager + get_user_db/get_user_manager DI chain
 │   ├── session.py               resolve_session_user (shared HTTP + WS cookie validation)
-│   ├── seed.py                  ensure_seed_user / ensure_seed_user_startup (single CEO row)
+│   ├── seed.py                  find_seed_user / ensure_seed_user / ensure_seed_user_startup (single CEO row)
 │   ├── routes.py                always-public /status + conditional login/logout mount
 │   └── login_limit.py           LoginRateLimiter (per-IP POST limit; path-keyed, shared with telegram.py webapp-auth)
 └── schemas/
