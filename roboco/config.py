@@ -1983,6 +1983,25 @@ class Settings(BaseSettings):
         default=1000,
         description="Primary gid of the `agent` user in the agent images.",
     )
+    git_user_uid: int = Field(
+        default=1500,
+        description=(
+            "uid the orchestrator drops to for every git command in an agent "
+            "workspace (`roboco-git` in the orchestrator image, primary gid "
+            "agent_gid). Never root (agents can rewrite every clone) and "
+            "never agent_uid (that is the host user on the NAS, who owns the "
+            "provider credentials mounted into the orchestrator). Must match "
+            "the image's ROBOCO_GIT_USER_UID build arg."
+        ),
+    )
+    git_support_dir: str = Field(
+        default="/opt/roboco/git",
+        description=(
+            "Root-owned dir in the orchestrator image: `hooks/` is the ONLY "
+            "hooks dir any orchestrator-side git runs (core.hooksPath), "
+            "`workspace.gitconfig` is the git user's global config."
+        ),
+    )
     host_data_dir: str = Field(
         default="",
         description=(
@@ -1998,7 +2017,10 @@ class Settings(BaseSettings):
         description=(
             "Orchestrator-only data dir, never mounted into an agent "
             "container (agents mount ALL of /data/workspaces read-write). "
-            "Holds scratch trees the orchestrator builds itself."
+            "Holds the per-project git relays (`relays/<slug>.git`, the only "
+            "repositories that ever see a project token), the read clones "
+            "(`read/<slug>`), the release clones (`release/<slug>`) and the "
+            "scratch trees the orchestrator builds itself (`scratch/`)."
         ),
     )
     workspace_container_image: str | None = Field(

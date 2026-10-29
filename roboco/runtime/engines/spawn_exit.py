@@ -310,7 +310,14 @@ class SpawnExitEngine(_Base):
                 log_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
                 log_path = log_dir / f"{timestamp}.log"
-                with log_path.open("wb") as out:
+                # Owner-only: a dump carries whatever the agent printed,
+                # tokens and provider keys included.
+                fd = os.open(
+                    log_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC,
+                    0o600,
+                )
+                with os.fdopen(fd, "wb") as out:
                     dump_proc = await asyncio.create_subprocess_exec(
                         "docker",
                         "logs",

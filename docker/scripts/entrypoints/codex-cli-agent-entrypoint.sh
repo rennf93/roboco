@@ -9,6 +9,9 @@
 # wires Claude/grok); this entrypoint renders the codex runtime config from
 # that mount and runs the CLI headless.
 set -euo pipefail
+# Group-writable output: the orchestrator's workspace git user shares the
+# agent group and must be able to rewrite what this agent creates.
+umask 002
 
 # Render ~/.codex/config.toml (the MCP gateway) + the execpolicy deny rules +
 # the combined system+task prompt + the per-role sandbox flag. Run from /app so

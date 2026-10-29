@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from roboco.config import settings
 from roboco.services import workspace_container as wc
+from roboco.services import workspace_git
 
 _TIMEOUT_EXIT_CODE = 124
 
@@ -34,6 +35,9 @@ def _host_layout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "workspace_container_network", "bridge")
     monkeypatch.setattr(settings, "agent_uid", 1000)
     monkeypatch.setattr(settings, "agent_gid", 1000)
+    # The layout above is not on disk: the mount's identity is stubbed (the
+    # real descriptor walk is exercised below and in the live suite).
+    monkeypatch.setattr(wc, "workspace_dir_identity", lambda _path: (64, 4242))
 
 
 async def test_the_command_runs_unprivileged_with_only_its_clone_mounted(
@@ -68,6 +72,12 @@ async def test_the_command_runs_unprivileged_with_only_its_clone_mounted(
     # Env values ride the docker CLI's env, never its argv.
     assert not [o for i, o in enumerate(options) if options[i - 1] == "-e" and "=" in o]
     assert exec_mock.call_args.kwargs["env"]["UV_PYTHON_INSTALL_DIR"] == "/x"
+    # The container checks its mount is this exact directory before running.
+    cli_env = exec_mock.call_args.kwargs["env"]
+    assert cli_env["ROBOCO_WORKSPACE_MOUNT"] == (
+        "/data/workspaces/roboco-api/backend/be-dev-1"
+    )
+    assert cli_env["ROBOCO_WORKSPACE_MOUNT_ID"] == "64:4242"
     assert command[:3] == ["-c", wc._entry_script(60, merge_stderr=False), "sh"]
     # The run ends on its own even if no orchestrator is left to kill it.
     assert "exec timeout -k 10 60 env" in command[1]
@@ -229,3 +239,28 @@ async def test_an_unresolvable_own_image_names_the_setting(
     )
     with pytest.raises(wc.WorkspaceContainerError, match="WORKSPACE_CONTAINER_IMAGE"):
         await wc.workspace_container_image()
+
+
+async def test_a_clone_reached_through_a_symlink_is_never_mounted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon would resolve a planted symlink on the host and mount its
+    target; the clone is reached by descriptor walk instead, and refused."""
+    monkeypatch.setattr(
+        wc, "workspace_dir_identity", workspace_git.workspace_dir_identity
+    )
+    monkeypatch.setattr(settings, "workspaces_root", str(tmp_path / "workspaces"))
+    elsewhere = tmp_path / "elsewhere" / "be-dev-1"
+    elsewhere.mkdir(parents=True)
+    (tmp_path / "workspaces" / "proj").mkdir(parents=True)
+    (tmp_path / "workspaces" / "proj" / "backend").symlink_to(elsewhere.parent)
+    exec_mock = AsyncMock(return_value=_proc())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_mock)
+
+    with pytest.raises(wc.WorkspaceContainerError, match="cannot be mounted"):
+        await wc.run_in_workspace_container(
+            tmp_path / "workspaces" / "proj" / "backend" / "be-dev-1",
+            ["make", "gate"],
+            timeout=60,
+        )
+    exec_mock.assert_not_called()

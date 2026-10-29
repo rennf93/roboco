@@ -2119,9 +2119,7 @@ class SweepsEngine(_Base):
                 workspace = await git.get_workspace(
                     project_slug, agent_id=system_id, skip_refresh=True
                 )
-                await git.create_branch_from_pr_head(
-                    workspace, project_slug, pr_number, branch_name
-                )
+                await git.create_branch_from_pr_head(workspace, pr_number, branch_name)
                 # Success: clear the gate, clear any prior failure markers,
                 # and wake the dispatcher.
                 markers.clear_branch_pending(umbrella)

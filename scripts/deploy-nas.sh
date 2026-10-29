@@ -83,6 +83,23 @@ wait_healthy() { # wait_healthy <container> [exit0]
 
 COMPOSE=(docker compose -f docker-compose.yaml)
 
+# Redis runs with requirepass, and compose refuses to start without
+# ROBOCO_REDIS_PASSWORD (`:?`). The first deploy after that change generates
+# one into .env; it never replaces a value that is already set (in .env or
+# in the environment this script runs with).
+ensure_env_secret() { # ensure_env_secret <VAR>
+  local value="${!1:-}" generated
+  [ -n "$value" ] || value="$(grep -E "^$1=" .env 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+  [ -n "$value" ] && return 0
+  generated="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+    || { echo "[deploy] could not generate $1 (python3 failed); add it to .env by hand" >&2; exit 1; }
+  # Start on a fresh line even if .env does not end with a newline.
+  [ ! -s .env ] || [ -z "$(tail -c1 .env)" ] || echo >> .env
+  echo "$1=$generated" >> .env
+  echo "[deploy] generated $1 into .env (it did not have one)"
+}
+ensure_env_secret ROBOCO_REDIS_PASSWORD
+
 echo "[deploy] app/$COLOR: content-gated image builds..."
 # ---------------------------------------------------------------------------
 # Content-aware rebuild gating (2026-09-28). The 02ec8b4c always-rebuild rule

@@ -13,7 +13,8 @@ without a DB or a real git remote.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import subprocess
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -295,13 +296,20 @@ async def test_install_never_runs_the_clone_code_in_this_process(
     (ws / "pnpm-lock.yaml").write_text("lockfileVersion: 9\n")
     runner = _container()
 
-    def _forbidden(*_a: object, **_kw: object) -> None:
-        raise AssertionError("an install ran in the orchestrator process")
+    real_run = subprocess.run
+
+    def _no_local_install(
+        argv: list[str], *args: Any, **kw: Any
+    ) -> subprocess.CompletedProcess[Any]:
+        # Reading lockfiles/markers as the git user is fine; running a
+        # package manager here is not.
+        if {"uv", "pnpm", "npm"} & set(argv):
+            raise AssertionError(f"an install ran in the orchestrator: {argv}")
+        return real_run(argv, *args, **kw)
 
     with (
         patch("roboco.services.workspace.run_in_workspace_container", runner),
-        patch("roboco.services.workspace.subprocess.run", side_effect=_forbidden),
-        patch("roboco.services.workspace._ensure_agent_owned", side_effect=_forbidden),
+        patch("subprocess.run", side_effect=_no_local_install),
     ):
         ran = await _service().install_dev_deps(ws)
 

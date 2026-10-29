@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 import pytest
 from roboco.exceptions import GitCommandError
 from roboco.services.git import GitService
+from tests.unit.local_origin_relay import serve_origin_through_relay
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,11 +90,12 @@ def _service() -> GitService:
 
 
 @pytest.fixture
-def repo_pair(tmp_path: Path) -> tuple[Path, Path]:
+def repo_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """A bare origin plus a working clone, both carrying a pushed task branch
     (``master`` with one root commit, ``_HEAD`` branched off it with one more)."""
     origin = tmp_path / "origin.git"
     _init_bare(origin)
+    serve_origin_through_relay(monkeypatch, tmp_path, origin)
     seed = tmp_path / "seed"
     _clone(origin, seed)
     _commit(seed, "README.md", "root\n")
@@ -119,9 +121,7 @@ async def test_local_ahead_survives_sync_and_reaches_origin(
     _commit(work, "fix.py", "unpushed fix\n")  # committed locally, never pushed
 
     svc = _service()
-    result = await svc.rebase_onto_base(
-        work, head_branch=_HEAD, base_branch=_BASE, git_token=""
-    )
+    result = await svc.rebase_onto_base(work, head_branch=_HEAD, base_branch=_BASE)
 
     assert result["status"] == "rebased"
     assert "add fix.py" in _log_subjects(origin, _HEAD)
@@ -141,9 +141,7 @@ async def test_local_behind_adopts_origin_unchanged(
     _git(other, "push", "origin", _HEAD)
 
     svc = _service()
-    result = await svc.rebase_onto_base(
-        work, head_branch=_HEAD, base_branch=_BASE, git_token=""
-    )
+    result = await svc.rebase_onto_base(work, head_branch=_HEAD, base_branch=_BASE)
 
     assert result["status"] == "rebased"
     assert "add sibling.py" in _log_subjects(work, _HEAD)
@@ -169,9 +167,7 @@ async def test_diverged_refuses_and_touches_neither_side(
     origin_before = _rev(origin, _HEAD)
 
     svc = _service()
-    result = await svc.rebase_onto_base(
-        work, head_branch=_HEAD, base_branch=_BASE, git_token=""
-    )
+    result = await svc.rebase_onto_base(work, head_branch=_HEAD, base_branch=_BASE)
 
     assert result == {"status": "diverged", "local_only": 1, "origin_only": 1}
     assert _rev(work, _HEAD) == local_before
@@ -192,9 +188,7 @@ async def test_local_ref_absent_recovers_from_origin(
     assert _git_ok(fresh, "rev-parse", "--verify", "--quiet", _HEAD).returncode != 0
 
     svc = _service()
-    result = await svc.rebase_onto_base(
-        fresh, head_branch=_HEAD, base_branch=_BASE, git_token=""
-    )
+    result = await svc.rebase_onto_base(fresh, head_branch=_HEAD, base_branch=_BASE)
 
     assert result["status"] == "rebased"
     assert _git_ok(fresh, "rev-parse", "--verify", "--quiet", _HEAD).returncode == 0
@@ -216,9 +210,7 @@ async def test_superseded_still_returns_superseded(
     _git(other, "push", "origin", "master")
 
     svc = _service()
-    result = await svc.rebase_onto_base(
-        work, head_branch=_HEAD, base_branch=_BASE, git_token=""
-    )
+    result = await svc.rebase_onto_base(work, head_branch=_HEAD, base_branch=_BASE)
     assert result == {"status": "superseded"}
 
 
@@ -257,14 +249,10 @@ async def test_self_inflicted_wedge_self_heals_on_retry(
     svc = _service()
     _install_rejecting_hook(origin)
     with pytest.raises(GitCommandError):
-        await svc.rebase_onto_base(
-            work, head_branch=_HEAD, base_branch=_BASE, git_token=""
-        )
+        await svc.rebase_onto_base(work, head_branch=_HEAD, base_branch=_BASE)
     _remove_rejecting_hook(origin)
 
-    result = await svc.rebase_onto_base(
-        work, head_branch=_HEAD, base_branch=_BASE, git_token=""
-    )
+    result = await svc.rebase_onto_base(work, head_branch=_HEAD, base_branch=_BASE)
 
     assert result["status"] == "rebased"
     assert "add fix.py" in _log_subjects(origin, _HEAD)
@@ -299,7 +287,7 @@ async def test_conflicts_still_refuses_and_reports_files(
 
     svc = _service()
     result = await svc.rebase_onto_base(
-        conflicting, head_branch=conflict_head, base_branch=_BASE, git_token=""
+        conflicting, head_branch=conflict_head, base_branch=_BASE
     )
     assert result["status"] == "conflicts"
     assert result["files"] == ["README.md"]

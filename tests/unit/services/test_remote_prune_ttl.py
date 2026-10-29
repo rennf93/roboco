@@ -33,7 +33,6 @@ async def test_prune_remote_skips_git_call_within_ttl_window(
     svc = GitService(MagicMock())
     run_git = AsyncMock()
     _bind(svc, "_run_git", run_git)
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value="tok"))
     workspace = Path("/tmp/ws-ttl-a")
 
     await svc.prune_remote_best_effort(workspace)
@@ -52,7 +51,6 @@ async def test_prune_remote_runs_again_once_ttl_expires(
     svc = GitService(MagicMock())
     run_git = AsyncMock()
     _bind(svc, "_run_git", run_git)
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value="tok"))
 
     await svc.prune_remote_best_effort(workspace)
 
@@ -70,7 +68,6 @@ async def test_prune_remote_records_timestamp_only_on_success(
     _bind(svc, "log", MagicMock())
     run_git = AsyncMock(side_effect=RuntimeError("boom"))
     _bind(svc, "_run_git", run_git)
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value="tok"))
     workspace = Path("/tmp/ws-ttl-c")
 
     await svc.prune_remote_best_effort(workspace)

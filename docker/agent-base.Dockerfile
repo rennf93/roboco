@@ -125,16 +125,19 @@ COPY docker/scripts/hooks/fable-bash-discipline-hook.sh /app/scripts/hooks/fable
 COPY docker/scripts/hooks/fable-honesty-nudge-hook.sh /app/scripts/hooks/fable-honesty-nudge-hook.sh
 COPY docker/scripts/hooks/fable-prompt-nudge-hook.sh /app/scripts/hooks/fable-prompt-nudge-hook.sh
 COPY docker/scripts/hooks/fable-precompact-hook.sh /app/scripts/hooks/fable-precompact-hook.sh
-# This image copies ONLY hooks (entrypoint scripts live in the role images).
-RUN chmod 0755 /app/scripts/hooks/*.sh
+# This image copies ONLY hooks (entrypoint scripts live in the role images),
+# plus the umask prefix the binary entrypoints below run through.
+COPY docker/scripts/umask-exec.sh /app/scripts/umask-exec.sh
+RUN chmod 0755 /app/scripts/hooks/*.sh /app/scripts/umask-exec.sh
 
 USER agent
 
-# Workspaces are cloned by the orchestrator (running as root) into a shared
-# volume, so inside the agent container they show up owned by a different
-# uid. Git 2.35+ refuses to operate on such repos with "dubious ownership"
-# until safe.directory is set. `*` trusts everything, which is fine inside
-# a per-agent sandbox that only mounts its own workspace.
+# Workspaces are cloned by the orchestrator's git user (uid 1500, this
+# image's agent group) into a shared volume, so inside the agent container
+# they show up owned by a different uid. Git 2.35+ refuses to operate on such
+# repos with "dubious ownership" until safe.directory is set. `*` trusts
+# everything, which is fine here: the agent runs only its own git, and every
+# repository it can see is one it may write anyway.
 RUN git config --global --add safe.directory '*'
 
 # Claude Code reads ~/.claude.json (a sibling FILE, not under ~/.claude/). The
@@ -159,4 +162,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 EXPOSE 9000
 
-ENTRYPOINT ["claude"]
+ENTRYPOINT ["/app/scripts/umask-exec.sh", "claude"]

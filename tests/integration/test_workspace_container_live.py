@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from roboco.config import settings
+from roboco.services import workspace_container
 from roboco.services.workspace_container import (
     WorkspaceContainerError,
     run_in_workspace_container,
@@ -108,3 +109,16 @@ async def test_an_unstartable_image_raises_instead_of_running_here(
     )
     with pytest.raises(WorkspaceContainerError):
         await run_in_workspace_container(clone, ["true"], timeout=60)
+
+
+async def test_a_mount_that_is_not_the_clone_never_runs_the_command(
+    clone: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the daemon mounted another directory (a symlink swapped in after
+    the descriptor walk), the identity check inside refuses to run."""
+    monkeypatch.setattr(
+        workspace_container, "workspace_dir_identity", lambda _p: (0, 0)
+    )
+    with pytest.raises(WorkspaceContainerError, match="not the expected directory"):
+        await run_in_workspace_container(clone, ["touch", "ran"], timeout=120)
+    assert not (clone / "ran").exists()

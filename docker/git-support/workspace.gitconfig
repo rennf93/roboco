@@ -1,0 +1,10 @@
+# Global config of the workspace git user (roboco-git), the GIT_CONFIG_GLOBAL
+# that roboco/services/workspace_git.py sets. Root-owned and read-only in the
+# orchestrator image.
+#
+# The git user runs in clones the agent uid owns, and git honors
+# safe.directory only from protected (system/global) config. Running there is
+# this user's whole purpose, and it holds nothing worth stealing: no token,
+# no capabilities, no supplementary groups.
+[safe]
+	directory = *

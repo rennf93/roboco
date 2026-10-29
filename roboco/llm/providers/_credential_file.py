@@ -12,11 +12,10 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from roboco.config import settings
+
 if TYPE_CHECKING:
     from pathlib import Path
-
-# Same knob workspace ownership has always used for the agent image's uid.
-AGENT_UID = int(os.environ.get("ROBOCO_AGENT_UID", "1000"))
 
 _OWNER_ONLY = 0o600
 # No O_NOFOLLOW: the path is operator-configured (ROBOCO_HOST_*_DIR), never
@@ -37,6 +36,6 @@ def write_agent_credential(path: Path, payload: str) -> None:
     fd = os.open(path, _WRITE_FLAGS, _OWNER_ONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         if os.geteuid() == 0:
-            os.fchown(fd, AGENT_UID, -1)
+            os.fchown(fd, settings.agent_uid, -1)
         os.fchmod(fd, _OWNER_ONLY)
         handle.write(payload)

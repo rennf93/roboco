@@ -9,6 +9,9 @@
 # the staged OAuth credential into a writable ~/.gemini, renders the gemini
 # runtime config from that mount, and runs the CLI headless.
 set -euo pipefail
+# Group-writable output: the orchestrator's workspace git user shares the
+# agent group and must be able to rewrite what this agent creates.
+umask 002
 
 # The orchestrator mounts the host ~/.gemini DIRECTORY read-only at this
 # staging path (roboco.llm.providers.gemini._append_gemini_auth_mount). Copy it

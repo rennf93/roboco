@@ -146,7 +146,7 @@ async def test_open_conventions_pr_force_pushes_scaffold_branch(
     monkeypatch.setattr(git, "_token_for_project", _fake_token)
     monkeypatch.setattr(git, "push", _fake_push)
     monkeypatch.setattr(
-        git, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+        git, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
 
     _pr_number = 42

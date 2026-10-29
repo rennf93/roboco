@@ -35,6 +35,8 @@ from roboco.foundation.policy.conventions.models import (
 )
 from roboco.services.base import BaseService
 from roboco.services.git import CONVENTIONS_SCAFFOLD_BRANCH, get_git_service
+from roboco.services.git_relay import is_dispatcher_owned, run_private_git
+from roboco.services.workspace_git import run_workspace_git
 
 if TYPE_CHECKING:
     from sqlalchemy.exc import IntegrityError
@@ -411,17 +413,15 @@ class ConventionsService(BaseService):
 
     @staticmethod
     def _head_sha_at(root: Path) -> str | None:
-        """The clone's HEAD sha, or None if ``root`` is not a readable git repo."""
+        """The clone's HEAD sha, or None if ``root`` is not a readable git repo.
+
+        Root git only in the dispatcher-owned read clone; an agent clone (a
+        first-clone scaffold) is read as the workspace git user.
+        """
+        runner = run_private_git if is_dispatcher_owned(root) else run_workspace_git
         try:
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-        except (OSError, subprocess.SubprocessError):
+            result = runner(root, ["rev-parse", "HEAD"], timeout=10, check=False)
+        except (OSError, RuntimeError, subprocess.SubprocessError):
             return None
         return result.stdout.strip() or None
 

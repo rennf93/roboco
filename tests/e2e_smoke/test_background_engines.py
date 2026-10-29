@@ -104,7 +104,7 @@ async def test_h24_wait_for_ci_polls_through_non_success(
         prod_branch="master",
         root=Path("/tmp/release-e2e"),
         git_url="",
-        git_prefix=[],
+        relay=MagicMock(),
         ci_workflow=None,
         env_chain=[],
     )

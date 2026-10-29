@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from roboco.config import settings
 from roboco.llm.providers import _credential_file as cf
 
 if TYPE_CHECKING:
@@ -30,7 +31,7 @@ def test_root_hands_the_file_to_the_agent_uid_before_writing(
 
     cf.write_agent_credential(path, '{"k": "v"}')
 
-    assert chowned == [(cf.AGENT_UID, -1)]
+    assert chowned == [(settings.agent_uid, -1)]
     assert path.read_text() == '{"k": "v"}'
     assert path.stat().st_mode & 0o777 == _OWNER_ONLY_MODE
 

@@ -4,14 +4,14 @@ Audit H26: when a PM/Doc is respawned and re-enters `ensure_workspace`
 on an already-healthy clone, the previous implementation short-circuited
 with no fetch — leaving the agent looking at arbitrarily stale refs.
 These tests pin the new behavior: every healthy short-circuit MUST run
-`git fetch origin` (best-effort).
+`git fetch origin` (best-effort), served through the project's relay.
 """
 
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -20,15 +20,6 @@ from roboco.services.workspace import WorkspaceService
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
-
-# Minimum tokens in a valid `git fetch origin [...]` argv (`git`, `fetch`,
-# `origin`). Named to satisfy ruff PLR2004 — magic-value comparison.
-_MIN_GIT_FETCH_ARGC = 3
-
-# Healthy short-circuit chowns BEFORE fetch (repair pre-existing root
-# ownership) AND AFTER fetch (repair root-owned pack/refs the fetch
-# just wrote). Named to satisfy ruff PLR2004.
-_MIN_CHOWN_CALLS_AROUND_FETCH = 2
 
 
 def _service() -> WorkspaceService:
@@ -53,6 +44,37 @@ def _fake_agent(slug: str = "be-pm") -> MagicMock:
     return agent
 
 
+def _wire_healthy_reentry(
+    svc: WorkspaceService, workspace: Path, *, fetch_returncode: int = 0
+) -> AsyncMock:
+    """Stub everything around the refresh fetch; return the origin stub, which
+    records the ``origin`` command the relay is asked to serve."""
+    agent = _fake_agent()
+    _bind(svc, "_lookup_agent_or_raise", AsyncMock(return_value=agent))
+    _bind(svc, "get_workspace_path", MagicMock(return_value=workspace))
+    _bind(svc, "_prune_broken_refs", MagicMock())
+    _bind(svc, "install_dev_deps", AsyncMock())
+
+    def _local(
+        _ws: Path, args: list[str], **_kw: Any
+    ) -> subprocess.CompletedProcess[str]:
+        out = ""
+        if args[0] == "rev-parse":
+            out = "feature/frontend/abc12345\n"
+        elif args[0] == "symbolic-ref":
+            out = "origin/master\n"
+        return subprocess.CompletedProcess(args, 0, out, "")
+
+    _bind(svc, "_worktree_git", MagicMock(side_effect=_local))
+    origin = AsyncMock(
+        return_value=subprocess.CompletedProcess(
+            ["git"], fetch_returncode, "", "fatal: unable to access"
+        )
+    )
+    _bind(svc, "_origin_git", origin)
+    return origin
+
+
 @pytest.fixture
 def healthy_workspace(tmp_path: Path) -> Iterator[Path]:
     """Materialize a directory that passes `_is_workspace_healthy`."""
@@ -73,55 +95,21 @@ async def test_ensure_workspace_fetches_origin_on_healthy_short_circuit(
     that no longer matches the dev's pushed branch.
     """
     svc = _service()
-    agent = _fake_agent()
-    _bind(svc, "_lookup_agent_or_raise", AsyncMock(return_value=agent))
-    _bind(svc, "get_workspace_path", MagicMock(return_value=healthy_workspace))
+    origin = _wire_healthy_reentry(svc, healthy_workspace)
 
-    captured: list[list[str]] = []
-
-    def _fake_run(
-        args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        captured.append(args)
-        return subprocess.CompletedProcess(
-            args=args, returncode=0, stdout="", stderr=""
-        )
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._ensure_agent_owned"),
-    ):
-        result = await svc.ensure_workspace(
-            project_slug="roboco",
-            agent_id=agent.id,
-        )
+    result = await svc.ensure_workspace(project_slug="roboco", agent_id=uuid4())
 
     assert result == healthy_workspace
-    fetch_calls = [
-        a
-        for a in captured
-        if len(a) >= _MIN_GIT_FETCH_ARGC and a[0] == "git" and "fetch" in a
-    ]
-    assert fetch_calls, (
-        f"Expected `git fetch origin` on healthy short-circuit, "
-        f"got subprocess calls: {captured}"
-    )
-    # Specifically: a SCOPED `git fetch --no-tags --prune origin <ref...>` with
-    # NO `-c` flag. The fetch is scoped to the workspace's branches (current +
-    # default) rather than all refs so it can't time out on a monorepo with many
-    # accumulated feature/* branches. The `-c` check protects the docstring's
-    # no-token-injection invariant — a future refactor that added
-    # `git -c http.extraheader=...` must not slip in unnoticed.
-    assert any(
-        a[0] == "git"
-        and "-c" not in a
-        and "fetch" in a
-        and "--no-tags" in a
-        and "--prune" in a
-        and "origin" in a
-        and a.index("origin") < len(a) - 1  # ≥1 ref after origin → scoped
-        for a in fetch_calls
-    ), f"Expected scoped `git fetch --no-tags --prune origin <ref>`, got: {fetch_calls}"
+    origin.assert_awaited_once()
+    assert origin.await_args is not None
+    repo, project_slug, args = origin.await_args.args
+    assert (repo, project_slug) == (healthy_workspace, "roboco")
+    # A SCOPED `fetch --no-tags --prune origin <ref...>`: scoped to the
+    # workspace's branches (current + default) rather than all refs so it
+    # can't time out on a monorepo with many accumulated feature/* branches.
+    # The command names `origin` only — the relay owns the URL and token.
+    assert args[:4] == ["fetch", "--no-tags", "--prune", "origin"]
+    assert len(args) > len(["fetch", "--no-tags", "--prune", "origin"])
 
 
 @pytest.mark.asyncio
@@ -134,94 +122,13 @@ async def test_refresh_fetch_is_scoped_to_current_and_default_branch(
     branches, leaving the workspace silently stale.
     """
     svc = _service()
-    agent = _fake_agent()
-    _bind(svc, "_lookup_agent_or_raise", AsyncMock(return_value=agent))
-    _bind(svc, "get_workspace_path", MagicMock(return_value=healthy_workspace))
+    origin = _wire_healthy_reentry(svc, healthy_workspace)
 
-    captured: list[list[str]] = []
+    await svc.ensure_workspace(project_slug="roboco", agent_id=uuid4())
 
-    def _fake_run(
-        args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        captured.append(args)
-        out = ""
-        if "rev-parse" in args:
-            out = "feature/frontend/abc12345"
-        elif "symbolic-ref" in args:
-            out = "origin/master"
-        return subprocess.CompletedProcess(
-            args=args, returncode=0, stdout=out, stderr=""
-        )
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._ensure_agent_owned"),
-    ):
-        await svc.ensure_workspace(project_slug="roboco", agent_id=agent.id)
-
-    fetch = next(a for a in captured if a[0] == "git" and "fetch" in a)
-    after_origin = fetch[fetch.index("origin") + 1 :]
-    assert "feature/frontend/abc12345" in after_origin, (
-        f"current branch must be fetched, got: {fetch}"
-    )
-    assert "master" in after_origin, f"default branch must be fetched, got: {fetch}"
-
-
-@pytest.mark.asyncio
-async def test_ensure_workspace_rechowns_after_refresh_fetch(
-    healthy_workspace: Path,
-) -> None:
-    """Healthy-clone re-entry MUST chown again AFTER `git fetch origin`.
-
-    The orchestrator runs as root, so `git fetch` writes new pack files
-    under `.git/objects/pack/` and updates refs under
-    `.git/refs/remotes/origin/` — those land root-owned, undoing the
-    pre-fetch chown. Without a post-fetch chown, the next agent-side
-    write (.git/index.lock, packed-refs, etc.) hits Permission denied.
-
-    This mirrors the pattern in `fetch_branch_for_inspection`.
-    """
-    svc = _service()
-    agent = _fake_agent()
-    _bind(svc, "_lookup_agent_or_raise", AsyncMock(return_value=agent))
-    _bind(svc, "get_workspace_path", MagicMock(return_value=healthy_workspace))
-
-    call_log: list[str] = []
-
-    def _fake_run(
-        args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        if "fetch" in args:
-            call_log.append("fetch")
-        return subprocess.CompletedProcess(
-            args=args, returncode=0, stdout="", stderr=""
-        )
-
-    def _fake_chown(_workspace: object) -> None:
-        call_log.append("chown")
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch(
-            "roboco.services.workspace._ensure_agent_owned",
-            side_effect=_fake_chown,
-        ),
-    ):
-        await svc.ensure_workspace(
-            project_slug="roboco",
-            agent_id=agent.id,
-        )
-
-    # Expect at least: chown (pre-fetch) -> fetch -> chown (post-fetch).
-    # The post-fetch chown is the load-bearing one — it repairs ownership
-    # of objects/refs the root-side fetch just wrote.
-    assert call_log.count("chown") >= _MIN_CHOWN_CALLS_AROUND_FETCH, (
-        f"Expected at least two chown calls (pre + post fetch), got: {call_log}"
-    )
-    fetch_idx = call_log.index("fetch")
-    assert "chown" in call_log[fetch_idx + 1 :], (
-        f"Expected a chown AFTER the fetch, got: {call_log}"
-    )
+    assert origin.await_args is not None
+    args = origin.await_args.args[2]
+    assert args[args.index("origin") + 1 :] == ["feature/frontend/abc12345", "master"]
 
 
 @pytest.mark.asyncio
@@ -233,24 +140,8 @@ async def test_ensure_workspace_fetch_failure_does_not_abort(
     Network blips and offline-mode CI must not break workspace setup.
     """
     svc = _service()
-    agent = _fake_agent()
-    _bind(svc, "_lookup_agent_or_raise", AsyncMock(return_value=agent))
-    _bind(svc, "get_workspace_path", MagicMock(return_value=healthy_workspace))
+    _wire_healthy_reentry(svc, healthy_workspace, fetch_returncode=128)
 
-    def _fake_run(
-        args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            args=args, returncode=128, stdout="", stderr="fatal: unable to access"
-        )
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._ensure_agent_owned"),
-    ):
-        result = await svc.ensure_workspace(
-            project_slug="roboco",
-            agent_id=agent.id,
-        )
+    result = await svc.ensure_workspace(project_slug="roboco", agent_id=uuid4())
 
     assert result == healthy_workspace

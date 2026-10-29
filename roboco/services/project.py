@@ -203,6 +203,27 @@ class ProjectService(BaseService):
         )
         return self._register_forge(result.scalar_one_or_none())
 
+    async def get_by_workspace_path(self, workspace_path: str) -> ProjectTable | None:
+        """The project whose operator-configured ``workspace_path`` this is.
+
+        None when no project, or more than one, claims the path: picking one
+        arbitrarily would serve git for that path with another project's relay
+        and token.
+        """
+        result = await self.session.execute(
+            select(ProjectTable)
+            .where(ProjectTable.workspace_path == workspace_path)
+            .limit(2)
+        )
+        projects = list(result.scalars().all())
+        if len(projects) > 1:
+            self.log.warning(
+                "workspace_path is claimed by more than one project",
+                workspace_path=workspace_path,
+            )
+            return None
+        return self._register_forge(projects[0] if projects else None)
+
     async def get_or_raise(self, project_id: UUID) -> ProjectTable:
         """Get a project by ID or raise NotFoundError."""
         project = await self.get(project_id)
@@ -348,6 +369,7 @@ class ProjectService(BaseService):
 
         if delete_workspaces:
             from roboco.services.workspace import get_workspace_service
+            from roboco.services.workspace_git import remove_workspace_tree
 
             ws_svc = get_workspace_service(self.session)
             try:
@@ -357,9 +379,7 @@ class ProjectService(BaseService):
 
                     path = Path(ws_info["path"])
                     if path.exists():
-                        import shutil
-
-                        shutil.rmtree(path)
+                        remove_workspace_tree(path)
                 self.log.info(
                     "Deleted workspaces for project",
                     project_slug=project_slug,

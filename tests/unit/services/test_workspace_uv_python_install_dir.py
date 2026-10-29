@@ -14,10 +14,9 @@ clone's own build backend), but the pin still matters: the managed CPython must
 live on the shared volume the agent container mounts, not in that container.
 
 Cure: pin ``UV_PYTHON_INSTALL_DIR`` to ``<workspace>/.uv-python`` so the managed
-CPython the venv symlinks to lives INSIDE the workspace bind mount and is chowned
-to the agent by the existing ``_ensure_agent_owned`` walk (``.uv-python`` is not
-in ``_PRUNE_DIRS``). Per-workspace → per-project isolation intact (no global
-shared interpreter). ``/app/.venv`` untouched.
+CPython the venv symlinks to lives INSIDE the workspace bind mount, written by
+the install container as the agent uid itself. Per-workspace → per-project
+isolation intact (no global shared interpreter). ``/app/.venv`` untouched.
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.services.workspace import (
-    _PRUNE_DIRS,
     WorkspaceService,
     _uv_container_env,
 )
@@ -51,17 +49,6 @@ def _make_workspace(tmp_path: Path) -> Path:
     workspace = tmp_path / "roboco" / "backend" / "be-dev-1"
     (workspace / ".git").mkdir(parents=True)
     return workspace
-
-
-# ---------------------------------------------------------------------------
-# _PRUNE_DIRS — the chown walk must reach .uv-python
-# ---------------------------------------------------------------------------
-
-
-def test_uv_python_install_dir_not_pruned() -> None:
-    # If .uv-python were pruned, _ensure_agent_owned would never chown the
-    # managed CPython and the agent still couldn't traverse it.
-    assert ".uv-python" not in _PRUNE_DIRS
 
 
 def test_repo_gitignore_ignores_uv_python_dir() -> None:

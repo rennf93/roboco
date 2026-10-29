@@ -8,7 +8,6 @@ All business logic for git commands, commit templates, PR generation.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import json
 import os
@@ -26,7 +25,7 @@ from uuid import UUID
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Coroutine, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,13 +63,42 @@ from roboco.services.base import (
 )
 from roboco.services.forge import ForgeRouter, GitProvider, RepoRef
 from roboco.services.gateway.quality_gate import GateResult, run_quality_commands
+from roboco.services.git_origin import (
+    OriginContext,
+    UnsupportedOriginCommandError,
+    is_origin_command,
+    push_ref_update,
+    run_origin_command,
+)
+from roboco.services.git_relay import (
+    GitRelay,
+    is_dispatcher_owned,
+    private_root,
+    read_clone_path,
+    relay_for,
+    run_private_git,
+)
 from roboco.services.project import get_project_service
+from roboco.services.project_hooks import (
+    find_project_hook,
+    run_commit_hooks,
+    run_project_hook,
+    skips_hooks,
+)
 from roboco.services.task import TaskService, get_task_service
 from roboco.services.work_session import get_work_session_service
 from roboco.services.workspace import (
     WorkspaceError,
     WorkspaceService,
     get_workspace_service,
+)
+from roboco.services.workspace_git import (
+    UnsafeWorkspaceGitConfigError,
+    run_as_workspace_user,
+    run_workspace_git,
+    workspace_git_env,
+    workspace_user_argv,
+    write_workspace_file,
 )
 from roboco.templates.git import (
     BranchNameError,
@@ -89,6 +117,7 @@ from roboco.templates.git import (
 from roboco.templates.git.pr_internal import InternalCommitInfo
 from roboco.templates.git.pr_root import CommitInfo as PRCommitInfo
 from roboco.utils.converters import require_uuid
+from roboco.utils.workspace_paths import clone_root_of
 
 
 # Git command timeout in seconds. Sourced from settings so operators can
@@ -210,35 +239,64 @@ def _workspace_sync_lock(workspace: Path) -> asyncio.Lock:
     return lock
 
 
-def resolve_git_dir(workspace: Path) -> Path | None:
-    """Resolve the real ``.git`` directory for a workspace or linked worktree.
+def _run_local_git(
+    repo: Path, args: list[str], timeout: int
+) -> subprocess.CompletedProcess[str]:
+    """A non-origin git command: as root only in a dispatcher-owned repo."""
+    if is_dispatcher_owned(repo):
+        return run_private_git(repo, args, timeout=timeout, check=False)
+    return run_workspace_git(repo, args, timeout=timeout, check=False)
 
-    A normal clone's ``.git`` is a directory. A linked worktree's ``.git`` is a
-    *file* containing ``gitdir: <path>`` pointing into the clone root's
-    ``.git/worktrees/<id>/``. Callers that rglob locks / parse config must go
-    through here, not assume ``workspace / ".git"`` is a directory.
 
-    Returns the resolved git dir, or None if the workspace has no git metadata.
+def _write_repo_file(repo: Path, relative: str, content: str) -> None:
+    """Write a file into a repository's working tree.
+
+    In an agent workspace the write runs as the git user: as root, a
+    planted symlink anywhere along the path would steer root's write.
     """
-    dot_git = workspace / ".git"
-    if dot_git.is_dir():
-        return dot_git
-    if dot_git.is_file():
-        try:
-            first = dot_git.read_text().splitlines()[0].strip()
-        except (OSError, IndexError):
-            return None
-        if not first.startswith("gitdir: "):
-            return None
-        target = Path(first[len("gitdir: ") :].strip())
-        if not target.is_absolute():
-            target = (workspace / target).resolve()
-        return target if target.is_dir() else None
-    return None
+    if is_dispatcher_owned(repo):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+        return
+    write_workspace_file(repo / relative, content)
+
+
+def _git_admin_dir(workspace: Path) -> Path:
+    """A repository's admin dir, by layout — never by reading ``.git``.
+
+    ``<clone>/.git`` for a clone root, ``<clone>/.git/worktrees/<id>`` for a
+    per-task worktree at ``<clone>/.worktrees/<id>``. A worktree's ``.git``
+    gitfile is agent-writable and could point anywhere, so it is not read.
+    """
+    clone_root = clone_root_of(workspace)
+    if clone_root != workspace:
+        return clone_root / ".git" / "worktrees" / workspace.name
+    return workspace / ".git"
+
+
+_LOCK_SWEEP_TIMEOUT_SECONDS = 30
+
+# Commands a project's own hooks gate (roboco.services.project_hooks).
+_HOOKED_VERBS = frozenset({"commit", "push"})
+_ZERO_SHA = "0" * 40
+
+# Dispatcher-owned repositories live at <private_root>/<kind>/<slug>[/...].
+_PRIVATE_REPO_KINDS = frozenset({"read", "release", "scratch"})
+_PRIVATE_REPO_DEPTH = 2
+
+
+def _hook_refusal(
+    args: list[str], refused: subprocess.CompletedProcess[str], *, check: bool
+) -> subprocess.CompletedProcess[str]:
+    """A project hook's refusal, surfaced the way a failed git command is."""
+    if check:
+        raise GitCommandError(" ".join(args), refused.stderr)
+    return refused
 
 
 def _remove_stale_git_locks(workspace: Path) -> None:
-    """Best-effort removal of orphaned ``.git/**/*.lock`` files.
+    """Best-effort removal of orphaned ``*.lock`` files under the admin dir.
 
     F019: a git mutation op (commit / merge --ff-only / rebase / reset --hard /
     add) killed by ``_run_git``'s timeout (SIGKILL) can orphan lock files —
@@ -246,100 +304,22 @@ def _remove_stale_git_locks(workspace: Path) -> None:
     op (incl. the next fresh-claim ``reset --hard``) with
     "Another git process seems to be running in this repository". By the time
     the timeout fires the git process is dead, so its orphaned locks are safe
-    to remove. Best-effort: any error (no .git, race with a real process) is
-    swallowed — this only ever *helps*, never blocks.
-
-    Worktree-aware (F123): a linked worktree's ``.git`` is a gitdir pointer —
-    route through ``resolve_git_dir`` so locks inside ``.git/worktrees/<id>/``
-    are reached.
+    to remove. ``find`` never follows a symlink; in an agent workspace it runs
+    as the git user, so a planted link cannot steer a root delete anywhere.
+    Best-effort: errors are swallowed — this only ever *helps*, never blocks.
     """
-    git_dir = resolve_git_dir(workspace)
-    if git_dir is None or not git_dir.is_dir():
-        return
-    try:
-        for lock in git_dir.rglob("*.lock"):
-            # A lock a real process just grabbed, or a permission issue —
-            # leave it. The TTL/next-op path is the backstop.
-            with contextlib.suppress(OSError):
-                lock.unlink()
-    except OSError:
-        return
-
-
-# Verbs that never write anything — `_run_git`'s post-op ownership repair is
-# pure waste after these (live NAS: a "rev-parse --verify" cost 5165ms of
-# chown for a command that touches nothing). Read-only forms of `branch` /
-# `symbolic-ref` are handled separately below since they share a verb name
-# with a mutating form.
-_READ_ONLY_GIT_VERBS = frozenset(
-    {
-        "status",
-        "log",
-        "diff",
-        "rev-parse",
-        "rev-list",
-        "ls-remote",
-        "merge-base",
-        "show",
-        "cherry",
-    }
-)
-
-# Verbs that write only inside `.git/` (refs, objects, index) — never the
-# working tree. Ownership repair can be scoped to `.git/` alone instead of a
-# full-workspace walk. `remote` (add/rename/set-url/prune, ...) only ever
-# touches `.git/config` and `refs/remotes/*` / `packed-refs`, but it fell
-# through to the "full" default unclassified, which meant a bare
-# `remote prune` (the branch-list route's self-heal, a read-only poll) paid
-# a whole-workspace chown walk for an op that never touches the working tree.
-_GIT_SCOPED_VERBS = frozenset({"add", "commit", "fetch", "push", "remote"})
-
-
-def _branch_or_symbolic_ref_scope(verb: str, rest: list[str]) -> str:
-    """Query vs SET form of `branch` / `symbolic-ref` (same verb, different
-    scope): query reads only, SET writes a ref under `.git/`.
-
-    Query: `branch --show-current` (0 positional) or `symbolic-ref [-q]
-    <name>` (1 positional — naming which ref to read). SET (`branch <name>
-    <start>`, `symbolic-ref <name> <ref>`) always carries 2+ positional args.
-    """
-    positional = [a for a in rest if not a.startswith("-")]
-    is_query = (verb == "branch" and not positional) or (
-        verb == "symbolic-ref" and len(positional) <= 1
-    )
-    return "none" if is_query else "git"
-
-
-def _git_ownership_scope(args: list[str]) -> str:
-    """Classify a git invocation's post-op ownership-repair scope.
-
-    Root cause of the chown cost: the orchestrator's git subprocess runs as
-    root, so a MUTATING op leaves root-owned files under `.git/` (and, for
-    checkout/reset/rebase/pull, the working tree) that the agent container
-    (uid 1000) can't write. A read-only op never writes anything, so
-    repairing ownership after one is pure waste — on the NAS this cost
-    5-10s PER git call, and a single `i_am_done` chains ~a dozen ops.
-
-    Returns "none" (skip repair — zero syscalls), "git" (repair `.git/`
-    only, worktree-aware via `_resolve_clone_root`), or "full" (repair the
-    whole workspace — unchanged behavior, and the safe default for
-    checkout/reset/rebase/pull/stash or any verb this classifier doesn't
-    recognize, so an unclassified op is never under-repaired). `stash`
-    (rebase_onto_base's `stash=True` path, #337 scoping) writes both the
-    working tree (push/pop) and `.git/` (the stash ref + objects) — it is
-    deliberately left unclassified so it falls to the safe "full" default
-    rather than a `.git/`-only repair that would strand agent-owned files.
-    """
-    if not args:
-        return "full"
-    verb = args[0]
-    if verb in _READ_ONLY_GIT_VERBS:
-        return "none"
-    if verb in ("branch", "symbolic-ref"):
-        return _branch_or_symbolic_ref_scope(verb, args[1:])
-    if verb in _GIT_SCOPED_VERBS:
-        return "git"
-    return "full"
+    argv = ["find", str(_git_admin_dir(workspace)), "-name", "*.lock"]
+    argv += ["-type", "f", "-delete"]
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        if is_dispatcher_owned(workspace):
+            subprocess.run(
+                argv,
+                capture_output=True,
+                timeout=_LOCK_SWEEP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        else:
+            run_as_workspace_user(argv, timeout=_LOCK_SWEEP_TIMEOUT_SECONDS)
 
 
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
@@ -500,75 +480,50 @@ class GitService(BaseService):
         workspace: Path,
         args: list[str],
         check: bool = True,
-        token: str | None = None,
         timeout: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        """Run a git command in the workspace (non-blocking).
+        """Run a git command in a repository (non-blocking).
 
-        If `token` is given, injects an Authorization header via `-c
-        http.extraheader=...` for this one invocation. The token never
-        lands in argv (it goes in a config flag that git consumes and
-        then forgets) and never touches `.git/config` on disk. Use this
-        for push / fetch / ls-remote — any op that talks to origin.
+        Every agent container mounts every clone read-write, so nothing here
+        trusts a clone, and no token comes near one:
 
-        `timeout` overrides the default per-command budget
-        (``settings.git_command_timeout_seconds``). Staging and committing
-        a large changeset (e.g. the Next.js panel) can exceed the short
-        default while git hashes every object and we re-chown the tree, so
-        the commit choreography passes the longer
-        ``settings.git_commit_timeout_seconds``.
+        - a command that names ``origin`` (fetch / push / ls-remote / pull /
+          remote prune) is served through the project's relay against its
+          URL from the database (``roboco.services.git_origin``); the token
+          lives only in root-run git inside the relay, scoped to the origin
+          host, never in argv or on disk;
+        - any other command runs as the git user via ``run_workspace_git``
+          (environment from scratch, program-starting settings pinned off,
+          hooks only from the root-owned support dir, config audited), or as
+          root via ``run_private_git`` in a dispatcher-owned repository under
+          the private root (the read and release clones).
 
-        After every orchestrator-side git op, hand ownership back to the
-        agent user — SCOPED to what this op could actually have written
-        (see `_git_ownership_scope`). Git commands here run as root and
-        create root-owned files under .git/ (refs, logs/refs, packed-refs,
-        index, objects). If we don't re-chown, the agent container (uid
-        1000) can't append to those files on its next commit and fails
-        with "unable to append to .git/logs/refs/heads/...". A read-only
-        op (status, log, diff, ...) never writes, so it skips the repair
-        entirely.
-
-        This is also the ONE chokepoint every root-side git write routes
-        through, so it's where the ownership-repair root-sentinel marker
-        (``_ensure_agent_owned``'s ``.git/roboco-owned``, workspace.py) gets
-        invalidated — BEFORE the op runs, since the op is what's about to
-        create new root-owned files a live marker would otherwise let a
-        later ``_ensure_agent_owned`` call wrongly skip.
+        The git user writes group-writable files in the agent group, so no
+        ownership repair follows a command. ``timeout`` overrides the default
+        per-command budget (``settings.git_command_timeout_seconds``): staging
+        and committing a large changeset (e.g. the Next.js panel) can exceed
+        the short default, so the commit choreography passes the longer
+        ``settings.git_commit_timeout_seconds``. A refused clone config or an
+        origin command RoboCo never issues raises ``GitCommandError``.
         """
         effective_timeout = timeout if timeout is not None else _default_git_timeout()
+        args, refused = await self._run_project_hooks(
+            workspace, args, effective_timeout
+        )
+        if refused is not None:
+            return _hook_refusal(args, refused, check=check)
+        if is_origin_command(args):
+            ctx = await self._origin_context(workspace, effective_timeout)
 
-        prefix: list[str] = []
-        if token:
-            # GitHub's git-over-HTTPS (smart HTTP) authenticates with HTTP
-            # Basic, NOT Bearer. Using Bearer here causes git to fall
-            # through to the credential prompt and fail with
-            # "could not read Username for 'https://github.com'".
-            # Bearer is only correct for the REST API (PR create/merge,
-            # via httpx) — keep them separate.
-            basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-            prefix = [
-                "-c",
-                f"http.extraheader=Authorization: Basic {basic}",
-            ]
+            def _run() -> subprocess.CompletedProcess[str]:
+                return run_origin_command(ctx, args)
 
-        def _run() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                ["git", *prefix, *args],
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=effective_timeout,
-                check=check,
-            )
+        else:
+
+            def _run() -> subprocess.CompletedProcess[str]:
+                return _run_local_git(workspace, args, effective_timeout)
 
         loop = asyncio.get_running_loop()
-        op = " ".join(args[:2])
-        if _git_ownership_scope(args) != "none":
-            from roboco.services.workspace import invalidate_owned_marker
-
-            await loop.run_in_executor(
-                _GIT_EXECUTOR, invalidate_owned_marker, workspace
-            )
         t0 = time.monotonic()
         try:
             result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
@@ -579,48 +534,147 @@ class GitService(BaseService):
                 _GIT_EXECUTOR, _remove_stale_git_locks, workspace
             )
             raise GitTimeoutError(" ".join(args), effective_timeout) from e
-        except subprocess.CalledProcessError as e:
+        except (UnsafeWorkspaceGitConfigError, UnsupportedOriginCommandError) as e:
+            raise GitCommandError(" ".join(args), str(e)) from e
+        self._warn_if_slow(args, t0, effective_timeout, workspace)
+        if check and result.returncode != 0:
             raise GitCommandError(
-                " ".join(args), e.stderr or e.stdout or "Unknown error"
-            ) from e
-        git_ms = (time.monotonic() - t0) * 1000.0
-        chown_ms = await self._reown_after_git_op(loop, workspace, args)
-
-        # Surface slow git/chown ops (instrumentation): a single line that
-        # pinpoints where an op's time went — the subprocess (e.g. a push to
-        # origin) vs the ownership repair — without flooding the fast path.
-        if git_ms > _SLOW_GIT_OP_MS or chown_ms > _SLOW_GIT_OP_MS:
-            self.log.warning(
-                "slow git op",
-                op=op,
-                git_ms=round(git_ms),
-                chown_ms=round(chown_ms),
-                timeout_s=effective_timeout,
-                workspace=str(workspace),
+                " ".join(args), result.stderr or result.stdout or "Unknown error"
             )
         return result
 
-    @staticmethod
-    async def _reown_after_git_op(
-        loop: asyncio.AbstractEventLoop, workspace: Path, args: list[str]
-    ) -> float:
-        """Run the scope-appropriate post-op ownership repair; return its ms cost.
+    def _warn_if_slow(
+        self, args: list[str], started: float, timeout: int, workspace: Path
+    ) -> None:
+        """Surface slow git ops (instrumentation) without flooding the fast path."""
+        git_ms = (time.monotonic() - started) * 1000.0
+        if git_ms > _SLOW_GIT_OP_MS:
+            self.log.warning(
+                "slow git op",
+                op=" ".join(args[:2]),
+                git_ms=round(git_ms),
+                timeout_s=timeout,
+                workspace=str(workspace),
+            )
 
-        Extracted out of `_run_git` so the classify-then-dispatch logic stays
-        out of that method's cyclomatic budget. Runs in the dedicated git
-        executor so it doesn't compete with the event loop's default pool.
-        A "none"-scope op costs zero syscalls and returns 0.0 so the slow-op
-        instrumentation still sees the true (near-zero) cost.
+    async def _run_project_hooks(
+        self, workspace: Path, args: list[str], timeout: int
+    ) -> tuple[list[str], subprocess.CompletedProcess[str] | None]:
+        """The project's own hooks git would run before this commit or push,
+        run in a throwaway container (``roboco.services.project_hooks``).
+        Returns the command's args (a ``commit-msg`` hook rewrites them to
+        read its edited message) and the refusal, if any. Only workspace
+        commits and pushes have any: dispatcher-owned repositories run none."""
+        if not args or args[0] not in _HOOKED_VERBS or is_dispatcher_owned(workspace):
+            return args, None
+        if args[0] == "commit":
+            return await run_commit_hooks(workspace, args, timeout=timeout)
+        return args, await self._run_pre_push_hook(workspace, args, timeout)
+
+    async def _run_pre_push_hook(
+        self, workspace: Path, args: list[str], timeout: int
+    ) -> subprocess.CompletedProcess[str] | None:
+        """``pre-push origin <url>`` with git's one-line input, when the
+        project has one; None when there is none or it passed."""
+        if skips_hooks(args) or not is_origin_command(args):
+            return None
+        hook = await find_project_hook(workspace, "pre-push")
+        if hook is None:
+            return None
+        try:
+            local_ref, remote_ref = push_ref_update(args)
+        except UnsupportedOriginCommandError:
+            return None  # the push itself refuses it, with this error
+        update = await self._pre_push_update(workspace, local_ref, remote_ref)
+        relay = await self._relay_for_repo(workspace)
+        return await run_project_hook(
+            workspace,
+            hook,
+            ["origin", relay.git_url],
+            timeout=timeout,
+            stdin=" ".join(update) + "\n",
+        )
+
+    async def _pre_push_update(
+        self, workspace: Path, local_ref: str, remote_ref: str
+    ) -> list[str]:
+        """``<local ref> <local sha> <remote ref> <remote sha>`` as git hands
+        it to ``pre-push``; the remote side is read from origin through the
+        relay (all zeros for a new branch)."""
+        local = await self._run_git(
+            workspace, ["rev-parse", "--verify", f"{local_ref}^{{commit}}"], check=False
+        )
+        listed = await self._run_git(
+            workspace, ["ls-remote", "origin", remote_ref], check=False
+        )
+        remote_sha = next(
+            (
+                line.split("\t", 1)[0]
+                for line in listed.stdout.splitlines()
+                if line.endswith(f"\t{remote_ref}")
+            ),
+            _ZERO_SHA,
+        )
+        return [local_ref, local.stdout.strip() or _ZERO_SHA, remote_ref, remote_sha]
+
+    async def _origin_context(self, repo: Path, timeout: int) -> OriginContext:
+        """The relay round-trip context for an ``origin`` command in ``repo``."""
+        relay = await self._relay_for_repo(repo)
+
+        def _local(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            return _run_local_git(repo, list(args), timeout)
+
+        return OriginContext(
+            relay=relay,
+            repo=repo,
+            local_git=_local,
+            from_workspace=not is_dispatcher_owned(repo),
+            timeout=timeout,
+        )
+
+    async def _relay_for_repo(self, repo: Path) -> GitRelay:
+        """The relay of the project ``repo`` belongs to, from the database."""
+        project = await self._project_for_repo(repo)
+        if project is None:
+            raise GitCommandError("origin", f"no project owns repository {repo}")
+        return relay_for(project, await self._token_for_project(str(project.slug)))
+
+    async def _project_for_repo(self, repo: Path) -> ProjectTable | None:
+        """The project a repository belongs to, by its path — never its config.
+
+        An agent workspace sits at ``<workspaces_root>/<slug>/...`` and a
+        dispatcher-owned clone at ``<private_root>/<read|release|scratch>/<slug>``;
+        any other path is an operator-configured ``workspace_path``. The path
+        is taken lexically: an agent can swap its clone for a symlink to
+        another project's, so it is never resolved.
         """
-        from roboco.services.workspace import _ensure_agent_owned, _ensure_git_dir_owned
+        normalized = Path(os.path.normpath(repo))
+        slug: str | None = None
+        with contextlib.suppress(ValueError):
+            slug = normalized.relative_to(settings.workspaces_root).parts[0]
+        with contextlib.suppress(ValueError):
+            parts = normalized.relative_to(private_root()).parts
+            if len(parts) >= _PRIVATE_REPO_DEPTH and parts[0] in _PRIVATE_REPO_KINDS:
+                slug = parts[1]
+        project_service = get_project_service(self.session)
+        if slug:
+            return await project_service.get_by_slug(slug)
+        return await project_service.get_by_workspace_path(str(normalized))
 
-        scope = _git_ownership_scope(args)
-        if scope == "none":
-            return 0.0
-        repair = _ensure_git_dir_owned if scope == "git" else _ensure_agent_owned
-        t1 = time.monotonic()
-        await loop.run_in_executor(_GIT_EXECUTOR, repair, workspace)
-        return (time.monotonic() - t1) * 1000.0
+    async def _repo_ref_for_workspace(self, workspace: Path) -> RepoRef:
+        """The forge repo a workspace's REST calls act on: the project's URL
+        from the database, never the agent-writable ``remote.origin.url``.
+
+        A clone's config is agent-controlled: read from there, a rewritten
+        origin URL pointed PR create/merge/close (with the project token) at
+        any repository that token can reach.
+        """
+        project = await self._project_for_repo(workspace)
+        if project is None:
+            raise GitError(
+                "No project owns this workspace", {"workspace": str(workspace)}
+            )
+        return self._parse_git_url(str(project.git_url))
 
     async def _token_for_project(self, project_slug: str) -> str | None:
         """Decrypted project token for orchestrator-side remote git ops.
@@ -647,23 +701,6 @@ class GitService(BaseService):
                 error=str(exc),
             )
             return None
-
-    async def _token_for_workspace(self, workspace: Path) -> str | None:
-        """Derive project_slug from workspace path, then load its token.
-
-        Workspace layout is `/data/workspaces/{project}/{team}/{agent}/`, so
-        the project slug is the first component after `/data/workspaces/`.
-        Returns None if it can't be derived or the project has no token.
-        """
-        try:
-            parts = (
-                workspace.resolve().relative_to(Path(settings.workspaces_root)).parts
-            )
-        except (ValueError, OSError):
-            return None
-        if not parts:
-            return None
-        return await self._token_for_project(parts[0])
 
     async def get_workspace(
         self,
@@ -732,12 +769,10 @@ class GitService(BaseService):
         """
         try:
             workspace = await self.get_workspace(project_slug, agent_id)
-            token = await self._token_for_project(project_slug)
             result = await self._run_git(
                 workspace,
                 ["ls-remote", "--heads", "origin", branch_name],
                 check=False,
-                token=token,
                 timeout=_network_git_timeout(),
             )
         except Exception as exc:
@@ -769,12 +804,10 @@ class GitService(BaseService):
         if last is not None and (now - last) < _REMOTE_PRUNE_TTL_SECONDS:
             return
         try:
-            token = await self._token_for_workspace(workspace)
             await self._run_git(
                 workspace,
                 ["remote", "prune", "origin"],
                 check=False,
-                token=token,
                 timeout=_network_git_timeout(),
             )
             _remote_pruned_at[key] = now
@@ -923,29 +956,6 @@ class GitService(BaseService):
         ``GitHubProvider``.
         """
         return ForgeRouter().parse_repo_ref(url)
-
-    def _parse_github_remote(self, workspace: Path) -> RepoRef:
-        """Read the origin remote URL from a workspace and parse owner/repo."""
-        cfg = workspace / ".git" / "config"
-        try:
-            text = cfg.read_text()
-        except OSError as e:
-            raise GitError(
-                f"Could not read git config: {e}",
-                {"workspace": str(workspace)},
-            ) from e
-
-        match = re.search(
-            r"^\s*url\s*=\s*(?P<url>\S+)",
-            text,
-            flags=re.MULTILINE,
-        )
-        if not match:
-            raise GitError(
-                "No remote URL in git config",
-                {"workspace": str(workspace)},
-            )
-        return self._parse_git_url(match.group("url"))
 
     def _get_primary_session_id(self, _task: TaskTable | None) -> str | None:
         """Discussion sessions are retired; always None.
@@ -1126,7 +1136,6 @@ class GitService(BaseService):
             return
         # Resumed/re-provisioned clone parked on the wrong branch — try to
         # recover onto the task branch before rejecting.
-        token = await self._token_for_workspace(workspace)
         local = await self._run_git(
             workspace,
             ["rev-parse", "--verify", "--quiet", f"refs/heads/{task_branch}"],
@@ -1137,7 +1146,6 @@ class GitService(BaseService):
             await self._run_git(
                 workspace,
                 ["fetch", "origin", task_branch],
-                token=token,
                 check=False,
                 timeout=_network_git_timeout(),
             )
@@ -1450,10 +1458,8 @@ class GitService(BaseService):
         )
         default_branch = await self._project_default_branch(request.project_slug)
 
-        # Token for any remote-touching git command below (fetch, ls-remote,
-        # pull, push). Injected into a single `http.extraheader` config for
-        # the subprocess — never stored in .git/config on disk.
-        project_token = await self._token_for_project(request.project_slug)
+        # Remote-touching git below (fetch, ls-remote, push) goes through the
+        # project's relay (`_run_git`); no token is handled here.
 
         if base_branch != default_branch:
             # Parent is not the default branch - check it exists on remote.
@@ -1466,7 +1472,6 @@ class GitService(BaseService):
                 workspace,
                 ["ls-remote", "--heads", "origin", base_branch],
                 check=False,
-                token=project_token,
             )
             if not result.stdout.strip():
                 self.log.warning(
@@ -1487,7 +1492,6 @@ class GitService(BaseService):
         await self._run_git(
             workspace,
             ["fetch", "origin", *fetch_refs],
-            token=project_token,
             check=False,
             timeout=_network_git_timeout(),
         )
@@ -1544,7 +1548,6 @@ class GitService(BaseService):
         await self._run_git(
             workspace,
             ["push", "-u", "origin", branch_name],
-            token=project_token,
             timeout=_network_git_timeout(),
         )
         # Ownership re-chown happens automatically inside `_run_git` now.
@@ -1560,7 +1563,6 @@ class GitService(BaseService):
         task_id: UUID,
         branch_name: str,
         source_branch: str,
-        project_slug: str,
     ) -> dict[str, Any]:
         """Backfill a freshly cut branch with a dependency's merged content.
 
@@ -1585,12 +1587,10 @@ class GitService(BaseService):
         ``missing_ref`` / ``merged`` / ``merged_push_failed`` / ``conflict``
         (the last carries ``"files"``).
         """
-        token = await self._token_for_project(project_slug)
         await self._run_git(
             workspace,
             ["fetch", "origin", source_branch],
             check=False,
-            token=token,
             timeout=_network_git_timeout(),
         )
         origin_ref = f"origin/{source_branch}"
@@ -1618,7 +1618,6 @@ class GitService(BaseService):
             worktree,
             ["push", "origin", branch_name],
             check=False,
-            token=token,
             timeout=_network_git_timeout(),
         )
         return {"status": "merged" if push.returncode == 0 else "merged_push_failed"}
@@ -1635,7 +1634,6 @@ class GitService(BaseService):
     async def create_branch_from_pr_head(
         self,
         workspace: Path,
-        project_slug: str,
         pr_number: int,
         branch_name: str,
     ) -> str:
@@ -1649,7 +1647,6 @@ class GitService(BaseService):
         code enters a roboco branch, so the caller MUST only invoke it for a
         human-confirmed (``confirmed_by_human``) supersede.
         """
-        project_token = await self._token_for_project(project_slug)
         pull_ref = f"refs/pull/{pr_number}/head"
         # Force the refspec (``+``) so a retry after a prior push (e.g. the
         # commit after the push failed and rolled the umbrella back) updates the
@@ -1658,14 +1655,12 @@ class GitService(BaseService):
         await self._run_git(
             workspace,
             ["fetch", "origin", f"+{pull_ref}:{branch_name}"],
-            token=project_token,
             timeout=_network_git_timeout(),
         )
         await self._run_git(workspace, ["checkout", branch_name])
         await self._run_git(
             workspace,
             ["push", "-u", "origin", branch_name],
-            token=project_token,
             timeout=_network_git_timeout(),
         )
         return branch_name
@@ -1729,14 +1724,12 @@ class GitService(BaseService):
         Fetches from origin first to ensure remote branches are available.
         If the branch doesn't exist locally, creates a tracking branch from remote.
         """
-        token = await self._token_for_workspace(workspace)
         # Fetch just the branch we're about to check out, not every remote ref.
         # check=False: a not-yet-pushed branch makes this a no-op, and the
         # local/tracking checkout below still works.
         await self._run_git(
             workspace,
             ["fetch", "origin", branch],
-            token=token,
             check=False,
             timeout=_network_git_timeout(),
         )
@@ -1815,9 +1808,7 @@ class GitService(BaseService):
         workspace = await self.get_workspace(data.project_slug, agent_id)
         await self.checkout(workspace, data.branch)
 
-    async def _ensure_pushable_branch(
-        self, workspace: Path, branch: str, token: str | None
-    ) -> None:
+    async def _ensure_pushable_branch(self, workspace: Path, branch: str) -> None:
         """Make sure ``branch`` exists as a local ref before a push-by-name.
 
         Push-by-name (``git push origin <branch>``) decouples the push from the
@@ -1847,7 +1838,6 @@ class GitService(BaseService):
         await self._run_git(
             workspace,
             ["fetch", "origin", branch],
-            token=token,
             check=False,
             timeout=_network_git_timeout(),
         )
@@ -1889,11 +1879,10 @@ class GitService(BaseService):
         """
         if branch is None:
             branch = await self.get_current_branch(workspace)
-        token = await self._token_for_workspace(workspace)
         # The named ref must exist locally for push-by-name; recover it from
         # origin if a re-provisioned/shared clone is missing it (else the push
         # dies on "src refspec ... does not match any" and the task wedges).
-        await self._ensure_pushable_branch(workspace, branch, token)
+        await self._ensure_pushable_branch(workspace, branch)
 
         count_result = await self._run_git(
             workspace,
@@ -1911,9 +1900,7 @@ class GitService(BaseService):
             args.insert(1, "--force-with-lease")
 
         try:
-            await self._run_git(
-                workspace, args, token=token, timeout=_network_git_timeout()
-            )
+            await self._run_git(workspace, args, timeout=_network_git_timeout())
         except GitCommandError as e:
             # A >100MB file trips GitHub's GH001 pre-receive hook — a PERMANENT
             # rejection that retrying can never fix. Restate it unmistakably so
@@ -2046,12 +2033,10 @@ class GitService(BaseService):
                 "Stage and commit (or stash) your changes before pulling."
             )
 
-        token = await self._token_for_workspace(workspace)
         # Gate 2: fast-forward only — raises if branches have diverged
         pull_result = await self._run_git(
             workspace,
             ["pull", "--ff-only"],
-            token=token,
             timeout=_network_git_timeout(),
             check=False,
         )
@@ -2092,11 +2077,9 @@ class GitService(BaseService):
         Returns: (current_branch, has_changes, staged, unstaged, untracked,
                   ahead, behind)
         """
-        token = await self._token_for_workspace(workspace)
         await self._run_git(
             workspace,
             ["fetch", "origin", "--prune"],
-            token=token,
             timeout=_network_git_timeout(),
         )
         return await self.get_status(workspace)
@@ -2720,7 +2703,6 @@ class GitService(BaseService):
         workspace: Path,
         target_branch: str,
         default_branch: str,
-        git_token: str,
         task_id: UUID,
     ) -> str:
         """Return a PR base branch that actually exists on origin.
@@ -2739,7 +2721,6 @@ class GitService(BaseService):
             workspace,
             ["ls-remote", "--heads", "origin", target_branch],
             check=False,
-            token=git_token,
         )
         if ls.stdout.strip():
             return target_branch
@@ -2784,10 +2765,10 @@ class GitService(BaseService):
         default_branch = await self._project_default_branch(request.project_slug)
         git_token = await self._get_project_token_or_raise(request.project_slug)
         target_branch, pr_title, pr_body = await self._resolve_new_pr_context(
-            workspace, request, source_branch, default_branch, git_token
+            workspace, request, source_branch, default_branch
         )
 
-        repo_ref = self._parse_github_remote(workspace)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
         resp = await self._post_pr(
             repo_ref,
             git_token,
@@ -2872,14 +2853,13 @@ class GitService(BaseService):
             # Gitea/GitLab have no server-side merges API — their providers
             # return a shaped 501 and the shared local-git fallback runs.
             return await self._local_merge_branch(
-                project.git_url, git_token, target_branch, source_branch
+                project_slug, target_branch, source_branch
             )
         return self._env_merge_status(resp, project_slug)
 
     async def _local_merge_branch(
         self,
-        git_url: str,
-        git_token: str,
+        project_slug: str,
         target_branch: str,
         source_branch: str,
     ) -> dict[str, Any]:
@@ -2888,20 +2868,29 @@ class GitService(BaseService):
         merge the source rung, push. Same status vocabulary as
         ``_env_merge_status``; a conflict aborts with the clone discarded,
         so the remote is never touched on failure.
+
+        The throwaway lives under ``<private_root>/scratch/<slug>/`` (no agent
+        can reach it) and talks to origin only through the project's relay:
+        ``fetch origin`` / ``push origin`` there go through ``_run_git``'s
+        relay translation like everywhere else.
         """
-        with tempfile.TemporaryDirectory(prefix="roboco-envsync-") as tmp:
-            workdir = Path(tmp)
-            clone_dir = workdir / "clone"
-            clone = await self._run_git(
-                workdir,
-                ["clone", "--branch", target_branch, git_url, str(clone_dir)],
-                token=git_token,
+        scratch = private_root() / "scratch" / project_slug
+        scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="envsync-", dir=scratch) as tmp:
+            clone_dir = Path(tmp) / "clone"
+            await self._run_git(
+                Path(tmp), ["init", "--quiet", "-b", target_branch, str(clone_dir)]
+            )
+            target = await self._run_git(
+                clone_dir,
+                ["fetch", "origin", target_branch],
                 timeout=_network_git_timeout(),
                 check=False,
             )
-            if clone.returncode != 0:
+            if target.returncode != 0:
                 return {"status": "missing_ref"}
             for config_args in (
+                ["reset", "--hard", "--quiet", f"origin/{target_branch}"],
                 ["config", "user.email", "envsync@roboco.local"],
                 ["config", "user.name", "RoboCo Env Sync"],
                 ["config", "commit.gpgsign", "false"],
@@ -2910,7 +2899,6 @@ class GitService(BaseService):
             fetch = await self._run_git(
                 clone_dir,
                 ["fetch", "origin", source_branch],
-                token=git_token,
                 timeout=_network_git_timeout(),
                 check=False,
             )
@@ -2939,7 +2927,6 @@ class GitService(BaseService):
             push = await self._run_git(
                 clone_dir,
                 ["push", "origin", f"HEAD:{target_branch}"],
-                token=git_token,
                 timeout=_network_git_timeout(),
                 check=False,
             )
@@ -3083,7 +3070,6 @@ class GitService(BaseService):
         request: GitCreatePRRequest,
         source_branch: str,
         default_branch: str,
-        git_token: str,
     ) -> tuple[str, str | None, str | None]:
         """Resolve (target_branch, title, body) for a new PR.
 
@@ -3100,7 +3086,7 @@ class GitService(BaseService):
             request, task, default_branch
         )
         target_branch = await self._pr_base_on_remote(
-            workspace, target_branch, default_branch, git_token, request.task_id
+            workspace, target_branch, default_branch, request.task_id
         )
         pr_title, pr_body = await self._generate_pr_title_body(
             request, task, source_branch, target_branch, request.task_id
@@ -3635,7 +3621,7 @@ class GitService(BaseService):
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
-        repo_ref = self._parse_github_remote(workspace)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
         git_token = await self._get_project_token_or_raise(project.slug)
         pr_number = int(task.pr_number)
 
@@ -3793,9 +3779,7 @@ class GitService(BaseService):
                 {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             ) from e
 
-    async def _sync_target_branch(
-        self, workspace: Path, target_branch: str, git_token: str
-    ) -> str:
+    async def _sync_target_branch(self, workspace: Path, target_branch: str) -> str:
         """Checkout + hard-sync the target branch to origin, return its tip.
 
         If the target branch has no local ref (common in agent workspaces that
@@ -3818,9 +3802,7 @@ class GitService(BaseService):
             # a tracking branch. A full `git fetch` is avoided because the
             # workspace may hold many refs; narrowing to the target keeps it
             # cheap and avoids token-burn on a large repo.
-            await self._run_git(
-                workspace, ["fetch", "origin", target_branch], token=git_token
-            )
+            await self._run_git(workspace, ["fetch", "origin", target_branch])
             tracking = await self._run_git(
                 workspace,
                 ["checkout", "-b", target_branch, f"origin/{target_branch}"],
@@ -3836,15 +3818,13 @@ class GitService(BaseService):
                         "tracking_stderr": tracking.stderr.strip(),
                     },
                 )
-        await self._run_git(
-            workspace, ["fetch", "origin", target_branch], token=git_token
-        )
+        await self._run_git(workspace, ["fetch", "origin", target_branch])
         await self._run_git(workspace, ["reset", "--hard", f"origin/{target_branch}"])
         log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
         return log_result.stdout.strip()
 
     async def _sync_target_branch_best_effort(
-        self, workspace: Path, target_branch: str, git_token: str
+        self, workspace: Path, target_branch: str
     ) -> str | None:
         """Post-merge local sync of ``target_branch`` — best-effort, never raises.
 
@@ -3860,7 +3840,7 @@ class GitService(BaseService):
         done; the local sync is not worth failing on.
         """
         try:
-            return await self._sync_target_branch(workspace, target_branch, git_token)
+            return await self._sync_target_branch(workspace, target_branch)
         except GitError as exc:
             self.log.warning(
                 "post-merge target-branch sync failed; merge already landed,"
@@ -4269,7 +4249,7 @@ class GitService(BaseService):
         Returns: (target_branch, merge_commit)
         """
         git_token = await self._get_project_token_or_raise(project_slug)
-        repo_ref = self._parse_github_remote(workspace)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
         if merge_method not in {"merge", "squash", "rebase"}:
             merge_method = "squash"
 
@@ -4329,9 +4309,7 @@ class GitService(BaseService):
         # Default branch always exists on origin, so the plain sync is correct
         # here. The best-effort variant guards the agent-facing pr_merge path,
         # whose target can be an integration branch deleted from origin.
-        merge_commit = await self._sync_target_branch(
-            workspace, target_branch, git_token
-        )
+        merge_commit = await self._sync_target_branch(workspace, target_branch)
         return target_branch, merge_commit
 
     _PM_MERGE_ROLES: ClassVar[frozenset[AgentRole]] = frozenset(
@@ -4747,7 +4725,9 @@ class GitService(BaseService):
             if project is None:
                 return None
             workspace = await self.get_workspace(project.slug, actor_agent_id)
-            _python, status = WorkspaceService.read_toolchain_status(workspace)
+            _python, status = await asyncio.to_thread(
+                WorkspaceService.read_toolchain_status, workspace
+            )
             return status
         except Exception:
             return None
@@ -4803,29 +4783,6 @@ class GitService(BaseService):
             raise NotFoundError("Project", str(task.project_id))
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         return await self.get_workspace(project.slug, agent_id=workspace_agent_id)
-
-    async def _token_for_branch(self, branch_name: str) -> str | None:
-        """Best-effort project PAT for authenticated fetch in the diff path.
-
-        An unauthenticated ``git fetch`` fails on a private
-        repo ("could not read Username for github.com"), so the diff base
-        stays the stale clone-time ``origin/<default>`` and the three-dot
-        diff spans the whole repo delta instead of the branch's change.
-        Returns None on ANY resolution failure so the fetch degrades to
-        unauthenticated (prior behaviour) rather than raising inside an
-        evidence-assembly path — authentication is an optimisation here,
-        never a hard dependency of producing a diff.
-        """
-        try:
-            task = await self._task_for_branch(branch_name)
-            if task is None:
-                return None
-            project = await self._project_for_task(task)
-            if project is None:
-                return None
-            return await self._get_project_token_or_raise(project.slug)
-        except Exception:
-            return None
 
     async def checkout_branch_in_agent_workspace(
         self,
@@ -4889,7 +4846,6 @@ class GitService(BaseService):
         workspace: Path,
         base_branch: str,
         project_slug: str,
-        git_token: str,
     ) -> str:
         """Ensure the PR base branch exists on origin; create it if missing.
 
@@ -4909,7 +4865,6 @@ class GitService(BaseService):
             workspace,
             ["ls-remote", "--heads", "origin", base_branch],
             check=False,
-            token=git_token,
         )
         if ls.stdout.strip():
             return base_branch
@@ -4917,13 +4872,11 @@ class GitService(BaseService):
             workspace,
             ["fetch", "origin", default_branch],
             check=False,
-            token=git_token,
         )
         push = await self._run_git(
             workspace,
             ["push", "origin", f"origin/{default_branch}:refs/heads/{base_branch}"],
             check=False,
-            token=git_token,
         )
         if push.returncode != 0:
             self.log.warning(
@@ -4972,16 +4925,14 @@ class GitService(BaseService):
             branch_name, actor_agent_id=actor_agent_id
         )
         git_token = await self._get_project_token_or_raise(project.slug)
-        repo_ref = self._parse_github_remote(workspace)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
 
         # `open_pr` targets an ancestor task's branch (e.g. the cell-PM
         # integration branch) that may not exist on origin — a PM paused
         # before pushing it, or the workspace was wiped. Create it on the
         # remote off the default branch so GitHub doesn't 422 'base invalid'
         # and the integration hierarchy is preserved.
-        parent = await self._ensure_base_on_remote(
-            workspace, parent, project.slug, git_token
-        )
+        parent = await self._ensure_base_on_remote(workspace, parent, project.slug)
 
         pr_title = f"[{str(task.id)[:8]}] {task.title}"
         pr_body = task.description or ""
@@ -5222,7 +5173,7 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, None)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        repo_ref = self._parse_github_remote(workspace)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
         merged = await self._pr_is_merged(repo_ref, task.pr_number, git_token)
         return True if merged is None else bool(merged)
 
@@ -5285,7 +5236,7 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        repo_ref = self._parse_github_remote(workspace)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
 
         # CEO is the only one who merges into the project's head environment
         # branch (ladder index 0 — "master" only when no ladder is declared;
@@ -5338,9 +5289,7 @@ class GitService(BaseService):
         # that the row lock is gone. Serialize the git sequence itself so
         # their checkout/fetch/reset --hard don't race on one working tree.
         async with _workspace_sync_lock(workspace):
-            merge_commit = await self._sync_target_branch_best_effort(
-                workspace, target, git_token
-            )
+            merge_commit = await self._sync_target_branch_best_effort(workspace, target)
         return {"merge_commit_sha": merge_commit or None}
 
     async def _get_pr_refs(
@@ -5366,7 +5315,6 @@ class GitService(BaseService):
         *,
         head_branch: str,
         base_branch: str,
-        git_token: str,
         stash: bool = False,
     ) -> dict[str, Any]:
         """Rebase ``head_branch`` onto the latest ``base_branch`` from origin.
@@ -5432,7 +5380,7 @@ class GitService(BaseService):
         """
         stashed = await self._stash_if_dirty(workspace, stash=stash)
 
-        await self._run_git(workspace, ["fetch", "origin"], token=git_token)
+        await self._run_git(workspace, ["fetch", "origin"])
         await self._ensure_local_head_ref(workspace, head_branch)
         await self._run_git(workspace, ["checkout", head_branch])
         diverged = await self._reset_head_or_diverged(workspace, head_branch)
@@ -5452,7 +5400,6 @@ class GitService(BaseService):
             await self._run_git(
                 workspace,
                 ["push", "--force-with-lease", "origin", f"HEAD:{head_branch}"],
-                token=git_token,
             )
             result = {"status": "rebased", "unique_commits": unique}
         if stashed:
@@ -5636,7 +5583,7 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         clone_root = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        repo_ref = self._parse_github_remote(clone_root)
+        repo_ref = await self._repo_ref_for_workspace(clone_root)
 
         refs = await self._get_pr_refs(repo_ref, pr_number, git_token)
         if refs is None:
@@ -5650,7 +5597,6 @@ class GitService(BaseService):
             workspace,
             head_branch=head_branch,
             base_branch=base_branch,
-            git_token=git_token,
         )
 
     async def sync_task_branch(
@@ -5704,7 +5650,9 @@ class GitService(BaseService):
             )
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         clone_root = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
-        git_token = await self._get_project_token_or_raise(project.slug)
+        # Fail fast without a token, as before: the relay's fetch would only
+        # fail later on origin's auth error.
+        await self._get_project_token_or_raise(project.slug)
         # Rebase inside the per-task worktree (F123): the branch is checked out
         # there, so a checkout in the clone root would be refused ("already
         # checked out at '<worktree>'") and the behind-base recovery loop dies.
@@ -5714,7 +5662,6 @@ class GitService(BaseService):
             workspace,
             head_branch=task.branch_name,
             base_branch=base_branch,
-            git_token=git_token,
             stash=stash,
         )
 
@@ -5746,12 +5693,13 @@ class GitService(BaseService):
             return []
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
-        git_token = await self._get_project_token_or_raise(project.slug)
+        # Fail fast without a token, as before: the relay's fetch would only
+        # fail later on origin's auth error.
+        await self._get_project_token_or_raise(project.slug)
         refs = [str(task.branch_name)] + [str(c.branch_name) for c in candidates]
         await self._run_git(
             workspace,
             ["fetch", "origin", *dict.fromkeys(refs)],
-            token=git_token,
             check=False,
             timeout=_network_git_timeout(),
         )
@@ -5846,8 +5794,10 @@ class GitService(BaseService):
             raise NotFoundError("Project for task", str(task.id))
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
-        git_token = await self._get_project_token_or_raise(project.slug)
-        await self._run_git(workspace, ["fetch", "origin"], token=git_token)
+        # Fail fast without a token, as before: the relay's fetch would only
+        # fail later on origin's auth error.
+        await self._get_project_token_or_raise(project.slug)
+        await self._run_git(workspace, ["fetch", "origin"])
         # --left-right --count A...B → "<left> <right>": left = commits only in
         # A (base, what the head is BEHIND by); right = commits only in B (head,
         # the head's own ahead work). Triple-dot = symmetric difference.
@@ -5956,7 +5906,7 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        repo_ref = self._parse_github_remote(workspace)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
 
         existing = await self._forge.get_pr(repo_ref, git_token, pr_number)
         already_closed = (
@@ -6021,7 +5971,7 @@ class GitService(BaseService):
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
-        repo_ref = self._parse_github_remote(workspace)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
         git_token = await self._get_project_token_or_raise(project.slug)
 
         try:
@@ -6055,9 +6005,7 @@ class GitService(BaseService):
         )
         return result.returncode == 0
 
-    async def _default_branch_ref(
-        self, workspace: Any, token: str | None = None
-    ) -> str:
+    async def _default_branch_ref(self, workspace: Any) -> str:
         """Resolve the repo's default remote branch ref.
 
         Tries ``origin/HEAD`` (the canonical pointer), then common
@@ -6081,7 +6029,6 @@ class GitService(BaseService):
                 workspace,
                 ["fetch", "origin", candidate.split("/", 1)[1]],
                 check=False,
-                token=token,
             )
             if await self._ref_exists(workspace, candidate):
                 return candidate
@@ -6091,7 +6038,6 @@ class GitService(BaseService):
         self,
         workspace: Any,
         branch_name: str,
-        token: str | None = None,
         *,
         preferred_parent: str | None = None,
     ) -> str:
@@ -6127,21 +6073,15 @@ class GitService(BaseService):
             if preferred_parent is not None
             else parent_branch_for(branch_name)
         )
-        await self._run_git(
-            workspace, ["fetch", "origin", parent], check=False, token=token
-        )
+        await self._run_git(workspace, ["fetch", "origin", parent], check=False)
         if await self._ref_exists(workspace, f"origin/{parent}"):
             return f"origin/{parent}"
-        default = await self._default_branch_ref(workspace, token=token)
+        default = await self._default_branch_ref(workspace)
         short = default.split("/", 1)[1] if "/" in default else default
-        await self._run_git(
-            workspace, ["fetch", "origin", short], check=False, token=token
-        )
+        await self._run_git(workspace, ["fetch", "origin", short], check=False)
         return default
 
-    async def _resolve_head_ref(
-        self, workspace: Any, branch_name: str, token: str | None = None
-    ) -> str:
+    async def _resolve_head_ref(self, workspace: Any, branch_name: str) -> str:
         """Ref for the branch tip that actually resolves in `workspace`.
 
         The local ``<branch_name>`` ref only exists in
@@ -6172,9 +6112,7 @@ class GitService(BaseService):
         divergence apart from a rewritten one: both resolve to the same
         action (serve origin), so no patch-equivalence check is needed here.
         """
-        await self._run_git(
-            workspace, ["fetch", "origin", branch_name], check=False, token=token
-        )
+        await self._run_git(workspace, ["fetch", "origin", branch_name], check=False)
         origin_ref = f"origin/{branch_name}"
         local_exists = await self._ref_exists(workspace, branch_name)
         origin_exists = await self._ref_exists(workspace, origin_ref)
@@ -6207,13 +6145,12 @@ class GitService(BaseService):
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
-        token = await self._token_for_branch(branch_name)
-        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
+        head_ref = await self._resolve_head_ref(workspace, branch_name)
         base_ref = (
             base
             if base is not None
             else await self._resolve_diff_base(
-                workspace, branch_name, token=token, preferred_parent=preferred_parent
+                workspace, branch_name, preferred_parent=preferred_parent
             )
         )
         return workspace, head_ref, base_ref
@@ -6392,8 +6329,7 @@ class GitService(BaseService):
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
-        token = await self._token_for_branch(branch_name)
-        head_ref = await self._resolve_head_ref(workspace, branch_name, token=token)
+        head_ref = await self._resolve_head_ref(workspace, branch_name)
         result = await self._run_git(
             workspace, ["show", f"{head_ref}:{path}"], check=False
         )
@@ -6581,15 +6517,22 @@ class GitService(BaseService):
         effective_timeout = (
             timeout if timeout is not None else _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS
         )
+        # The validator parses agent-written files (tree-sitter C parsers on
+        # hostile input): it runs as the workspace git user, never as root.
         proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "roboco.conventions",
-            "check",
-            "--root",
-            str(workspace),
-            "--files",
-            *files,
+            *workspace_user_argv(
+                [
+                    sys.executable,
+                    "-m",
+                    "roboco.conventions",
+                    "check",
+                    "--root",
+                    str(workspace),
+                    "--files",
+                    *files,
+                ]
+            ),
+            env=workspace_git_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -6650,17 +6593,18 @@ class GitService(BaseService):
         ws = workspace
         if ws is None and project.workspace_path:
             # workspace_path is API-settable (PM-gated route): only a path
-            # inside THIS project's workspace tree may receive the scaffold
-            # commit — anything else (arbitrary dir, another project's clone)
-            # is refused as "no usable workspace".
-            candidate = Path(project.workspace_path)
-            try:
-                candidate.resolve().relative_to(
-                    Path(settings.workspaces_root) / project.slug
-                )
-                ws = candidate
-            except (ValueError, OSError):
-                ws = None
+            # inside THIS project's workspace tree or its read clone may
+            # receive the scaffold commit — anything else (arbitrary dir,
+            # another project's clone) is refused as "no usable workspace".
+            # Lexical, never resolved: a symlinked path must not qualify.
+            candidate = Path(os.path.normpath(project.workspace_path))
+            allowed = (
+                Path(settings.workspaces_root) / project.slug,
+                read_clone_path(project.slug),
+            )
+            ws = (
+                candidate if any(candidate.is_relative_to(a) for a in allowed) else None
+            )
         if ws is None or not ws.exists():
             return None
         base = head_branch(project)
@@ -6715,9 +6659,9 @@ class GitService(BaseService):
         if await self.get_current_branch(workspace) != base:
             return False
         await self._run_git(workspace, ["checkout", "-B", spec.branch])
-        target = workspace / ".roboco" / "conventions.yml"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(spec.content)
+        await asyncio.to_thread(
+            _write_repo_file, workspace, ".roboco/conventions.yml", spec.content
+        )
         await self._run_git(workspace, ["add", ".roboco/conventions.yml"])
         await self._run_git(workspace, ["commit", "-m", spec.title])
         return True
@@ -6735,7 +6679,7 @@ class GitService(BaseService):
             return unopened
         try:
             await self.push(workspace, force=True)
-            repo_ref = self._parse_github_remote(workspace)
+            repo_ref = await self._repo_ref_for_workspace(workspace)
             resp = await self._post_pr(
                 repo_ref,
                 token,

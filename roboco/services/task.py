@@ -3648,7 +3648,6 @@ class TaskService(BaseService):
                     require_uuid(task.id),
                     branch_name,
                     base_branch,
-                    project_slug=project.slug,
                 )
                 status = result.get("status")
                 if status == "merged":

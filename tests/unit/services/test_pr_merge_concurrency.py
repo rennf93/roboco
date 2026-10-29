@@ -104,7 +104,9 @@ async def test_pr_merge_retries_once_on_409_conflict() -> None:
     svc = GitService(_make_session(fake_task, fake_parent))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
 
     call_seq = AsyncMock(side_effect=[_fake_response(409), _fake_response(200)])
     _bind(svc, "_call_merge_api", call_seq)
@@ -148,7 +150,9 @@ async def test_pr_merge_raises_after_second_409() -> None:
     svc = GitService(_make_session(fake_task, fake_parent))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
 
     call_seq = AsyncMock(side_effect=[_fake_response(409), _fake_response(409)])
     _bind(svc, "_call_merge_api", call_seq)
@@ -185,7 +189,9 @@ async def test_pr_merge_does_not_retry_on_non_409_error() -> None:
     svc = GitService(_make_session(fake_task, fake_parent))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
 
     call_seq = AsyncMock(side_effect=[_fake_response(422)])
     _bind(svc, "_call_merge_api", call_seq)
@@ -223,7 +229,9 @@ async def test_pr_merge_locks_parent_task_with_for_update() -> None:
     svc = GitService(session)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc"))
@@ -273,7 +281,9 @@ async def test_pr_merge_commits_before_local_target_branch_sync() -> None:
     svc = GitService(session)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(side_effect=_sync_target_branch))
@@ -326,7 +336,9 @@ async def test_pr_merge_serializes_git_sync_for_same_workspace() -> None:
         _bind(svc, "get_workspace", AsyncMock(return_value=workspace))
         _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
         _bind(
-            svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo"))
+            svc,
+            "_repo_ref_for_workspace",
+            AsyncMock(return_value=RepoRef("acme", "repo")),
         )
         _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
         _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
@@ -392,7 +404,9 @@ async def test_pr_merge_skips_parent_lock_for_root_task() -> None:
     svc = GitService(session)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc"))
@@ -440,7 +454,9 @@ async def test_pr_merge_scopes_task_lookup_by_project_id() -> None:
     svc = GitService(session)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="sha"))

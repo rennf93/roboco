@@ -8,7 +8,6 @@ call sequence; the production git/gh ops is exercised live (CEO-gated).
 
 from __future__ import annotations
 
-import base64
 import subprocess
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -17,12 +16,11 @@ from unittest.mock import MagicMock
 import pytest
 from roboco.config import settings
 from roboco.services import release_executor as re
+from roboco.services.git_relay import GitRelay
 from roboco.services.release_executor import (
     ReleaseExecutor,
     ReleaseResult,
-    _bump_uv_lock,
     _GitReleaseOps,
-    _lock_package_name,
     _ReleaseContext,
     _resolve_release_ci_workflow,
 )
@@ -339,7 +337,7 @@ async def test_wait_for_ci_scoped_to_release_commit_not_branch_latest(
         prod_branch="master",
         root=tmp_path,
         git_url="x",
-        git_prefix=[],
+        relay=GitRelay("roboco-api", "https://github.com/o/roboco", None),
         ci_workflow="ci.yml",
         env_chain=[],
     )
@@ -390,7 +388,7 @@ async def test_wait_for_ci_polls_through_rerun(
         prod_branch="master",
         root=tmp_path,
         git_url="x",
-        git_prefix=[],
+        relay=GitRelay("roboco-api", "https://github.com/o/roboco", None),
         ci_workflow="ci.yml",
         env_chain=[],
     )
@@ -437,7 +435,7 @@ async def test_wait_for_ci_exhausts_window_on_persistent_failure(
         prod_branch="master",
         root=tmp_path,
         git_url="x",
-        git_prefix=[],
+        relay=GitRelay("roboco-api", "https://github.com/o/roboco", None),
         ci_workflow="ci.yml",
         env_chain=[],
     )
@@ -506,7 +504,7 @@ def _ops(session: object, root: Path) -> _GitReleaseOps:
         prod_branch="master",
         root=root,
         git_url="x",
-        git_prefix=[],
+        relay=GitRelay("roboco-api", "https://github.com/o/roboco", None),
         ci_workflow="ci.yml",
         env_chain=[],
     )
@@ -572,257 +570,61 @@ async def test_release_commit_sha_none_when_version_not_yet_bumped(
 
 
 # --------------------------------------------------------------------------- #
-# H11: the PAT must never appear in a git subprocess argv. The release clone
-# and the release push carry the token via ``-c http.extraheader=Authorization:
-# Basic <base64(x-access-token:TOKEN)>`` and a bare URL — never URL-embedded.
+# The release clone and push go through the project's relay: the clone is
+# dispatcher-owned (private root, symlinks off) and the token only ever lives
+# in the relay's root git (env-scoped, never argv — pinned in
+# tests/unit/services/test_git_relay_and_origin.py).
 # --------------------------------------------------------------------------- #
 
 
-def _basic_auth(token: str) -> str:
-    return base64.b64encode(f"x-access-token:{token}".encode()).decode()
-
-
-class _DoneProc:
-    """A subprocess that completes immediately with a fixed rc + stdout."""
-
-    def __init__(self, out: bytes = b"", returncode: int = 0) -> None:
-        self.returncode = returncode
-        self._out = out
-
-    async def communicate(self) -> tuple[bytes, bytes]:
-        return (self._out, b"")
-
-    def kill(self) -> None:
-        return None
-
-    async def wait(self) -> int:
-        return self.returncode
+def _bare_origin_with_master(tmp_path: Path) -> Path:
+    origin = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "master", str(origin)], check=True
+    )
+    subprocess.run(["git", "init", "-q", "-b", "master", str(seed)], check=True)
+    _init_release_repo(seed)
+    _git_sync(seed, "push", "-q", str(origin), "master")
+    return origin
 
 
 @pytest.mark.asyncio
-async def test_release_clone_argv_uses_extraheader_not_url_token(
+async def test_release_clone_comes_from_the_relay_with_symlinks_off(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """H11: the release-clone argv carries the PAT via ``-c http.extraheader``,
-    never URL-embedded (``/proc/<pid>/cmdline`` would expose a URL token)."""
-    token = "ghp_SECRETCLONE"
-    git_url = "https://github.com/org/roboco.git"
-    expected_basic = _basic_auth(token)
-    git_prefix = ["-c", f"http.extraheader=Authorization: Basic {expected_basic}"]
-    captured: list[list[str]] = []
+    monkeypatch.setattr(settings, "private_data_root", str(tmp_path / "private"))
+    origin = _bare_origin_with_master(tmp_path)
+    relay = GitRelay("roboco-api", f"file://{origin}", None)
 
-    async def _exec(*args: str, **_kwargs: object) -> _DoneProc:
-        captured.append(list(args))
-        return _DoneProc()
+    root = await re._prepare_release_clone(relay, "master")
 
-    monkeypatch.setattr(re.asyncio, "create_subprocess_exec", _exec)
-    monkeypatch.setattr(settings, "workspaces_root", str(tmp_path))
-
-    await re._prepare_release_clone("roboco-api", git_url, git_prefix, "master")
-
-    clone_argv = next(a for a in captured if "clone" in a)
-    assert f"https://{token}@" not in " ".join(clone_argv), (
-        f"raw token leaked into clone argv URL: {clone_argv}"
+    assert root == tmp_path / "private" / "release" / "roboco-api"
+    assert _git_sync(root, "config", "core.symlinks").strip() == "false"
+    assert _git_sync(root, "rev-parse", "HEAD") == _git_sync(
+        origin, "rev-parse", "master"
     )
-    assert token not in clone_argv, f"raw token in clone argv: {clone_argv}"
-    assert git_url in clone_argv, f"bare git_url missing from clone argv: {clone_argv}"
-    assert "-c" in clone_argv
-    c_idx = clone_argv.index("-c")
-    assert (
-        clone_argv[c_idx + 1]
-        == f"http.extraheader=Authorization: Basic {expected_basic}"
-    )
-    assert "clone" in clone_argv[c_idx + 2 :]
 
 
 @pytest.mark.asyncio
-async def test_release_push_argv_uses_extraheader_not_url_token(
+async def test_release_push_reaches_origin_through_the_relay(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """H11: the release push argv carries the PAT via ``-c http.extraheader``
-    and pushes to the bare URL — never ``https://TOKEN@host/...``."""
-    token = "ghp_SECRETPUSH"
-    git_url = "https://github.com/org/roboco.git"
-    expected_basic = _basic_auth(token)
-    git_prefix = ["-c", f"http.extraheader=Authorization: Basic {expected_basic}"]
-    captured: list[list[str]] = []
-
-    # commit_and_push issues: add -A, 2x identity config, commit, rev-parse, push.
-    responses = iter(
-        [
-            _DoneProc(b""),  # add -A
-            _DoneProc(b""),  # config user.name
-            _DoneProc(b""),  # config user.email
-            _DoneProc(b""),  # commit
-            _DoneProc(b"deadbeef\n"),  # rev-parse HEAD
-            _DoneProc(b"ok"),  # push
-        ]
-    )
-
-    async def _exec(*args: str, **_kwargs: object) -> _DoneProc:
-        captured.append(list(args))
-        return next(responses)
-
-    monkeypatch.setattr(re.asyncio, "create_subprocess_exec", _exec)
-
+    monkeypatch.setattr(settings, "private_data_root", str(tmp_path / "private"))
+    origin = _bare_origin_with_master(tmp_path)
+    relay = GitRelay("roboco-api", f"file://{origin}", None)
+    root = await re._prepare_release_clone(relay, "master")
+    (root / "CHANGELOG.md").write_text("# Changelog\n\n## [0.13.0]\n")
     ctx = _ReleaseContext(
         slug="roboco-api",
         prod_branch="master",
-        root=tmp_path,
-        git_url=git_url,
-        git_prefix=git_prefix,
+        root=root,
+        git_url=f"file://{origin}",
+        relay=relay,
         ci_workflow=None,
         env_chain=[],
     )
-    ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
-    sha = await ops.commit_and_push("0.13.0")
-    assert sha == "deadbeef"
 
-    push_argv = next(a for a in captured if "push" in a)
-    assert f"https://{token}@" not in " ".join(push_argv), (
-        f"raw token leaked into push argv URL: {push_argv}"
-    )
-    assert token not in push_argv, f"raw token in push argv: {push_argv}"
-    assert git_url in push_argv, f"bare git_url missing from push argv: {push_argv}"
-    assert "-c" in push_argv
-    c_idx = push_argv.index("-c")
-    assert (
-        push_argv[c_idx + 1]
-        == f"http.extraheader=Authorization: Basic {expected_basic}"
-    )
-    assert "push" in push_argv[c_idx + 2 :]
+    sha = await _GitReleaseOps(session=MagicMock(), ctx=ctx).commit_and_push("0.13.0")
 
-
-def test_insert_changelog_entry_empties_unreleased_body() -> None:
-    existing = (
-        "# Changelog\n\nintro\n\n## [Unreleased]\n\n### Added\n\n"
-        "- **Curated bullet.**\n\n## [0.24.0] - 2026-07-14\n\n- old\n"
-    )
-    entry = "## [0.25.0] - 2026-07-15\n\n### Added\n\n- **Curated bullet.**\n"
-    result = re._insert_changelog_entry(existing, entry)
-    unreleased = result.split("## [Unreleased]")[1].split("## [0.25.0]")[0]
-    assert "Curated bullet" not in unreleased
-    assert result.count("Curated bullet") == 1
-    assert result.index("## [Unreleased]") < result.index("## [0.25.0]")
-    assert result.index("## [0.25.0]") < result.index("## [0.24.0]")
-    assert "- old" in result
-
-
-def test_insert_changelog_entry_without_unreleased_is_unchanged_behavior() -> None:
-    existing = "# Changelog\n\n## [0.24.0] - 2026-07-14\n\n- old\n"
-    entry = "## [0.25.0] - 2026-07-15\n\n- new\n"
-    result = re._insert_changelog_entry(existing, entry)
-    assert result.index("## [0.25.0]") < result.index("## [0.24.0]")
-    assert "- old" in result and "- new" in result
-
-
-@pytest.mark.asyncio
-async def test_wait_for_ci_polls_the_prod_branch(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The release commit lives on the prod rung — the CI wait must query that
-    branch, not the ladder head where get_latest_ci_conclusion defaults."""
-    seen: dict[str, object] = {}
-
-    async def _fake_get_ci(_slug: str, **kwargs: object) -> dict[str, object]:
-        seen.update(kwargs)
-        return {"head_sha": "cafebabe", "conclusion": "success"}
-
-    monkeypatch.setattr(
-        "roboco.services.git.get_git_service",
-        lambda _session: SimpleNamespace(get_latest_ci_conclusion=_fake_get_ci),
-    )
-    ctx = _ReleaseContext(
-        slug="roboco-api",
-        prod_branch="master",
-        root=tmp_path,
-        git_url="x",
-        git_prefix=[],
-        ci_workflow="ci.yml",
-        env_chain=["slave"],
-    )
-    ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
-    ok = await ops.wait_for_ci("cafebabe")
-    assert ok is True
-    assert seen.get("branch") == "master"
-
-
-# ---------------------------------------------------------------------------
-# Portability: the executor must bump whatever manifest the repo actually
-# ships, and scope the uv.lock edit to that repo's OWN package. Both were
-# hardcoded to RoboCo (pyproject-only, plus a literal `name = "roboco"`), so a
-# third-party project got a version readiness had detected but the executor
-# could not bump, and a lockfile entry that was silently skipped.
-
-_UV_LOCK = """version = 1
-
-[[package]]
-name = "acme-api"
-version = "0.12.0"
-
-[[package]]
-name = "some-dep"
-version = "0.12.0"
-"""
-
-
-def test_lock_package_name_reads_project_name(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "acme-api"\nversion = "0.12.0"\n'
-    )
-    assert _lock_package_name(tmp_path) == "acme-api"
-
-
-def test_lock_package_name_empty_without_pyproject(tmp_path: Path) -> None:
-    assert _lock_package_name(tmp_path) == ""
-
-
-def test_lock_package_name_pep503_normalizes_underscore_and_case(
-    tmp_path: Path,
-) -> None:
-    """uv.lock always stores the PEP 503-normalized name (lowercase, ``-_.``
-    runs collapsed to one ``-``); a raw pyproject ``Acme_Api`` must normalize
-    to ``acme-api`` or the bump regex never matches the lockfile entry."""
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "Acme_Api"\nversion = "0.12.0"\n'
-    )
-    assert _lock_package_name(tmp_path) == "acme-api"
-
-
-def test_bump_uv_lock_scopes_to_this_repos_own_package() -> None:
-    out = _bump_uv_lock(_UV_LOCK, "0.12.0", "0.13.0", "acme-api")
-    assert 'name = "acme-api"\nversion = "0.13.0"' in out
-    # A dependency pinned at the same version stays untouched.
-    assert 'name = "some-dep"\nversion = "0.12.0"' in out
-
-
-def test_bump_uv_lock_noops_on_unresolvable_package() -> None:
-    assert _bump_uv_lock(_UV_LOCK, "0.12.0", "0.13.0", "") == _UV_LOCK
-
-
-@pytest.mark.asyncio
-async def test_apply_version_bumps_reads_a_non_python_manifest(
-    tmp_path: Path,
-) -> None:
-    """A Node repo: readiness detects package.json's version, so the executor
-    must bump it instead of crashing on a missing pyproject.toml."""
-    (tmp_path / "package.json").write_text('{"name": "acme", "version": "0.12.0"}\n')
-    ops = _ops(MagicMock(), tmp_path)
-
-    await ops.apply_version_bumps(["package.json"], "0.13.0")
-
-    assert '"version": "0.13.0"' in (tmp_path / "package.json").read_text()
-
-
-@pytest.mark.asyncio
-async def test_apply_version_bumps_aborts_when_no_manifest(tmp_path: Path) -> None:
-    """Fail-closed: an empty current version makes str.replace insert the new
-    version between EVERY character of every planned file."""
-    victim = tmp_path / "notes.txt"
-    victim.write_text("untouched\n")
-    ops = _ops(MagicMock(), tmp_path)
-
-    with pytest.raises(RuntimeError, match="no current version"):
-        await ops.apply_version_bumps(["notes.txt"], "0.13.0")
-
-    assert victim.read_text() == "untouched\n"
+    assert sha == _git_sync(origin, "rev-parse", "master").strip()

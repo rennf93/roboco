@@ -103,14 +103,29 @@ COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 # service in the compose files.
 COPY --from=builder /usr/local/bin/py-spy /usr/local/bin/py-spy
 
-# Orchestrator clones workspaces as root, then chowns them to the agent
-# user (uid 1000) so the agent container can read/write. After the chown,
-# the orchestrator (still root) needs to run git commands (claim branch
-# creation, status, log, fetch) inside those now-1000-owned dirs — git's
-# "dubious ownership" check refuses unless safe.directory is set. `*`
-# trusts every path, which is fine here since this container only mounts
-# the sandboxed /data/workspaces tree.
-RUN git config --global --add safe.directory '*'
+# Workspace git never runs as root: every agent container mounts every clone
+# read-write, so a clone's hooks/config could run anything git starts. It
+# runs as `roboco-git` (roboco/services/workspace_git.py via setpriv): not
+# root, not the agent uid (on the NAS that is the host user who owns the
+# provider credentials mounted here), primary group = the agent images' gid
+# so both sides write group-writable files the other can edit. The uid/gid
+# must match settings.git_user_uid / agent_gid (env set below).
+#
+# Root runs git only in its own repositories under /data/private (the relay,
+# read and release clones), so root keeps git's "dubious ownership" check:
+# no global safe.directory. The git user's global config, and the ONLY hooks
+# directory any orchestrator-side git runs, live root-owned in /opt/roboco/git.
+ARG ROBOCO_GIT_USER_UID=1500
+ARG ROBOCO_AGENT_GID=1000
+RUN groupadd --gid "${ROBOCO_AGENT_GID}" agent \
+    && useradd --uid "${ROBOCO_GIT_USER_UID}" --gid "${ROBOCO_AGENT_GID}" \
+        --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin \
+        roboco-git \
+    && command -v setpriv
+COPY docker/git-support /opt/roboco/git
+RUN chown -R root:root /opt/roboco/git && chmod -R u=rwX,go=rX /opt/roboco/git
+ENV ROBOCO_GIT_USER_UID=${ROBOCO_GIT_USER_UID} \
+    ROBOCO_AGENT_GID=${ROBOCO_AGENT_GID}
 
 # PYTHONUNBUFFERED: flush stdout/stderr immediately so structured logs reach
 # `docker logs` in real time. Without it Python block-buffers stdout (it's a pipe,

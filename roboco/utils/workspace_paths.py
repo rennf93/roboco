@@ -1,7 +1,7 @@
 """Pure path rules of the agent workspace layout.
 
-    {workspaces_root}/{project}/{team}/{agent}/                 clone root
-    {workspaces_root}/{project}/{team}/{agent}/.worktrees/{id}/ per-task worktree
+{workspaces_root}/{project}/{team}/{agent}/                 clone root
+{workspaces_root}/{project}/{team}/{agent}/.worktrees/{id}/ per-task worktree
 """
 
 from __future__ import annotations

@@ -9,6 +9,13 @@ uid, with no capabilities, no Docker socket, only the one clone mounted, and on
 ``workspace_container_network`` (plain ``bridge`` by default: package
 registries yes, RoboCo's networks no).
 
+"Only the one clone" is checked, not assumed: the Docker daemon resolves the
+bind source on the host, following any symlink an agent planted in place of
+the clone or a directory above it. The clone's device and inode are taken
+here through an ``O_NOFOLLOW`` descriptor walk, and the container compares
+them with its own mount before running anything; a mismatch exits 125, which
+callers already treat as "could not start".
+
 A container that cannot be started raises ``WorkspaceContainerError``; callers
 skip the step (logged), they never fall back to running the code here.
 """
@@ -25,6 +32,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from roboco.config import settings
+from roboco.services.workspace_git import workspace_dir_identity
 from roboco.utils.docker_env import docker_cli_env, docker_options_without_env_values
 from roboco.utils.workspace_paths import clone_root_of
 
@@ -47,6 +55,8 @@ _KILL_GRACE_SECONDS = 10
 def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
     """The container's ``sh -c`` script; the command follows as ``$@``.
 
+    It first checks that the mount is the directory identified here
+    (``ROBOCO_WORKSPACE_MOUNT_ID``), else exits 125 without running anything.
     umask 002 keeps every file the command writes group-writable for the
     agent group. VIRTUAL_ENV / UV_PROJECT_ENVIRONMENT are this image's own
     /app/.venv pins: unset, uv resolves the clone's .venv instead. The
@@ -55,6 +65,9 @@ def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
     container always ends on its own and ``--rm`` removes it.
     """
     script = (
+        '[ "$(stat -c %d:%i -- "$ROBOCO_WORKSPACE_MOUNT")" = '
+        '"$ROBOCO_WORKSPACE_MOUNT_ID" ] || { echo "the mounted workspace is not '
+        f'the expected directory" >&2; exit {_DOCKER_RUN_FAILED}; }}; '
         'umask 002 && mkdir -p "$HOME" && '
         f"exec timeout -k {_KILL_GRACE_SECONDS} {max(1, int(timeout))} "
         'env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT "$@"'
@@ -119,7 +132,12 @@ async def run_in_workspace_container(
     the container and reports ``timed_out`` with returncode 124.
     """
     name = f"roboco-wsx-{uuid4().hex[:12]}"
-    options = _container_options(name, clone_root_of(cwd), cwd, env or {})
+    mount = clone_root_of(Path(os.path.normpath(cwd)))
+    try:
+        identity = await asyncio.to_thread(workspace_dir_identity, mount)
+    except OSError as exc:
+        raise WorkspaceContainerError(f"{mount} cannot be mounted: {exc}") from exc
+    options = _container_options(name, mount, cwd, env or {}, identity)
     script = _entry_script(timeout, merge_stderr=merge_stderr)
     options, env_values = docker_options_without_env_values(options)
     image = await workspace_container_image()
@@ -155,7 +173,11 @@ async def run_in_workspace_container(
 
 
 def _container_options(
-    name: str, mount: Path, cwd: Path, env: Mapping[str, str]
+    name: str,
+    mount: Path,
+    cwd: Path,
+    env: Mapping[str, str],
+    identity: tuple[int, int],
 ) -> list[str]:
     """The ``docker run`` options (everything before the image)."""
     options = [
@@ -188,6 +210,10 @@ def _container_options(
         "HOME=/tmp/home",
         "-e",
         "UV_CACHE_DIR=/tmp/uv-cache",
+        "-e",
+        f"ROBOCO_WORKSPACE_MOUNT={os.path.normpath(mount)}",
+        "-e",
+        f"ROBOCO_WORKSPACE_MOUNT_ID={identity[0]}:{identity[1]}",
         "--entrypoint",
         "/bin/sh",
     ]
