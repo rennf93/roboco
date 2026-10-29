@@ -45,6 +45,8 @@ _LOOPS = (
     ("_telegram_poll_task", "_telegram_poll_loop"),
 )
 
+_REMOVE_PRE_MOVE_COPIES = "roboco.services.git_relay.remove_pre_move_copies"
+
 # Every reconciliation step start() awaits before launching the loops, plus
 # the heartbeat call, all best-effort DB/docker/redis I/O in production,
 # stubbed here so this stays a unit test.
@@ -72,6 +74,7 @@ def _make_orchestrator() -> AgentOrchestrator:
     orch._sweeper_task = None
     orch._init_engine_loop_task_slots()
     orch._last_dispatch_heartbeat = None
+    orch._bg_tasks = set()
     for name in _RECONCILE_METHODS:
         setattr(orch, name, AsyncMock())
     # Any-typed view: a plain assignment here is a bound-method override
@@ -95,11 +98,13 @@ async def test_api_role_skips_reconciliation_and_every_loop(
     monkeypatch.setattr(settings, "role", "api")
     orch = _make_orchestrator()
 
-    await orch.start()
+    with patch(_REMOVE_PRE_MOVE_COPIES) as remove_pre_move_copies:
+        await orch.start()
 
     assert orch._running is True
     for name in _RECONCILE_METHODS:
         getattr(orch, name).assert_not_awaited()
+    remove_pre_move_copies.assert_not_called()
     for task_attr, _loop_method in _LOOPS:
         assert getattr(orch, task_attr) is None, (
             f"{task_attr} must stay unscheduled in api role"
@@ -113,16 +118,22 @@ async def test_dispatcher_role_runs_reconciliation_and_every_loop(
     """role='dispatcher': every reconciliation step runs and every loop is
     scheduled, this is the ONE process now responsible for the fleet."""
     monkeypatch.setattr(settings, "role", "dispatcher")
-    with patch(
-        "roboco.services.release_proposal.sweep_orphan_release_locks",
-        AsyncMock(),
+    with (
+        patch(
+            "roboco.services.release_proposal.sweep_orphan_release_locks",
+            AsyncMock(),
+        ),
+        patch(_REMOVE_PRE_MOVE_COPIES) as remove_pre_move_copies,
     ):
         orch = _make_orchestrator()
         await orch.start()
+        # Scheduled in a background thread (gigabytes to delete), not awaited.
+        await asyncio.gather(*orch._bg_tasks)
 
     assert orch._running is True
     for name in _RECONCILE_METHODS:
         getattr(orch, name).assert_awaited_once()
+    remove_pre_move_copies.assert_called_once_with()
     tasks = [getattr(orch, task_attr) for task_attr, _ in _LOOPS]
     for task_attr, task in zip((t for t, _ in _LOOPS), tasks, strict=True):
         assert task is not None, f"{task_attr} must be scheduled"
@@ -138,16 +149,22 @@ async def test_all_role_matches_dispatcher_role(
     """role='all' (the default) is byte-for-byte today's single-process
     behavior: same reconciliation + loop launch as 'dispatcher'."""
     monkeypatch.setattr(settings, "role", "all")
-    with patch(
-        "roboco.services.release_proposal.sweep_orphan_release_locks",
-        AsyncMock(),
+    with (
+        patch(
+            "roboco.services.release_proposal.sweep_orphan_release_locks",
+            AsyncMock(),
+        ),
+        patch(_REMOVE_PRE_MOVE_COPIES) as remove_pre_move_copies,
     ):
         orch = _make_orchestrator()
         await orch.start()
+        # Scheduled in a background thread (gigabytes to delete), not awaited.
+        await asyncio.gather(*orch._bg_tasks)
 
     assert orch._running is True
     for name in _RECONCILE_METHODS:
         getattr(orch, name).assert_awaited_once()
+    remove_pre_move_copies.assert_called_once_with()
     tasks = [getattr(orch, task_attr) for task_attr, _ in _LOOPS]
     for task_attr, task in zip((t for t, _ in _LOOPS), tasks, strict=True):
         assert task is not None, f"{task_attr} must be scheduled"

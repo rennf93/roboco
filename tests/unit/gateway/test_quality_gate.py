@@ -4,11 +4,9 @@ i_am_done, blocking a red submit before it reaches QA. Full tests stay on CI.
 
 from __future__ import annotations
 
-import asyncio
-import os
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
 if TYPE_CHECKING:
     import pathlib
@@ -20,8 +18,18 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 from roboco.services.gateway.choreographer._impl import _IAmDoneContext
 from roboco.services.gateway.quality_gate import GateResult, run_quality_commands
 from roboco.services.git import GitService
+from roboco.services.workspace_container import WorkspaceContainerResult
+from tests.unit.local_workspace_container import run_in_local_shell
 
-# --- the runner (real subprocess) -------------------------------------------
+# --- the runner -------------------------------------------------------------
+# Commands run in a throwaway container (roboco.services.workspace_container,
+# tested on its own). The gate's own logic - aggregation, naming, output - is
+# exercised with real commands in a local shell standing in for the container.
+
+
+@pytest.fixture
+def _local_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(quality_gate, "run_in_workspace_container", run_in_local_shell)
 
 
 @pytest.mark.asyncio
@@ -32,6 +40,7 @@ async def test_no_commands_is_a_skipped_pass(tmp_path: pathlib.Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_local_container")
 async def test_all_commands_pass(tmp_path: pathlib.Path) -> None:
     result = await run_quality_commands(
         tmp_path, [("lint", "echo lint-ok"), ("typecheck", "true")]
@@ -41,6 +50,7 @@ async def test_all_commands_pass(tmp_path: pathlib.Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_local_container")
 async def test_a_failing_command_blocks_and_is_named(tmp_path: pathlib.Path) -> None:
     result = await run_quality_commands(
         tmp_path, [("lint", "echo problem-here; exit 1"), ("typecheck", "true")]
@@ -51,6 +61,7 @@ async def test_a_failing_command_blocks_and_is_named(tmp_path: pathlib.Path) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_local_container")
 async def test_every_command_runs_even_after_a_failure(tmp_path: pathlib.Path) -> None:
     result = await run_quality_commands(
         tmp_path, [("lint", "echo AAA; exit 1"), ("typecheck", "echo BBB; exit 2")]
@@ -70,97 +81,46 @@ def test_gate_result_summary_and_excerpt() -> None:
     assert 0 < len(failed.output_excerpt) < len(failed.output)
 
 
-# --- _run_one None-returncode fail-closed -----------------------------------
-
 _TIMEOUT_EXIT_CODE = 124
 
 
 @pytest.mark.asyncio
-async def test_run_one_treats_none_returncode_as_failure(
+async def test_run_one_runs_the_command_in_the_workspace_container(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A None returncode (process terminated without a recorded exit code, e.g.
-    killed out-of-band during communicate) must NOT be masked as 0 / success.
-    The gate is fail-closed — an unknown exit status is a failure, not a pass.
-    """
-    fake_proc = MagicMock()
-    fake_proc.returncode = None  # abnormal: communicate returned, no code set
-    fake_proc.communicate = AsyncMock(return_value=(b"some output", b""))
+    """The gate command executes the clone's own Makefile/tooling, which any
+    agent can rewrite: it must never run in the orchestrator (root)."""
+    runner = AsyncMock(return_value=WorkspaceContainerResult(0, "ok\n", ""))
+    monkeypatch.setattr(quality_gate, "run_in_workspace_container", runner)
+    assert not hasattr(quality_gate, "asyncio"), "no local subprocess path left"
 
-    async def _fake_shell(*_args: object, **_kwargs: object) -> object:
-        return fake_proc
+    rc, out = await quality_gate._run_one(tmp_path, "make gate")
 
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", _fake_shell)
-
-    rc, out = await quality_gate._run_one(tmp_path, "anything")
-    assert rc != 0, "a None returncode masked as 0 lets a red gate pass"
-    assert "some output" in out
+    assert (rc, out) == (0, "ok\n")
+    runner.assert_awaited_once_with(
+        tmp_path,
+        ["sh", "-c", "make gate"],
+        timeout=quality_gate._GATE_TIMEOUT_SECONDS,
+        merge_stderr=True,
+    )
 
 
 @pytest.mark.asyncio
-async def test_run_one_reaps_killed_timeout_process(
+async def test_run_one_reports_a_timeout_as_exit_124(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """On timeout, _run_one must kill AND await wait() to reap the killed
-    process and close the stdout/stderr pipe transports. kill alone leaves a
-    transient zombie + leaked FDs (communicate() was cancelled, so it never
-    closed the pipes)."""
-    fake_proc = MagicMock()
-    fake_proc.returncode = -9  # killed by SIGKILL
-
-    # communicate() never completes on its own — wait_for cancels it.
-    async def _communicate() -> tuple[bytes, bytes]:
-        await asyncio.sleep(30)
-        return (b"", b"")
-
-    fake_proc.communicate = _communicate
-    fake_proc.kill = MagicMock()
-    fake_proc.wait = AsyncMock(return_value=-9)
-
-    async def _fake_shell(*_args: object, **_kwargs: object) -> object:
-        return fake_proc
-
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", _fake_shell)
-    monkeypatch.setattr(quality_gate, "_GATE_TIMEOUT_SECONDS", 0.01)
-
-    rc, _msg = await quality_gate._run_one(tmp_path, "slow-command")
+    monkeypatch.setattr(
+        quality_gate,
+        "run_in_workspace_container",
+        AsyncMock(
+            return_value=WorkspaceContainerResult(
+                _TIMEOUT_EXIT_CODE, "", "timed out", timed_out=True
+            )
+        ),
+    )
+    rc, msg = await quality_gate._run_one(tmp_path, "slow-command")
     assert rc == _TIMEOUT_EXIT_CODE
-    fake_proc.kill.assert_called_once()
-    fake_proc.wait.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_run_one_kills_child_on_outer_cancellation(
-    tmp_path: pathlib.Path,
-) -> None:
-    """An outer cancellation (e.g. FlowVerbTimeoutMiddleware's own
-    asyncio.timeout firing around the whole i_am_done submit) throws
-    CancelledError into the wait_for, bypassing the TimeoutError handler
-    above. Without a dedicated handler the child is orphaned and keeps
-    running past the cancelled request; _run_one must kill + reap it and
-    re-raise.
-    """
-    real_create_subprocess_shell = asyncio.create_subprocess_shell
-    spawned: dict[str, asyncio.subprocess.Process] = {}
-
-    async def _capturing_create(*args: Any, **kwargs: Any) -> Any:
-        proc = await real_create_subprocess_shell(*args, **kwargs)
-        spawned["proc"] = proc
-        return proc
-
-    with patch.object(asyncio, "create_subprocess_shell", _capturing_create):
-        task = asyncio.ensure_future(quality_gate._run_one(tmp_path, "sleep 30"))
-        while "proc" not in spawned:
-            await asyncio.sleep(0.01)
-        await asyncio.sleep(0.1)  # let the shell actually exec sleep
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    proc = spawned["proc"]
-    assert proc.returncode is not None, "child was not reaped after cancellation"
-    with pytest.raises(ProcessLookupError):
-        os.kill(proc.pid, 0)
+    assert "timed out" in msg
 
 
 # --- GitService command selection -------------------------------------------

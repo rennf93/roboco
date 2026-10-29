@@ -14,10 +14,25 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from roboco.config import settings
+from roboco.services import workspace as workspace_module
 from roboco.services.workspace import WorkspaceService, _ensure_lock_for
+from tests.unit.local_workspace_container import run_in_local_shell
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _private_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The probe's throwaway clone lives under the orchestrator-only data root;
+    the upgrade + status run in a container, here a local shell stand-in."""
+    private_root = tmp_path / "private"
+    monkeypatch.setattr(settings, "private_data_root", str(private_root))
+    monkeypatch.setattr(
+        workspace_module, "run_in_workspace_container", run_in_local_shell
+    )
+    return private_root
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -56,6 +71,8 @@ async def test_dirtying_a_lockfile_returns_true(tmp_path: Path) -> None:
 
     assert await svc.dry_upgrade_changes_lockfile(_project(cmd)) is True
 
+    # The throwaway clone was built under the private scratch root and removed.
+    assert list((tmp_path / "private" / "scratch").iterdir()) == []
     # The read clone itself is never mutated by the probe.
     status = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -134,7 +151,9 @@ async def test_probe_holds_read_clone_lock_across_local_clone(
         )
         time.sleep(0.4)
 
-    def noop_probe(_clone_dir: Path, _command: str, _lock_paths: list[str]) -> bool:
+    async def noop_probe(
+        _clone_dir: Path, _command: str, _lock_paths: list[str]
+    ) -> bool:
         return False
 
     monkeypatch.setattr(WorkspaceService, "_clone_local_into", staticmethod(slow_clone))
@@ -149,3 +168,26 @@ async def test_probe_holds_read_clone_lock_across_local_clone(
     assert lock.locked(), "read-clone lock must be held during the local-clone step"
     await asyncio.wait_for(probe_task, timeout=3)
     assert not lock.locked(), "lock released after the clone step (upgrade needs none)"
+
+
+@pytest.mark.asyncio
+async def test_upgrade_and_status_both_run_in_the_workspace_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The upgrade may build the project's dependencies, and its `git status`
+    reads a .git that code just ran in: neither may run in this process."""
+    calls: list[list[str]] = []
+
+    async def _recording(cwd: Path, argv: list[str], **kw: Any) -> Any:
+        calls.append(list(argv))
+        return await run_in_local_shell(cwd, argv, **kw)
+
+    monkeypatch.setattr(workspace_module, "run_in_workspace_container", _recording)
+    svc = _svc(_make_read_clone(tmp_path))
+    cmd = "python3 -c \"open('uv.lock','a').write('x')\""
+
+    assert await svc.dry_upgrade_changes_lockfile(_project(cmd)) is True
+    assert calls == [
+        ["python3", "-c", "open('uv.lock','a').write('x')"],
+        ["git", "status", "--porcelain", "--", "uv.lock", "pnpm-lock.yaml"],
+    ]

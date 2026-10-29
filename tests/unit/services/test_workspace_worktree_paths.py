@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from roboco.models.base import Team
 from roboco.services.workspace import WorkspaceError, WorkspaceService
+from roboco.utils.workspace_paths import worktree_path_of
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -80,3 +81,20 @@ def test_get_worktree_path_per_task_isolation(tmp_path: Path) -> None:
         == b.parent
         == tmp_path / "guard-core" / "backend" / "be-dev-1" / ".worktrees"
     )
+
+
+@pytest.mark.parametrize("bad", ["..", "../..", "../other-agent", "/etc"])
+def test_get_worktree_path_refuses_an_id_that_leaves_the_worktrees_dir(
+    tmp_path: Path, bad: str
+) -> None:
+    svc = _service(tmp_path)
+    with pytest.raises(WorkspaceError, match="unsafe task id"):
+        svc.get_worktree_path("guard-core", Team.BACKEND, "be-dev-1", bad)
+
+
+def test_worktree_path_of_is_normalized_and_inside_the_clone(tmp_path: Path) -> None:
+    clone = tmp_path / "guard-core" / "backend" / "be-dev-1"
+    assert worktree_path_of(clone, "a3c40fe7") == clone / ".worktrees" / "a3c40fe7"
+    assert worktree_path_of(clone, "./a3c40fe7") == clone / ".worktrees" / "a3c40fe7"
+    with pytest.raises(ValueError, match="unsafe task id"):
+        worktree_path_of(clone, "")

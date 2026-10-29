@@ -94,7 +94,9 @@ async def _stub_task_get(svc: GitService, task: object | None) -> None:
 def _wire_service(svc: GitService, task: MagicMock) -> MagicMock:
     """Apply common bindings: workspace, remote parse, token resolution."""
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
 
     # update_pr_for_task fetches the task via get_task_service; we patch it

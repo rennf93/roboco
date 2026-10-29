@@ -393,6 +393,11 @@ def build_e2e_stack(
 
     mp = pytest.MonkeyPatch()
     root = tmp_path_factory.mktemp("e2e")
+    if os.geteuid() == 0:
+        # As root (the orchestrator image), workspace git runs as the git
+        # user: let it traverse the 0700 temp dirs, as /data is in production.
+        for directory in (root, root.parent, root.parent.parent):
+            directory.chmod(directory.stat().st_mode | 0o055)
     origin = _seed_origin(root)
     admin = _make_admin_clone(root, origin)
     gh = _FakeGitHub(origin=origin, admin_clone=admin)
@@ -406,6 +411,8 @@ def build_e2e_stack(
     mp.setattr(settings, "database_password", url.password or "")
     mp.setattr(settings, "database_name", url.database or "")
     mp.setattr(settings, "workspaces_root", str(workspaces))
+    # Relays, read and release clones: orchestrator-only in production.
+    mp.setattr(settings, "private_data_root", str(root / "private"))
     mp.setattr(settings, "workspace_auto_clone", True)
     mp.setattr(settings, "encryption_key", Fernet.generate_key().decode())
 

@@ -150,6 +150,49 @@ async def test_spawn_container_adds_compose_labels_before_image_args(
 
 
 @pytest.mark.asyncio
+async def test_spawn_container_moves_env_values_out_of_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any process in the orchestrator can read the docker CLI's argv from
+    /proc; the agent token must ride the CLI's env (`-e NAME`) instead, and
+    the container command after the image must be left exactly as built."""
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    calls: list[str] = []
+    _stub_spawn_container_collaborators(monkeypatch, orch, calls)
+
+    async def _no_labels(_service: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr(
+        "roboco.runtime.engines.spawn_launch.compose_label_args", _no_labels
+    )
+    monkeypatch.setattr(
+        orch,
+        "_append_agent_auth_env",
+        lambda cmd, _cfg: cmd.extend(["-e", "ROBOCO_AGENT_TOKEN=tok-secret"]),
+    )
+    monkeypatch.setattr(
+        orch,
+        "_append_image_and_claude_args",
+        lambda cmd, *_a: cmd.extend(["roboco-agent-dev-be", "claude", "-e", "X=y"]),
+    )
+    exec_mock = AsyncMock(return_value=_fake_proc())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_mock)
+
+    await orch._spawn_container(_config(["postgres"]))
+
+    assert list(exec_mock.call_args.args) == [
+        "-e",
+        "ROBOCO_AGENT_TOKEN",
+        "roboco-agent-dev-be",
+        "claude",
+        "-e",
+        "X=y",
+    ]
+    assert exec_mock.call_args.kwargs["env"]["ROBOCO_AGENT_TOKEN"] == "tok-secret"
+
+
+@pytest.mark.asyncio
 async def test_spawn_container_omits_compose_labels_outside_compose(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

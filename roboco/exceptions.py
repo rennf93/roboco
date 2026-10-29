@@ -380,7 +380,9 @@ def _scrub_git_secrets(text: str) -> str:
         return text
     text = re.sub(r"(://)[^/@\s]+@", r"\1***@", text)
     text = re.sub(r"(?i)(authorization:\s*basic\s+)\S+", r"\1***", text)
-    text = re.sub(r"(?i)(extraheader=\S*?basic\s+)\S+", r"\1***", text)
+    # [^\s=], not \S: a lazy scan that could cross "=" restarts at every
+    # "extraheader=" in the input and goes quadratic on a repeated one.
+    text = re.sub(r"(?i)(extraheader=[^\s=]*?basic\s+)\S+", r"\1***", text)
     text = re.sub(
         r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b", "***", text
     )

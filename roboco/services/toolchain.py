@@ -27,8 +27,12 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from typing import Any
+
+    # Reads one file: its text, or None when absent / unreadable.
+    TextReader = Callable[[Path], str | None]
 
 # Candidate ``major.minor`` interpreters, lowest first. The lowest version that
 # satisfies the constraint is the most portable choice (best wheel coverage).
@@ -69,27 +73,30 @@ def _extract_requires_python(data: dict[str, Any]) -> str | None:
     return None
 
 
-def _read_requires_python(project_root: Path) -> str | None:
-    pyproject = project_root / "pyproject.toml"
-    if not pyproject.exists():
+def read_text_or_none(path: Path) -> str | None:
+    """A file's text, or None when absent/unreadable (the default reader)."""
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
+def _read_requires_python(project_root: Path, read: TextReader) -> str | None:
+    text = read(project_root / "pyproject.toml")
+    if text is None:
         return None
     try:
-        data = tomllib.loads(pyproject.read_text())
-    except (tomllib.TOMLDecodeError, OSError):
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
         return None
     return _extract_requires_python(data)
 
 
-def _read_pin(project_root: Path) -> str | None:
+def _read_pin(project_root: Path, read: TextReader) -> str | None:
     """The ``major.minor`` from ``.python-version`` (tolerates ``3.13.2``,
     ``cpython-3.13``); None when absent or unparseable."""
-    pin_file = project_root / ".python-version"
-    if not pin_file.exists():
-        return None
-    try:
-        match = _PIN_RE.search(pin_file.read_text())
-    except OSError:
-        return None
+    text = read(project_root / ".python-version")
+    match = _PIN_RE.search(text) if text is not None else None
     return f"{match.group(1)}.{match.group(2)}" if match else None
 
 
@@ -100,14 +107,18 @@ def _lowest_satisfying(specifier: str) -> str | None:
     return None
 
 
-def resolve_target_python(project_root: Path) -> ResolvedPython | None:
+def resolve_target_python(
+    project_root: Path, read: TextReader = read_text_or_none
+) -> ResolvedPython | None:
     """The interpreter to provision the agent workspace with, or None.
 
     None means the target declares nothing actionable (no python project / no
-    constraint) — the caller should leave provisioning unchanged.
+    constraint) — the caller should leave provisioning unchanged. ``read``
+    returns a file's text or None; an agent workspace passes a reader that
+    runs as the workspace git user, never root.
     """
-    requires = _read_requires_python(project_root)
-    pin = _read_pin(project_root)
+    requires = _read_requires_python(project_root, read)
+    pin = _read_pin(project_root, read)
     if pin is not None and (requires is None or satisfies(pin, requires)):
         return ResolvedPython(pin, "python_version_file")
     if requires is not None:

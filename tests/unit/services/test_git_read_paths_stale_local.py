@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from roboco.services.git import GitService
+from tests.unit.local_origin_relay import serve_origin_through_relay
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -74,14 +75,14 @@ def _wire_for_reviewer(svc: Any, reviewer: Path) -> None:
     """Bypass the DB-backed workspace/token lookup: point every call at the
     given clone, unauthenticated (local bare-repo remotes need no token)."""
     svc._workspace_for_branch = AsyncMock(return_value=reviewer)
-    svc._token_for_branch = AsyncMock(return_value=None)
 
 
 @pytest.fixture
-def repo_pair(tmp_path: Path) -> tuple[Path, Path]:
+def repo_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """A bare origin plus a dev clone, both carrying a pushed task branch."""
     origin = tmp_path / "origin.git"
     _init_bare(origin)
+    serve_origin_through_relay(monkeypatch, tmp_path, origin)
     dev = tmp_path / "dev"
     _clone(origin, dev)
     _commit(dev, "README.md", "root\n")

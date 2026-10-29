@@ -79,7 +79,6 @@ async def test_second_fetch_within_ttl_is_skipped(
             "_fetch_origin_best_effort",
             side_effect=fake_fetch,
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         await svc.ensure_workspace(project_slug="roboco", agent_id=agent.id)
         await svc.ensure_workspace(project_slug="roboco", agent_id=agent.id)
@@ -122,7 +121,6 @@ async def test_fetch_after_ttl_runs_again(
             "_fetch_origin_best_effort",
             side_effect=fake_fetch,
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
         patch(
             "roboco.services.workspace._monotonic",
             side_effect=monotonic_calls,
@@ -159,7 +157,6 @@ async def test_force_true_bypasses_cache(
             "_fetch_origin_best_effort",
             side_effect=fake_fetch,
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         # First call populates the cache.
         await svc.ensure_workspace(project_slug="roboco", agent_id=agent.id)
@@ -205,7 +202,6 @@ async def test_different_workspaces_have_independent_caches(
             "_fetch_origin_best_effort",
             side_effect=fake_fetch,
         ),
-        patch("roboco.services.workspace._ensure_agent_owned"),
     ):
         _bind(svc, "_lookup_agent_or_raise", AsyncMock(return_value=agent_a))
         _bind(svc, "get_workspace_path", MagicMock(return_value=workspace_a))

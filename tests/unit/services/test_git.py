@@ -250,7 +250,6 @@ async def test_push_targets_explicit_branch_not_current_checkout() -> None:
     """push(branch=X) pushes X by ref even when the workspace is on Y."""
     svc = _service()
     _bind(svc, "get_current_branch", AsyncMock(return_value="feature/frontend/OTHER"))
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
     calls: list[list[str]] = []
 
     async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
@@ -280,7 +279,6 @@ async def test_push_recovers_missing_local_branch_from_origin() -> None:
     so after recreating the local tracking ref the push is a clean no-op.
     """
     svc = _service()
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
     calls: list[list[str]] = []
 
     async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
@@ -313,7 +311,6 @@ async def test_push_fails_loud_when_branch_absent_local_and_origin() -> None:
     is genuinely lost from this clone — fail with a recoverable instruction, not
     the raw "src refspec does not match any"."""
     svc = _service()
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
 
     async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
         res = MagicMock()
@@ -339,7 +336,6 @@ async def test_push_force_uses_force_with_lease_not_bare_force() -> None:
     fails fast instead of clobbering someone else's commits.
     """
     svc = _service()
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
     calls: list[list[str]] = []
 
     async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
@@ -362,7 +358,6 @@ async def test_push_force_uses_force_with_lease_not_bare_force() -> None:
 async def test_push_no_force_has_neither_flag() -> None:
     """push(force=False) carries neither --force nor --force-with-lease."""
     svc = _service()
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
     calls: list[list[str]] = []
 
     async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
@@ -745,24 +740,22 @@ async def test_diff_returns_diff_stdout() -> None:
 
 @pytest.mark.asyncio
 async def test_diff_and_files_resolves_once_and_returns_both_legs() -> None:
-    """``diff_and_files`` resolves workspace / token / head-ref / base-ref
+    """``diff_and_files`` resolves workspace / head-ref / base-ref
     EXACTLY ONCE (not the two separate resolutions calling ``diff()`` then
     ``list_changed_files()`` would cost) and returns both the full diff and
     the changed-file list from that single resolution."""
     svc = _service()
     workspace_mock = AsyncMock(return_value=Path("/tmp/ws"))
-    token_mock = AsyncMock(return_value=None)
     head_mock = AsyncMock(return_value="origin/feature")
     base_mock = AsyncMock(return_value="origin/master")
     _bind(svc, "_workspace_for_branch", workspace_mock)
-    _bind(svc, "_token_for_branch", token_mock)
     _bind(svc, "_resolve_head_ref", head_mock)
     _bind(svc, "_resolve_diff_base", base_mock)
 
     async def _run_git(
-        _workspace: Path, args: list[str], check: bool = True, token: str | None = None
+        _workspace: Path, args: list[str], check: bool = True
     ) -> MagicMock:
-        del check, token
+        del check
         if "--name-only" in args:
             return MagicMock(stdout="a.py\nb.py\n", returncode=0)
         return MagicMock(stdout="diff --git a b\n+x\n", returncode=0)
@@ -774,7 +767,6 @@ async def test_diff_and_files_resolves_once_and_returns_both_legs() -> None:
     assert "+x" in diff
     assert files == ["a.py", "b.py"]
     workspace_mock.assert_awaited_once()
-    token_mock.assert_awaited_once()
     head_mock.assert_awaited_once()
     base_mock.assert_awaited_once()
 
@@ -788,7 +780,6 @@ async def test_diff_and_files_runs_subprocesses_concurrently() -> None:
     2) rather than a wall-clock margin, which can flake under CI load."""
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
     _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
 
@@ -827,7 +818,6 @@ async def test_diff_and_files_isolates_a_single_leg_failure() -> None:
     other raises)."""
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
     _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
 
@@ -856,7 +846,6 @@ async def test_diff_and_files_raises_when_both_legs_fail() -> None:
     ``run_bounded_leg`` handling."""
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
     _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
     _bind(svc, "_run_git", AsyncMock(side_effect=GitCommandError("diff", "boom")))
@@ -879,7 +868,6 @@ async def test_diff_and_files_single_leg_failure_is_logged_and_recovered() -> No
     svc = _service()
     svc.log = MagicMock()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
     _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
 
@@ -922,7 +910,6 @@ async def test_diff_and_files_diff_leg_failure_is_logged() -> None:
     svc = _service()
     svc.log = MagicMock()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
     _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
 
@@ -949,7 +936,6 @@ async def test_diff_and_files_diff_leg_failure_is_logged() -> None:
 async def test_read_file_at_branch_returns_committed_content() -> None:
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
     _bind(
         svc,
@@ -966,7 +952,6 @@ async def test_read_file_at_branch_returns_committed_content() -> None:
 async def test_read_file_at_branch_missing_returns_none() -> None:
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_token_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_resolve_head_ref", AsyncMock(return_value="HEAD"))
     # git show on a path that isn't in the tree exits non-zero.
     _bind(
@@ -995,7 +980,9 @@ async def test_pr_target_returns_base_ref() -> None:
 
     svc = _service(execute_returns=result)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="token"))
 
     fake_response = MagicMock()
@@ -1043,7 +1030,9 @@ async def test_create_pr_returns_pr_dict() -> None:
     _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_record_pr_atomically", AsyncMock())
     # parent == default → _ensure_base_on_remote short-circuits (no git call)
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
@@ -1087,7 +1076,9 @@ async def test_create_pr_truncates_oversized_description_body() -> None:
     _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_record_pr_atomically", AsyncMock())
     # parent == default → _ensure_base_on_remote short-circuits (no git call)
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
@@ -1147,7 +1138,9 @@ async def test_create_pr_records_pr_despite_cancellation_after_post() -> None:
     _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
 
     recorded = {"done": False}
@@ -1205,7 +1198,9 @@ async def test_create_pr_cancellation_waits_out_record_before_reraising() -> Non
     _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
 
     order: list[str] = []
@@ -1275,7 +1270,7 @@ async def test_ensure_base_creates_missing_base_off_default() -> None:
 
     _bind(svc, "_run_git", fake_run_git)
     out = await svc._ensure_base_on_remote(
-        Path("/tmp/ws"), "feature/frontend/abc--def", "roboco", "tok"
+        Path("/tmp/ws"), "feature/frontend/abc--def", "roboco"
     )
     assert out == "feature/frontend/abc--def"
     assert any(
@@ -1302,9 +1297,7 @@ async def test_ensure_base_passthrough_when_present() -> None:
         return MagicMock(stdout="", returncode=0, stderr="")
 
     _bind(svc, "_run_git", fake_run_git)
-    out = await svc._ensure_base_on_remote(
-        Path("/tmp/ws"), "feature/x", "roboco", "tok"
-    )
+    out = await svc._ensure_base_on_remote(Path("/tmp/ws"), "feature/x", "roboco")
     assert out == "feature/x"
     assert pushed is False
 
@@ -1323,9 +1316,7 @@ async def test_ensure_base_falls_back_to_default_when_create_fails() -> None:
         return MagicMock(stdout="", returncode=0, stderr="")
 
     _bind(svc, "_run_git", fake_run_git)
-    out = await svc._ensure_base_on_remote(
-        Path("/tmp/ws"), "feature/x", "roboco", "tok"
-    )
+    out = await svc._ensure_base_on_remote(Path("/tmp/ws"), "feature/x", "roboco")
     assert out == "master"
 
 
@@ -1389,7 +1380,9 @@ async def test_pr_merge_returns_merge_commit_dict() -> None:
     svc = _service(execute_returns=result)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
 
     fake_resp = MagicMock(is_success=True, status_code=200)
     _bind(svc, "_call_merge_api", AsyncMock(return_value=fake_resp))
@@ -1420,7 +1413,9 @@ async def test_pr_merge_into_default_branch_is_ceo_only() -> None:
     svc = _service(execute_returns=result)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
     merge_api = AsyncMock()
     _bind(svc, "_call_merge_api", merge_api)
@@ -1493,7 +1488,6 @@ async def test_push_restates_gh001_as_permanent() -> None:
     as a transient timeout and blind-retries."""
     svc = _service()
     _bind(svc, "get_current_branch", AsyncMock(return_value="feature/x"))
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
 
     async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
         if args[:1] == ["push"]:
@@ -1514,7 +1508,6 @@ async def test_push_propagates_non_gh001_error_unchanged() -> None:
     """A non-size push failure is re-raised as-is (not reclassified)."""
     svc = _service()
     _bind(svc, "get_current_branch", AsyncMock(return_value="feature/x"))
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
 
     async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
         if args[:1] == ["push"]:
@@ -1546,9 +1539,7 @@ async def test_sync_target_branch_uses_local_ref_when_present() -> None:
         return MagicMock(returncode=0, stdout="", stderr="")
 
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
-    sha = await svc._sync_target_branch(
-        Path("/tmp/ws"), "feature/backend/parent", "token"
-    )
+    sha = await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
     assert sha == "local-tip-sha"
     assert ["checkout", "feature/backend/parent"] in calls
     assert ["fetch", "origin", "feature/backend/parent"] in calls
@@ -1576,9 +1567,7 @@ async def test_sync_target_branch_fetches_and_tracks_when_local_ref_missing() ->
         return MagicMock(returncode=0, stdout="", stderr="")
 
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
-    sha = await svc._sync_target_branch(
-        Path("/tmp/ws"), "feature/backend/parent", "token"
-    )
+    sha = await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
     assert sha == "origin-tip-sha"
     assert ["checkout", "feature/backend/parent"] in calls
     assert ["fetch", "origin", "feature/backend/parent"] in calls
@@ -1608,9 +1597,7 @@ async def test_sync_target_branch_raises_when_origin_also_missing() -> None:
 
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
     with pytest.raises(GitError, match="Could not check out target branch"):
-        await svc._sync_target_branch(
-            Path("/tmp/ws"), "feature/backend/parent", "token"
-        )
+        await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
 
 
 # ---------------------------------------------------------------------------
@@ -1641,7 +1628,7 @@ async def test_sync_target_branch_best_effort_swallows_missing_branch() -> None:
         ),
     )
     result = await svc._sync_target_branch_best_effort(
-        Path("/tmp/ws"), "feature/backend/31ae12fc--0e49e04e", "token"
+        Path("/tmp/ws"), "feature/backend/31ae12fc--0e49e04e"
     )
     assert result is None
 
@@ -1652,7 +1639,7 @@ async def test_sync_target_branch_best_effort_returns_sha_on_success() -> None:
     svc = _service()
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="merged-tip-sha"))
     result = await svc._sync_target_branch_best_effort(
-        Path("/tmp/ws"), "feature/backend/parent", "token"
+        Path("/tmp/ws"), "feature/backend/parent"
     )
     assert result == "merged-tip-sha"
 
@@ -1682,7 +1669,6 @@ async def test_rebase_onto_base_refuses_dirty_worktree() -> None:
             Path("/tmp/ws"),
             head_branch="feature/backend/h",
             base_branch="master",
-            git_token="t",
         )
 
     # Only the status probe ran — no fetch/checkout/reset/rebase touched the tree.
@@ -1713,7 +1699,6 @@ async def test_rebase_onto_base_proceeds_on_clean_tree() -> None:
         Path("/tmp/ws"),
         head_branch="feature/backend/h",
         base_branch="master",
-        git_token="t",
     )
 
     assert result == {"status": "superseded"}
@@ -1755,7 +1740,6 @@ async def test_rebase_onto_base_stash_true_auto_stashes_and_pops() -> None:
         Path("/tmp/ws"),
         head_branch="feature/backend/h",
         base_branch="master",
-        git_token="t",
         stash=True,
     )
 
@@ -1796,7 +1780,6 @@ async def test_rebase_onto_base_stash_pop_conflict_preserves_stash() -> None:
         Path("/tmp/ws"),
         head_branch="feature/backend/h",
         base_branch="master",
-        git_token="t",
         stash=True,
     )
 
@@ -1834,7 +1817,6 @@ async def test_rebase_onto_base_stash_true_rebase_conflict_skips_pop() -> None:
         Path("/tmp/ws"),
         head_branch="feature/backend/h",
         base_branch="master",
-        git_token="t",
         stash=True,
     )
 
@@ -1975,7 +1957,9 @@ async def test_merge_pull_request_none_does_not_raise_git_error() -> None:
     """CEO merge path: indeterminate (None) falls through to cleanup, not GitError."""
     svc = _service()
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc123sha"))
@@ -2000,7 +1984,9 @@ async def test_is_pr_merged_for_task_none_treated_as_merged() -> None:
     svc = _service(execute_returns=result)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_project_for_task", AsyncMock(return_value=fake_project))
     _bind(svc, "_resolve_workspace_agent_id", MagicMock(return_value=None))
     _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
@@ -2070,7 +2056,9 @@ async def test_update_pr_for_task_threads_actor_agent_id() -> None:
         return Path("/tmp/ws")
 
     _bind(svc, "get_workspace", AsyncMock(side_effect=_capture_workspace))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
 
     fake_task_service = MagicMock()

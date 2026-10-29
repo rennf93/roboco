@@ -25,6 +25,9 @@
 # opencode.json remain the primary gate
 # (roboco.llm.providers.openrouter_cli_config).
 set -euo pipefail
+# Group-writable output: the orchestrator's workspace git user shares the
+# agent group and must be able to rewrite what this agent creates.
+umask 002
 
 # Split-install sanity: docker/agent-openrouter.Dockerfile installs the
 # binary via `npm install -g opencode-ai` — verify it resolved on PATH

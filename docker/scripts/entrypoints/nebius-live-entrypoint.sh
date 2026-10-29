@@ -4,6 +4,9 @@
 # then exec the provider-generic interactive driver. Auth = NEBIUS_API_KEY
 # env (passed at spawn), same as the one-shot path.
 set -euo pipefail
+# Group-writable output: the orchestrator's workspace git user shares the
+# agent group and must be able to rewrite what this agent creates.
+umask 002
 cd /app
 python -m roboco.llm.providers.nebius_cli_config
 exec python -m roboco.agent_sdk.live_main

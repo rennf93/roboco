@@ -19,4 +19,4 @@ LABEL description="Intake interviewer on Grok — a panel-driven grok-CLI conver
 EXPOSE 9000
 
 # Override the base grok one-shot entrypoint with the interactive intake driver.
-ENTRYPOINT ["python", "-m", "roboco.agent_sdk.grok_intake_main"]
+ENTRYPOINT ["/app/scripts/umask-exec.sh", "python", "-m", "roboco.agent_sdk.grok_intake_main"]

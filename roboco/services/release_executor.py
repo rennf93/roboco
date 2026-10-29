@@ -15,18 +15,32 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import subprocess
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
+from roboco.services.git_origin import (
+    OriginContext,
+    is_origin_command,
+    run_origin_command,
+)
+from roboco.services.git_relay import (
+    GitRelay,
+    relay_for,
+    release_clone_path,
+    run_private_git,
+)
 from roboco.services.release_readiness import project_version
 
 logger = structlog.get_logger()
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.services.release_readiness import ReleaseReadinessReport
@@ -297,10 +311,9 @@ class _ReleaseContext:
     prod_branch: str
     root: Path
     git_url: str
-    # Per-call ``-c http.extraheader=Authorization: Basic …`` prefix so the PAT
-    # never lands in the clone/push argv (``/proc/<pid>/cmdline`` would expose
-    # a URL-embedded token). Empty for SSH / tokenless repos.
-    git_prefix: list[str]
+    # Every origin round-trip (fetch, ls-remote, push) goes through the
+    # project's relay: the token never enters a process in the clone.
+    relay: GitRelay
     ci_workflow: str | None
     # Env-ladder rung branches to merge into the prod checkout head→…→just-
     # below-prod before the bump (full-chain promotion). Empty for a
@@ -309,7 +322,7 @@ class _ReleaseContext:
 
 
 class _GitReleaseOps:
-    """Real release steps on a writable clone of RoboCo (token-authenticated)."""
+    """Real release steps on a dispatcher-owned writable clone of RoboCo."""
 
     def __init__(self, session: AsyncSession, ctx: _ReleaseContext) -> None:
         self._session = session
@@ -317,26 +330,45 @@ class _GitReleaseOps:
         self._default_branch = ctx.prod_branch
         self._root = ctx.root
         self._git_url = ctx.git_url
-        self._git_prefix = ctx.git_prefix
+        self._relay = ctx.relay
         self._head_branch = ctx.env_chain[0] if ctx.env_chain else ctx.prod_branch
         self._ci_workflow = ctx.ci_workflow
         self._env_chain = ctx.env_chain
 
     async def _git(self, *args: str) -> tuple[int, str]:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            "-C",
-            str(self._root),
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        return await _await_proc(proc, _GIT_OP_TIMEOUT_SECONDS)
+        """``git <args>`` in the release clone; ``(rc, stdout+stderr)``.
+
+        An ``origin`` command goes through the relay; anything else runs as
+        root in the clone (dispatcher-owned, under the private root). A hang
+        past the deadline reports rc 124 so every fail-closed branch fires.
+        """
+        root = self._root
+
+        def _local(local_args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            return run_private_git(
+                root, local_args, timeout=_GIT_OP_TIMEOUT_SECONDS, check=False
+            )
+
+        def _run() -> subprocess.CompletedProcess[str]:
+            if not is_origin_command(args):
+                return _local(args)
+            ctx = OriginContext(
+                relay=self._relay,
+                repo=root,
+                local_git=_local,
+                from_workspace=False,
+                timeout=_GIT_OP_TIMEOUT_SECONDS,
+            )
+            return run_origin_command(ctx, args)
+
+        try:
+            result = await asyncio.to_thread(_run)
+        except subprocess.TimeoutExpired:
+            return _TIMEOUT_RC, f"subprocess timed out after {_GIT_OP_TIMEOUT_SECONDS}s"
+        return result.returncode, result.stdout + result.stderr
 
     async def is_already_published(self, version: str) -> bool:
-        rc, out = await self._git(
-            *self._git_prefix, "ls-remote", "--tags", "origin", f"v{version}"
-        )
+        rc, out = await self._git("ls-remote", "--tags", "origin", f"v{version}")
         return rc == 0 and bool(out.strip())
 
     async def release_commit_sha(self, version: str) -> str | None:
@@ -430,7 +462,7 @@ class _GitReleaseOps:
         await self._git("config", "user.email", settings.release_git_email)
         # Fresh ``--branch <prod>`` clone only has prod's history — fetch every
         # rung branch so ``origin/<branch>`` resolves for the merges.
-        rc, out = await self._git(*self._git_prefix, "fetch", "origin")
+        rc, out = await self._git("fetch", "origin")
         if rc != 0:
             raise RuntimeError(f"env-chain fetch failed: {out.strip()[:200]}")
         for branch in self._env_chain:
@@ -489,7 +521,7 @@ class _GitReleaseOps:
         _, out = await self._git("rev-parse", "HEAD")
         sha = out.strip()
         push_rc, push_out = await self._git(
-            *self._git_prefix, "push", self._git_url, f"HEAD:{self._default_branch}"
+            "push", "origin", f"HEAD:{self._default_branch}"
         )
         if push_rc != 0:
             logger.error("release push failed", error=push_out.strip()[:300])
@@ -656,44 +688,59 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     # Full-chain promotion: rung branches head→…→just-below-prod to merge into
     # the prod checkout before bumping. Degenerate (head==prod) → [] → no-op.
     env_chain = promotion_chain(project)
-    # PAT rides a per-call ``-c http.extraheader=Authorization: Basic …`` config
-    # (mirrors workspace.py :642 / :1285) so it never lands in the clone/push
-    # argv — ``/proc/<pid>/cmdline`` would otherwise expose a URL-embedded token.
-    git_prefix: list[str] = []
-    using_token = bool(token) and git_url.startswith("https://")
-    if using_token:
-        import base64
-
-        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        git_prefix = ["-c", f"http.extraheader=Authorization: Basic {basic}"]
-    root = await _prepare_release_clone(slug, git_url, git_prefix, default_branch)
+    relay = relay_for(project, token)
+    root = await _prepare_release_clone(relay, default_branch)
     ctx = _ReleaseContext(
         slug=slug,
         prod_branch=default_branch,
         root=root,
         git_url=git_url,
-        git_prefix=git_prefix,
+        relay=relay,
         ci_workflow=_resolve_release_ci_workflow(),
         env_chain=env_chain,
     )
     return ReleaseExecutor(_GitReleaseOps(session, ctx))
 
 
-async def _prepare_release_clone(
-    slug: str, git_url: str, git_prefix: list[str], default_branch: str
-) -> Path:
-    """Fresh, writable, token-authenticated clone for the release commit + push."""
-    from roboco.config import settings
+async def _prepare_release_clone(relay: GitRelay, default_branch: str) -> Path:
+    """Fresh, writable clone of the relay's ``default_branch`` for the release.
 
-    root = Path(settings.workspaces_root) / "_release" / slug
+    Dispatcher-owned (under the private root, never mounted into an agent)
+    and checked out with ``core.symlinks=false``: the release step rewrites
+    CHANGELOG / version files as root, so a symlink committed to the repo
+    must stay a plain file here, never a path out of the clone.
+    """
+    root = release_clone_path(relay.project_slug)
     if root.exists():
         await _run(["rm", "-rf", str(root)])
     root.parent.mkdir(parents=True, exist_ok=True)
-    rc, out = await _run(
-        ["git", *git_prefix, "clone", "--branch", default_branch, git_url, str(root)]
-    )
-    if rc != 0:
-        raise RuntimeError(f"release clone failed: {out.strip()[:200]}")
+
+    def _clone() -> subprocess.CompletedProcess[str]:
+        fetched = relay.fetch_from_origin(
+            [f"+refs/heads/{default_branch}:refs/heads/{default_branch}"],
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
+        if fetched.returncode != 0:
+            return fetched
+        return run_private_git(
+            root.parent,
+            [
+                "clone",
+                "--quiet",
+                "-c",
+                "core.symlinks=false",
+                "--branch",
+                default_branch,
+                str(relay.path),
+                str(root),
+            ],
+            timeout=_CLONE_TIMEOUT_SECONDS,
+            check=False,
+        )
+
+    cloned = await asyncio.to_thread(_clone)
+    if cloned.returncode != 0:
+        raise RuntimeError(f"release clone failed: {cloned.stderr.strip()[:200]}")
     return root
 
 

@@ -50,6 +50,7 @@ from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 from roboco.llm.providers.openrouter_cli_config import opencode_model_ref
 from roboco.runtime.compose_labels import compose_label_args
 from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.utils.docker_env import docker_cli_env, docker_options_without_env_values
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -169,10 +170,12 @@ class OpenRouterProvider(AgentProvider):
         self._append_usage_mount(cmd, hosts)
         self._append_openrouter_env(cmd, config, initial_prompt)
         cmd.extend(await compose_label_args(config.agent_id))
+        cmd, env_values = docker_options_without_env_values(cmd)
         cmd.append(self._image)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            env=docker_cli_env(env_values),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

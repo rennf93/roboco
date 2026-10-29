@@ -6,6 +6,12 @@
 # and the pre-built venv copied in.
 # =============================================================================
 
+# Entire CLI pin (stages below). Same pin as agent-base.Dockerfile: version
+# AND sha256 written here, not fetched from the release.
+ARG ENTIRE_VERSION=0.12.2
+ARG ENTIRE_SHA256_AMD64=bfc5c8d5b599f328775b89b735db020c963e307b6a324fc30ce371fe8fa789e8
+ARG ENTIRE_SHA256_ARM64=f08a1b8c6352d3f78076268dc67b0b273d7f62dbab94b15aec028e7b4257ad0c
+
 # ---- Builder ----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS builder
 
@@ -49,6 +55,35 @@ COPY alembic.ini /app/
 COPY alembic /app/alembic
 RUN uv sync --frozen --no-dev
 
+# ---- Entire CLI -------------------------------------------------------------
+# Entire (entire.io) records agent sessions as git checkpoints. Agents run its
+# session hooks in their own containers; its commit hooks run in the throwaway
+# workspace container (roboco/services/entire_hooks.py), started from this
+# image. BuildKit fetches the releases and checks their sha256 itself (`ADD
+# --checksum`, a mismatch fails the build): no package manager or downloader
+# in the stage. Both architectures' tarballs are fetched, each against its own
+# pinned sum, and the RUN unpacks TARGETARCH's: a stage picked by
+# `FROM ...-${TARGETARCH}` would, for an architecture with no such stage, pull
+# that name from a registry instead of failing.
+FROM python:3.13-slim-bookworm AS entire
+ARG ENTIRE_VERSION
+ARG ENTIRE_SHA256_AMD64
+ARG ENTIRE_SHA256_ARM64
+ARG TARGETARCH
+ADD --checksum=sha256:${ENTIRE_SHA256_AMD64} \
+    https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_amd64.tar.gz \
+    /tmp/entire_linux_amd64.tar.gz
+ADD --checksum=sha256:${ENTIRE_SHA256_ARM64} \
+    https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_arm64.tar.gz \
+    /tmp/entire_linux_arm64.tar.gz
+RUN case "$TARGETARCH" in \
+        amd64|arm64) ;; \
+        *) echo "unsupported TARGETARCH: '$TARGETARCH'" >&2; exit 1 ;; \
+    esac \
+    && mkdir -p /usr/local/lib/entire \
+    && tar --no-same-owner -xzf "/tmp/entire_linux_${TARGETARCH}.tar.gz" \
+        -C /usr/local/lib/entire entire
+
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner
 
@@ -56,9 +91,12 @@ FROM python:3.13-slim-bookworm AS runner
 # make (backstop for projects whose CI commands use make targets), Node.js 22
 # via NodeSource. Debian's distro nodejs is v18, but current pnpm requires
 # Node >=22.13 — installing v18 made `pnpm install` fail in Node/TS workspaces.
+# libatomic1: the pnpm a project pins via `packageManager` (pnpm 11's
+# @pnpm/exe) is a native binary linked against libatomic.so.1; without it
+# every pnpm command in such a project exits 127.
 # curl/gnupg/lsb-release are only needed to add the repos, then purged.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg lsb-release git make \
+        curl ca-certificates gnupg lsb-release git make libatomic1 \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && curl -fsSL https://download.docker.com/linux/debian/gpg \
@@ -103,14 +141,34 @@ COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 # service in the compose files.
 COPY --from=builder /usr/local/bin/py-spy /usr/local/bin/py-spy
 
-# Orchestrator clones workspaces as root, then chowns them to the agent
-# user (uid 1000) so the agent container can read/write. After the chown,
-# the orchestrator (still root) needs to run git commands (claim branch
-# creation, status, log, fetch) inside those now-1000-owned dirs — git's
-# "dubious ownership" check refuses unless safe.directory is set. `*`
-# trusts every path, which is fine here since this container only mounts
-# the sandboxed /data/workspaces tree.
-RUN git config --global --add safe.directory '*'
+# Entire CLI, deliberately off PATH: only RoboCo's Entire step runs it, by
+# absolute path. On PATH, the wrapper hooks Entire installs in a clone's
+# .git/hooks would start it from any project hook run here.
+COPY --from=entire /usr/local/lib/entire/entire /usr/local/lib/entire/entire
+
+# Workspace git never runs as root: every agent container mounts every clone
+# read-write, so a clone's hooks/config could run anything git starts. It
+# runs as `roboco-git` (roboco/services/workspace_git.py via setpriv): not
+# root, not the agent uid (on the NAS that is the host user who owns the
+# provider credentials mounted here), primary group = the agent images' gid
+# so both sides write group-writable files the other can edit. The uid/gid
+# must match settings.git_user_uid / agent_gid (env set below).
+#
+# Root runs git only in its own repositories under /data/private (the relay,
+# read and release clones), so root keeps git's "dubious ownership" check:
+# no global safe.directory. The git user's global config, and the ONLY hooks
+# directory any orchestrator-side git runs, live root-owned in /opt/roboco/git.
+ARG ROBOCO_GIT_USER_UID=1500
+ARG ROBOCO_AGENT_GID=1000
+RUN groupadd --gid "${ROBOCO_AGENT_GID}" agent \
+    && useradd --uid "${ROBOCO_GIT_USER_UID}" --gid "${ROBOCO_AGENT_GID}" \
+        --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin \
+        roboco-git \
+    && command -v setpriv
+COPY docker/git-support /opt/roboco/git
+RUN chown -R root:root /opt/roboco/git && chmod -R u=rwX,go=rX /opt/roboco/git
+ENV ROBOCO_GIT_USER_UID=${ROBOCO_GIT_USER_UID} \
+    ROBOCO_AGENT_GID=${ROBOCO_AGENT_GID}
 
 # PYTHONUNBUFFERED: flush stdout/stderr immediately so structured logs reach
 # `docker logs` in real time. Without it Python block-buffers stdout (it's a pipe,

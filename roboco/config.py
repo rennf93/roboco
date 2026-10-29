@@ -13,7 +13,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, computed_field, field_validator, model_validator
@@ -240,9 +240,16 @@ class Settings(BaseSettings):
     @property
     def redis_url(self) -> str:
         """Redis connection URL."""
-        if self.redis_password:
-            return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
-        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        return self.redis_url_for_db(self.redis_db)
+
+    def redis_url_for_db(self, db: int) -> str:
+        """Redis connection URL for ``db``, carrying the password when one is set.
+
+        The password is URL-quoted so a hand-picked one containing ``@`` or
+        ``/`` still parses (a generated hex password is unaffected).
+        """
+        auth = f":{quote(self.redis_password, safe='')}@" if self.redis_password else ""
+        return f"redis://{auth}{self.redis_host}:{self.redis_port}/{db}"
 
     # ==========================================================================
     # RAG (in-house engine with pgvector)
@@ -745,13 +752,17 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Entire (entire.io) session checkpoints for the fleet. The agent images
     # ship a pinned Entire CLI behind a wrapper that reads this flag at spawn;
-    # off => the wrapper turns every Entire hook into a silent no-op.
+    # off => the wrapper turns every Entire hook into a silent no-op. On, RoboCo
+    # runs Entire's commit hooks for agent commits in the sealed workspace
+    # container (roboco/services/entire_hooks.py).
     entire_enabled: bool = Field(
         default=False,
         description=(
             "Records each agent's Claude Code session with Entire so every "
-            "task commit carries a redacted transcript checkpoint. Off => "
-            "Entire's hooks are no-ops in every agent container."
+            "task commit carries a redacted transcript checkpoint, pushed with "
+            "the branch to the project's own origin (anyone who can read the "
+            "repository can read it). Off => Entire's hooks are no-ops in every "
+            "agent container and RoboCo runs none for their commits."
         ),
     )
 
@@ -1964,6 +1975,100 @@ class Settings(BaseSettings):
             "minutes; the default clone timeout is too short for this."
         ),
     )
+    agent_uid: int = Field(
+        default=1000,
+        description=(
+            "uid of the `agent` user in the agent images (Debian `useradd` "
+            "default). Workspace files belong to it, and every throwaway "
+            "workspace container runs as it."
+        ),
+    )
+    agent_gid: int = Field(
+        default=1000,
+        description="Primary gid of the `agent` user in the agent images.",
+    )
+    git_user_uid: int = Field(
+        default=1500,
+        description=(
+            "uid the orchestrator drops to for every git command in an agent "
+            "workspace (`roboco-git` in the orchestrator image, primary gid "
+            "agent_gid). Never root (agents can rewrite every clone) and "
+            "never agent_uid (that is the host user on the NAS, who owns the "
+            "provider credentials mounted into the orchestrator). Must match "
+            "the image's ROBOCO_GIT_USER_UID build arg."
+        ),
+    )
+    git_support_dir: str = Field(
+        default="/opt/roboco/git",
+        description=(
+            "Root-owned dir in the orchestrator image: `hooks/` is the ONLY "
+            "hooks dir any orchestrator-side git runs (core.hooksPath), "
+            "`workspace.gitconfig` is the git user's global config."
+        ),
+    )
+    host_data_dir: str = Field(
+        default="",
+        description=(
+            "Host path of the data dir the compose files mount under /data "
+            "(ROBOCO_HOST_DATA_DIR). Bind mounts for containers the "
+            "orchestrator starts over the Docker socket name host paths, so "
+            "/data/workspaces/... is translated through it. Empty = the "
+            "orchestrator runs on the host itself (local dev)."
+        ),
+    )
+    host_claude_dir: str = Field(
+        default="",
+        description=(
+            "Host path of the ~/.claude every agent container mounts "
+            "(ROBOCO_HOST_CLAUDE_DIR; this orchestrator sees it as its own "
+            "~/.claude). The Entire step mounts one agent's transcript folder "
+            "from it into the throwaway container. Empty = the orchestrator "
+            "runs on the host itself (local dev)."
+        ),
+    )
+    private_data_root: str = Field(
+        default="/data/private",
+        description=(
+            "Orchestrator-only data dir, never mounted into an agent "
+            "container (agents mount ALL of /data/workspaces read-write). "
+            "Holds the per-project git relays (`relays/<slug>.git`, the only "
+            "repositories that ever see a project token), the read clones "
+            "(`read/<slug>`), the release clones (`release/<slug>`) and the "
+            "scratch trees the orchestrator builds itself (`scratch/`)."
+        ),
+    )
+    workspace_container_image: str | None = Field(
+        default=None,
+        description=(
+            "Image of the throwaway container that runs a workspace's own "
+            "code: the quality gate, codegen, dependency installs, the "
+            "toolchain smoke and the dep-update probe. Unset = the image this "
+            "orchestrator runs, read from its own container, so the toolchain "
+            "is the one these commands used when they ran here as root. Set "
+            "it when the orchestrator is not itself in a container."
+        ),
+    )
+    workspace_container_network: str = Field(
+        default="bridge",
+        description=(
+            "Docker network for the throwaway workspace container. The "
+            "default `bridge` reaches package registries but not RoboCo's "
+            "networks (no API, no Postgres/Redis by name)."
+        ),
+    )
+    workspace_container_memory: str = Field(
+        default="4g",
+        description="`docker run --memory` for the throwaway workspace container.",
+    )
+    workspace_container_cpus: str = Field(
+        default="2",
+        description="`docker run --cpus` for the throwaway workspace container.",
+    )
+    workspace_container_pids_limit: int = Field(
+        default=4096,
+        ge=64,
+        description="`docker run --pids-limit` for the throwaway workspace container.",
+    )
 
     # ==========================================================================
     # Agent container images (spawn source)
@@ -2102,6 +2207,17 @@ class Settings(BaseSettings):
             "the Next.js panel) can exceed the 30s default-git timeout while "
             "git hashes every object and the orchestrator re-chowns the "
             "tree, so the commit choreography uses this longer budget."
+        ),
+    )
+    project_hook_push_timeout_seconds: int = Field(
+        default=240,
+        ge=30,
+        description=(
+            "Time a project's own pre-push hook may run (in the throwaway "
+            "container) before RoboCo pushes for an agent; past it the push is "
+            "refused. Projects run their test suites there. It has to fit, "
+            "with the quality gate (up to 600 s), inside i_am_done's "
+            "flow_verb_slow_timeout_seconds wall (900 s)."
         ),
     )
     git_network_timeout_seconds: int = Field(

@@ -172,8 +172,7 @@ async def get_git_log(
         # bare branch name so this reads the same authoritative tip diff()/
         # read_file_at_branch() do, not whatever this clone happened to
         # have on disk from the last time it looked.
-        token = await git_service._token_for_branch(branch)
-        head_ref = await git_service._resolve_head_ref(workspace, branch, token=token)
+        head_ref = await git_service._resolve_head_ref(workspace, branch)
 
         # Get log with format. Don't raise if the branch doesn't exist in
         # this workspace yet — that's a normal race (branch created in a

@@ -14,7 +14,7 @@ without a DB or a real git remote.
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,7 +23,10 @@ from roboco.services.workspace import (
     WorkspaceService,
     _detect_dep_commands,
     _lockfile_digest,
-    _own_install_outputs,
+)
+from roboco.services.workspace_container import (
+    WorkspaceContainerError,
+    WorkspaceContainerResult,
 )
 
 if TYPE_CHECKING:
@@ -143,106 +146,76 @@ def test_lockfile_digest_changes_with_content(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# install_dev_deps
+# install_dev_deps — every install runs in a throwaway workspace container
 # ---------------------------------------------------------------------------
+
+
+def _container(returncode: int = 0, stderr: str = "") -> AsyncMock:
+    return AsyncMock(return_value=WorkspaceContainerResult(returncode, "", stderr))
+
+
+def _python_workspace(tmp_path: Path) -> Path:
+    ws = _make_workspace(tmp_path)
+    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (ws / "uv.lock").write_text("version = 1\n")
+    return ws
 
 
 @pytest.mark.asyncio
 async def test_install_runs_detected_command(tmp_path: Path) -> None:
     """A Python workspace runs `uv sync` and writes the digest marker."""
-    ws = _make_workspace(tmp_path)
-    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    (ws / "uv.lock").write_text("version = 1\n")
+    ws = _python_workspace(tmp_path)
+    runner = _container()
 
-    svc = _service()
-    captured: list[list[str]] = []
-
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        captured.append(argv)
-        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._ensure_agent_owned"),
-    ):
-        ran = await svc.install_dev_deps(ws)
+    with patch("roboco.services.workspace.run_in_workspace_container", runner):
+        ran = await _service().install_dev_deps(ws)
 
     assert ran is True
-    assert ["uv", "sync", "--extra", "dev"] in captured
+    assert runner.call_args.args == (ws, ["uv", "sync", "--extra", "dev"])
     assert (ws / _DEP_INSTALL_MARKER).is_file()
 
 
 @pytest.mark.asyncio
 async def test_install_idempotent_on_unchanged_lockfiles(tmp_path: Path) -> None:
     """A second call with the same lockfiles is a no-op (cache hit)."""
-    ws = _make_workspace(tmp_path)
-    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    (ws / "uv.lock").write_text("version = 1\n")
-
+    ws = _python_workspace(tmp_path)
+    runner = _container()
     svc = _service()
-    run_count = 0
 
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        nonlocal run_count
-        run_count += 1
-        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._ensure_agent_owned"),
-    ):
+    with patch("roboco.services.workspace.run_in_workspace_container", runner):
         first = await svc.install_dev_deps(ws)
         second = await svc.install_dev_deps(ws)
 
     assert first is True
     assert second is False
-    assert run_count == 1
+    runner.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_install_reruns_when_lockfile_changes(tmp_path: Path) -> None:
     """Changing the lockfile invalidates the marker and re-installs."""
-    ws = _make_workspace(tmp_path)
-    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    lock = ws / "uv.lock"
-    lock.write_text("version = 1\n")
-
+    ws = _python_workspace(tmp_path)
+    runner = _container()
     svc = _service()
-    run_count = 0
 
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        nonlocal run_count
-        run_count += 1
-        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._ensure_agent_owned"),
-    ):
+    with patch("roboco.services.workspace.run_in_workspace_container", runner):
         await svc.install_dev_deps(ws)
-        lock.write_text("version = 2\n")
+        (ws / "uv.lock").write_text("version = 2\n")
         await svc.install_dev_deps(ws)
 
-    assert run_count == _EXPECTED_RERUN_INSTALLS
+    assert runner.await_count == _EXPECTED_RERUN_INSTALLS
 
 
 @pytest.mark.asyncio
 async def test_install_failure_is_best_effort(tmp_path: Path) -> None:
     """A non-zero install exit logs but does NOT raise, and writes no marker."""
-    ws = _make_workspace(tmp_path)
-    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    (ws / "uv.lock").write_text("version = 1\n")
+    ws = _python_workspace(tmp_path)
 
-    svc = _service()
-
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(argv, returncode=1, stdout="", stderr="boom")
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._ensure_agent_owned"),
+    with patch(
+        "roboco.services.workspace.run_in_workspace_container",
+        _container(1, "boom"),
     ):
-        ran = await svc.install_dev_deps(ws)
+        ran = await _service().install_dev_deps(ws)
 
     assert ran is False
     # No marker on failure → next call retries.
@@ -251,196 +224,97 @@ async def test_install_failure_is_best_effort(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_install_missing_tool_does_not_raise(tmp_path: Path) -> None:
-    """A missing `uv`/`pnpm` on the host is swallowed (FileNotFoundError)."""
-    ws = _make_workspace(tmp_path)
-    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    (ws / "uv.lock").write_text("version = 1\n")
+    """A tool missing from the container image exits 127 in its shell."""
+    ws = _python_workspace(tmp_path)
 
-    svc = _service()
-
-    def _fake_run(*_a: object, **_kw: object) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError("uv not found")
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._ensure_agent_owned"),
+    with patch(
+        "roboco.services.workspace.run_in_workspace_container",
+        _container(127, "uv: not found"),
     ):
-        ran = await svc.install_dev_deps(ws)
+        ran = await _service().install_dev_deps(ws)
 
     assert ran is False
 
 
 @pytest.mark.asyncio
-async def test_install_skipped_when_disabled(tmp_path: Path) -> None:
-    """`workspace_install_dev_deps=False` short-circuits before any subprocess."""
-    ws = _make_workspace(tmp_path)
-    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    (ws / "uv.lock").write_text("version = 1\n")
+async def test_install_container_that_cannot_start_does_not_raise(
+    tmp_path: Path,
+) -> None:
+    ws = _python_workspace(tmp_path)
 
-    svc = _service()
+    with patch(
+        "roboco.services.workspace.run_in_workspace_container",
+        AsyncMock(side_effect=WorkspaceContainerError("docker unreachable")),
+    ):
+        ran = await _service().install_dev_deps(ws)
+
+    assert ran is False
+    assert not (ws / _DEP_INSTALL_MARKER).is_file()
+
+
+@pytest.mark.asyncio
+async def test_install_skipped_when_disabled(tmp_path: Path) -> None:
+    """`workspace_install_dev_deps=False` short-circuits before any container."""
+    ws = _python_workspace(tmp_path)
+    runner = _container()
 
     with (
         patch(
             "roboco.services.workspace.settings.workspace_install_dev_deps",
             False,
         ),
-        patch("roboco.services.workspace.subprocess.run") as run_mock,
-        patch("roboco.services.workspace._ensure_agent_owned"),
+        patch("roboco.services.workspace.run_in_workspace_container", runner),
     ):
-        ran = await svc.install_dev_deps(ws)
+        ran = await _service().install_dev_deps(ws)
 
     assert ran is False
-    run_mock.assert_not_called()
+    runner.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_install_noop_when_no_manifest(tmp_path: Path) -> None:
     """A workspace with no recognized manifest installs nothing."""
     ws = _make_workspace(tmp_path)
-    svc = _service()
+    runner = _container()
 
-    with (
-        patch("roboco.services.workspace.subprocess.run") as run_mock,
-        patch("roboco.services.workspace._ensure_agent_owned"),
-    ):
-        ran = await svc.install_dev_deps(ws)
+    with patch("roboco.services.workspace.run_in_workspace_container", runner):
+        ran = await _service().install_dev_deps(ws)
 
     assert ran is False
-    run_mock.assert_not_called()
+    runner.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_install_invalidates_owned_marker_before_running(tmp_path: Path) -> None:
-    """The root-run install drops the ownership sentinel first, so the repair
-    walk after it cannot be skipped by a stale marker and leave root-owned
-    .venv files behind (live 2026-09: 1212 root-owned files in agent venvs)."""
-    ws = _make_workspace(tmp_path)
-    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    (ws / "uv.lock").write_text("version = 1\n")
+async def test_install_never_runs_the_clone_code_in_this_process(
+    tmp_path: Path,
+) -> None:
+    """`uv sync` runs the clone's build backend and `pnpm install` its package
+    scripts: as root here that was root on the host. Nothing may run locally,
+    and with the agent uid doing the writes no ownership repair follows."""
+    ws = _python_workspace(tmp_path)
+    (ws / "package.json").write_text("{}")
+    (ws / "pnpm-lock.yaml").write_text("lockfileVersion: 9\n")
+    runner = _container()
 
-    svc = _service()
-    order: list[str] = []
+    real_run = subprocess.run
 
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        order.append("install")
-        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
-
-    with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch(
-            "roboco.services.workspace.invalidate_owned_marker",
-            side_effect=lambda _ws: order.append("invalidate"),
-        ),
-        patch(
-            "roboco.services.workspace._own_install_outputs",
-            side_effect=lambda _ws: order.append("own_outputs"),
-        ),
-        patch(
-            "roboco.services.workspace._ensure_agent_owned",
-            side_effect=lambda _ws: order.append("repair"),
-        ),
-    ):
-        ran = await svc.install_dev_deps(ws)
-
-    assert ran is True
-    assert order == ["invalidate", "install", "own_outputs", "repair"]
-
-
-# ---------------------------------------------------------------------------
-# _own_install_outputs
-# ---------------------------------------------------------------------------
-
-
-def test_own_install_outputs_walks_venv_and_node_modules(tmp_path: Path) -> None:
-    """.venv and node_modules are walked in full (never pruned here) so every
-    dir and file under them gets chowned; files outside them are untouched."""
-    ws = _make_workspace(tmp_path)
-    venv_bin = ws / ".venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    (venv_bin / "python").write_text("#!/bin/sh\n")
-    site_pkg = ws / ".venv" / "lib" / "site-packages" / "pkg"
-    site_pkg.mkdir(parents=True)
-    (site_pkg / "__init__.py").write_text("")
-    node_pkg = ws / "node_modules" / "foo"
-    node_pkg.mkdir(parents=True)
-    (node_pkg / "index.js").write_text("module.exports = {}\n")
-    (ws / "src").mkdir()
-    (ws / "src" / "main.py").write_text("x = 1\n")
-
-    touched: list[str] = []
-
-    def _record(entry: str) -> int:
-        touched.append(entry)
-        return 0
-
-    with patch("roboco.services.workspace._own_and_grant_rw", side_effect=_record):
-        _own_install_outputs(ws)
-
-    assert len(touched) == len(set(touched))
-    expected = {
-        str(ws / ".venv"),
-        str(ws / ".venv" / "bin"),
-        str(ws / ".venv" / "bin" / "python"),
-        str(ws / ".venv" / "lib"),
-        str(ws / ".venv" / "lib" / "site-packages"),
-        str(ws / ".venv" / "lib" / "site-packages" / "pkg"),
-        str(ws / ".venv" / "lib" / "site-packages" / "pkg" / "__init__.py"),
-        str(ws / "node_modules"),
-        str(ws / "node_modules" / "foo"),
-        str(ws / "node_modules" / "foo" / "index.js"),
-    }
-    assert set(touched) == expected
-    assert str(ws / "src" / "main.py") not in touched
-
-
-def test_own_install_outputs_does_not_follow_a_symlinked_venv(tmp_path: Path) -> None:
-    """A worktree's .venv is a symlink to the clone root's shared .venv
-    (_link_shared_venv); the link itself gets owned, its target never walked."""
-    target = tmp_path / "shared-venv"
-    (target / "bin").mkdir(parents=True)
-    (target / "bin" / "python").write_text("#!/bin/sh\n")
-    ws = _make_workspace(tmp_path)
-    (ws / ".venv").symlink_to(target)
-
-    touched: list[str] = []
-
-    def _record(entry: str) -> int:
-        touched.append(entry)
-        return 0
-
-    with patch("roboco.services.workspace._own_and_grant_rw", side_effect=_record):
-        _own_install_outputs(ws)
-
-    assert touched.count(str(ws / ".venv")) <= 1
-    assert not any(str(target) in entry for entry in touched)
-
-
-@pytest.mark.asyncio
-async def test_install_owns_venv_after_root_install(tmp_path: Path) -> None:
-    """The root-run uv sync writes .venv; _own_install_outputs must chown it
-    since the main walk (_ensure_agent_owned) prunes .venv as agent-created."""
-    ws = _make_workspace(tmp_path)
-    (ws / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    (ws / "uv.lock").write_text("version = 1\n")
-
-    svc = _service()
-    owned: list[str] = []
-
-    def _record_own(entry: str) -> int:
-        owned.append(entry)
-        return 0
-
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        venv_bin = ws / ".venv" / "bin"
-        venv_bin.mkdir(parents=True, exist_ok=True)
-        (venv_bin / "python").write_text("#!/bin/sh\n")
-        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
+    def _no_local_install(
+        argv: list[str], *args: Any, **kw: Any
+    ) -> subprocess.CompletedProcess[Any]:
+        # Reading lockfiles/markers as the git user is fine; running a
+        # package manager here is not.
+        if {"uv", "pnpm", "npm"} & set(argv):
+            raise AssertionError(f"an install ran in the orchestrator: {argv}")
+        return real_run(argv, *args, **kw)
 
     with (
-        patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run),
-        patch("roboco.services.workspace._own_and_grant_rw", side_effect=_record_own),
+        patch("roboco.services.workspace.run_in_workspace_container", runner),
+        patch("subprocess.run", side_effect=_no_local_install),
     ):
-        ran = await svc.install_dev_deps(ws)
+        ran = await _service().install_dev_deps(ws)
 
     assert ran is True
-    assert str(ws / ".venv" / "bin" / "python") in owned
+    assert [call.args[1] for call in runner.await_args_list] == [
+        ["uv", "sync", "--extra", "dev"],
+        ["pnpm", "install", "--frozen-lockfile"],
+    ]

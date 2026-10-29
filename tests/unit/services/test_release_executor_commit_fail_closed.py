@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from roboco.services.git_relay import GitRelay
 from roboco.services.release_executor import _GitReleaseOps, _ReleaseContext
 
 
@@ -19,7 +20,7 @@ def _ctx() -> _ReleaseContext:
         prod_branch="master",
         root=Path("/tmp/roboco-release-f012"),
         git_url="https://github.com/o/roboco",
-        git_prefix=[],
+        relay=GitRelay("roboco-api", "https://github.com/o/roboco", None),
         ci_workflow=None,
         env_chain=[],
     )
@@ -35,7 +36,7 @@ class _FakeGitOps(_GitReleaseOps):
         self._default_branch = ctx.prod_branch
         self._root = ctx.root
         self._git_url = ctx.git_url
-        self._git_prefix = ctx.git_prefix
+        self._relay = ctx.relay
         self._ci_workflow = ctx.ci_workflow
         self._script = list(script)
         self.calls: list[tuple[str, ...]] = []

@@ -284,7 +284,6 @@ async def test_log_resolves_through_head_ref_not_bare_branch(
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
-        svc._token_for_branch = AsyncMock(return_value="tok")
         svc._resolve_head_ref = AsyncMock(return_value="origin/feature/x")
         svc._run_git = AsyncMock(return_value=log_result)
         mock_get.return_value = svc
@@ -293,7 +292,7 @@ async def test_log_resolves_through_head_ref_not_bare_branch(
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.OK
-    svc._resolve_head_ref.assert_awaited_once_with("/tmp/ws", "feature/x", token="tok")
+    svc._resolve_head_ref.assert_awaited_once_with("/tmp/ws", "feature/x")
     svc._run_git.assert_awaited_once()
     logged_args = svc._run_git.await_args.args[1]
     assert logged_args[-1] == "origin/feature/x"

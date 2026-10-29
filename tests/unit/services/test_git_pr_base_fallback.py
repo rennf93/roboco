@@ -37,7 +37,7 @@ async def test_retargets_to_default_when_base_absent_on_origin(
     monkeypatch.setattr(svc, "_run_git", AsyncMock(return_value=_result(stdout="")))
 
     base = await svc._pr_base_on_remote(
-        Path("/tmp/ws"), "feature/backend/root--parent", "master", "tok", uuid4()
+        Path("/tmp/ws"), "feature/backend/root--parent", "master", uuid4()
     )
 
     assert base == "master"
@@ -54,9 +54,7 @@ async def test_keeps_base_when_present_on_origin(
         AsyncMock(return_value=_result(stdout="abc123\trefs/heads/feature/x\n")),
     )
 
-    base = await svc._pr_base_on_remote(
-        Path("/tmp/ws"), "feature/x", "master", "tok", uuid4()
-    )
+    base = await svc._pr_base_on_remote(Path("/tmp/ws"), "feature/x", "master", uuid4())
 
     assert base == "feature/x"
 
@@ -69,9 +67,7 @@ async def test_noop_when_base_is_default_branch(
     run = AsyncMock(return_value=_result(stdout=""))
     monkeypatch.setattr(svc, "_run_git", run)
 
-    base = await svc._pr_base_on_remote(
-        Path("/tmp/ws"), "master", "master", "tok", uuid4()
-    )
+    base = await svc._pr_base_on_remote(Path("/tmp/ws"), "master", "master", uuid4())
 
     assert base == "master"
     run.assert_not_awaited()  # no remote lookup needed when base is the default

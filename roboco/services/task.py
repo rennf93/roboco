@@ -86,6 +86,7 @@ from roboco.services.repositories.review_findings import ReviewFindingsRepositor
 from roboco.services.uptime import UptimeLedger
 from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
+from roboco.utils.workspace_paths import worktree_path_of
 
 if TYPE_CHECKING:
     from roboco.services.permissions import PermissionService
@@ -3512,7 +3513,7 @@ class TaskService(BaseService):
         """Best-effort removal of a task's per-task worktree (F123 rollback)."""
         from roboco.services.workspace import get_workspace_service
 
-        worktree = clone_root / ".worktrees" / str(task_id)[:8]
+        worktree = worktree_path_of(clone_root, str(task_id)[:8])
         try:
             await get_workspace_service(self.session).remove_worktree(
                 clone_root, worktree
@@ -3648,7 +3649,6 @@ class TaskService(BaseService):
                     require_uuid(task.id),
                     branch_name,
                     base_branch,
-                    project_slug=project.slug,
                 )
                 status = result.get("status")
                 if status == "merged":
@@ -6201,7 +6201,7 @@ class TaskService(BaseService):
             clone_root = ws_service.get_clone_root_path(
                 project.slug, assignee.team, assignee.slug
             )
-            worktree = clone_root / ".worktrees" / str(task.id)[:8]
+            worktree = worktree_path_of(clone_root, str(task.id)[:8])
             await ws_service.remove_worktree(clone_root, worktree)
             self.log.info(
                 "reaped task worktree removed",
@@ -8942,7 +8942,7 @@ class TaskService(BaseService):
             clone_root = ws_service.get_clone_root_path(
                 project.slug, assignee.team, assignee.slug
             )
-            worktree = clone_root / ".worktrees" / str(task.id)[:8]
+            worktree = worktree_path_of(clone_root, str(task.id)[:8])
             await ws_service.remove_worktree(clone_root, worktree)
 
             branch = task.branch_name

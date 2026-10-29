@@ -8,6 +8,9 @@
 # wires Claude); this entrypoint renders the grok runtime config from that mount
 # and runs the CLI headless.
 set -euo pipefail
+# Group-writable output: the orchestrator's workspace git user shares the
+# agent group and must be able to rewrite what this agent creates.
+umask 002
 
 # Render ~/.grok/config.toml (the MCP gateway) + the per-role grok flags. Run
 # from /app so `python -m` resolves the INSTALLED roboco package: dev/doc/qa

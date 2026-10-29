@@ -56,6 +56,7 @@ SLICE_ORDER = [
     "engine-docs-sync",
     "panel",
     "tests",
+    "attestation",
 ]
 
 

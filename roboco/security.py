@@ -566,7 +566,8 @@ _BEHAVIOR_RULES: tuple[BehaviorRuleConfig, ...] = (
 
 
 def _redis_url() -> str:
-    return f"redis://{settings.redis_host}:{settings.redis_port}/0"
+    """The guard's Redis (always db 0), authenticated like every other client."""
+    return settings.redis_url_for_db(0)
 
 
 # Loopback + docker's bridge pool: the internal agent mesh ONLY. Agents reach

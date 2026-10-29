@@ -17,6 +17,7 @@ import io
 import os
 import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
 from dataclasses import dataclass
@@ -52,6 +53,11 @@ from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 from roboco.services.uptime import UptimeLedger
+from roboco.services.workspace_git import (
+    UnsafeWorkspaceGitConfigError,
+    archive_workspace_ref,
+    run_workspace_git,
+)
 from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
@@ -6147,30 +6153,40 @@ class ContentActions:
 
     @staticmethod
     async def _git_capture(root: Path, *args: str) -> tuple[bool, str, str]:
-        """One git invocation in ``root``; (ok, stdout, stderr)."""
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            *args,
-            cwd=root,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, err = await proc.communicate()
+        """One git invocation in workspace ``root`` as the workspace git user;
+        (ok, stdout, stderr). A refused clone config reports as a failure."""
+        try:
+            result = await asyncio.to_thread(
+                run_workspace_git,
+                root,
+                list(args),
+                timeout=settings.git_command_timeout_seconds,
+                check=False,
+            )
+        except (UnsafeWorkspaceGitConfigError, subprocess.SubprocessError) as exc:
+            return False, "", str(exc)[:300]
         return (
-            proc.returncode == 0,
-            out.decode(errors="replace").strip(),
-            err.decode(errors="replace").strip()[:300],
+            result.returncode == 0,
+            result.stdout.strip(),
+            result.stderr.strip()[:300],
         )
 
     @staticmethod
     async def _git_archive_workspace(
         root: Path, archive: Path, ref: str = "HEAD"
     ) -> tuple[bool, str]:
-        """One ``git archive`` attempt of the committed ``ref``; (ok, stderr)."""
-        ok, _, err = await ContentActions._git_capture(
-            root, "archive", "--format=tar.gz", f"-o{archive}", ref
-        )
-        return ok, err
+        """One ``git archive`` attempt of the committed ``ref``; (ok, stderr).
+
+        git runs as the workspace git user writing to the descriptor this
+        process opened on ``archive`` (a root-only mkstemp file)."""
+        try:
+            return await asyncio.to_thread(archive_workspace_ref, root, ref, archive)
+        except (
+            UnsafeWorkspaceGitConfigError,
+            OSError,
+            subprocess.SubprocessError,
+        ) as exc:
+            return False, str(exc)[:300]
 
     async def _sandbox_tests_ref(
         self, agent_id: UUID, root: Path, branch: str | None
@@ -6582,23 +6598,8 @@ class ContentActions:
         any failure (missing ref, missing dir, no git binary). The render
         preview's provenance stamp is best-effort — a git hiccup must never
         block the render response itself."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "git",
-                "-C",
-                str(workspace),
-                "rev-parse",
-                ref,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, _ = await proc.communicate()
-        except OSError:
-            return None
-        if proc.returncode != 0:
-            return None
-        sha = out.decode().strip()
-        return sha or None
+        ok, sha, _err = await ContentActions._git_capture(workspace, "rev-parse", ref)
+        return sha if ok and sha else None
 
     @classmethod
     async def _render_git_head_and_dirty(
@@ -6609,21 +6610,8 @@ class ContentActions:
         head = await cls._render_git_rev(workspace, "HEAD")
         if head is None:
             return None, False
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "git",
-                "-C",
-                str(workspace),
-                "status",
-                "--porcelain",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, _ = await proc.communicate()
-        except OSError:
-            return head, False
-        dirty = bool(out.decode().strip()) if proc.returncode == 0 else False
-        return head, dirty
+        ok, out, _err = await cls._git_capture(workspace, "status", "--porcelain")
+        return head, bool(out) if ok else False
 
     async def _render_dev_source(
         self, agent_id: UUID, agent_slug: str, task: Any, project: Any

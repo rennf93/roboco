@@ -20,6 +20,10 @@ from roboco.llm.providers import OpenRouterProvider, ProviderError, SpawnResult
 from roboco.llm.providers import openrouter as openrouter_module
 from roboco.models.runtime import OrchestratorAgentConfig
 from roboco.seeds.initial_data import AGENT_UUIDS
+from tests.unit.docker_cli_calls import (
+    docker_argv_env_assignments,
+    docker_run_cmd_with_env_values,
+)
 
 
 def test_openrouter_cli_model_is_a_real_settings_field() -> None:
@@ -150,7 +154,7 @@ async def test_openrouter_spawn_no_anthropic_leak() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # The provider endpoint must NOT be injected as an Anthropic var.
     assert not any(c.startswith("ANTHROPIC_BASE_URL=") for c in cmd)
     assert not any(c.startswith("ANTHROPIC_AUTH_TOKEN=") for c in cmd)
@@ -170,7 +174,7 @@ async def test_openrouter_spawn_no_auth_mount() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any(".openrouter-auth" in c for c in cmd)
     assert not any(".opencode-auth" in c for c in cmd)
     # No _auth.py module exists — the key is a plain env var.
@@ -190,7 +194,7 @@ async def test_openrouter_spawn_injects_key_and_base_url_via_env() -> None:
                 provider_base_url="https://openrouter.ai/api/v1",
             )
         )
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "OPENROUTER_API_KEY=sk-or-v1-secret" in cmd
     assert "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1" in cmd
 
@@ -207,7 +211,9 @@ async def test_openrouter_spawn_wires_gateway_env_and_image_last() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         result = await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
+    # Values ride the docker CLI's env, never argv (/proc/<pid>/cmdline).
+    assert docker_argv_env_assignments(exec_mock.call_args) == []
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert f"ROBOCO_AGENT_ID={AGENT_UUIDS['be-dev-1']}" in cmd
     # The env carries the opencode model REF (opencode's own provider id
@@ -240,7 +246,7 @@ async def test_openrouter_spawn_prefixes_custom_model_for_opencode() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         result = await provider.spawn(config)
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "ROBOCO_AGENT_MODEL=openrouter/z-ai/glm-5.3" in cmd
     # SpawnResult keeps the bare catalog id (the model identity, not the
     # opencode grammar).
@@ -263,7 +269,7 @@ async def test_openrouter_spawn_adds_compose_labels_before_image(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "com.docker.compose.service=be-dev-1" in cmd
     assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
         "roboco-agent-openrouter:test"
@@ -284,7 +290,7 @@ async def test_openrouter_spawn_prompt_is_injection_safe() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config(), initial_prompt=nasty)
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # Passed only as an env value, never as a bare argv token.
     assert f"ROBOCO_INITIAL_PROMPT={nasty}" in cmd
     assert nasty not in cmd
@@ -297,7 +303,7 @@ async def test_openrouter_spawn_empty_prompt_when_none() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config(), initial_prompt=None)
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "ROBOCO_INITIAL_PROMPT=" in cmd
 
 
@@ -341,7 +347,7 @@ async def test_openrouter_spawn_includes_attribution_headers_when_set(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "HTTP_REFERER=https://roboco.tech" in cmd
     assert "X_OPENROUTER_TITLE=RoboCo" in cmd
 
@@ -357,6 +363,6 @@ async def test_openrouter_spawn_omits_empty_referer(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any(c.startswith("HTTP_REFERER=") for c in cmd)
     assert "X_OPENROUTER_TITLE=RoboCo" in cmd
