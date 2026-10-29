@@ -56,6 +56,8 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | scripts/regenerate_verb_tables.py | Regenerate agents/prompts/_generated/verbs.md + per-role verb tables from role_config ROLE_CONFIGS + Pydantic flow/do schemas (skips driver-based prompter/secretary) | 238 |
 | scripts/verify_postgres_enums.py | Foundation drift gate: compare postgres agentrole/team enum labels to foundation identity; exit 0 on match/skip(unreachable or unmigrated), 1 on drift | 126 |
 | scripts/reflow_md.py | Reflow hard-wrapped markdown prose to one line per paragraph (token-invariant safety check); --apply / --check modes for the CI gate | 238 |
+| scripts/verify_codebase_map.py | docs/map reference gate: every path and symbol a map table names must exist (exit 1 otherwise); line-number, LOC and Alembic-range drift are warnings that --fix rewrites; risk/change rows only get suggestions | 1141 |
+| scripts/rebuild_map_concat.py | Rebuild docs/map/_complete_map.md from _front.md + the slices in a fixed order; --check exits 1 when the committed concat is behind | 103 |
 | scripts/reset_runtime_state.sh | Host/container smoke-test reset: stop agent containers, run reset_runtime_state.sql, FLUSH Redis, optional FULL_RESET data wipe, per-workspace git hard-reset + stray-branch prune | 262 |
 | scripts/bootstrap.sh | `make quickstart` entrypoint: idempotent one-command bring-up for the registry compose — copies `.env.example` to `.env` on first run (never touches a reused `.env`), injects the three required secrets via documented one-liners (the panel token via the exact `issue_panel_token` HMAC formula) with a standing-credential warning (louder if cloud auth is detected), pre-validates the three required vars with pointed remedies before `docker compose ... up -d` (compose's own `:?` guard on an empty token is an opaque interpolation error otherwise), then runs a doctor-style readiness sweep (root `/health`, `/api/auth/status` through nginx, the verbatim "Alembic upgrade finished" log line, `ollama list`), each stage failing loud with the exact next command | 333 |
 | scripts/reset_runtime_state.sql | Transactional DELETE of runtime tables (tasks/.../a2a_*) preserving agents/projects/alembic_version; resets agents.metrics | 126 |
@@ -111,6 +113,8 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | reflow | function | scripts/reflow_md.py:164 | Token-invariant reflow of markdown prose (paragraphs, list items, front matter, code fences verbatim) |
 | in_scope | function | scripts/reflow_md.py:187 | Skip SKIP_DIRS / EXCLUDE_PREFIXES (docs/internal, agents/prompts/_generated) / EXCLUDE_GLOBS |
 | main | function | scripts/reflow_md.py:196 | Walk *.md, reflow, enforce token-invariant safety, --apply / --check (exit 1 on wrapped files) |
+| check_map | function | scripts/verify_codebase_map.py:1063 | Check every map file's tables against the tree and return the findings (errors: missing-path / missing-symbol) |
+| apply_fixes | function | scripts/verify_codebase_map.py:1072 | Rewrite every fixable finding (line numbers, LOC, migration range) in place |
 | _render_role_section | function | scripts/regenerate_verb_tables.py:144 | Render one role's flow + do verb tables from role_config + schemas |
 | main | function | scripts/regenerate_verb_tables.py:187 | Write agents/prompts/_generated/verbs.md + per-role {role}.md, skipping driver-based prompter/secretary |
 | _reset_workspace | function | scripts/reset_runtime_state.sh:177 | Per-clone git hard-reset to default branch + clean -fdx + delete stray feature branches (as owner) |
@@ -222,6 +226,8 @@ deployment-tooling
 | scripts/build_lifecycle_artifacts.py | scripts/build_lifecycle_artifacts.py | make lifecycle (foundation-check runs it) |
 | scripts/verify_postgres_enums.py | scripts/verify_postgres_enums.py | make foundation-check (final step) |
 | scripts/reflow_md.py --check | scripts/reflow_md.py | make reflow-check / make quality |
+| scripts/verify_codebase_map.py | scripts/verify_codebase_map.py | make quality (check) / make map (--fix) |
+| scripts/rebuild_map_concat.py | scripts/rebuild_map_concat.py | make quality (--check) / make map / make codegen |
 | scripts/regenerate_verb_tables.py | scripts/regenerate_verb_tables.py | manual after role_config / schema change (not wired into make quality) |
 | scripts/reset_runtime_state.sh | scripts/reset_runtime_state.sh | manual smoke-test reset (host or ssh into NAS) |
 | scripts/bootstrap.sh | scripts/bootstrap.sh | `make quickstart` (pull-and-run registry-compose deploy) |
