@@ -222,6 +222,7 @@ async def test_the_own_image_is_read_once_from_this_container(
     exec_mock.assert_awaited_once()
     assert exec_mock.call_args.args == (
         "docker",
+        "container",
         "inspect",
         "--format",
         "{{.Image}}",
@@ -237,7 +238,11 @@ async def test_an_unresolvable_own_image_names_the_setting(
     monkeypatch.setattr(
         asyncio,
         "create_subprocess_exec",
-        AsyncMock(return_value=_proc(1, b"", b"No such object")),
+        AsyncMock(
+            return_value=_proc(
+                1, b"", b"Error response from daemon: No such container: 0123abcd"
+            )
+        ),
     )
     with pytest.raises(wc.WorkspaceContainerError, match="WORKSPACE_CONTAINER_IMAGE"):
         await wc.workspace_container_image()

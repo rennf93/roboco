@@ -18,7 +18,7 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | roboco/llm/providers/base.py | AgentProvider ABC + SpawnResult/ProviderError defining the lifecycle contract | 92 |
 | roboco/llm/providers/registry.py | ProviderRegistry mapping ModelProvider -> AgentProvider instance | 73 |
 | roboco/llm/providers/claude_code.py | ClaudeCodeProvider: delegates spawn/remove to orchestrator, stop/health to docker helpers (reference adapter, NOT registered) | 92 |
-| roboco/llm/providers/_docker.py | Shared async docker stop/kill/inspect-running helpers for providers | 42 |
+| roboco/llm/providers/_docker.py | Shared async docker stop/kill/inspect-running helpers for providers | 43 |
 | roboco/llm/providers/grok.py | GrokCliProvider: spawns roboco-agent-grok container, mounts ~/.grok dir + usage dir + grok env | 245 |
 | roboco/llm/providers/grok_auth.py | SuperGrok token refresh-token grant loop + --check backstop CLI; atomic auth.json rewrite | 372 |
 | roboco/llm/providers/grok_cli_config.py | Entrypoint renderer: mcp-config -> ~/.grok/config.toml, per-role grok flags, AGENTS.md, bash-guard hook, + default-off fable-mode honesty-nudge hook | 404 |
@@ -89,7 +89,7 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | ProviderRegistry.get_or_none | method | roboco/llm/providers/registry.py:55 | Return provider or None (orchestrator uses this to decide built-in fallback) |
 | ClaudeCodeProvider | class | roboco/llm/providers/claude_code.py:49 | Delegate spawn/remove to orchestrator _spawn_container/_remove_container, stop/health to docker helpers (reference adapter, NOT registered) |
 | stop_container | function | roboco/llm/providers/_docker.py:16 | docker stop/kill a container by name (graceful SIGTERM vs SIGKILL) |
-| container_running | function | roboco/llm/providers/_docker.py:31 | docker inspect --format State.Running -> bool |
+| container_running | function | roboco/llm/providers/_docker.py:31 | docker container inspect --format State.Running -> bool |
 | GrokCliProvider | class | roboco/llm/providers/grok.py:107 | Spawn roboco-agent-grok container: reuse shared mount/auth/git assembly, blank provider fields, add grok auth+usage mounts+env |
 | GrokCliProvider.spawn | method | roboco/llm/providers/grok.py:114 | Remove old container, ensure usage dir, build docker run args, launch subprocess, return SpawnResult |
 | GrokCliProvider._append_grok_auth_mount | staticmethod | roboco/llm/providers/grok.py:171 | Mount host ~/.grok DIRECTORY RO to /home/agent/.grok-auth-ro (dir, not file, so tmp+rename refresh propagates); warn if auth.json missing |

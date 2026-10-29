@@ -199,7 +199,7 @@ class ReconcileEngine(_Base):
 
     @staticmethod
     async def _resolve_container_id(container_name: str) -> str | None:
-        """Return the Docker container id for ``container_name`` via `docker inspect`.
+        """The container id of ``container_name``, from `docker container inspect`.
 
         Used at startup re-adoption (F033) so a re-adopted ACTIVE instance
         carries the real container id — ``_check_health`` skips
@@ -210,6 +210,7 @@ class ReconcileEngine(_Base):
         """
         proc = await asyncio.create_subprocess_exec(
             "docker",
+            "container",
             "inspect",
             "-f",
             "{{.Id}}",
@@ -505,7 +506,7 @@ class ReconcileEngine(_Base):
         ``_is_agent_active`` does NOT — so after a restart it sees a live agent as
         inactive and can double-spawn it onto work its forgotten-but-running
         container is already doing. Probe each known agent slug's container (the
-        same ``docker inspect`` the reaper uses) and register a minimal ACTIVE
+        same ``docker container inspect`` the reaper uses) and register a minimal ACTIVE
         instance for any that is running, not already tracked, AND still holds a
         live (non-terminal) claim — a running container whose claim a prior
         orchestrator already released is a zombie and is skipped so it can't
