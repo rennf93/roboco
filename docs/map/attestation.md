@@ -10,24 +10,24 @@ Two sequenced leaves built this: `roboco/services/attestation.py` (the assembly 
 
 | Path | Role | LOC |
 |---|---|---|
-| `roboco/services/attestation.py` | Assembly service: `assemble_task_attestation` reads the five source tables/stamps into a `TaskAttestation` frozen-dataclass tree; `render_attestation_markdown` renders that SAME object as a human-readable receipt. | 501 |
+| `roboco/services/attestation.py` | Assembly service: `assemble_task_attestation` reads the five source tables/stamps into a `TaskAttestation` frozen-dataclass tree; `render_attestation_markdown` renders that SAME object as a human-readable receipt. | 524 |
 | `roboco/api/schemas/attestation.py` | Pydantic response schemas mirroring the service's dataclasses field-for-field; `attestation_to_response` converts one into the other. | 230 |
-| `roboco/api/routes/tasks.py` (`get_task_attestation`, ~line 1003) | Thin `GET /{task_id}/attestation` handler: resolve task → resolve project/git_service if project-bound → `assemble_task_attestation` → branch on `format`. No model/helper defined in the route itself. | (slice within a shared file) |
+| `roboco/api/routes/tasks.py` (`get_task_attestation`, see Key Symbols) | Thin `GET /{task_id}/attestation` handler: resolve task → resolve project/git_service if project-bound → `assemble_task_attestation` → branch on `format`. No model/helper defined in the route itself. | (slice within a shared file) |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | `TaskAttestation` | frozen dataclass | `attestation.py:151` | The full per-task attestation: identity/refs, `commits`, `work_sessions`, `acceptance_criteria`, `findings_by_round`, `ci`, `conventions_findings`, `reviewer_chain`, `generated_at`. The real contract — leaf 2's route/schemas/render all key off this shape. |
-| `assemble_task_attestation` | coroutine | `attestation.py:465` | Builds one `TaskAttestation` from a `TaskTable` row plus `session` queries; `project_slug`/`git_service` are optional duck-typed params used only to fetch the live CI verdict — every other field is reachable from `task`/`session` alone. |
+| `assemble_task_attestation` | coroutine | `attestation.py:483` | Builds one `TaskAttestation` from a `TaskTable` row plus `session` queries; `project_slug`/`git_service` are optional duck-typed params used only to fetch the live CI verdict — every other field is reachable from `task`/`session` alone. |
 | `_attested_criteria` | function | `attestation.py:188` | Matches each AC against the `qa_notes` `[AC]` stamps by id OR text (mirrors `findings_lib.unmatched_criteria`) — `criteria_verified`'s `criterion` key may be either the AC's stable id or its exact text, so matching text alone would misreport an id-keyed verified criterion as unverified. |
 | `_parse_ac_stamps` | function | `attestation.py:173` | Regex-parses `qa_notes`'s deterministic `"[AC] <criterion> — verified: <evidence>"` lines (`_AC_STAMP_RE`) back into a `{criterion: evidence}` dict — best-effort text parsing of an existing rendering, not a new capture point. |
 | `_reviewer_chain` | coroutine | `attestation.py:263` | The custody chain from `audit_log`: one entry per generic `task.<to_status>` row, oldest first. Skips the rejector-attributed duplicate rows (`task.qa_fail`/`task.pr_fail`/`task.request_changes`/`task.ceo_reject`, emitted alongside the generic row by `TaskService._audit_events_for` for rework-metric attribution — see `docs/map/review-findings.md`) so each real transition appears exactly once. |
 | `_ci_verdict` | coroutine | `attestation.py:326` | The PR head commit's CI state via `git_service.get_pr_ci_status` (duck-typed). Returns `not_available` when no PR exists yet or the caller supplied no `git_service`/`project_slug` — no live call is attempted in that case; returns `error` on an exception from the call itself. |
 | `render_attestation_markdown` | function | `attestation.py:442` | Renders a human-readable Markdown receipt from an ALREADY-assembled `TaskAttestation` — never a second computation over raw tables, so the Markdown can never drift from the JSON the route also returns. Each section (header/AC/findings/CI/conventions/reviewer-chain/work-sessions) is a small pure helper kept under the branch budget. |
 | `TaskAttestationResponse` | Pydantic model | `schemas/attestation.py:100` | Response schema mirroring `TaskAttestation` field-for-field. |
-| `attestation_to_response` | function | `schemas/attestation.py:141` | Converts the assembler's frozen-dataclass tree into its Pydantic twin. Lives in `roboco.api.schemas`, not the route and not the service — services must never import schemas (conventions map layering rule). |
-| `get_task_attestation` | async route | `roboco/api/routes/tasks.py:1004` | `GET /api/tasks/{id}/attestation`; 404 on an unknown task id; `format=json` (default) returns `TaskAttestationResponse`, `format=markdown` returns a `PlainTextResponse` of `render_attestation_markdown`'s output — both call sites pass the SAME `assemble_task_attestation` result, so JSON and Markdown can never diverge. |
+| `attestation_to_response` | function | `schemas/attestation.py:142` | Converts the assembler's frozen-dataclass tree into its Pydantic twin. Lives in `roboco.api.schemas`, not the route and not the service — services must never import schemas (conventions map layering rule). |
+| `get_task_attestation` | async route | `roboco/api/routes/tasks.py:1031` | `GET /api/tasks/{id}/attestation`; 404 on an unknown task id; `format=json` (default) returns `TaskAttestationResponse`, `format=markdown` returns a `PlainTextResponse` of `render_attestation_markdown`'s output — both call sites pass the SAME `assemble_task_attestation` result, so JSON and Markdown can never diverge. |
 
 ## Response shape (cross-cell contract)
 

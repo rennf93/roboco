@@ -5,63 +5,63 @@ This slice is the agent-to-agent communication, audit forensics, journaling, str
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/a2a.py | A2A protocol + persistent conversation service: Agent Cards, task↔A2A conversion, legacy A2A task notifications, bidirectional response spawning, slug-keyed conversation/message CRUD, gateway send adapter, CEO admin/live-view surface (reply budget + org-wide read), CEO-DM offline-recipient wake | 2090 |
-| roboco/services/audit.py | AuditService singleton: best-effort persist denial/lifecycle/agent events to audit_log, resolve actor role + slug→UUID at write time, tracing-gap query for respawn circuit breaker, recent-events query | 462 |
-| roboco/services/journal.py | JournalService: journal/entry CRUD, gateway scope-string→JournalEntryType adapter, fire-and-forget RAG indexing (private excluded), tracing-gate existence checks, board review brief, growth analytics | 1029 |
-| roboco/services/content_notes.py | Single chokepoint applying structured notes: validate via foundation ContentModel, store in notes_structured, regenerate derived TEXT mirror column (dev_notes/qa_notes/etc.) | 74 |
-| roboco/services/extraction.py | ExtractionService + ExtractionPipeline: regex-pattern (and optional LLM/TOON) classification of raw agent LLM buffers into typed ExtractedMessages; transcription pipeline callback fan-out | 508 |
-| roboco/services/permissions.py | PermissionService singleton + async helpers: notification scope (all/cell/board-chain), task-action and KB-action RBAC from agents_config; privileged/PM-role DB lookups | 425 |
+| roboco/services/a2a.py | A2A protocol + persistent conversation service: Agent Cards, task↔A2A conversion, legacy A2A task notifications, bidirectional response spawning, slug-keyed conversation/message CRUD, gateway send adapter, CEO admin/live-view surface (reply budget + org-wide read), CEO-DM offline-recipient wake | 2424 |
+| roboco/services/audit.py | AuditService singleton: best-effort persist denial/lifecycle/agent events to audit_log, resolve actor role + slug→UUID at write time, tracing-gap query for respawn circuit breaker, recent-events query | 514 |
+| roboco/services/journal.py | JournalService: journal/entry CRUD, gateway scope-string→JournalEntryType adapter, fire-and-forget RAG indexing (private excluded), tracing-gate existence checks, board review brief, growth analytics | 1115 |
+| roboco/services/content_notes.py | Single chokepoint applying structured notes: validate via foundation ContentModel, store in notes_structured, regenerate derived TEXT mirror column (dev_notes/qa_notes/etc.) | 85 |
+| roboco/services/extraction.py | ExtractionService + ExtractionPipeline: regex-pattern (and optional LLM/TOON) classification of raw agent LLM buffers into typed ExtractedMessages; transcription pipeline callback fan-out | 630 |
+| roboco/services/permissions.py | PermissionService singleton + async helpers: notification scope (all/cell/board-chain), task-action and KB-action RBAC from agents_config; privileged/PM-role DB lookups | 302 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
-| A2AService | class | roboco/services/a2a.py:55 | Service layer for A2A protocol ops and persistent agent conversations; takes an AsyncSession |
-| get_service_endpoint | staticmethod | roboco/services/a2a.py:69 | Build outbound callback URL; dials loopback when host binds 0.0.0.0/:: to avoid bandit B104 |
-| build_system_agent_card | staticmethod | roboco/services/a2a.py:87 | Return the system-level Agent Card served at /.well-known/agent.json |
-| build_agent_card | method | roboco/services/a2a.py:144 | Resolve agent by UUID or slug and return its AgentCard (None if missing) |
-| _agent_to_card | method | roboco/services/a2a.py:172 | Map an AgentTable row to an AgentCard with role-keyed skills + bearer security scheme |
-| task_to_a2a | method | roboco/services/a2a.py:265 | Canonical RoboCo TaskTable→A2ATask conversion with status mapping and metadata |
-| get_task | method | roboco/services/a2a.py:320 | Fetch task by UUID string and return A2ATask or None |
-| list_tasks | method | roboco/services/a2a.py:345 | Paginated task listing with has_more detection (fetches page_size+1) |
-| _status_value_of | staticmethod | roboco/services/a2a.py:383 | Extract task status as a comparable string (enum .value or str); factored from cancel_task for xenon complexity gate |
-| _apply_cancel_note | method | roboco/services/a2a.py:387 | Append actor-attributed cancellation note to task.dev_notes and flush; factored from cancel_task |
-| cancel_task | method | roboco/services/a2a.py:408 | Cancel task and cascade to descendants; now takes agent_role (threaded into TaskService.cancel role gate) and actor_slug (recorded in cancellation note); rejects terminal states |
-| discover_agents | method | roboco/services/a2a.py:442 | List AgentCards filtered by role/team/skill_tag |
-| get_team_from_agent | staticmethod | roboco/services/a2a.py:485 | Map agent slug to Team enum via agents_config.get_agent_team (defaults BACKEND) |
-| resolve_target_agent | staticmethod | roboco/services/a2a.py:496 | Resolve target agent slug from metadata (explicit target_agent or skill-based routing) |
-| extract_message_text | staticmethod | roboco/services/a2a.py:523 | Split first text part into (title, description, full_text) |
-| update_task_with_message | staticmethod | roboco/services/a2a.py:540 | Append A2A-protocol message text to task.dev_notes (legacy A2A thread store, not gateway conversations) |
-| resolve_creator_agent | method | roboco/services/a2a.py:563 | Resolve creator AgentTable from from_agent slug or fall back to first main_pm |
-| create_a2a_notification | method | roboco/services/a2a.py:619 | Legacy A2A peer-to-peer notification (requires task_id); requires from_agent present and target_agent resolvable (raises ValueError with distinct messages if either missing); enforces hierarchy unconditionally via validate_a2a_access (A2AAccessDeniedError), then parse_priority, delegates to NotificationService.send_a2a_notification |
-| update_task_from_message | method | roboco/services/a2a.py:657 | Append response message to existing A2A task and notify/spawn original requester (bidirectional) |
-| _lookup_requester_slug | staticmethod | roboco/services/a2a.py:700 | Reverse-lookup agent slug from creator UUID via static AGENT_UUIDS map |
-| _publish_a2a_response_event | staticmethod | roboco/services/a2a.py:711 | Publish TASK_ASSIGNED event to event bus to spawn/notify the original requester; swallows errors |
-| _notify_original_requester | method | roboco/services/a2a.py:741 | If task.dev_notes carries 'A2A Request' marker, publish response event to requester (skips self-response) |
-| _canonical_pair | staticmethod | roboco/services/a2a.py:779 | Return two agent slugs in lexically-sorted order (conversation uniqueness key) |
-| get_or_create_conversation | method | roboco/services/a2a.py:784 | Validate A2A access (validate_a2a_access), canonical-order lookup or create A2AConversationTable row |
-| get_conversation | method | roboco/services/a2a.py:850 | Fetch conversation by ID only if agent_slug is a participant |
-| get_conversation_admin | method | roboco/services/a2a.py:952 | Wave-2 CEO live view: like get_conversation but WITHOUT the participant check — returns any conversation by id for the org-wide read; None only if it truly doesn't exist |
-| list_conversations | method | roboco/services/a2a.py:881 | List conversation summaries for an agent with optional status/with_agent/task_id filters; per-conv last-message preview query (N+1) |
-| list_conversations_admin | method | roboco/services/a2a.py:1063 | Wave-2 CEO live view: list conversations across every agent pair (no participant filter), most-recent-first; backs GET /chat/admin/conversations |
-| list_admin_pairs | method | roboco/services/a2a.py:1101 | Wave-2c switchboard: every agents_config.A2A_ALLOWED_PAIRS entry joined with its representative conversation (most-recently-updated when >1) via one bulk tuple_(agent_a,agent_b).in_() query — never N+1; backs GET /chat/admin/pairs |
-| close_conversation | method | roboco/services/a2a.py:962 | Mark conversation CLOSED with optional resolution; participant-only |
-| _enforce_ceo_reply_budget | method | roboco/services/a2a.py:1177 | Wave-2 reply-then-wait budget on the CEO's inbox — the one stateful gate the stateless can_a2a_direct matrix can't see. An agent may message the CEO only inside a conversation the CEO itself opened, and only up to the CEO's own message count there (rejects once agent_count >= ceo_count); no-op for CEO-authored sends or non-CEO conversations |
-| send_chat_message | method | roboco/services/a2a.py:1225 | Send message in conversation; nil-UUID guard; dedup unread identical (conv,sender,kind,content); calls _enforce_ceo_reply_budget before persisting; bump unread for other side; reads skill from opts and persists it on the message row (nullable) |
-| get_messages | method | roboco/services/a2a.py:1337 | Paginated chronological message list for a participant |
-| get_messages_admin | method | roboco/services/a2a.py:1375 | Wave-2 CEO live view: like get_messages but WITHOUT the participant check — reads any conversation's transcript; [] only if the conversation truly doesn't exist |
-| mark_read | method | roboco/services/a2a.py:1410 | Zero agent's per-side unread counter and bulk UPDATE read_at on inbound unread messages |
-| mark_all_read | method | roboco/services/a2a.py:1451 | Agent-keyed bulk mark_read across all conversations with unread for this agent; returns count cleared |
-| get_inbox_summary | method | roboco/services/a2a.py:1492 | Aggregate total unread, conversations with unread, pending + unanswered requires_response counts |
-| list_pairs | method | roboco/services/a2a.py:1553 | Group conversations into unique agent pairs with rollup counts/unread/last_activity for frontend |
-| _conv_to_model | method | roboco/services/a2a.py:1603 | A2AConversationTable→A2AConversation Pydantic model |
-| _msg_to_model | method | roboco/services/a2a.py:1621 | A2AMessageTable→A2AChatMessage Pydantic model; now maps skill field (migration 054 adds nullable skill column on a2a_messages) |
-| _resolve_slug_from_id | method | roboco/services/a2a.py:1642 | Lookup agent slug from UUID; raise ValueError if missing (gateway send adapter) |
-| _get_conversation_for_reply_to_ceo | method | roboco/services/a2a.py:1652 | Wave-2: resolve the conversation for an agent replying to the CEO by direct lookup (bypasses get_or_create_conversation's validate-first gate, which would deny even a legitimate reply) — an existing pair conversation's mere presence proves the CEO opened it, since agents can never create one |
-| send | method | roboco/services/a2a.py:1684 | Gateway adapter: resolve both ends to slugs, get_or_create_conversation (or _get_conversation_for_reply_to_ceo when replying to "ceo") + send_chat_message; publishes A2A_MESSAGE_SENT via _publish_a2a_message_sent afterward |
-| _publish_a2a_message_sent | staticmethod | roboco/services/a2a.py:1742 | Wave-2: best-effort publish of A2A_MESSAGE_SENT (conversation_id/message_id/task_id/from_agent/to_agent/skill/body_excerpt/timestamp) to the event bus for the operator live view; a bus outage is logged and never rolls back the already-persisted message |
-| _maybe_wake_ceo_recipient | method | roboco/services/a2a.py:1983 | CEO-authored send only (`from_slug == "ceo"`); gates on `is_spawnable_agent_slug` + the recipient role carrying `read_a2a` (else an unackable row would be immortal), dedups against an already-pending wake, then calls `send_a2a_notification(..., requires_ack=True)` so the row is visible to the orchestrator's `_dispatch_a2a_work` pending_ack_only poll. Called from `send_chat_message` and `interject_as_ceo`; best-effort, never breaks the send |
-| _ack_pending_wake_notifications | method | roboco/services/a2a.py:2059 | Bulk-acknowledges this agent's pending CEO-DM wake notification(s); called from `mark_all_read`/`get_unread_messages` (the gateway's `read_a2a`) once the inbox is actually drained, so the wake row doesn't sit pending forever and permanently block the next dedup check |
+| A2AService | class | roboco/services/a2a.py:129 | Service layer for A2A protocol ops and persistent agent conversations; takes an AsyncSession |
+| get_service_endpoint | staticmethod | roboco/services/a2a.py:144 | Build outbound callback URL; dials loopback when host binds 0.0.0.0/:: to avoid bandit B104 |
+| build_system_agent_card | staticmethod | roboco/services/a2a.py:162 | Return the system-level Agent Card served at /.well-known/agent.json |
+| build_agent_card | method | roboco/services/a2a.py:218 | Resolve agent by UUID or slug and return its AgentCard (None if missing) |
+| _agent_to_card | method | roboco/services/a2a.py:246 | Map an AgentTable row to an AgentCard with role-keyed skills + bearer security scheme |
+| task_to_a2a | method | roboco/services/a2a.py:339 | Canonical RoboCo TaskTable→A2ATask conversion with status mapping and metadata |
+| get_task | method | roboco/services/a2a.py:394 | Fetch task by UUID string and return A2ATask or None |
+| list_tasks | method | roboco/services/a2a.py:419 | Paginated task listing with has_more detection (fetches page_size+1) |
+| _status_value_of | staticmethod | roboco/services/a2a.py:457 | Extract task status as a comparable string (enum .value or str); factored from cancel_task for xenon complexity gate |
+| _apply_cancel_note | method | roboco/services/a2a.py:461 | Append actor-attributed cancellation note to task.dev_notes and flush; factored from cancel_task |
+| cancel_task | method | roboco/services/a2a.py:482 | Cancel task and cascade to descendants; now takes agent_role (threaded into TaskService.cancel role gate) and actor_slug (recorded in cancellation note); rejects terminal states |
+| discover_agents | method | roboco/services/a2a.py:554 | List AgentCards filtered by role/team/skill_tag |
+| get_team_from_agent | staticmethod | roboco/services/a2a.py:598 | Map agent slug to Team enum via agents_config.get_agent_team (defaults BACKEND) |
+| resolve_target_agent | staticmethod | roboco/services/a2a.py:609 | Resolve target agent slug from metadata (explicit target_agent or skill-based routing) |
+| extract_message_text | staticmethod | roboco/services/a2a.py:636 | Split first text part into (title, description, full_text) |
+| update_task_with_message | staticmethod | roboco/services/a2a.py:653 | Append A2A-protocol message text to task.dev_notes (legacy A2A thread store, not gateway conversations) |
+| resolve_creator_agent | method | roboco/services/a2a.py:675 | Resolve creator AgentTable from from_agent slug or fall back to first main_pm |
+| create_a2a_notification | method | roboco/services/a2a.py:693 | Legacy A2A peer-to-peer notification (requires task_id); requires from_agent present and target_agent resolvable (raises ValueError with distinct messages if either missing); enforces hierarchy unconditionally via validate_a2a_access (A2AAccessDeniedError), then parse_priority, delegates to NotificationService.send_a2a_notification |
+| update_task_from_message | method | roboco/services/a2a.py:784 | Append response message to existing A2A task and notify/spawn original requester (bidirectional) |
+| _lookup_requester_slug | staticmethod | roboco/services/a2a.py:828 | Reverse-lookup agent slug from creator UUID via static AGENT_UUIDS map |
+| _publish_a2a_response_event | staticmethod | roboco/services/a2a.py:839 | Publish TASK_ASSIGNED event to event bus to spawn/notify the original requester; swallows errors |
+| _notify_original_requester | method | roboco/services/a2a.py:868 | If task.dev_notes carries 'A2A Request' marker, publish response event to requester (skips self-response) |
+| _canonical_pair | staticmethod | roboco/services/a2a.py:907 | Return two agent slugs in lexically-sorted order (conversation uniqueness key) |
+| get_or_create_conversation | method | roboco/services/a2a.py:911 | Validate A2A access (validate_a2a_access), canonical-order lookup or create A2AConversationTable row |
+| get_conversation | method | roboco/services/a2a.py:977 | Fetch conversation by ID only if agent_slug is a participant |
+| get_conversation_admin | method | roboco/services/a2a.py:1008 | Wave-2 CEO live view: like get_conversation but WITHOUT the participant check — returns any conversation by id for the org-wide read; None only if it truly doesn't exist |
+| list_conversations | method | roboco/services/a2a.py:1028 | List conversation summaries for an agent with optional status/with_agent/task_id filters; per-conv last-message preview query (N+1) |
+| list_conversations_admin | method | roboco/services/a2a.py:1120 | Wave-2 CEO live view: list conversations across every agent pair (no participant filter), most-recent-first; backs GET /chat/admin/conversations |
+| list_admin_pairs | method | roboco/services/a2a.py:1159 | Wave-2c switchboard: every agents_config.A2A_ALLOWED_PAIRS entry joined with its representative conversation (most-recently-updated when >1) via one bulk tuple_(agent_a,agent_b).in_() query — never N+1; backs GET /chat/admin/pairs |
+| close_conversation | method | roboco/services/a2a.py:1205 | Mark conversation CLOSED with optional resolution; participant-only |
+| _enforce_ceo_reply_budget | method | roboco/services/a2a.py:1235 | Wave-2 reply-then-wait budget on the CEO's inbox — the one stateful gate the stateless can_a2a_direct matrix can't see. An agent may message the CEO only inside a conversation the CEO itself opened, and only up to the CEO's own message count there (rejects once agent_count >= ceo_count); no-op for CEO-authored sends or non-CEO conversations |
+| send_chat_message | method | roboco/services/a2a.py:1283 | Send message in conversation; nil-UUID guard; dedup unread identical (conv,sender,kind,content); calls _enforce_ceo_reply_budget before persisting; bump unread for other side; reads skill from opts and persists it on the message row (nullable) |
+| get_messages | method | roboco/services/a2a.py:1707 | Paginated chronological message list for a participant |
+| get_messages_admin | method | roboco/services/a2a.py:1745 | Wave-2 CEO live view: like get_messages but WITHOUT the participant check — reads any conversation's transcript; [] only if the conversation truly doesn't exist |
+| mark_read | method | roboco/services/a2a.py:1780 | Zero agent's per-side unread counter and bulk UPDATE read_at on inbound unread messages |
+| mark_all_read | method | roboco/services/a2a.py:1825 | Agent-keyed bulk mark_read across all conversations with unread for this agent; returns count cleared |
+| get_inbox_summary | method | roboco/services/a2a.py:1954 | Aggregate total unread, conversations with unread, pending + unanswered requires_response counts |
+| list_pairs | method | roboco/services/a2a.py:2015 | Group conversations into unique agent pairs with rollup counts/unread/last_activity for frontend |
+| _conv_to_model | method | roboco/services/a2a.py:2065 | A2AConversationTable→A2AConversation Pydantic model |
+| _msg_to_model | method | roboco/services/a2a.py:2083 | A2AMessageTable→A2AChatMessage Pydantic model; now maps skill field (migration 054 adds nullable skill column on a2a_messages) |
+| _resolve_slug_from_id | method | roboco/services/a2a.py:2110 | Lookup agent slug from UUID; raise ValueError if missing (gateway send adapter) |
+| _get_conversation_for_reply_to_ceo | method | roboco/services/a2a.py:2120 | Wave-2: resolve the conversation for an agent replying to the CEO by direct lookup (bypasses get_or_create_conversation's validate-first gate, which would deny even a legitimate reply) — an existing pair conversation's mere presence proves the CEO opened it, since agents can never create one |
+| send | method | roboco/services/a2a.py:2152 | Gateway adapter: resolve both ends to slugs, get_or_create_conversation (or _get_conversation_for_reply_to_ceo when replying to "ceo") + send_chat_message; publishes A2A_MESSAGE_SENT via _publish_a2a_message_sent afterward |
+| _publish_a2a_message_sent | staticmethod | roboco/services/a2a.py:2270 | Wave-2: best-effort publish of A2A_MESSAGE_SENT (conversation_id/message_id/task_id/from_agent/to_agent/skill/body_excerpt/timestamp) to the event bus for the operator live view; a bus outage is logged and never rolls back the already-persisted message |
+| _maybe_wake_ceo_recipient | method | roboco/services/a2a.py:2308 | CEO-authored send only (`from_slug == "ceo"`); gates on `is_spawnable_agent_slug` + the recipient role carrying `read_a2a` (else an unackable row would be immortal), dedups against an already-pending wake, then calls `send_a2a_notification(..., requires_ack=True)` so the row is visible to the orchestrator's `_dispatch_a2a_work` pending_ack_only poll. Called from `send_chat_message` and `interject_as_ceo`; best-effort, never breaks the send |
+| _ack_pending_wake_notifications | method | roboco/services/a2a.py:2386 | Bulk-acknowledges this agent's pending CEO-DM wake notification(s); called from `mark_all_read`/`get_unread_messages` (the gateway's `read_a2a`) once the inbox is actually drained, so the wake row doesn't sit pending forever and permanently block the next dedup check |
 | _AuditEvent | dataclass | roboco/services/audit.py:20 | Bundled fields for one audit row write (event_type, agent_id, target, severity, details) |
 | _coerce_uuid | function | roboco/services/audit.py:36 | Best-effort coerce str/UUID to UUID; returns None for slugs/invalid |
 | AuditService | class | roboco/services/audit.py:48 | SingletonService for audit logging; structured log + best-effort audit_log persistence |
@@ -72,50 +72,49 @@ This slice is the agent-to-agent communication, audit forensics, journaling, str
 | log_event | method | roboco/services/audit.py:238 | Free-form generic audit event (e.g. gateway.rejected) for Choreographer forensics |
 | log_agent_event | method | roboco/services/audit.py:273 | Log orchestrator agent event (spawned/stopped/stranded); resolves slug→UUID so agent_id is a real FK |
 | _resolve_actor_role_from_db | method | roboco/services/audit.py:314 | Read agents.role for actor UUID at write time (DB authoritative over caller-supplied role) |
-| _resolve_agent_id_by_slug | method | roboco/services/audit.py:302 | Static AGENT_UUIDS fast-path then DB lookup for slug→UUID; best-effort None on failure |
-| has_recent_tracing_gap | method | roboco/services/audit.py:353 | Query audit_log for gateway.rejected/tracing_gap rows since cutoff; backs PM-respawn circuit breaker reset decision |
-| get_recent_events | method | roboco/services/audit.py:399 | Fetch recent audit events as dicts (Auditor/CEO queries) with optional type/agent/severity filters |
-| get_audit_service | function | roboco/services/audit.py:458 | Lazy singleton accessor for AuditService |
-| JournalService | class | roboco/services/journal.py:64 | BaseService for journal/entry CRUD, gateway adapters, RAG indexing, tracing-gate existence checks |
-| _get_optimal_service | method | roboco/services/journal.py:78 | Lazy-load OptimalService singleton (avoid circular import) |
-| resolve_agent_id | method | roboco/services/journal.py:86 | Resolve UUID-or-slug string to agent UUID via repositories.resolve_agent_uuid |
-| get_agent_slug | method | roboco/services/journal.py:102 | Reverse slug lookup via repositories.get_agent_slug |
-| get_or_create_journal | method | roboco/services/journal.py:120 | Fetch or create a journal row for an agent (commits on create) |
-| create_entry | method | roboco/services/journal.py:215 | Insert entry, bump journal metadata counters, commit; IntegrityError→rollback+None; schedule fire-and-forget RAG index |
-| _schedule_rag_index | method | roboco/services/journal.py:324 | asyncio.create_task best-effort RAG index; skips private entries in shared JOURNALS index; strong-ref in _RAG_INDEX_TASKS |
-| list_entries | method | roboco/services/journal.py:401 | Filtered/paginated entry listing (excludes private unless include_private) |
-| board_review_brief | method | roboco/services/journal.py:455 | PO+HoM DECISION_LOG entries for a task (board handoff for CEO approval/intake redraft) |
-| delete_entry | method | roboco/services/journal.py:494 | Delete entry and decrement journal counters (floored at 0) |
-| add_task_reflection/add_decision_log/add_learning/add_struggle/add_general_entry | method | roboco/services/journal.py:532 | Convenience builders that get_or_create journal then create_entry via the journal model factories |
-| get_growth_metrics | method | roboco/services/journal.py:702 | Compute learning/struggle/decision counts, resolution rate, learning frequency from entries_by_type + content scan |
-| search_entries | method | roboco/services/journal.py:757 | Semantic RAG search over an agent's JOURNALS index; re-fetches entries and filters by owning journal |
-| _has_entry_of_type | method | roboco/services/journal.py:835 | Existence check: agent has entry of type for task (backs tracing gates) |
-| has_decision_for_task/latest_decision_at/has_note_for_task/has_learning_for_task/has_reflect_for_task/has_struggle_for_task | method | roboco/services/journal.py:854 | Per-type tracing-gate existence checks used by the Choreographer |
-| has_recent_entry | method | roboco/services/journal.py:912 | Any entry within window (backs auditor i_am_idle session-scoped note obligation) |
-| write_struggle/write_decision | method | roboco/services/journal.py:934 | Write-then-gate helpers deriving title from first content line for PM verbs |
-| write_entry | method | roboco/services/journal.py:987 | Gateway adapter: scope string→JournalEntryType, get_or_create journal, create_entry |
-| get_journal_service | function | roboco/services/journal.py:1027 | Factory: JournalService(db) |
-| drain_rag_index_tasks | function | roboco/services/journal.py:51 | Test helper: await all in-flight background RAG index tasks |
-| apply_structured_note | function | roboco/services/content_notes.py:57 | Validate payload via foundation ContentModel, store in notes_structured[content_type], regenerate TEXT mirror column; raises before any mutation |
-| content_type_for_role | function | roboco/services/content_notes.py:45 | Map agent role to the note section content-type it authors via note(scope='handoff') |
+| _resolve_agent_id_by_slug | method | roboco/services/audit.py:354 | Static AGENT_UUIDS fast-path then DB lookup for slug→UUID; best-effort None on failure |
+| has_recent_tracing_gap | method | roboco/services/audit.py:405 | Query audit_log for gateway.rejected/tracing_gap rows since cutoff; backs PM-respawn circuit breaker reset decision |
+| get_recent_events | method | roboco/services/audit.py:451 | Fetch recent audit events as dicts (Auditor/CEO queries) with optional type/agent/severity filters |
+| get_audit_service | function | roboco/services/audit.py:510 | Lazy singleton accessor for AuditService |
+| JournalService | class | roboco/services/journal.py:67 | BaseService for journal/entry CRUD, gateway adapters, RAG indexing, tracing-gate existence checks |
+| _get_optimal_service | method | roboco/services/journal.py:81 | Lazy-load OptimalService singleton (avoid circular import) |
+| resolve_agent_id | method | roboco/services/journal.py:89 | Resolve UUID-or-slug string to agent UUID via repositories.resolve_agent_uuid |
+| get_agent_slug | method | roboco/services/journal.py:105 | Reverse slug lookup via repositories.get_agent_slug |
+| get_or_create_journal | method | roboco/services/journal.py:140 | Fetch or create a journal row for an agent (commits on create) |
+| create_entry | method | roboco/services/journal.py:235 | Insert entry, bump journal metadata counters, commit; IntegrityError→rollback+None; schedule fire-and-forget RAG index |
+| _schedule_rag_index | method | roboco/services/journal.py:397 | asyncio.create_task best-effort RAG index; skips private entries in shared JOURNALS index; strong-ref in _RAG_INDEX_TASKS |
+| list_entries | method | roboco/services/journal.py:478 | Filtered/paginated entry listing (excludes private unless include_private) |
+| board_review_brief | method | roboco/services/journal.py:531 | PO+HoM DECISION_LOG entries for a task (board handoff for CEO approval/intake redraft) |
+| delete_entry | method | roboco/services/journal.py:570 | Delete entry and decrement journal counters (floored at 0) |
+| add_task_reflection/add_decision_log/add_learning/add_struggle/add_general_entry | method | roboco/services/journal.py:620 | Convenience builders that get_or_create journal then create_entry via the journal model factories |
+| get_growth_metrics | method | roboco/services/journal.py:788 | Compute learning/struggle/decision counts, resolution rate, learning frequency from entries_by_type + content scan |
+| search_entries | method | roboco/services/journal.py:843 | Semantic RAG search over an agent's JOURNALS index; re-fetches entries and filters by owning journal |
+| _has_entry_of_type | method | roboco/services/journal.py:921 | Existence check: agent has entry of type for task (backs tracing gates) |
+| has_decision_for_task/latest_decision_at/has_note_for_task/has_learning_for_task/has_reflect_for_task/has_struggle_for_task | method | roboco/services/journal.py:940 | Per-type tracing-gate existence checks used by the Choreographer |
+| has_recent_entry | method | roboco/services/journal.py:998 | Any entry within window (backs auditor i_am_idle session-scoped note obligation) |
+| write_struggle/write_decision | method | roboco/services/journal.py:1020 | Write-then-gate helpers deriving title from first content line for PM verbs |
+| write_entry | method | roboco/services/journal.py:1073 | Gateway adapter: scope string→JournalEntryType, get_or_create journal, create_entry |
+| get_journal_service | function | roboco/services/journal.py:1113 | Factory: JournalService(db) |
+| drain_rag_index_tasks | function | roboco/services/journal.py:53 | Test helper: await all in-flight background RAG index tasks |
+| apply_structured_note | function | roboco/services/content_notes.py:63 | Validate payload via foundation ContentModel, store in notes_structured[content_type], regenerate TEXT mirror column; raises before any mutation |
+| content_type_for_role | function | roboco/services/content_notes.py:51 | Map agent role to the note section content-type it authors via note(scope='handoff') |
 | _MIRROR_COLUMN | module constant | roboco/services/content_notes.py:22 | content_type→derived TEXT mirror column (dev_notes/qa_notes/auditor_notes/doc_notes/pr_reviewer_notes/quick_context) |
 | ExtractionService | class | roboco/services/extraction.py:134 | Pattern-based classifier turning raw agent LLM buffers into typed ExtractedMessages |
 | extract | method | roboco/services/extraction.py:166 | Segment + classify content; emit ExtractedMessages with confidence + raw_excerpt |
-| _segment_content | method | roboco/services/extraction.py:252 | Split on code blocks then double-newlines into paragraph segments |
-| _classify_segment | method | roboco/services/extraction.py:280 | Score each MessageType by matched patterns; default REASONING@0.5 if none |
-| _call_anthropic_with_retry | method | roboco/services/extraction.py:316 | Anthropic messages.create with MAX_RATE_LIMIT_RETRIES 429 backoff honoring Retry-After |
-| extract_with_llm | method | roboco/services/extraction.py:361 | LLM/TOON classification (claude-3-haiku); falls back to pattern extract on any non-RateLimit error |
-| ExtractionPipeline | class | roboco/services/extraction.py:459 | Wraps ExtractionService; process_buffer fans results to registered callbacks |
-| PermissionService | class | roboco/services/permissions.py:130 | Singleton RBAC enforcement from agents_config: notifications, task actions, KB actions |
-| can_send_notifications | method | roboco/services/permissions.py:255 | Whether role may call notify (foundation.NOTIFY_SENDER_ROLES) |
-| can_notify | method | roboco/services/permissions.py:259 | Scope rules: all (main_pm/ceo), cell (cell_pm: PMs or same team), board-chain list, else False |
-| can_perform_task_action | method | roboco/services/permissions.py:296 | CEO bypasses all; else TASK_PERMISSIONS with VIEW_OWN team restriction + VIEW_ALL fallback |
-| can_perform_kb_action | method | roboco/services/permissions.py:333 | KB_PERMISSIONS role action check |
-| check_all | method | roboco/services/permissions.py:357 | Comprehensive permission summary dict for an agent context |
-| has_privileged_access | function | roboco/services/permissions.py:382 | Async DB check: agent role in PRIVILEGED_ROLES (CEO/Auditor/Main_PM); queries id OR slug |
-| is_pm_role | function | roboco/services/permissions.py:410 | Async DB check: agent role in MANAGEMENT_ROLES (CEO/PO/CellPM/MainPM) |
-| _get_notification_scope | function | roboco/services/permissions.py:106 | Return scope ('all'/'cell'/role list/[]) for a sender role |
-| _get_agents_for_role_team | function | roboco/services/permissions.py:64 | All agent slugs matching a (role, team) pair from the precomputed lookup |
+| _segment_content | method | roboco/services/extraction.py:309 | Split on code blocks then double-newlines into paragraph segments |
+| _classify_segment | method | roboco/services/extraction.py:337 | Score each MessageType by matched patterns; default REASONING@0.5 if none |
+| _call_anthropic_with_retry | method | roboco/services/extraction.py:399 | Anthropic messages.create with MAX_RATE_LIMIT_RETRIES 429 backoff honoring Retry-After |
+| extract_with_llm | method | roboco/services/extraction.py:444 | LLM/TOON classification (claude-3-haiku); falls back to pattern extract on any non-RateLimit error |
+| ExtractionPipeline | class | roboco/services/extraction.py:581 | Wraps ExtractionService; process_buffer fans results to registered callbacks |
+| PermissionService | class | roboco/services/permissions.py:118 | Singleton RBAC enforcement from agents_config: notifications, task actions, KB actions |
+| can_send_notifications | method | roboco/services/permissions.py:139 | Whether role may call notify (foundation.NOTIFY_SENDER_ROLES) |
+| can_notify | method | roboco/services/permissions.py:143 | Scope rules: all (main_pm/ceo), cell (cell_pm: PMs or same team), board-chain list, else False |
+| can_perform_task_action | method | roboco/services/permissions.py:180 | CEO bypasses all; else TASK_PERMISSIONS with VIEW_OWN team restriction + VIEW_ALL fallback |
+| can_perform_kb_action | method | roboco/services/permissions.py:217 | KB_PERMISSIONS role action check |
+| check_all | method | roboco/services/permissions.py:241 | Comprehensive permission summary dict for an agent context |
+| has_privileged_access | function | roboco/services/permissions.py:264 | Async DB check: agent role in PRIVILEGED_ROLES (CEO/Auditor/Main_PM); queries id OR slug |
+| is_pm_role | function | roboco/services/permissions.py:287 | Async DB check: agent role in MANAGEMENT_ROLES (CEO/PO/CellPM/MainPM) |
+| _get_notification_scope | function | roboco/services/permissions.py:94 | Return scope ('all'/'cell'/role list/[]) for a sender role |
 
 ## Data Flow
 CONTROL FLOW: (1) A2A — HTTP routes in roboco/api/routes/a2a.py construct A2AService(db) per request for card discovery, task get/list/cancel, conversation CRUD, message send, mark-read, inbox/pairs; the gateway Choreographer/content_actions use A2AService.send (UUID→slug resolved) for directed agent messaging. Legacy A2A-protocol path: create_a2a_notification requires a task_id, requires both from_agent and target_agent to be present/resolvable (raises distinct ValueError if either missing), enforces hierarchy unconditionally via validate_a2a_access (raises A2AAccessDeniedError), parses priority via foundation.policy.communications.parse_priority, then delegates to NotificationService.send_a2a_notification (which now runs the loop-prone 60s Redis re-fire guard). Bidirectional responses: update_task_from_message appends to dev_notes and, if dev_notes contains the 'A2A Request' marker, _notify_original_requester publishes a TASK_ASSIGNED event to the StreamEventBus to spawn the offline requester. CEO live view (wave 2/2c): every send() publishes A2A_MESSAGE_SENT (_publish_a2a_message_sent) which websocket_bridge forwards to /ws/system as an a2a.message frame for the panel's /a2a switchboard; the CEO-only /chat/admin/* routes (_require_ceo) read across all conversations via get_conversation_admin/list_conversations_admin/get_messages_admin/list_admin_pairs (no participant check) and reply_as_ceo chimes in via the normal send() path, which routes a reply-to-CEO through _get_conversation_for_reply_to_ceo and gates every non-CEO send to the CEO through _enforce_ceo_reply_budget. CEO-DM wake: send_chat_message and interject_as_ceo both call _maybe_wake_ceo_recipient after persisting, which — for a CEO-authored send to a read_a2a-capable recipient only — creates an a2a_request NotificationTable row with requires_ack=True (a per-row override on CreateNotificationParams/send_a2a_notification, since A2A_REQUEST's type default is requires_ack=False) so the orchestrator's _dispatch_a2a_work pending_ack_only poll can see and spawn the offline recipient; the pending-row lookup doubles as dedup, and _ack_pending_wake_notifications closes it out once the recipient actually reads via read_a2a. Agent-to-agent DM never wakes — pull-only by design. (2) Audit — TaskService (log_task_event at every transition chokepoint), task routes (log_task_action_denial on 403 for action denials; log_task_creation_denial on 403 for pre-task create denials — distinct target_type="task_creation" with no task_id), the orchestrator (log_agent_event on spawn/stop + has_recent_tracing_gap for the PM-respawn circuit breaker) and the Choreographer (log_event for gateway.rejected) all call get_audit_service(); _persist opens its own session+commit so audit writes never roll back the caller's transaction. (3) Journal — gateway content_actions.note → JournalService.write_entry (scope string→type via foundation SCOPE_TO_TYPE), and write_struggle/write_decision for PM write-then-gate verbs; create_entry commits the row then _schedule_rag_index fires asyncio.create_task (strong-ref in _RAG_INDEX_TASKS) that calls OptimalService.index_journal_entry (skipped for is_private) and record_learning for LEARNING entries; tracing-gate existence checks (has_decision_for_task/latest_decision_at/has_note_for_task/...) feed the Choreographer's gate decisions. (4) content_notes — TaskService._set_structured_note and gateway content_actions handoff path call apply_structured_note(task, content_type, payload); it validates via foundation.policy.content.validate_content BEFORE mutating, reassigns notes_structured (to flag the JSON column dirty), and writes render_markdown() into the derived TEXT mirror column. (5) Extraction — app lifespan builds ExtractionPipeline(ExtractionService()); stream route process_buffer → ExtractionService.extract (regex classify) → callbacks store/broadcast messages; extract_with_llm is the optional Anthropic/TOON path. (6) Permissions — notification/task/KB routes and gateway kb_authz call PermissionService methods synchronously (no DB) from an AgentContext; has_privileged_access/is_pm_role are async DB lookups used by route deps. DATA: inputs are AsyncSession + UUIDs/slugs/payloads; outputs are Pydantic models (A2ATask, A2AConversation, Journal, JournalEntry), audit rows, structured note columns, ExtractedMessage lists, and bool permission decisions.

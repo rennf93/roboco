@@ -8,7 +8,7 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 
 | Path | Role | approx LOC |
 |------|------|-----------:|
-| `roboco/services/conventions.py` | `ConventionsService` — cache/render/scaffold/restore the effective conventions map; record + read findings | 448 |
+| `roboco/services/conventions.py` | `ConventionsService` — cache/render/scaffold/restore the effective conventions map; record + read findings | 586 |
 | `roboco/services/docs.py` | `DocsService` — write/read/list/delete docs, RAG dedup, commit doc to repo, path-traversal containment | 737 |
 | `roboco/conventions/__init__.py` | Package public API re-exports (`run`, `Finding`, `check_*`, `get_parser`, `GrammarUnavailable`, `ValidatorCouldNotRun`) | 30 |
 | `roboco/conventions/__main__.py` | argparse CLI entrypoint (`check --root <dir> --files ...`), JSONL output, exit-0/exit-3 fail-loud | 69 |
@@ -27,28 +27,28 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `_is_unique_violation` | fn | `services/conventions.py:65` | Narrow `IntegrityError` to UNIQUE constraint (SQLSTATE 23505); non-unique errors are re-raised, not swallowed |
-| `ConventionsService` | class | `services/conventions.py:82` | Cache/render/scaffold/restore a project's conventions standard |
-| `ConventionsService.get_map` | method | `services/conventions.py:85` | Return effective standard for a project at its HEAD (cache-first; degraded rows not trusted from cache) |
-| `ConventionsService.baseline_constraints` | method | `services/conventions.py:111` | Render block rules + module boundaries as per-task constraints |
-| `ConventionsService.render_ambient_block` | method | `services/conventions.py:129` | Bounded `## Architectural Standard` prompt block (2000-char cap) |
-| `ConventionsService.scaffold` | method | `services/conventions.py:171` | Open a PR adding the auto-scaffolded `.roboco/conventions.yml` |
-| `ConventionsService.restore` | method | `services/conventions.py:180` | Open a PR re-committing the file from the last-good map (or a scan) |
-| `ConventionsService.commit_standard` | method | `services/conventions.py:194` | Open a PR committing an externally-edited standard (panel save) |
-| `ConventionsService.health` | method | `services/conventions.py:206` | Report live file status at HEAD + last-good commit SHA (reads file, not cache) |
-| `ConventionsService.record_findings` | method | `services/conventions.py:230` | Replace a task's recorded findings (delete-then-insert); caller commits |
-| `ConventionsService.recent_findings` | method | `services/conventions.py:257` | Recent findings across the project (panel feed) |
-| `ConventionsService.resolve_workspace` | method | `services/conventions.py:300` | Ensure the project's read clone; None if unavailable (backfill path) |
-| `ConventionsService._resolve` | method | `services/conventions.py:316` | Resolve repo root + HEAD sha; persist clone path + sha back onto project |
-| `ConventionsService._head_sha_at` | method | `services/conventions.py:344` | `git rev-parse HEAD` in the clone (10s timeout), None if not a repo |
-| `ConventionsService._read_committed_standard` | method | `services/conventions.py:362` | Read/parse `.roboco/conventions.yml` → `(standard, status)` |
-| `ConventionsService._publish` | method | `services/conventions.py:379` | Open the conventions scaffold/restore PR via `GitService` |
-| `ConventionsService._cache_get` | method | `services/conventions.py:411` | Read cached effective map row by `(project_id, commit_sha)` |
-| `ConventionsService._cache_put` | method | `services/conventions.py:422` | Persist effective map in a savepoint (UNIQUE-violation-only swallow; non-unique IntegrityError re-raised) |
-| `ConventionsService._latest_ok_row` / `_latest_ok_map` | method | `services/conventions.py:472` / `:486` | Most recent `status="ok"` cached row (degraded fallback source) |
-| `ScaffoldResult` | dataclass | `services/conventions.py:47` | Outcome of a scaffold/restore: pr_number, branch, created |
-| `ConventionsHealth` | dataclass | `services/conventions.py:56` | status, head_sha, last_ok_sha |
-| `get_conventions_service` | fn | `services/conventions.py:493` | Construct `ConventionsService(session)` |
+| `_is_unique_violation` | fn | `services/conventions.py:76` | Narrow `IntegrityError` to UNIQUE constraint (SQLSTATE 23505); non-unique errors are re-raised, not swallowed |
+| `ConventionsService` | class | `services/conventions.py:114` | Cache/render/scaffold/restore a project's conventions standard |
+| `ConventionsService.get_map` | method | `services/conventions.py:117` | Return effective standard for a project at its HEAD (cache-first; degraded rows not trusted from cache) |
+| `ConventionsService.baseline_constraints` | method | `services/conventions.py:176` | Render block rules + module boundaries as per-task constraints |
+| `ConventionsService.render_ambient_block` | method | `services/conventions.py:194` | Bounded `## Architectural Standard` prompt block (2000-char cap) |
+| `ConventionsService.scaffold` | method | `services/conventions.py:236` | Open a PR adding the auto-scaffolded `.roboco/conventions.yml` |
+| `ConventionsService.restore` | method | `services/conventions.py:245` | Open a PR re-committing the file from the last-good map (or a scan) |
+| `ConventionsService.commit_standard` | method | `services/conventions.py:263` | Open a PR committing an externally-edited standard (panel save) |
+| `ConventionsService.health` | method | `services/conventions.py:275` | Report live file status at HEAD + last-good commit SHA (reads file, not cache) |
+| `ConventionsService.record_findings` | method | `services/conventions.py:306` | Replace a task's recorded findings (delete-then-insert); caller commits |
+| `ConventionsService.recent_findings` | method | `services/conventions.py:333` | Recent findings across the project (panel feed) |
+| `ConventionsService.resolve_workspace` | method | `services/conventions.py:376` | Ensure the project's read clone; None if unavailable (backfill path) |
+| `ConventionsService._resolve` | method | `services/conventions.py:392` | Resolve repo root + HEAD sha; persist clone path + sha back onto project |
+| `ConventionsService._head_sha_at` | method | `services/conventions.py:415` | `git rev-parse HEAD` in the clone (10s timeout), None if not a repo |
+| `ConventionsService._read_committed_standard` | method | `services/conventions.py:431` | Read/parse `.roboco/conventions.yml` → `(standard, status)` |
+| `ConventionsService._publish` | method | `services/conventions.py:448` | Open the conventions scaffold/restore PR via `GitService` |
+| `ConventionsService._cache_get` | method | `services/conventions.py:480` | Read cached effective map row by `(project_id, commit_sha)` |
+| `ConventionsService._cache_put` | method | `services/conventions.py:513` | Persist effective map in a savepoint (UNIQUE-violation-only swallow; non-unique IntegrityError re-raised) |
+| `ConventionsService._latest_ok_row` / `_latest_ok_map` | method | `services/conventions.py:563` / `:577` | Most recent `status="ok"` cached row (degraded fallback source) |
+| `ScaffoldResult` | dataclass | `services/conventions.py:59` | Outcome of a scaffold/restore: pr_number, branch, created |
+| `ConventionsHealth` | dataclass | `services/conventions.py:68` | status, head_sha, last_ok_sha |
+| `get_conventions_service` | fn | `services/conventions.py:584` | Construct `ConventionsService(session)` |
 | `main` | fn | `conventions/__main__.py:57` | argparse CLI entrypoint; returns exit code |
 | `_run_check` | fn | `conventions/__main__.py:42` | Load file+scan, build effective map, run validator, print JSONL |
 | `_fail` | fn | `conventions/__main__.py:37` | Emit `{"error": ...}` on stderr + return exit 3 |
@@ -66,28 +66,28 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `classify_definitions` (ts) | fn | `conventions/classify_ts.py:36` | Top-level TS/TSX defs → `(name, line, kind)` |
 | `check_hygiene` | fn | `conventions/hygiene.py:58` | Inline-comment + suppression findings |
 | `_suppression_allowed` | fn | `conventions/hygiene.py:89` | True iff only sanctioned codes (TC001/2/3, prop-decorator) |
-| `check_modularity` | fn | `conventions/modularity.py:70` | Cohesion + thin routes + thin components + god class |
-| `_check_cohesion` | fn | `conventions/modularity.py:96` | >1 core kind in a file → `modular_cohesion` finding |
-| `_body_hits_db` | fn | `conventions/modularity.py:220` | Route body calls execute/scalars/select/... (thin_routes) |
-| `_component_fetches` | fn | `conventions/modularity.py:300` | Component body calls fetch/axios (thin_components) |
+| `check_modularity` | fn | `conventions/modularity.py:77` | Cohesion + thin routes + thin components + god class |
+| `_check_cohesion` | fn | `conventions/modularity.py:103` | >1 core kind in a file → `modular_cohesion` finding |
+| `_body_hits_db` | fn | `conventions/modularity.py:239` | Route body calls execute/scalars/select/... (thin_routes) |
+| `_component_fetches` | fn | `conventions/modularity.py:318` | Component body calls fetch/axios (thin_components) |
 | `unrecognized_rule_languages` | fn | `conventions/custom.py:37` | Return language tags on a `CustomRule` that the validator never reports — flags typos in the conventions file |
 | `check_custom` | fn | `conventions/custom.py:56` | Project regex rule matches scoped by language |
 | `_rule_applies` | fn | `conventions/custom.py:45` | Language scoping with tsx→typescript dialect relation |
 | `derive_from_scan` | fn | `conventions/scan.py:100` | Infer modules/languages/rules/CLAUDE.md-lifted custom rules |
 | `_seed_rules` | fn | `conventions/scan.py:142` | Seed hygiene + placement + modularity rules (stack-scoped) |
 | `_lift_claude_md` | fn | `conventions/scan.py:223` | Lift imperative CLAUDE.md code-spans into warn custom rules |
-| `render_yaml` | fn | `conventions/scan.py:304` | Render a standard to commented YAML (round-trips via parse_yaml) |
-| `DocsService` | class | `services/docs.py:154` | Documentation file management |
-| `DocsService.write_doc` | method | `services/docs.py:159` | Write/update a doc with RAG dedup + repo commit |
-| `DocsService.read_doc` | method | `services/docs.py:468` | Read a doc (role-gated, path-contained) |
-| `DocsService.list_docs` | method | `services/docs.py:504` | List docs (by task or by team filesystem scan) |
-| `DocsService.delete_doc` | method | `services/docs.py:543` | Delete a doc (role-gated, path-contained) |
-| `DocsService._commit_doc_to_repo` | method | `services/docs.py:245` | Best-effort commit the doc onto the task branch via `GitService` |
-| `DocsService._find_similar_doc` | method | `services/docs.py:314` | RAG content-similarity dedup (≥0.75, same team) |
-| `_resolve_contained_path` | fn | `services/docs.py:123` | Containment-prove `base / rel` (anti path-traversal, absolute-escape) |
-| `_coerce_doc_ref` | fn | `services/docs.py:107` | Defensive DocRef coercion from str/dict/DocRef |
-| `WriteDocInput` | dataclass | `services/docs.py:33` | Route DTO for write_doc |
-| `get_docs_service` | fn | `services/docs.py:735` | Factory for `DocsService(session)` |
+| `render_yaml` | fn | `conventions/scan.py:310` | Render a standard to commented YAML (round-trips via parse_yaml) |
+| `DocsService` | class | `services/docs.py:187` | Documentation file management |
+| `DocsService.write_doc` | method | `services/docs.py:192` | Write/update a doc with RAG dedup + repo commit |
+| `DocsService.read_doc` | method | `services/docs.py:530` | Read a doc (role-gated, path-contained) |
+| `DocsService.list_docs` | method | `services/docs.py:566` | List docs (by task or by team filesystem scan) |
+| `DocsService.delete_doc` | method | `services/docs.py:605` | Delete a doc (role-gated, path-contained) |
+| `DocsService._commit_doc_to_repo` | method | `services/docs.py:292` | Best-effort commit the doc onto the task branch via `GitService` |
+| `DocsService._find_similar_doc` | method | `services/docs.py:370` | RAG content-similarity dedup (≥0.75, same team) |
+| `_resolve_contained_path` | fn | `services/docs.py:156` | Containment-prove `base / rel` (anti path-traversal, absolute-escape) |
+| `_coerce_doc_ref` | fn | `services/docs.py:140` | Defensive DocRef coercion from str/dict/DocRef |
+| `WriteDocInput` | dataclass | `services/docs.py:35` | Route DTO for write_doc |
+| `get_docs_service` | fn | `services/docs.py:808` | Factory for `DocsService(session)` |
 
 ## Data Flow
 
@@ -269,7 +269,7 @@ No other logic-touching commits in the range.
 | ~~Cache put savepoint swallows all IntegrityError~~ | `services/conventions.py:451-465` | ~~The `except IntegrityError` swallows any integrity error, not only a duplicate-key.~~ **FIXED 536bbb64**: `_is_unique_violation` now narrows the catch to SQLSTATE 23505 only; any other IntegrityError (FK / NOT NULL / check constraint) is logged at ERROR and re-raised. The savepoint still rolls back only the failed insert, leaving the outer session usable. | low |
 | Backfill writes project row on a read path | `services/conventions.py:303-307` | `_resolve` mutates `project.workspace_path`/`head_commit` during `get_map` (a read). If the caller's session is not the one that commits, the backfill is lost; if it is, a read has a write side effect that can race with a concurrent project update. | low |
 | ~~Degraded fallback caches last-good as `degraded`~~ | `services/conventions.py:95-108` | ~~On a corrupted file, the last-good map is re-cached with `status="degraded"`.~~ **FIXED 536bbb64**: `get_map` now skips the cache when `status=="degraded"` (never pins a degraded row); `health()` re-reads the live file instead of consulting the cache, so an in-place repair is immediately visible. | low |
-| ~~write_doc filename guard not containment-checked~~ | `services/docs.py:411-454` | ~~`write_doc` does NOT call `_resolve_contained_path` on the built path.~~ **FIXED 536bbb64**: `_create_new_doc` and `_update_existing_doc` both now call `_resolve_contained_path` on their resolved path before writing — the built `{team}/{subfolder}/{filename}` and the RAG-sourced `existing_path` are both containment-checked. | medium |
+| ~~write_doc filename guard not containment-checked~~ | `services/docs.py:192-290` | ~~`write_doc` does NOT call `_resolve_contained_path` on the built path.~~ **FIXED 536bbb64**: `_create_new_doc` and `_update_existing_doc` both now call `_resolve_contained_path` on their resolved path before writing — the built `{team}/{subfolder}/{filename}` and the RAG-sourced `existing_path` are both containment-checked. | medium |
 | _commit_doc_to_repo swallows all exceptions | `services/docs.py:295-320` | Broad `except Exception` catches all git failures. **REDUCED 536bbb64**: now returns `"committed"` / `"skipped"` / `"failed"` (instead of `None`); `write_doc` attaches the string to `doc_ref.commit_status` so the caller can surface it. The exception is still caught (the doc write must not fail), but the outcome is no longer invisible. | low |
 | RAG dedup overwrites similar docs | `services/docs.py:221` | `_find_similar_doc` matches ≥0.75 content similarity in the same team. **REDUCED 536bbb64**: `write_doc` now only calls `_update_existing_doc` when the similar doc's filename exactly matches `req.filename` — a different filename always creates a new file. Still possible for same-filename, same-team, similar content to collapse silently. | low |
 | ~~Modularity DB-method set excludes stream/stream_scalars~~ | `conventions/modularity.py:45-57` | ~~`await session.stream(...)` / `stream_scalars(...)` were missing from `_DB_METHODS` — thin-route false negative.~~ **FIXED 536bbb64**: `"stream"` and `"stream_scalars"` added to `_DB_METHODS`. Legacy `query` was already present. Other hypothetical future SA 2.0 constructs not in the set remain a low-severity under-enforcement non-issue. | low |

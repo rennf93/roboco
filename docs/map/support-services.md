@@ -12,21 +12,21 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 |---|---|---|
 | `roboco/services/base.py` | `BaseService` (session-bound) + `SingletonService` + `SingletonHolder[T]` + `ServiceError` hierarchy (NotFound/Validation/Conflict/Unauthorized/ServiceUnavailable) | 226 |
 | `roboco/services/exceptions.py` | LLM-provider rate-limit exception + `Retry-After` parser + retry constants | 81 |
-| `roboco/services/agent.py` | Thin read-side `AgentService` over `AgentTable` (list/get by uuid/slug/raise) | 74 |
+| `roboco/services/agent.py` | Thin read-side `AgentService` over `AgentTable` (list/get by uuid/slug/raise) | 83 |
 | `roboco/services/health.py` | `check_database` / `check_redis` infrastructure probes backing `/health` | 32 |
-| `roboco/services/settings.py` | `SettingsService` CRUD over `system_settings` + `FEATURE_FLAGS` registry + startup overlay onto `roboco.config.settings` | 165 |
+| `roboco/services/settings.py` | `SettingsService` CRUD over `system_settings` + `FEATURE_FLAGS` registry + startup overlay onto `roboco.config.settings` | 384 |
 | `roboco/services/toolchain.py` | Pure resolver: target project's Python interpreter from `pyproject.toml` / `.python-version` | 117 |
 | `roboco/services/provider.py` | `ProviderService` CRUD for `provider_configs` rows + Fernet-encrypted token tri-state updates | 229 |
-| `roboco/services/llm.py` | `ModelRoutingService`: resolve (provider, model) per agent spawn; assignment CRUD; mode apply (anthropic/grok/ollama/self_hosted/mix); Ollama probe | 599 |
+| `roboco/services/llm.py` | `ModelRoutingService`: resolve (provider, model) per agent spawn; assignment CRUD; mode apply (anthropic/grok/ollama/self_hosted/mix); Ollama probe | 1742 |
 | `roboco/services/proactive.py` | `ProactiveKnowledgeService`: assemble RAG context packages on task-claim / session-start | 542 |
 | `roboco/services/transcription.py` | `TranscriptionService`: buffer raw LLM stream chunks into extractable segments | 278 |
-| `roboco/services/second_review.py` | Cross-vendor second-review selection: settings-driven risk-threshold classifier + a pure provider-difference resolver over `ProviderService`'s enabled-provider set (never a hardcoded vendor list); non-raising skip when only one provider is enabled | 176 |
+| `roboco/services/second_review.py` | Cross-vendor second-review selection: settings-driven risk-threshold classifier + a pure provider-difference resolver over `ProviderService`'s enabled-provider set (never a hardcoded vendor list); non-raising skip when only one provider is enabled | 231 |
 | `roboco/events/__init__.py` | Public re-exports for the event system | 41 |
 | `roboco/events/bus.py` | Backward-compat shim: `EventBus = StreamEventBus`, `get_event_bus`, `init_event_bus` | 57 |
 | `roboco/events/handlers.py` | Workflow trigger handlers (task status → notifications, QA result, blocker, question, auditor spawn) + `register_default_handlers` | 419 |
 | `roboco/events/stream_bus.py` | `StreamEventBus`: Redis Streams durable event bus with consumer groups, ACK, pending recovery, periodic reclaim loop, dead-letter for undecodable messages | 604 |
-| `roboco/seeds/__init__.py` | Re-exports seed constants | 25 |
-| `roboco/seeds/initial_data.py` | Static seed data (agents) derived from `foundation` catalogs | 332 |
+| `roboco/seeds/__init__.py` | Re-exports seed constants | 17 |
+| `roboco/seeds/initial_data.py` | Static seed data (agents) derived from `foundation` catalogs | 114 |
 | `roboco/utils/__init__.py` | Re-exports crypto + converter helpers | 23 |
 | `roboco/utils/converters.py` | `InvalidIdentifierError` + `require_uuid` / `to_python_uuid` / `to_python_uuid_list` + `repo_key` | 99 |
 | `roboco/utils/crypto.py` | Fernet `encrypt_token` / `decrypt_token` / `is_encryption_configured` + `EncryptionError` | 111 |
@@ -49,61 +49,61 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `AgentService` | class | `services/agent.py:19` | Read-only agent queries (list/get_by_uuid/get_by_slug/get_by_uuid_or_slug_or_raise) |
 | `check_database` | func | `services/health.py:14` | Opens a DB context, `SELECT 1`, returns `(msg, ok)` |
 | `check_redis` | func | `services/health.py:24` | `redis.from_url(settings.redis_url).ping()` then close |
-| `SettingsService` | class | `services/settings.py:83` | KV CRUD on `system_settings` (get/get_int/get_bool/set/all); `set` validates + flushes, caller commits |
-| `FEATURE_FLAGS` | tuple | `services/settings.py:46` | Panel-tunable flag registry `(key, label)`; maps to `Settings` bool attrs of same name |
-| `validate_setting` | func | `services/settings.py:75` | Reject unknown keys + run per-key validator |
-| `apply_persisted_feature_flags` | func | `services/settings.py:146` | Startup overlay: stored flag value → `setattr(settings, key, bool)`; returns overridden keys |
-| `feature_flag_effective_values` | func | `services/settings.py:131` | Stored override else env default; backs Settings panel card |
-| `SettingValidationError` | class | `services/settings.py:22` | Unknown/invalid setting on write |
-| `resolve_target_python` | func | `services/toolchain.py:103` | Returns `ResolvedPython(version, source)` or None; honors `.python-version` only if it satisfies `requires-python` |
-| `satisfies` | func | `services/toolchain.py:48` | PEP 440 membership test (empty specifier = any) |
-| `ResolvedPython` | dataclass | `services/toolchain.py:40` | Frozen `(version, source)` result |
+| `SettingsService` | class | `services/settings.py:289` | KV CRUD on `system_settings` (get/get_int/get_bool/set/all); `set` validates + flushes, caller commits |
+| `FEATURE_FLAGS` | tuple | `services/settings.py:84` | Panel-tunable flag registry `(key, label)`; maps to `Settings` bool attrs of same name |
+| `validate_setting` | func | `services/settings.py:281` | Reject unknown keys + run per-key validator |
+| `apply_persisted_feature_flags` | func | `services/settings.py:365` | Startup overlay: stored flag value → `setattr(settings, key, bool)`; returns overridden keys |
+| `feature_flag_effective_values` | func | `services/settings.py:350` | Stored override else env default; backs Settings panel card |
+| `SettingValidationError` | class | `services/settings.py:28` | Unknown/invalid setting on write |
+| `resolve_target_python` | func | `services/toolchain.py:110` | Returns `ResolvedPython(version, source)` or None; honors `.python-version` only if it satisfies `requires-python` |
+| `satisfies` | func | `services/toolchain.py:52` | PEP 440 membership test (empty specifier = any) |
+| `ResolvedPython` | dataclass | `services/toolchain.py:45` | Frozen `(version, source)` result |
 | `ProviderService` | class | `services/provider.py:61` | CRUD for `provider_configs`; tri-state token update; 409 on delete-with-assignments |
 | `ProviderCreate` / `ProviderUpdate` | dataclasses | `services/provider.py:32,43` | Service-boundary shapes; `ProviderUpdate.auth_token` tri-state + `clear_auth_token` |
 | `get_decrypted_token` | method | `services/provider.py:211` | Decrypt provider token or None; raises `EncryptionError` on bad key |
-| `ModelRoutingService` | class | `services/llm.py:119` | Per-agent route resolution + assignment CRUD + mode apply |
-| `AgentRoute` | dataclass | `services/llm.py:95` | Frozen resolved route `(provider_id, type, base_url, auth_token, model_name)`; None base_url/token = Anthropic default |
-| `resolve_for_agent` | method | `services/llm.py:194` | Precedence ladder AGENT_SLUG > ROLE(:complexity) > ROLE > GLOBAL; optional `complexity` (a task's `estimated_complexity`, lowercased) enables the compound `ROLE:complexity` rung; never raises — downgrades to legacy Anthropic path |
-| `_resolve_assignment` | method | `services/llm.py:248` | Tries AGENT_SLUG first, then (when `role` AND `complexity` both given) the compound `scope_value=f"{role}:{complexity}"` ROLE row, then the plain `role` ROLE row, then GLOBAL — the compound rung reuses the existing ROLE scope + `scope_value` column, no schema change |
-| `probe_ollama_tags` | func | `services/llm.py:63` | `{base_url}/api/tags` probe; never raises, returns `([], error)` |
-| `upsert_assignment` | method | `services/llm.py:241` | Insert-or-update by `(scope, scope_value)`; routes non-catalog names to LOCAL; auto-enables LOCAL provider |
-| `apply_mode` | method | `services/llm.py:567` | Wipe role/global rows (AGENT_SLUG pins preserved) + set GLOBAL for anthropic/grok/ollama/self_hosted/codex/gemini; per-agent map for mix. `apply_mode('cost_tiered')` is the one exception — it ADDITIVELY seeds `_COST_TIERED_SEED` instead of wipe-then-seed, so it composes with whatever mode is already active. **Retired to an empty tuple (#680, 2026-07-24)**: the one entry (`developer:low` → haiku) is gone — haiku can't reliably emit the structured lifecycle envelopes, and the structured-verb capability floor below would have silently upgraded the seeded row back to sonnet anyway. `cost_tiered` mode itself stays wired (an empty seed is inert) so an operator can re-seed a genuinely above-floor `role:complexity` tier later. |
-| `_below_capability_floor` / `_floor_below_capability` | functions | `services/llm.py:189,354` | Structured-verb capability floor (#680): any Anthropic assignment that resolves to a haiku-class model — from a pin, a plain ROLE row, or the now-empty cost-tiered seed — is upgraded to `sonnet` at resolution, in both the assignment and legacy paths. Non-Anthropic providers are untouched (an Anthropic-tier floor, not a provider policy); `pr_reviewer`/`auditor` stay on opus regardless. |
-| `derive_mode` | method | `services/llm.py:443` | Settings UI label from current assignments |
-| `set_ollama_api_key` / `set_grok_api_key` | methods | `services/llm.py:340,360` | Encrypt+enable / clear+disable on the seeded provider row |
-| `_interactive_exempt` | func | `services/llm.py:176` | True when `agent_slug` is `intake-1`/`secretary-1` AND the resolved assignment routes to OPENAI/GEMINI — neither provider supports the interactive chat driver, so these two agents stay on Anthropic regardless of a fleet-wide mode switch; an explicit AGENT_SLUG pin onto either provider for these two slugs is refused loudly at the spawn/save boundary rather than silently producing a broken interactive session |
-| `list_routing_presets` / `get_routing_preset` | methods | `services/llm.py:837,845` | List / fetch one saved `RoutingPresetTable` row |
-| `save_routing_preset` | method | `services/llm.py:848` | Snapshot the FULL current routing state (mode + every assignment row, AGENT_SLUG pins included) into a named `RoutingPresetTable.payload` (JSONB) |
-| `apply_routing_preset` | method | `services/llm.py:931` | Restore a saved preset wholesale — a full swap, validating every entry via `_validate_preset_entry` FIRST so an invalid payload never triggers the wipe (unlike a mode switch's pin-preserving behavior) |
-| `_validate_preset_entry` | method | `services/llm.py:896` | Per-entry validation for `apply_routing_preset` (scope/provider/model shape) run before any row is touched |
-| `delete_routing_preset` | method | `services/llm.py:886` | Delete a saved preset by id |
-| `ProactiveKnowledgeService` | class | `services/proactive.py:90` | Builds `ContextPackage` from multiple RAG indexes on claim/session |
+| `ModelRoutingService` | class | `services/llm.py:494` | Per-agent route resolution + assignment CRUD + mode apply |
+| `AgentRoute` | dataclass | `services/llm.py:416` | Frozen resolved route `(provider_id, type, base_url, auth_token, model_name)`; None base_url/token = Anthropic default |
+| `resolve_for_agent` | method | `services/llm.py:499` | Precedence ladder AGENT_SLUG > ROLE(:complexity) > ROLE > GLOBAL; optional `complexity` (a task's `estimated_complexity`, lowercased) enables the compound `ROLE:complexity` rung; never raises — downgrades to legacy Anthropic path |
+| `_resolve_assignment` | method | `services/llm.py:555` | Tries AGENT_SLUG first, then (when `role` AND `complexity` both given) the compound `scope_value=f"{role}:{complexity}"` ROLE row, then the plain `role` ROLE row, then GLOBAL — the compound rung reuses the existing ROLE scope + `scope_value` column, no schema change |
+| `probe_ollama_tags` | func | `services/llm.py:212` | `{base_url}/api/tags` probe; never raises, returns `([], error)` |
+| `upsert_assignment` | method | `services/llm.py:692` | Insert-or-update by `(scope, scope_value)`; routes non-catalog names to LOCAL; auto-enables LOCAL provider |
+| `apply_mode` | method | `services/llm.py:1048` | Wipe role/global rows (AGENT_SLUG pins preserved) + set GLOBAL for anthropic/grok/ollama/self_hosted/codex/gemini; per-agent map for mix. `apply_mode('cost_tiered')` is the one exception — it ADDITIVELY seeds `_COST_TIERED_SEED` instead of wipe-then-seed, so it composes with whatever mode is already active. **Retired to an empty tuple (#680, 2026-07-24)**: the one entry (`developer:low` → haiku) is gone — haiku can't reliably emit the structured lifecycle envelopes, and the structured-verb capability floor below would have silently upgraded the seeded row back to sonnet anyway. `cost_tiered` mode itself stays wired (an empty seed is inert) so an operator can re-seed a genuinely above-floor `role:complexity` tier later. |
+| `_below_capability_floor` / `_floor_below_capability` | functions | `services/llm.py:473,635` | Structured-verb capability floor (#680): any Anthropic assignment that resolves to a haiku-class model — from a pin, a plain ROLE row, or the now-empty cost-tiered seed — is upgraded to `sonnet` at resolution, in both the assignment and legacy paths. Non-Anthropic providers are untouched (an Anthropic-tier floor, not a provider policy); `pr_reviewer`/`auditor` stay on opus regardless. |
+| `derive_mode` | method | `services/llm.py:781` | Settings UI label from current assignments |
+| `set_ollama_api_key` / `set_grok_api_key` | methods | `services/llm.py:866,886` | Encrypt+enable / clear+disable on the seeded provider row |
+| `_interactive_exempt` | func | `services/llm.py:482` | True when `agent_slug` is `intake-1`/`secretary-1` AND the resolved assignment routes to OPENAI/GEMINI — neither provider supports the interactive chat driver, so these two agents stay on Anthropic regardless of a fleet-wide mode switch; an explicit AGENT_SLUG pin onto either provider for these two slugs is refused loudly at the spawn/save boundary rather than silently producing a broken interactive session |
+| `list_routing_presets` / `get_routing_preset` | methods | `services/llm.py:1543,1551` | List / fetch one saved `RoutingPresetTable` row |
+| `save_routing_preset` | method | `services/llm.py:1554` | Snapshot the FULL current routing state (mode + every assignment row, AGENT_SLUG pins included) into a named `RoutingPresetTable.payload` (JSONB) |
+| `apply_routing_preset` | method | `services/llm.py:1637` | Restore a saved preset wholesale — a full swap, validating every entry via `_validate_preset_entry` FIRST so an invalid payload never triggers the wipe (unlike a mode switch's pin-preserving behavior) |
+| `_validate_preset_entry` | method | `services/llm.py:1602` | Per-entry validation for `apply_routing_preset` (scope/provider/model shape) run before any row is touched |
+| `delete_routing_preset` | method | `services/llm.py:1592` | Delete a saved preset by id |
+| `ProactiveKnowledgeService` | class | `services/proactive.py:91` | Builds `ContextPackage` from multiple RAG indexes on claim/session |
 | `ContextPackage` | dataclass | `services/proactive.py:27` | Aggregates similar_tasks/learnings/code_patterns/standards/decisions/known_issues + summary |
-| `on_task_claimed` / `on_session_started` | methods | `services/proactive.py:116,201` | Best-effort multi-index search; each source wrapped in try/except |
-| `get_proactive_service` | func | `services/proactive.py:534` | Singleton holder; lazy-inits with `OptimalService` |
+| `on_task_claimed` / `on_session_started` | methods | `services/proactive.py:117,197` | Best-effort multi-index search; each source wrapped in try/except |
+| `get_proactive_service` | func | `services/proactive.py:547` | Singleton holder; lazy-inits with `OptimalService` |
 | `TranscriptionService` | class | `services/transcription.py:28` | Per-(agent,session) `StreamBuffer` map; periodic flush task; callback registration |
 | `process_chunk` | method | `services/transcription.py:120` | Append chunk, return buffer if ready-for-extraction else None |
 | `_periodic_flush` | method | `services/transcription.py:225` | Background loop: sleep `flush_interval_seconds`, yield ready buffers to callbacks |
 | `SecondReviewSelection` | frozen dataclass | `services/second_review.py:44` | Outcome of a second-review resolution: `.resolved(provider)` (skipped=False) or `.skip(reason)` (skipped=True, provider=None) — consumers branch on `skipped`, not on `provider is None` |
 | `is_high_stakes` | func | `services/second_review.py:68` | Pure risk-threshold check over explicit signals + `Settings`; unconditionally `False` when `settings.cross_vendor_review_enabled` is off (default) |
 | `task_is_high_stakes` | func | `services/second_review.py:93` | `is_high_stakes` wrapper for a real `Task`; derives `security_relevant` from a settings-configurable keyword match against title+description (no dedicated `Task` field) |
-| `resolve_second_review_provider` | func | `services/second_review.py:113` | Pure resolver: first enabled provider differing from every provider in `authoring_provider` (a single `ModelProvider` or a `Sequence` of them — an assembled cell/root task can have more than one authoring dev/QA agent on different providers), in caller-supplied order; never raises — returns `SecondReviewSelection.skip(...)` with an evidence note when no differing enabled provider exists (e.g. single-vendor fleet) |
-| `SecondReviewService` | class | `services/second_review.py:136` | DB-backed entry point: `enabled_providers()` reads distinct enabled types via `ProviderService.list_providers(include_disabled=False)`; `resolve_second_reviewer_for_agent` resolves the authoring provider via `ModelRoutingService.resolve_for_agent` then delegates to the pure resolver |
-| `get_second_review_service` | func | `services/second_review.py:173` | Factory mirroring the other `get_*_service` singletons in this package |
+| `resolve_second_review_provider` | func | `services/second_review.py:153` | Pure resolver: first enabled provider differing from every provider in `authoring_provider` (a single `ModelProvider` or a `Sequence` of them — an assembled cell/root task can have more than one authoring dev/QA agent on different providers), in caller-supplied order; never raises — returns `SecondReviewSelection.skip(...)` with an evidence note when no differing enabled provider exists (e.g. single-vendor fleet) |
+| `SecondReviewService` | class | `services/second_review.py:186` | DB-backed entry point: `enabled_providers()` reads distinct enabled types via `ProviderService.list_providers(include_disabled=False)`; `resolve_second_reviewer_for_agent` resolves the authoring provider via `ModelRoutingService.resolve_for_agent` then delegates to the pure resolver |
+| `get_second_review_service` | func | `services/second_review.py:229` | Factory mirroring the other `get_*_service` singletons in this package |
 | `StreamEventBus` | class | `events/stream_bus.py:35` | Redis Streams bus: `xadd` trim, `xreadgroup` block=5000, ACK-on-success, `xclaim` recovery, periodic `_reclaim_loop`, dead-letter for undecodable messages |
 | `DEAD_LETTER_STREAM` | class attr | `events/stream_bus.py:51` | `"roboco:stream:dead-letter"` — undecodable messages are parked here before ACK for operator inspection |
-| `publish` / `publish_task_event` | methods | `events/stream_bus.py:152,191` | `xadd` to category-grouped stream, returns message id |
-| `recover_pending` | method | `events/stream_bus.py:534` | `xpending_range` + `xclaim` idle≥60s messages; called at startup and periodically by `_reclaim_loop` |
-| `_reclaim_loop` | method | `events/stream_bus.py:253` | Background task spawned alongside `_listen_loop`; re-runs `recover_pending` every 60s so runtime handler failures are retried without waiting for a restart |
-| `_handle_message` | method | `events/stream_bus.py:434` | Decode (poison-pill: dead-letter+ACK on `Event.from_json` failure) → dispatch → ACK iff all handlers succeeded (else stays pending for reclaim) |
-| `_dead_letter` | method | `events/stream_bus.py:403` | Best-effort write to `DEAD_LETTER_STREAM`; never blocks ACK on publish failure |
-| `get_stream_event_bus` / `init_stream_event_bus` | funcs | `events/stream_bus.py:577,584` | Singleton + connect + optional startup pending recovery |
-| `handle_task_status_change` | func | `events/handlers.py:141` | Routes task.* events to PM/QA/Documenter/developer notifications |
-| `handle_auditor_spawn` | func | `events/handlers.py:332` | One-shot auditor spawn on blocked/cancelled/awaiting_ceo_approval; failures swallowed |
-| `register_default_handlers` | func | `events/handlers.py:372` | Subscribes all default handlers on the bus |
-| `set_event_context` / `get_event_context` | funcs | `events/handlers.py:26,37` | DI of `notification_service` + `orchestrator` into module-global `_context` |
-| `DEFAULT_AGENTS` | const | `seeds/initial_data.py:156` | Composed from `foundation.AGENTS` + presentation names; system sentinel appended literally (team=None) |
-| `AGENT_UUIDS` / `CEO_AGENT_ID` | consts | `seeds/initial_data.py:83,173` | String-keyed UUID map for legacy consumers |
+| `publish` / `publish_task_event` | methods | `events/stream_bus.py:162,201` | `xadd` to category-grouped stream, returns message id |
+| `recover_pending` | method | `events/stream_bus.py:581` | `xpending_range` + `xclaim` idle≥60s messages; called at startup and periodically by `_reclaim_loop` |
+| `_reclaim_loop` | method | `events/stream_bus.py:263` | Background task spawned alongside `_listen_loop`; re-runs `recover_pending` every 60s so runtime handler failures are retried without waiting for a restart |
+| `_handle_message` | method | `events/stream_bus.py:451` | Decode (poison-pill: dead-letter+ACK on `Event.from_json` failure) → dispatch → ACK iff all handlers succeeded (else stays pending for reclaim) |
+| `_dead_letter` | method | `events/stream_bus.py:413` | Best-effort write to `DEAD_LETTER_STREAM`; never blocks ACK on publish failure |
+| `get_stream_event_bus` / `init_stream_event_bus` | funcs | `events/stream_bus.py:624,631` | Singleton + connect + optional startup pending recovery |
+| `handle_task_status_change` | func | `events/handlers.py:146` | Routes task.* events to PM/QA/Documenter/developer notifications |
+| `handle_auditor_spawn` | func | `events/handlers.py:310` | One-shot auditor spawn on blocked/cancelled/awaiting_ceo_approval; failures swallowed |
+| `register_default_handlers` | func | `events/handlers.py:352` | Subscribes all default handlers on the bus |
+| `set_event_context` / `get_event_context` | funcs | `events/handlers.py:27,38` | DI of `notification_service` + `orchestrator` into module-global `_context` |
+| `DEFAULT_AGENTS` | const | `seeds/initial_data.py:114` | Composed from `foundation.AGENTS` + presentation names; system sentinel appended literally (team=None) |
+| `AGENT_UUIDS` / `CEO_AGENT_ID` | consts | `seeds/initial_data.py:35,41` | String-keyed UUID map for legacy consumers |
 | `encrypt_token` / `decrypt_token` | funcs | `utils/crypto.py:40,67` | Fernet symmetric encrypt/decrypt; `EncryptionError` on empty/bad key |
 | `is_encryption_configured` | func | `utils/crypto.py:102` | True iff `settings.encryption_key` yields a valid Fernet |
 | `InvalidIdentifierError` | class | `utils/converters.py:11` | `ValueError` subclass raised by `require_uuid` on None or unparseable input; typed so callers can distinguish a bad identifier instead of broad-catching (#25) |
@@ -250,18 +250,18 @@ support-services
 
 | Symbol | Invoked from | Trigger |
 |---|---|---|
-| `apply_persisted_feature_flags` | `api/app.py:117` | FastAPI lifespan (after DB ready) |
-| `get_settings_service` | `api/routes/settings.py`, `runtime/orchestrator.py:5910` | `GET/POST /api/settings`; orchestrator transcript-retention read |
-| `get_model_routing_service().resolve_for_agent` | `runtime/orchestrator.py:3301` | Each agent spawn |
+| `apply_persisted_feature_flags` | `api/app.py:137` | FastAPI lifespan (after DB ready) |
+| `get_settings_service` | `api/routes/settings.py`, `runtime/engines/sweeps.py:1475` | `GET/POST /api/settings`; orchestrator transcript-retention read |
+| `get_model_routing_service().resolve_for_agent` | `runtime/engines/spawn_launch.py:1713` | Each agent spawn |
 | `ModelRoutingService.*` assignment/mode ops | `api/routes/provider.py` | `GET/POST/DELETE /api/providers/*` |
 | `ProviderService.*` | `api/routes/provider.py` | provider CRUD routes |
 | `get_agent_service` | `api/routes/agents.py`, `services/task.py`, `services/pitch.py` | `/api/agents`; task/pitch main-pm lookup |
-| `check_database` / `check_redis` | `api/routes/health.py:41` | `GET /health` |
-| `resolve_target_python` | `services/workspace.py:1308` | Workspace provisioning (clone/claim) |
-| `init_event_bus` / `register_default_handlers` / `set_event_context` | `bootstrap.py:92-96` | App bootstrap |
+| `check_database` / `check_redis` | `api/routes/health.py:43` | `GET /health` |
+| `resolve_target_python` | `services/workspace.py:1631` | Workspace provisioning (clone/claim) |
+| `init_event_bus` / `register_default_handlers` / `set_event_context` | `bootstrap.py:134-138` | App bootstrap |
 | `bus.publish` / `publish_task_event` | services, orchestrator, websocket_bridge | Status transitions, live events |
 | `get_proactive_service` | `services/task.py:2548`, `api/routes/optimal.py:1257` | claim_task, `/api/optimal/context` |
-| `TranscriptionService` | `api/app.py:124`, `services/extraction.py` | Lifespan construct; extraction pipeline |
+| `TranscriptionService` | `api/app.py:105`, `services/extraction.py` | Lifespan construct; extraction pipeline |
 | `DEFAULT_AGENTS` | `db/seed.py`, `foundation/_validate_lifecycle.py` | DB bootstrap + lifecycle validation |
 | `encrypt_token` / `decrypt_token` | `provider`, `llm` (via ProviderService), ProjectService | Token persist / read |
 
@@ -348,12 +348,12 @@ No files in this slice changed between `fd10cc86` and `HEAD`, so there are no *r
 | Title | File:Line | Claim | Severity |
 |---|---|---|---|
 | Handler failure leaves Redis stream message pending → duplicate side effects on reclaim | `events/stream_bus.py` | ACK only when *all* handlers succeed; `_reclaim_loop` now re-runs `recover_pending` every 60s at runtime (not just on restart). Undecodable payloads are dead-lettered + ACKed immediately (poison-pill fix). Non-idempotent notification handlers can still double-fire on reclaim — `_run_handler_guarded` idempotency marker mitigates but requires Redis availability. | high |
-| `resolve_for_agent` silently downgrades to Anthropic on any provider error | `services/llm.py:124,193,205` | Decrypt failure / unreachable LOCAL / missing assignment all return the legacy Anthropic route instead of raising — a misconfigured Grok/Ollama/self-hosted fleet spawns against Anthropic with only a log warning. | high |
+| `resolve_for_agent` silently downgrades to Anthropic on any provider error | `services/llm.py:499` | Decrypt failure / unreachable LOCAL / missing assignment all return the legacy Anthropic route instead of raising — a misconfigured Grok/Ollama/self-hosted fleet spawns against Anthropic with only a log warning. | high |
 | Mix-mode self-hosted assignment enables LOCAL only on upsert path | `services/llm.py:285` | `upsert_assignment` flips LOCAL `enabled=True`, but a pre-existing GLOBAL LOCAL assignment whose provider row was disabled will not be re-enabled until an upsert touches it — `resolve_for_agent` then skips it (`enabled` check at `llm.py:134`) and falls back to Anthropic. | medium |
-| `probe_ollama_tags` leaks raw exception text into error string | `services/llm.py:86-92` | Generic `except Exception` puts `str(exc)` in the returned error, surfaced to the panel/UI — minor info disclosure. | low |
+| `probe_ollama_tags` leaks raw exception text into error string | `services/llm.py:212-243` | Generic `except Exception` puts `str(exc)` in the returned error, surfaced to the panel/UI — minor info disclosure. | low |
 | `TranscriptionService` sync callbacks can stall the flush task | `services/transcription.py:57,233` | `register_callback` takes a sync `Callable` invoked without `await` inside the async `_periodic_flush`; a blocking callback blocks all buffer flushing. | medium |
 | `get_ready_buffers` never removes buffers → unbounded growth | `services/transcription.py:208` | Iterates and yields ready buffers without clearing; only `_flush_all` (shutdown) clears. A long-running orchestrator with many sessions accumulates buffers unless callers `flush_buffer` after extraction. | medium |
-| `apply_persisted_feature_flags` mutates shared `settings` singleton unsynchronized | `services/settings.py:163` | Runs once at lifespan (safe), but any future caller that re-invokes it mid-serve could race concurrent flag reads. | low |
+| `apply_persisted_feature_flags` mutates shared `settings` singleton unsynchronized | `services/settings.py:365` | Runs once at lifespan (safe), but any future caller that re-invokes it mid-serve could race concurrent flag reads. | low |
 | ~~`ProactiveKnowledgeService._find_code_patterns` vestigial~~ | `services/proactive.py` | **FIXED** (321e68d7): method removed; `ContextPackage.code_patterns` retained as always-empty for back-compat. | ~~low~~ |
 | `require_uuid` raises untyped `ValueError` not `NotFoundError` | `utils/converters.py:38` | **FIXED** (6b441e42): now raises `InvalidIdentifierError(ValueError)` — typed, backward-compatible. A None/bad identifier still surfaces as a 500-class error (not 404), but callers can now handle it distinctly. | low |
 

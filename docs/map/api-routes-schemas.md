@@ -103,21 +103,21 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `require_any_authenticated_agent` | dep | v1/_role_dep.py (instance built from `_require_authenticated_agent()`, impl in utils/v1_role_dep.py) | HMAC-verify X-Agent-ID/role/team token; router-level guard on do + a2a. |
 | `require_<role>` (require_dev/qa/...) | dep | v1/_role_dep.py (instances built from `_require_roles`, impl in utils/v1_role_dep.py) | Per-role guard: HMAC + role assertion, applied as router dependency. |
 | `envelope_to_response` | fn | utils/v1_role_dep.py (re-imported into v1/_role_dep.py) | Convert Choreographer `Envelope` to JSON, set status from `envelope.status`. |
-| `_check_agent_auth_token` | fn | api/deps.py:217 | Core HMAC verify; rejects invalid tokens even in dev; required-only in prod. |
-| `require_panel_token` | dep | api/deps.py:251 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
-| `CurrentAgentContext` | dep | api/deps.py:376 | Resolves agent from headers + HMAC, injects `AgentContext`. |
+| `_check_agent_auth_token` | fn | api/deps.py:251 | Core HMAC verify; rejects invalid tokens even in dev; required-only in prod. |
+| `require_panel_token` | dep | api/deps.py:300 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
+| `CurrentAgentContext` | dep | api/deps.py:592 | Resolves agent from headers + HMAC, injects `AgentContext`. |
 | `_require_ceo` | dep | utils/orchestrator.py:35 (re-imported into routes/orchestrator.py, extracted 2026-08-08, finding F-6342aeab) | Router-level CEO-HMAC guard on orchestrator control routes. |
 | `_validated_agent_id` | fn | utils/orchestrator.py:70 (re-imported into routes/orchestrator.py, extracted 2026-08-08, finding F-6342aeab) | Path-injection guard (rejects empty/`.`/`..`/`/`/`\`/NUL) then normalizes via `_resolve_to_slug` — spawn/stop/status/resolve-wait/mark-waiting accept either a DB UUID or a slug and address the runtime container by the resolved slug; an unknown UUID passes through unchanged. |
 | `_build_manual_spawn_prompt` | fn | utils/orchestrator.py:102 (re-imported into routes/orchestrator.py) | Builds the initial prompt for a CEO-triggered manual (panel) spawn — points the agent at the task id/title/status and trusts the gateway envelope's `next`/`remediate` for the actual claim verb. |
 | `_resolve_manual_spawn_prompt` | fn | utils/orchestrator.py:126 (re-imported into routes/orchestrator.py) | Best-effort task-aware prompt for a manual panel spawn; falls back to the raw `ceo_message` unchanged on any lookup failure (bad `task_id`, DB hiccup, missing task) so enrichment never blocks a CEO-requested spawn. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
-| `request_validation_handler` | fn | api/middleware.py:407 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
-| `_scrub_secrets` | fn | api/middleware.py:389 | Deep-redact known secret fields from logged 422 bodies. |
-| `StrList` | type | schemas/v1/flow.py:20 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
-| `Choreographer` | svc | services/gateway/choreographer.py | Composes service intents behind every flow verb. |
-| `ContentActions` | svc | services/gateway/ | Composes do-verb content actions (commit/note/say/...). |
-| `router` (do) | router | v1/do.py:38 | `/api/v1/do` router, `require_any_authenticated_agent` dep. |
-| `router` (flow_dev) | router | v1/flow_dev.py:24 | `/api/v1/flow/developer` router, `require_dev` dep. |
+| `request_validation_handler` | fn | api/middleware.py:480 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
+| `_scrub_secrets` | fn | api/middleware.py:462 | Deep-redact known secret fields from logged 422 bodies. |
+| `StrList` | type | schemas/v1/flow.py:21 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
+| `Choreographer` | svc | services/gateway/choreographer/__init__.py:30 | Composes service intents behind every flow verb: the per-role mixins (board, doc, QA, PR reviewer, PR gate) over the legacy class in `choreographer/_impl.py`. |
+| `ContentActions` | svc | services/gateway/content_actions.py:827 | Composes do-verb content actions (commit/note/dm/...). |
+| `router` (do) | router | v1/do.py:67 | `/api/v1/do` router, `require_any_authenticated_agent` dep. |
+| `router` (flow_dev) | router | v1/flow_dev.py:29 | `/api/v1/flow/developer` router, `require_dev` dep. |
 
 ## Data Flow
 Request hits nginx (port 3000) -> FastAPI app (`api/app.py`) registers routers under `/api/*` plus `/api/v1/flow/*` and `/api/v1/do/*`. Middleware chain (CorrelationId -> RequestLogging) attaches a correlation ID and logs; exception handlers intercept 422/HTTP/RobocoError/generic. Router-level `Depends` resolves `DbSession` + agent context (HMAC-verified from `X-Agent-*` headers) and, on agent-gateway routes, the role guard. The thin handler pulls a service via `Depends` (TaskService, Choreographer, ContentActions, GitService, OptimalService, ReleaseProposalService...) and returns a typed Pydantic response; flow/do verbs return the Choreographer `Envelope` via `envelope_to_response`. SSE (`EventSourceResponse`) is used for live-chat streams and a2a send-stream.

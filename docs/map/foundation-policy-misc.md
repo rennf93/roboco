@@ -5,112 +5,111 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/foundation/policy/communications.py | Notification sender allowlist, NotificationType→requires_ack map, A2A priority parser | 280 |
-| roboco/foundation/policy/journaling.py | Journal Scope enum, scope→JournalEntryType map, per-role journal ReadTier, protected-journal slugs | 77 |
-| roboco/foundation/policy/task_completeness.py | Task field completeness rules + placeholder denylist + auto-fill helpers (team/priority/parent) | 299 |
-| roboco/foundation/policy/tracing.py | Tracing-gate: Requirement enum, per-requirement checkers, VERB_REQUIREMENTS table, VERBS_WITHOUT_TRACING set, check_requirements entry | 416 |
-| roboco/foundation/policy/agent_loop.py | Per-agent budget/loop policy defaults, per-verb retry caps, unlimited-retry verb set, retry_limit_for lookup | 108 |
-| roboco/foundation/policy/content/__init__.py | Public surface re-export for the content schema package | 50 |
-| roboco/foundation/policy/content/enums.py | Severity + Verdict controlled vocabularies for PR-review/QA content | 36 |
-| roboco/foundation/policy/content/markers.py | Typed accessors for Task.orchestration_markers JSON column (original_developer, documenter, escalation, release report, transition notes, etc.) | 221 |
-| roboco/foundation/policy/content/models.py | Pydantic content models (PrReviewContent, TaskDescription, ResumptionNote, DeveloperNote, QaNote, DocNote, AuditorNote) + CONTENT_MODELS registry + validate_content + pr_review_conflict + required_shape | 506 |
-| roboco/foundation/policy/content/validators.py | Shared validation primitives: BANNED_PHRASES, reject_trivial, coerce_to_list, coerce_str_list, ContentValidationError | 159 |
+| roboco/foundation/policy/communications.py | Notification sender allowlist (`NOTIFY_SENDER_ROLES`), `NO_COMMS_ROLES`, NotificationType→requires_ack map, A2A priority parser, and the unacked-notification re-escalation backoff (`reescalation_decision`) | 150 |
+| roboco/foundation/policy/journaling.py | Journal Scope enum, scope→JournalEntryType map, per-role journal ReadTier, protected-journal slugs | 84 |
+| roboco/foundation/policy/task_completeness.py | Task field completeness rules + placeholder denylist + auto-fill helpers (team/priority/parent) | 376 |
+| roboco/foundation/policy/tracing.py | Tracing-gate: Requirement enum, per-requirement checkers, VERB_REQUIREMENTS table, VERBS_WITHOUT_TRACING set, check_requirements entry | 481 |
+| roboco/foundation/policy/agent_loop.py | Per-agent budget/loop policy defaults, per-verb retry caps, unlimited-retry verb set, retry_limit_for lookup | 170 |
+| roboco/foundation/policy/content/__init__.py | Public surface re-export for the content schema package | 55 |
+| roboco/foundation/policy/content/enums.py | Severity + Verdict controlled vocabularies for PR-review/QA content | 35 |
+| roboco/foundation/policy/content/markers.py | Typed accessors for Task.orchestration_markers JSON column (original_developer, documenter, escalation, release report, transition notes, etc.) | 1086 |
+| roboco/foundation/policy/content/models.py | Pydantic content models (PrReviewContent, TaskDescription, ResumptionNote, DeveloperNote, QaNote, DocNote, AuditorNote) + CONTENT_MODELS registry + validate_content + pr_review_conflict + required_shape | 667 |
+| roboco/foundation/policy/content/validators.py | Shared validation primitives: BANNED_PHRASES, reject_trivial, coerce_to_list, coerce_str_list, ContentValidationError | 158 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
-| parse_priority | function | roboco/foundation/policy/communications.py:23 | Resolve a NotificationPriority from raw_priority string or legacy urgent flag; unknown→NORMAL |
-| NOTIFY_SENDER_ROLES | constant | roboco/foundation/policy/communications.py:51 | frozenset of roles permitted to call notify() (CELL_PM, MAIN_PM, PRODUCT_OWNER, HEAD_MARKETING, CEO) |
-| NO_COMMS_ROLES | constant | roboco/foundation/policy/communications.py:66 | frozenset of roles with NO agent-comms surface at all (PROMPTER, SECRETARY — human-only, own dedicated chat pages) — the canonical set both `content_actions.dm()`'s sender-side guard and `agents_config.can_a2a_direct`'s CEO-target-side check consume, so the two enforcement points can't drift apart. AUDITOR/PR_REVIEWER carry `dm`/`read_a2a` (CEO-reachable, reply-only) but are not in this set — the auditor's peer-silence is enforced separately in `can_a2a_direct`'s `from_role == "auditor"` branch |
-| ACK_REQUIRED_BY_TYPE | constant | roboco/foundation/policy/communications.py:80 | NotificationType→requires_ack mapping (action-required vs informational) |
+| parse_priority | function | roboco/foundation/policy/communications.py:26 | Resolve a NotificationPriority from raw_priority string or legacy urgent flag; unknown→NORMAL |
+| NOTIFY_SENDER_ROLES | constant | roboco/foundation/policy/communications.py:54 | frozenset of roles permitted to call notify() (CELL_PM, MAIN_PM, PRODUCT_OWNER, HEAD_MARKETING, CEO) |
+| NO_COMMS_ROLES | constant | roboco/foundation/policy/communications.py:76 | frozenset of roles with NO agent-comms surface at all (PROMPTER, SECRETARY — human-only, own dedicated chat pages) — the canonical set both `content_actions.dm()`'s sender-side guard and `agents_config.can_a2a_direct`'s CEO-target-side check consume, so the two enforcement points can't drift apart. AUDITOR/PR_REVIEWER carry `dm`/`read_a2a` (CEO-reachable, reply-only) but are not in this set — the auditor's peer-silence is enforced separately in `can_a2a_direct`'s `from_role == "auditor"` branch |
+| ACK_REQUIRED_BY_TYPE | constant | roboco/foundation/policy/communications.py:88 | NotificationType→requires_ack mapping (action-required vs informational) |
 | ReescalationPolicy | dataclass | roboco/foundation/policy/communications.py:113 | Bundled `base_seconds`/`max_reescalations` — kept as one dataclass so `reescalation_decision` stays under the 5-arg lint ceiling |
 | reescalation_decision | function | roboco/foundation/policy/communications.py:123 | Pure due/wait/capped verdict for one notification's re-escalation attempt: first fire at expiry, then exponential doubling from `base_seconds` capped at 24h between attempts; past `max_reescalations` always "capped" regardless of elapsed time |
 | Scope | enum | roboco/foundation/policy/journaling.py:21 | Journal entry scope StrEnum (note/decision/reflect/learning/struggle) |
 | SCOPE_TO_TYPE | constant | roboco/foundation/policy/journaling.py:32 | Scope→JournalEntryType single-source mapping |
-| ReadTier | enum | roboco/foundation/policy/journaling.py:41 | Journal read-breadth StrEnum (own/cell/cell_and_pms/all_cells/all) |
-| ROLE_READ_TIERS | constant | roboco/foundation/policy/journaling.py:51 | Per-role journal ReadTier mapping (auditor/ceo=ALL, developer/qa=CELL, etc.) |
-| PROTECTED_JOURNALS | constant | roboco/foundation/policy/journaling.py:76 | frozenset of slugs whose journals only the agent themselves can read (ceo, auditor) |
+| ReadTier | enum | roboco/foundation/policy/journaling.py:46 | Journal read-breadth StrEnum (own/cell/cell_and_pms/all_cells/all) |
+| ROLE_READ_TIERS | constant | roboco/foundation/policy/journaling.py:56 | Per-role journal ReadTier mapping (auditor/ceo=ALL, developer/qa=CELL, etc.) |
+| PROTECTED_JOURNALS | constant | roboco/foundation/policy/journaling.py:84 | frozenset of slugs whose journals only the agent themselves can read (ceo, auditor) |
 | FieldRule | enum | roboco/foundation/policy/task_completeness.py:27 | Completeness field-rule StrEnum (non_empty_string/min_length/non_empty_list/explicitly_declared) |
-| FieldRequirement | dataclass | roboco/foundation/policy/task_completeness.py:34 | Frozen (field, rule, value, hint) tuple describing one required field check |
-| CompletenessSpec | dataclass | roboco/foundation/policy/task_completeness.py:42 | Named bundle of FieldRequirements for one lifecycle moment (e.g. task_at_create) |
-| CompletenessResult | dataclass | roboco/foundation/policy/task_completeness.py:48 | Result of check(): passed bool + missing list + field_hints dict |
-| TaskCompletenessError | exception | roboco/foundation/policy/task_completeness.py:55 | Service-layer exception carrying missing fields + hints |
-| DENYLIST_AC_PHRASES | constant | roboco/foundation/policy/task_completeness.py:70 | frozenset of placeholder AC strings rejected as known evasions |
-| DENYLIST_DESCRIPTION_PATTERNS | constant | roboco/foundation/policy/task_completeness.py:81 | Regex tuple of placeholder description patterns rejected |
-| TASK_AT_CREATE | constant | roboco/foundation/policy/task_completeness.py:119 | CompletenessSpec for task creation (title/description/AC/task_type/nature/complexity/team) |
-| _check_field | function | roboco/foundation/policy/task_completeness.py:170 | Dispatch a FieldRequirement to its rule checker |
-| _matches_denylist_ac | function | roboco/foundation/policy/task_completeness.py:181 | True if any AC item is a denylisted placeholder phrase |
-| _matches_denylist_description | function | roboco/foundation/policy/task_completeness.py:191 | True if description matches any denylist regex (case-insensitive full-match) |
-| check | function | roboco/foundation/policy/task_completeness.py:202 | Run every requirement in a spec against a task; return CompletenessResult |
-| fill_team_from_assignee | function | roboco/foundation/policy/task_completeness.py:243 | Auto-fill team from assigned_to slug (never overwriting explicit); returns new dict |
-| fill_priority_from_parent | function | roboco/foundation/policy/task_completeness.py:262 | Auto-fill priority from parent task, default medium(2); sets __priority_inherited sentinel |
-| fill_parent_from_active_task | function | roboco/foundation/policy/task_completeness.py:285 | Auto-fill parent_task_id from caller's active task on delegate |
-| Requirement | enum | roboco/foundation/policy/tracing.py:23 | Tracing-gate requirement StrEnum (plan, commits, pr_open, journals, AC addressed, notes min chars, subtasks terminal, role note-sections) |
-| GateContext | dataclass | roboco/foundation/policy/tracing.py:54 | Ambient inputs to the checker not on the Task model (journal presence flags, min-char thresholds) |
-| GateResult | dataclass | roboco/foundation/policy/tracing.py:72 | Result of check_requirements: passed + missing list |
-| _unaddressed_criteria | function | roboco/foundation/policy/tracing.py:131 | List acceptance criteria with no referencing_artifact_id in status rows |
-| _check_acceptance_criteria | function | roboco/foundation/policy/tracing.py:142 | AC-addressed gate: reflect-note satisfies; else list unaddressed criteria |
-| _check_subtasks_terminal | function | roboco/foundation/policy/tracing.py:201 | Read task._subtasks_all_terminal flag set by choreographer |
-| _CHECKERS | constant | roboco/foundation/policy/tracing.py:209 | Requirement→Checker function dispatch table |
-| check_requirements | function | roboco/foundation/policy/tracing.py:235 | Run a list of Requirements against task+ctx; return GateResult |
-| VERB_REQUIREMENTS | constant | roboco/foundation/policy/tracing.py:253 | Verb→frozenset[Requirement] single source of truth (i_will_work_on, i_am_done, pass_review, pr_pass, submit_root, complete, etc.) |
-| VERBS_WITHOUT_TRACING | constant | roboco/foundation/policy/tracing.py:374 | frozenset of verbs intentionally exempt from tracing (give_me_work, open_pr, sync_branch, claim_*, resume, unclaim, etc.) |
-| requirements_for | function | roboco/foundation/policy/tracing.py:401 | Lookup required-set for a verb; raises KeyError on unknown verb |
-| BudgetPolicy | dataclass | roboco/foundation/policy/agent_loop.py:23 | Per-agent runtime budget + loop policy defaults (tool call warn/halt, loop threshold/window/action, PM respawn caps, verb retry default) |
-| DEFAULT_BUDGET | constant | roboco/foundation/policy/agent_loop.py:48 | Canonical BudgetPolicy instance consumers fall back to |
-| VERB_RETRY_LIMITS | constant | roboco/foundation/policy/agent_loop.py:54 | Per-verb retry caps over 60s window keyed by MCP-exposed verb names (pass/fail, i_am_done, open_pr=5, etc.) |
-| UNLIMITED_RETRY_VERBS | constant | roboco/foundation/policy/agent_loop.py:80 | frozenset of verbs exempt from the per-verb circuit breaker (discovery/claim verbs) |
-| retry_limit_for | function | roboco/foundation/policy/agent_loop.py:97 | Return per-verb retry cap or None for unlimited; falls back to default for unknown |
-| default_budget_usd_for | function | roboco/foundation/policy/agent_loop.py:99 | Per-`TaskType` default $ cap consulted only when a task's own `budget_usd` is null AND `ROBOCO_TASK_BUDGETS_ENABLED` is on |
-| effective_task_budget_usd | function | roboco/foundation/policy/agent_loop.py:111 | A task's effective $ cap: its own `budget_usd` if set, else the `TaskType` default; the single resolver the orchestrator's budget sweep and the panel's budget-input validation both consult |
+| FieldRequirement | dataclass | roboco/foundation/policy/task_completeness.py:36 | Frozen (field, rule, value, hint) tuple describing one required field check |
+| CompletenessSpec | dataclass | roboco/foundation/policy/task_completeness.py:47 | Named bundle of FieldRequirements for one lifecycle moment (e.g. task_at_create) |
+| CompletenessResult | dataclass | roboco/foundation/policy/task_completeness.py:53 | Result of check(): passed bool + missing list + field_hints dict |
+| TaskCompletenessError | exception | roboco/foundation/policy/task_completeness.py:59 | Service-layer exception carrying missing fields + hints |
+| DENYLIST_AC_PHRASES | constant | roboco/foundation/policy/task_completeness.py:74 | frozenset of placeholder AC strings rejected as known evasions |
+| DENYLIST_DESCRIPTION_PATTERNS | constant | roboco/foundation/policy/task_completeness.py:85 | Regex tuple of placeholder description patterns rejected |
+| TASK_AT_CREATE | constant | roboco/foundation/policy/task_completeness.py:126 | CompletenessSpec for task creation (title/description/AC/task_type/nature/complexity/team) |
+| _check_field | function | roboco/foundation/policy/task_completeness.py:217 | Dispatch a FieldRequirement to its rule checker |
+| _matches_denylist_ac | function | roboco/foundation/policy/task_completeness.py:230 | True if any AC item is a denylisted placeholder phrase |
+| _matches_denylist_description | function | roboco/foundation/policy/task_completeness.py:272 | True if description matches any denylist regex (case-insensitive full-match) |
+| check | function | roboco/foundation/policy/task_completeness.py:283 | Run every requirement in a spec against a task; return CompletenessResult |
+| fill_team_from_assignee | function | roboco/foundation/policy/task_completeness.py:321 | Auto-fill team from assigned_to slug (never overwriting explicit); returns new dict |
+| fill_priority_from_parent | function | roboco/foundation/policy/task_completeness.py:340 | Auto-fill priority from parent task, default medium(2); sets __priority_inherited sentinel |
+| fill_parent_from_active_task | function | roboco/foundation/policy/task_completeness.py:363 | Auto-fill parent_task_id from caller's active task on delegate |
+| Requirement | enum | roboco/foundation/policy/tracing.py:25 | Tracing-gate requirement StrEnum (plan, commits, pr_open, journals, AC addressed, notes min chars, subtasks terminal, role note-sections) |
+| GateContext | dataclass | roboco/foundation/policy/tracing.py:67 | Ambient inputs to the checker not on the Task model (journal presence flags, min-char thresholds) |
+| GateResult | dataclass | roboco/foundation/policy/tracing.py:89 | Result of check_requirements: passed + missing list |
+| _unaddressed_criteria | function | roboco/foundation/policy/tracing.py:147 | List acceptance criteria with no referencing_artifact_id in status rows |
+| _check_acceptance_criteria | function | roboco/foundation/policy/tracing.py:158 | AC-addressed gate: reflect-note satisfies; else list unaddressed criteria |
+| _check_subtasks_terminal | function | roboco/foundation/policy/tracing.py:234 | Read task._subtasks_all_terminal flag set by choreographer |
+| _CHECKERS | constant | roboco/foundation/policy/tracing.py:242 | Requirement→Checker function dispatch table |
+| check_requirements | function | roboco/foundation/policy/tracing.py:270 | Run a list of Requirements against task+ctx; return GateResult |
+| VERB_REQUIREMENTS | constant | roboco/foundation/policy/tracing.py:288 | Verb→frozenset[Requirement] single source of truth (i_will_work_on, i_am_done, pass_review, pr_pass, submit_root, complete, etc.) |
+| VERBS_WITHOUT_TRACING | constant | roboco/foundation/policy/tracing.py:433 | frozenset of verbs intentionally exempt from tracing (give_me_work, open_pr, sync_branch, claim_*, resume, unclaim, etc.) |
+| requirements_for | function | roboco/foundation/policy/tracing.py:467 | Lookup required-set for a verb; raises KeyError on unknown verb |
+| BudgetPolicy | dataclass | roboco/foundation/policy/agent_loop.py:31 | Per-agent runtime budget + loop policy defaults (tool call warn/halt, loop threshold/window/action, PM respawn caps, verb retry default) |
+| DEFAULT_BUDGET | constant | roboco/foundation/policy/agent_loop.py:77 | Canonical BudgetPolicy instance consumers fall back to |
+| VERB_RETRY_LIMITS | constant | roboco/foundation/policy/agent_loop.py:98 | Per-verb retry caps over 60s window keyed by MCP-exposed verb names (pass/fail, i_am_done, open_pr=5, etc.) |
+| UNLIMITED_RETRY_VERBS | constant | roboco/foundation/policy/agent_loop.py:124 | frozenset of verbs exempt from the per-verb circuit breaker (discovery/claim verbs) |
+| retry_limit_for | function | roboco/foundation/policy/agent_loop.py:141 | Return per-verb retry cap or None for unlimited; falls back to default for unknown |
+| effective_task_budget_usd | function | roboco/foundation/policy/agent_loop.py:80 | A task's $ cap: its own `budget_usd`, or `None` for no cap (the per-`TaskType` default table was removed on 2026-07-23 after it blocked a default-budget coordination root); the single resolver the orchestrator's budget sweep and the `unblock` re-check both call, skipping enforcement on `None` |
 | Severity | enum | roboco/foundation/policy/content/enums.py:14 | PR-review finding severity ladder (blocker/major/minor/nit) |
 | Verdict | enum | roboco/foundation/policy/content/enums.py:23 | Review outcome StrEnum (approved/changes_requested/passed/failed) |
 | HasMarkers | protocol | roboco/foundation/policy/content/markers.py:19 | Protocol for anything carrying orchestration_markers column |
-| get_marker | function | roboco/foundation/policy/content/markers.py:39 | Read a marker key from orchestration_markers (default on missing/non-dict) |
-| set_marker | function | roboco/foundation/policy/content/markers.py:46 | Reassign orchestration_markers with key set (new dict so SQLAlchemy flags dirty) |
-| clear_marker | function | roboco/foundation/policy/content/markers.py:53 | Remove a marker key, reassigning dict (or None when emptied) |
-| get_original_developer | function | roboco/foundation/policy/content/markers.py:65 | Read original_developer marker as str/None |
-| set_original_developer | function | roboco/foundation/policy/content/markers.py:70 | Write original_developer marker from agent_id |
-| get_documenter | function | roboco/foundation/policy/content/markers.py:77 | Read documenter marker |
-| set_documenter | function | roboco/foundation/policy/content/markers.py:82 | Write documenter marker |
-| get_required_cells | function | roboco/foundation/policy/content/markers.py:89 | Read required_cells marker as list[str] |
-| set_required_cells | function | roboco/foundation/policy/content/markers.py:94 | Write required_cells marker |
-| get_self_heal_fingerprint | function | roboco/foundation/policy/content/markers.py:101 | Read self_heal fingerprint marker |
-| set_self_heal_fingerprint | function | roboco/foundation/policy/content/markers.py:106 | Write self_heal fingerprint marker |
-| get_release_report | function | roboco/foundation/policy/content/markers.py:113 | Read release_report marker as dict/None |
-| set_release_report | function | roboco/foundation/policy/content/markers.py:118 | Write release_report marker |
-| get_release_required_changes | function | roboco/foundation/policy/content/markers.py:122 | Read release_required_changes marker |
-| set_release_required_changes | function | roboco/foundation/policy/content/markers.py:127 | Write release_required_changes marker |
-| get_external_pr_head | function | roboco/foundation/policy/content/markers.py:134 | Read external_pr_head marker |
-| set_external_pr_head | function | roboco/foundation/policy/content/markers.py:139 | Write external_pr_head marker |
-| get_external_pr_supersede | function | roboco/foundation/policy/content/markers.py:146 | Read external_pr_supersede marker |
-| set_external_pr_supersede | function | roboco/foundation/policy/content/markers.py:151 | Write external_pr_supersede marker |
-| is_dismissed | function | roboco/foundation/policy/content/markers.py:158 | Bool read of dismissed marker |
-| mark_dismissed | function | roboco/foundation/policy/content/markers.py:162 | Set dismissed=True marker |
-| get_escalation | function | roboco/foundation/policy/content/markers.py:173 | Read escalation marker as {from,to,reason}/None |
-| set_escalation | function | roboco/foundation/policy/content/markers.py:178 | Write escalation marker from from_slug/to_slug/reason |
-| get_approve_and_start_notes | function | roboco/foundation/policy/content/markers.py:190 | Read CEO approve-and-start notes marker |
-| set_approve_and_start_notes | function | roboco/foundation/policy/content/markers.py:195 | Write approve-and-start notes marker |
-| TRANSITION_NOTES | constant | roboco/foundation/policy/content/markers.py:205 | Marker key for lifecycle transition notes dict |
-| get_transition_note | function | roboco/foundation/policy/content/markers.py:208 | Read one transition note by event name |
-| set_transition_note | function | roboco/foundation/policy/content/markers.py:216 | Write one transition note keyed by event |
-| _Base | class | roboco/foundation/policy/content/models.py:40 | Pydantic base: extra=ignore, validate_assignment=True |
-| _Content | class | roboco/foundation/policy/content/models.py:46 | Content base class declaring render_markdown() contract |
-| Finding | class | roboco/foundation/policy/content/models.py:76 | One PR-review finding (file/line/severity/criterion/expected/actual) with trivial-rejection |
-| WorkUnit | class | roboco/foundation/policy/content/models.py:92 | One cell's slice of a task description (cell team/summary/items); rejects non-cell teams |
-| AcVerdict | class | roboco/foundation/policy/content/models.py:127 | One acceptance-criterion verdict (criterion/status/how) |
-| PrReviewContent | class | roboco/foundation/policy/content/models.py:145 | PR-review comment/verdict model (summary/findings/issues/verdict/head_sha) with markdown render |
-| pr_review_conflict | function | roboco/foundation/policy/content/models.py:211 | Return (message,remediate) when APPROVE/REQUEST_CHANGES event contradicts findings, else None |
-| TaskDescription | class | roboco/foundation/policy/content/models.py:251 | Well-formed task description (objective/what_this_builds/the_work/notes/constraints/AC) shared by PM delegate + Intake |
-| ResumptionNote | class | roboco/foundation/policy/content/models.py:313 | Human handoff in quick_context (done/next/where_to_look) |
-| DeveloperNote | class | roboco/foundation/policy/content/models.py:337 | Developer task note (summary/changes/risks/follow_ups) |
-| QaNote | class | roboco/foundation/policy/content/models.py:366 | QA review note (summary/ac_verdicts/verdict restricted to passed/failed) |
-| DocNote | class | roboco/foundation/policy/content/models.py:403 | Documenter note (summary/documented/skipped) |
-| AuditorNote | class | roboco/foundation/policy/content/models.py:429 | Auditor confidential observation (summary/concerns/severity info/watch/risk) |
-| CONTENT_MODELS | constant | roboco/foundation/policy/content/models.py:460 | Registry mapping content-type key to model class (pr_review/task_description/resumption/developer/qa/doc/auditor) |
-| validate_content | function | roboco/foundation/policy/content/models.py:471 | Validate payload against model for content_type; passthrough if already instance; raise ContentValidationError on failure |
-| required_shape | function | roboco/foundation/policy/content/models.py:496 | Return {field:type-hint} map for a content type for remediation hints |
+| get_marker | function | roboco/foundation/policy/content/markers.py:89 | Read a marker key from orchestration_markers (default on missing/non-dict) |
+| set_marker | function | roboco/foundation/policy/content/markers.py:96 | Reassign orchestration_markers with key set (new dict so SQLAlchemy flags dirty) |
+| clear_marker | function | roboco/foundation/policy/content/markers.py:103 | Remove a marker key, reassigning dict (or None when emptied) |
+| get_original_developer | function | roboco/foundation/policy/content/markers.py:115 | Read original_developer marker as str/None |
+| set_original_developer | function | roboco/foundation/policy/content/markers.py:120 | Write original_developer marker from agent_id |
+| get_documenter | function | roboco/foundation/policy/content/markers.py:127 | Read documenter marker |
+| set_documenter | function | roboco/foundation/policy/content/markers.py:132 | Write documenter marker |
+| get_required_cells | function | roboco/foundation/policy/content/markers.py:139 | Read required_cells marker as list[str] |
+| set_required_cells | function | roboco/foundation/policy/content/markers.py:144 | Write required_cells marker |
+| get_self_heal_fingerprint | function | roboco/foundation/policy/content/markers.py:151 | Read self_heal fingerprint marker |
+| set_self_heal_fingerprint | function | roboco/foundation/policy/content/markers.py:156 | Write self_heal fingerprint marker |
+| get_release_report | function | roboco/foundation/policy/content/markers.py:163 | Read release_report marker as dict/None |
+| set_release_report | function | roboco/foundation/policy/content/markers.py:168 | Write release_report marker |
+| get_release_required_changes | function | roboco/foundation/policy/content/markers.py:185 | Read release_required_changes marker |
+| set_release_required_changes | function | roboco/foundation/policy/content/markers.py:190 | Write release_required_changes marker |
+| get_external_pr_head | function | roboco/foundation/policy/content/markers.py:654 | Read external_pr_head marker |
+| set_external_pr_head | function | roboco/foundation/policy/content/markers.py:659 | Write external_pr_head marker |
+| get_external_pr_supersede | function | roboco/foundation/policy/content/markers.py:675 | Read external_pr_supersede marker |
+| set_external_pr_supersede | function | roboco/foundation/policy/content/markers.py:680 | Write external_pr_supersede marker |
+| is_dismissed | function | roboco/foundation/policy/content/markers.py:687 | Bool read of dismissed marker |
+| mark_dismissed | function | roboco/foundation/policy/content/markers.py:691 | Set dismissed=True marker |
+| get_escalation | function | roboco/foundation/policy/content/markers.py:702 | Read escalation marker as {from,to,reason}/None |
+| set_escalation | function | roboco/foundation/policy/content/markers.py:707 | Write escalation marker from from_slug/to_slug/reason |
+| get_approve_and_start_notes | function | roboco/foundation/policy/content/markers.py:719 | Read CEO approve-and-start notes marker |
+| set_approve_and_start_notes | function | roboco/foundation/policy/content/markers.py:724 | Write approve-and-start notes marker |
+| TRANSITION_NOTES | constant | roboco/foundation/policy/content/markers.py:734 | Marker key for lifecycle transition notes dict |
+| get_transition_note | function | roboco/foundation/policy/content/markers.py:737 | Read one transition note by event name |
+| set_transition_note | function | roboco/foundation/policy/content/markers.py:745 | Write one transition note keyed by event |
+| _Base | class | roboco/foundation/policy/content/models.py:74 | Pydantic base: extra=ignore, validate_assignment=True |
+| _Content | class | roboco/foundation/policy/content/models.py:80 | Content base class declaring render_markdown() contract |
+| Finding | class | roboco/foundation/policy/content/models.py:110 | One PR-review finding (file/line/severity/criterion/expected/actual) with trivial-rejection |
+| WorkUnit | class | roboco/foundation/policy/content/models.py:164 | One cell's slice of a task description (cell team/summary/items); rejects non-cell teams |
+| AcVerdict | class | roboco/foundation/policy/content/models.py:199 | One acceptance-criterion verdict (criterion/status/how) |
+| PrReviewContent | class | roboco/foundation/policy/content/models.py:217 | PR-review comment/verdict model (summary/findings/issues/verdict/head_sha) with markdown render |
+| pr_review_conflict | function | roboco/foundation/policy/content/models.py:284 | Return (message,remediate) when APPROVE/REQUEST_CHANGES event contradicts findings, else None |
+| TaskDescription | class | roboco/foundation/policy/content/models.py:353 | Well-formed task description (objective/what_this_builds/the_work/notes/constraints/AC) shared by PM delegate + Intake |
+| ResumptionNote | class | roboco/foundation/policy/content/models.py:415 | Human handoff in quick_context (done/next/where_to_look) |
+| DeveloperNote | class | roboco/foundation/policy/content/models.py:439 | Developer task note (summary/changes/risks/follow_ups) |
+| QaNote | class | roboco/foundation/policy/content/models.py:468 | QA review note (summary/ac_verdicts/verdict restricted to passed/failed) |
+| DocNote | class | roboco/foundation/policy/content/models.py:542 | Documenter note (summary/documented/skipped) |
+| AuditorNote | class | roboco/foundation/policy/content/models.py:568 | Auditor confidential observation (summary/concerns/severity info/watch/risk) |
+| CONTENT_MODELS | constant | roboco/foundation/policy/content/models.py:599 | Registry mapping content-type key to model class (pr_review/task_description/resumption/developer/qa/doc/auditor) |
+| validate_content | function | roboco/foundation/policy/content/models.py:612 | Validate payload against model for content_type; passthrough if already instance; raise ContentValidationError on failure |
+| required_shape | function | roboco/foundation/policy/content/models.py:658 | Return {field:type-hint} map for a content type for remediation hints |
 | BANNED_PHRASES | constant | roboco/foundation/policy/content/validators.py:22 | frozenset of placeholder tokens never acceptable as a whole field value |
 | ContentValidationError | exception | roboco/foundation/policy/content/validators.py:45 | Public gateway-facing exception carrying (field, reason) |
 | _all_tokens_filler | function | roboco/foundation/policy/content/validators.py:58 | True when every whitespace token (sans punctuation) is a placeholder |
@@ -216,12 +215,12 @@ foundation/policy (misc slice)
 
 | Name | File | Trigger |
 |---|---|---|
-| check (task_completeness) | roboco/foundation/policy/task_completeness.py:202 | Called by TaskService.create / PrompterService.create_task_from_draft / choreographer._impl._create_subtask_from_inputs at task construction |
-| check_requirements (tracing) | roboco/foundation/policy/tracing.py:235 | Called by gateway choreographer (_impl/qa/doc/pr_gate/pr_review) before each gated verb's state transition |
-| requirements_for (tracing) | roboco/foundation/policy/tracing.py:401 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
-| validate_content | roboco/foundation/policy/content/models.py:471 | Called by gateway content_actions / choreographer / prompter / intake_driver / flow_server when an agent submits a structured-content payload |
-| retry_limit_for (agent_loop) | roboco/foundation/policy/agent_loop.py:97 | Called by agent_sdk/server per-verb circuit breaker on /verb/attempted |
-| parse_priority (communications) | roboco/foundation/policy/communications.py:23 | Called by services/a2a.py + notification_delivery on A2A urgency resolution |
+| check (task_completeness) | roboco/foundation/policy/task_completeness.py:283 | Called by TaskService.create / PrompterService.create_task_from_draft / choreographer._impl._create_subtask_from_inputs at task construction |
+| check_requirements (tracing) | roboco/foundation/policy/tracing.py:270 | Called by gateway choreographer (_impl/qa/doc/pr_gate/pr_review) before each gated verb's state transition |
+| requirements_for (tracing) | roboco/foundation/policy/tracing.py:467 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
+| validate_content | roboco/foundation/policy/content/models.py:612 | Called by gateway content_actions / choreographer / prompter / intake_driver / flow_server when an agent submits a structured-content payload |
+| retry_limit_for (agent_loop) | roboco/foundation/policy/agent_loop.py:141 | Called by agent_sdk/server per-verb circuit breaker on /verb/attempted |
+| parse_priority (communications) | roboco/foundation/policy/communications.py:26 | Called by services/a2a.py + notification_delivery on A2A urgency resolution |
 | markers accessors | roboco/foundation/policy/content/markers.py | Called by task.py, orchestrator, self_heal_engine, release_proposal, release_manager_engine whenever reading/writing orchestration_markers |
 
 ## Config Flags
@@ -277,11 +276,11 @@ foundation/policy (misc slice)
 
 | Title | File:Line | Claim | Severity |
 |---|---|---|---|
-| PrReviewContent.issues changes rendered pr_reviewer_notes markdown shape | roboco/foundation/policy/content/models.py:199 | e202ce39 added an '## Issues' section to render_markdown whenever issues is non-empty. Downstream readers/parsers of pr_reviewer_notes (or notes_structured.pr_review markdown mirror) that did not expect a second H2 section after Findings could mis-parse; the section ordering is Findings → Issues → Verdict, and a reader that took the first H2 as the body could drop the issues list. | medium |
+| PrReviewContent.issues changes rendered pr_reviewer_notes markdown shape | roboco/foundation/policy/content/models.py:230 | e202ce39 added an '## Issues' section to render_markdown whenever issues is non-empty. Downstream readers/parsers of pr_reviewer_notes (or notes_structured.pr_review markdown mirror) that did not expect a second H2 section after Findings could mis-parse; the section ordering is Findings → Issues → Verdict, and a reader that took the first H2 as the body could drop the issues list. | medium |
 | VERB_RETRY_LIMITS keyed by 'pass'/'fail' but tracing uses 'pass_review'/'fail_review' | roboco/foundation/policy/agent_loop.py:65 | The circuit-breaker keys ('pass','fail') are the MCP-exposed verb names, while VERB_REQUIREMENTS keys the same verbs as 'pass_review'/'fail_review'. The docstring flags this, but a future rename on either side without the other silently disables the per-verb retry cap for QA handoffs — the agent could retry-storm pass/fail without ever hitting circuit_open. No regression today, but a loaded footgun. | low |
 | _extract_strs_from_dict refactor could change dict-without-text-key behavior | roboco/foundation/policy/content/validators.py:128 | 3a4a3fe5 extracted the inline dict-fallback into _extract_strs_from_dict. Behavior is intended to be identical, but the extracted helper now returns the bare-string-values list for ANY dict lacking a _TEXT_KEYS match — including a dict whose only values are non-str (returns []). Previously the same inline logic ran; verbatim move, so no real regression, but the helper is now reusable and a new caller could feed it a dict expecting different semantics. | low |
 | sync_branch added to VERBS_WITHOUT_TRACING but not to VERB_RETRY_LIMITS | roboco/foundation/policy/tracing.py:396 | cf7603f3 registered sync_branch as tracing-exempt (correct, mirrors open_pr). sync_branch is also absent from VERB_RETRY_LIMITS and UNLIMITED_RETRY_VERBS in agent_loop.py, so retry_limit_for('sync_branch') falls back to DEFAULT_BUDGET.verb_retry_max_per_minute=3. open_pr has an explicit cap of 5 in VERB_RETRY_LIMITS. A network-flaky sync_branch (force-push) could hit the tighter default cap of 3/min and circuit_open sooner than open_pr — inconsistent with the 'mirror open_pr' intent stated in the commit. | low |
-| PrReviewContent.head_sha optional field not surfaced in required_shape hints | roboco/foundation/policy/content/models.py:167 | e52fd05d added head_sha as an optional field. required_shape() (line 496) iterates model_fields and emits a type hint for EVERY field, so head_sha now appears in remediation shape hints for 'pr_review' even though it is machine-set by pr_gate, not agent-supplied. An agent receiving a remediation envelope that lists head_sha could attempt to set it, which is not the intended agent write-path. Minor confusion risk. | low |
+| PrReviewContent.head_sha optional field not surfaced in required_shape hints | roboco/foundation/policy/content/models.py:239 | e52fd05d added head_sha as an optional field. required_shape() iterates model_fields and emits a type hint for EVERY field, so head_sha now appears in remediation shape hints for 'pr_review' even though it is machine-set by pr_gate, not agent-supplied. An agent receiving a remediation envelope that lists head_sha could attempt to set it, which is not the intended agent write-path. Minor confusion risk. | low |
 
 ## Health
 This slice is in good shape: it is pure data + validators with no I/O or concurrency of its own, well-documented intent at each site, and a parity test guarding the tracing table against drift. The recent changes are small, additive, and mostly behavior-preserving. The main latent risk is a naming-convention footgun (agent_loop 'pass'/'fail' keys vs tracing 'pass_review'/'fail_review'; sync_branch missing from VERB_RETRY_LIMITS) — not an active bug today, but one rename away from silently degrading. The markers accessors correctly handle SQLAlchemy dirty tracking via dict reassignment, and the content models correctly delegate SDK-wrapper flattening to the intake boundary via coerce_str_list. No active regressions observed in the slice itself.

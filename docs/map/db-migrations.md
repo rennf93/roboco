@@ -1,7 +1,7 @@
 # db-migrations slice
 
 ## Purpose
-The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→086) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~2.5k lines, 38+ tables — not recomputed for this delta, several 077-086 migrations add columns to existing tables rather than new ones).
+The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→110) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~3.1k lines, 56 table classes as of migration 110; `scripts/verify_codebase_map.py` keeps the chain range in this paragraph current, the table count is not checked).
 
 ## Files
 
@@ -9,40 +9,40 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 |------|------|
 | `roboco/db/__init__.py` | Re-exports `Base`, session helpers, `bootstrap_database`, table classes. |
 | `roboco/db/base.py` | `Base` (DeclarativeBase + naming convention), `get_engine`, `get_session_factory`, `get_db` (FastAPI dep), `get_db_context`, `run_migrations`, `init_db`, `_db_has_*` probes. Stamps a pre-Alembic DB at 001 then upgrades head. |
-| `roboco/db/tables.py` | All 37 ORM table classes (single module). |
+| `roboco/db/tables.py` | All ORM table classes (single module; 56 as of migration 110). |
 | `roboco/db/seed.py` | `bootstrap_database()` — runs `init_db` then seeds agents. |
 | `alembic/env.py` | Async Alembic env; imports `roboco.db.tables` to register metadata, overrides `sqlalchemy.url` from settings, `compare_type` + `compare_server_default` on. |
 | `alembic.ini` | Standard config; `script_location=alembic`, `prepend_sys_path=.`, no URL (set in env.py). |
-| `alembic/versions/` | 86 migration files 001..086 (two share number 026 — chained, not a collision). |
+| `alembic/versions/` | 112 migration files 001..110 (two numbers are shared, 026 and 095; each pair is chained, not a collision). |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `Base` | class | db/base.py:38 | DeclarativeBase + MetaData naming convention. |
-| `get_engine` | fn | db/base.py:46 | Lazy singleton async engine (pool_pre_ping). |
-| `get_db` | fn | db/base.py:70 | FastAPI async session dependency. |
+| `Base` | class | db/base.py:40 | DeclarativeBase + MetaData naming convention. |
+| `get_engine` | fn | db/base.py:138 | Lazy singleton async engine (pool_pre_ping). |
+| `get_db` | fn | db/base.py:207 | FastAPI async session dependency. |
 | `get_db_context` | fn | db/base.py | Out-of-request async session context. |
-| `init_db` | fn | db/base.py:180 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
-| `run_migrations` | fn | db/base.py:141 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
-| `bootstrap_database` | fn | db/seed.py:282 | `init_db` + seed default agents. |
-| `TaskTable` | class | tables.py:157 | Core task entity (largest table, drives lifecycle). |
-| `WorkSessionTable` | class | tables.py:798 | Per-claim session; single-active enforced by 047 partial-unique index. |
-| `AgentTable` | class | tables.py:95 | Agent identity, role, team, model provider assignment. |
-| `ProjectTable` | class | tables.py:475 | Git repo config + CI/watch/dep-update/quality_command/`sandbox_services` (057) cols. |
-| `AuditLogTable` | class | tables.py:1940 | Transition journey; `details` JSONB (010); composite query index (045). |
-| `AgentSpawnSessionTable` | class | tables.py:2170 | Per-spawn token totals; feeds usage dashboard. |
-| `ProjectConventionsCacheTable` | class | tables.py:2442 | Effective conventions map per (project, HEAD sha). |
-| `PlaybookTable` | class | tables.py:721 | Curated procedures (draft→approved→indexed). |
-| `RespawnTrackerTable` | class | tables.py:1902 | Durable PM-respawn circuit breaker mirror. |
-| `TaskCellProjectTable` | class | tables.py:632 | Per-cell project map for a MegaTask root-subtask (052). |
-| `WaitingRecordTable` | class | tables.py:1872 | Persisted dispatcher waiting records (restore at start). |
-| `IndexedDocumentTable` | class | tables.py:1651 | RAG corpus docs (added to chain by 017). |
-| `VerbLatencySampleTable` | class | tables.py:~2698 | Per-verb HTTP duration samples persisted from `RequestLoggingMiddleware` for p50/p95 aggregation by `MetricsService.get_verb_latency_stats`. Migration 094; indexes on `verb`, `created_at`, composite `(verb, created_at)`. |
-| `UserTable` | class | tables.py:2603 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
-| `XCredentialsTable` | class | tables.py:2650 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
-| `XSeenMentionTable` | class | tables.py:2675 | X mentions-poll dedup ledger, keyed by mention id (059). |
-| `XSeenFeatureTable` | class | tables.py:2264 | X feature-spotlight dedup ledger, keyed by feature slug (061). |
+| `init_db` | fn | db/base.py:415 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
+| `run_migrations` | fn | db/base.py:354 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
+| `bootstrap_database` | fn | db/seed.py:82 | `init_db` + seed default agents. |
+| `TaskTable` | class | tables.py:156 | Core task entity (largest table, drives lifecycle). |
+| `WorkSessionTable` | class | tables.py:926 | Per-claim session; single-active enforced by 047 partial-unique index. |
+| `AgentTable` | class | tables.py:90 | Agent identity, role, team, model provider assignment. |
+| `ProjectTable` | class | tables.py:511 | Git repo config + CI/watch/dep-update/quality_command/`sandbox_services` (057) cols. |
+| `AuditLogTable` | class | tables.py:1685 | Transition journey; `details` JSONB (010); composite query index (045). |
+| `AgentSpawnSessionTable` | class | tables.py:1955 | Per-spawn token totals; feeds usage dashboard. |
+| `ProjectConventionsCacheTable` | class | tables.py:2299 | Effective conventions map per (project, HEAD sha). |
+| `PlaybookTable` | class | tables.py:826 | Curated procedures (draft→approved→indexed). |
+| `RespawnTrackerTable` | class | tables.py:1646 | Durable PM-respawn circuit breaker mirror. |
+| `TaskCellProjectTable` | class | tables.py:737 | Per-cell project map for a MegaTask root-subtask (052). |
+| `WaitingRecordTable` | class | tables.py:1616 | Persisted dispatcher waiting records (restore at start). |
+| `IndexedDocumentTable` | class | tables.py:1384 | RAG corpus docs (added to chain by 017). |
+| `VerbLatencySampleTable` | class | tables.py:2722 | Per-verb HTTP duration samples persisted from `RequestLoggingMiddleware` for p50/p95 aggregation by `MetricsService.get_verb_latency_stats`. Migration 094; indexes on `verb`, `created_at`, composite `(verb, created_at)`. |
+| `UserTable` | class | tables.py:2439 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
+| `XCredentialsTable` | class | tables.py:2486 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
+| `XSeenMentionTable` | class | tables.py:2555 | X mentions-poll dedup ledger, keyed by mention id (059). |
+| `XSeenFeatureTable` | class | tables.py:2569 | X feature-spotlight dedup ledger, keyed by feature slug (061). |
 | `run_async_migrations` | fn | env.py | Async online migration runner (NullPool). |
 
 ## Migration Chain
@@ -111,7 +111,17 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | 059 | 059_x_credentials.py | `x_credentials` (singleton Fernet-encrypted OAuth 1.0a secrets) + `x_seen_mentions` (mentions-poll dedup ledger) — the X (Twitter) engine (`ROBOCO_X_ENGINE_ENABLED`, default off). |
 | 060 | 060_drop_messaging.py | Drops the channels/groups/sessions/session_tasks/messages subsystem (comms teardown — A2A is now the sole directed-message channel): `journal_entries.session_id` column, the 5 tables, and 4 enum types (`messagetype`/`sessionstatus`/`sessionscope`/`channeltype`); one-way (`downgrade()` raises `NotImplementedError`). |
 | 061 | 061_x_feature_spotlight.py | `x_seen_features` (feature-spotlight dedup ledger, keyed by feature slug) + `company_goals.brand_voice` (Text, CEO-authored brand-voice sample, feeds `_voice_guide`) — X feature-spotlight (`ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`, default off, sub-switch of `x_engine_enabled`). |
-| 062-072 | *(not yet reflected in this table — pre-existing gap, out of scope for this pass)* | Vault V1/V2, revision-findings ledger, sandbox extensions, and other slices landed migrations in this range; see `alembic/versions/` directly until this table is backfilled. |
+| 062 | 062_tiktok_credentials.py | `tiktok_credentials` (singleton, mirrors `x_credentials`): Fernet-encrypted `client_key` / `client_secret` (static) and `access_token` / `refresh_token` (rotated on refresh) for the TikTok inbox-upload poster. Additive and inert until real credentials are set. |
+| 063 | 063_video_engine_project_toggle.py | `projects.video_engine_enabled` (Boolean, `server_default` false): per-project opt-in for video authoring (it writes a HyperFrames composition into the project's `motion/` dir), on top of the global `ROBOCO_VIDEO_ENGINE_ENABLED`. Mirrors `ci_watch_enabled` (048). |
+| 064 | 064_playbook_indexed_flag.py | `playbooks.indexed_ok` (Boolean, `server_default` false) + `playbooks.indexed_at`: record whether the post-approve RAG index write actually landed, so a startup reconcile re-indexes APPROVED-but-unindexed rows (an embedder outage mid-approval used to leave them invisible to agents). |
+| 065 | 065_rag_index_failures.py | `rag_index_failures`: the dead-letter retry queue for fire-and-forget RAG index writes (journal / completion learnings): `doc_source`, `payload` JSONB, `attempts`, `last_error`, `next_retry_at`. A startup janitor retries due rows with backoff and deletes them on success. |
+| 066 | 066_tasks_source_status_idx.py | Index `ix_tasks_source_status_created` on `tasks (source, status, created_at)`, backing the bounded video render-loop scan (`list_completed_video_tasks`). No data change. |
+| 067 | 067_respawn_revisit_resets.py | `respawn_tracker.revisit_resets` (Integer, default 0): persists the PM-respawn breaker's revisit-reset counter across restarts, mirroring `tracing_resets`. |
+| 068 | 068_tasks_constraints_column.py | `tasks.constraints` (Text, nullable): moves the auto-attached conventions block out of `tasks.description` into its own column (the panel renders it as a read-only card). Existing rows are not backfilled. |
+| 069 | 069_tasks_parent_task_id_idx.py | Index `ix_tasks_parent_task_id`: Postgres does not index FK columns, so sibling lookups on the claim hot path (`get_subtasks`, the sequence claim guard, the dispatch merge/lane barriers) were sequential scans. |
+| 070 | 070_vault_seen_notes.py | `vault_seen_notes`: the vault-intake watcher's dedup ledger, unique on `(note_path, content_hash)` so an unchanged note never reprocesses but an edited one does. Mirrors `x_seen_mentions`; inert while `ROBOCO_VAULT_INTAKE_ENABLED` is off. |
+| 071 | 071_review_findings.py | `task_review_findings` (the append-only revision-findings ledger: every qa_fail / pr_fail / request_changes / ceo_reject finding, advanced open -> addressed -> verified or waived, cascade-deleted with its task) + `tasks.pm_notes` (the PM merge-review reject note slot). See `docs/map/review-findings.md`. |
+| 072 | 072_project_sandbox_extensions.py | `projects.sandbox_extensions` (JSONB, nullable): per-project extensions/modules the sandboxed dev DB activates post-ready (e.g. `{"postgres": ["vector"]}`); names are allowlist-validated by the Project model (`SANDBOX_ENGINE_FEATURES`) before persistence. |
 | 073 | 073_project_environments.py | `projects.environments` (nullable JSONB) — the per-project ordered environment ladder (`list[{name, branch}]`, index 0 = head rung, index -1 = prod rung) that replaces `default_branch` as the source of truth for a project's PR target and release target. Additive: a null value falls back to a degenerate single-branch ladder synthesized from `default_branch` at read time (`roboco/models/env_branches.py`), so existing projects are unaffected until the CEO declares a real ladder. |
 | 074 | 074_telegram_credentials.py | `telegram_credentials` (singleton Fernet-encrypted `bot_token_encrypted` + `chat_id_encrypted`, mirrors `x_credentials`) — the Telegram notifications bridge (`ROBOCO_TELEGRAM_ENABLED`, default off). |
 | 075 | 075_company_goals_company_name.py | `company_goals.company_name` (Text, `server_default=""`) — CEO-authored product/company name, mirroring `brand_voice`. Feeds `CompanyGoalsService.resolve_product_name` (project name → this field → the "RoboCo" literal fallback), which `XEngine`/`VideoEngine` both call so release posts/videos stop hardcoding "RoboCo". Additive and inert until the CEO sets it in the Business → Goals editor. |
@@ -126,6 +136,30 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | 084 | 084_modelprovider_gemini.py | Adds `gemini` to the `modelprovider` postgres enum. |
 | 085 | 085_seed_gemini_provider.py | Seeds the Gemini CLI provider row — `ModelProvider.GEMINI`. |
 | 086 | 086_enable_gemini_provider.py | `UPDATE provider_configs SET enabled = true` for the Gemini row 085 seeded `enabled=false` — Grok gets force-enabled via its `apply_mode="grok"` write path, but `apply_mode` grew no `"gemini"` case until this same change, so without this migration a Mix-mode assignment to a Gemini model would resolve against a permanently-disabled row and silently fall back to Anthropic (wired end-to-end everywhere except reachable). Codex (083) sidesteps this by seeding `enabled=true` directly. See `docs/map/runtime-providers.md`. |
+| 087 | 087_board_program_cycles.py | `board_program_cycles`: the Board Program registry's LEARN ledger, one row per program cycle (`program_key`, `exploration_task_id` FK SET NULL, `opened_at` / `closed_at`, item proposed/approved/rejected counts, `decisions` JSON). `BoardProgramEngine` dedups one open cycle per program on `closed_at IS NULL`. |
+| 088 | 088_project_board_programs.py | `projects.board_programs` (JSONB, nullable): per-project Board Program scoping; a program key opts the project into a project-scoped program, a `!`-prefixed key opts it out of an org-scoped one (`foundation.policy.board_programs.project_participates`). |
+| 089 | 089_board_cycle_ntp_reason.py | `board_program_cycles.nothing_to_propose_reason` (Text, nullable): where the `nothing_to_propose` do-verb parks its reason, so the next cycle's LEARN context says why a cycle proposed nothing. |
+| 090 | 090_modelprovider_kimi.py | Adds `kimi` to the `modelprovider` postgres enum (enum-add only; the row seed is split into 091 because a new enum value cannot be used in the transaction that adds it). |
+| 091 | 091_seed_kimi_provider.py | Seeds the Kimi (Moonshot, kimi-code CLI) `provider_configs` row `enabled=true`: it authenticates from a mounted subscription credential, so `base_url` / `auth_token_encrypted` stay NULL. |
+| 092 | 092_task_stalled_marker.py | `tasks.stalled_reason` (String(50), indexed) + `tasks.stalled_since`: a durable record of the dispatcher's respawn-breaker give-up on a task (`models.base.StalledReason`); NULL means never stalled, or cleared by real progress. |
+| 093 | 093_playbook_source_program.py | `playbooks.source_program` (String(30), nullable): which Board Program drafted the playbook (Coroner vs Librarian both draft as the Auditor identity, so `created_by` cannot tell them apart). NULL means an ordinary delivery-role draft. |
+| 094 | 094_verb_latency_samples.py | `verb_latency_samples` (`verb`, `role`, `duration_ms`, `outcome`, `status_code`, `created_at`; indexes on `verb`, `created_at` and `(verb, created_at)`): one row per gateway-verb call from `RequestLoggingMiddleware`, aggregated to p50/p95 by `MetricsService.get_verb_latency_stats`. |
+| 095a | 095_pg_stat_statements.py | `CREATE EXTENSION IF NOT EXISTS pg_stat_statements` in an autocommit block; the compose files preload the library so the view actually collects per-query stats. |
+| 095b | 095_modelprovider_openrouter.py | Adds `openrouter` to the `modelprovider` enum (chained off 095a, so the two 095 files are sequential like the 026 pair). |
+| 096 | 096_seed_openrouter_provider.py | Seeds the OpenRouter `provider_configs` row `enabled=false`: it authenticates with a metered API key, so the row stays disabled until `PUT /providers/openrouter-key` encrypts the key and enables it. |
+| 097 | 097_modelprovider_zai.py | Adds `zai` to the `modelprovider` enum. |
+| 098 | 098_seed_zai_provider.py | Seeds the Z.ai `provider_configs` row `enabled=false` with Z.ai's Anthropic-compatible endpoint in `base_url` (routed by `ANTHROPIC_BASE_URL` injection at spawn); `PUT /providers/zai-key` encrypts the key and enables it. |
+| 099 | 099_modelprovider_nebius.py | Adds `nebius` to the `modelprovider` enum. |
+| 100 | 100_seed_nebius_provider.py | Seeds the Nebius Token Factory `provider_configs` row `enabled=false` until `PUT /providers/nebius-key` stores the metered key and enables it. |
+| 101 | 101_modelprovider_hummin.py | Adds `hummin` (the GLM-native hummin CLI) to the `modelprovider` enum. |
+| 102 | 102_seed_hummin_provider.py | Seeds the Hummin `provider_configs` row `enabled=true`: a spawn without a key fails safe (auth preflight exits 78, the orchestrator parks the provider) until `PUT /providers/hummin-key` stores it. |
+| 103 | 103_agentrole_devops.py | Adds `devops` to the `agentrole` enum for the DevOps floater (`devops-1`, on the existing `board` team). |
+| 104 | 104_a2a_steering.py | `a2a_messages.steering` (String(50), nullable): the Decisions steer-gate mode for a peer DM (`steer_switch_consideration` / `steer_now` render into the recipient's next context boundary); NULL is ordinary pull-only delivery. |
+| 105 | 105_decisionlog.py | `decision_log` (`pilot`, `tier`, `mode`, `session_id`, `answers`, `confidence`, `action`, `cost`, `created_at`): persisted Decisions verdict history for the Auditor's daily decisions-audit review. |
+| 106 | 106_decisionlog_corpus.py | `decision_log.state` / `.questions` (the question inputs as sent) + `.outcome` / `.outcome_at` (ground-truth label) and index `ix_decision_log_pilot_session`: makes each row a labelable training example. |
+| 107 | 107_decisionlog_qoutcomes.py | `decision_log.question_outcomes` (JSON): per-question outcome labels for batched pilots whose questions each carry their own truth. |
+| 108 | 108_ci_history.py | `ci_runs` (every distinct CI reading: project, workflow, conclusion, breach flag, observed-at; unique per reading) + `memory_retrieval_log` (which institutional-memory items were injected into which spawn): Decisions training-corpus inputs. |
+| 109 | 109_memory_links.py | `memory_links` (`pilot`, `session_id`, `source`): links a memory-family decision row to the knowledge item it produced, for later grading. |
 | 110 | 110_entire_trails.py | Entire trails bridge: `projects.entire_trails_enabled` (Boolean, `server_default` false), `entire_credentials` (singleton Fernet-encrypted token), `entire_trails` (per tree top: Entire project, trail id/number/url, frozen `create_fields` JSONB, `synced_at`, `closed_at`), `entire_trail_changes` (repository+branch unique; `task_id` deliberately not a FK, so the inline link never share-locks a task row), `entire_trail_findings` (ledger id -> Entire finding id + repository/branch), `entire_trail_outbox` (BigInteger id order, op, payload JSONB, attempts, dead, last_error, next_attempt_at). Purely additive. |
 
 ## Data Flow
@@ -141,13 +175,19 @@ graph LR
   027-->028-->029-->030-->031-->032-->033-->034-->035-->036
   036-->037-->038-->039-->040-->041-->042-->043-->044-->045
   045-->046-->047-->048-->049-->050-->051-->052-->053-->054
-  054-->055-->056-->057-->058-->059-->060-->061
+  054-->055-->056-->057-->058-->059-->060-->061-->062-->063
+  063-->064-->065-->066-->067-->068-->069-->070-->071-->072
+  072-->073-->074-->075-->076-->077-->078-->079-->080-->081
+  081-->082-->083-->084-->085-->086-->087-->088-->089-->090
+  090-->091-->092-->093-->094-->095a-->095b-->096-->097-->098
+  098-->099-->100-->101-->102-->103-->104-->105-->106-->107
+  107-->108-->109-->110
 ```
 
 ## Logical Tree
 
 ```
-Migration chain 001..059
+Migration chain 001..110
 ├── Initial schema
 │   └── 001 initial schema (agents, tasks, work_sessions, notifications, journals, audit_log, a2a_*; also originally channels/sessions/messages, later dropped by the comms-teardown migration)
 ├── Persistence
@@ -242,6 +282,63 @@ Migration chain 001..059
 ├── X (Twitter) engine
 │   ├── 059 x_credentials (singleton encrypted OAuth 1.0a) + x_seen_mentions (dedup ledger)
 │   └── 061 x_seen_features (feature-spotlight dedup ledger) + company_goals.brand_voice
+├── Provider backends and routing
+│   ├── 082 routing_presets (named save/restore of the routing state)
+│   ├── 083 seed OpenAI (Codex CLI) provider
+│   ├── 084 / 085 / 086 gemini enum value + seed + enable
+│   ├── 090 / 091 kimi enum value + seed
+│   ├── 095b / 096 openrouter enum value + seed
+│   ├── 097 / 098 zai enum value + seed
+│   ├── 099 / 100 nebius enum value + seed
+│   └── 101 / 102 hummin enum value + seed
+├── Projects: forge, environments, per-project opt-ins
+│   ├── 063 projects.video_engine_enabled
+│   ├── 072 projects.sandbox_extensions
+│   ├── 073 projects.environments (environment ladder)
+│   ├── 076 projects.git_provider
+│   ├── 077 github_app_credentials + projects.github_installation_id
+│   ├── 078 projects.codegen_command
+│   └── 088 projects.board_programs
+├── Outbound integration credentials
+│   ├── 062 tiktok_credentials
+│   └── 074 telegram_credentials
+├── Tasks
+│   ├── 066 ix_tasks_source_status_created
+│   ├── 068 tasks.constraints
+│   ├── 069 ix_tasks_parent_task_id
+│   ├── 080 tasks.budget_usd + projects.monthly_budget_usd
+│   └── 092 tasks.stalled_reason + stalled_since
+├── Review findings
+│   └── 071 task_review_findings + tasks.pm_notes
+├── RAG and playbook durability
+│   ├── 064 playbooks.indexed_ok + indexed_at
+│   ├── 065 rag_index_failures (dead-letter retry queue)
+│   └── 093 playbooks.source_program
+├── Respawn and notifications
+│   ├── 067 respawn_tracker.revisit_resets
+│   └── 079 notifications re-escalation backoff columns
+├── Company charter
+│   └── 075 company_goals.company_name
+├── Vault
+│   └── 070 vault_seen_notes
+├── Board Programs
+│   ├── 087 board_program_cycles
+│   └── 089 board_program_cycles.nothing_to_propose_reason
+├── Observability
+│   ├── 081 agent_spawn_sessions.doctrine_version
+│   ├── 094 verb_latency_samples
+│   └── 095a pg_stat_statements extension
+├── Roles
+│   └── 103 add devops to agentrole enum
+├── Decisions service
+│   ├── 104 a2a_messages.steering
+│   ├── 105 decision_log
+│   ├── 106 decision_log corpus columns
+│   ├── 107 decision_log.question_outcomes
+│   ├── 108 ci_runs + memory_retrieval_log
+│   └── 109 memory_links
+├── Entire trails bridge
+│   └── 110 projects.entire_trails_enabled + entire_credentials + entire_trails + entire_trail_changes / findings / outbox
 └── Comms teardown
     └── 060 drop channels/groups/sessions/session_tasks/messages + journal_entries.session_id (A2A is now the sole directed-message channel; one-way, no downgrade)
 ```
@@ -267,13 +364,12 @@ Migration chain 001..059
 - **`sa.Enum(create_type=False)` is silently ignored** — the flag only works on `postgresql.ENUM`, not generic `sa.Enum`. Using `sa.Enum` re-emits CREATE TYPE and fails with "type already exists". 001/016/052 carry the live gotcha comment; 004/016 use the correct `postgresql.ENUM(create_type=False)`. 001 itself uses `sa.Enum(..., create_type=False)` in spots — latent on a clean re-apply.
 - **Enum-parity gate can false-green** — `make quality` runs `scripts/verify_postgres_enums.py` only against a migrated DB; an empty `roboco` DB (conftest ephemeral) or `|| echo` masking hides drift. Fixed in 957fb522 but the gate is only as good as the DB it points at.
 - **016 latent** — the `team` enum member list under create_type=False is the *original* set, not the later-widened set; inert but misleading.
-- **Two files numbered 026** — not a collision: `026_token_usage_tables` chains off `026_completed_dependency_ids`. Renaming is risky (breaks down_revision refs).
+- **Two files numbered 026, and two numbered 095** — not collisions: `026_token_usage_tables` chains off `026_completed_dependency_ids`, and `095_modelprovider_openrouter` chains off `095_pg_stat_statements`. Renaming any of them is risky (breaks down_revision refs).
 - **052 reuses the `team` enum** with `create_type=False` correctly — no new enum added; safe.
 - **017 reconciled drift the other way** — added ORM tables the chain had missed; `create_all` is no longer authoritative.
 
 ## Drift from CLAUDE.md
-- CLAUDE.md says "52 migrations 001..052" — now stale; chain is 001..059 (59 files). Does not mention the two 026 files (chained, not a conflict).
-- CLAUDE.md cites migrations 043/046/047/048/049/050/051 by number in feature sections — all present and consistent.
+- CLAUDE.md no longer states a migration count or cites migrations by number; it only says schema changes ship as Alembic migrations under `alembic/versions/` and how to apply them. No drift.
 - No factual drift found in the DB layer description.
 
 ## Changes Since Baseline

@@ -10,84 +10,84 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 
 | Path | Role | approx LOC |
 |------|------|-----------|
-| `roboco/api/app.py` | FastAPI app factory + async lifespan (startup/shutdown ordering) | ~490 |
-| `roboco/api/deps.py` | DI: agent header auth, role gates, Choreographer/ContentActions builders, pagination | ~611 |
-| `roboco/api/middleware.py` | Correlation-id + request-logging middleware, exception handlers, 422 secret-scrub + UUID remediation | ~469 |
+| `roboco/api/app.py` | FastAPI app factory + async lifespan (startup/shutdown ordering) | ~725 |
+| `roboco/api/deps.py` | DI: agent header auth, role gates, Choreographer/ContentActions builders, pagination | ~804 |
+| `roboco/api/middleware.py` | Correlation-id + request-logging middleware, exception handlers, 422 secret-scrub + UUID remediation | ~768 |
 | `roboco/api/middleware_docs.py` | Docs-path access-control matrix (read/write per role/team/slug) | ~330 |
-| `roboco/api/websocket.py` | WS routes + ConnectionManager with bounded per-connection send queues, panel-token gate, idle timeout | ~692 |
-| `roboco/api/websocket_bridge.py` | Event-bus → WS forwarders (notifications, agents, rate-limit, usage, A2A) | ~252 |
+| `roboco/api/websocket.py` | WS routes + ConnectionManager with bounded per-connection send queues, panel-token gate, idle timeout | ~544 |
+| `roboco/api/websocket_bridge.py` | Event-bus → WS forwarders (notifications, agents, rate-limit, usage, A2A) | ~203 |
 | `roboco/api/utils/__init__.py` | Re-export surface for error factories + resource helpers | ~43 |
 | `roboco/api/utils/errors.py` | HTTPException factories + `handle_service_error` + `service_error_handler` decorator | ~214 |
 | `roboco/api/utils/resources.py` | `get_or_404`, `get_by_field_or_404`, `require_ownership`/`require_recipient`/`require_membership` | ~180 |
 | `roboco/api/__init__.py` | Deliberately does NOT re-export `app` (circular-import guard, documented) | ~14 |
-| `roboco/security.py` | fastapi-guard 8.0.0 / guard-core 4.0.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~900 |
+| `roboco/security.py` | fastapi-guard 8.0.0 / guard-core 4.0.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~1142 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `lifespan` | async ctx mgr | app.py:82 | Startup: migrations, flag overlay, transcription/extraction/optimal/learning init; Shutdown: stop orchestrator BEFORE close_db, then close optimal, then DB |
-| `create_app` | func | app.py:196 | Build FastAPI, add CORS + custom middleware, mount ~40 routers + ws_router at `/ws` |
+| `lifespan` | async ctx mgr | app.py:162 | Startup: migrations, flag overlay, transcription/extraction/optimal/learning init; Shutdown: stop orchestrator BEFORE close_db, then close optimal, then DB |
+| `create_app` | func | app.py:398 | Build FastAPI, add CORS + custom middleware, mount ~40 routers + ws_router at `/ws` |
 | `app` | module attr | app.py:489 | The default ASGI instance (`roboco.api.app:app` entrypoint) |
-| `_AppServices` | class | app.py:74 | Holder for transcription/extraction singletons set in lifespan |
-| `DbSession` | type alias | deps.py:46 | `Annotated[AsyncSession, Depends(get_db)]` |
-| `resolve_agent_id` | func | deps.py:49 | Resolve UUID-or-slug → UUID, 400 on miss |
-| `_ServiceHolder` | class | deps.py:74 | Singleton store for PermissionService + orchestrator |
+| `_AppServices` | class | app.py:102 | Holder for transcription/extraction singletons set in lifespan |
+| `DbSession` | type alias | deps.py:60 | `Annotated[AsyncSession, Depends(get_db)]` |
+| `resolve_agent_id` | func | deps.py:63 | Resolve UUID-or-slug → UUID, 400 on miss |
+| `_ServiceHolder` | class | deps.py:88 | Singleton store for PermissionService + orchestrator |
 | `set_orchestrator`/`clear_orchestrator`/`get_orchestrator`/`get_orchestrator_or_none` | funcs | deps.py:91-119 | Global orchestrator accessors; `get_orchestrator` 503s when unset, `_or_none` used by shutdown |
 | `get_current_agent_id`/`get_current_agent_slug`/`get_optional_agent_id` | funcs | deps.py:125-208 | Header-based agent identity (UUID or slug) |
-| `_auth_required` | func | deps.py:211 | Reads `ROBOCO_AGENT_AUTH_REQUIRED` env |
-| `_check_agent_auth_token` | func | deps.py:217 | HMAC token enforcement (required in prod, optional-but-verified in dev) |
-| `require_panel_token` | func | deps.py:251 | CEO-HMAC gate for live-chat bridges (HTTP analog of WS gate) |
-| `_resolve_agent_identity` | func | deps.py:277 | Returns `(agent_id, slug)`, special-casing `system` role |
-| `_coerce_agent_role`/`_coerce_agent_team` | funcs | deps.py:298/324 | Parse role/team headers with DB fallback for role |
-| `_header_trust_agent_context` | func | deps.py:340 | The original `get_agent_context` body verbatim (header-trust); the OFF-mode path, and also what a valid agent HMAC token delegates to when cloud auth is ON |
-| `_slide_session_cookie` | func | deps.py:379 | Re-mints + re-sets the session cookie on every cookie-authenticated request — the sliding 30-day window (only inactivity past `cloud_auth_cookie_max_age` logs out) |
-| `_cloud_auth_agent_context` | func | deps.py:390 | Dual-path enforcement when `cloud_auth_enabled`: a valid HMAC token (any role) delegates to `_header_trust_agent_context`; otherwise a non-CEO role claim is rejected outright, and the CEO must present a valid session cookie via `resolve_session_user` |
-| `get_agent_context` | func | deps.py:452 | Builds `AgentContext` from X-Agent-* headers + token (+ the `roboco_session` cookie); byte-for-byte header-trust when `cloud_auth_enabled` is False, else delegates to `_cloud_auth_agent_context` |
-| `require_pm_or_above`/`require_developer_or_above`/`require_cell_access` | funcs | deps.py:403/428/443 | Coarse role-gate guards (403) |
-| `require_ceo_role` | func | deps.py:412 | Single CEO-check: raises 403 unless `role` is CEO; accepts `AgentRole`/`Role`/lowercase string; unifies orchestrator-router + release-handler CEO gates into one source of truth (`536bbb64`) |
-| `require_notification_permission`/`require_task_action` | dep factories | deps.py:490/508 | PermissionService-backed dependency factories |
-| `get_choreographer`/`get_content_actions` | funcs | deps.py:545/575 | Build Choreographer / ContentActions with all service deps + orchestrator/bus |
-| `get_pagination` | func | deps.py:599 | Clamp limit 1-100, offset ≥0 |
-| `CorrelationIdMiddleware` | class | middleware.py:54 | X-Correlation-ID in/out + structlog bind |
-| `RequestLoggingMiddleware` | class | middleware.py:96 | Log request/response + `X-Response-Time-Ms` header |
+| `_auth_required` | func | deps.py:235 | Reads `ROBOCO_AGENT_AUTH_REQUIRED` env |
+| `_check_agent_auth_token` | func | deps.py:251 | HMAC token enforcement (required in prod, optional-but-verified in dev) |
+| `require_panel_token` | func | deps.py:300 | CEO-HMAC gate for live-chat bridges (HTTP analog of WS gate) |
+| `_resolve_agent_identity` | func | deps.py:353 | Returns `(agent_id, slug)`, special-casing `system` role |
+| `_coerce_agent_role`/`_coerce_agent_team` | funcs | deps.py:374/400 | Parse role/team headers with DB fallback for role |
+| `_header_trust_agent_context` | func | deps.py:409 | The original `get_agent_context` body verbatim (header-trust); the OFF-mode path, and also what a valid agent HMAC token delegates to when cloud auth is ON |
+| `_slide_session_cookie` | func | deps.py:448 | Re-mints + re-sets the session cookie on every cookie-authenticated request — the sliding 30-day window (only inactivity past `cloud_auth_cookie_max_age` logs out) |
+| `_cloud_auth_agent_context` | func | deps.py:488 | Dual-path enforcement when `cloud_auth_enabled`: a valid HMAC token (any role) delegates to `_header_trust_agent_context`; otherwise a non-CEO role claim is rejected outright, and the CEO must present a valid session cookie via `resolve_session_user` |
+| `get_agent_context` | func | deps.py:551 | Builds `AgentContext` from X-Agent-* headers + token (+ the `roboco_session` cookie); byte-for-byte header-trust when `cloud_auth_enabled` is False, else delegates to `_cloud_auth_agent_context` |
+| `require_pm_or_above`/`require_developer_or_above`/`require_cell_access` | funcs | deps.py:619/644/665 | Coarse role-gate guards (403) |
+| `require_ceo_role` | func | deps.py:628 | Single CEO-check: raises 403 unless `role` is CEO; accepts `AgentRole`/`Role`/lowercase string; unifies orchestrator-router + release-handler CEO gates into one source of truth (`536bbb64`) |
+| `require_notification_permission`/`require_task_action` | dep factories | deps.py:680/698 | PermissionService-backed dependency factories |
+| `get_choreographer`/`get_content_actions` | funcs | deps.py:735/765 | Build Choreographer / ContentActions with all service deps + orchestrator/bus |
+| `get_pagination` | func | deps.py:793 | Clamp limit 1-100, offset ≥0 |
+| `CorrelationIdMiddleware` | class | middleware.py:63 | X-Correlation-ID in/out + structlog bind |
+| `RequestLoggingMiddleware` | class | middleware.py:151 | Log request/response + `X-Response-Time-Ms` header |
 | `get_status_code`/`roboco_exception_handler`/`service_exception_handler`/`rate_limit_exception_handler`/`generic_exception_handler`/`http_exception_handler`/`request_validation_handler` | funcs | middleware.py:143-441 | Exception → structured JSONResponse chain |
-| `_SERVICE_ERROR_STATUS` | const | middleware.py:191 | Maps service exception types → HTTP status |
-| `_uuid_field_remediation` | func | middleware.py:343 | Actionable hint when an agent sends an 8-char task prefix as UUID |
-| `_SECRET_FIELD_NAMES`/`_scrub_secrets` | const/func | middleware.py:372/389 | Redact credential fields from 422 log bodies |
-| `setup_middleware` | func | middleware.py:444 | Register exception handlers + middleware in order |
+| `_SERVICE_ERROR_STATUS` | const | middleware.py:264 | Maps service exception types → HTTP status |
+| `_uuid_field_remediation` | func | middleware.py:416 | Actionable hint when an agent sends an 8-char task prefix as UUID |
+| `_SECRET_FIELD_NAMES`/`_scrub_secrets` | const/func | middleware.py:445/462 | Redact credential fields from 422 log bodies |
+| `setup_middleware` | func | middleware.py:525 | Register exception handlers + middleware in order |
 | `DOCS_PERMISSIONS` | const | middleware_docs.py:55 | Path-prefix → read/write role matrix |
 | `check_docs_access`/`require_docs_access`/`get_allowed_docs_paths` | funcs | middleware_docs.py:222/265/303 | Docs path permission checks |
 | `_fast_path_access_decision` | func | middleware_docs.py:203 | CEO/auditor/main_pm short-circuit |
-| `ConnectionManager` | class | websocket.py:82 | Tracks all WS subscriptions + per-connection send queues |
-| `_ClientConnection` | class | websocket.py:45 | Bounded outbound queue + sender task holder |
-| `manager` | singleton | websocket.py:334 | Global ConnectionManager |
-| `_require_panel_token` | func | websocket.py:61 | WS upgrade CEO-HMAC gate (returns False to close) |
-| `validate_agent_exists` | func | websocket.py:337 | DB existence check for claimed agent_id |
-| `_register_sender`/`_run_sender`/`_enqueue_or_send`/`_send_with_timeout` | methods | websocket.py:122/129/244/270 | Non-blocking fan-out plumbing |
-| `connect_agent`/`connect_notifications`/`connect_system` | methods | websocket.py:187/213/224 | Accept + register per stream type |
-| `disconnect` | method | websocket.py:230 | Remove socket from all sets + cancel sender task |
-| `broadcast_to_agent_watchers`/`broadcast_system` | methods | websocket.py:310/332 | Fan-out enqueues |
-| `agent_stream`/`notification_stream`/`system_stream` | routes | websocket.py:445/573/625 | WS endpoints under `/ws` |
-| `broadcast_agent_chunk`/`broadcast_notification` | funcs | websocket.py:650/665 | Helper broadcasters for external callers |
-| `IDLE_TIMEOUT_SECONDS`/`MAX_SEND_QUEUE`/`SEND_TIMEOUT_SECONDS` | consts | websocket.py:35/41/42 | 90s / 256 / 10s tunables |
-| `register_websocket_bridge_handlers`/`start_websocket_bridge` | funcs | websocket_bridge.py:169/203 | Subscribe bus handlers |
+| `ConnectionManager` | class | websocket.py:125 | Tracks all WS subscriptions + per-connection send queues |
+| `_ClientConnection` | class | websocket.py:75 | Bounded outbound queue + sender task holder |
+| `manager` | singleton | websocket.py:311 | Global ConnectionManager |
+| `_require_panel_token` | func | websocket.py:91 | WS upgrade CEO-HMAC gate (returns False to close) |
+| `validate_agent_exists` | func | websocket.py:314 | DB existence check for claimed agent_id |
+| `_register_sender`/`_run_sender`/`_enqueue_or_send`/`_send_with_timeout` | methods | websocket.py:159/166/247/273 | Non-blocking fan-out plumbing |
+| `connect_agent`/`connect_notifications`/`connect_system` | methods | websocket.py:195/208/219 | Accept + register per stream type |
+| `disconnect` | method | websocket.py:225 | Remove socket from all sets + cancel sender task |
+| `broadcast_to_agent_watchers`/`broadcast_system` | methods | websocket.py:286/297 | Fan-out enqueues |
+| `agent_stream`/`notification_stream`/`system_stream` | routes | websocket.py:338/403/455 | WS endpoints under `/ws` |
+| `broadcast_agent_chunk`/`broadcast_notification` | funcs | websocket.py:503/518 | Helper broadcasters for external callers |
+| `IDLE_TIMEOUT_SECONDS`/`MAX_SEND_QUEUE`/`SEND_TIMEOUT_SECONDS` | consts | websocket.py:65/71/72 | 90s / 256 / 10s tunables |
+| `register_websocket_bridge_handlers`/`start_websocket_bridge` | funcs | websocket_bridge.py:163/195 | Subscribe bus handlers |
 | `_handle_notification_sent`/`_handle_agent_event`/`_handle_rate_limit_event`/`_handle_usage_event`/`_handle_a2a_message_event` | funcs | websocket_bridge.py | Event-bus → WS forwarders (`_handle_a2a_message_event` fans `A2A_MESSAGE_SENT` to `/ws/system` as an `a2a.message` frame — the CEO's live view of every agent-to-agent chat) |
 | `_RATE_LIMIT_WS_TYPES`/`_USAGE_WS_TYPES` | consts | websocket_bridge.py:18/23 | EventType → panel `type` string maps |
 | `not_found`/`forbidden`/`unauthorized`/`validation_error`/`conflict`/`service_unavailable` | funcs | utils/errors.py:29-142 | HTTPException factories |
 | `handle_service_error`/`service_error_handler` | func/deco | utils/errors.py:150/191 | ServiceError → HTTPException translation |
 | `get_or_404`/`get_by_field_or_404` | funcs | utils/resources.py:17/59 | Generic get-or-404 helpers |
 | `require_ownership`/`require_recipient`/`require_membership` | funcs | utils/resources.py:96/130/156 | Authorization checks |
-| `apply_guard` | func | security.py:378 | Mounts `SecurityMiddleware` on `app` + sets `app.state.guard_decorator`; no-op unless `settings.guard_enabled` |
-| `guarded_lifespan` | func | security.py:399 | Wraps `lifespan` with guard's `make_lifespan` (redis/geo/agent init) when armed; passthrough when off |
-| `build_security_config` | func | security.py:329 | Assembles the global `SecurityConfig` from settings: passive_mode, fail_secure, enforce_https, WAF calibration fields |
+| `apply_guard` | func | security.py:1106 | Mounts `SecurityMiddleware` on `app` + sets `app.state.guard_decorator`; no-op unless `settings.guard_enabled` |
+| `guarded_lifespan` | func | security.py:1134 | Wraps `lifespan` with guard's `make_lifespan` (redis/geo/agent init) when armed; passthrough when off |
+| `build_security_config` | func | security.py:879 | Assembles the global `SecurityConfig` from settings: passive_mode, fail_secure, enforce_https, WAF calibration fields |
 | `security_config` / `guard_deco` | module singletons | security.py:374-375 | Built once at import (pure, no I/O); `guard_deco` is the `SecurityDecorator` route files decorate with `@guard_deco.<verb>` |
-| `prompt_injection_validator`/`secret_exfil_validator`/`internal_ssrf_validator` | async funcs | security.py:116/128/139 | Custom `@guard_deco.custom_validation` content checks the signature WAF can't cover; each returns a generic 400 (no rule detail leaked) |
+| `prompt_injection_validator`/`secret_exfil_validator`/`internal_ssrf_validator` | async funcs | security.py:233/255/266 | Custom `@guard_deco.custom_validation` content checks the signature WAF can't cover; each returns a generic 400 (no rule detail leaked) |
 | `_guard_whitelist` / `_INTERNAL_NETWORKS` | func / const | security.py | WAF/IP-ban/rate-limit exemption for the internal agent mesh: loopback + docker's default bridge pool (`172.16.0.0/12`) ONLY — deliberately excludes `10.0.0.0/8`/`192.168.0.0/16` (those would also exempt a real LAN client hitting nginx, not just the docker mesh, since a genuine LAN browser's real IP survives the one XFF hop under `trusted_proxy_depth=1`) |
-| `resolve_forwarded_client_ip` | func | security.py:479 | Peels loopback/operator-named (`guard_trusted_chain_peers`) hops from the right of XFF; the remaining candidate is honored ONLY if at least one hop peeled AND the candidate is in the tailnet CGNAT range (`100.64.0.0/10`) — every other shape (direct LAN, an unnamed 172.x relay even carrying a forged prefix, all-hops, malformed) abstains to the guard's own depth-1 resolution |
-| `ClientIpResolutionMiddleware` | class | security.py:521 | Pure ASGI, mounted OUTSIDE `SecurityMiddleware` (added after it, so it runs first): stamps `request.state.client_ip` (guard_core's supported override seam) with `resolve_forwarded_client_ip`'s verdict; only honors XFF when the CONNECTING peer itself is trusted to present it (`_CONNECTING_PEER_NETWORKS`, broader than and independent of the hop-peel set) |
-| `_warn_unconfigured_tailnet_gateway_once` | func | security.py:453 | Logs once per distinct gateway IP (never the full XFF) when a host-proxied tailnet chain is detected behind a real docker bridge gateway but no `guard_trusted_chain_peers` is configured — the one regression left genuinely silent otherwise (traffic resolves to a whitelisted bridge IP, WAF stays inert, zero signal) |
-| `_WAF_FREETEXT_BODY_FIELDS` | const | security.py:211 | Top-level free-text body-field exclusion set (`excluded_detection_body_fields`) — the WAF calibration; includes free-form container fields (plan/risks/findings/section/payload/...) whose nested prose is stringified and scanned |
+| `resolve_forwarded_client_ip` | func | security.py:733 | Peels loopback/operator-named (`guard_trusted_chain_peers`) hops from the right of XFF; the remaining candidate is honored ONLY if at least one hop peeled AND the candidate is in the tailnet CGNAT range (`100.64.0.0/10`) — every other shape (direct LAN, an unnamed 172.x relay even carrying a forged prefix, all-hops, malformed) abstains to the guard's own depth-1 resolution |
+| `ClientIpResolutionMiddleware` | class | security.py:775 | Pure ASGI, mounted OUTSIDE `SecurityMiddleware` (added after it, so it runs first): stamps `request.state.client_ip` (guard_core's supported override seam) with `resolve_forwarded_client_ip`'s verdict; only honors XFF when the CONNECTING peer itself is trusted to present it (`_CONNECTING_PEER_NETWORKS`, broader than and independent of the hop-peel set) |
+| `_warn_unconfigured_tailnet_gateway_once` | func | security.py:707 | Logs once per distinct gateway IP (never the full XFF) when a host-proxied tailnet chain is detected behind a real docker bridge gateway but no `guard_trusted_chain_peers` is configured — the one regression left genuinely silent otherwise (traffic resolves to a whitelisted bridge IP, WAF stays inert, zero signal) |
+| `_WAF_FREETEXT_BODY_FIELDS` | const | security.py:430 | Top-level free-text body-field exclusion set (`excluded_detection_body_fields`) — the WAF calibration; includes free-form container fields (plan/risks/findings/section/payload/...) whose nested prose is stringified and scanned |
 
 ## Data Flow
 
@@ -271,15 +271,15 @@ Logic-touching changes in that commit, scoped to this slice:
 |--------|-----------|--------|
 | Lifespan shutdown now stops orchestrator BEFORE close_db (was: DB closed first, only bootstrap's finally stopped orchestrator) | app.py:170-186 | Final audit-log rows / respawn_tracker upserts / agent-state finalizes no longer silently dropped on shutdown. `get_orchestrator_or_none()` added so lifespan doesn't 503 when no orchestrator is wired (tests/skip_orchestrator). |
 | `get_orchestrator_or_none` + `clear_orchestrator` added | deps.py:96-119 | New accessor for shutdown + test teardown; `get_orchestrator` still 503s. |
-| `require_panel_token` HTTP dep added (CEO HMAC for live-chat bridges) | deps.py:251-274 | New gate; mirrors WS `_require_panel_token`. Browser EventSource can't set headers, so token-only. |
+| `require_panel_token` HTTP dep added (CEO HMAC for live-chat bridges) | deps.py:300-350 | New gate; mirrors WS `_require_panel_token`. Browser EventSource can't set headers, so token-only. |
 | `CEO_AGENT_ID` import added to deps.py | deps.py:18 | Required by `require_panel_token` + reused by WS gate. |
-| `_SECRET_FIELD_NAMES` + `_scrub_secrets` added; 422 log scrubs credential fields | middleware.py:372-404, 426 | Plaintext GitHub PAT / provider API key / bearer tokens no longer dumped to structlog on a 422. Response body unchanged. |
-| WS panel-token gate (`_require_panel_token`) added to channel/agent/session/notifications streams | websocket.py:61, 371/439/503/567 | `/ws/*` now CEO-HMAC-gated in prod; dev allows missing token but rejects forged. **`/ws/system` was NOT gated** (inconsistency). |
-| Per-connection bounded send queue + sender task (`_ClientConnection`, `_register_sender`, `_run_sender`, `_enqueue_or_send`, `_send_with_timeout`) | websocket.py:45-156, 244-281 | Replaced `asyncio.gather(*[conn.send_text(data)])` with non-blocking enqueue. One slow client can no longer back-pressure the fan-out; full queue drops+warns. `_run_sender` reaps dead sockets on hard send error. |
-| `IDLE_TIMEOUT_SECONDS` (90s) `asyncio.wait_for` on `receive_text` | websocket.py:35, 400/471/534/586/623 | Half-open sockets from dead containers no longer block the receive loop forever; `TimeoutError` → `finally disconnect`. |
+| `_SECRET_FIELD_NAMES` + `_scrub_secrets` added; 422 log scrubs credential fields | middleware.py:445-477, 499 | Plaintext GitHub PAT / provider API key / bearer tokens no longer dumped to structlog on a 422. Response body unchanged. |
+| WS panel-token gate (`_require_panel_token`) added to channel/agent/session/notifications streams | websocket.py:91, 348/413 | `/ws/*` now CEO-HMAC-gated in prod; dev allows missing token but rejects forged. **`/ws/system` was NOT gated** (inconsistency; gated since `536bbb64`). The channel and session streams were later removed by the comms teardown, so the current lines are the agents and notifications streams. |
+| Per-connection bounded send queue + sender task (`_ClientConnection`, `_register_sender`, `_run_sender`, `_enqueue_or_send`, `_send_with_timeout`) | websocket.py:75-193, 247-284 | Replaced `asyncio.gather(*[conn.send_text(data)])` with non-blocking enqueue. One slow client can no longer back-pressure the fan-out; full queue drops+warns. `_run_sender` reaps dead sockets on hard send error. |
+| `IDLE_TIMEOUT_SECONDS` (90s) `asyncio.wait_for` on `receive_text` | websocket.py:65, 380/432/476 | Half-open sockets from dead containers no longer block the receive loop forever; `TimeoutError` → `finally disconnect`. |
 | `httpx` self-call `validate_channel_access` REMOVED; `settings` import dropped from websocket.py | websocket.py (was) | The channel WS no longer makes an HTTP round-trip to `/api/permissions/check` on the local server (deadlocks/latency risk gone). Channel access now gated only by panel token. |
-| `structlog` logger (`log`) replaced the old logger; `validate_agent_exists` kept for agent/session/notifications | websocket.py:30, 337 | Logging consistent with rest of API. |
-| `system_stream` endpoint + `broadcast_system` + `connect_system` (already present pre-baseline) — the commit RETAINED the no-token path for `/ws/system` | websocket.py:208-212, 316-322, 608 | Operator stream stays ungated; rate-limit/usage telemetry reachable without panel token. |
+| `structlog` logger (`log`) replaced the old logger; `validate_agent_exists` kept for agent/session/notifications | websocket.py:60, 314 | Logging consistent with rest of API. |
+| `system_stream` endpoint + `broadcast_system` + `connect_system` (already present pre-baseline) — the commit RETAINED the no-token path for `/ws/system` | websocket.py:219, 297, 455 | Operator stream stays ungated; rate-limit/usage telemetry reachable without panel token (gated since `536bbb64`, see the risk below). |
 
 `middleware_docs.py` and `utils/*` are byte-for-byte unchanged since baseline. `websocket_bridge.py` was unchanged at the snapshot but has since been edited by the chat-subsystem live-delivery work (the `_handle_message_event` forwarder + `MESSAGE_SENT` subscription — see the post-snapshot note above).
 
@@ -287,15 +287,15 @@ Logic-touching changes in that commit, scoped to this slice:
 
 | Title | File:Line | Claim | Severity |
 |-------|-----------|-------|----------|
-| `/ws/system` ungated while siblings require panel token | websocket.py:608 | ~~The rate-limit/usage operator stream has no `_require_panel_token` call; if nginx does not edge-gate `/ws/system`, any reachable client gets RATE_LIMIT_HIT/LIFTED + USAGE_SNAPSHOT telemetry. The other four streams gate.~~ **RESOLVED (`536bbb64`)**: `/ws/system` now calls `_require_panel_token` (websocket.py:621); all `/ws/*` endpoints are consistently gated (five then; the comms-subsystem teardown since removed `/ws/channels` + `/ws/sessions`, leaving three). | ~~medium~~ resolved |
-| `_run_sender` self-cancels its own task on send error | websocket.py:155 | `self.disconnect(ws)` pops `conn.sender` and calls `.cancel()` on the task currently running `_run_sender`. The immediate `return` mitigates, but a cancellation landing on a returning task is a subtle race; under heavy churn could mask a later send or trip a CancelledError in an `except Exception` handler. | low |
-| Concurrent set mutation between sender-task `disconnect` and receive-loop `finally disconnect` | websocket.py:155 / 425 | Two tasks (sender + receive loop) can call `disconnect(ws)` on the same socket concurrently. `set.discard` is idempotent, but a `broadcast_to_*` iterating the same set on the loop thread during the sender-task's `disconnect` could raise `Set changed size during iteration`. Single-loop asyncio makes this rare but not impossible. | low |
-| `validate_agent_exists` opens its own DB session via `async for db in get_db()` per WS upgrade | websocket.py:347 | Each `/agents`, `/notifications` upgrade grabs a session just to confirm the viewer exists — extra session pressure under many concurrent panel connections; the check is also bypassable in dev (no token). | low |
+| `/ws/system` ungated while siblings require panel token | websocket.py:455 | ~~The rate-limit/usage operator stream has no `_require_panel_token` call; if nginx does not edge-gate `/ws/system`, any reachable client gets RATE_LIMIT_HIT/LIFTED + USAGE_SNAPSHOT telemetry. The other four streams gate.~~ **RESOLVED (`536bbb64`)**: `/ws/system` now calls `_require_panel_token`; all `/ws/*` endpoints are consistently gated (five then; the comms-subsystem teardown since removed `/ws/channels` + `/ws/sessions`, leaving three). | ~~medium~~ resolved |
+| `_run_sender` self-cancels its own task on send error | websocket.py:166 | `self.disconnect(ws)` pops `conn.sender` and calls `.cancel()` on the task currently running `_run_sender`. The immediate `return` mitigates, but a cancellation landing on a returning task is a subtle race; under heavy churn could mask a later send or trip a CancelledError in an `except Exception` handler. | low |
+| Concurrent set mutation between sender-task `disconnect` and receive-loop `finally disconnect` | websocket.py:192 / 399 | Two tasks (sender + receive loop) can call `disconnect(ws)` on the same socket concurrently. `set.discard` is idempotent, but a `broadcast_to_*` iterating the same set on the loop thread during the sender-task's `disconnect` could raise `Set changed size during iteration`. Single-loop asyncio makes this rare but not impossible. | low |
+| `validate_agent_exists` opens its own DB session via `async for db in get_db()` per WS upgrade | websocket.py:314 | Each `/agents`, `/notifications` upgrade grabs a session just to confirm the viewer exists — extra session pressure under many concurrent panel connections; the check is also bypassable in dev (no token). | low |
 | Lifespan shutdown hangs if `orchestrator.stop()` blocks | app.py:184 | The new stop-before-close-db order is correct, but a hung `stop()` now blocks `close_optimal_service` + `close_db` (wrapped in try/except, so a hang — not an exception — is the failure mode). Pre-baseline, a hung stop only affected bootstrap's finally. | low |
 | 422 response body still echoes unscrubbed secrets | middleware.py:434 | `_scrub_secrets` only scrubs the LOG, not the response. A client sending a `git_token` that fails validation gets it back in the 422 `body` field. By design but a leak surface if logs/responses are captured. | low |
-| `_resolve_agent_identity` `system` role bypasses DB lookup | deps.py:281 | `role=system` returns `UUID(x_agent_id)` with no DB check. In dev (no auth) a caller can claim `system` with any UUID and get an `AgentContext` for a non-existent agent. Auth-required mode still needs a valid HMAC, mitigating prod. | low |
+| `_resolve_agent_identity` `system` role bypasses DB lookup | deps.py:353 | `role=system` returns `UUID(x_agent_id)` with no DB check. In dev (no auth) a caller can claim `system` with any UUID and get an `AgentContext` for a non-existent agent. Auth-required mode still needs a valid HMAC, mitigating prod. | low |
 | `_enqueue_or_send` legacy fallback creates unbounded fire-and-forget tasks | websocket.py:266 | For an unregistered socket (shouldn't happen since every `connect_*` registers), a `_send_with_timeout` task is spawned per message with no queue cap. Only the legacy path; held in `_pending_sends` for GC safety. | low |
-| `broadcast_notification` double-iterates notification connections | websocket.py:665-691 | It reads `manager.notification_connections.get(agent_id)` then calls `manager._enqueue_or_send` per conn, bypassing the `broadcast_to_*` serializer. If a disconnect happens between the snapshot and the enqueue, the enqueue targets a dead socket whose sender was cancelled — `_enqueue_or_send` falls to the legacy fire-and-forget path. Low. | low |
+| `broadcast_notification` double-iterates notification connections | websocket.py:518-544 | It reads `manager.notification_connections.get(agent_id)` then calls `manager._enqueue_or_send` per conn, bypassing the `broadcast_to_*` serializer. If a disconnect happens between the snapshot and the enqueue, the enqueue targets a dead socket whose sender was cancelled — `_enqueue_or_send` falls to the legacy fire-and-forget path. Low. | low |
 | Stale module docstring misleads future edits | websocket.py:8-13 | Describes query-param agent validation as the security model; actual model is CEO HMAC. A future edit trusting the docstring could weaken the gate. | low |
 
 ## Health

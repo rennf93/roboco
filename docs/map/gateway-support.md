@@ -1,123 +1,118 @@
 ## Purpose
-The support layer of the agent gateway: pure/cheap components the Choreographer composes into intent-verb sequences. Envelope is the wire contract; claim_guards/claimant_lock/trigger_filter gate concurrency and spawn decisions; content_actions smart-wraps the do-tools (commit/note/dm/notify/evidence/progress/pr_update/playbook/pitch); evidence_builder/evidence_repo assemble briefings; role_config is the per-role verb/tool manifest source; rate_limit_tracker persists provider park state in Redis; quality_gate runs the pre-submit fast checks; merge_chain resolves PR targets; commit_validator/remediation/kb_authz are small policy shims. None of these own the verb state machine — they are invoked BY the Choreographer and the MCP route handlers.
+The support layer of the agent gateway: pure/cheap components the Choreographer composes into intent-verb sequences. Envelope is the wire contract; claim_guards/claimant_lock gate claim concurrency (the trigger_filter spawn gate was deleted as dead code in 1c87a4e4); content_actions smart-wraps the do-tools (commit/note/dm/notify/evidence/progress/pr_update/playbook/pitch); evidence_builder/evidence_repo assemble briefings; role_config is the per-role verb/tool manifest source; rate_limit_tracker persists provider park state in Redis; quality_gate runs the pre-submit fast checks; merge_chain resolves PR targets; commit_validator/remediation/kb_authz are small policy shims. None of these own the verb state machine — they are invoked BY the Choreographer and the MCP route handlers.
 
 ## Files
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/gateway/__init__.py | Package marker + __all__ re-export list of the gateway submodules. | 24 |
-| roboco/services/gateway/envelope.py | Canonical Envelope dataclass every verb returns; ok/error factory methods + introspection + as_dict wire serializer. | 278 |
-| roboco/services/gateway/claim_guards.py | Pre-mutation claim-time predicates: already_active, paused, unmet-dependency; first non-None short-circuits claim. | 112 |
-| roboco/services/gateway/claimant_lock.py | Pure single-claimant acquire decision + heartbeat staleness test; caller owns DB writes. | 49 |
-| roboco/services/gateway/trigger_filter.py | Pure spawn-gating decision (stale/provider-rate/claimant/cooldown/role-rate) for (task,trigger) pairs. | 130 |
-| roboco/services/gateway/commit_validator.py | Commit-message subject gate: length, banned single-words, conventional-commits soft hint. | 101 |
-| roboco/services/gateway/content_actions.py | ContentActions: smart-wrapped do-tools (commit/note/dm/notify/evidence/progress/pr_update/playbook/pitch/inbox) with RBAC, ownership, anti-soup, heartbeat refresh. | 1873 |
-| roboco/services/gateway/evidence_builder.py | Pure assembly of EvidencePayload + context_briefing + task_handoff (incl. pr_review verdict) + role-shaped memory query. | 221 |
-| roboco/services/gateway/evidence_repo.py | Capped DB queries for context_briefing: unread a2a/mentions/notifications, team activity, blockers, journal highlights, company goals, similar_memory. | 364 |
-| roboco/services/gateway/kb_authz.py | KB/docs authorization -> Envelope.not_authorized with role-list remediate hint. | 91 |
-| roboco/services/gateway/merge_chain.py | Branch-depth + parent-branch resolution by string surgery and via the parent task's real branch_name (cross-team safe); `find_topology_issue` detects a stale/incoherent PR-base vs. parent-topology mismatch, reused at `open_pr` preflight and the `parent_task_id` re-parent write-through. | 236 |
-| roboco/services/gateway/quality_gate.py | run_quality_commands: execute project fast checks in workspace, fail-closed on real failure, fail-open on infra, reap timeout zombies. | 101 |
-| roboco/services/gateway/rate_limit_tracker.py | RateLimitStateTracker: Redis JSON blob per provider; atomic Lua activate-merge (preserves probe_failures), probe-failure increment/reset; list_rate_limited_providers scan. | 243 |
-| roboco/services/gateway/remediation.py | Concrete single-sentence remediation hint strings for tracing-gap/invalid-state rejections. | 100 |
-| roboco/services/gateway/role_config.py | ROLE_CONFIGS: per-role flow_tools/do_tools/allows_write/allows_subagent/description; flow tools derived from lifecycle.intents_for_role. | 273 |
+| roboco/services/gateway/__init__.py | Package marker + __all__ re-export list of the gateway submodules. | 23 |
+| roboco/services/gateway/envelope.py | Canonical Envelope dataclass every verb returns; ok/error factory methods + introspection + as_dict wire serializer. | 334 |
+| roboco/services/gateway/claim_guards.py | Pre-mutation claim-time predicates: already_active, paused, unmet-dependency; first non-None short-circuits claim. | 215 |
+| roboco/services/gateway/claimant_lock.py | Pure single-claimant acquire decision + heartbeat staleness test; caller owns DB writes. | 48 |
+| roboco/services/gateway/commit_validator.py | Commit-message subject gate: length, banned single-words, conventional-commits soft hint. | 175 |
+| roboco/services/gateway/content_actions.py | ContentActions: smart-wrapped do-tools (commit/note/dm/notify/evidence/progress/pr_update/playbook/pitch/inbox) with RBAC, ownership, anti-soup, heartbeat refresh. | 7626 |
+| roboco/services/gateway/evidence_builder.py | Pure assembly of EvidencePayload + context_briefing + task_handoff (incl. pr_review verdict) + role-shaped memory query. | 480 |
+| roboco/services/gateway/evidence_repo.py | Capped DB queries for context_briefing: unread a2a/mentions/notifications, team activity, blockers, journal highlights, company goals, similar_memory. | 530 |
+| roboco/services/gateway/kb_authz.py | KB/docs authorization -> Envelope.not_authorized with role-list remediate hint. | 90 |
+| roboco/services/gateway/merge_chain.py | Branch-depth + parent-branch resolution by string surgery and via the parent task's real branch_name (cross-team safe); `find_topology_issue` detects a stale/incoherent PR-base vs. parent-topology mismatch, reused at `open_pr` preflight and the `parent_task_id` re-parent write-through. | 242 |
+| roboco/services/gateway/quality_gate.py | run_quality_commands: execute project fast checks in workspace, fail-closed on real failure, fail-open on infra, reap timeout zombies. | 94 |
+| roboco/services/gateway/rate_limit_tracker.py | RateLimitStateTracker: Redis JSON blob per provider; atomic Lua activate-merge (preserves probe_failures), probe-failure increment/reset; list_rate_limited_providers scan. | 271 |
+| roboco/services/gateway/remediation.py | Concrete single-sentence remediation hint strings for tracing-gap/invalid-state rejections. | 149 |
+| roboco/services/gateway/role_config.py | ROLE_CONFIGS: per-role flow_tools/do_tools/allows_write/allows_subagent/description; flow tools derived from lifecycle.intents_for_role. | 423 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | Envelope | dataclass | roboco/services/gateway/envelope.py:22 | Canonical gateway response; fields status/task_id/next/evidence/context_briefing/error/message/remediate/missing/field_hints/correlation_id/current_state/valid_next_verbs. |
-| Envelope.ok | classmethod | roboco/services/gateway/envelope.py:52 | Success envelope factory requiring status + next. |
-| Envelope._missing_message | staticmethod | roboco/services/gateway/envelope.py:70 | Build non-null human-readable message for tracing_gap/incomplete_input so audit log + agent see the full picture. |
-| Envelope.tracing_gap | classmethod | roboco/services/gateway/envelope.py:85 | Rejection for missing required tracing tokens. |
-| Envelope.incomplete_input | classmethod | roboco/services/gateway/envelope.py:101 | Structured under-filled-input rejection carrying field_hints answer-key (spec 5.2.1). |
-| Envelope.invalid_state | classmethod | roboco/services/gateway/envelope.py:125 | State-machine rejection with remediate hint. |
-| Envelope.not_authorized | classmethod | roboco/services/gateway/envelope.py:140 | RBAC denial with remediate. |
-| Envelope.not_found | classmethod | roboco/services/gateway/envelope.py:155 | 404-style rejection. |
-| Envelope.circuit_open | classmethod | roboco/services/gateway/envelope.py:159 | Per-verb retry circuit-breaker tripped signal (wired by agent_sdk runtime, not gateway). |
-| Envelope.from_decision | classmethod | roboco/services/gateway/envelope.py:186 | Map a lifecycle.spec rejection Decision onto the right envelope flavor; raises on allow Decision. |
-| Envelope.with_introspection | method | roboco/services/gateway/envelope.py:230 | Populate current_state + valid_next_verbs from task+role; best-effort, never raises (catches MissingGreenlet on expired ORM). |
-| Envelope.as_dict | method | roboco/services/gateway/envelope.py:257 | Wire-format dict; drops None fields except error; always emits error/correlation_id/current_state/valid_next_verbs. |
+| Envelope.ok | classmethod | roboco/services/gateway/envelope.py:57 | Success envelope factory requiring status + next. |
+| Envelope._missing_message | staticmethod | roboco/services/gateway/envelope.py:75 | Build non-null human-readable message for tracing_gap/incomplete_input so audit log + agent see the full picture. |
+| Envelope.tracing_gap | classmethod | roboco/services/gateway/envelope.py:90 | Rejection for missing required tracing tokens. |
+| Envelope.incomplete_input | classmethod | roboco/services/gateway/envelope.py:106 | Structured under-filled-input rejection carrying field_hints answer-key (spec 5.2.1). |
+| Envelope.invalid_state | classmethod | roboco/services/gateway/envelope.py:130 | State-machine rejection with remediate hint. |
+| Envelope.not_authorized | classmethod | roboco/services/gateway/envelope.py:176 | RBAC denial with remediate. |
+| Envelope.not_found | classmethod | roboco/services/gateway/envelope.py:191 | 404-style rejection. |
+| Envelope.circuit_open | classmethod | roboco/services/gateway/envelope.py:209 | Per-verb retry circuit-breaker tripped signal (wired by agent_sdk runtime, not gateway). |
+| Envelope.from_decision | classmethod | roboco/services/gateway/envelope.py:242 | Map a lifecycle.spec rejection Decision onto the right envelope flavor; raises on allow Decision. |
+| Envelope.with_introspection | method | roboco/services/gateway/envelope.py:285 | Populate current_state + valid_next_verbs from task+role; best-effort, never raises (catches MissingGreenlet on expired ORM). |
+| Envelope.as_dict | method | roboco/services/gateway/envelope.py:312 | Wire-format dict; drops None fields except error; always emits error/correlation_id/current_state/valid_next_verbs. |
 | already_active_guard | function | roboco/services/gateway/claim_guards.py:35 | Reject claim if agent has any active (claimed/in_progress/verifying/blocked) task other than target. |
 | paused_tasks_guard | function | roboco/services/gateway/claim_guards.py:61 | Reject claim if agent has a paused task other than target (PM re-entry on own paused umbrella exempt). |
 | project_budget_exceeded_guard | function | roboco/services/gateway/claim_guards.py:86 | `ROBOCO_TASK_BUDGETS_ENABLED`-gated: reject a WORK-STARTING claim (`i_will_work_on`/`i_will_plan` only — review/doc/gate/inbound-PR claims are exempt so in-flight work can always finish) once the project's `monthly_budget_usd` has been reached this calendar month; fires only when `monthly_budget_usd` is set (`None` = no cap). Spend counts closed sessions' `estimated_cost_usd` plus open sessions priced live from token snapshots. |
-| unmet_dependency_guard | function | roboco/services/gateway/claim_guards.py:112 | Reject claim while task has non-terminal depends_on; holds pre-assigned dev at claim verb. |
+| unmet_dependency_guard | function | roboco/services/gateway/claim_guards.py:190 | Reject claim while task has non-terminal depends_on; holds pre-assigned dev at claim verb. |
 | ClaimDecision | enum | roboco/services/gateway/claimant_lock.py:18 | GRANTED / GRANTED_AFTER_STALE_RELEASE / BLOCKED_OTHER_ACTIVE. |
 | is_stale | function | roboco/services/gateway/claimant_lock.py:24 | True when no heartbeat or heartbeat older than threshold_seconds. |
 | try_acquire | function | roboco/services/gateway/claimant_lock.py:35 | Decide whether agent may acquire/refresh claim on task (pure; caller persists). |
-| TriggerKind | enum | roboco/services/gateway/trigger_filter.py:17 | a2a / notification / scan / escalation. |
-| SpawnDecision | enum | roboco/services/gateway/trigger_filter.py:24 | SPAWN / QUEUE / DROP. |
-| decide_spawn | function | roboco/services/gateway/trigger_filter.py:84 | Apply 5 ordered rules (stale>provider-rate>claimant>cooldown>role-rate) returning a Decision. |
-| _stale_trigger_decision | function | roboco/services/gateway/trigger_filter.py:68 | DROP for terminal task or stale a2a code_review trigger; else None. |
-| validate_commit_message | function | roboco/services/gateway/commit_validator.py:48 | Validate commit subject: empty/length/banned-word/conventional-shape soft hint. |
-| ValidationResult | dataclass | roboco/services/gateway/commit_validator.py:40 | ok/reason/hint/remediate outcome of commit message validation. |
-| ContentActionsDeps | dataclass | roboco/services/gateway/content_actions.py:282 | Bundled service deps: task/git/a2a/journal/workspace/notifications + notification_delivery + evidence_repo. |
-| ContentActions | class | roboco/services/gateway/content_actions.py:329 | Smart-wrapped do-tools; validates input, auto-injects task_id, calls service, returns Envelope. |
-| ContentActions.commit | method | roboco/services/gateway/content_actions.py:462 | Validate msg, RBAC (developer/documenter only), active-task + active-claimant gates, git commit, add progress, heartbeat. |
-| ContentActions.note | method | roboco/services/gateway/content_actions.py:593 | Route scope=handoff to section write; else journal note with soup-guard + structured normalize + ownership. |
-| ContentActions._write_journal_note | method | roboco/services/gateway/content_actions.py:661 | Validate+persist journal entry for note/decision/reflect/learning/struggle; tolerant of thin notes. |
-| ContentActions._record_section_handoff | method | roboco/services/gateway/content_actions.py:862 | Write role-specific note SECTION (dev_notes/quick_context/etc.) via record_section_note + journal trail. |
-| ContentActions.draft_playbook | method | roboco/services/gateway/content_actions.py:718 | Delivery roles draft a curated playbook; ConflictError -> invalid_state. |
-| ContentActions.approve_playbook | method | roboco/services/gateway/content_actions.py:767 | Auditor approves draft -> approved + indexed. |
-| ContentActions.reject_playbook | method | roboco/services/gateway/content_actions.py:773 | Auditor rejects playbook -> archived with reason. |
-| ContentActions.archive_playbook | method | roboco/services/gateway/content_actions.py:784 | Auditor archives an approved playbook -> retired. |
-| ContentActions._curate_playbook | method | roboco/services/gateway/content_actions.py:792 | Shared Auditor-only curation; commit status BEFORE RAG index/unindex; ConflictError->invalid_state. |
-| ContentActions.pitch | method | roboco/services/gateway/content_actions.py:935 | Board (PO/Head Marketing) proposes a product; validates cells, ConflictError/ValidationError->invalid_state. |
-| ContentActions.propose_feature_spotlight | method | roboco/services/gateway/content_actions.py:1238 | Head-of-Marketing-only (`_FEATURE_SPOTLIGHT_ROLES`); validates feature_slug/title/body, checks `XEngine.is_feature_seen`, calls `XEngine.materialize_feature_spotlight` (creates a held X-post draft + completes the caller's exploration task). |
-| ContentActions.dm | method | roboco/services/gateway/content_actions.py:1080 | A2A direct message; requires task_id; no-comms RBAC; A2AAccessDenied->not_authorized. |
-| ContentActions.notify | method | roboco/services/gateway/content_actions.py:1150 | Formal ack-required notification (PMs/Board only); rejects bad priority, no-comms sender, disallowed recipient. |
-| ContentActions._reject_disallowed_recipient | method | roboco/services/gateway/content_actions.py:1230 | Reject notify to prompter/secretary (no ack path) then defer to CEO-dependency-notify check. |
-| ContentActions._reject_ceo_dependency_notify | method | roboco/services/gateway/content_actions.py:1268 | Reject CEO notify about an open dependency block (noise). |
-| ContentActions._dependency_block_reason | method | roboco/services/gateway/content_actions.py:1294 | Return reason string if task_id waiting on unfinished deps, else None. |
-| ContentActions.evidence | method | roboco/services/gateway/content_actions.py:1324 | Inspect task PR diff/commits/files; allowed for assignee/unassigned/board-co-review/dependency; builds EvidencePayload. |
-| ContentActions._is_caller_dependency | method | roboco/services/gateway/content_actions.py:1313 | True when task is a dependency of a task the caller is assigned to (read-only evidence exemption). |
-| ContentActions.progress | method | roboco/services/gateway/content_actions.py:1424 | Append progress update; plan_step marks checklist; ownership+active-claim+active-status gate. |
-| ContentActions.notify_list | method | roboco/services/gateway/content_actions.py:1607 | Read agent notification inbox via NotificationDeliveryService. |
-| ContentActions.notify_get | method | roboco/services/gateway/content_actions.py:1649 | Read one notification + mark read. |
-| ContentActions.notify_ack | method | roboco/services/gateway/content_actions.py:1818 | Acknowledge a notification; non-recipient -> not_authorized. |
-| ContentActions.read_messages | method | roboco/services/gateway/content_actions.py:1852 | Mark all caller's unread A2A DMs as read (clears i_am_idle soft-block). |
-| ContentActions.read_a2a | method | roboco/services/gateway/content_actions.py:1846 | Return caller's unread incoming A2A message bodies (content, not just the counter), then clear them; excludes the caller's own sends. |
-| ContentActions.pr_update | method | roboco/services/gateway/content_actions.py:1737 | Update existing PR title/body/reviewers; authorized for assignee/main_pm/cell_pm on team. |
-| ContentActions._pr_update_is_authorized | staticmethod | roboco/services/gateway/content_actions.py:1718 | True iff caller is assignee, main_pm, or cell_pm on matching team. |
-| ContentActions._active_claim_violation | method | roboco/services/gateway/content_actions.py:379 | Refuse write when caller is not active_claimant (board co-reviewer exempt). |
-| ContentActions._verify_explicit_task_ownership | method | roboco/services/gateway/content_actions.py:565 | Gate Set D: refuse content posts on tasks caller doesn't own; stale assigned_to falls through to active-claim check. |
-| ContentActions._board_may_co_review | method | roboco/services/gateway/content_actions.py:552 | True iff board role posting to a board/coordination task. |
-| ContentActions._touch_heartbeat | method | roboco/services/gateway/content_actions.py:365 | Best-effort heartbeat refresh on content-write success (suppress exceptions). |
-| ContentActions._reject_soup | staticmethod | roboco/services/gateway/content_actions.py:398 | Universal anti-soup guard; returns invalid_state Envelope (never raw 422, would trip circuit breaker). |
-| ContentActions._reject_structured_soup | classmethod | roboco/services/gateway/content_actions.py:418 | Soup-guard scope's narrative sub-fields when agent filled them; omitted fields keep placeholder. |
-| _merge_resumption_fields | function | roboco/services/gateway/content_actions.py:39 | Fold top-level done/next/where_to_look into handoff section without overwriting supplied keys (fixes minimax section={} meltdown). |
-| _normalize_structured | function | roboco/services/gateway/content_actions.py:224 | Tolerant copy of structured for decision/reflect: scalar->list wrap, missing narrative fields default to placeholder. |
-| _render_journal_content | function | roboco/services/gateway/content_actions.py:166 | Build journal entry body with markdown sections for decision/reflect scopes. |
-| _strip_task_prefix | function | roboco/services/gateway/content_actions.py:1870 | Strip any [task-id] prefix the agent supplied; gateway re-adds canonical. |
-| EvidencePayload | dataclass | roboco/services/gateway/evidence_builder.py:19 | Task-scoped evidence: pr/commits/files/dev_summary/journal/acceptance/convention_findings. |
-| BriefingInputs | dataclass | roboco/services/gateway/evidence_builder.py:38 | Agent-scoped briefing inputs (a2a/mentions/notifications/gaps/activity/blockers/handoff/goals). |
-| build_evidence_for_task | function | roboco/services/gateway/evidence_builder.py:58 | Compose EvidencePayload from Task model + supplemental data. |
-| build_task_handoff | function | roboco/services/gateway/evidence_builder.py:110 | Compact prior-work digest for briefed task; None when no prior work; surfaces pr_review verdict. Also surfaces `markers.get_topology_issue(task)` as `handoff["topology_issue"]` when present (round-1 pr_gate finding F-01e642fd) — the marker `recheck_topology_after_reparent` (`task.py`) sets on a re-parent that strands an open PR previously had zero production consumers, so a stranded-base condition was silent to any agent/human until the terminal-verb `CEO_ONLY` refusal; now the assignee/PM see it on their very next verb call instead. |
-| _extract_pr_review | function | roboco/services/gateway/evidence_builder.py:163 | Pull canonical pr_review slot from notes_structured; well-typed fields only; None when absent/malformed. |
-| build_context_briefing | function | roboco/services/gateway/evidence_builder.py:194 | Compose context_briefing dict; caps each list at BRIEFING_LIST_CAP=10. |
-| shape_memory_query | function | roboco/services/gateway/evidence_builder.py:208 | Role-shape the institutional-memory query (dev=implementation, PM=decomposition, qa=defects, doc=patterns). |
-| EvidenceRepo | class | roboco/services/gateway/evidence_repo.py:18 | Capped DB queries for briefing assembly (single AsyncSession). |
-| EvidenceRepo.company_goals | method | roboco/services/gateway/evidence_repo.py:22 | Singleton charter lookup; None when empty so briefing stays token-light. |
-| EvidenceRepo.list_unread_a2a | method | roboco/services/gateway/evidence_repo.py:53 | Open A2A conversations with unread messages keyed by agent slug. |
-| EvidenceRepo.list_unread_mentions | method | roboco/services/gateway/evidence_repo.py:101 | Unacked MENTION-type notifications (acked_by is the read signal). |
-| EvidenceRepo.list_pending_notifications | method | roboco/services/gateway/evidence_repo.py:143 | Unacked, unexpired notifications addressed to agent. |
-| EvidenceRepo.task_metadata_gaps | method | roboco/services/gateway/evidence_repo.py:188 | Human-readable gaps (no acceptance criteria / no description). |
-| EvidenceRepo.recent_team_activity | method | roboco/services/gateway/evidence_repo.py:204 | Recently-updated tasks in agent's team (lane awareness). |
-| EvidenceRepo.blockers_in_lane | method | roboco/services/gateway/evidence_repo.py:238 | Blocked tasks in agent's team. |
-| EvidenceRepo.journal_highlights_for_task | method | roboco/services/gateway/evidence_repo.py:272 | Task's upstream handoff journal entries (decision/reflection/general, oldest first, cap 50). |
-| EvidenceRepo.similar_memory | method | roboco/services/gateway/evidence_repo.py:323 | Top-K institutional memory (lessons+playbooks) above min_score; best-effort returns [] on failure. |
+| validate_commit_message | function | roboco/services/gateway/commit_validator.py:61 | Validate commit subject: empty/length/banned-word/conventional-shape soft hint. |
+| ValidationResult | dataclass | roboco/services/gateway/commit_validator.py:49 | ok/reason/hint/remediate outcome of commit message validation. |
+| ContentActionsDeps | dataclass | roboco/services/gateway/content_actions.py:365 | Bundled service deps: task/git/a2a/journal/workspace/notifications + notification_delivery + evidence_repo. |
+| ContentActions | class | roboco/services/gateway/content_actions.py:827 | Smart-wrapped do-tools; validates input, auto-injects task_id, calls service, returns Envelope. |
+| ContentActions.commit | method | roboco/services/gateway/content_actions.py:991 | Validate msg, RBAC (developer/documenter only), active-task + active-claimant gates, git commit, add progress, heartbeat. |
+| ContentActions.note | method | roboco/services/gateway/content_actions.py:1167 | Route scope=handoff to section write; else journal note with soup-guard + structured normalize + ownership. |
+| ContentActions._write_journal_note | method | roboco/services/gateway/content_actions.py:1266 | Validate+persist journal entry for note/decision/reflect/learning/struggle; tolerant of thin notes. |
+| ContentActions._record_section_handoff | method | roboco/services/gateway/content_actions.py:1593 | Write role-specific note SECTION (dev_notes/quick_context/etc.) via record_section_note + journal trail. |
+| ContentActions.draft_playbook | method | roboco/services/gateway/content_actions.py:1368 | Delivery roles draft a curated playbook; ConflictError -> invalid_state. |
+| ContentActions.approve_playbook | method | roboco/services/gateway/content_actions.py:1417 | Auditor approves draft -> approved + indexed. |
+| ContentActions.reject_playbook | method | roboco/services/gateway/content_actions.py:1423 | Auditor rejects playbook -> archived with reason. |
+| ContentActions.archive_playbook | method | roboco/services/gateway/content_actions.py:1434 | Auditor archives an approved playbook -> retired. |
+| ContentActions._curate_playbook | method | roboco/services/gateway/content_actions.py:1442 | Shared Auditor-only curation; commit status BEFORE RAG index/unindex; ConflictError->invalid_state. |
+| ContentActions.pitch | method | roboco/services/gateway/content_actions.py:1671 | Board (PO/Head Marketing) proposes a product; validates cells, ConflictError/ValidationError->invalid_state. |
+| ContentActions.propose_feature_spotlight | method | roboco/services/gateway/content_actions.py:3201 | Head-of-Marketing-only (`_FEATURE_SPOTLIGHT_ROLES`); validates feature_slug/title/body, checks `XEngine.is_feature_seen`, calls `XEngine.materialize_feature_spotlight` (creates a held X-post draft + completes the caller's exploration task). |
+| ContentActions.dm | method | roboco/services/gateway/content_actions.py:5429 | A2A direct message; requires task_id; no-comms RBAC; A2AAccessDenied->not_authorized. |
+| ContentActions.notify | method | roboco/services/gateway/content_actions.py:5502 | Formal ack-required notification (PMs/Board only); rejects bad priority, no-comms sender, disallowed recipient. |
+| ContentActions._reject_disallowed_recipient | method | roboco/services/gateway/content_actions.py:5582 | Reject notify to prompter/secretary (no ack path) then defer to CEO-dependency-notify check. |
+| ContentActions._reject_ceo_dependency_notify | method | roboco/services/gateway/content_actions.py:5620 | Reject CEO notify about an open dependency block (noise). |
+| ContentActions._dependency_block_reason | method | roboco/services/gateway/content_actions.py:5646 | Return reason string if task_id waiting on unfinished deps, else None. |
+| ContentActions.evidence | method | roboco/services/gateway/content_actions.py:5761 | Inspect task PR diff/commits/files; allowed for assignee/unassigned/board-co-review/dependency; builds EvidencePayload. |
+| ContentActions._is_caller_dependency | method | roboco/services/gateway/content_actions.py:5665 | True when task is a dependency of a task the caller is assigned to (read-only evidence exemption). |
+| ContentActions.progress | method | roboco/services/gateway/content_actions.py:6984 | Append progress update; plan_step marks checklist; ownership+active-claim+active-status gate. |
+| ContentActions.notify_list | method | roboco/services/gateway/content_actions.py:7054 | Read agent notification inbox via NotificationDeliveryService. |
+| ContentActions.notify_get | method | roboco/services/gateway/content_actions.py:7096 | Read one notification + mark read. |
+| ContentActions.notify_ack | method | roboco/services/gateway/content_actions.py:7242 | Acknowledge a notification; non-recipient -> not_authorized. |
+| ContentActions.read_messages | method | roboco/services/gateway/content_actions.py:7276 | Mark all caller's unread A2A DMs as read (clears i_am_idle soft-block). |
+| ContentActions.read_a2a | method | roboco/services/gateway/content_actions.py:7293 | Return caller's unread incoming A2A message bodies (content, not just the counter), then clear them; excludes the caller's own sends. |
+| ContentActions.pr_update | method | roboco/services/gateway/content_actions.py:7158 | Update existing PR title/body/reviewers; authorized for assignee/main_pm/cell_pm on team. |
+| ContentActions._pr_update_is_authorized | staticmethod | roboco/services/gateway/content_actions.py:7140 | True iff caller is assignee, main_pm, or cell_pm on matching team. |
+| ContentActions._active_claim_violation | method | roboco/services/gateway/content_actions.py:877 | Refuse write when caller is not active_claimant (board co-reviewer exempt). |
+| ContentActions._verify_explicit_task_ownership | method | roboco/services/gateway/content_actions.py:1123 | Gate Set D: refuse content posts on tasks caller doesn't own; stale assigned_to falls through to active-claim check. |
+| ContentActions._board_may_co_review | method | roboco/services/gateway/content_actions.py:1110 | True iff board role posting to a board/coordination task. |
+| ContentActions._touch_heartbeat | method | roboco/services/gateway/content_actions.py:863 | Best-effort heartbeat refresh on content-write success (suppress exceptions). |
+| ContentActions._reject_soup | staticmethod | roboco/services/gateway/content_actions.py:927 | Universal anti-soup guard; returns invalid_state Envelope (never raw 422, would trip circuit breaker). |
+| ContentActions._reject_structured_soup | classmethod | roboco/services/gateway/content_actions.py:948 | Soup-guard scope's narrative sub-fields when agent filled them; omitted fields keep placeholder. |
+| _merge_resumption_fields | function | roboco/services/gateway/content_actions.py:78 | Fold top-level done/next/where_to_look into handoff section without overwriting supplied keys (fixes minimax section={} meltdown). |
+| _normalize_structured | function | roboco/services/gateway/content_actions.py:292 | Tolerant copy of structured for decision/reflect: scalar->list wrap, missing narrative fields default to placeholder. |
+| _render_journal_content | function | roboco/services/gateway/content_actions.py:234 | Build journal entry body with markdown sections for decision/reflect scopes. |
+| _strip_task_prefix | function | roboco/services/gateway/content_actions.py:7605 | Strip any [task-id] prefix the agent supplied; gateway re-adds canonical. |
+| EvidencePayload | dataclass | roboco/services/gateway/evidence_builder.py:38 | Task-scoped evidence: pr/commits/files/dev_summary/journal/acceptance/convention_findings. |
+| BriefingInputs | dataclass | roboco/services/gateway/evidence_builder.py:97 | Agent-scoped briefing inputs (a2a/mentions/notifications/gaps/activity/blockers/handoff/goals). |
+| build_evidence_for_task | function | roboco/services/gateway/evidence_builder.py:179 | Compose EvidencePayload from Task model + supplemental data. |
+| build_task_handoff | function | roboco/services/gateway/evidence_builder.py:279 | Compact prior-work digest for briefed task; None when no prior work; surfaces pr_review verdict. Also surfaces `markers.get_topology_issue(task)` as `handoff["topology_issue"]` when present (round-1 pr_gate finding F-01e642fd) — the marker `recheck_topology_after_reparent` (`task.py`) sets on a re-parent that strands an open PR previously had zero production consumers, so a stranded-base condition was silent to any agent/human until the terminal-verb `CEO_ONLY` refusal; now the assignee/PM see it on their very next verb call instead. |
+| _extract_pr_review | function | roboco/services/gateway/evidence_builder.py:379 | Pull canonical pr_review slot from notes_structured; well-typed fields only; None when absent/malformed. |
+| build_context_briefing | function | roboco/services/gateway/evidence_builder.py:448 | Compose context_briefing dict; caps each list at BRIEFING_LIST_CAP=10. |
+| shape_memory_query | function | roboco/services/gateway/evidence_builder.py:468 | Role-shape the institutional-memory query (dev=implementation, PM=decomposition, qa=defects, doc=patterns). |
+| EvidenceRepo | class | roboco/services/gateway/evidence_repo.py:47 | Capped DB queries for briefing assembly (single AsyncSession). |
+| EvidenceRepo.company_goals | method | roboco/services/gateway/evidence_repo.py:51 | Singleton charter lookup; None when empty so briefing stays token-light. |
+| EvidenceRepo.list_unread_a2a | method | roboco/services/gateway/evidence_repo.py:91 | Open A2A conversations with unread messages keyed by agent slug. |
+| EvidenceRepo.list_unread_mentions | method | roboco/services/gateway/evidence_repo.py:156 | Unacked MENTION-type notifications (acked_by is the read signal). |
+| EvidenceRepo.list_pending_notifications | method | roboco/services/gateway/evidence_repo.py:196 | Unacked, unexpired notifications addressed to agent. |
+| EvidenceRepo.task_metadata_gaps | method | roboco/services/gateway/evidence_repo.py:254 | Human-readable gaps (no acceptance criteria / no description). |
+| EvidenceRepo.recent_team_activity | method | roboco/services/gateway/evidence_repo.py:270 | Recently-updated tasks in agent's team (lane awareness). |
+| EvidenceRepo.blockers_in_lane | method | roboco/services/gateway/evidence_repo.py:304 | Blocked tasks in agent's team. |
+| EvidenceRepo.journal_highlights_for_task | method | roboco/services/gateway/evidence_repo.py:407 | Task's upstream handoff journal entries (decision/reflection/general, oldest first, cap 50). |
+| EvidenceRepo.similar_memory | method | roboco/services/gateway/evidence_repo.py:476 | Top-K institutional memory (lessons+playbooks) above min_score; best-effort returns [] on failure. |
 | authorize_kb_action | function | roboco/services/gateway/kb_authz.py:46 | Verdict on a KB action: None=allowed, else Envelope.not_authorized naming allowed roles. |
 | docs_denial_envelope | function | roboco/services/gateway/kb_authz.py:68 | Wrap DocsService denial as Envelope.not_authorized with role-appropriate remediate. |
-| branch_depth | function | roboco/services/gateway/merge_chain.py:27 | Number of --separated hierarchy segments; master=0; raises on invalid branch. |
-| parent_branch_for | function | roboco/services/gateway/merge_chain.py:37 | Merge target by string surgery (same-team only); root->master. |
-| resolve_parent_branch | coroutine | roboco/services/gateway/merge_chain.py:62 | Cross-team-safe base/target: parent task's real branch_name; branchless parent falls back to project default branch. |
-| _project_default_branch | coroutine | roboco/services/gateway/merge_chain.py:97 | Resolve task's project head rung via a TaskService resolver when present, else `roboco.models.env_branches.head_branch(task.project)` (the env-ladder head rung, shimmed from `default_branch` when no ladder is declared); None when unresolvable so the caller falls back to string derivation. |
-| TopologyIssue | dataclass | roboco/services/gateway/merge_chain.py:124 | Detected PR-base/parent-topology mismatch: `shape` (`parented_base_is_head`/`parentless_in_coordination_tree`), `expected_base`, `actual_base`, `message`, `repair`. |
-| find_topology_issue | coroutine | roboco/services/gateway/merge_chain.py:148 | Entry point reused at `open_pr` preflight and the `parent_task_id` re-parent write-through; dispatches to `_parented_topology_issue` or `_parentless_topology_issue` by whether the task has a parent. |
-| _parented_topology_issue | coroutine | roboco/services/gateway/merge_chain.py:164 | Shape (a): flags a real parent branch existing but the task's `recorded_pr_base` still pointing at the project's integration/head branch instead — the 5612b225/PR #856 incident class. Skips when the parent owns no branch (legitimate branchless coordination) and when THIS task's own branch was cut via the deliberate `markers.BASE_BRANCH_FALLBACK` (round-1 pr_gate finding F-2789f259) — `TaskService._create_branch_in_project` stamps that marker when `create_branch`'s returned actual base differs from the requested `parent_branch` (git.py's own fallback: the parent branch was DB-recorded but not yet pushed at branch-creation time), a real, already-logged, benign condition the developer has no verb to repair, not a genuine restructure. |
-| _parentless_topology_issue | coroutine | roboco/services/gateway/merge_chain.py:202 | Shape (b): flags a parentless root whose `branch_depth` > 1 — detached from a coordination ancestor during a restructure. A genuinely standalone root's branch is always depth 1 and never fires. |
-| GateResult | dataclass | roboco/services/gateway/quality_gate.py:27 | passed/skipped/failures/output + summary + output_excerpt properties. |
-| run_quality_commands | coroutine | roboco/services/gateway/quality_gate.py:50 | Run each (name,command) in workspace, aggregate; runs all (no short-circuit). |
-| _run_one | coroutine | roboco/services/gateway/quality_gate.py:75 | Run one command via shell; timeout kills+reaps zombie, returns 124; None returncode fails closed (1). |
+| branch_depth | function | roboco/services/gateway/merge_chain.py:31 | Number of --separated hierarchy segments; master=0; raises on invalid branch. |
+| parent_branch_for | function | roboco/services/gateway/merge_chain.py:41 | Merge target by string surgery (same-team only); root->master. |
+| resolve_parent_branch | coroutine | roboco/services/gateway/merge_chain.py:66 | Cross-team-safe base/target: parent task's real branch_name; branchless parent falls back to project default branch. |
+| _project_default_branch | coroutine | roboco/services/gateway/merge_chain.py:107 | Resolve task's project head rung via a TaskService resolver when present, else `roboco.models.env_branches.head_branch(task.project)` (the env-ladder head rung, shimmed from `default_branch` when no ladder is declared); None when unresolvable so the caller falls back to string derivation. |
+| TopologyIssue | dataclass | roboco/services/gateway/merge_chain.py:126 | Detected PR-base/parent-topology mismatch: `shape` (`parented_base_is_head`/`parentless_in_coordination_tree`), `expected_base`, `actual_base`, `message`, `repair`. |
+| find_topology_issue | coroutine | roboco/services/gateway/merge_chain.py:149 | Entry point reused at `open_pr` preflight and the `parent_task_id` re-parent write-through; dispatches to `_parented_topology_issue` or `_parentless_topology_issue` by whether the task has a parent. |
+| _parented_topology_issue | coroutine | roboco/services/gateway/merge_chain.py:165 | Shape (a): flags a real parent branch existing but the task's `recorded_pr_base` still pointing at the project's integration/head branch instead — the 5612b225/PR #856 incident class. Skips when the parent owns no branch (legitimate branchless coordination) and when THIS task's own branch was cut via the deliberate `markers.BASE_BRANCH_FALLBACK` (round-1 pr_gate finding F-2789f259) — `TaskService._create_branch_in_project` stamps that marker when `create_branch`'s returned actual base differs from the requested `parent_branch` (git.py's own fallback: the parent branch was DB-recorded but not yet pushed at branch-creation time), a real, already-logged, benign condition the developer has no verb to repair, not a genuine restructure. |
+| _parentless_topology_issue | coroutine | roboco/services/gateway/merge_chain.py:209 | Shape (b): flags a parentless root whose `branch_depth` > 1 — detached from a coordination ancestor during a restructure. A genuinely standalone root's branch is always depth 1 and never fires. |
+| GateResult | dataclass | roboco/services/gateway/quality_gate.py:30 | passed/skipped/failures/output + summary + output_excerpt properties. |
+| run_quality_commands | coroutine | roboco/services/gateway/quality_gate.py:52 | Run each (name,command) in workspace, aggregate; runs all (no short-circuit). |
+| _run_one | coroutine | roboco/services/gateway/quality_gate.py:77 | Run one command via shell; timeout kills+reaps zombie, returns 124; None returncode fails closed (1). |
 | RateLimitStateTracker | class | roboco/services/gateway/rate_limit_tracker.py:88 | Per-provider Redis JSON state: rate_limited/kind/activated_at/retry_after/affected_agents/probe_failures. |
 | RateLimitStateTracker.activate | coroutine | roboco/services/gateway/rate_limit_tracker.py:134 | Mark provider parked (rate_limited/overloaded); Lua atomic merge (_ACTIVATE_RATE_LIMIT) carries over previous probe_failures count so a re-park cannot reset the give-up counter. |
 | RateLimitStateTracker.clear | coroutine | roboco/services/gateway/rate_limit_tracker.py:165 | Delete provider state key. |
@@ -130,21 +125,21 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | hint_for_missing_reflect | function | roboco/services/gateway/remediation.py:18 | Hint: call note(scope='reflect',...). |
 | hint_for_unaddressed_acceptance_criteria | function | roboco/services/gateway/remediation.py:25 | Hint: every AC needs a referencing artifact. |
 | hint_for_missing_ac_coverage | function | roboco/services/gateway/remediation.py | #686: a `delegate` child draft rejected for a `covers_parent_criteria` ref that doesn't resolve now gets a copy-pasteable corrected skeleton with the parent's REAL criteria inlined (id when present, quoted exact text otherwise — never a bare `'<id>'` placeholder), instead of a rejection that named the field but never showed its shape. The coverage-reject path self-heals an empty/out-of-length id list on the parent before rendering so the skeleton always has real references; `cell_pm.md`/`main_pm.md` also show the field on every delegation-guidance child draft now. |
-| hint_for_missing_journal_decision | function | roboco/services/gateway/remediation.py:36 | Hint: call note(scope='decision',...) before complete. |
-| hint_for_missing_journal_learning | function | roboco/services/gateway/remediation.py:43 | Hint: call note(scope='learning',...) before pass/fail. |
-| hint_for_missing_qa_notes | function | roboco/services/gateway/remediation.py:50 | Hint: qa_notes must be >=80 chars. |
-| hint_for_evidence_not_inspected | function | roboco/services/gateway/remediation.py:57 | Hint: call evidence(task_id) before pass/fail. |
-| hint_for_short_doc_notes | function | roboco/services/gateway/remediation.py:61 | Hint: i_documented requires notes>=min_chars. |
-| hint_for_missing_doc_files | function | roboco/services/gateway/remediation.py:69 | Hint: i_documented(files=[...]) requires >=1 path. |
-| hint_for_short_dev_notes | function | roboco/services/gateway/remediation.py:76 | Hint: dev_notes under min_chars; use note(scope='handoff',...). |
-| hint_for_short_pr_reviewer_notes | function | roboco/services/gateway/remediation.py:85 | Hint: PR reviewer note must be >=min_chars. |
-| hint_for_short_quick_context | function | roboco/services/gateway/remediation.py:93 | Hint: quick_context under min_chars; pass done/next as top-level string args. |
+| hint_for_missing_journal_decision | function | roboco/services/gateway/remediation.py:77 | Hint: call note(scope='decision',...) before complete. |
+| hint_for_missing_journal_learning | function | roboco/services/gateway/remediation.py:84 | Hint: call note(scope='learning',...) before pass/fail. |
+| hint_for_missing_qa_notes | function | roboco/services/gateway/remediation.py:91 | Hint: qa_notes must be >=80 chars. |
+| hint_for_evidence_not_inspected | function | roboco/services/gateway/remediation.py:98 | Hint: call evidence(task_id) before pass/fail. |
+| hint_for_short_doc_notes | function | roboco/services/gateway/remediation.py:102 | Hint: i_documented requires notes>=min_chars. |
+| hint_for_missing_doc_files | function | roboco/services/gateway/remediation.py:110 | Hint: i_documented(files=[...]) requires >=1 path. |
+| hint_for_short_dev_notes | function | roboco/services/gateway/remediation.py:117 | Hint: dev_notes under min_chars; use note(scope='handoff',...). |
+| hint_for_short_pr_reviewer_notes | function | roboco/services/gateway/remediation.py:126 | Hint: PR reviewer note must be >=min_chars. |
+| hint_for_short_quick_context | function | roboco/services/gateway/remediation.py:142 | Hint: quick_context under min_chars; pass done/next as top-level string args. |
 | RoleConfig | dataclass | roboco/services/gateway/role_config.py:22 | Static per-role config: flow_tools/do_tools/allows_write/allows_subagent/description. |
-| ROLE_CONFIGS | dict | roboco/services/gateway/role_config.py:166 | Map of all 11 roles to their RoleConfig. |
-| get_role_config | function | roboco/services/gateway/role_config.py:268 | Lookup role config; KeyError on unknown role. |
+| ROLE_CONFIGS | dict | roboco/services/gateway/role_config.py:290 | Map of all 11 roles to their RoleConfig. |
+| get_role_config | function | roboco/services/gateway/role_config.py:403 | Lookup role config; KeyError on unknown role. |
 
 ## Data Flow
-Inbound: MCP servers (roboco-flow/roboco-do) receive agent tool calls, delegate to the Choreographer (sibling choreographer/ package), which calls into this slice. Claim verbs invoke claim_guards.already_active_guard/paused_tasks_guard/unmet_dependency_guard + claimant_lock.try_acquire (caller resolves unmet ids + persists active_claimant_id/last_heartbeat_at). Spawn ticks invoke trigger_filter.decide_spawn with counts the caller queried from gateway_triggers; rate-limit park/unpark routes through RateLimitStateTracker (Redis). The do-tools route through ContentActions: commit -> commit_validator + git.commit + task.add_progress + heartbeat; note -> journal.write_entry or record_section_note; dm/notify -> a2a/notifications with no-comms + ownership gates; evidence -> workspace.fetch_branch_for_inspection + git.diff + evidence_repo.journal_highlights_for_task + build_evidence_for_task. Briefing assembly: Choreographer queries EvidenceRepo (unread a2a/mentions/notifications, team activity, blockers, journal highlights, company_goals, similar_memory), packs into BriefingInputs, evidence_builder.build_context_briefing + build_task_handoff shape it, and the Envelope carries context_briefing. i_am_done pre-submit runs quality_gate.run_quality_commands in the dev workspace; merge steps call merge_chain.resolve_parent_branch. Outbound: every verb returns an Envelope; route handler stamps correlation_id and calls as_dict for the wire. remediation.py strings are injected into Envelope.remediate by the Choreographer on tracing-gap/invalid-state rejections. role_config feeds the spawn manifest builder (tool-manifest.json) and MCP tool registration. kb_authz is consulted by docs/optimal routes.
+Inbound: MCP servers (roboco-flow/roboco-do) receive agent tool calls, delegate to the Choreographer (sibling choreographer/ package), which calls into this slice. Claim verbs invoke claim_guards.already_active_guard/paused_tasks_guard/unmet_dependency_guard + claimant_lock.try_acquire (caller resolves unmet ids + persists active_claimant_id/last_heartbeat_at). Rate-limit park/unpark routes through RateLimitStateTracker (Redis). The do-tools route through ContentActions: commit -> commit_validator + git.commit + task.add_progress + heartbeat; note -> journal.write_entry or record_section_note; dm/notify -> a2a/notifications with no-comms + ownership gates; evidence -> workspace.fetch_branch_for_inspection + git.diff + evidence_repo.journal_highlights_for_task + build_evidence_for_task. Briefing assembly: Choreographer queries EvidenceRepo (unread a2a/mentions/notifications, team activity, blockers, journal highlights, company_goals, similar_memory), packs into BriefingInputs, evidence_builder.build_context_briefing + build_task_handoff shape it, and the Envelope carries context_briefing. i_am_done pre-submit runs quality_gate.run_quality_commands in the dev workspace; merge steps call merge_chain.resolve_parent_branch. Outbound: every verb returns an Envelope; route handler stamps correlation_id and calls as_dict for the wire. remediation.py strings are injected into Envelope.remediate by the Choreographer on tracing-gap/invalid-state rejections. role_config feeds the spawn manifest builder (tool-manifest.json) and MCP tool registration. kb_authz is consulted by docs/optimal routes.
 
 ## Mermaid
 ```mermaid
@@ -161,11 +156,8 @@ graph TD
     CL -->|ClaimDecision| CHORE
   end
 
-  subgraph Spawn gate
-    TF[trigger_filter.decide_spawn]
+  subgraph Provider parking
     RLT[RateLimitStateTracker Redis]
-    TF -->|uses| CL
-    TF -->|QUEUE on| RLT
   end
 
   subgraph Content tools
@@ -191,7 +183,6 @@ graph TD
   MCP --> CHORE
   CHORE --> CG
   CHORE --> CL
-  CHORE --> TF
   CHORE --> CA
   CHORE --> EB
   CHORE --> ER
@@ -224,10 +215,6 @@ gateway-support
     ClaimDecision (GRANTED / GRANTED_AFTER_STALE_RELEASE / BLOCKED_OTHER_ACTIVE)
     is_stale
     try_acquire
-  trigger_filter.py
-    TriggerKind / SpawnDecision / Decision / SpawnConfig / TriggerContext
-    _stale_trigger_decision
-    decide_spawn (5 ordered rules)
   commit_validator.py
     ValidationResult
     validate_commit_message
@@ -277,7 +264,6 @@ gateway-support
 | Choreographer verb composition | roboco/services/gateway/choreographer/ | every agent flow/do verb call composes these helpers; the choreographer owns the state machine, this slice is the support layer |
 | claim verbs (give_me_work / i_will_work_on / i_will_plan / claim_review / claim_doc_task) | roboco/services/gateway/claim_guards.py | Choreographer runs claim_guards + claimant_lock.try_acquire before any task-status mutation |
 | do-tool verbs (commit/note/dm/notify/evidence/progress/pr_update/draft_playbook/pitch/...) | roboco/services/gateway/content_actions.py | roboco-do MCP server -> Choreographer -> ContentActions method |
-| orchestrator spawn tick | roboco/services/gateway/trigger_filter.py | per dispatch tick the orchestrator calls decide_spawn for each (task,trigger) |
 | provider park/unpark + probe loop | roboco/services/gateway/rate_limit_tracker.py | i_am_blocked(rate_limited) -> activate; background probe loop -> increment/reset/clear |
 | i_am_done pre-submit gate | roboco/services/gateway/quality_gate.py | Choreographer runs run_quality_commands in dev workspace before accepting submit |
 | spawn manifest build | roboco/services/gateway/role_config.py | orchestrator builds /app/tool-manifest.json from ROLE_CONFIGS at agent spawn |
@@ -294,7 +280,6 @@ gateway-support
 - ROBOCO_CONVENTIONS_ENABLED (convention_findings in EvidencePayload; empty when off)
 - settings.commit_subject_min_chars / settings.commit_banned_words (commit_validator overrides)
 - settings.redis_url (RateLimitStateTracker key prefix + list_rate_limited_providers scan)
-- SpawnConfig.cooldown_seconds / role_rate_per_minute / claim_stale_seconds (trigger_filter tunables, caller-supplied)
 - _GATE_TIMEOUT_SECONDS=600 / _OUTPUT_EXCERPT_CHARS=2000 (quality_gate module constants)
 - BRIEFING_LIST_CAP=10 (evidence_builder/repo list caps)
 
@@ -303,7 +288,6 @@ gateway-support
 - claimant_lock is pure: it never writes tasks.active_claimant_id / last_heartbeat_at. The Choreographer persists the decision. Two callers acting on the same task must serialize via DB row write, not via this module.
 - claim_guards._ACTIVE_BLOCKING_STATUSES now includes 'blocked' (changed in 15effce0). A dev with a genuinely blocked task can no longer claim a new one until they pause/unclaim. Intended fix but a behavior change agents must learn.
 - claim_guards and claimant_lock have NO PM-coordinator exclusion; _COORDINATOR_ROLES skip lives in the Choreographer's _run_claim_guards, NOT here. Importing these predicates elsewhere bypasses the PM exemption.
-- trigger_filter.decide_spawn rule order is load-bearing: stale > provider-rate > claimant > cooldown > role-rate. Reordering changes which QUEUE reason wins and which gates never get re-evaluated.
 - RateLimitStateTracker.activate is now itself a Lua atomic merge (_ACTIVATE_RATE_LIMIT): it refreshes episode metadata (kind/activated_at/retry_after/affected_agents) while carrying over the previous probe_failures count, so a re-park can no longer wipe an in-flight increment. The race between increment and activate is now closed — all three operations are server-side Lua EVALs and are indivisible w.r.t. each other.
 - RateLimitStateTracker.list_rate_limited_providers swallows ALL exceptions and returns []; a Redis outage looks identical to 'nothing rate-limited' — callers must not treat [] as 'healthy'.
 - quality_gate._run_one previously used `proc.returncode or 0` which turned a None returncode into 0 (passing an unknown-status gate). Now fixed to fail closed (return 1). The 124 timeout code is distinct from a real non-zero exit.
@@ -350,11 +334,11 @@ gateway-support
 | Title | File:Line | Claim | Severity |
 |---|---|---|---|
 | blocked task now blocks new claims | roboco/services/gateway/claim_guards.py:31 | Adding 'blocked' to _ACTIVE_BLOCKING_STATUSES means a dev whose task is externally blocked can no longer claim a parallel task until they pause/unclaim. If a downstream flow expected a blocked dev to pick up other work (e.g. a PM delegating to a blocked-but-capable dev), that dev is now hard-refused. The comment says it's intended (blocked still owns the task), but any orchestration path that relied on the old exclusion will silently QUEUE. | medium |
-| archive_playbook behavior change: was reject, now archive | roboco/services/gateway/content_actions.py:784 | archive_playbook previously routed through _curate_playbook with action='reject' and reason='archived' (a latent bug). It now calls svc.archive and status='playbook_archived'. Any caller/test asserting the archived playbook landed in the rejected/archived-with-reason state will fail, and the unindex_playbook branch now runs for archive (previously archive went through reject which may not have unindexed). | medium |
-| ~~_curate_playbook explicit session.commit before index~~ **RESOLVED 536bbb64** | roboco/services/gateway/content_actions.py:847 | ~~New `await self.task.session.commit()` runs before svc.index_approved/unindex_playbook. If the caller's session is already in a PendingRollbackError state (e.g. a prior mid-verb failure poisoned it), this commit raises and the whole curation verb 500s instead of returning a clean envelope.~~ Fixed: PendingRollbackError is now caught; verb returns a clean invalid_state and skips the index. Double-commit (no-op) risk unchanged. | ~~medium~~ resolved |
+| archive_playbook behavior change: was reject, now archive | roboco/services/gateway/content_actions.py:1434 | archive_playbook previously routed through _curate_playbook with action='reject' and reason='archived' (a latent bug). It now calls svc.archive and status='playbook_archived'. Any caller/test asserting the archived playbook landed in the rejected/archived-with-reason state will fail, and the unindex_playbook branch now runs for archive (previously archive went through reject which may not have unindexed). | medium |
+| ~~_curate_playbook explicit session.commit before index~~ **RESOLVED 536bbb64** | roboco/services/gateway/content_actions.py:1442 | ~~New `await self.task.session.commit()` runs before svc.index_approved/unindex_playbook. If the caller's session is already in a PendingRollbackError state (e.g. a prior mid-verb failure poisoned it), this commit raises and the whole curation verb 500s instead of returning a clean envelope.~~ Fixed: PendingRollbackError is now caught; verb returns a clean invalid_state and skips the index. Double-commit (no-op) risk unchanged. | ~~medium~~ resolved |
 | notify to prompter/secretary now refused | roboco/services/gateway/content_actions.py:1251 | _reject_disallowed_recipient now hard-refuses notify() to prompter/secretary. If any existing PM/Board flow legitimately notified the prompter or secretary (e.g. a Board broadcast loop that iterates all roles), those sends now return not_authorized and the notification never lands. The CEO is explicitly excluded from this rule (acks via panel), but prompter/secretary are not. | medium |
-| quality_gate None-returncode now fails the gate | roboco/services/gateway/quality_gate.py:95 | Previously `proc.returncode or 0` let an unknown exit status PASS the gate (false green). Now None -> return 1 (fail closed). A workspace where the process is terminated out-of-band (e.g. OOM killer, signal) will now BLOCK i_am_done where it previously passed. Correct, but if the dev environment has a flaky signal-delivery issue, submits that used to succeed will now fail with no clear remediation. | low |
-| _merge_resumption_fields nested-section-wins may surprise | roboco/services/gateway/content_actions.py:60 | If a model passes BOTH section={'done': X} AND done='Y', the nested section wins (X kept, Y ignored). A caller/test that expected the top-level done to override the nested section, or that passed both expecting union semantics, gets the section's value. The 'without overwriting' direction is documented but easy to misread. | low |
+| quality_gate None-returncode now fails the gate | roboco/services/workspace_container.py:232 | (The check moved here when gate commands began running in a throwaway workspace container: `quality_gate._run_one` returns that result's returncode.) Previously `proc.returncode or 0` let an unknown exit status PASS the gate (false green). Now None -> return 1 (fail closed). A workspace where the process is terminated out-of-band (e.g. OOM killer, signal) will now BLOCK i_am_done where it previously passed. Correct, but if the dev environment has a flaky signal-delivery issue, submits that used to succeed will now fail with no clear remediation. | low |
+| _merge_resumption_fields nested-section-wins may surprise | roboco/services/gateway/content_actions.py:78 | If a model passes BOTH section={'done': X} AND done='Y', the nested section wins (X kept, Y ignored). A caller/test that expected the top-level done to override the nested section, or that passed both expecting union semantics, gets the section's value. The 'without overwriting' direction is documented but easy to misread. | low |
 | ~~Lua increment vs activate race still exists~~ **RESOLVED 536bbb64** | roboco/services/gateway/rate_limit_tracker.py:68 | ~~increment/reset_probe_failures are atomic vs each other, but activate() is a plain SET that overwrites the whole blob. A probe-failure increment that races an activate (re-park) can still be overwritten by the fresh activate blob (probe_failures reset to 0).~~ Fixed: activate() now routes through _ACTIVATE_RATE_LIMIT Lua merge which carries over the previous probe_failures count; the race between increment and activate is closed. | ~~low~~ resolved |
 | evidence_builder pr_review surface adds a new prior-work trigger | roboco/services/gateway/evidence_builder.py:159 | _has_prior_work now returns True when pr_review is not None, so a task with only a prior pr_fail verdict (no commits/acceptance/PR) now produces a non-None handoff. A briefing consumer that assumed handoff non-None implied committable prior work may now render a handoff with only a pr_review block. Cosmetic, but changes the handoff-non-null invariant. | low |
 
