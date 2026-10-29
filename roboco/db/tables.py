@@ -2877,12 +2877,16 @@ class CiRunTable(Base):
     )
 
     __table_args__ = (
+        # The record_runs ON CONFLICT key. NULLS NOT DISTINCT (migration
+        # 111) because the ci-watch engine records workflow=None: with NULLs
+        # distinct, every sweep re-inserted the run it had already seen.
         Index(
             "ux_ci_runs_reading",
             "project_slug",
             "workflow",
             "observed_at_str",
             unique=True,
+            postgresql_nulls_not_distinct=True,
         ),
         # Backs runs_for: one project's readings in a created_at window,
         # oldest first (migration 108).
