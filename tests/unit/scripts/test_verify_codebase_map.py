@@ -1,11 +1,12 @@
 """scripts/verify_codebase_map.py: the docs/map reference checker.
 
 docs/map is auto-indexed into the knowledge base, so a row naming a deleted
-file or a renamed symbol misleads every agent that retrieves it. These tests
-pin what the checker treats as an error (a path or symbol that does not
-exist: exit 1), what it only warns about (line and size drift: exit 0, so an
-ordinary code edit never fails CI), what ``--fix`` may rewrite, and that
-``make quality`` runs it.
+file or a renamed symbol misleads every agent that retrieves it, and a module
+no row names is invisible to them. These tests pin what the checker treats
+as an error (a path or symbol that does not exist, a module or migration no
+table maps: exit 1), what it only warns about (line and size drift: exit 0,
+so an ordinary code edit never fails CI), what ``--fix`` may rewrite, and
+that ``make quality`` runs it.
 """
 
 from __future__ import annotations
@@ -88,9 +89,17 @@ def _slice(root: Path, body: str) -> Path:
 
 
 def _tree(root: Path) -> None:
+    """A small tree whose two modules a base slice maps (panel/ is out of scope)."""
     _write(root, "roboco/services/widget.py", SERVICE)
     _write(root, "roboco/config.py", SETTINGS)
     _write(root, "panel/src/hooks/use-widget.ts", PANEL_HOOK)
+    _write(
+        root,
+        "docs/map/base.md",
+        "| Path | Role |\n|---|---|\n"
+        "| roboco/services/widget.py | Widgets |\n"
+        "| roboco/config.py | Settings |\n",
+    )
 
 
 def _kinds(root: Path) -> list[str]:
@@ -275,6 +284,11 @@ def test_abbreviated_paths_resolve_through_the_slice_files_table(
     _tree(tmp_path)
     # A second widget.py elsewhere makes the bare basename ambiguous.
     _write(tmp_path, "roboco/api/routes/widget.py", "router = None\n")
+    _write(
+        tmp_path,
+        "docs/map/routes.md",
+        "| Path | Role |\n|---|---|\n| roboco/api/routes/widget.py | Routes |\n",
+    )
     _slice(
         tmp_path,
         """\
@@ -366,7 +380,77 @@ def test_migration_range_is_fixed_and_missing_rows_are_listed(
     text = doc.read_text()
     assert "Alembic chain (001→003)" in text
     assert "3 migration files 001..003" in text
-    assert _kinds(tmp_path) == ["unmapped-migration"]
+    findings = vcm.check_map(tmp_path)
+    assert [f.kind for f in findings] == ["unmapped-migration"]
+    assert findings[0].is_error
+    assert "Migration Chain table" in findings[0].message
+
+
+def test_a_module_no_table_names_is_an_error_naming_its_slice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _tree(tmp_path)
+    _write(tmp_path, "roboco/services/gadget.py", "GADGET = 1\n")
+    assert vcm.main(["--root", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert (
+        "docs/map/base.md:1: unmapped-module: `roboco/services/gadget.py` is "
+        "named by no docs/map table: its neighbours are mapped in "
+        "`docs/map/base.md`"
+    ) in out
+    assert "then run `make map`" in out
+
+
+def test_a_module_with_no_mapped_neighbour_points_at_the_slice_list(
+    tmp_path: Path,
+) -> None:
+    _tree(tmp_path)
+    _write(tmp_path, "scripts/new_tool.py", "print(1)\n")
+    (finding,) = vcm.check_map(tmp_path)
+    assert finding.kind == "unmapped-module"
+    assert finding.doc == "docs/map/_front.md"
+    assert "start a new slice" in finding.message
+
+
+def test_a_directory_row_maps_no_module_but_a_glob_row_does(tmp_path: Path) -> None:
+    _tree(tmp_path)
+    _write(tmp_path, "roboco/gadgets/one.py", "ONE = 1\n")
+    _write(tmp_path, "roboco/gadgets/two.py", "TWO = 2\n")
+    _write(tmp_path, "docker/agent.Dockerfile", "FROM scratch\n")
+    doc = _slice(
+        tmp_path,
+        """\
+        | Path | Role |
+        |---|---|
+        | roboco/gadgets/ | The gadgets package |
+        | docker/ | Images |
+        """,
+    )
+    assert _kinds(tmp_path) == ["unmapped-module"] * 3
+    doc.write_text(
+        "| Path | Role |\n|---|---|\n"
+        "| `roboco/gadgets/*.py` | The gadgets |\n"
+        "| `docker/agent.Dockerfile` | The agent image |\n"
+    )
+    assert _kinds(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("path", "required"),
+    [
+        ("roboco/services/x.py", True),
+        ("roboco/services/__init__.py", False),
+        ("roboco/vault_assets/meta/README.md", False),
+        ("roboco/vault_assets/obsidian/graph.json", False),
+        ("docker/scripts/hooks/stop-hook.sh", True),
+        ("docker/git-support/hooks/README.md", False),
+        ("scripts/bootstrap.sh", True),
+        ("panel/src/app/page.tsx", False),
+        ("tests/unit/test_x.py", False),
+    ],
+)
+def test_which_files_need_a_map_row(path: str, *, required: bool) -> None:
+    assert vcm.requires_map_row(path) is required
 
 
 def test_generated_concat_and_fenced_tables_are_not_read(tmp_path: Path) -> None:

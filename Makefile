@@ -208,10 +208,12 @@ reflow-check:
 	uv run python scripts/reflow_md.py --check
 
 # Refresh docs/map's mechanically derivable data (line numbers, LOC, the
-# Alembic chain range) and rebuild _complete_map.md. `make quality` fails only
-# on a path or symbol that no longer exists; line/size drift is reported as a
-# warning, since every code edit shifts it. Hand-written rows (descriptions, a
-# deleted file's row, a new migration's row) still need a human.
+# Alembic chain range) and rebuild _complete_map.md. `make quality` fails on a
+# path or symbol that no longer exists, and on a module or migration that no
+# table maps (the message names the slice to add it to); line/size drift is
+# reported as a warning, since every code edit shifts it. Hand-written rows
+# (descriptions, a deleted file's row, a new module's or migration's row)
+# still need a human.
 .PHONY: map
 map:
 	uv run python scripts/verify_codebase_map.py --fix
@@ -302,7 +304,7 @@ quality: sync
 	@uv run ruff check .
 	@echo "==> markdown prose (no hard-wrapping)"
 	@uv run python scripts/reflow_md.py --check
-	@echo "==> codebase map (every path and symbol docs/map names exists)"
+	@echo "==> codebase map (every path and symbol exists, every module is mapped)"
 	@uv run python scripts/verify_codebase_map.py
 	@echo "==> codebase map concatenation up to date"
 	@uv run python scripts/rebuild_map_concat.py --check
