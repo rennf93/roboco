@@ -88,15 +88,18 @@ def test_dispatcher_api_url_never_loopback_and_color_correct() -> None:
 def test_indexer_services_have_no_http_healthcheck() -> None:
     """The indexer role never runs uvicorn (roboco/bootstrap.py's
     _run_indexer_role only awaits run_indexer), so an HTTP probe can never
-    pass - 2026-09-06 it sat `unhealthy` on the NAS for two hours."""
+    pass - 2026-09-06 it sat `unhealthy` on the NAS for two hours. The
+    orchestrator image now carries that probe itself (its HEALTHCHECK, for
+    the api/dispatcher roles), so leaving the key out would inherit it: each
+    indexer must turn it off explicitly, and nothing else."""
     for name in _COMPOSE_FILES:
         compose = yaml.safe_load((_REPO_ROOT / name).read_text())
         indexers = _role_services(compose, "indexer")
         assert indexers, f"{name}: no indexer service found"
         for service in indexers:
-            assert "healthcheck" not in service, (
-                f"{name}: an indexer service serves no HTTP, a healthcheck "
-                "can never pass"
+            assert service.get("healthcheck") == {"disable": True}, (
+                f"{name}: an indexer service serves no HTTP, so it must "
+                "disable the image's /health probe (healthcheck: disable: true)"
             )
 
 
