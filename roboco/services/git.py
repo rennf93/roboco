@@ -6794,7 +6794,7 @@ class GitService(BaseService):
             # matching the validator's own fail-loud philosophy, and reap the
             # killed proc so it isn't orphaned on orchestrator restart. A
             # git-user child this process may not kill is ended by its
-            # in-command timeout; the reap is bounded so the gate never hangs.
+            # helper's deadline; the reap is bounded so the gate never hangs.
             kill_workspace_user_process(proc)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(

@@ -247,7 +247,7 @@ async def test_validator_ended_by_its_in_command_timeout_fails_closed(
     fake_proc.returncode = 124
 
     async def _communicate() -> tuple[bytes, bytes]:
-        # Ends at the in-command deadline (1 s), with timeout's exit 124.
+        # Ends at the helper's deadline (1 s), with its exit 124.
         await asyncio.sleep(1)
         return (b"", b"")
 
@@ -261,7 +261,7 @@ async def test_validator_ended_by_its_in_command_timeout_fails_closed(
 
     result = await _service()._run_conventions_validator(tmp_path, ["a.py"], timeout=1)
 
-    assert seen[0][:5] == (str(helper), "timeout", "-k", "10s", "1s")
+    assert seen[0][:6] == (str(helper), "--timeout", "1", "--grace", "10", "--")
     assert result["could_not_run"] is True
     assert "timed out after 1s" in (result.get("reason") or "")
 

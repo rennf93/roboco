@@ -11,9 +11,10 @@ Workspace git now runs:
 
 - as ``settings.git_user_uid`` with primary gid ``settings.agent_gid`` and no
   other groups, no capabilities, ``no_new_privs`` (the set-id helper
-  ``as-git-user``, ``docker/as-git-user/``), umask 002, under an in-command
-  ``timeout`` — never root, and never the agent uid (the host user owning the
-  provider credentials mounted into the orchestrator). With
+  ``as-git-user``, ``docker/as-git-user/``), umask 002, under the helper's
+  deadline, which ends the command and everything it started — never root,
+  and never the agent uid (the host user owning the provider credentials
+  mounted into the orchestrator). With
   ``workspace_git_drop=required`` (the orchestrator image) a missing or
   refusing helper raises ``GitUserDropError``: nothing falls back to running
   as this process;
@@ -48,7 +49,6 @@ import contextlib
 import math
 import os
 import shutil
-import signal
 import stat
 import subprocess
 import threading
@@ -209,16 +209,15 @@ def workspace_repository_env(path: Path) -> dict[str, str]:
 # Set-user-id and set-group-id to the git user (docker/as-git-user/), mode
 # 6750: only root and the agent group may run it.
 GIT_USER_HELPER = "/usr/local/libexec/roboco/as-git-user"
-# The in-command ``timeout`` sends TERM at the deadline, KILL this much later.
+# The helper sends TERM at the deadline, KILL this much later.
 _KILL_GRACE_SECONDS = 10
 # A caller waits this much past deadline + grace before it gives up itself.
 _WAIT_MARGIN_SECONDS = 5
-# GNU timeout exits 124 when TERM ended the command; when KILL was needed it
-# also kills itself (it sends KILL to its own process group).
-_TIMED_OUT_STATUSES = frozenset({124, -signal.SIGKILL})
-# The helper's own refusal (126) or a missing ``timeout`` (127), told apart
-# from the command's exit by the helper's stderr prefix.
-_HELPER_FAILED_STATUSES = frozenset({126, 127})
+# The helper exits 124 when the deadline came while the command still ran.
+_TIMED_OUT = 124
+# The helper's own refusal, told apart from the command's own 126 by the
+# helper's stderr prefix.
+_HELPER_REFUSED = 126
 _HELPER_PREFIX = "as-git-user: "
 
 
@@ -237,22 +236,25 @@ def git_user_drop_required() -> bool:
 
 
 def workspace_user_argv(argv: Sequence[str], *, timeout: float) -> list[str]:
-    """``argv`` as the git user, under an in-command ``timeout``.
+    """``argv`` as the git user, under the helper's deadline.
 
-    With the drop required: ``[as-git-user, timeout, -k, grace, secs, *argv]``.
-    ``timeout`` runs as the git user, so it ends the command and everything
-    it started even when this process may not signal them (a non-root parent
-    of a git-user child). A missing helper raises ``GitUserDropError``.
-    Off: ``argv`` unchanged, bounded by the caller's own timeout.
+    With the drop required: ``[as-git-user, --timeout, secs, --grace, grace,
+    --, *argv]``. The helper runs as the git user and is a subreaper: at the
+    deadline it ends the command and everything it started, including
+    processes that left its process group, even when this process may not
+    signal them (a non-root parent of a git-user child). A missing helper
+    raises ``GitUserDropError``. Off: ``argv`` unchanged, bounded by the
+    caller's own timeout.
     """
     if not git_user_drop_required():
         return list(argv)
     return [
         _git_user_helper(),
-        "timeout",
-        "-k",
-        f"{_KILL_GRACE_SECONDS}s",
-        f"{_in_command_seconds(timeout)}s",
+        "--timeout",
+        str(_deadline_seconds(timeout)),
+        "--grace",
+        str(_KILL_GRACE_SECONDS),
+        "--",
         *argv,
     ]
 
@@ -265,35 +267,35 @@ def workspace_user_executable(program: str) -> str:
 
 def workspace_user_wait_seconds(timeout: float) -> float:
     """How long to wait for a ``workspace_user_argv(..., timeout=timeout)``
-    process: with the drop required, past the in-command deadline and its
-    kill grace, so the process is gone before the caller gives up on it."""
+    process: with the drop required, past the helper's deadline and its kill
+    grace, so the process is gone before the caller gives up on it."""
     if not git_user_drop_required():
         return timeout
-    return _in_command_seconds(timeout) + _KILL_GRACE_SECONDS + _WAIT_MARGIN_SECONDS
+    return _deadline_seconds(timeout) + _KILL_GRACE_SECONDS + _WAIT_MARGIN_SECONDS
 
 
 def workspace_user_timed_out(
     returncode: int | None, elapsed: float, timeout: float
 ) -> bool:
-    """Whether the in-command ``timeout`` ended a ``workspace_user_argv``
-    process (``elapsed`` measured from before it started)."""
+    """Whether the helper's deadline ended a ``workspace_user_argv`` process
+    (``elapsed`` measured from before it started)."""
     return (
         git_user_drop_required()
-        and returncode in _TIMED_OUT_STATUSES
-        and elapsed >= _in_command_seconds(timeout)
+        and returncode == _TIMED_OUT
+        and elapsed >= _deadline_seconds(timeout)
     )
 
 
 def kill_workspace_user_process(process: _Killable) -> None:
     """Kill a process that outlived its wait, when this process may. A
     non-root parent may not signal a git-user child (``PermissionError``):
-    its in-command ``timeout`` ends it instead."""
+    the helper's deadline ends it instead."""
     with contextlib.suppress(PermissionError, ProcessLookupError):
         process.kill()
 
 
-def _in_command_seconds(timeout: float) -> int:
-    """Whole seconds for ``timeout``, at least 1 (``timeout 0`` never ends)."""
+def _deadline_seconds(timeout: float) -> int:
+    """Whole seconds for ``timeout``, at least 1 (the helper refuses 0)."""
     return max(1, math.ceil(timeout))
 
 
@@ -355,7 +357,7 @@ def _run_as_git_user(
 ) -> subprocess.CompletedProcess[Any]:
     """``subprocess.run`` for ``workspace_user_argv`` processes: waits
     ``workspace_user_wait_seconds``, never blocks on a child it may not kill,
-    and reports the in-command timeout as ``TimeoutExpired``."""
+    and reports the helper's deadline as ``TimeoutExpired``."""
     argv = workspace_user_argv(
         [command.program, *command.args], timeout=command.timeout
     )
@@ -389,8 +391,7 @@ def _run_as_git_user(
 def _give_up_on(process: subprocess.Popen[Any]) -> None:
     """Kill (when permitted) and reap a process that outlived its wait, then
     close this end of its pipes: a descendant that outlives it can hold them
-    open. One this process may not kill is left to its in-command
-    ``timeout``."""
+    open. One this process may not kill is left to the helper's deadline."""
     kill_workspace_user_process(process)
     with contextlib.suppress(subprocess.TimeoutExpired):
         process.wait(timeout=_KILL_GRACE_SECONDS)
@@ -400,7 +401,7 @@ def _give_up_on(process: subprocess.Popen[Any]) -> None:
 
 
 def _raise_if_the_helper_failed(returncode: int, stderr: str | bytes | None) -> None:
-    if not git_user_drop_required() or returncode not in _HELPER_FAILED_STATUSES:
+    if not git_user_drop_required() or returncode != _HELPER_REFUSED:
         return
     message = (
         stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr

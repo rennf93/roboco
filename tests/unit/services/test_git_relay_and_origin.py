@@ -223,8 +223,8 @@ def test_upload_pack_runs_as_the_git_user_under_the_fetch_timeout(
     )
 
     argv = shlex.split(command)
-    assert argv[:5] == [str(helper), "timeout", "-k", "10s", "60s"]
-    assert argv[5:7] == ["env", "-i"]
+    assert argv[:6] == [str(helper), "--timeout", "60", "--grace", "10", "--"]
+    assert argv[6:8] == ["env", "-i"]
     assert argv[-1] == "upload-pack"
 
 

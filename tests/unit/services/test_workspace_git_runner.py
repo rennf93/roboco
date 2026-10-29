@@ -38,15 +38,16 @@ def test_the_environment_is_built_from_scratch(monkeypatch: pytest.MonkeyPatch) 
     assert env["HOME"] == "/nonexistent"
 
 
-def test_the_drop_runs_the_helper_under_an_in_command_timeout(
+def test_the_drop_runs_the_command_under_the_helpers_deadline(
     helper: str,
 ) -> None:
     assert wg.workspace_user_argv(["git", "status"], timeout=30) == [
         helper,
-        "timeout",
-        "-k",
-        "10s",
-        "30s",
+        "--timeout",
+        "30",
+        "--grace",
+        "10",
+        "--",
         "git",
         "status",
     ]
@@ -178,28 +179,35 @@ def test_a_refusing_helper_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("drop", "stderr"),
-    [("required", "timeout: failed to run command 'git'\n"), ("off", "as-git-user: x")],
+    ("drop", "returncode", "stderr"),
+    [
+        ("required", 126, "failed to run command 'git': Permission denied\n"),
+        ("required", 127, "failed to run command 'git': No such file or directory"),
+        ("required", 127, "as-git-user: x"),
+        ("off", 126, "as-git-user: x"),
+    ],
 )
 @pytest.mark.usefixtures("helper")
-def test_the_command_own_126_is_its_result(
-    monkeypatch: pytest.MonkeyPatch, drop: str, stderr: str
+def test_the_commands_own_126_or_127_is_its_result(
+    monkeypatch: pytest.MonkeyPatch, drop: str, returncode: int, stderr: str
 ) -> None:
+    """The helper refuses with 126 only; a failed exec of the command is the
+    command's result, as it would be from a shell."""
     monkeypatch.setattr(settings, "workspace_git_drop", drop)
-    _FakePopen.install(monkeypatch, _Outcome(returncode=126, stderr=stderr))
+    _FakePopen.install(monkeypatch, _Outcome(returncode=returncode, stderr=stderr))
     result = wg.run_as_workspace_user("git", "status", timeout=1)
-    assert result.returncode == _REFUSED
+    assert result.returncode == returncode
 
 
 @pytest.mark.parametrize(
-    ("timeout", "seconds"), [(0, "1s"), (0.2, "1s"), (30, "30s"), (30.5, "31s")]
+    ("timeout", "seconds"), [(0, "1"), (0.2, "1"), (30, "30"), (30.5, "31")]
 )
 @pytest.mark.usefixtures("helper")
-def test_the_in_command_timeout_is_whole_seconds_and_never_zero(
+def test_the_deadline_is_whole_seconds_and_never_zero(
     timeout: float, seconds: str
 ) -> None:
-    """``timeout 0`` would never end the command."""
-    assert wg.workspace_user_argv(["true"], timeout=timeout)[4] == seconds
+    """The helper takes whole seconds and refuses 0."""
+    assert wg.workspace_user_argv(["true"], timeout=timeout)[2] == seconds
 
 
 @pytest.mark.usefixtures("helper")
@@ -207,22 +215,34 @@ def test_the_caller_waits_past_the_deadline_and_the_kill_grace() -> None:
     assert wg.workspace_user_wait_seconds(_DEADLINE) == _DEADLINE + _GRACE + _MARGIN
 
 
-@pytest.mark.parametrize("returncode", [124, -signal.SIGKILL])
 @pytest.mark.usefixtures("helper")
-def test_the_in_command_timeout_raises_timeout_expired(
-    monkeypatch: pytest.MonkeyPatch, returncode: int
+def test_the_helpers_deadline_raises_timeout_expired(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakePopen.install(monkeypatch, _Outcome(returncode=returncode, elapsed=_DEADLINE))
+    _FakePopen.install(monkeypatch, _Outcome(returncode=_TIMED_OUT, elapsed=_DEADLINE))
     with pytest.raises(subprocess.TimeoutExpired) as raised:
         wg.run_as_workspace_user("git", "fetch", timeout=_DEADLINE)
     assert raised.value.timeout == _DEADLINE
+
+
+@pytest.mark.usefixtures("helper")
+def test_a_command_killed_past_the_deadline_is_its_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The helper never kills itself: a SIGKILL status is the command's own
+    (raised on the helper as the command died), not the deadline."""
+    _FakePopen.install(
+        monkeypatch, _Outcome(returncode=-signal.SIGKILL, elapsed=_DEADLINE)
+    )
+    result = wg.run_as_workspace_user("git", "fetch", timeout=_DEADLINE)
+    assert result.returncode == -signal.SIGKILL
 
 
 @pytest.mark.parametrize(
     ("drop", "elapsed"), [("required", 29.0), ("off", 30.0)], ids=["early", "off"]
 )
 @pytest.mark.usefixtures("helper")
-def test_an_exit_124_is_a_timeout_only_from_the_in_command_timeout(
+def test_an_exit_124_is_a_timeout_only_from_the_helpers_deadline(
     monkeypatch: pytest.MonkeyPatch, drop: str, elapsed: float
 ) -> None:
     monkeypatch.setattr(settings, "workspace_git_drop", drop)
@@ -232,7 +252,7 @@ def test_an_exit_124_is_a_timeout_only_from_the_in_command_timeout(
 
 
 @pytest.mark.usefixtures("helper")
-def test_a_child_this_process_may_not_kill_is_left_to_its_timeout(
+def test_a_child_this_process_may_not_kill_is_left_to_the_helpers_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A non-root parent gets EPERM killing a git-user child: the wait still
@@ -248,17 +268,20 @@ def test_a_child_this_process_may_not_kill_is_left_to_its_timeout(
     assert process.reaps == [_GRACE]
 
 
-def test_the_real_timeout_ends_a_command_that_ignores_term(
+def test_the_callers_own_wait_backs_up_the_helper(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """GNU ``timeout`` behind a pass-through helper: TERM is ignored, KILL
-    after the grace ends it, and the caller sees ``TimeoutExpired``."""
+    """A helper that never ends the command (here a pass-through one): the
+    caller gives up after deadline + grace + margin, kills and reaps it, and
+    raises ``TimeoutExpired``. The real helper's deadline is exercised in the
+    orchestrator image (tests/integration/test_git_user_helper_live.py)."""
     _pass_through_helper(monkeypatch, tmp_path)
     monkeypatch.setattr(wg, "_KILL_GRACE_SECONDS", 1)
+    monkeypatch.setattr(wg, "_WAIT_MARGIN_SECONDS", 0)
     started = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired):
-        wg.run_as_workspace_user("sh", "-c", "trap '' TERM; sleep 30", timeout=1)
-    assert time.monotonic() - started < 1 + 1 + 5
+        wg.run_as_workspace_user("sleep", "30", timeout=1)
+    assert time.monotonic() - started < 1 + 1 + 1
 
 
 def test_the_archive_runs_through_the_drop(
@@ -414,9 +437,15 @@ def helper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
 
 
 def _pass_through_helper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The drop required, with a helper that runs its argv as this user."""
+    """The drop required, with a helper that takes the real one's arguments
+    and runs the command as this user, with no deadline."""
     path = tmp_path / "as-git-user"
-    path.write_text('#!/bin/sh\nexec "$@"\n')
+    path.write_text(
+        "#!/bin/sh\n"
+        '[ "$1 $3 $5" = "--timeout --grace --" ] || exit 99\n'
+        "shift 5\n"
+        'exec "$@"\n'
+    )
     path.chmod(0o755)
     monkeypatch.setattr(settings, "workspace_git_drop", "required")
     monkeypatch.setattr(wg, "GIT_USER_HELPER", str(path))

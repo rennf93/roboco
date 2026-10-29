@@ -570,11 +570,11 @@ def test_workspace_git_runs_as_the_git_user_without_capabilities(lab: Lab) -> No
 
 
 @root_with_the_drop
-def test_a_hung_git_is_ended_by_its_in_command_timeout(lab: Lab) -> None:
-    """git blocked in a hook past its deadline: the in-command ``timeout``,
-    running as the git user, ends git and the hook (TERM to their process
-    group), the caller gets ``TimeoutExpired`` well before its own wait runs
-    out, and no process of the git user is left."""
+def test_a_hung_git_is_ended_by_the_helpers_deadline(lab: Lab) -> None:
+    """git blocked in a hook past its deadline: the helper, running as the
+    git user, ends git and the hook (TERM to their process group), the caller
+    gets ``TimeoutExpired`` well before its own wait runs out, and no process
+    of the git user is left."""
     hook = Path(settings.git_support_dir) / "hooks" / "pre-commit"
     hook.write_text("#!/bin/sh\nsleep 600\n")
     hook.chmod(0o755)
