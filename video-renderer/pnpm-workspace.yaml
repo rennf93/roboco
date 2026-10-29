@@ -8,3 +8,9 @@ minimumReleaseAgeExclude:
   - '@hyperframes/parsers@0.7.36'
   - '@hyperframes/producer@0.7.36'
   - '@hyperframes/studio-server@0.7.36'
+overrides:
+  # get-uri (via puppeteer -> @puppeteer/browsers -> proxy-agent) still asks for
+  # basic-ftp ^5, and no get-uri release moves past it. basic-ftp 6.2.1+ fixes
+  # GHSA-c475-qrg2-pj4r; 6.x keeps the 5.x client API and only stops allowing a
+  # separate FTP transfer host by default.
+  basic-ftp: ^6.2.3
