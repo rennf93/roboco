@@ -107,11 +107,12 @@ async def test_similar_memory_caps_at_top_k(
         "roboco.services.optimal.get_optimal_service",
         AsyncMock(return_value=optimal),
     )
+    top_k = 2
     out = await EvidenceRepo(MagicMock()).similar_memory(
-        query="q", top_k=2, min_score=_FLOOR
+        query="q", top_k=top_k, min_score=_FLOOR
     )
     assert out["status"] == "ok"
-    assert len(out["items"]) == 2  # noqa: PLR2004 - top_k cap
+    assert len(out["items"]) == top_k
 
 
 @pytest.mark.asyncio

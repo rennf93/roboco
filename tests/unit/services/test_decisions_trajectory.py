@@ -368,8 +368,12 @@ async def test_engine_loop_disabled_is_a_noop(
     from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 
     monkeypatch.setattr(cfg.settings, "decisions_enabled", False)
-    engine = DecisionsLabelerEngine()  # type: ignore[abstract]
-    engine._record_loop_heartbeat = lambda *a, **kw: None  # type: ignore[method-assign]
+    # The mixin's TYPE_CHECKING-only Protocol base makes it abstract to mypy;
+    # at runtime the base is `object`, so route the class through type[Any]
+    # and hand the instance the heartbeat its host orchestrator provides.
+    engine_cls: type[Any] = DecisionsLabelerEngine
+    engine = engine_cls()
+    engine._record_loop_heartbeat = lambda *_a, **_kw: None
     engine._running = True
     sleep = AsyncMock()
     monkeypatch.setattr("asyncio.sleep", sleep)

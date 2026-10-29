@@ -181,9 +181,10 @@ def test_uvicorn_loop_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> No
     assert Settings().uvicorn_loop == "uvloop"
 
 
-def test_uvicorn_loop_rejects_unknown_value() -> None:
+def test_uvicorn_loop_rejects_unknown_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_UVICORN_LOOP", "unknown")
     with pytest.raises(ValidationError):
-        Settings(uvicorn_loop="unknown")  # type: ignore[arg-type]
+        Settings()
 
 
 def test_resolve_uvicorn_loop_factory_asyncio_is_none() -> None:

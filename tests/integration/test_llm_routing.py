@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from roboco.services.llm import AgentRoute
     from sqlalchemy.ext.asyncio import AsyncSession
 
+# An AGENT_SLUG pin plus one GLOBAL row: what a mode switch must leave behind
+# when a per-agent pin exists.
+_PIN_AND_GLOBAL_ROWS = 2
+
 
 def _first_model_for_type(provider_type: ModelProvider) -> str:
     for entry in MODEL_CATALOG:
@@ -422,7 +426,7 @@ async def test_apply_mode_ollama_preserves_agent_pin(llm_setup: dict) -> None:
     )
     await svc.apply_mode(mode="ollama", default_model=ollama_model)
     assignments = await svc.list_assignments()
-    assert len(assignments) == 2  # noqa: PLR2004  AGENT_SLUG pin kept + new GLOBAL row.
+    assert len(assignments) == _PIN_AND_GLOBAL_ROWS
     by_scope = {a.scope: a for a in assignments}
     assert by_scope[AssignmentScope.AGENT_SLUG].scope_value == "be-dev-1"
     assert by_scope[AssignmentScope.AGENT_SLUG].model_name == anthropic_model
@@ -1561,10 +1565,10 @@ async def test_apply_mode_self_hosted_clears_prior_assignments(
         scope_value=None,
         model_name=anthropic_model,
     )
-    assert len(await svc.list_assignments()) == 2  # noqa: PLR2004
+    assert len(await svc.list_assignments()) == _PIN_AND_GLOBAL_ROWS
     await svc.apply_mode(mode="self_hosted", default_model="gemma2:9b")
     assignments = await svc.list_assignments()
-    assert len(assignments) == 2  # noqa: PLR2004  AGENT_SLUG pin kept + new GLOBAL row.
+    assert len(assignments) == _PIN_AND_GLOBAL_ROWS
     by_scope = {a.scope: a for a in assignments}
     assert by_scope[AssignmentScope.AGENT_SLUG].scope_value == "be-dev-1"
     assert by_scope[AssignmentScope.AGENT_SLUG].model_name == anthropic_model

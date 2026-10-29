@@ -44,8 +44,9 @@ class TestLocalDate:
 class TestTrailingDates:
     def test_seven_days_oldest_to_today(self) -> None:
         now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
-        dates = trailing_dates("UTC", 7, now=now)
-        assert len(dates) == 7  # noqa: PLR2004
+        days = 7
+        dates = trailing_dates("UTC", days, now=now)
+        assert len(dates) == days
         assert dates[-1] == date(2026, 7, 23)
         assert dates[0] == date(2026, 7, 17)
         assert dates == sorted(dates)

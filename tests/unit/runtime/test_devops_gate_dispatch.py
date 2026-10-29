@@ -14,6 +14,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from roboco.config import settings
 from roboco.runtime.orchestrator import AgentOrchestrator
@@ -83,7 +84,8 @@ async def test_predicate_hit_and_no_verdict_spawns_devops(
     ):
         await orch._dispatch_devops_gate_review(task)
     spawn.assert_awaited_once()
-    kwargs = spawn.await_args.kwargs  # type: ignore[union-attr]
+    assert spawn.await_args is not None
+    kwargs = spawn.await_args.kwargs
     assert kwargs["agent_id"] == "devops-1"
     assert kwargs["task_id"] == task["id"]
     assert kwargs["initial_prompt"] == prompt
@@ -164,7 +166,7 @@ async def test_devops_gate_slot_runs_after_the_primary_reviewer_pass(
 
     o._dispatch_devops_gate_review = _devops_review
 
-    await orch._dispatch_pr_gate_work(None)  # type: ignore[arg-type]
+    await orch._dispatch_pr_gate_work(AsyncMock(spec=httpx.AsyncClient))
 
     assert "primary-selection" in order
     assert order.index("primary-selection") < order.index("devops")

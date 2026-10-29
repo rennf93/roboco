@@ -23,6 +23,9 @@ from roboco.llm.providers.grok_cli_config import grok_cli_args_for_role
 if TYPE_CHECKING:
     import pytest
 
+_DEFAULT_TURN_TIMEOUT = 600.0
+_ENV_TURN_TIMEOUT = 120.0
+
 
 def _kinds(chunks: list) -> list[str]:
     return [c.kind for c in chunks]
@@ -131,11 +134,11 @@ def test_turn_timeout_seconds_env_and_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", raising=False)
-    assert _turn_timeout_seconds() == 600.0  # noqa: PLR2004
+    assert _turn_timeout_seconds() == _DEFAULT_TURN_TIMEOUT
     monkeypatch.setenv("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", "120")
-    assert _turn_timeout_seconds() == 120.0  # noqa: PLR2004
+    assert _turn_timeout_seconds() == _ENV_TURN_TIMEOUT
     # Garbage / non-positive falls back to the default.
     monkeypatch.setenv("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", "nope")
-    assert _turn_timeout_seconds() == 600.0  # noqa: PLR2004
+    assert _turn_timeout_seconds() == _DEFAULT_TURN_TIMEOUT
     monkeypatch.setenv("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", "0")
-    assert _turn_timeout_seconds() == 600.0  # noqa: PLR2004
+    assert _turn_timeout_seconds() == _DEFAULT_TURN_TIMEOUT

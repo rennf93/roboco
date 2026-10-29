@@ -43,30 +43,34 @@ def _project(*, installation_id: int | None, pat: str | None) -> MagicMock:
     return p
 
 
-def _svc_with_get(project: MagicMock) -> ProjectService:
+def _svc_with_get(
+    monkeypatch: pytest.MonkeyPatch, project: MagicMock | None
+) -> ProjectService:
     svc = ProjectService(MagicMock())
-    svc.get = AsyncMock(return_value=project)  # type: ignore[method-assign]
-    svc.get_by_slug = AsyncMock(return_value=project)  # type: ignore[method-assign]
+    monkeypatch.setattr(svc, "get", AsyncMock(return_value=project))
+    monkeypatch.setattr(svc, "get_by_slug", AsyncMock(return_value=project))
     return svc
 
 
 @pytest.mark.asyncio
-async def test_no_installation_uses_stored_pat() -> None:
-    svc = _svc_with_get(_project(installation_id=None, pat="ghp_plain"))
+async def test_no_installation_uses_stored_pat(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = _svc_with_get(monkeypatch, _project(installation_id=None, pat="ghp_plain"))
     token = await svc.get_decrypted_token(uuid4())
     assert token == "ghp_plain"
 
 
 @pytest.mark.asyncio
-async def test_no_project_returns_none() -> None:
-    svc = _svc_with_get(None)  # type: ignore[arg-type]
+async def test_no_project_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = _svc_with_get(monkeypatch, None)
     assert await svc.get_decrypted_token(uuid4()) is None
     assert await svc.get_decrypted_token_by_slug("nope") is None
 
 
 @pytest.mark.asyncio
-async def test_installation_id_without_app_creds_falls_back_to_pat() -> None:
-    svc = _svc_with_get(_project(installation_id=42, pat="ghp_fallback"))
+async def test_installation_id_without_app_creds_falls_back_to_pat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = _svc_with_get(monkeypatch, _project(installation_id=42, pat="ghp_fallback"))
     fake_creds_svc = MagicMock()
     fake_creds_svc.has_credentials = AsyncMock(return_value=False)
     with patch(
@@ -78,8 +82,10 @@ async def test_installation_id_without_app_creds_falls_back_to_pat() -> None:
 
 
 @pytest.mark.asyncio
-async def test_installation_id_with_app_creds_mints_token() -> None:
-    svc = _svc_with_get(_project(installation_id=42, pat="ghp_unused"))
+async def test_installation_id_with_app_creds_mints_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = _svc_with_get(monkeypatch, _project(installation_id=42, pat="ghp_unused"))
     fake_creds_svc = MagicMock()
     fake_creds_svc.has_credentials = AsyncMock(return_value=True)
     with (
@@ -97,8 +103,8 @@ async def test_installation_id_with_app_creds_mints_token() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mint_failure_falls_back_to_pat() -> None:
-    svc = _svc_with_get(_project(installation_id=42, pat="ghp_fallback"))
+async def test_mint_failure_falls_back_to_pat(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = _svc_with_get(monkeypatch, _project(installation_id=42, pat="ghp_fallback"))
     fake_creds_svc = MagicMock()
     fake_creds_svc.has_credentials = AsyncMock(return_value=True)
     with (
@@ -116,12 +122,14 @@ async def test_mint_failure_falls_back_to_pat() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mint_network_error_falls_back_to_pat() -> None:
+async def test_mint_network_error_falls_back_to_pat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A raw httpx failure inside the REAL mint path (not mocked away) must
     still fall back to the PAT — github_app_auth wraps it as GitHubAppError
     at its own chokepoint, which _resolve_token's existing except clause
     already catches."""
-    svc = _svc_with_get(_project(installation_id=42, pat="ghp_fallback"))
+    svc = _svc_with_get(monkeypatch, _project(installation_id=42, pat="ghp_fallback"))
     fake_creds_svc = MagicMock()
     fake_creds_svc.has_credentials = AsyncMock(return_value=True)
     fake_creds_svc.get_decrypted = AsyncMock(
@@ -147,11 +155,13 @@ async def test_mint_network_error_falls_back_to_pat() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mint_corrupted_pem_falls_back_to_pat() -> None:
+async def test_mint_corrupted_pem_falls_back_to_pat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A corrupted stored private key makes the REAL mint path's
     ``jwt.encode`` raise ``InvalidKeyError`` before any network call — must
     also fall back to the PAT."""
-    svc = _svc_with_get(_project(installation_id=42, pat="ghp_fallback"))
+    svc = _svc_with_get(monkeypatch, _project(installation_id=42, pat="ghp_fallback"))
     fake_creds_svc = MagicMock()
     fake_creds_svc.has_credentials = AsyncMock(return_value=True)
     fake_creds_svc.get_decrypted = AsyncMock(
@@ -172,8 +182,10 @@ async def test_mint_corrupted_pem_falls_back_to_pat() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mint_failure_with_no_pat_returns_none() -> None:
-    svc = _svc_with_get(_project(installation_id=42, pat=None))
+async def test_mint_failure_with_no_pat_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = _svc_with_get(monkeypatch, _project(installation_id=42, pat=None))
     fake_creds_svc = MagicMock()
     fake_creds_svc.has_credentials = AsyncMock(return_value=True)
     with (
@@ -191,8 +203,8 @@ async def test_mint_failure_with_no_pat_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_by_slug_mints_token_too() -> None:
-    svc = _svc_with_get(_project(installation_id=7, pat=None))
+async def test_by_slug_mints_token_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = _svc_with_get(monkeypatch, _project(installation_id=7, pat=None))
     fake_creds_svc = MagicMock()
     fake_creds_svc.has_credentials = AsyncMock(return_value=True)
     with (

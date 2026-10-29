@@ -76,7 +76,7 @@ def test_i_will_plan_request_flattens_sdk_nested_technical_considerations() -> N
     # The SDK nests list-of-strings tool input as nested arrays / dict-wrapped
     # text (``[[["…"]]]``, ``{"item": {"$text": "…"}}``). Annotated ``list[Any]``
     # so mypy accepts the coerce-able shape; the ``StrList`` BeforeValidator
-    # flattens it to ``list[str]`` at runtime (no ``type: ignore`` owed).
+    # flattens it to ``list[str]`` at runtime (no mypy suppression owed).
     technical_considerations: list[Any] = [
         [[["Empty state distinct from loaded state, coverage target 80%"]]],
         [{"item": {"$text": "Use asyncpg prepared statements"}}],
@@ -402,8 +402,7 @@ def test_i_will_work_on_request_non_dict_step_still_reported_by_real_validation(
     hits the real ``list[dict[str, str]]`` type check and raises, so the
     clamp can't mask a genuinely malformed payload."""
     with pytest.raises(ValidationError) as exc:
-        IWillWorkOnRequest(
-            task_id=uuid4(),
-            steps=[{"title": "t"}, "not a dict"],  # type: ignore[list-item]
+        IWillWorkOnRequest.model_validate(
+            {"task_id": uuid4(), "steps": [{"title": "t"}, "not a dict"]}
         )
     assert "steps" in str(exc.value)

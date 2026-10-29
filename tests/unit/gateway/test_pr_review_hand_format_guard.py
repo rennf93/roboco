@@ -98,7 +98,7 @@ async def test_hand_formatted_verdict_body_with_no_findings_is_rejected() -> Non
     c.git.post_pr_review.assert_not_awaited()
     # ``c._verb_runner()`` is a ``MagicMock`` at runtime (stubbed above) but the
     # declared return is a coroutine — index the spy through an ``Any`` alias so
-    # ``assert_not_awaited`` resolves without a ``type: ignore``.
+    # ``assert_not_awaited`` resolves without an inline mypy suppression.
     cc: Any = c
     cc._verb_runner().run_intent.assert_not_awaited()
 

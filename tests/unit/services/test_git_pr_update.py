@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from roboco.exceptions import GitError
 from roboco.services.base import NotFoundError
@@ -66,7 +67,7 @@ def _make_http_response(
 ) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
-    resp.is_success = 200 <= status_code < 300  # noqa: PLR2004
+    resp.is_success = httpx.codes.is_success(status_code)
     resp.json.return_value = json_payload or {}
     resp.text = text
     return resp
