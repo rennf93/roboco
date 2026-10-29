@@ -89,7 +89,7 @@ class RateLimitProbeEngine(_Base):
 
         # Generate resume prompt
         resume_prompt = self._generate_resume_prompt(record, resolution)
-        git_context = self._fresh_or_prior_git_context(record.task_id, agent_id)
+        git_context = await self._fresh_or_prior_git_context(record.task_id, agent_id)
 
         # Respawn FIRST, then tear down the record only once a container actually
         # launched. The old order deleted the record (in-memory + durable) before
