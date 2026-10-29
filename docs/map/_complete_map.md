@@ -8639,7 +8639,7 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `roboco/conventions/classify_python.py` | Python top-level definition classifier → `model`/`route`/`helper`/`other` | 101 |
 | `roboco/conventions/classify_ts.py` | TypeScript/TSX top-level definition classifier → `model`/`route`/`component`/`other` | 159 |
 | `roboco/conventions/hygiene.py` | `check_hygiene` — inline-comment + lint/type-suppression findings; sanctioned-code allowlist | 139 |
-| `roboco/conventions/modularity.py` | `check_modularity` — cohesion (1 concern/file), thin routes, thin components, god class | 344 |
+| `roboco/conventions/modularity.py` | `check_modularity` — cohesion (1 concern/file), thin routes, thin components, god class; ambiguous DB method names (`add`/`add_all`/`merge`/`query`/`stream`) count only on a session-handle receiver, and only axios's request methods count as fetching | 386 |
 | `roboco/conventions/custom.py` | `check_custom` — project regex rules scoped by language with tsx→typescript dialect relation; `unrecognized_rule_languages` surfaces typo language tags | 85 |
 | `roboco/conventions/scan.py` | `derive_from_scan` — infer modules/languages/rules from a repo (drops candidate modules under `NON_SOURCE_SEGMENTS`); `render_yaml`; CLAUDE.md token lifting | 321 |
 
@@ -8687,10 +8687,10 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `classify_definitions` (ts) | fn | `conventions/classify_ts.py:36` | Top-level TS/TSX defs → `(name, line, kind)` |
 | `check_hygiene` | fn | `conventions/hygiene.py:58` | Inline-comment + suppression findings |
 | `_suppression_allowed` | fn | `conventions/hygiene.py:89` | True iff only sanctioned codes (TC001/2/3, prop-decorator) |
-| `check_modularity` | fn | `conventions/modularity.py:70` | Cohesion + thin routes + thin components + god class |
-| `_check_cohesion` | fn | `conventions/modularity.py:96` | >1 core kind in a file → `modular_cohesion` finding |
-| `_body_hits_db` | fn | `conventions/modularity.py:220` | Route body calls execute/scalars/select/... (thin_routes) |
-| `_component_fetches` | fn | `conventions/modularity.py:300` | Component body calls fetch/axios (thin_components) |
+| `check_modularity` | fn | `conventions/modularity.py:97` | Cohesion + thin routes + thin components + god class |
+| `_check_cohesion` | fn | `conventions/modularity.py:123` | >1 core kind in a file → `modular_cohesion` finding |
+| `_body_hits_db` | fn | `conventions/modularity.py:259` | Route body calls execute/scalars/select/... (thin_routes); `registry.stream(...)` / `service.query(...)` are not DB hits, `db.stream(...)` / `db.query(...)` are |
+| `_component_fetches` | fn | `conventions/modularity.py:338` | Component body calls `fetch(...)`, `axios(...)` or an axios request method (thin_components); `axios.isAxiosError` is not fetching |
 | `unrecognized_rule_languages` | fn | `conventions/custom.py:37` | Return language tags on a `CustomRule` that the validator never reports — flags typos in the conventions file |
 | `check_custom` | fn | `conventions/custom.py:56` | Project regex rule matches scoped by language |
 | `_rule_applies` | fn | `conventions/custom.py:45` | Language scoping with tsx→typescript dialect relation |
