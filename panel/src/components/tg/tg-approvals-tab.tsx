@@ -13,7 +13,7 @@ import {
   BoardProgramItemDetail,
   ScalesItemDetail,
 } from "@/components/tg/approvals/board-program-detail";
-import { useBackButton, useTgWebApp } from "@/lib/telegram/hooks";
+import { useBackButton, useTgWebApp } from "@/hooks/use-tg-webapp";
 import { haptics } from "@/lib/telegram/webapp";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
