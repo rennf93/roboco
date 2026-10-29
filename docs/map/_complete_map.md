@@ -9645,6 +9645,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.25.0) is the s
 | `panel/src/components/projects/`, `products/`, `agents/`, `business/`, `auditor/`, `knowledge-base/`, `git/`, `journals/`, `work-sessions/`, `notifications/`, `rate-limit/`, `layout/`, `ui/` | Per-domain component groups (`projects/` and `products/` each export a `*-view.tsx` consumed by `workstation/page.tsx`, plus a `*-card-grid.tsx` reusing the sibling table's exported badge renderers; `agents/` similarly exports `agents-fleet-view.tsx` (`AgentsFleetView`) consumed by `agents/page.tsx`'s Fleet tab, plus `agent-card.tsx`'s DM quick-action button; `journals/` similarly exports `journals-view.tsx` (`JournalsView`) consumed by `agents/page.tsx`'s Journals tab); `ui/` = Radix-based primitives (dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown, `collapsible-section`) |
 | `panel/src/hooks/use-websocket.ts` | Shared `useWebSocket<T>(path, handlers?, isSystem?)` hook (auto-reconnect, heartbeat) |
 | `panel/src/hooks/use-{tasks,agents,projects,products,usage,prompter,secretary,dashboard,git,journals,notifications,knowledge-base,observability,work-sessions,providers,rate-limit-{sync,websocket}}.ts` | TanStack Query + zustand data hooks |
+| `panel/src/hooks/use-api-health.ts` | `useApiHealth` — polls `/health` (5s timeout, every 30s) → `checking`/`connected`/`disconnected`; the header's `ConnectionStatus` badge renders it |
 | `panel/src/hooks/use-a2a-live.ts` | `useA2AConversations` / `useA2AAdminPairs` / `useA2AMessages` (TanStack Query over `a2aApi`) + `useReplyAsCeo` / `useCreateCeoConversation` / `useSendCeoMessage` mutations; `a2aLiveKeys` query-key namespace |
 | `panel/src/lib/api/*.ts` | Per-domain axios clients (`client.ts` shared instance; `release.ts`, `playbooks.ts`, `prompter-live.ts`, `tasks.ts`, `settings.ts`, `usage.ts`, `cockpit.ts`, `a2a.ts`, `auth.ts` (status/login/logout), `x.ts` (post queue + credentials), `roadmap.ts` (cycles + item approve/reject), …) |
 | `panel/src/lib/websocket/connection.ts` | `WebSocketConnection` class + `getWebSocketUrl` |
@@ -9813,6 +9814,7 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 ├── src/hooks/
 │   ├── use-websocket.ts                    (shared useWebSocket<T>: auto-reconnect, heartbeat)
 │   ├── use-tg-webapp.ts                    (useTgWebApp / useMainButton / useBackButton over TgWebAppContext)
+│   ├── use-api-health.ts                   (useApiHealth: /health poll behind the header badge)
 │   └── use-{tasks,agents,projects,products,usage,prompter,secretary,dashboard,git,journals,notifications,knowledge-base,observability,work-sessions,providers,rate-limit-{sync,websocket}}.ts
 ├── src/lib/
 │   ├── api/*.ts                            (per-domain axios clients; client.ts shared instance; release, playbooks, prompter-live, tasks, settings, usage, cockpit, a2a, auth, x, roadmap, …)

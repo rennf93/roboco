@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
@@ -8,31 +7,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Wifi, WifiOff, Loader2 } from "lucide-react";
-
-type ConnectionState = "checking" | "connected" | "disconnected";
+import { useApiHealth, type ApiHealthState } from "@/hooks/use-api-health";
 
 export function ConnectionStatus() {
-  const [state, setState] = useState<ConnectionState>("checking");
-
-  useEffect(() => {
-    const checkConnection = async () => {
-      try {
-        // Health endpoint is at /health (not under /api)
-        const response = await fetch("/health", {
-          method: "GET",
-          signal: AbortSignal.timeout(5000),
-        });
-        setState(response.ok ? "connected" : "disconnected");
-      } catch {
-        setState("disconnected");
-      }
-    };
-
-    checkConnection();
-    const interval = setInterval(checkConnection, 30000); // Check every 30s
-
-    return () => clearInterval(interval);
-  }, []);
+  const state = useApiHealth();
 
   // Icon-only badge: the tooltip below is now the ONLY place the state is
   // spelled out in words, so each hint fully explains the state rather than
@@ -40,7 +18,7 @@ export function ConnectionStatus() {
   // its accessible name (a visible label no longer exists to fall back on);
   // aria-live announces a state change to assistive tech without re-reading
   // on every unchanged 30s poll (aria-live only fires when content differs).
-  const hint: Record<ConnectionState, string> = {
+  const hint: Record<ApiHealthState, string> = {
     checking: "Checking the orchestrator API...",
     connected: "Orchestrator API reachable, re-checked every 30s",
     disconnected: "Orchestrator API unreachable, retrying every 30s",
