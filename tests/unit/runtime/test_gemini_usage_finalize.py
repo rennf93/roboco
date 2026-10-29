@@ -139,12 +139,13 @@ def test_gemini_usage_json_reads_the_real_local_dir(
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     udir = tmp_path / "roboco-gemini-usage" / "be-dev-1"
     udir.mkdir(parents=True)
+    cost_usd = 0.1
     (udir / "usage.json").write_text(
-        json.dumps({"total_tokens": 55, "cost_usd": 0.1}), encoding="utf-8"
+        json.dumps({"total_tokens": 55, "cost_usd": cost_usd}), encoding="utf-8"
     )
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     assert orch._gemini_usage_tokens("be-dev-1") == (0, 55, 0, 0)
-    assert orch._gemini_cost_usd("be-dev-1") == 0.1  # noqa: PLR2004
+    assert orch._gemini_cost_usd("be-dev-1") == cost_usd
 
 
 def test_ensure_gemini_usage_dir_creates_world_writable(

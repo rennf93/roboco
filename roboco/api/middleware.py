@@ -108,14 +108,13 @@ def _extract_flow_verb_role(path: str) -> tuple[str, str] | None:
     """Extract (role, verb) from a ``/api/v1/flow/{role}/{verb}`` path.
 
     Returns ``None`` for non-flow paths so telemetry only persists for gateway
-    verbs.
+    verbs. The prefix guarantees at least three slashes, so the split always
+    yields its last two segments.
     """
     if not path.startswith(_FLOW_PATH_PREFIX):
         return None
-    parts = path.rstrip("/").rsplit("/", 2)
-    if len(parts) < 2:  # noqa: PLR2004
-        return None
-    return parts[-2], parts[-1]
+    role, verb = path.rstrip("/").rsplit("/", 2)[-2:]
+    return role, verb
 
 
 async def _persist_verb_latency(
@@ -146,6 +145,23 @@ async def _persist_verb_latency(
             outcome=outcome,
             exc_info=True,
         )
+
+
+# The event loop keeps only a weak reference to a task, so a fire-and-forget
+# latency write could be garbage-collected mid-INSERT. Each task stays here
+# until it finishes.
+_pending_latency_writes: set[asyncio.Task[None]] = set()
+
+
+def _schedule_verb_latency_write(
+    verb: str, role: str, duration_ms: float, outcome: str, status_code: int | None
+) -> None:
+    """Start the latency write without awaiting it, holding the task until done."""
+    task = asyncio.create_task(
+        _persist_verb_latency(verb, role, duration_ms, outcome, status_code)
+    )
+    _pending_latency_writes.add(task)
+    task.add_done_callback(_pending_latency_writes.discard)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -181,11 +197,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             flow_parts = _extract_flow_verb_role(request.url.path)
             if flow_parts is not None:
                 role, verb = flow_parts
-                outcome = "timeout" if response.status_code == 504 else "success"  # noqa: PLR2004
-                asyncio.create_task(  # noqa: RUF006
-                    _persist_verb_latency(
-                        verb, role, duration_ms, outcome, response.status_code
-                    )
+                timed_out = response.status_code == http_status.HTTP_504_GATEWAY_TIMEOUT
+                outcome = "timeout" if timed_out else "success"
+                _schedule_verb_latency_write(
+                    verb, role, duration_ms, outcome, response.status_code
                 )
 
             return response
@@ -201,9 +216,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             flow_parts = _extract_flow_verb_role(request.url.path)
             if flow_parts is not None:
                 role, verb = flow_parts
-                asyncio.create_task(  # noqa: RUF006
-                    _persist_verb_latency(verb, role, duration_ms, "error", None)
-                )
+                _schedule_verb_latency_write(verb, role, duration_ms, "error", None)
 
             raise
 

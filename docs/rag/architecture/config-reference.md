@@ -246,7 +246,7 @@ The session cookie is `secure`-only (`cookie_secure=True` in `roboco/api/auth/ba
 |----------|---------|-------------|
 | `ROBOCO_ROLE` | `all` | `all`: single process, everything runs (default, unchanged behavior). `api`: serves stateless FastAPI request/response routes; never runs the startup reconciliation or launches a background loop. Keeps its own Orchestrator instance only for isolated on-demand actions with no fleet-state dependency (`POST /api/tasks/{id}/supersede-external-pr`'s branch cut) - NOT the secretary/intake live chats, which nginx routes to the dispatcher instead. `dispatcher`: the fleet owner - runs the startup reconciliation plus every loop, and (via nginx) every route that touches the live fleet; also serves its own `/health` off the same FastAPI app for its container healthcheck. Its own task/notification queries go over HTTP to its OWN uvicorn (`internal_api_url` resolves to 127.0.0.1, pinned explicitly via `ROBOCO_API_URL` in the compose files), never the orchestrator (api-role) service. `indexer`: runs only the KB/embedding worker (`roboco/services/optimal_brain/indexer_worker.py`), no docker socket, no HTTP server. |
 
-### nginx routing table (`docker/nginx.conf`)
+### nginx routing table (`deploy/nginx.conf`)
 
 `AgentOrchestrator._instances`/`_waiting_records` (the live fleet's spawn/waiting-agent registries) are per-process dicts. In split-role mode the dispatcher is the only process with a populated copy - the orchestrator (api role) runs the same route code against an always-empty copy - so nginx routes every fleet-touching path to the dispatcher upstream instead.
 

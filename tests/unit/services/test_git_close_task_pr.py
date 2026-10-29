@@ -42,7 +42,7 @@ def _wire_project(
 def _resp(*, status_code: int = 200, json_payload: dict[str, Any] | None = None) -> Any:
     resp = MagicMock()
     resp.status_code = status_code
-    resp.is_success = 200 <= status_code < 300  # noqa: PLR2004
+    resp.is_success = httpx.codes.is_success(status_code)
     resp.json.return_value = json_payload or {}
     return resp
 

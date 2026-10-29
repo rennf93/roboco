@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock
 import pytest
 from roboco.services.memory_distiller import LessonInput, MemoryDistiller
 
+# The documented lesson word budget.
+_WORD_BUDGET = 120
+
 
 def _input() -> LessonInput:
     return LessonInput(
@@ -56,4 +59,4 @@ async def test_distill_caps_at_120_words(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     out = await MemoryDistiller().distill(_input())
     assert out is not None
-    assert len(out.split()) <= 120  # noqa: PLR2004 - the documented word budget
+    assert len(out.split()) <= _WORD_BUDGET

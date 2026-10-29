@@ -403,7 +403,7 @@ async def test_gate_counts_strike_when_review_container_idle() -> None:
     gated = await orch._pm_respawn_should_gate("fe-qa", task)
 
     assert gated is False
-    assert orch._pm_respawn_tracker[("fe-qa", task["id"])]["count"] == 2  # noqa: PLR2004
+    assert orch._pm_respawn_tracker[("fe-qa", task["id"])]["count"] == _ONE_STRIKE
 
 
 @pytest.mark.asyncio

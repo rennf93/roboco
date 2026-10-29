@@ -588,9 +588,6 @@ async def test_comment_pull_request_does_not_clone() -> None:
         slug="test-project",
         git_url="https://github.com/owner/repo.git",
     )
-    git._project_for_task = AsyncMock(return_value=project)  # type: ignore[method-assign]
-    git._get_project_token_or_raise = AsyncMock(return_value="fake-token")  # type: ignore[method-assign]
-
     mock_forge = MagicMock()
     mock_forge.create_issue_comment = AsyncMock()
 
@@ -602,6 +599,10 @@ async def test_comment_pull_request_does_not_clone() -> None:
     )
 
     with (
+        patch.object(git, "_project_for_task", new=AsyncMock(return_value=project)),
+        patch.object(
+            git, "_get_project_token_or_raise", new=AsyncMock(return_value="fake-token")
+        ),
         patch.object(GitService, "_forge", new=mock_forge),
         patch.object(GitService, "get_workspace", new=workspace_spy),
     ):
@@ -640,13 +641,16 @@ async def test_comment_pull_request_posts_on_correct_pr() -> None:
         slug="test-project",
         git_url="https://github.com/owner/repo.git",
     )
-    git._project_for_task = AsyncMock(return_value=project)  # type: ignore[method-assign]
-    git._get_project_token_or_raise = AsyncMock(return_value="fake-token")  # type: ignore[method-assign]
-
     mock_forge = MagicMock()
     mock_forge.create_issue_comment = AsyncMock()
 
-    with patch.object(GitService, "_forge", new=mock_forge):
+    with (
+        patch.object(git, "_project_for_task", new=AsyncMock(return_value=project)),
+        patch.object(
+            git, "_get_project_token_or_raise", new=AsyncMock(return_value="fake-token")
+        ),
+        patch.object(GitService, "_forge", new=mock_forge),
+    ):
         await git.comment_pull_request(
             _PR_NUM,
             project_id=uuid4(),

@@ -3,9 +3,9 @@
 The role mixins (`board.py`, `doc.py`, `qa.py`, …) call methods like
 ``self.task.get(...)`` and ``self._emit_rejection(...)`` that live on
 the legacy ``Choreographer`` class in ``_impl.py``. Without a typed
-reference, mypy resolves those as ``Any`` (via ``# type: ignore[attr-defined]``)
-which then bubbles up as ``no-any-return`` errors at every Envelope-returning
-verb.
+reference, mypy reports each of those calls as ``attr-defined``, and silencing
+that leaves an ``Any`` which then bubbles up as ``no-any-return`` errors at
+every Envelope-returning verb.
 
 This module gives mypy a typed view of those helpers. ``ChoreographerHelpers``
 is **not** a Protocol — Protocol with abstract members causes the

@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 from roboco.llm.providers import hummin_cli_config
 
+# hummin's own "invalid" auth-check status (verified main.ts mapping).
+_HUMMIN_INVALID_EXIT = 2
+
 
 def _role_of(agent_id: str) -> str:
     return {
@@ -109,11 +112,10 @@ def test_check_mode_passes_hummin_exit_code_through(
 
     def _fake_run(argv: list[str], **_kw: object) -> object:
         calls.append(argv)
-        return type("R", (), {"returncode": 2})()
+        return type("R", (), {"returncode": _HUMMIN_INVALID_EXIT})()
 
     monkeypatch.setattr(hummin_cli_config.subprocess, "run", _fake_run)
-    # 2 = hummin's own "invalid" status (verified main.ts mapping).
-    assert hummin_cli_config.main(["--check"]) == 2  # noqa: PLR2004
+    assert hummin_cli_config.main(["--check"]) == _HUMMIN_INVALID_EXIT
     assert calls == [["hummin", "auth", "check", "--provider", "zai", "--json"]]
 
 
@@ -124,7 +126,7 @@ def test_check_mode_maps_missing_binary_to_invalid(
         raise OSError("no such binary")
 
     monkeypatch.setattr(hummin_cli_config.subprocess, "run", _boom)
-    assert hummin_cli_config.main(["--check"]) == 2  # noqa: PLR2004
+    assert hummin_cli_config.main(["--check"]) == _HUMMIN_INVALID_EXIT
 
 
 # ---------------------------------------------------------------------------

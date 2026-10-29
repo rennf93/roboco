@@ -222,8 +222,8 @@ def _point_singletons_at_test_db(
     DB (the same one tests/conftest.py already provisioned and migrated), so
     get_engine()/get_session_factory(), the real singleton machinery, talk
     to it instead of a dev/production database. database_url is a
-    computed_field re-derived from these plain fields on every access, so
-    patching them is enough; the computed property itself can't be assigned
+    property re-derived from these plain fields on every access, so
+    patching them is enough; the property itself can't be assigned
     directly."""
     parsed = urlparse(_test_database_url)
     monkeypatch.setattr(settings, "database_host", parsed.hostname or "localhost")

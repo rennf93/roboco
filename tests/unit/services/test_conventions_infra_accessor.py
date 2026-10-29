@@ -23,13 +23,15 @@ from roboco.foundation.policy.conventions import (
 from roboco.services.conventions import ConventionsService
 
 
-def _service_with_map(mapping: ConventionsStandard) -> ConventionsService:
+def _service_with_map(
+    monkeypatch: pytest.MonkeyPatch, mapping: ConventionsStandard
+) -> ConventionsService:
     svc = ConventionsService(session=cast("Any", None))
 
     async def _fake_get_map(_project: Any, **_kwargs: Any) -> ConventionsStandard:
         return mapping
 
-    svc.get_map = _fake_get_map  # type: ignore[assignment, method-assign]
+    monkeypatch.setattr(svc, "get_map", _fake_get_map)
     return svc
 
 
@@ -41,7 +43,7 @@ async def _flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 async def test_accessor_returns_declared_globs(monkeypatch: pytest.MonkeyPatch) -> None:
     await _flag_off(monkeypatch)
-    svc = _service_with_map(ConventionsStandard(infra=["gitops/**"]))
+    svc = _service_with_map(monkeypatch, ConventionsStandard(infra=["gitops/**"]))
 
     assert await svc.effective_infra_globs(cast("Any", uuid4())) == ["gitops/**"]
 
@@ -51,7 +53,7 @@ async def test_accessor_returns_defaults_when_undeclared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await _flag_off(monkeypatch)
-    svc = _service_with_map(ConventionsStandard(infra=None))
+    svc = _service_with_map(monkeypatch, ConventionsStandard(infra=None))
 
     globs = await svc.effective_infra_globs(cast("Any", uuid4()))
     assert globs == DEFAULT_INFRA_GLOBS
@@ -64,7 +66,7 @@ async def test_accessor_preserves_explicit_optout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await _flag_off(monkeypatch)
-    svc = _service_with_map(ConventionsStandard(infra=[]))
+    svc = _service_with_map(monkeypatch, ConventionsStandard(infra=[]))
 
     # [] is a real opt-out, not a missing declaration: it must NOT be
     # expanded back to the defaults.

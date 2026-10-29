@@ -21,6 +21,10 @@ if TYPE_CHECKING:
 # auth.json must stay readable by its owner (the agent uid) alone.
 _OWNER_ONLY_MODE = 0o600
 
+# Bounds, in seconds, around a token expiring in ~54 minutes (3240 s).
+_ABOUT_54_MINUTES_MIN = 3200
+_ABOUT_54_MINUTES_MAX = 3300
+
 
 _PAST = "2020-01-01T00:00:00.000000000Z"
 _FUTURE = "2099-01-01T00:00:00.000000000Z"
@@ -68,7 +72,7 @@ def test_seconds_until_expiry_and_is_valid(tmp_path: Path) -> None:
     _write(path, _bundle("2026-06-19T06:54:18.840268518Z"))
     remaining = ga.seconds_until_expiry(path, now=now)
     assert remaining is not None
-    assert 3200 < remaining < 3300  # noqa: PLR2004 — ~54 minutes
+    assert _ABOUT_54_MINUTES_MIN < remaining < _ABOUT_54_MINUTES_MAX
     assert ga.is_valid(path, now=now)
     # Less than an hour left -> not valid under a 1h skew.
     assert not ga.is_valid(path, skew_seconds=3600, now=now)

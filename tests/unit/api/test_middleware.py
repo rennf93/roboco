@@ -7,9 +7,9 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 # UUID annotates a Pydantic model field below, so it must stay a runtime import
-# (Pydantic resolves the annotation when building the model) despite `from
-# __future__ import annotations` making it look type-checking-only to ruff.
-from uuid import UUID  # noqa: TC003
+# (Pydantic resolves the annotation when building the model); ruff knows this
+# through pyproject's runtime-evaluated-base-classes.
+from uuid import UUID
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request

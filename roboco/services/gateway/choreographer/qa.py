@@ -294,7 +294,9 @@ class QAMixin(_Base):
                     t,
                     await self._emit_rejection(
                         Envelope.not_authorized(
-                            message="this review task is already claimed by another agent",  # noqa: E501
+                            message=(
+                                "this review task is already claimed by another agent"
+                            ),
                             remediate="give_me_work for the next available task",
                             context_briefing=briefing,
                         ).with_introspection(task=t, role=role_str),

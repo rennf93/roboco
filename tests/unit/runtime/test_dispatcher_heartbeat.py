@@ -12,7 +12,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4  # noqa: F401 - parity with sibling harnesses
 
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator

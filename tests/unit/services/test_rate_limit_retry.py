@@ -19,7 +19,6 @@ from uuid import uuid4
 import anthropic as anthropic_mod
 import httpx
 import pytest
-import pytest_asyncio  # noqa: F401 - registers asyncio mode
 
 # ---------------------------------------------------------------------------
 # Module imports
