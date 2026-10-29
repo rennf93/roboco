@@ -445,7 +445,7 @@ product-strategy-research-pitch
 | `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1071 | Master switch — loop never starts when off |
 | `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1078 | Seconds between strategy assessment passes |
 | `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1083 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2307 | Denylist — `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2324 | Denylist — `ProjectService` rejects `git_url` containing any entry |
 | `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:868 | Fernet key for git-token encrypt/decrypt |
 | `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1861 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
 | `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1871 | Seconds between roadmap-exploration cycles (default weekly) |
