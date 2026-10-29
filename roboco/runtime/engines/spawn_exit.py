@@ -229,7 +229,7 @@ class SpawnExitEngine(_Base):
 
     @staticmethod
     async def _inspect_exit_diagnostics(container_name: str) -> dict[str, Any]:
-        """Best-effort extra `docker inspect` fields for a dead container's log line.
+        """Best-effort extra `docker container inspect` fields for a dead container.
 
         Cheap (one more inspect the monitor already does one of) and never
         raises — any failure/timeout yields {} so the caller's log line still
@@ -238,6 +238,7 @@ class SpawnExitEngine(_Base):
         try:
             proc = await asyncio.create_subprocess_exec(
                 "docker",
+                "container",
                 "inspect",
                 "-f",
                 "{{.State.OOMKilled}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|"
@@ -291,6 +292,7 @@ class SpawnExitEngine(_Base):
         # containers, and on first spawn there's nothing to dump.
         inspect = await asyncio.create_subprocess_exec(
             "docker",
+            "container",
             "inspect",
             "--format={{.Id}}",
             container_name,
@@ -1401,13 +1403,14 @@ class SpawnExitEngine(_Base):
     async def _inspect_container_state(
         container_name: str,
     ) -> tuple[bool, int | None]:
-        """Return (is_running, exit_code) from `docker inspect`.
+        """Return (is_running, exit_code) from `docker container inspect`.
 
         exit_code is None when the output is missing or unparseable; the
         caller treats None as a crash for safety.
         """
         proc = await asyncio.create_subprocess_exec(
             "docker",
+            "container",
             "inspect",
             "-f",
             "{{.State.Running}} {{.State.ExitCode}}",

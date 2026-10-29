@@ -294,7 +294,7 @@ class SandboxProvisioner:
             name = engine.container_name(agent_id)
             try:
                 rc, stdout, _ = await run(
-                    ["inspect", "--format={{.State.Running}}", name],
+                    ["container", "inspect", "--format={{.State.Running}}", name],
                     _DOCKER_EXEC_TIMEOUT_SECONDS,
                 )
             except Exception:

@@ -10,7 +10,7 @@ Compositions live under `compositions/<composition_id>/`. Each composition is on
 2. Add a shared `theme.css` with `@font-face` declarations (fonts are vendored under `public/fonts/*.woff2` — never load from a CDN, the render is offline) and the color/type tokens for the clip. (Skip this if you're building in the panel-demo register below — `kit/kit.css` already owns the reset + fonts.)
 3. Ship a `props.js` with default `window.__PROPS__` + `window.__ORIENTATION__` values for local preview. The sidecar OVERWRITES this file at render time with the real per-release values — your HTML loads it via `<script src="props.js"></script>` before any inline script that reads the globals.
 4. Add `<your_clip>.test.js` (vitest) asserting the HTML-structure invariants — dimensions, props.js wiring, theme link, at least one `class="clip"` element, no CDN scripts. See `release-announcement.test.js` as a template.
-5. `pnpm preview` (alias for `hyperframes preview <file>`) opens the local preview server; `pnpm lint` runs `hyperframes lint` over both orientations; `pnpm test` runs the smoke gate that CI runs.
+5. `pnpm preview` (alias for `hyperframes preview <file>`) opens the local preview server; `pnpm lint` runs `hyperframes lint` over both orientations; `pnpm test` runs the smoke gate that CI runs. The HyperFrames CLI sends anonymous usage events to PostHog unless `HYPERFRAMES_NO_TELEMETRY=1` (or `DO_NOT_TRACK=1`) is set. The `preview*` and `lint` scripts set it, and so does every agent image; set it yourself when you run `npx hyperframes` directly, as the commands below do.
 
 ## Captions
 
@@ -82,8 +82,8 @@ The story is "three releases shipped in six days": a single intake types "3 rele
 ### Preview / test this composition
 
 ```bash
-npx hyperframes preview compositions/release-recap/vertical.html
-npx hyperframes preview compositions/release-recap/square.html
+HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-recap/vertical.html
+HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-recap/square.html
 pnpm test   # runs vitest on all *.test.js under motion/
 ```
 
@@ -227,8 +227,8 @@ The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pi
 ### Preview / test this composition
 
 ```bash
-npx hyperframes preview compositions/release-0.27.0/vertical.html
-npx hyperframes preview compositions/release-0.27.0/square.html
+HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-0.27.0/vertical.html
+HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-0.27.0/square.html
 pnpm test   # release-0.27.0.test.js is picked up by vitest
 ```
 
@@ -280,8 +280,8 @@ The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pi
 ### Preview / test this composition
 
 ```bash
-npx hyperframes preview compositions/release-0.28.0/vertical.html
-npx hyperframes preview compositions/release-0.28.0/square.html
+HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-0.28.0/vertical.html
+HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-0.28.0/square.html
 pnpm test   # release-0.28.0.test.js is picked up by vitest
 ```
 

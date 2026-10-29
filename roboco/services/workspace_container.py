@@ -332,6 +332,7 @@ async def workspace_container_image() -> str:
         return _own_image["id"]
     proc = await asyncio.create_subprocess_exec(
         "docker",
+        "container",
         "inspect",
         "--format",
         "{{.Image}}",

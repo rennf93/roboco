@@ -76,7 +76,10 @@ class _FakeRunner:
                 self.ps_output if self._ps_call_count == 1 else self.ps_live_output
             )
             rc, out, err = 0, listing, b""
-        elif verb == "inspect":
+        elif verb == "container":
+            # `container inspect --format={{.State.Running}} <name>`.
+            if args[1] != "inspect":
+                raise AssertionError(f"unexpected container subverb: {args[1]}")
             rc = self.inspect_rc
             out = b"true\n" if self.inspect_running else b"false\n"
             err = b""
@@ -378,7 +381,7 @@ async def test_is_live_true_when_container_running() -> None:
 
     assert await provisioner.is_live("dev-10", ["postgres", "redis"]) is True
     expected_inspect_calls = 2
-    inspects = [c for c in runner.calls if c[0] == "inspect"]
+    inspects = [c for c in runner.calls if c[:2] == ["container", "inspect"]]
     assert len(inspects) == expected_inspect_calls
 
 
@@ -394,7 +397,7 @@ async def test_is_live_false_when_container_stopped() -> None:
 
 @pytest.mark.asyncio
 async def test_is_live_false_when_container_missing() -> None:
-    """Nonzero rc — `docker inspect` fails outright on a removed container."""
+    """Nonzero rc — `docker container inspect` fails on a removed container."""
     runner = _FakeRunner()
     runner.inspect_rc = 1
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
@@ -411,7 +414,7 @@ async def test_is_live_short_circuits_on_first_dead_service() -> None:
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     assert await provisioner.is_live("dev-13", ["postgres", "redis"]) is False
-    inspects = [c for c in runner.calls if c[0] == "inspect"]
+    inspects = [c for c in runner.calls if c[:2] == ["container", "inspect"]]
     assert len(inspects) == 1
 
 
