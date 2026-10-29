@@ -98,6 +98,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("task_budgets_enabled", "Task/project cost budgets"),
     ("devops_enabled", "DevOps agent (floating infra role)"),
     ("entire_enabled", "Entire session checkpoints (fleet)"),
+    ("entire_trails_enabled", "Entire trails (task trees as trails)"),
     ("decisions_enabled", "Decisions service (typed System One verdicts)"),
     ("decisions_tier_clef_enabled", "Decisions: default self-hosted tier (Clef)"),
     ("decisions_tier_laya_enabled", "Decisions: cheap self-hosted tier (Laya)"),

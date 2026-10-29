@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from roboco.config import settings
+from roboco.foundation.identity import slug_for_uuid_or_none
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.content import (
@@ -1049,7 +1050,10 @@ class QAMixin(_Base):
             # would itself blow up instead of cleanly reaching the agent.
             async with self.task.session.begin_nested():
                 await findings_lib.stamp_addressed_verified(
-                    self.task.session, t.id, origin="qa"
+                    self.task.session,
+                    t.id,
+                    origin="qa",
+                    verified_by=slug_for_uuid_or_none(qa_agent_id),
                 )
             t = await runner.run_intent("pass_review", t, agent, spec_ctx)
         except Exception as exc:

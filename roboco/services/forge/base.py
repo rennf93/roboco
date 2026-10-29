@@ -105,6 +105,13 @@ class GitProvider(ABC):
         """Patch a pull request's title/body/state — ``PATCH .../pulls/{n}``."""
 
     @abstractmethod
+    async def mark_pr_ready_for_review(
+        self, repo: RepoRef, token: str, pr_node_id: str
+    ) -> Any:
+        """Take a draft pull request out of draft (a forge without drafts
+        answers a shaped 501)."""
+
+    @abstractmethod
     async def merge_pr(
         self, repo: RepoRef, token: str, pr_number: int, *, merge_method: str
     ) -> Any:

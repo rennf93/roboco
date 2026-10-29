@@ -409,6 +409,17 @@ def role_for_uuid_or_none(agent_uuid: object | None) -> Role | None:
     return None
 
 
+def slug_for_uuid_or_none(agent_uuid: object | None) -> str | None:
+    """Resolve a seeded agent's ``UUID`` to its slug (None if unknown)."""
+    if agent_uuid is None:
+        return None
+    key = str(agent_uuid)
+    for row in AGENTS.values():
+        if str(row.uuid) == key:
+            return row.slug
+    return None
+
+
 def team_for_slug(slug: str) -> Team:
     """Shorthand for `agent_for_slug(slug).team`."""
     return agent_for_slug(slug).team

@@ -765,6 +765,38 @@ class Settings(BaseSettings):
             "agent container and RoboCo runs none for their commits."
         ),
     )
+    # Entire trails: the dispatcher mirrors each bridged task tree onto one
+    # Entire trail (roboco/services/entire_trails/). The RoboCo database stays
+    # canonical; writes go through a durable outbox drained by the
+    # orchestrator, with the token from the encrypted entire_credentials row.
+    entire_trails_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mirrors the task trees of opted-in GitHub projects onto Entire "
+            "trails: the root's plan is the trail, every branch a change, "
+            "review findings trail findings, the CEO's approval a trail "
+            "approval. RoboCo's own state and merge path stay canonical. Off "
+            "=> nothing is sent to Entire and no new tree is bridged."
+        ),
+    )
+    entire_trails_drain_interval_seconds: int = Field(
+        default=15,
+        ge=1,
+        description="Seconds between passes of the Entire trails outbox drain.",
+    )
+    entire_trails_max_attempts: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Failed attempts after which an Entire trails outbox row stops "
+            "retrying (its tree's queue holds) and the CEO is alerted."
+        ),
+    )
+    entire_trails_cli_timeout_seconds: int = Field(
+        default=60,
+        ge=5,
+        description="Timeout for one Entire CLI call made by the trails bridge.",
+    )
 
     # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)

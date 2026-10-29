@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from roboco.config import settings
+from roboco.foundation.identity import slug_for_uuid_or_none
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.batch import is_batch_root_subtask
@@ -1207,7 +1208,10 @@ class PRGateMixin(_Base):
             # cleanly reaching the reviewer.
             async with self.task.session.begin_nested():
                 await findings_lib.stamp_addressed_verified(
-                    self.task.session, t.id, origin="pr_gate"
+                    self.task.session,
+                    t.id,
+                    origin="pr_gate",
+                    verified_by=slug_for_uuid_or_none(reviewer_agent_id),
                 )
                 # The devops_review ledger rows (a devops pr_fail's findings)
                 # bind the author exactly like gate findings; verify their
@@ -1222,6 +1226,7 @@ class PRGateMixin(_Base):
                         self.task.session,
                         t.id,
                         origin=devops_gate_lib.DEVOPS_REVIEW_ORIGIN,
+                        verified_by=slug_for_uuid_or_none(reviewer_agent_id),
                     )
         except Exception as exc:
             return await self._emit_rejection(

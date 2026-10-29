@@ -303,9 +303,12 @@ async def full_ledger_for_task(
         return []
 
 
-async def stamp_addressed_verified(session: Any, task_id: UUID, *, origin: str) -> int:
+async def stamp_addressed_verified(
+    session: Any, task_id: UUID, *, origin: str, verified_by: str | None = None
+) -> int:
     """Bulk-verify every ADDRESSED finding of ``origin`` on this task — QA
-    passing / the in-path gate passing IS the confirmation.
+    passing / the in-path gate passing IS the confirmation. ``verified_by``
+    is the confirming reviewer's slug (recorded on the trail findings).
 
     Runs in the caller's own session with no independent commit (mirrors
     ``insert_and_render``'s same-transaction posture) — a repo error
@@ -316,4 +319,4 @@ async def stamp_addressed_verified(session: Any, task_id: UUID, *, origin: str) 
     repo = ReviewFindingsRepository(session)
     addressed = await repo.list_for_task(task_id, status=STATUS_ADDRESSED)
     ids = [row.id for row in addressed if row.origin == origin]
-    return await repo.mark_verified(ids)
+    return await repo.mark_verified(ids, verified_by=verified_by)

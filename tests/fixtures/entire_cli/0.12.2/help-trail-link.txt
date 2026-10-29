@@ -1,0 +1,18 @@
+Link an existing remote branch to a project trail. --branch defaults to the current branch. Use --branch-action create to create remote branch work from --base. Existing work and reviews are preserved; a branch belonging to another trail is rejected.
+
+Usage:
+  entire trail link <trail> [flags]
+
+Flags:
+      --base string              Base branch for new code work
+      --branch string            Branch to use (defaults to the current feature branch; create derives one from the title on the base branch)
+      --branch-action string     Branch action: link existing remote work, or create a new branch (default "link")
+  -h, --help                     help for link
+      --idempotency-key string   Retry key for linking a branch; with intent-only creation, requires project management
+      --json                     Output raw JSON instead of a table
+      --status string            Lifecycle status (open, closed)
+
+Global Flags:
+      --context name     Act as this saved login name for this command only — including the git and agent processes it spawns — instead of the active context (entire auth contexts lists them)
+      --project string   Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace
+      --repo string      Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project

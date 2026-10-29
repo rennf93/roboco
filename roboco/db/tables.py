@@ -585,6 +585,15 @@ class ProjectTable(Base):
         Boolean, nullable=False, server_default="false", default=False
     )
 
+    # Entire trails opt-in (migration 110). The global
+    # ROBOCO_ENTIRE_TRAILS_ENABLED flag arms the bridge; a GitHub project's
+    # task trees are mirrored onto Entire trails only once it opts in here.
+    # Default-off for every project, so a public repository's plans and
+    # findings never reach Entire without the CEO choosing it.
+    entire_trails_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+
     # Dependency-update bot opt-in. A project participates only when
     # dep_update_command is set (e.g. "uv lock --upgrade"); dep_update_paths are
     # the lockfile globs the probe inspects (null → infer uv.lock/pnpm-lock.yaml).
@@ -2927,4 +2936,156 @@ class MemoryLinkTable(Base):
     __table_args__ = (
         Index("ix_memory_links_pilot_session", "pilot", "session_id"),
         Index("ix_memory_links_source", "source"),
+    )
+
+
+# =============================================================================
+# ENTIRE TRAILS (roboco/services/entire_trails/)
+# =============================================================================
+
+
+class EntireCredentialsTable(Base):
+    """Singleton row holding the Fernet-encrypted Entire API token the trails
+    bridge passes to the Entire CLI (mirrors ``TelegramCredentialsTable``).
+    At most one row ever exists; ``EntireCredentialsService`` upserts it.
+    Decrypted only server-side, into the CLI subprocess's environment; the
+    API never returns it and no agent container ever sees it."""
+
+    __tablename__ = "entire_credentials"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+
+class EntireTrailTable(Base):
+    """The Entire trail of one bridged task tree, keyed by the tree's top task
+    (a coordination root, or a MegaTask umbrella: one trail across its
+    repositories). The row is written when the tree's first branch is cut on
+    an opted-in project; a tree without one is never bridged, so a root that
+    was already running when its project opted in keeps Entire's own
+    per-PR trails. ``trail_id`` stays null until the outbox creates the
+    trail. ``create_fields`` (title, body, type, priority) is fixed when the
+    row is written: Entire refuses a create retried under the same
+    idempotency key with different fields, so every retry sends these, and
+    the trail's current text follows as an update."""
+
+    __tablename__ = "entire_trails"
+
+    root_task_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    entire_project: Mapped[str] = mapped_column(String(200), nullable=False)
+    create_fields: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, nullable=False
+    )
+    trail_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trail_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trail_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    # When the trail's text last matched the tree; the drain re-syncs a trail
+    # whose tasks changed after it.
+    synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class EntireTrailChangeTable(Base):
+    """One branch linked to a trail as a change (Entire: one change per
+    repository branch; a change can never move to another trail).
+    ``task_id`` is deliberately not a foreign key: inserting a row must not
+    take a share lock on the task, which a request waiting on the inline
+    link may hold ``FOR UPDATE``."""
+
+    __tablename__ = "entire_trail_changes"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    root_task_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("entire_trails.root_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    repository: Mapped[str] = mapped_column(String(300), nullable=False)
+    branch: Mapped[str] = mapped_column(String(500), nullable=False)
+    base: Mapped[str] = mapped_column(String(500), nullable=False)
+    change_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    linked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "repository", "branch", name="uq_entire_trail_changes_repo_branch"
+        ),
+    )
+
+
+class EntireTrailFindingTable(Base):
+    """A review-findings ledger row mirrored as an Entire trail finding, on
+    the change (repository branch) it was added to."""
+
+    __tablename__ = "entire_trail_findings"
+
+    review_finding_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("task_review_findings.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    entire_finding_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    repository: Mapped[str] = mapped_column(String(300), nullable=False)
+    branch: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+class EntireTrailOutboxTable(Base):
+    """A pending Entire trails operation, written in the same transaction as
+    the RoboCo change it mirrors and drained by the orchestrator in id order
+    per tree (``EntireTrailsDrain``). A row is deleted once it succeeds; after
+    ``entire_trails_max_attempts`` failures it is marked dead, which holds
+    its tree's queue until the CEO retries it."""
+
+    __tablename__ = "entire_trail_outbox"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    root_task_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("entire_trails.root_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    op: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dead: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
     )

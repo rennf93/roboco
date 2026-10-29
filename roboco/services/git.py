@@ -67,6 +67,10 @@ from roboco.services.entire_hooks import (
     records_entire_sessions,
     run_entire_post_commit,
 )
+from roboco.services.entire_trails.drain import (
+    approve_before_merge,
+    link_before_pr,
+)
 from roboco.services.forge import ForgeRouter, GitProvider, RepoRef
 from roboco.services.gateway.quality_gate import GateResult, run_quality_commands
 from roboco.services.git_origin import (
@@ -124,6 +128,7 @@ from roboco.templates.git import (
 from roboco.templates.git.pr_internal import InternalCommitInfo
 from roboco.templates.git.pr_root import CommitInfo as PRCommitInfo
 from roboco.utils.converters import require_uuid
+from roboco.utils.entire_markers import is_entire_pr_body, with_entire_markers
 from roboco.utils.workspace_paths import clone_root_of, worktree_path_of
 
 
@@ -2887,12 +2892,30 @@ class GitService(BaseService):
 
         labels = await self._labels_for_pr_request(request, target_branch)
 
-        existing = await self._existing_pr_tuple(
-            resp, repo_ref, (source_branch, target_branch), git_token, pr_title
+        found = await self._existing_pr(
+            resp, repo_ref, (source_branch, target_branch), git_token
         )
-        if existing is not None:
-            await self._apply_pr_labels(repo_ref, git_token, existing[0], labels)
-            return existing
+        if found is not None:
+            project = await get_project_service(self.session).get_by_slug(
+                request.project_slug
+            )
+            await self._adopt_entire_pr(
+                repo_ref,
+                git_token,
+                found,
+                title_body=(pr_title or source_branch, pr_body or ""),
+                project=project,
+            )
+            await self._apply_pr_labels(
+                repo_ref, git_token, int(found["number"]), labels
+            )
+            return (
+                int(found["number"]),
+                found["html_url"],
+                found.get("title", pr_title or ""),
+                source_branch,
+                target_branch,
+            )
 
         if not resp.is_success:
             raise GitError(
@@ -3198,32 +3221,23 @@ class GitService(BaseService):
         )
         return target_branch, pr_title, pr_body
 
-    async def _existing_pr_tuple(
+    async def _existing_pr(
         self,
         resp: httpx.Response,
         repo_ref: RepoRef,
         branches: tuple[str, str],
         git_token: str,
-        pr_title: str | None,
-    ) -> tuple[int, str, str, str, str] | None:
-        """Idempotency: if the create hit an 'already exists' 422, return that PR.
+    ) -> dict[str, Any] | None:
+        """Idempotency: if the create hit an 'already exists' 422, return that
+        PR as GitHub has it.
 
         ``branches`` is (source, target).
         """
         if resp.status_code != _GH_UNPROCESSABLE or "already exists" not in resp.text:
             return None
         source_branch, target_branch = branches
-        found = await self._find_existing_pr(
+        return await self._find_existing_pr(
             repo_ref, source_branch, target_branch, git_token
-        )
-        if not found:
-            return None
-        return (
-            int(found["number"]),
-            found["html_url"],
-            found.get("title", pr_title or ""),
-            source_branch,
-            target_branch,
         )
 
     async def _patch_pr_title_body(
@@ -3232,17 +3246,27 @@ class GitService(BaseService):
         pr_number: int,
         git_token: str,
         payload: dict[str, str],
+        *,
+        current_body: str | None = None,
     ) -> None:
         """PATCH /repos/{owner}/{repo}/pulls/{pr_number} with title/body.
 
-        Translates HTTP failures into GitError so the verb layer can map
-        them onto invalid_state envelopes. 404 → "PR not found"; any
-        other non-2xx surfaces the GitHub validation text inline.
+        A new body keeps Entire's markers from the current one
+        (``with_entire_markers``; ``current_body`` spares the lookup when the
+        caller already has it). Translates HTTP failures into GitError so the
+        verb layer can map them onto invalid_state envelopes. 404 → "PR not
+        found"; any other non-2xx surfaces the GitHub validation text inline.
         """
         if "title" in payload:
             payload["title"] = _cap_pr_title(payload["title"])
         if "body" in payload:
-            payload["body"] = _cap_pr_body(payload["body"])
+            if current_body is None:
+                current_body = await self._current_pr_body(
+                    repo_ref, pr_number, git_token
+                )
+            payload["body"] = _cap_pr_body(
+                with_entire_markers(payload["body"], current_body)
+            )
         try:
             resp = await self._forge.update_pr(
                 repo_ref, git_token, pr_number, payload=payload
@@ -3261,6 +3285,82 @@ class GitService(BaseService):
             raise GitError(
                 f"GitHub API refused PR update ({resp.status_code}): {resp.text[:200]}",
                 {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
+            )
+
+    async def _current_pr_body(
+        self, repo_ref: RepoRef, pr_number: int, git_token: str
+    ) -> str | None:
+        """The PR's body as GitHub has it now, or None when it cannot be
+        read (then a rewrite simply carries no Entire markers forward)."""
+        try:
+            resp = await self._forge.get_pr(repo_ref, git_token, pr_number)
+        except httpx.HTTPError as e:
+            self.log.warning("PR body unreadable", pr=pr_number, error=str(e))
+            return None
+        if not resp.is_success:
+            return None
+        return cast("str | None", resp.json().get("body"))
+
+    async def _adopt_entire_pr(
+        self,
+        repo_ref: RepoRef,
+        git_token: str,
+        found: dict[str, Any],
+        *,
+        title_body: tuple[str, str],
+        project: Any,
+    ) -> None:
+        """Make a PR Entire opened for a linked branch RoboCo's own.
+
+        On a project bridged to Entire trails, a linked branch that already
+        has commits gets a PR from Entire (draft, titled with the branch
+        name), so RoboCo's create finds it instead of opening one. RoboCo then
+        sets its own title and body, keeping Entire's markers, and takes the
+        PR out of draft: GitHub never merges a draft. A PR Entire has not
+        marked is left as it is.
+        """
+        if not (
+            settings.entire_trails_enabled
+            and getattr(project, "entire_trails_enabled", False)
+        ):
+            return
+        current_body = found.get("body") or ""
+        if not is_entire_pr_body(current_body):
+            return
+        pr_number = int(found["number"])
+        title, body = title_body
+        await self._patch_pr_title_body(
+            repo_ref,
+            pr_number,
+            git_token,
+            {"title": title, "body": body},
+            current_body=current_body,
+        )
+        if found.get("draft"):
+            await self._mark_pr_ready(
+                repo_ref, git_token, pr_number, str(found["node_id"])
+            )
+
+    async def _mark_pr_ready(
+        self, repo_ref: RepoRef, git_token: str, pr_number: int, node_id: str
+    ) -> None:
+        """Take a draft PR out of draft, or raise GitError."""
+        context = {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number}
+        try:
+            resp = await self._forge.mark_pr_ready_for_review(
+                repo_ref, git_token, node_id
+            )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error taking PR #{pr_number} out of draft: {e}", context
+            ) from e
+        errors = resp.json().get("errors") if resp.is_success else None
+        if not resp.is_success or errors:
+            detail = errors if errors else resp.text[:200]
+            raise GitError(
+                f"GitHub refused to take PR #{pr_number} out of draft "
+                f"({resp.status_code}): {detail}",
+                context,
             )
 
     async def _post_pr_reviewers(
@@ -4538,6 +4638,19 @@ class GitService(BaseService):
                     project_slug = root_project.slug
 
             workspace = await self.get_workspace(project_slug, agent_id)
+            if agent_role == AgentRole.CEO and task.branch_name:
+                # Entire trails: the CEO's approval lands on the root change
+                # before the merge (Entire pins it to the head it approves).
+                # RoboCo's merge below stays the one that merges.
+                project = await get_project_service(self.session).get_by_slug(
+                    project_slug
+                )
+                await approve_before_merge(
+                    require_uuid(task.id),
+                    project,
+                    branch=str(task.branch_name),
+                    message=f"Approved by the CEO in RoboCo (PR #{data.pr_number})",
+                )
             target_branch, merge_commit = await self.merge_pull_request(
                 workspace=workspace,
                 pr_number=data.pr_number,
@@ -5043,6 +5156,15 @@ class GitService(BaseService):
         pr_title = f"[{str(task.id)[:8]}] {task.title}"
         pr_body = task.description or ""
 
+        # Entire trails: the branch must be on its trail before its first PR
+        # opens, or Entire gives the PR a trail of its own (a change never
+        # moves). A dev branch was linked at claim; an integration branch
+        # links here, and Entire then opens a draft PR for it that the 422
+        # path below adopts. A no-op unless the tree is bridged.
+        await link_before_pr(
+            require_uuid(task.id), project, branch=branch_name, base=parent
+        )
+
         resp = await self._post_pr(
             repo_ref,
             git_token,
@@ -5073,6 +5195,13 @@ class GitService(BaseService):
             if found:
                 pr_number = int(found["number"])
                 pr_url = str(found["html_url"])
+                await self._adopt_entire_pr(
+                    repo_ref,
+                    git_token,
+                    found,
+                    title_body=(pr_title, pr_body),
+                    project=project,
+                )
                 # Shielded + waited-out: the PR already exists on GitHub, so
                 # a cancellation here must not skip recording it locally —
                 # and shield alone would leave the detached write racing

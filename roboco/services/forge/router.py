@@ -99,6 +99,13 @@ class ForgeRouter(GitProvider):
             repo, token, pr_number, **kwargs
         )
 
+    async def mark_pr_ready_for_review(
+        self, repo: RepoRef, token: str, pr_node_id: str
+    ) -> Any:
+        return await self._provider_for_ref(repo).mark_pr_ready_for_review(
+            repo, token, pr_node_id
+        )
+
     async def merge_pr(
         self, repo: RepoRef, token: str, pr_number: int, **kwargs: Any
     ) -> Any:
