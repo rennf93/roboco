@@ -11,7 +11,6 @@
 ARG ENTIRE_VERSION=0.12.2
 ARG ENTIRE_SHA256_AMD64=bfc5c8d5b599f328775b89b735db020c963e307b6a324fc30ce371fe8fa789e8
 ARG ENTIRE_SHA256_ARM64=f08a1b8c6352d3f78076268dc67b0b273d7f62dbab94b15aec028e7b4257ad0c
-ARG TARGETARCH
 
 # ---- Builder ----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS builder
@@ -60,30 +59,30 @@ RUN uv sync --frozen --no-dev
 # Entire (entire.io) records agent sessions as git checkpoints. Agents run its
 # session hooks in their own containers; its commit hooks run in the throwaway
 # workspace container (roboco/services/entire_hooks.py), started from this
-# image. BuildKit fetches the release and checks its sha256 itself (`ADD
+# image. BuildKit fetches the releases and checks their sha256 itself (`ADD
 # --checksum`, a mismatch fails the build): no package manager or downloader
-# in the stage. One stage per architecture, each with its own pinned sum; the
-# build runs only TARGETARCH's.
-FROM scratch AS entire-download-amd64
+# in the stage. Both architectures' tarballs are fetched, each against its own
+# pinned sum, and the RUN unpacks TARGETARCH's: a stage picked by
+# `FROM ...-${TARGETARCH}` would, for an architecture with no such stage, pull
+# that name from a registry instead of failing.
+FROM python:3.13-slim-bookworm AS entire
 ARG ENTIRE_VERSION
 ARG ENTIRE_SHA256_AMD64
+ARG ENTIRE_SHA256_ARM64
+ARG TARGETARCH
 ADD --checksum=sha256:${ENTIRE_SHA256_AMD64} \
     https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_amd64.tar.gz \
-    /entire.tar.gz
-
-FROM scratch AS entire-download-arm64
-ARG ENTIRE_VERSION
-ARG ENTIRE_SHA256_ARM64
+    /tmp/entire_linux_amd64.tar.gz
 ADD --checksum=sha256:${ENTIRE_SHA256_ARM64} \
     https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_arm64.tar.gz \
-    /entire.tar.gz
-
-FROM entire-download-${TARGETARCH} AS entire-download
-
-FROM python:3.13-slim-bookworm AS entire
-COPY --from=entire-download /entire.tar.gz /tmp/entire.tar.gz
-RUN mkdir -p /usr/local/lib/entire \
-    && tar --no-same-owner -xzf /tmp/entire.tar.gz -C /usr/local/lib/entire entire
+    /tmp/entire_linux_arm64.tar.gz
+RUN case "$TARGETARCH" in \
+        amd64|arm64) ;; \
+        *) echo "unsupported TARGETARCH: '$TARGETARCH'" >&2; exit 1 ;; \
+    esac \
+    && mkdir -p /usr/local/lib/entire \
+    && tar --no-same-owner -xzf "/tmp/entire_linux_${TARGETARCH}.tar.gz" \
+        -C /usr/local/lib/entire entire
 
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner

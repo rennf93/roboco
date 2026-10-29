@@ -16,8 +16,8 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 59 |
 | roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 252 |
 | roboco/exceptions.py | Exception hierarchy (RobocoError base + NotFound/Validation/InvalidState/Permission/Auth/Task/TaskLifecycle/Agent/Notification/Service/Database/Git/MergeConflict/GitCommand/GitTimeout); includes TaskLifecycle transition hints and git-secret scrubbing | 497 |
-| docker/orchestrator.Dockerfile | Multi-stage build: uv venv builder (python:3.13-slim) + runner with docker-cli/git/make/node/npm/pnpm/setpriv; group `agent` (gid 1000) + user `roboco-git` (uid 1500, gid 1000) that workspace git drops to; root-owned /opt/roboco/git (git-support hooks + workspace.gitconfig); no global safe.directory; ENTRYPOINT python -m roboco.cli | 142 |
-| docker/agent-base.Dockerfile | Shared agent runtime: uv venv + Node 22 + @anthropic-ai/claude-code, agent user, hook scripts, safe.directory * (clones are owned by the orchestrator's git user), ENTRYPOINT umask-exec.sh claude (umask 002 so the git user can edit what the agent writes) | 138 |
+| docker/orchestrator.Dockerfile | Multi-stage build: uv venv builder (python:3.13-slim) + `entire` stage (both architectures' Entire CLI tarballs fetched by `ADD --checksum` against the global ENTIRE_* pins, TARGETARCH's unpacked, any other architecture refused) + runner with docker-cli/git/make/node/npm/pnpm/setpriv and the Entire CLI off PATH at /usr/local/lib/entire/entire; group `agent` (gid 1000) + user `roboco-git` (uid 1500, gid 1000) that workspace git drops to; root-owned /opt/roboco/git (git-support hooks + workspace.gitconfig); no global safe.directory; ENTRYPOINT python -m roboco.cli | 185 |
+| docker/agent-base.Dockerfile | Shared agent runtime: uv venv + Node 22 + @anthropic-ai/claude-code, Entire CLI (same ENTIRE_* pins as the orchestrator, sha256-checked; real binary off PATH, `entire` on PATH is docker/scripts/entire-wrapper.sh), agent user, hook scripts, safe.directory * (clones are owned by the orchestrator's git user), ENTRYPOINT umask-exec.sh claude (umask 002 so the git user can edit what the agent writes) | 164 |
 | docker/agent-pm.Dockerfile | PM agent — FROM roboco-agent-base, no extra tools (MCP-only) | 11 |
 | docker/agent-dev-be.Dockerfile | Backend dev — adds postgresql-client + redis-tools on top of base | 18 |
 | docker/agent-dev-fe.Dockerfile | Frontend dev — adds Playwright system deps + pnpm + chromium browser | 37 |
@@ -177,8 +177,8 @@ deployment-tooling
 │     ├─ orchestrator (image, ROBOCO_AGENT_IMAGE_REGISTRY/TAG)
 │     └─ panel + nginx (image)
 ├─ Dockerfiles (docker/)
-│  ├─ orchestrator.Dockerfile (builder + runner w/ docker-cli, git, make, node, pnpm, uv)
-│  ├─ agent-base.Dockerfile (venv + Node22 + claude-code + hooks, USER agent)
+│  ├─ orchestrator.Dockerfile (builder + entire + runner w/ docker-cli, git, make, node, pnpm, uv, Entire CLI off PATH)
+│  ├─ agent-base.Dockerfile (venv + Node22 + claude-code + Entire CLI + hooks, USER agent)
 │  │  └─ docker/scripts/*.sh (sdk-startup, a2a-check, bash-guard, post-tool-budget, usage-report, stop, user-prompt, pre-compact, session-end, + 5 default-off fable-*.sh gated by fable_mode_enabled)
 │  ├─ role images FROM agent-base: pm, dev-be, dev-fe, qa-be, qa-fe, ux, doc, prompter, secretary, pr-reviewer
 │  ├─ grok family: agent-grok.Dockerfile (+ grok CLI latest-at-build, grok-cli-agent-entrypoint.sh)
@@ -214,7 +214,7 @@ deployment-tooling
 
 | Name | File | Trigger |
 |---|---|---|
-| python -m roboco.cli / roboco console script | roboco/cli.py | orchestrator container ENTRYPOINT (docker/orchestrator.Dockerfile:98); `make orchestrator`; `make dev`; `make db-init` (--db-only) |
+| python -m roboco.cli / roboco console script | roboco/cli.py | orchestrator container ENTRYPOINT (docker/orchestrator.Dockerfile:184); `make orchestrator`; `make dev`; `make db-init` (--db-only) |
 | roboco-bootstrap console script | roboco/bootstrap.py | pyproject [project.scripts] alias (points at roboco.bootstrap:cli which does not exist — see drift) |
 | uvicorn roboco.api.app:app | roboco/bootstrap.py | spawned as asyncio task inside bootstrap.main (make api / make run run it directly) |
 | make quality / foundation-check / lifecycle | Makefile | CI merge gate |
