@@ -2,7 +2,9 @@
 
 A failed ``git add`` / ``git commit`` (gpgsign unavailable, pre-commit rejection,
 no-op bump) must raise before any push — otherwise ``gh release create`` tags
-the pre-bump base as the new version.
+the pre-bump base as the new version. The fake takes the ``git push`` path (a
+forge with no server-side commit API); GitHub's API path is pinned in
+``test_release_executor_github_commits.py``.
 """
 
 from __future__ import annotations
@@ -44,6 +46,10 @@ class _FakeGitOps(_GitReleaseOps):
     async def _git(self, *args: str) -> tuple[int, str]:
         self.calls.append(args)
         return self._script.pop(0)
+
+    async def _land_through_forge_api(self, version: str) -> str | None:
+        _ = version
+        return None  # no server-side commit API: push with git
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +136,41 @@ class GitProvider(ABC):
     async def merge_branch(
         self, repo: RepoRef, token: str, *, base: str, head: str, commit_message: str
     ) -> Any:
-        """Server-side merge one branch into another (the env-sync cascade)."""
+        """Server-side merge one branch into another — ``POST .../merges``
+        (the env-sync cascade, and the release's env-chain merges on GitHub).
+        ``head`` may be a branch or a commit sha."""
+
+    @abstractmethod
+    async def create_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str
+    ) -> Any:
+        """Create a branch at ``sha`` — ``POST .../git/refs``. The release
+        executor's first server-side commit call: a forge that cannot write
+        commits itself answers a shaped 501, read as "push with git"."""
+
+    @abstractmethod
+    async def update_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str, force: bool
+    ) -> Any:
+        """Move a branch to ``sha`` — ``PATCH .../git/refs/heads/{branch}``.
+        ``force=False`` refuses anything but a fast-forward."""
+
+    @abstractmethod
+    async def create_commit_on_branch(
+        self,
+        repo: RepoRef,
+        token: str,
+        branch: str,
+        *,
+        expected_head_oid: str,
+        headline: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+        timeout: float | None = None,
+    ) -> Any:
+        """Have the forge write and sign a commit on ``branch`` from whole-file
+        contents (GitHub's GraphQL ``createCommitOnBranch``), refused unless
+        the branch head is ``expected_head_oid``."""
 
     @abstractmethod
     async def list_ci_runs(

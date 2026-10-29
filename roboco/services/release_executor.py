@@ -6,8 +6,13 @@ before any publish. Idempotent: re-running an already-published version is a
 no-op. The bump/gate/commit/publish steps live behind a ``ReleaseOps`` seam so
 the fail-closed ORDERING (the correctness this feature exists to guarantee) is
 unit-tested deterministically; the production ``_GitReleaseOps`` performs the
-real git / ``make quality`` work on a writable clone and publishes the GitHub
-release over REST (the orchestrator image ships no ``gh`` binary).
+real git / ``make quality`` work on a writable clone and publishes the release
+over the project's forge REST API (the orchestrator image ships no ``gh``
+binary).
+
+On GitHub the commits that land on prod (the env-chain merges and the release
+commit) are written by GitHub's API from what the clone computed, so GitHub
+signs them; a forge without that API gets the clone's commits by ``git push``.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ import re
 import subprocess
 import tomllib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
@@ -43,11 +48,17 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from roboco.services.forge.base import GitProvider, RepoRef
     from roboco.services.release_readiness import ReleaseReadinessReport
 
 # CHANGELOG.md is in the canonical bump set but is NOT version-string-replaced —
 # it receives a NEW entry. The bump skips it (and any path ending in it).
 _CHANGELOG_NAME = "CHANGELOG.md"
+
+
+def _release_subject(version: str) -> str:
+    """The release commit's subject; half-landed detection matches on it."""
+    return f"chore(release): {version}"
 
 
 @dataclass(frozen=True)
@@ -273,6 +284,18 @@ _TIMEOUT_RC = 124
 
 # GitHub REST "created" — the only success status for the release POST.
 _HTTP_CREATED = 201
+_HTTP_OK = 200
+_HTTP_NO_CONTENT = 204
+_HTTP_UNPROCESSABLE = 422
+# A forge adapter's answer for a call its forge has no API for.
+_HTTP_NOT_IMPLEMENTED = 501
+
+# Where the GitHub path assembles a release before prod moves: GitHub writes
+# the env-chain merges and the release commit here, then prod fast-forwards to
+# the result in one ref update, the API twin of the git path's single push.
+# Prod never holds a half-promoted state, and a moved prod refuses the update.
+# The name sits outside the branch filters of RoboCo's own CI workflows.
+_STAGING_BRANCH = "release-manager/staging"
 
 
 async def _await_proc(
@@ -321,6 +344,122 @@ class _ReleaseContext:
     env_chain: list[str]
 
 
+@dataclass(frozen=True)
+class _PromotionStep:
+    """One env-chain rung merged into the prod checkout, as git did it locally.
+
+    ``before`` and ``after`` are HEAD around the merge, ``source`` the rung tip
+    merged: ``after == before`` was already up to date, ``after == source`` a
+    fast-forward, anything else a merge commit GitHub re-creates.
+    """
+
+    branch: str
+    before: str
+    source: str
+    after: str
+
+
+@dataclass(frozen=True)
+class _ForgeCommits:
+    """The forge calls of the GitHub landing, each read into a sha or a
+    ``RuntimeError``: transport stays in the forge layer, meaning lives here."""
+
+    forge: GitProvider
+    repo: RepoRef
+    token: str
+
+    async def open_staging(self, base: str) -> bool:
+        """Point the staging branch at ``base``. False when the forge cannot
+        write commits itself (a shaped 501); a staging branch an interrupted
+        run left behind is reset."""
+        resp = await self.forge.create_branch_ref(
+            self.repo, self.token, _STAGING_BRANCH, sha=base
+        )
+        if resp.status_code == _HTTP_NOT_IMPLEMENTED:
+            return False
+        if resp.status_code == _HTTP_UNPROCESSABLE:
+            resp = await self.forge.update_branch_ref(
+                self.repo, self.token, _STAGING_BRANCH, sha=base, force=True
+            )
+            _require_status(resp, _HTTP_OK, "reset the staging branch")
+            return True
+        _require_status(resp, _HTTP_CREATED, "create the staging branch")
+        return True
+
+    async def fast_forward(self, branch: str, sha: str) -> None:
+        """Move ``branch`` to ``sha``; GitHub refuses a non-fast-forward."""
+        resp = await self.forge.update_branch_ref(
+            self.repo, self.token, branch, sha=sha, force=False
+        )
+        _require_status(resp, _HTTP_OK, f"fast-forward {branch}")
+
+    async def merge_into_staging(self, source: str, message: str) -> tuple[str, str]:
+        """Merge commit ``source`` into staging; ``(merge sha, its tree)``."""
+        resp = await self.forge.merge_branch(
+            self.repo,
+            self.token,
+            base=_STAGING_BRANCH,
+            head=source,
+            commit_message=message,
+        )
+        _require_status(resp, _HTTP_CREATED, f"merge {source[:12]}")
+        body = resp.json()
+        return str(body["sha"]), str(body["commit"]["tree"]["sha"])
+
+    async def commit_on_staging(
+        self,
+        expected_head: str,
+        headline: str,
+        additions: dict[str, bytes],
+        deletions: list[str],
+    ) -> tuple[str, str]:
+        """Commit whole files on staging; ``(commit sha, its tree)``."""
+        resp = await self.forge.create_commit_on_branch(
+            self.repo,
+            self.token,
+            _STAGING_BRANCH,
+            expected_head_oid=expected_head,
+            headline=headline,
+            additions=additions,
+            deletions=deletions,
+            timeout=_GIT_OP_TIMEOUT_SECONDS,
+        )
+        _require_status(resp, _HTTP_OK, "commit the release")
+        payload = resp.json()
+        if payload.get("errors"):
+            errors = str(payload["errors"])[:200]
+            raise RuntimeError(f"release push failed: commit the release: {errors}")
+        commit = payload["data"]["createCommitOnBranch"]["commit"]
+        return str(commit["oid"]), str(commit["tree"]["oid"])
+
+    async def close_staging(self) -> None:
+        """Delete the staging branch. Best effort: a leftover is reset by the
+        next release's ``open_staging``."""
+        import httpx
+
+        try:
+            resp = await self.forge.delete_branch_ref(
+                self.repo, self.token, _STAGING_BRANCH
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("release staging branch not deleted", error=str(exc))
+            return
+        if resp.status_code != _HTTP_NO_CONTENT:
+            logger.warning(
+                "release staging branch not deleted", status=resp.status_code
+            )
+
+
+def _require_status(resp: Any, expected: int, step: str) -> None:
+    """Raise the release's fail-closed ``RuntimeError`` unless the forge's
+    answer to ``step`` carries the ``expected`` status."""
+    if resp.status_code != expected:
+        raise RuntimeError(
+            f"release push failed: {step}: HTTP {resp.status_code}: "
+            f"{str(resp.text)[:200]}"
+        )
+
+
 class _GitReleaseOps:
     """Real release steps on a dispatcher-owned writable clone of RoboCo."""
 
@@ -334,6 +473,8 @@ class _GitReleaseOps:
         self._head_branch = ctx.env_chain[0] if ctx.env_chain else ctx.prod_branch
         self._ci_workflow = ctx.ci_workflow
         self._env_chain = ctx.env_chain
+        # What promote_env_chain did, for the GitHub path to re-create.
+        self._promotion: list[_PromotionStep] = []
 
     async def _git(self, *args: str) -> tuple[int, str]:
         """``git <args>`` in the release clone; ``(rc, stdout+stderr)``.
@@ -387,7 +528,7 @@ class _GitReleaseOps:
         rc, out = await self._git("log", "-n", "50", "--format=%H%x00%s")
         if rc != 0:
             return None
-        wanted = f"chore(release): {version}"
+        wanted = _release_subject(version)
         for line in out.splitlines():
             sha, _, subject = line.partition("\x00")
             if sha and subject.strip() == wanted:
@@ -450,6 +591,9 @@ class _GitReleaseOps:
         fail-closed on a fetch or merge conflict — a divergent rung aborts the
         release before any bump rather than landing a half-promoted prod. No-op
         for a degenerate (head==prod) ladder (empty chain).
+
+        Each merge is recorded as a ``_PromotionStep``: on GitHub, prod never
+        receives these local merges, GitHub re-creates them at commit time.
         """
         if not self._env_chain:
             return
@@ -466,11 +610,15 @@ class _GitReleaseOps:
         if rc != 0:
             raise RuntimeError(f"env-chain fetch failed: {out.strip()[:200]}")
         for branch in self._env_chain:
+            before = await self._rev_parse("HEAD")
+            source = await self._rev_parse(f"origin/{branch}")
             rc, out = await self._git("merge", "--no-edit", f"origin/{branch}")
             if rc != 0:
                 raise RuntimeError(
                     f"env-chain merge {branch}→prod failed: {out.strip()[:200]}"
                 )
+            after = await self._rev_parse("HEAD")
+            self._promotion.append(_PromotionStep(branch, before, source, after))
 
     async def run_gate(self) -> tuple[bool, str]:
         """Re-verify the head rung's CI verdict at execute time.
@@ -499,6 +647,22 @@ class _GitReleaseOps:
         return conclusion == "success", detail
 
     async def commit_and_push(self, version: str) -> str:
+        """Commit the release in the clone, then land it on prod; the sha
+        that landed.
+
+        On GitHub, GitHub's API re-creates the env-chain merges and the
+        release commit (so GitHub signs them) and prod fast-forwards to them;
+        a forge without that API gets the clone's own commits by ``git push``.
+        Either way prod moves once and only by fast-forward, so a prod that
+        moved since the clone refuses and nothing lands.
+        """
+        await self._commit_release_locally(version)
+        landed = await self._land_through_forge_api(version)
+        if landed is not None:
+            return landed
+        return await self._push_with_git()
+
+    async def _commit_release_locally(self, version: str) -> None:
         from roboco.config import settings
 
         add_rc, add_out = await self._git("add", "-A")
@@ -509,15 +673,19 @@ class _GitReleaseOps:
         # identity — set it per-clone or the commit refuses outright.
         await self._git("config", "user.name", settings.release_git_name)
         await self._git("config", "user.email", settings.release_git_email)
+        # Only a git-pushed commit keeps this signature; GitHub's path
+        # re-creates the commit and signs it itself.
         sign = ["-S"] if settings.release_sign_commits else []
         commit_rc, commit_out = await self._git(
-            "commit", *sign, "-m", f"chore(release): {version}"
+            "commit", *sign, "-m", _release_subject(version)
         )
         if commit_rc != 0:
             # A failed commit (gpgsign/pre-commit reject/no-op bump) must abort
             # before push — otherwise the pre-bump base gets tagged as the release.
             logger.error("release commit failed", error=commit_out.strip()[:300])
             raise RuntimeError(f"release commit failed: {commit_out.strip()[:200]}")
+
+    async def _push_with_git(self) -> str:
         _, out = await self._git("rev-parse", "HEAD")
         sha = out.strip()
         push_rc, push_out = await self._git(
@@ -527,6 +695,140 @@ class _GitReleaseOps:
             logger.error("release push failed", error=push_out.strip()[:300])
             raise RuntimeError(f"release push failed: {push_out.strip()[:200]}")
         return sha
+
+    async def _land_through_forge_api(self, version: str) -> str | None:
+        """Have the forge write the release's commits and fast-forward prod to
+        them; the release sha it wrote, or None when the remote has no such
+        API (the adapter answers 501, or the forge layer does not resolve the
+        URL) and the caller pushes with git.
+
+        GitHub re-creates the local commits on the staging branch, the
+        env-chain merges through its merges API and the release commit
+        through ``createCommitOnBranch``, each checked to hold exactly the
+        tree the clone built. Prod moves last, in one fast-forward.
+        """
+        import httpx
+
+        from roboco.exceptions import GitError
+        from roboco.services.forge.router import ForgeRouter
+        from roboco.services.git import GitService
+
+        try:
+            repo = GitService._parse_git_url(self._git_url)
+        except GitError:
+            return None
+        token = await self._forge_token()
+        if not token:
+            raise RuntimeError(f"release push failed: no git token for {self._slug}")
+        if self._promotion:
+            base = self._promotion[0].before
+        else:
+            base = await self._rev_parse("HEAD^")
+        commits = _ForgeCommits(ForgeRouter(), repo, token)
+        try:
+            if not await commits.open_staging(base):
+                return None
+            try:
+                head = await self._recreate_promotion(commits, base)
+                landed = await self._recreate_release_commit(commits, head, version)
+                await commits.fast_forward(self._default_branch, landed)
+            finally:
+                await commits.close_staging()
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            # A transport failure or an answer missing the expected fields.
+            logger.error("release push failed", error=str(exc)[:300])
+            raise RuntimeError(f"release push failed: {exc!s}"[:280]) from exc
+        return landed
+
+    async def _recreate_promotion(self, commits: _ForgeCommits, base: str) -> str:
+        """Replay ``promote_env_chain``'s merges on staging; the head after."""
+        head = base
+        for step in self._promotion:
+            if step.after == step.before:
+                continue
+            if step.after == step.source:
+                await commits.fast_forward(_STAGING_BRANCH, step.source)
+                head = step.source
+                continue
+            message = await self._commit_message(step.after)
+            head, tree = await commits.merge_into_staging(step.source, message)
+            await self._require_same_tree(step.after, tree, f"{step.branch} merge")
+        return head
+
+    async def _recreate_release_commit(
+        self, commits: _ForgeCommits, head: str, version: str
+    ) -> str:
+        """Commit the local release commit's file changes on staging; its sha."""
+        local_release = await self._rev_parse("HEAD")
+        additions, deletions = await self._file_changes(
+            await self._rev_parse("HEAD^"), local_release
+        )
+        sha, tree = await commits.commit_on_staging(
+            head, _release_subject(version), additions, deletions
+        )
+        await self._require_same_tree(local_release, tree, "release commit")
+        return sha
+
+    async def _file_changes(
+        self, old: str, new: str
+    ) -> tuple[dict[str, bytes], list[str]]:
+        """What ``new`` changes against ``old``: whole contents of the files it
+        adds or modifies (read from the clone, which has ``new`` checked out)
+        and the paths it deletes. A checkout filter (eol, clean/smudge) on a
+        changed file would make these bytes differ from the committed blob;
+        the tree check after the commit then refuses the landing."""
+        rc, out = await self._git(
+            "diff-tree", "-r", "--no-renames", "--name-status", "-z", old, new
+        )
+        if rc != 0:
+            raise RuntimeError(f"release push failed: diff-tree: {out.strip()[:200]}")
+        # -z ends every field, status and path alike, with a NUL.
+        fields = out.split("\0")[:-1]
+        additions: dict[str, bytes] = {}
+        deletions: list[str] = []
+        for status, path in zip(fields[0::2], fields[1::2], strict=True):
+            if status == "D":
+                deletions.append(path)
+                continue
+            try:
+                additions[path] = (self._root / path).read_bytes()
+            except OSError as exc:
+                raise RuntimeError(f"release push failed: read {path}: {exc}") from exc
+        return additions, deletions
+
+    async def _require_same_tree(
+        self, local_commit: str, remote_tree: str, what: str
+    ) -> None:
+        """Fail closed unless GitHub's commit holds the tree the clone built.
+        Trees are content-addressed: equal ids mean byte-identical files."""
+        local_tree = await self._rev_parse(f"{local_commit}^{{tree}}")
+        if remote_tree != local_tree:
+            raise RuntimeError(
+                f"release push failed: GitHub's {what} has tree "
+                f"{remote_tree[:12]}, the clone's {local_tree[:12]}; prod not moved"
+            )
+
+    async def _rev_parse(self, ref: str) -> str:
+        rc, out = await self._git("rev-parse", "--verify", "--quiet", ref)
+        words = out.split()
+        if rc != 0 or not words:
+            raise RuntimeError(f"cannot resolve {ref} in the release clone")
+        return words[0]
+
+    async def _commit_message(self, sha: str) -> str:
+        rc, out = await self._git("show", "-s", "--format=%B", sha)
+        if rc != 0:
+            raise RuntimeError(f"cannot read the message of {sha[:12]}")
+        return out.strip()
+
+    async def _forge_token(self) -> str | None:
+        """The project's forge token, resolved per call: a GitHub App
+        installation token lasts an hour, and a release can outlive one."""
+        from roboco.services.project import ProjectService
+
+        return await ProjectService(self._session).get_decrypted_token_by_slug(
+            self._slug
+        )
 
     async def wait_for_ci(self, commit_sha: str) -> bool:
         from roboco.services.git import get_git_service
@@ -552,23 +854,29 @@ class _GitReleaseOps:
         return False
 
     async def publish_release(self, version: str, notes: str) -> str:
-        # REST, not `gh release create` — the orchestrator image ships no gh
-        # binary, so the CLI path fails at publish time with a missing binary.
+        """Publish the release through the project's forge (GitHub, Gitea or
+        GitLab, routed by the remote's host); the release page URL.
+
+        REST, not `gh release create` — the orchestrator image ships no gh
+        binary. Every failure, an unresolvable remote included, raises
+        ``RuntimeError`` so ``execute`` reports ``publish_failed``.
+        """
         import httpx
 
-        from roboco.services.forge.github import GitHubProvider
+        from roboco.exceptions import GitError
+        from roboco.services.forge.router import ForgeRouter
         from roboco.services.git import GitService
-        from roboco.services.project import ProjectService
 
         tag = f"v{version}"
-        token = await ProjectService(self._session).get_decrypted_token_by_slug(
-            self._slug
-        )
+        token = await self._forge_token()
         if not token:
             raise RuntimeError(f"release publish failed: no git token for {self._slug}")
-        repo_ref = GitService._parse_git_url(self._git_url)
         try:
-            resp = await GitHubProvider().create_release(
+            repo_ref = GitService._parse_git_url(self._git_url)
+        except GitError as e:
+            raise RuntimeError(f"release publish failed: {e}") from e
+        try:
+            resp = await ForgeRouter().create_release(
                 repo_ref,
                 token,
                 tag_name=tag,

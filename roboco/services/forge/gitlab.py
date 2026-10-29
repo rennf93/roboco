@@ -17,6 +17,9 @@ Deliberate Phase-3 postures (per the spec):
 - ``merge_branch`` (the env-sync cascade's server-side merge) has no GitLab
   equivalent; it returns a shaped 501 so ``_env_merge_status`` lands on its
   existing ``missing_ref`` branch, same as Gitea.
+- The server-side commit calls (``create_branch_ref``, ``update_branch_ref``,
+  ``create_commit_on_branch``) are shaped 501s too, so the release executor
+  pushes its commits with git, same as Gitea.
 - ``request_reviewers`` needs numeric GitLab user ids RoboCo does not store
   (only usernames/slugs) — mirroring is skipped with a synthetic 200 rather
   than failing the PR-open flow over a best-effort reviewer nudge.
@@ -41,10 +44,10 @@ import httpx
 from roboco.config import settings
 from roboco.exceptions import GitError
 from roboco.services.forge.base import GitProvider, RepoRef
-from roboco.services.forge.shaping import ShapedResponse
+from roboco.services.forge.shaping import ShapedResponse, not_implemented
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 # GitLab MR list `state` param: "open" is GitHub/RoboCo's vocabulary, GitLab
 # calls it "opened". Every other value (closed/merged/locked/all) passes
@@ -56,6 +59,10 @@ _STATE_PARAM_MAP = {"open": "opened"}
 # absent on purpose — they classify as "not yet concluded" by omission.
 _CONCLUSION_MAP = {"success": "success", "failed": "failure", "canceled": "failure"}
 _IN_PROGRESS_STATUSES = frozenset({"running", "pending", "created"})
+
+_NO_SERVER_SIDE_COMMITS = (
+    "GitLab: server-side commits are not implemented; push with git"
+)
 
 # get_pr_diff pagination cap — GitLab's /diffs endpoint is JSON-per-file
 # with no raw-unified-diff media type, so a large MR needs multiple pages
@@ -369,13 +376,10 @@ class GitLabProvider(GitProvider):
         """Only GitHub-backed PRs are adopted from Entire, so nothing here
         is ever un-drafted: a shaped 501."""
         _ = (repo, token, pr_node_id)
-        request = httpx.Request("post", f"{self._scheme}://{self._host}/unsupported")
-        real = httpx.Response(
-            httpx.codes.NOT_IMPLEMENTED,
-            request=request,
-            json={"message": "GitLab: un-drafting a pull request is not supported"},
+        return not_implemented(
+            f"{self._scheme}://{self._host}",
+            "GitLab: un-drafting a pull request is not supported",
         )
-        return ShapedResponse(real)
 
     async def merge_branch(
         self, repo: RepoRef, token: str, *, base: str, head: str, commit_message: str
@@ -384,13 +388,57 @@ class GitLabProvider(GitProvider):
         ``_env_merge_status`` on its existing ``missing_ref`` branch (the
         shared local-git fallback lives in GitService)."""
         _ = (repo, token, base, head, commit_message)
-        request = httpx.Request("post", f"{self._scheme}://{self._host}/unsupported")
-        real = httpx.Response(
-            httpx.codes.NOT_IMPLEMENTED,
-            request=request,
-            json={"message": "GitLab has no server-side branch-merge API"},
+        return not_implemented(
+            f"{self._scheme}://{self._host}",
+            "GitLab has no server-side branch-merge API",
         )
-        return ShapedResponse(real)
+
+    # -- server-side commits ---------------------------------------------------
+    # Not implemented for GitLab: the release executor pushes its commit with
+    # git instead. GitLab signs only the commits it creates itself, and only
+    # when the instance has a signing key configured.
+
+    async def create_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str
+    ) -> Any:
+        _ = (repo, token, branch, sha)
+        return not_implemented(
+            f"{self._scheme}://{self._host}", _NO_SERVER_SIDE_COMMITS
+        )
+
+    async def update_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str, force: bool
+    ) -> Any:
+        _ = (repo, token, branch, sha, force)
+        return not_implemented(
+            f"{self._scheme}://{self._host}", _NO_SERVER_SIDE_COMMITS
+        )
+
+    async def create_commit_on_branch(
+        self,
+        repo: RepoRef,
+        token: str,
+        branch: str,
+        *,
+        expected_head_oid: str,
+        headline: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+        timeout: float | None = None,
+    ) -> Any:
+        _ = (
+            repo,
+            token,
+            branch,
+            expected_head_oid,
+            headline,
+            additions,
+            deletions,
+            timeout,
+        )
+        return not_implemented(
+            f"{self._scheme}://{self._host}", _NO_SERVER_SIDE_COMMITS
+        )
 
     # -- CI --------------------------------------------------------------------
 
