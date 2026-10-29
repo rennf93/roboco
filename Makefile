@@ -207,6 +207,16 @@ reflow-docs:
 reflow-check:
 	uv run python scripts/reflow_md.py --check
 
+# Refresh docs/map's mechanically derivable data (line numbers, LOC, the
+# Alembic chain range) and rebuild _complete_map.md. `make quality` fails only
+# on a path or symbol that no longer exists; line/size drift is reported as a
+# warning, since every code edit shifts it. Hand-written rows (descriptions, a
+# deleted file's row, a new migration's row) still need a human.
+.PHONY: map
+map:
+	uv run python scripts/verify_codebase_map.py --fix
+	uv run python scripts/rebuild_map_concat.py
+
 # Find dead code with Vulture
 .PHONY: vulture
 vulture:
@@ -292,6 +302,8 @@ quality: sync
 	@uv run ruff check .
 	@echo "==> markdown prose (no hard-wrapping)"
 	@uv run python scripts/reflow_md.py --check
+	@echo "==> codebase map (every path and symbol docs/map names exists)"
+	@uv run python scripts/verify_codebase_map.py
 	@echo "==> mypy"
 	@uv run mypy roboco/ tests/
 	@echo "==> pytest with coverage"
@@ -524,6 +536,7 @@ help:
 	@echo "  make lint                     - Run linting (ruff, mypy, vulture)"
 	@echo "  make fix                      - Auto-fix linting issues"
 	@echo "  make quality                  - Run all quality checks"
+	@echo "  make map                      - Refresh docs/map line numbers/LOC + rebuild the concat"
 	@echo "  make security                 - Run security checks (bandit, safety, pip-audit)"
 	@echo "  make check-all                - Run ALL checks"
 	@echo "  make panel-token              - Print the panel's CEO token for secure mode"

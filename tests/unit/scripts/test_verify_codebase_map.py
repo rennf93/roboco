@@ -4,7 +4,8 @@ docs/map is auto-indexed into the knowledge base, so a row naming a deleted
 file or a renamed symbol misleads every agent that retrieves it. These tests
 pin what the checker treats as an error (a path or symbol that does not
 exist: exit 1), what it only warns about (line and size drift: exit 0, so an
-ordinary code edit never fails CI), and what ``--fix`` may rewrite.
+ordinary code edit never fails CI), what ``--fix`` may rewrite, and that
+``make quality`` runs it.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).parents[3]
 SCRIPT = ROOT / "scripts" / "verify_codebase_map.py"
+MAKEFILE = ROOT / "Makefile"
 
 
 def _load_module() -> ModuleType:
@@ -413,3 +415,23 @@ def test_split_cells_keeps_escaped_pipes_and_offsets() -> None:
     cells = vcm.split_cells(line)
     assert [c.text for c in cells] == [r"`a \| b`", "x.py:3"]
     assert line[cells[1].start :].startswith("x.py:3")
+
+
+# ---------------------------------------------------------------------------
+# Wiring and the committed map
+# ---------------------------------------------------------------------------
+
+
+def test_quality_target_runs_the_map_check() -> None:
+    text = MAKEFILE.read_text()
+    quality_block = text.split("\n.PHONY: quality\n", 1)[1].split("\n.PHONY: ", 1)[0]
+    assert "scripts/verify_codebase_map.py" in quality_block, (
+        "make quality must run scripts/verify_codebase_map.py (the docs/map "
+        "reference gate) — wiring was removed"
+    )
+    assert "scripts/verify_codebase_map.py --fix" not in quality_block
+
+
+def test_committed_map_has_no_errors() -> None:
+    errors = [f.render() for f in vcm.check_map(ROOT) if f.is_error]
+    assert errors == [], "\n".join(errors)
