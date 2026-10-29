@@ -182,7 +182,7 @@ async def test_open_video_task_creates_assigned_authoring_task(
     assert draft["brief"].startswith("Announce the release")
     assert "motion/README.md" in draft["brief"]
     assert "motion/kit/README.md" in draft["brief"]
-    assert "compositions/panel-demo/" in draft["brief"]
+    assert "compositions/release-0.28.0/" in draft["brief"]
     assert "request_render" in draft["brief"]  # verify-the-render pointer
     assert "Brand voice" not in draft["brief"]  # unset -> omitted
     assert draft["suggested_input_props"] == {}  # none supplied
@@ -875,7 +875,7 @@ async def test_open_video_task_brief_carries_motion_pointer_no_brand_voice_by_de
     assert draft["brief"].startswith("CEO's on-demand brief, verbatim.")
     assert "motion/README.md" in draft["brief"]
     assert "motion/kit/README.md" in draft["brief"]
-    assert "compositions/panel-demo/" in draft["brief"]
+    assert "compositions/release-0.28.0/" in draft["brief"]
     assert "Brand voice" not in draft["brief"]  # unset -> omitted
     assert task.description == draft["brief"]
 
