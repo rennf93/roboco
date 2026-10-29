@@ -1391,7 +1391,7 @@ class Choreographer:
                 MemoryRetrievalLogTable(
                     source=str(item.get("source") or "")[:500],
                     task_id=task.id if task is not None else None,
-                    agent_slug=str(agent_id),
+                    agent_slug=slug_for_uuid_or_none(agent_id),
                     retrieved_at=now,
                 )
                 for item in items
