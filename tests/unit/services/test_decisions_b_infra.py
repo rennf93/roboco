@@ -47,10 +47,24 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
+def _session_stub() -> Any:
+    """An AsyncSession stand-in: its awaitables are AsyncMock, but
+    ``begin_nested()`` is a plain call returning an async context manager,
+    as on a real session. A bare AsyncMock hands back a coroutine there,
+    which ``async with`` rejects, so every pilot prologue would take its
+    fail-open error path instead of the path under test."""
+    session = AsyncMock()
+    savepoint = MagicMock()
+    savepoint.__aenter__ = AsyncMock(return_value=savepoint)
+    savepoint.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=savepoint)
+    return session
+
+
 def _bare(engine_cls: type) -> Any:
     """Instantiate a mixin/engine without __init__ (no DB needed)."""
     engine = cast("Any", engine_cls).__new__(engine_cls)
-    engine.session = AsyncMock()
+    engine.session = _session_stub()
     engine.log = structlog.get_logger("test")
     return engine
 
