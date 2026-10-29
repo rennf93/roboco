@@ -97,8 +97,11 @@ rules:
   # every remaining noqa/type:ignore from roboco/ and tests/, those two
   # included: a false positive now lives as a commented per-file-ignores entry
   # in pyproject.toml, never inline. That clears the tests/ backlog that kept
-  # this rule at warn; promoting it to block is a separate decision, so it
-  # stays warn for now.
+  # this rule at warn. The check now counts only real directives (a marker
+  # where ruff, mypy, bandit, ESLint or TypeScript reads it, nosec included),
+  # never prose that names one, so the only finding left in the tree is the
+  # nosec B108 on the Nebius microVM path. Promoting the rule to block is a
+  # separate decision, so it stays warn for now.
   no_lint_suppressions:
     level: warn
   # RoboCo routes deliberately call db.commit() (get_db auto-commit is unreliable
