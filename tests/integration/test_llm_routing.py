@@ -1855,3 +1855,49 @@ async def test_apply_routing_preset_skips_entry_whose_provider_went_disabled(
 
     remaining = await svc.list_assignments()
     assert remaining == []  # the disabled-provider entry was never written
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_zai_replaces_the_previous_modes_role_rows(
+    llm_setup: dict, db_session: AsyncSession
+) -> None:
+    """Every mode switch wipes the plain ROLE/GLOBAL rows before setting its
+    own; zai skipped the wipe, so the previous mode's ROLE rows kept
+    overriding the new GLOBAL GLM default. Pins and complexity overrides
+    survive, as on every mode."""
+    db_session.add(
+        ProviderConfigTable(
+            name="zai-test",
+            type=ModelProvider.ZAI,
+            enabled=False,
+            auth_token_encrypted="stored-key",
+        )
+    )
+    await db_session.flush()
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    pin_model = _first_model_for_type(ModelProvider.OPENAI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG, scope_value="be-dev-1", model_name=pin_model
+    )
+    override_model = _first_model_for_type(ModelProvider.GROK)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=override_model,
+    )
+
+    await svc.apply_mode(mode="zai")
+
+    rows = {
+        (a.scope, a.scope_value, a.model_name) for a in await svc.list_assignments()
+    }
+    assert rows == {
+        (AssignmentScope.GLOBAL, None, "glm-5.3-flash"),
+        (AssignmentScope.AGENT_SLUG, "be-dev-1", pin_model),
+        (AssignmentScope.ROLE, "developer:low", override_model),
+    }
+    # The GLM ids in the catalog resolve to HUMMIN since 2026-09-17: the
+    # GLOBAL row must still point at the ZAI provider, or "zai" mode is
+    # hummin mode under another name.
+    assert await svc.derive_mode() == "zai"

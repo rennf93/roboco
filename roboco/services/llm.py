@@ -1366,9 +1366,11 @@ class ModelRoutingService(BaseService):
     async def _apply_zai(self, default_model: str | None) -> None:
         """Wipe assignments, set the GLOBAL default to a Z.ai GLM model.
 
-        ZAI models ARE in the static ``MODEL_CATALOG`` (glm-5.3,
-        glm-5.3-flash), so the upsert needs no ``provider_type_override``
-        - the catalog resolves straight to the ZAI provider row. Unlike
+        The GLM ids in the static ``MODEL_CATALOG`` resolve to HUMMIN since
+        2026-09-17 (ZAI kept its row and key endpoint as a manual fallback,
+        with no catalog entries of its own), so the upsert pins the ZAI
+        provider with ``provider_type_override`` (the openrouter/nebius
+        shape); without it "zai" mode routed every spawn to hummin. Unlike
         the subscription-CLI modes, the ZAI row authenticates with a
         stored key, so this REFUSES to apply when the operator has not
         saved one (a force-enable here would route every spawn to a dead
@@ -1392,11 +1394,13 @@ class ModelRoutingService(BaseService):
             require_uuid(zai.id),
             ProviderUpdate(enabled=True),
         )
+        await self._wipe_mode_switch_assignments()
         model_name = default_model or "glm-5.3-flash"
         await self.upsert_assignment(
             scope=AssignmentScope.GLOBAL,
             scope_value=None,
             model_name=model_name,
+            provider_type_override=ModelProvider.ZAI,
         )
         self.log.info("Mode applied: zai", default_model=model_name)
 
