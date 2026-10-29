@@ -6,8 +6,9 @@ before any publish. Idempotent: re-running an already-published version is a
 no-op. The bump/gate/commit/publish steps live behind a ``ReleaseOps`` seam so
 the fail-closed ORDERING (the correctness this feature exists to guarantee) is
 unit-tested deterministically; the production ``_GitReleaseOps`` performs the
-real git / ``make quality`` work on a writable clone and publishes the GitHub
-release over REST (the orchestrator image ships no ``gh`` binary).
+real git / ``make quality`` work on a writable clone and publishes the release
+over the project's forge REST API (the orchestrator image ships no ``gh``
+binary).
 
 On GitHub the commits that land on prod (the env-chain merges and the release
 commit) are written by GitHub's API from what the clone computed, so GitHub
@@ -853,20 +854,29 @@ class _GitReleaseOps:
         return False
 
     async def publish_release(self, version: str, notes: str) -> str:
-        # REST, not `gh release create` — the orchestrator image ships no gh
-        # binary, so the CLI path fails at publish time with a missing binary.
+        """Publish the release through the project's forge (GitHub, Gitea or
+        GitLab, routed by the remote's host); the release page URL.
+
+        REST, not `gh release create` — the orchestrator image ships no gh
+        binary. Every failure, an unresolvable remote included, raises
+        ``RuntimeError`` so ``execute`` reports ``publish_failed``.
+        """
         import httpx
 
-        from roboco.services.forge.github import GitHubProvider
+        from roboco.exceptions import GitError
+        from roboco.services.forge.router import ForgeRouter
         from roboco.services.git import GitService
 
         tag = f"v{version}"
         token = await self._forge_token()
         if not token:
             raise RuntimeError(f"release publish failed: no git token for {self._slug}")
-        repo_ref = GitService._parse_git_url(self._git_url)
         try:
-            resp = await GitHubProvider().create_release(
+            repo_ref = GitService._parse_git_url(self._git_url)
+        except GitError as e:
+            raise RuntimeError(f"release publish failed: {e}") from e
+        try:
+            resp = await ForgeRouter().create_release(
                 repo_ref,
                 token,
                 tag_name=tag,
