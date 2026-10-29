@@ -1287,7 +1287,7 @@ async def test_resolve_creator_agent_with_none_falls_back_to_main_pm(
 
 
 # ---------------------------------------------------------------------------
-# get_service_endpoint — unspecified host falls through to 127.0.0.1
+# get_service_endpoint — an unspecified host dials its family's loopback
 # ---------------------------------------------------------------------------
 
 
@@ -1298,6 +1298,15 @@ def test_get_service_endpoint_unspecified_host() -> None:
         mock_settings.port = 8000
         url = A2AService.get_service_endpoint()
     assert "127.0.0.1" in url
+
+
+def test_get_service_endpoint_ipv6_unspecified_host() -> None:
+    """:: binds IPv6-only under asyncio, so it dials [::1], not 127.0.0.1."""
+    with patch("roboco.services.a2a.settings") as mock_settings:
+        mock_settings.host = "::"
+        mock_settings.port = 8000
+        url = A2AService.get_service_endpoint()
+    assert url == "http://[::1]:8000"
 
 
 def test_get_service_endpoint_invalid_host_falls_through() -> None:

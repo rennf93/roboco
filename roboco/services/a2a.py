@@ -21,7 +21,7 @@ from roboco.agents_config import (
     get_agent_skills,
     get_agent_team,
 )
-from roboco.config import settings
+from roboco.config import reachable_url_host, settings
 from roboco.db.tables import (
     A2AConversationTable,
     A2AMessageTable,
@@ -145,18 +145,10 @@ class A2AService:
         """Build service endpoint URL from settings.
 
         When the API binds to the all-interfaces address (dev default),
-        we can't use it for outbound callbacks — dial loopback instead.
-        `is_unspecified` covers both 0.0.0.0 and ::, and avoids a bare
-        literal that trips bandit B104.
+        we can't use it for outbound callbacks; ``reachable_url_host`` dials
+        the loopback of the same address family instead.
         """
-        import ipaddress
-
-        try:
-            is_any_iface = ipaddress.ip_address(settings.host).is_unspecified
-        except ValueError:
-            is_any_iface = False
-        connect_host = "127.0.0.1" if is_any_iface else settings.host
-        return f"http://{connect_host}:{settings.port}"
+        return f"http://{reachable_url_host(settings.host)}:{settings.port}"
 
     @staticmethod
     def build_system_agent_card() -> AgentCard:

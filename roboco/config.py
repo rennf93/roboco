@@ -141,10 +141,10 @@ class Settings(BaseSettings):
         regardless of api_url (which is the agent-facing URL handed to
         spawned containers, not the dispatcher's own address). Every other
         role uses api_url if set, otherwise builds from host/port.
-        Note: 0.0.0.0 is only valid for binding, not connecting - use
-        127.0.0.1 instead.
+        A bind-all host is only valid for binding, not connecting; see
+        ``reachable_url_host``.
         """
-        connect_host = "127.0.0.1" if _is_unspecified_ipv4(self.host) else self.host
+        connect_host = reachable_url_host(self.host)
         if self.role == "dispatcher":
             return f"http://{connect_host}:{self.port}/api"
         if self.api_url:
@@ -3198,16 +3198,23 @@ class Settings(BaseSettings):
         return self
 
 
-def _is_unspecified_ipv4(host: str) -> bool:
-    """True if ``host`` is the IPv4 bind-all address (``0.0.0.0``).
+def reachable_url_host(bind_host: str) -> str:
+    """``bind_host`` as the host part of a URL that reaches the server bound to it.
 
-    A hostname or any other address is ``False``; an IPv6 address is too,
-    since only the IPv4 wildcard maps to the IPv4 loopback.
+    A bind-all address can't be dialled, so it maps to the loopback of its own
+    family: ``0.0.0.0`` to ``127.0.0.1`` and ``::`` to ``::1``. The family
+    matters: asyncio sets ``IPV6_V6ONLY`` on a socket it binds to ``::``, so
+    that server never answers on 127.0.0.1. An IPv6 address is bracketed
+    (``http://[::1]:8000``); a hostname is returned unchanged.
     """
     try:
-        return ipaddress.IPv4Address(host).is_unspecified
+        address = ipaddress.ip_address(bind_host)
     except ValueError:
-        return False
+        return bind_host
+    is_ipv6 = isinstance(address, ipaddress.IPv6Address)
+    if address.is_unspecified:
+        address = ipaddress.ip_address("::1" if is_ipv6 else "127.0.0.1")
+    return f"[{address}]" if is_ipv6 else str(address)
 
 
 def _vault_dirs_overlap(a: str, b: str) -> bool:
