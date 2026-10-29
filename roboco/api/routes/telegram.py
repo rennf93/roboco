@@ -15,9 +15,9 @@ signed ``initData`` is the authentication, not an agent/session header.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Response, status
-from sqlalchemy import select
 
 from roboco.api.auth.backend import cookie_transport, get_jwt_strategy
+from roboco.api.auth.seed import find_seed_user
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.telegram import (
     TelegramCredentialsSetRequest,
@@ -27,7 +27,6 @@ from roboco.api.schemas.telegram import (
 )
 from roboco.api.utils.telegram import _require_ceo
 from roboco.config import settings
-from roboco.db.tables import UserTable
 from roboco.logging import get_logger
 from roboco.security import guard_deco
 from roboco.services.audit import get_audit_service
@@ -149,13 +148,9 @@ async def webapp_auth(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized"
         )
 
-    # The single seeded CEO login user — same lookup convention as
-    # roboco.api.auth.seed.ensure_seed_user (ordered by the primary key's
-    # text label, not UserTable.id, so mypy's TYPE_CHECKING split still sees
-    # a column expression).
-    user = (
-        await db.execute(select(UserTable).order_by("id").limit(1))
-    ).scalar_one_or_none()
+    # The single seeded CEO login user, looked up exactly as
+    # ensure_seed_user finds the row it upserts.
+    user = await find_seed_user(db)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
