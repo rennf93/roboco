@@ -500,6 +500,16 @@ class TaskTable(Base):
         Index("ix_tasks_created_by_status", "created_by", "status"),
         Index("ix_tasks_project_status", "project_id", "status"),
         Index("ix_tasks_product_status", "product_id", "status"),
+        # Backs list_completed_video_tasks' bounded newest-first scan of one
+        # source + status (migration 066).
+        Index("ix_tasks_source_status_created", "source", "status", "created_at"),
+        # Partial: only stalled rows (the common case is NULL), backing
+        # list_stalled_tasks' current-stalled-set read (migration 092).
+        Index(
+            "ix_tasks_stalled_reason",
+            "stalled_reason",
+            postgresql_where=text("stalled_reason IS NOT NULL"),
+        ),
     )
 
 
@@ -793,9 +803,9 @@ class PitchTable(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    slug: Mapped[str] = mapped_column(
-        String(50), unique=True, nullable=False, index=True
-    )
+    # A unique constraint (uq_pitches_slug, migration 033); its own index
+    # serves the by-slug lookup, so no separate index.
+    slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     problem: Mapped[str] = mapped_column(Text, nullable=False)
     proposed_solution: Mapped[str] = mapped_column(Text, nullable=False)
     target_cells: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
@@ -2874,6 +2884,9 @@ class CiRunTable(Base):
             "observed_at_str",
             unique=True,
         ),
+        # Backs runs_for: one project's readings in a created_at window,
+        # oldest first (migration 108).
+        Index("ix_ci_runs_project_created", "project_slug", "created_at"),
     )
 
 
@@ -2898,13 +2911,17 @@ class MemoryRetrievalLogTable(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         nullable=False,
-        index=True,
     )
     source: Mapped[str] = mapped_column(String(500), nullable=False)
     task_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     agent_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
     retrieved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        # Named by migration 108, not by the naming convention.
+        Index("ix_memory_retrieval_created_at", "created_at"),
     )
 
 
