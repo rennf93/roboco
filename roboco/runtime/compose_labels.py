@@ -119,7 +119,8 @@ def _id_from_mountinfo() -> str | None:
 
 def _id_from_hostname_env() -> str | None:
     """Fallback: Docker's default (no `hostname:` override) sets HOSTNAME to
-    the container's own short id; `docker inspect` accepts a short-id prefix.
+    the container's own short id; `docker container inspect` accepts a short-id
+    prefix.
     """
     hostname = os.environ.get("HOSTNAME", "")
     return hostname if _HOSTNAME_ID_RE.match(hostname) else None
@@ -131,7 +132,7 @@ def _own_container_id() -> str | None:
 
 
 async def _inspect_compose_project(container_id: str) -> tuple[bool, str | None]:
-    """`docker inspect` our own compose-project label.
+    """`docker container inspect` our own compose-project label.
 
     Returns ``(definitive, project)``. ``definitive`` is False for a
     transient failure (docker CLI missing, a timeout, a nonzero inspect exit
@@ -143,6 +144,7 @@ async def _inspect_compose_project(container_id: str) -> tuple[bool, str | None]
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker",
+            "container",
             "inspect",
             "--format",
             '{{ index .Config.Labels "com.docker.compose.project" }}',
@@ -164,7 +166,7 @@ async def _discover() -> str | None:
     """Resolve + cache the orchestrator's own compose project, once.
 
     Lock-guarded so two concurrent first-callers (e.g. two agent spawns
-    racing at startup) can't both run `docker inspect`; every call after a
+    racing at startup) can't both run `docker container inspect`; every call after a
     DEFINITIVE resolution is a plain attribute read once the lock is free.
     """
     async with _lock:

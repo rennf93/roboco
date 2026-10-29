@@ -30,7 +30,7 @@ class _FakeProc:
 
 
 async def _fake_create_subprocess_exec(*args: Any, **_kwargs: Any) -> _FakeProc:
-    if args[1] == "inspect":
+    if args[1:3] == ("container", "inspect"):
         return _FakeProc(1)  # container does not exist -> skip log dump
     if args[1] == "rm":
         return _FakeProc(0)
