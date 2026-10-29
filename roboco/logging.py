@@ -144,10 +144,11 @@ def setup_logging() -> None:
     if log_dir is not None:
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
-            # Agent log dumps here carry real tokens and provider keys: as
-            # root, no other uid in the container (the workspace git user)
-            # may even traverse the log root.
-            if os.geteuid() == 0:
+            # Agent log dumps here carry real tokens and provider keys: no
+            # other uid in the container (the workspace git user) may even
+            # traverse the log root. Only its owner may change its mode,
+            # whichever uid this process runs as.
+            if log_dir.stat().st_uid == os.geteuid():
                 log_dir.chmod(0o700)
             file_handler = logging.handlers.RotatingFileHandler(
                 log_dir / "orchestrator.log",
