@@ -20,8 +20,10 @@ import * as tar from "tar";
 const execFileP = promisify(execFile);
 
 // @hyperframes/producer reads each cut's dimensions from the composition HTML
-// itself (data-width/data-height on the stage), so the sidecar no longer
-// passes width/height — it only picks the quality tier.
+// itself: data-width/data-height on the first element carrying
+// data-composition-id (the #stage), defaulting to 1080x1920 when that element
+// has none. So the sidecar no longer passes width/height — it only picks the
+// quality tier.
 const QUALITY = "high";
 
 const DEFAULT_FPS = 30;
