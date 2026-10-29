@@ -118,32 +118,13 @@ rules:
   # routes, no routes in services, no models/routes in panel components, etc.
 
 custom: []
-waivers:
-  # Waiver entries must describe a suppression that exists in the named file at
-  # the current branch HEAD. When the suppressed code is gone — removed
-  # upstream, by a fix, or by a rebase revert — its waiver becomes an orphan
-  # and must be deleted in the same change that removes the suppression; a
-  # waiver that describes nothing is worse than no waiver, because it keeps
-  # silenced debt plausible that no longer exists.
-  - path: roboco/api/routes/board_programs.py
-    rule: no_models_in_routes
-    reason: >-
-      `BoardProgramResponse` is this route's own `response_model` and predates
-      the route-helper extraction task (2026-08-08) that cleared every
-      `no_helpers_in_routes` finding in this file. That task's explicit
-      instructions forbade moving, renaming, or deleting any response schema
-      (to avoid repeating the reverted d48463f7/#769/#793 regression, which
-      deleted live handlers during a similar extraction) — only the plain
-      helper functions `_require_ceo`/`_to_response` were relocated into
-      `roboco/api/utils/board_programs.py`. Moving the model out is a
-      legitimate follow-up but is deliberately out of scope for that task.
-  - path: roboco/api/routes/board_programs.py
-    rule: modular_cohesion
-    reason: >-
-      Same root cause as the `no_models_in_routes` waiver directly above:
-      `BoardProgramResponse` staying colocated with the route handlers is
-      what trips this file's mixed-concern (model + route) finding. Tracked
-      as the same pre-existing, explicitly out-of-scope item.
+# Waiver entries must describe a suppression that exists in the named file at
+# the current branch HEAD. When the suppressed code is gone — removed
+# upstream, by a fix, or by a rebase revert — its waiver becomes an orphan
+# and must be deleted in the same change that removes the suppression; a
+# waiver that describes nothing is worse than no waiver, because it keeps
+# silenced debt plausible that no longer exists.
+waivers: []
 
 # Declared infrastructure paths: PRs whose changed files match these globs
 # require review by the DevOps agent (devops-1) before pr_pass composes.

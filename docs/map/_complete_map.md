@@ -8928,7 +8928,9 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/api/schemas/x.py` | `XPostResponse` + `XMentionRefModel` / `XFeatureRefModel` response shapes | 73 |
 | `roboco/foundation/policy/board_programs.py` | Board Program registry: `BoardProgram` dataclass, `PROGRAMS` (14 entries), `program_due`/`project_participates`/`validate_board_programs_field` (pure) | 295 |
 | `roboco/services/board_programs.py` | `BoardProgramEngine` — trigger/dedup/originate/LEARN over every registered program; `program_armed` settings-store chokepoint; `pick_rotation_target` for project-scoped round-robin | 566 |
-| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now` | 103 |
+| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now`, `GET /{key}/cycles` (LEARN history) | 116 |
+| `roboco/api/schemas/board_programs.py` | `BoardProgramResponse` / `BoardProgramCycleResponse` / `BoardProgramDecisionResponse` response shapes | 51 |
+| `roboco/api/utils/board_programs.py` | Route glue: `require_ceo`, `to_response` (engine state → `BoardProgramResponse`), `cycle_to_response` | 65 |
 | `roboco/services/pest_control_engine.py` | `PestControlEngine` — weekly+metric cron, project-scoped; evidence context (rework hotspots, recurring/waived findings) | 199 |
 | `roboco/services/spackle_engine.py` | `SpackleEngine` — biweekly cron, project-scoped gap-fill audit | 142 |
 | `roboco/services/scales_engine.py` | `ScalesEngine` — monthly cron, org-scoped portfolio rebalance; stale-backlog snapshot | 176 |
@@ -9249,7 +9251,9 @@ product-strategy-research-pitch
 │   └── each: run_cycle + context builder; war_room_engine also exposes open_for_release (release-hook bypass of _ORIGINATORS); barfly_engine screens candidates through injection_guard
 ├── coroner_engine.py / sentinel_engine.py / librarian_engine.py — Auditor programs
 │   └── coroner_engine: open_for_incident is the ONLY real entry point (event-only, no run_cycle path through the loop); sentinel_engine/librarian_engine: run_cycle (CRON) + context builder
-└── api/routes/board_programs.py — CEO-only status + run-now routes
+├── api/routes/board_programs.py — CEO-only status + run-now + cycles routes
+├── api/schemas/board_programs.py — BoardProgramResponse / BoardProgramCycleResponse / BoardProgramDecisionResponse
+└── api/utils/board_programs.py — require_ceo + to_response / cycle_to_response
 ```
 
 ## Dependencies
