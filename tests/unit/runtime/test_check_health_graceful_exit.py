@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.models.runtime import SpawnGitContext
 from roboco.runtime.orchestrator import AgentOrchestrator, AgentState
 
 
@@ -280,3 +281,30 @@ async def test_crash_no_respawn_while_dispatch_paused() -> None:
 
     spawn.assert_not_awaited()
     assert inst.error_count == 0
+
+
+@pytest.mark.asyncio
+async def test_crash_restart_passes_the_tasks_current_git_context() -> None:
+    """The crash retry re-resolves the git context from the task (a57be9d0)
+    and must hand spawn_agent the resolved context itself. The helper is
+    async; called without await it handed spawn_agent a coroutine, whose
+    missing project_slug raised inside the spawn."""
+    orch = _make_orchestrator()
+    task_id = str(uuid4())
+    orch._instances["be-dev-1"] = _instance(task_id=task_id)
+    fresh = SpawnGitContext(project_slug="roboco-api", branch_name="feature/backend/x")
+
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"false 137\n", b""))
+    spawn = AsyncMock()
+
+    with (
+        patch.object(orch, "spawn_agent", new=spawn),
+        patch.object(orch, "_is_paused", AsyncMock(return_value=False)),
+        patch.object(orch, "_git_context_from_task_id", AsyncMock(return_value=fresh)),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+    ):
+        await orch._check_health()
+
+    assert spawn.await_args is not None
+    assert spawn.await_args.kwargs["git_context"] is fresh

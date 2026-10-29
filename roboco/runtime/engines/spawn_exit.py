@@ -78,6 +78,7 @@ if TYPE_CHECKING:
 
 
 if TYPE_CHECKING:
+    from roboco.models.runtime import SpawnGitContext
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
@@ -1640,7 +1641,7 @@ class SpawnExitEngine(_Base):
 
     async def _fresh_or_prior_git_context(
         self, task_id: str | None, agent_id: str
-    ) -> Any:
+    ) -> SpawnGitContext | None:
         """The CURRENT task's git context, falling back to the prior instance's.
 
         Re-resolving from the task on every respawn (crash-retry, rate-limit
@@ -1685,7 +1686,7 @@ class SpawnExitEngine(_Base):
             await self.spawn_agent(
                 agent_id=agent_id,
                 task_id=instance.current_task_id,
-                git_context=self._fresh_or_prior_git_context(
+                git_context=await self._fresh_or_prior_git_context(
                     instance.current_task_id, agent_id
                 ),
                 spawned_by="_crash_retry_or_escalate",

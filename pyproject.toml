@@ -354,6 +354,10 @@ select = [
 "roboco/runtime/engines/dispatch_work.py" = ["UP037"]
 "roboco/runtime/engines/reconcile.py" = ["UP037"]
 "roboco/runtime/engines/sweeps.py" = ["UP037"]
+# PLR0913: the host Protocol's spawn_agent stub states the real signature
+# (spawn_launch.py's, exempt above) so mypy checks every mixin's call; an
+# untyped *args/**kwargs stub let an un-awaited coroutine reach git_context.
+"roboco/runtime/engines/_types.py" = ["PLR0913"]
 # The intake driver/entrypoint lazily import the heavy `claude-agent-sdk` (and
 # uvicorn) so the modules import without those installed and don't pay the cost
 # until a live container runs them — same rationale as the dirs above.
