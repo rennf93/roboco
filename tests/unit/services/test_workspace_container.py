@@ -86,6 +86,14 @@ async def test_the_command_runs_unprivileged_with_only_its_clone_mounted(
     assert command[3:] == ["make", "gate"]
 
 
+def test_a_project_never_inherits_the_orchestrator_git_drop() -> None:
+    """The image sets ROBOCO_WORKSPACE_GIT_DROP=required for the orchestrator;
+    a project's code (RoboCo's own tests, when it is the project) runs with
+    the setting's default instead."""
+    script = wc._entry_script(60, merge_stderr=False)
+    assert "-u ROBOCO_WORKSPACE_GIT_DROP " in script.split("exec timeout", 1)[1]
+
+
 async def test_merge_stderr_folds_stderr_into_stdout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

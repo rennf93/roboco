@@ -11,10 +11,16 @@
 # and ca-certificates by suite (bookworm-security), never by version.
 #
 # The image runs as root, deliberately: the orchestrator holds the Docker
-# socket, drops every workspace git command to the git user with setpriv
-# (roboco/services/workspace_git.py; as non-root that drop silently does not
-# happen), repairs workspace group ownership with fchown, and owns the
-# root-only relays under /data/private. See .claude/rules/workspaces-and-git.md.
+# socket, repairs workspace group ownership with fchown, and owns the relays
+# under /data/private. Every process it starts in an agent workspace runs as
+# the git user through the set-id helper /usr/local/libexec/roboco/as-git-user
+# (docker/as-git-user/as-git-user.c, compiled in the builder stage), and
+# ROBOCO_WORKSPACE_GIT_DROP=required makes that fail closed: a missing or
+# refusing helper raises, and the api and dispatcher refuse to start unless a
+# process started through it is the git user with no capability. The kernel
+# ignores set-id bits under no_new_privs, so the orchestrator services must
+# not get `security_opt: no-new-privileges`. See
+# .claude/rules/workspaces-and-git.md.
 # =============================================================================
 
 # Entire CLI pin (stages below). Same pin as agent-base.Dockerfile: version
@@ -22,6 +28,12 @@
 ARG ENTIRE_VERSION=0.12.2
 ARG ENTIRE_SHA256_AMD64=bfc5c8d5b599f328775b89b735db020c963e307b6a324fc30ce371fe8fa789e8
 ARG ENTIRE_SHA256_ARM64=f08a1b8c6352d3f78076268dc67b0b273d7f62dbab94b15aec028e7b4257ad0c
+
+# The workspace git user (uid) and the agent images' group (gid). The builder
+# compiles both into the git-user helper; the runner creates the user and
+# group and exports them as settings.git_user_uid / agent_gid.
+ARG ROBOCO_GIT_USER_UID=1500
+ARG ROBOCO_AGENT_GID=1000
 
 # ---- Builder ----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS builder
@@ -65,6 +77,18 @@ COPY docs /app/docs
 COPY alembic.ini /app/
 COPY alembic /app/alembic
 RUN uv sync --frozen --no-dev
+
+# The git-user exec helper: static (the runner has no compiler or libc
+# headers), with the git user's uid and gid compiled in. The source refuses
+# to compile with either unset or 0.
+ARG ROBOCO_GIT_USER_UID
+ARG ROBOCO_AGENT_GID
+COPY docker/as-git-user/as-git-user.c /tmp/as-git-user.c
+RUN mkdir -p /out \
+    && gcc -static -O2 -std=c11 -Wall -Wextra -Wpedantic -Werror \
+        -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
+        -DGIT_USER_UID="${ROBOCO_GIT_USER_UID}" -DAGENT_GID="${ROBOCO_AGENT_GID}" \
+        -o /out/as-git-user /tmp/as-git-user.c
 
 # ---- Entire CLI -------------------------------------------------------------
 # Entire (entire.io) records agent sessions as git checkpoints. Agents run its
@@ -187,27 +211,37 @@ COPY --from=entire /usr/local/lib/entire/entire /usr/local/lib/entire/entire
 
 # Workspace git never runs as root: every agent container mounts every clone
 # read-write, so a clone's hooks/config could run anything git starts. It
-# runs as `roboco-git` (roboco/services/workspace_git.py via setpriv): not
-# root, not the agent uid (on the NAS that is the host user who owns the
-# provider credentials mounted here), primary group = the agent images' gid
-# so both sides write group-writable files the other can edit. The uid/gid
-# must match settings.git_user_uid / agent_gid (env set below).
+# runs as `roboco-git` (roboco/services/workspace_git.py through the
+# as-git-user helper): not root, not the agent uid (on the NAS that is the
+# host user who owns the provider credentials mounted here), primary group =
+# the agent images' gid so both sides write group-writable files the other
+# can edit. The uid/gid must match settings.git_user_uid / agent_gid (env set
+# below); the startup self-test refuses a mismatch.
+#
+# The helper is set-user-id and set-group-id to that user, never to root, so
+# a bug in it reaches no more than the git user. Mode 6750: only root and the
+# agent group may run it.
 #
 # Root runs git only in its own repositories under /data/private (the relay,
-# read and release clones), so root keeps git's "dubious ownership" check:
-# no global safe.directory. The git user's global config, and the ONLY hooks
-# directory any orchestrator-side git runs, live root-owned in /opt/roboco/git.
-ARG ROBOCO_GIT_USER_UID=1500
-ARG ROBOCO_AGENT_GID=1000
+# read, release and scratch clones), with private.gitconfig as its global
+# config (safe.directory=*: both deploy colors share those repositories and
+# need not share a uid); the image sets no global safe.directory. The git
+# user's global config (workspace.gitconfig), and the ONLY hooks directory
+# any orchestrator-side git runs, live root-owned in /opt/roboco/git too.
+ARG ROBOCO_GIT_USER_UID
+ARG ROBOCO_AGENT_GID
 RUN groupadd --gid "${ROBOCO_AGENT_GID}" agent \
     && useradd --uid "${ROBOCO_GIT_USER_UID}" --gid "${ROBOCO_AGENT_GID}" \
         --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin \
-        roboco-git \
-    && command -v setpriv
+        roboco-git
+RUN --mount=type=bind,from=builder,source=/out/as-git-user,target=/tmp/as-git-user \
+    install -D -o "${ROBOCO_GIT_USER_UID}" -g "${ROBOCO_AGENT_GID}" -m 6750 \
+        /tmp/as-git-user /usr/local/libexec/roboco/as-git-user
 COPY docker/git-support /opt/roboco/git
 RUN chown -R root:root /opt/roboco/git && chmod -R u=rwX,go=rX /opt/roboco/git
 ENV ROBOCO_GIT_USER_UID=${ROBOCO_GIT_USER_UID} \
-    ROBOCO_AGENT_GID=${ROBOCO_AGENT_GID}
+    ROBOCO_AGENT_GID=${ROBOCO_AGENT_GID} \
+    ROBOCO_WORKSPACE_GIT_DROP=required
 
 # PYTHONUNBUFFERED: flush stdout/stderr immediately so structured logs reach
 # `docker logs` in real time. Without it Python block-buffers stdout (it's a pipe,

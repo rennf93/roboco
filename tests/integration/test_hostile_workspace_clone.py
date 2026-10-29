@@ -6,8 +6,9 @@ drives the git the orchestrator really runs — through ``run_workspace_git``
 and the relay — against a real local origin. A canary file proves whether a
 planted program ran; a fake token proves where credentials can reach.
 
-Root-only checks (the privilege drop itself) run when the suite runs as root,
-e.g. inside the orchestrator image; elsewhere they skip.
+Checks of the privilege drop itself run as root with the drop required, i.e.
+inside the orchestrator image (scripts/orchestrator_image_suites.sh); elsewhere
+they skip.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import shutil
 import stat
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +45,8 @@ _SUPPORT = Path(__file__).parents[2] / "docker" / "git-support"
 _TIMEOUT = 60
 _OWNER_ONLY = 0o600
 _OWNER_ONLY_DIR = 0o700
+# Seconds before the commands these tests make hang are ended.
+_DEADLINE = 2
 
 
 class Lab:
@@ -538,15 +542,16 @@ def test_a_config_flip_race_never_reaches_the_token(lab: Lab) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Root-only: the privilege drop itself
+# The privilege drop itself (root, drop required: the orchestrator image)
 # --------------------------------------------------------------------------- #
 
-root_only = pytest.mark.skipif(
-    os.geteuid() != 0, reason="needs root to drop privileges"
+root_with_the_drop = pytest.mark.skipif(
+    os.geteuid() != 0 or settings.workspace_git_drop != "required",
+    reason="needs root with workspace_git_drop=required (the orchestrator image)",
 )
 
 
-@root_only
+@root_with_the_drop
 def test_workspace_git_runs_as_the_git_user_without_capabilities(lab: Lab) -> None:
     probe = Path(settings.git_support_dir) / "hooks" / "post-commit"
     probe.write_text(
@@ -564,7 +569,57 @@ def test_workspace_git_runs_as_the_git_user_without_capabilities(lab: Lab) -> No
     assert "NoNewPrivs:\t1" in lines
 
 
-@root_only
+@root_with_the_drop
+def test_a_hung_git_is_ended_by_its_in_command_timeout(lab: Lab) -> None:
+    """git blocked in a hook past its deadline: the in-command ``timeout``,
+    running as the git user, ends git and the hook (TERM to their process
+    group), the caller gets ``TimeoutExpired`` well before its own wait runs
+    out, and no process of the git user is left."""
+    hook = Path(settings.git_support_dir) / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nsleep 600\n")
+    hook.chmod(0o755)
+    (lab.ws / "work.py").write_text("x = 1\n")
+    lab.git("add", "-A")
+    commit = ["-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "w"]
+
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_workspace_git(lab.ws, commit, timeout=_DEADLINE)
+    elapsed = time.monotonic() - started
+
+    assert _DEADLINE <= elapsed < workspace_git.workspace_user_wait_seconds(_DEADLINE)
+    assert _processes_of(settings.git_user_uid) == []
+
+
+@root_with_the_drop
+def test_a_command_that_ignores_term_is_killed_after_the_grace(lab: Lab) -> None:
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        workspace_git.run_as_workspace_user(
+            "sh", "-c", "trap '' TERM; sleep 600", cwd=lab.ws, timeout=_DEADLINE
+        )
+    elapsed = time.monotonic() - started
+
+    killed_at = _DEADLINE + workspace_git._KILL_GRACE_SECONDS
+    assert killed_at <= elapsed < workspace_git.workspace_user_wait_seconds(_DEADLINE)
+    assert _processes_of(settings.git_user_uid) == []
+
+
+def _processes_of(uid: int) -> list[str]:
+    """Command lines of the live processes whose real uid is ``uid``."""
+    found = []
+    for status in Path("/proc").glob("[0-9]*/status"):
+        with contextlib.suppress(OSError):
+            fields = {}
+            for line in status.read_text().splitlines():
+                name, _, value = line.partition(":")
+                fields[name] = value
+            if int(fields["Uid"].split()[0]) == uid and "Z" not in fields["State"]:
+                found.append((status.parent / "cmdline").read_text())
+    return found
+
+
+@root_with_the_drop
 def test_the_repair_walk_never_follows_a_planted_symlink(
     lab: Lab, tmp_path: Path
 ) -> None:
@@ -590,7 +645,7 @@ def _plant_symlinked_team_dir(lab: Lab, tmp_path: Path) -> Path:
     return elsewhere
 
 
-@root_only
+@root_with_the_drop
 def test_a_host_made_skeleton_is_opened_for_the_git_user(lab: Lab) -> None:
     """On the NAS the project/team dirs are the host user's, mode 755: the
     git user could not clone into them until root regroups them."""
@@ -611,7 +666,7 @@ def test_a_host_made_skeleton_is_opened_for_the_git_user(lab: Lab) -> None:
     assert clone.stat().st_uid == settings.git_user_uid
 
 
-@root_only
+@root_with_the_drop
 def test_the_skeleton_is_never_made_through_a_planted_symlink(
     lab: Lab, tmp_path: Path
 ) -> None:
@@ -624,7 +679,7 @@ def test_the_skeleton_is_never_made_through_a_planted_symlink(
     assert stat.S_IMODE(elsewhere.stat().st_mode) == _OWNER_ONLY_DIR
 
 
-@root_only
+@root_with_the_drop
 def test_a_workspace_delete_never_follows_a_planted_symlink(
     lab: Lab, tmp_path: Path
 ) -> None:
@@ -644,7 +699,7 @@ def test_a_workspace_delete_removes_the_clone(lab: Lab) -> None:
     assert lab.ws.parent.is_dir()
 
 
-@root_only
+@root_with_the_drop
 def test_a_file_write_into_an_old_clone_gets_the_group_repair_first(
     lab: Lab,
 ) -> None:

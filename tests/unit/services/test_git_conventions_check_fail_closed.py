@@ -22,7 +22,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.services import git as git_module
+from roboco.services import workspace_git
 from roboco.services.git import GitService
 
 
@@ -226,6 +228,77 @@ async def test_run_conventions_validator_timeout_override_used_over_hardcoded(
     result = await svc._run_conventions_validator(tmp_path, ["a.py"], timeout=0.01)
     assert result["could_not_run"] is True
     assert "timed out after 0.01s" in (result.get("reason") or "")
+
+
+@pytest.mark.asyncio
+async def test_validator_ended_by_its_in_command_timeout_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the drop required the validator runs under ``timeout`` as the git
+    user; that ending it (exit 124 at the deadline) is a timeout, not a
+    crash."""
+    helper = tmp_path / "as-git-user"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr(settings, "workspace_git_drop", "required")
+    monkeypatch.setattr(workspace_git, "GIT_USER_HELPER", str(helper))
+    seen: list[tuple[object, ...]] = []
+    fake_proc = MagicMock()
+    fake_proc.returncode = 124
+
+    async def _communicate() -> tuple[bytes, bytes]:
+        # Ends at the in-command deadline (1 s), with timeout's exit 124.
+        await asyncio.sleep(1)
+        return (b"", b"")
+
+    fake_proc.communicate = _communicate
+
+    async def _fake_exec(*args: object, **_kwargs: object) -> object:
+        seen.append(args)
+        return fake_proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    result = await _service()._run_conventions_validator(tmp_path, ["a.py"], timeout=1)
+
+    assert seen[0][:5] == (str(helper), "timeout", "-k", "10s", "1s")
+    assert result["could_not_run"] is True
+    assert "timed out after 1s" in (result.get("reason") or "")
+
+
+@pytest.mark.asyncio
+async def test_validator_this_process_may_not_kill_still_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-root parent gets EPERM killing a git-user child: the gate still
+    returns, bounded, instead of raising."""
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+
+    async def _communicate() -> tuple[bytes, bytes]:
+        await asyncio.sleep(30)
+        return (b"", b"")
+
+    async def _wait() -> int:
+        await asyncio.sleep(30)
+        return 0
+
+    fake_proc.communicate = _communicate
+    fake_proc.kill = MagicMock(side_effect=PermissionError())
+    fake_proc.wait = _wait
+
+    async def _fake_exec(*_args: object, **_kwargs: object) -> object:
+        return fake_proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(git_module, "_CONVENTIONS_VALIDATOR_REAP_SECONDS", 0.01)
+
+    result = await _service()._run_conventions_validator(
+        tmp_path, ["a.py"], timeout=0.01
+    )
+
+    assert result["could_not_run"] is True
+    fake_proc.kill.assert_called_once()
 
 
 def _task_with_id(branch_name: str) -> MagicMock:

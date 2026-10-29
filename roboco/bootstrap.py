@@ -21,6 +21,7 @@ from roboco.db import bootstrap_database
 from roboco.events import init_event_bus, register_default_handlers, set_event_context
 from roboco.runtime import AgentOrchestrator, set_reasoning_stream_callback
 from roboco.services.notification import NotificationService
+from roboco.services.workspace_git import GitUserDropError, verify_git_user_drop
 
 logger = structlog.get_logger()
 
@@ -76,6 +77,23 @@ def _start_indexer_task_if_available() -> asyncio.Task[None] | None:
     return asyncio.create_task(run_indexer())
 
 
+def _refuse_to_start_without_the_git_user_drop() -> None:
+    """The api and dispatcher run workspace git (``all`` is both): with
+    ``workspace_git_drop=required`` they never start unless a process started
+    through the git-user helper is that user with nothing more. The indexer
+    starts no workspace process."""
+    if settings.role == "indexer":
+        return
+    try:
+        verify_git_user_drop()
+    except GitUserDropError as exc:
+        logger.error(
+            "refusing to start: workspace processes cannot drop to the git user",
+            error=str(exc),
+        )
+        raise SystemExit(1) from exc
+
+
 async def _wait_for_api_ready(max_wait: int = 120) -> None:
     """
     Wait for the API server to be ready to accept connections.
@@ -113,6 +131,8 @@ async def main(
         spawn_agents: List of agent IDs to spawn immediately
     """
     logger.info("RoboCo Bootstrap starting...")
+
+    _refuse_to_start_without_the_git_user_drop()
 
     if not skip_db:
         await bootstrap_database()

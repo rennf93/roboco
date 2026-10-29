@@ -67,10 +67,14 @@ def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
     there is one, else exits 125 without running anything.
     umask 002 keeps every file the command writes group-writable for the
     agent group. VIRTUAL_ENV / UV_PROJECT_ENVIRONMENT are this image's own
-    /app/.venv pins: unset, uv resolves the clone's .venv instead. The
-    in-container ``timeout`` bounds the run even when no orchestrator is left
-    to kill it (a restart or a blue/green switch mid-gate), so an orphaned
-    container always ends on its own and ``--rm`` removes it.
+    /app/.venv pins: unset, uv resolves the clone's .venv instead.
+    ROBOCO_WORKSPACE_GIT_DROP is the orchestrator's own setting: unset, a
+    project's code (RoboCo's own test suite, when it is the project) runs
+    with the setting's default, and the git-user helper refuses here anyway
+    (no-new-privileges). The in-container ``timeout`` bounds the run even
+    when no orchestrator is left to kill it (a restart or a blue/green
+    switch mid-gate), so an orphaned container always ends on its own and
+    ``--rm`` removes it.
     """
     script = (
         '[ "$(stat -c %d:%i -- "$ROBOCO_WORKSPACE_MOUNT")" = '
@@ -82,7 +86,8 @@ def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
         f"exit {_DOCKER_RUN_FAILED}; }}; "
         'umask 002 && mkdir -p "$HOME" && '
         f"exec timeout -k {_KILL_GRACE_SECONDS} {max(1, int(timeout))} "
-        'env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT "$@"'
+        "env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT -u ROBOCO_WORKSPACE_GIT_DROP "
+        '"$@"'
     )
     return script + (" 2>&1" if merge_stderr else "")
 

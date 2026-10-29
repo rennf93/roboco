@@ -11,7 +11,6 @@ instead of short-circuiting past it on a valid-looking ``.git``.
 
 from __future__ import annotations
 
-import os
 import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -34,9 +33,9 @@ def origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(settings, "workspaces_root", str(tmp_path / "workspaces"))
     monkeypatch.setattr(settings, "workspace_install_dev_deps", False)
     (tmp_path / "workspaces").mkdir()
-    if os.geteuid() == 0:
-        # As root, workspace git runs as the git user: let it traverse
-        # pytest's 0700 temp dirs, as /data is traversable in production.
+    if settings.workspace_git_drop == "required":
+        # With the drop required, workspace git runs as the git user: let it
+        # traverse pytest's 0700 temp dirs, as /data is in production.
         for directory in (tmp_path, tmp_path.parent, tmp_path.parent.parent):
             directory.chmod(directory.stat().st_mode | 0o055)
     bare = tmp_path / "origin.git"

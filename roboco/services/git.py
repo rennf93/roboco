@@ -105,10 +105,13 @@ from roboco.services.workspace import (
 )
 from roboco.services.workspace_git import (
     UnsafeWorkspaceGitConfigError,
+    kill_workspace_user_process,
     run_as_workspace_user,
     run_workspace_git,
     workspace_git_env,
     workspace_user_argv,
+    workspace_user_timed_out,
+    workspace_user_wait_seconds,
     write_workspace_file,
 )
 from roboco.templates.git import (
@@ -379,6 +382,8 @@ _CI_RUN_WINDOW = 20
 # Cap a conventions-validator run so a hung subprocess (tree-sitter deadlock,
 # huge repo) can't hang the i_am_done/pr_pass gate forever.
 _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS = 120
+# How long a timed-out validator is waited for after the kill.
+_CONVENTIONS_VALIDATOR_REAP_SECONDS = 10
 # --- pr_pass CI-status guard ------------------------------------------------
 # GitHub check-run conclusions that count as a failing check on a PR's head
 # commit. ``neutral``/``skipped``/``success`` (and ``None`` on a still-running
@@ -6753,8 +6758,14 @@ class GitService(BaseService):
         effective_timeout = (
             timeout if timeout is not None else _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS
         )
+        timed_out = {
+            "findings": [],
+            "could_not_run": True,
+            "reason": f"validator timed out after {effective_timeout}s",
+        }
         # The validator parses agent-written files (tree-sitter C parsers on
         # hostile input): it runs as the workspace git user, never as root.
+        started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *workspace_user_argv(
                 [
@@ -6766,7 +6777,8 @@ class GitService(BaseService):
                     str(workspace),
                     "--files",
                     *files,
-                ]
+                ],
+                timeout=effective_timeout,
             ),
             env=workspace_git_env(),
             stdout=asyncio.subprocess.PIPE,
@@ -6775,19 +6787,24 @@ class GitService(BaseService):
         try:
             out, err = await asyncio.wait_for(
                 proc.communicate(),
-                timeout=effective_timeout,
+                timeout=workspace_user_wait_seconds(effective_timeout),
             )
         except TimeoutError:
             # Fail closed (could_not_run=True → block gate refuses the submit),
             # matching the validator's own fail-loud philosophy, and reap the
-            # killed proc so it isn't orphaned on orchestrator restart.
-            proc.kill()
-            await proc.wait()
-            return {
-                "findings": [],
-                "could_not_run": True,
-                "reason": (f"validator timed out after {effective_timeout}s"),
-            }
+            # killed proc so it isn't orphaned on orchestrator restart. A
+            # git-user child this process may not kill is ended by its
+            # in-command timeout; the reap is bounded so the gate never hangs.
+            kill_workspace_user_process(proc)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    proc.wait(), timeout=_CONVENTIONS_VALIDATOR_REAP_SECONDS
+                )
+            return timed_out
+        if workspace_user_timed_out(
+            proc.returncode, time.monotonic() - started, effective_timeout
+        ):
+            return timed_out
         if proc.returncode != 0:
             reason = err.decode(errors="replace").strip() or "validator crashed"
             return {"findings": [], "could_not_run": True, "reason": reason[:300]}

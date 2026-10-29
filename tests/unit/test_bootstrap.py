@@ -27,6 +27,7 @@ from roboco.bootstrap import (
     main,
 )
 from roboco.config import settings
+from roboco.services.workspace_git import GitUserDropError
 
 _INDEXER_MODULE = "roboco.services.optimal_brain.indexer_worker"
 
@@ -430,3 +431,64 @@ async def test_main_dispatcher_role_skips_websocket_bridge_and_indexer_task(
     assert bus_fn.await_args is not None
     consumer_name = bus_fn.await_args.kwargs["consumer_name"]
     assert consumer_name.startswith("orchestrator-dispatcher-")
+
+
+# ---------------------------------------------------------------------------
+# The git-user drop self-test gates the api and dispatcher (and "all").
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["api", "dispatcher", "all"])
+async def test_main_refuses_to_start_when_the_drop_fails(
+    monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    monkeypatch.setattr(settings, "role", role)
+    db_mock = AsyncMock()
+    with (
+        patch(
+            "roboco.bootstrap.verify_git_user_drop",
+            side_effect=GitUserDropError("as-git-user: refused"),
+        ),
+        patch("roboco.bootstrap.bootstrap_database", db_mock),
+        pytest.raises(SystemExit) as exited,
+    ):
+        await main(skip_orchestrator=True)
+    assert exited.value.code == 1
+    db_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_main_runs_the_self_test_before_anything_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "role", "api")
+    order: list[str] = []
+    with (
+        patch(
+            "roboco.bootstrap.verify_git_user_drop",
+            side_effect=lambda: order.append("self-test"),
+        ),
+        patch(
+            "roboco.bootstrap.bootstrap_database",
+            AsyncMock(side_effect=lambda: order.append("db")),
+        ),
+    ):
+        await main(skip_orchestrator=True)
+    assert order == ["self-test", "db"]
+
+
+@pytest.mark.asyncio
+async def test_main_indexer_role_runs_no_self_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The indexer starts no workspace process."""
+    monkeypatch.setattr(settings, "role", "indexer")
+    self_test = MagicMock()
+    with (
+        patch("roboco.bootstrap.verify_git_user_drop", self_test),
+        patch("roboco.bootstrap.bootstrap_database", AsyncMock()),
+        patch("roboco.bootstrap._run_indexer_role", AsyncMock()),
+    ):
+        await main()
+    self_test.assert_not_called()
