@@ -49,6 +49,30 @@ COPY alembic.ini /app/
 COPY alembic /app/alembic
 RUN uv sync --frozen --no-dev
 
+# ---- Entire CLI -------------------------------------------------------------
+# Entire (entire.io) records agent sessions as git checkpoints. Agents run its
+# session hooks in their own containers; its commit hooks run in the throwaway
+# workspace container (roboco/services/entire_hooks.py), started from this
+# image. Same pin as agent-base.Dockerfile: version AND sha256 written here.
+FROM python:3.13-slim-bookworm AS entire
+
+ARG ENTIRE_VERSION=0.12.2
+ARG ENTIRE_SHA256_AMD64=bfc5c8d5b599f328775b89b735db020c963e307b6a324fc30ce371fe8fa789e8
+ARG ENTIRE_SHA256_ARM64=f08a1b8c6352d3f78076268dc67b0b273d7f62dbab94b15aec028e7b4257ad0c
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && case "$TARGETARCH" in \
+        amd64) ENTIRE_SHA256="$ENTIRE_SHA256_AMD64" ;; \
+        arm64) ENTIRE_SHA256="$ENTIRE_SHA256_ARM64" ;; \
+        *) echo "unsupported TARGETARCH: '$TARGETARCH'" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --connect-timeout 15 --retry 5 --retry-all-errors --retry-delay 2 \
+        "https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_${TARGETARCH}.tar.gz" \
+        -o /tmp/entire.tar.gz \
+    && echo "${ENTIRE_SHA256}  /tmp/entire.tar.gz" | sha256sum -c - \
+    && mkdir -p /usr/local/lib/entire \
+    && tar --no-same-owner -xzf /tmp/entire.tar.gz -C /usr/local/lib/entire entire
+
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner
 
@@ -105,6 +129,11 @@ COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 # --pid 1). Needs SYS_PTRACE, granted via cap_add on the orchestrator
 # service in the compose files.
 COPY --from=builder /usr/local/bin/py-spy /usr/local/bin/py-spy
+
+# Entire CLI, deliberately off PATH: only RoboCo's Entire step runs it, by
+# absolute path. On PATH, the wrapper hooks Entire installs in a clone's
+# .git/hooks would start it from any project hook run here.
+COPY --from=entire /usr/local/lib/entire/entire /usr/local/lib/entire/entire
 
 # Workspace git never runs as root: every agent container mounts every clone
 # read-write, so a clone's hooks/config could run anything git starts. It

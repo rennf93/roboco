@@ -68,7 +68,7 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   devops_enabled:
     "Routes infra tasks to the floating DevOps agent (devops-1): PM delegation + board materialization pre-assignment spawn it, and it authors through the normal developer lifecycle (PR before QA). Off by default: the agent is seeded but inert: nothing spawns it.",
   entire_enabled:
-    "Records each agent's Claude Code session with Entire (entire.io) so every task commit carries a redacted transcript checkpoint, pushed with the branch. Off by default: Entire's hooks do nothing in agent containers.",
+    "Records each agent's Claude Code session with Entire (entire.io) so every task commit carries a redacted transcript checkpoint, pushed with the branch to the project's own repository: anyone who can read that repository can read the transcripts. Off by default: Entire's hooks do nothing in agent containers and RoboCo runs none for their commits.",
   rag_auto_update_enabled:
     "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled:

@@ -264,3 +264,63 @@ async def test_a_clone_reached_through_a_symlink_is_never_mounted(
             timeout=60,
         )
     exec_mock.assert_not_called()
+
+
+def _transcripts(tmp_path: Path) -> wc.ReadOnlyMount:
+    folder = tmp_path / "claude" / "projects" / "-data-workspaces-p-backend-a"
+    folder.mkdir(parents=True)
+    return wc.ReadOnlyMount(
+        root=tmp_path / "claude",
+        local=folder,
+        host="/home/op/.claude/projects/-data-workspaces-p-backend-a",
+        target="/home/agent/.claude/projects/-data-workspaces-p-backend-a",
+    )
+
+
+async def test_an_offline_run_has_no_network_and_one_checked_read_only_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exec_mock = AsyncMock(return_value=_proc(0, b"ok\n"))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_mock)
+    mount = _transcripts(tmp_path)
+
+    result = await wc.run_offline_in_workspace_container(
+        Path("/data/workspaces/p/backend/a"),
+        ["sh", "-c", "true"],
+        timeout=60,
+        read_only_mount=mount,
+    )
+
+    assert result.returncode == 0
+    argv = list(exec_mock.call_args.args)
+    options = argv[: argv.index("roboco-orch@sha")]
+    assert options[options.index("--network") + 1] == "none"
+    mounts = [options[i + 1] for i, o in enumerate(options) if o == "-v"]
+    assert mounts[1] == f"{mount.host}:{mount.target}:ro"
+    cli_env = exec_mock.call_args.kwargs["env"]
+    st = mount.local.stat()
+    assert cli_env["ROBOCO_EXTRA_MOUNT"] == mount.target
+    assert cli_env["ROBOCO_EXTRA_MOUNT_ID"] == f"{st.st_dev}:{st.st_ino}"
+    script = argv[argv.index("-c") + 1]
+    assert '"$ROBOCO_EXTRA_MOUNT_ID"' in script
+    assert script.endswith(" 2>&1")
+
+
+async def test_a_read_only_mount_reached_through_a_symlink_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exec_mock = AsyncMock(return_value=_proc())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_mock)
+    mount = _transcripts(tmp_path)
+    projects = mount.local.parent
+    projects.rename(tmp_path / "planted")
+    projects.symlink_to(tmp_path / "planted")
+
+    with pytest.raises(wc.WorkspaceContainerError, match="cannot be mounted"):
+        await wc.run_offline_in_workspace_container(
+            Path("/data/workspaces/p/backend/a"),
+            ["true"],
+            timeout=60,
+            read_only_mount=mount,
+        )
+    exec_mock.assert_not_called()

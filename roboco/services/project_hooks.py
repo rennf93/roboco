@@ -16,7 +16,10 @@ gating ones still run, in the same throwaway container as the quality gate
 A hook is found where git would look (``workspace_hook_path``: the repo's
 ``core.hooksPath``, else ``.git/hooks``), only under the workspaces root; an
 operator-configured path elsewhere cannot be mounted into the container, so
-its hooks are skipped (logged). A non-zero exit refuses the commit or push
+its hooks are skipped (logged). A wrapper Entire installed there stands for
+the hook it moved aside (``<hook>.pre-entire``), if any: Entire's own part
+RoboCo runs itself (``roboco.services.entire_hooks``), between ``pre-commit``
+and ``commit-msg`` as git would. A non-zero exit refuses the commit or push
 with the hook's output, as git does; so does a hook that could not be run at
 all (the container did not start): a check that did not run is not a pass.
 ``--no-verify`` skips them, as with git. Each hook gets the time budget of
@@ -33,6 +36,12 @@ from typing import TYPE_CHECKING
 
 from roboco.config import settings
 from roboco.logging import get_logger
+from roboco.services.entire_hooks import (
+    hook_entire_replaced,
+    is_entire_hook,
+    records_entire_sessions,
+    run_entire_message_hooks,
+)
 from roboco.services.workspace_container import (
     WorkspaceContainerError,
     run_in_workspace_container,
@@ -85,6 +94,8 @@ async def find_project_hook(cwd: Path, name: str) -> Path | None:
             workspace=str(cwd),
         )
         return None
+    if hook is not None and await asyncio.to_thread(is_entire_hook, hook):
+        return await asyncio.to_thread(hook_entire_replaced, hook)
     return hook
 
 
@@ -150,29 +161,45 @@ def _without_messages(args: Sequence[str]) -> list[str]:
 async def run_commit_hooks(
     cwd: Path, args: list[str], *, timeout: float
 ) -> tuple[list[str], subprocess.CompletedProcess[str] | None]:
-    """``pre-commit`` then ``commit-msg`` for a ``git commit`` RoboCo is
-    about to run. Returns the commit's (possibly rewritten) args and the
-    refusal, if any. With a ``commit-msg`` hook the message goes through
-    ``<git dir>/COMMIT_EDITMSG`` (as git does) and the commit reads it back
-    with ``-F``, so a hook that edits the message is honored."""
-    if _NO_VERIFY & set(args):
-        return args, None
-    pre_commit = await find_project_hook(cwd, "pre-commit")
-    if pre_commit is not None:
-        refused = await run_project_hook(cwd, pre_commit, [], timeout=timeout)
+    """``pre-commit``, Entire's message hooks (when Entire records the
+    agent's session), then ``commit-msg``, for a ``git commit`` RoboCo is
+    about to run; ``--no-verify`` skips the project's two, as with git.
+    Returns the commit's (possibly rewritten) args and the refusal, if any.
+    When a hook gets the message, it goes through ``<git dir>/COMMIT_EDITMSG``
+    (as git does) and the commit reads it back with ``-F``, so a hook that
+    edits the message is honored."""
+    verify = not skips_hooks(args)
+    if verify:
+        refused = await _run_pre_commit(cwd, timeout)
         if refused is not None:
             return args, refused
     message = _commit_message(args)
-    commit_msg = await find_project_hook(cwd, "commit-msg")
-    if commit_msg is None or message is None:
+    commit_msg = await find_project_hook(cwd, "commit-msg") if verify else None
+    entire = await asyncio.to_thread(records_entire_sessions, cwd)
+    if message is None or (commit_msg is None and not entire):
         return args, None
     message_file = workspace_repository(cwd).git_dir / "COMMIT_EDITMSG"
     await asyncio.to_thread(write_workspace_file, message_file, message)
-    refused = await run_project_hook(
-        cwd, commit_msg, [str(message_file)], timeout=timeout
-    )
+    if entire:
+        await run_entire_message_hooks(
+            cwd, message_file, verify=verify, timeout=timeout
+        )
+    refused = None
+    if commit_msg is not None:
+        refused = await run_project_hook(
+            cwd, commit_msg, [str(message_file)], timeout=timeout
+        )
     rewritten = [*_without_messages(args), "-F", str(message_file)]
     return rewritten, refused
+
+
+async def _run_pre_commit(
+    cwd: Path, timeout: float
+) -> subprocess.CompletedProcess[str] | None:
+    pre_commit = await find_project_hook(cwd, "pre-commit")
+    if pre_commit is None:
+        return None
+    return await run_project_hook(cwd, pre_commit, [], timeout=timeout)
 
 
 def skips_hooks(args: Sequence[str]) -> bool:

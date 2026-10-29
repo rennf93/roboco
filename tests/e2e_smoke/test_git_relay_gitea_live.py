@@ -25,7 +25,11 @@ from uuid import uuid4
 import httpx
 import pytest
 from roboco.config import settings
-from roboco.services.git_origin import OriginContext, run_origin_command
+from roboco.services.git_origin import (
+    OriginContext,
+    push_checkpoint_refs,
+    run_origin_command,
+)
 from roboco.services.git_relay import GitRelay
 from roboco.services.workspace_git import prepare_clone_parent, run_workspace_git
 
@@ -68,18 +72,45 @@ class _Project:
     def git(self, *args: str) -> subprocess.CompletedProcess[str]:
         return run_workspace_git(self.ws, list(args), timeout=_TIMEOUT)
 
-    def origin(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def context(self) -> OriginContext:
         def _local(local: Sequence[str]) -> subprocess.CompletedProcess[str]:
             return run_workspace_git(self.ws, local, timeout=_TIMEOUT, check=False)
 
-        ctx = OriginContext(
+        return OriginContext(
             relay=self.relay,
             repo=self.ws,
             local_git=_local,
             from_workspace=True,
             timeout=_TIMEOUT,
         )
-        return run_origin_command(ctx, list(args))
+
+    def origin(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return run_origin_command(self.context(), list(args))
+
+    def clone(self) -> None:
+        """The agent's clone, made from the relay as RoboCo makes it."""
+        fetched = self.relay.fetch_from_origin(
+            ["+refs/heads/*:refs/heads/*"], prune=True, timeout=_TIMEOUT
+        )
+        assert fetched.returncode == 0, fetched.stderr
+        prepare_clone_parent(self.ws)
+        run_workspace_git(
+            self.ws.parent,
+            [
+                "clone",
+                "-q",
+                "--no-local",
+                "--no-tags",
+                "--branch",
+                "main",
+                str(self.relay.path),
+                str(self.ws),
+            ],
+            timeout=_TIMEOUT,
+        )
+        self.git("remote", "set-url", "origin", self.url)
+        self.git("config", "user.name", "be-dev-1")
+        self.git("config", "user.email", "be-dev-1@roboco.tech")
 
     def branch_sha(self, branch: str) -> str:
         resp = _api("get", f"/repos/{self.owner}/{self.repo}/branches/{branch}")
@@ -127,28 +158,7 @@ def test_a_private_repo_is_unreachable_without_the_relays_token(
 
 
 def test_an_agent_round_trip_goes_through_the_relay(project: _Project) -> None:
-    fetched = project.relay.fetch_from_origin(
-        ["+refs/heads/*:refs/heads/*"], prune=True, timeout=_TIMEOUT
-    )
-    assert fetched.returncode == 0, fetched.stderr
-    prepare_clone_parent(project.ws)
-    run_workspace_git(
-        project.ws.parent,
-        [
-            "clone",
-            "-q",
-            "--no-local",
-            "--no-tags",
-            "--branch",
-            "main",
-            str(project.relay.path),
-            str(project.ws),
-        ],
-        timeout=_TIMEOUT,
-    )
-    project.git("remote", "set-url", "origin", project.url)
-    project.git("config", "user.name", "be-dev-1")
-    project.git("config", "user.email", "be-dev-1@roboco.tech")
+    project.clone()
 
     # Push a new branch.
     project.git("checkout", "-q", "-b", "feature/relay")
@@ -196,3 +206,21 @@ def test_an_agent_round_trip_goes_through_the_relay(project: _Project) -> None:
             data = path.read_bytes()
             assert _TOKEN.encode() not in data, path
             assert basic.encode() not in data, path
+
+
+def test_an_entire_checkpoint_reaches_the_forge_through_the_relay(
+    project: _Project,
+) -> None:
+    """Entire's checkpoint refs are not branches: the forge must take them
+    as they are, pushed from the workspace through the relay."""
+    project.clone()
+    tree = project.git("write-tree").stdout.strip()
+    checkpoint = project.git("commit-tree", tree, "-m", "checkpoint").stdout.strip()
+    ref = "refs/entire/checkpoints/AW/01M620JW5RZ2G6QBKQAM0FZNAW"
+    project.git("update-ref", ref, checkpoint)
+
+    pushed = push_checkpoint_refs(project.context(), [ref])
+
+    assert pushed.returncode == 0, pushed.stderr
+    listed = project.relay.ls_remote([ref], timeout=_TIMEOUT)
+    assert listed.stdout.split() == [checkpoint, ref]

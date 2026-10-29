@@ -12,6 +12,7 @@ guessed at.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -30,6 +31,7 @@ _TRACKING = "refs/remotes/origin/"
 _FETCH_FLAGS = frozenset({"--prune", "--no-tags", "--tags", "--force"})
 _PUSH_FLAGS = frozenset({"-u", "--set-upstream", "--force-with-lease"})
 _LS_REMOTE_FLAGS = frozenset({"--heads", "--tags"})
+_CHECKPOINT_REF = re.compile(r"refs/entire/checkpoints/[0-9A-Z]{2}/[0-9A-Z]{26}")
 
 
 class UnsupportedOriginCommandError(ValueError):
@@ -221,6 +223,32 @@ def _push_local_commit(
         ctx.local_git(["config", f"branch.{local}.remote", ORIGIN])
         ctx.local_git(["config", f"branch.{local}.merge", dst_ref])
     return pushed
+
+
+def push_checkpoint_refs(
+    ctx: OriginContext, refs: Sequence[str]
+) -> subprocess.CompletedProcess[str]:
+    """Push Entire checkpoint refs (``refs/entire/checkpoints/<xx>/<id>``)
+    to origin under their own names, never forced: each is taken into the
+    relay like a branch push (fsck'd), then all go in one push. Anything
+    that is not a checkpoint ref is refused."""
+    for ref in refs:
+        if not _CHECKPOINT_REF.fullmatch(ref):
+            raise UnsupportedOriginCommandError(f"{ref} is not an Entire checkpoint")
+    staged: list[str] = []
+    try:
+        for ref in refs:
+            taken, incoming = ctx.relay.take_ref(
+                ctx.repo, ref, from_workspace=ctx.from_workspace, timeout=ctx.timeout
+            )
+            if taken.returncode != 0:
+                return taken
+            staged.append(incoming)
+        refspecs = [f"{src}:{dst}" for src, dst in zip(staged, refs, strict=True)]
+        return ctx.relay.push_to_origin(refspecs, timeout=ctx.timeout)
+    finally:
+        for incoming in staged:
+            ctx.relay.drop_ref(incoming, timeout=ctx.timeout)
 
 
 # --------------------------------------------------------------------------- #

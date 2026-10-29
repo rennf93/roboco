@@ -61,12 +61,19 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
+from roboco.services.entire_hooks import (
+    CHECKPOINT_TRAILER,
+    checkpoint_refs,
+    records_entire_sessions,
+    run_entire_post_commit,
+)
 from roboco.services.forge import ForgeRouter, GitProvider, RepoRef
 from roboco.services.gateway.quality_gate import GateResult, run_quality_commands
 from roboco.services.git_origin import (
     OriginContext,
     UnsupportedOriginCommandError,
     is_origin_command,
+    push_checkpoint_refs,
     push_ref_update,
     run_origin_command,
 )
@@ -447,6 +454,19 @@ class _CiRunQuery:
     git_token: str
 
 
+@dataclass(frozen=True)
+class _EntireAfter:
+    """What Entire needs once a workspace commit or push went through,
+    worked out before it runs: ``post-commit``, or the checkpoint refs of
+    the commits the push sends."""
+
+    post_commit: bool = False
+    checkpoints: tuple[str, ...] = ()
+
+
+_NOTHING_FOR_ENTIRE = _EntireAfter()
+
+
 class GitService(BaseService):
     """
     Service for git operations on agent workspaces.
@@ -505,6 +525,10 @@ class GitService(BaseService):
         the short default, so the commit choreography passes the longer
         ``settings.git_commit_timeout_seconds``. A refused clone config or an
         origin command RoboCo never issues raises ``GitCommandError``.
+
+        A workspace commit or push also gets the hooks git would run around
+        it: the project's own (``_run_project_hooks``) and, when Entire
+        records the agent's session, Entire's (``roboco.services.entire_hooks``).
         """
         effective_timeout = timeout if timeout is not None else _default_git_timeout()
         args, refused = await self._run_project_hooks(
@@ -512,6 +536,7 @@ class GitService(BaseService):
         )
         if refused is not None:
             return _hook_refusal(args, refused, check=check)
+        entire = await self._entire_before(workspace, args)
         if is_origin_command(args):
             ctx = await self._origin_context(workspace, effective_timeout)
 
@@ -541,6 +566,7 @@ class GitService(BaseService):
             raise GitCommandError(
                 " ".join(args), result.stderr or result.stdout or "Unknown error"
             )
+        await self._run_entire_after(workspace, entire, result, effective_timeout)
         return result
 
     def _warn_if_slow(
@@ -584,7 +610,8 @@ class GitService(BaseService):
         try:
             local_ref, remote_ref = push_ref_update(args)
         except UnsupportedOriginCommandError:
-            return None  # the push itself refuses it, with this error
+            # The push itself refuses it, with this error.
+            return None
         update = await self._pre_push_update(workspace, local_ref, remote_ref)
         relay = await self._relay_for_repo(workspace)
         return await run_project_hook(
@@ -594,6 +621,78 @@ class GitService(BaseService):
             timeout=timeout,
             stdin=" ".join(update) + "\n",
         )
+
+    async def _entire_before(self, workspace: Path, args: list[str]) -> _EntireAfter:
+        """For a workspace commit or push in a clone where Entire records the
+        agent's session: ``post-commit`` to run after a commit, or the
+        checkpoint refs of the commits a push is about to send (those on no
+        ``origin/*`` ref yet, by their ``Entire-Checkpoint`` trailers)."""
+        if not args or args[0] not in _HOOKED_VERBS or is_dispatcher_owned(workspace):
+            return _NOTHING_FOR_ENTIRE
+        if not await asyncio.to_thread(records_entire_sessions, workspace):
+            return _NOTHING_FOR_ENTIRE
+        if args[0] == "commit":
+            return _EntireAfter(post_commit=True)
+        try:
+            local_ref, _ = push_ref_update(args)
+        except UnsupportedOriginCommandError:
+            return _NOTHING_FOR_ENTIRE
+        trailer_format = f"--format=%(trailers:key={CHECKPOINT_TRAILER},valueonly)"
+        log = await self._run_git(
+            workspace,
+            ["log", trailer_format, local_ref, "--not", "--remotes=origin"],
+            check=False,
+        )
+        return _EntireAfter(checkpoints=tuple(checkpoint_refs(log.stdout.split())))
+
+    async def _run_entire_after(
+        self,
+        workspace: Path,
+        entire: _EntireAfter,
+        result: subprocess.CompletedProcess[str],
+        timeout: int,
+    ) -> None:
+        """Entire's part once a workspace commit or push went through:
+        ``post-commit`` (the commit's checkpoint), or the push of the pushed
+        commits' checkpoints. Best-effort, like Entire's own hooks."""
+        if result.returncode != 0:
+            return
+        if entire.post_commit:
+            await run_entire_post_commit(workspace, timeout=timeout)
+        elif entire.checkpoints:
+            await self._push_entire_checkpoints(
+                workspace, list(entire.checkpoints), timeout
+            )
+
+    async def _push_entire_checkpoints(
+        self, workspace: Path, refs: list[str], timeout: int
+    ) -> None:
+        """Push those of ``refs`` the workspace has to origin, through the
+        relay, under the same names; a failure is logged, never raised."""
+        listed = await self._run_git(
+            workspace,
+            ["for-each-ref", "--format=%(refname)", "refs/entire/checkpoints/"],
+            check=False,
+        )
+        present = set(listed.stdout.split())
+        refs = [ref for ref in refs if ref in present]
+        if not refs:
+            return
+        ctx = await self._origin_context(workspace, timeout)
+        loop = asyncio.get_running_loop()
+        try:
+            pushed = await loop.run_in_executor(
+                _GIT_EXECUTOR, push_checkpoint_refs, ctx, refs
+            )
+        except (subprocess.TimeoutExpired, UnsupportedOriginCommandError) as exc:
+            self.log.warning("entire checkpoints not pushed", refs=refs, error=str(exc))
+            return
+        if pushed.returncode != 0:
+            self.log.warning(
+                "entire checkpoints not pushed",
+                refs=refs,
+                error=(pushed.stderr or pushed.stdout).strip()[-300:],
+            )
 
     async def _pre_push_update(
         self, workspace: Path, local_ref: str, remote_ref: str
@@ -840,8 +939,10 @@ class GitService(BaseService):
         staged: list[str] = []
         unstaged: list[str] = []
         untracked: list[str] = []
-        min_len = GitService._PORCELAIN_STATUS_WIDTH + 1  # status + separator
-        expected_parts = 2  # split gives [status, path]
+        # Status + separator.
+        min_len = GitService._PORCELAIN_STATUS_WIDTH + 1
+        # split gives [status, path].
+        expected_parts = 2
         for line in lines:
             if not line or len(line) < min_len:
                 continue
@@ -4699,7 +4800,8 @@ class GitService(BaseService):
             new_paths = self._new_codegen_drift_paths(before.stdout, after.stdout)
             if not new_paths:
                 self.log.info("codegen_no_new_drift", task_id=str(task_id))
-                return  # codegen touched nothing beyond pre-existing drift
+                # Codegen touched nothing beyond pre-existing drift.
+                return
             await self._run_git(worktree, ["add", "--", *new_paths])
             message = f"[{str(task_id)[:8]}] regenerate generated artifacts"
             await self._run_git(worktree, ["commit", "-m", message])
@@ -5727,7 +5829,8 @@ class GitService(BaseService):
             check=False,
         )
         if ref_ok.returncode != 0:
-            return None  # branch pruned after merge — nothing to compare
+            # Branch pruned after merge: nothing to compare.
+            return None
         cherry = await self._run_git(
             workspace,
             ["cherry", f"origin/{parent_branch}", child_ref],

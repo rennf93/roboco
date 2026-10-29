@@ -150,7 +150,7 @@ If the orchestrator is pegged at high CPU and nobody can say why, profile it liv
 
 ## Subsystem doctrine (`.claude/rules/`, auto-loaded by path)
 
-- `workspaces-and-git.md`: clone reset on fresh claim, `uv sync --extra dev`, stale-state fixes, forge adapters, protected-branch fail-open vs fail-closed
+- `workspaces-and-git.md`: clone reset on fresh claim, `uv sync --extra dev`, stale-state fixes, forge adapters, protected-branch fail-open vs fail-closed, the workspace trust boundary, Entire's commit hooks
 - `task-lifecycle.md`: PR gate, zero-diff waiver, sequence bar, PM auto-submit, revision findings ledger
 - `gateway-guards.md`: possibilities matrix, collision map, delegation fidelity, budgets, PR labels, rate-limit parking, tool-call budget, spawn-waste metrics
 - `notifications-and-a2a.md`: re-escalation backoff, outbox + savepoint interaction

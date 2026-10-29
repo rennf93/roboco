@@ -752,13 +752,17 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Entire (entire.io) session checkpoints for the fleet. The agent images
     # ship a pinned Entire CLI behind a wrapper that reads this flag at spawn;
-    # off => the wrapper turns every Entire hook into a silent no-op.
+    # off => the wrapper turns every Entire hook into a silent no-op. On, RoboCo
+    # runs Entire's commit hooks for agent commits in the sealed workspace
+    # container (roboco/services/entire_hooks.py).
     entire_enabled: bool = Field(
         default=False,
         description=(
             "Records each agent's Claude Code session with Entire so every "
-            "task commit carries a redacted transcript checkpoint. Off => "
-            "Entire's hooks are no-ops in every agent container."
+            "task commit carries a redacted transcript checkpoint, pushed with "
+            "the branch to the project's own origin (anyone who can read the "
+            "repository can read it). Off => Entire's hooks are no-ops in every "
+            "agent container and RoboCo runs none for their commits."
         ),
     )
 
@@ -2010,6 +2014,16 @@ class Settings(BaseSettings):
             "orchestrator starts over the Docker socket name host paths, so "
             "/data/workspaces/... is translated through it. Empty = the "
             "orchestrator runs on the host itself (local dev)."
+        ),
+    )
+    host_claude_dir: str = Field(
+        default="",
+        description=(
+            "Host path of the ~/.claude every agent container mounts "
+            "(ROBOCO_HOST_CLAUDE_DIR; this orchestrator sees it as its own "
+            "~/.claude). The Entire step mounts one agent's transcript folder "
+            "from it into the throwaway container. Empty = the orchestrator "
+            "runs on the host itself (local dev)."
         ),
     )
     private_data_root: str = Field(

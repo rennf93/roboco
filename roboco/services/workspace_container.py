@@ -16,6 +16,9 @@ here through an ``O_NOFOLLOW`` descriptor walk, and the container compares
 them with its own mount before running anything; a mismatch exits 125, which
 callers already treat as "could not start".
 
+A caller may add one more directory, read-only (``ReadOnlyMount``: the
+Entire step's agent transcript folder), checked the same way.
+
 A container that cannot be started raises ``WorkspaceContainerError``; callers
 skip the step (logged), they never fall back to running the code here.
 """
@@ -51,12 +54,17 @@ _KILL_TIMEOUT_SECONDS = 30.0
 # Grace between the in-container timeout's TERM and its KILL.
 _KILL_GRACE_SECONDS = 10
 
+_OPEN_DIRECTORY_NO_FOLLOW = (
+    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+)
+
 
 def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
     """The container's ``sh -c`` script; the command follows as ``$@``.
 
     It first checks that the mount is the directory identified here
-    (``ROBOCO_WORKSPACE_MOUNT_ID``), else exits 125 without running anything.
+    (``ROBOCO_WORKSPACE_MOUNT_ID``), and so is the read-only extra mount when
+    there is one, else exits 125 without running anything.
     umask 002 keeps every file the command writes group-writable for the
     agent group. VIRTUAL_ENV / UV_PROJECT_ENVIRONMENT are this image's own
     /app/.venv pins: unset, uv resolves the clone's .venv instead. The
@@ -68,6 +76,10 @@ def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
         '[ "$(stat -c %d:%i -- "$ROBOCO_WORKSPACE_MOUNT")" = '
         '"$ROBOCO_WORKSPACE_MOUNT_ID" ] || { echo "the mounted workspace is not '
         f'the expected directory" >&2; exit {_DOCKER_RUN_FAILED}; }}; '
+        '[ -z "$ROBOCO_EXTRA_MOUNT" ] || [ "$(stat -c %d:%i -- '
+        '"$ROBOCO_EXTRA_MOUNT")" = "$ROBOCO_EXTRA_MOUNT_ID" ] || { echo "the '
+        'read-only mount is not the expected directory" >&2; '
+        f"exit {_DOCKER_RUN_FAILED}; }}; "
         'umask 002 && mkdir -p "$HOME" && '
         f"exec timeout -k {_KILL_GRACE_SECONDS} {max(1, int(timeout))} "
         'env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT "$@"'
@@ -81,6 +93,32 @@ _own_image: dict[str, str] = {}
 
 class WorkspaceContainerError(RuntimeError):
     """The throwaway workspace container could not be started."""
+
+
+@dataclass(frozen=True)
+class ReadOnlyMount:
+    """One more directory for the container, read-only at ``target``.
+
+    ``local`` is that directory as seen here, below the trusted ``root``
+    (every component under it is agent-writable, so it is reached by an
+    ``O_NOFOLLOW`` walk); ``host`` is what the Docker daemon binds.
+    """
+
+    root: Path
+    local: Path
+    host: str
+    target: str
+
+
+@dataclass(frozen=True)
+class _Run:
+    """How one throwaway container runs (all but its cwd and command)."""
+
+    timeout: float
+    env: Mapping[str, str]
+    merge_stderr: bool
+    network: str
+    read_only_mount: ReadOnlyMount | None = None
 
 
 @dataclass(frozen=True)
@@ -131,14 +169,37 @@ async def run_in_workspace_container(
     only environment the command gets beyond the image's own. A timeout kills
     the container and reports ``timed_out`` with returncode 124.
     """
+    run = _Run(timeout, env or {}, merge_stderr, settings.workspace_container_network)
+    return await _run_container(cwd, argv, run)
+
+
+async def run_offline_in_workspace_container(
+    cwd: Path,
+    argv: Sequence[str],
+    *,
+    timeout: float,
+    env: Mapping[str, str] | None = None,
+    read_only_mount: ReadOnlyMount | None = None,
+) -> WorkspaceContainerResult:
+    """``run_in_workspace_container`` with no network at all (stdout and
+    stderr merged), plus ``read_only_mount`` when given."""
+    run = _Run(timeout, env or {}, True, "none", read_only_mount)
+    return await _run_container(cwd, argv, run)
+
+
+async def _run_container(
+    cwd: Path, argv: Sequence[str], run: _Run
+) -> WorkspaceContainerResult:
     name = f"roboco-wsx-{uuid4().hex[:12]}"
     mount = clone_root_of(Path(os.path.normpath(cwd)))
     try:
         identity = await asyncio.to_thread(workspace_dir_identity, mount)
     except OSError as exc:
         raise WorkspaceContainerError(f"{mount} cannot be mounted: {exc}") from exc
-    options = _container_options(name, mount, cwd, env or {}, identity)
-    script = _entry_script(timeout, merge_stderr=merge_stderr)
+    options = _container_options(name, mount, cwd, identity, run)
+    if run.read_only_mount is not None:
+        options.extend(await _read_only_mount_options(run.read_only_mount))
+    script = _entry_script(run.timeout, merge_stderr=run.merge_stderr)
     options, env_values = docker_options_without_env_values(options)
     image = await workspace_container_image()
     proc = await asyncio.create_subprocess_exec(
@@ -153,11 +214,11 @@ async def run_in_workspace_container(
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=run.timeout)
     except TimeoutError:
         await _stop_workspace_container(name, proc)
         return WorkspaceContainerResult(
-            _TIMED_OUT, "", f"timed out after {timeout}s", timed_out=True
+            _TIMED_OUT, "", f"timed out after {run.timeout}s", timed_out=True
         )
     except asyncio.CancelledError:
         await _stop_workspace_container(name, proc)
@@ -172,12 +233,44 @@ async def run_in_workspace_container(
     return WorkspaceContainerResult(returncode, out, err)
 
 
+async def _read_only_mount_options(mount: ReadOnlyMount) -> list[str]:
+    try:
+        dev, ino = await asyncio.to_thread(_dir_identity_below, mount.root, mount.local)
+    except (OSError, ValueError) as exc:
+        raise WorkspaceContainerError(
+            f"{mount.local} cannot be mounted: {exc}"
+        ) from exc
+    return [
+        "-v",
+        f"{mount.host}:{mount.target}:ro",
+        "-e",
+        f"ROBOCO_EXTRA_MOUNT={mount.target}",
+        "-e",
+        f"ROBOCO_EXTRA_MOUNT_ID={dev}:{ino}",
+    ]
+
+
+def _dir_identity_below(root: Path, directory: Path) -> tuple[int, int]:
+    """``(st_dev, st_ino)`` of ``directory``, opened one component at a time
+    below ``root`` with ``O_NOFOLLOW`` (a symlink raises ``OSError``)."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for name in directory.relative_to(root).parts:
+            child = os.open(name, _OPEN_DIRECTORY_NO_FOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        st = os.fstat(fd)
+    finally:
+        os.close(fd)
+    return st.st_dev, st.st_ino
+
+
 def _container_options(
     name: str,
     mount: Path,
     cwd: Path,
-    env: Mapping[str, str],
     identity: tuple[int, int],
+    run: _Run,
 ) -> list[str]:
     """The ``docker run`` options (everything before the image)."""
     options = [
@@ -191,7 +284,7 @@ def _container_options(
         "--user",
         f"{settings.agent_uid}:{settings.agent_gid}",
         "--network",
-        settings.workspace_container_network,
+        run.network,
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -217,7 +310,7 @@ def _container_options(
         "--entrypoint",
         "/bin/sh",
     ]
-    for key, value in env.items():
+    for key, value in run.env.items():
         options.extend(["-e", f"{key}={value}"])
     return options
 
