@@ -17,6 +17,21 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | roboco/services/repositories/base.py | BaseRepository: generic CRUD mixin used by IndexedDocumentRepository | 281 |
 | roboco/services/repositories/indexed_document.py | IndexedDocumentRepository: upsert/get/delete_by_source for the indexed_documents tracking table (used by playbook de-index) | 136 |
 | roboco/services/repositories/query_helpers.py | Generic SQLAlchemy query helpers (pagination/status/team/agent/timestamp filters, slug resolution) — not slice-specific | 294 |
+| `roboco/services/rag_index_failures.py` | RAG index dead-letter: persists a failed fire-and-forget index write to `rag_index_failures` (migration 065), counts it for the health route, and reclaims due rows with backoff (delete on success, bump `attempts` on failure); also backfills journal entries that were silently zero-chunked | 422 |
+| `roboco/services/optimal_brain/indexer_worker.py` | Indexer worker: producers call `enqueue_index_request`, the request rides the Redis stream `roboco:stream:index` to the `ROBOCO_ROLE=indexer` process running `run_indexer` (or runs inline when the stream is unavailable); also owns the boot-time RAG reconcile | 485 |
+| `roboco/services/optimal_brain/indexes/code.py` | `CodeIndexPlugin`: boundary-aware code chunking with incremental indexing through a content-hash `FileHashRegistry`; extension, skip-directory and auto-index file caps | 655 |
+| `roboco/services/optimal_brain/indexes/decisions.py` | `DecisionsIndexPlugin`: record an architectural or design decision and check for a similar earlier one; search by scope or agent | 200 |
+| `roboco/services/optimal_brain/indexes/docs.py` | `DocsIndexPlugin`: batch-embedded documentation indexing (the auto-indexed `docs/rag` and `docs/map` corpora) and `flip_task_provenance` for docs written by given tasks | 277 |
+| `roboco/services/optimal_brain/indexes/errors.py` | `ErrorsIndexPlugin`: record an error pattern with its solution and search known solutions | 140 |
+| `roboco/services/optimal_brain/indexes/journals.py` | `JournalsIndexPlugin`: index agent journal entries; search by agent or entry type | 102 |
+| `roboco/services/optimal_brain/indexes/reviews.py` | `ReviewsIndexPlugin`: record code-review comments and fetch past reviews for a file, type or severity | 205 |
+| `roboco/services/optimal_brain/indexes/standards.py` | `StandardsIndexPlugin`: index standards (single entries or parsed markdown files) and return the ones relevant to a domain or to content being validated | 315 |
+| `roboco/services/optimal_brain/mentor.py` | `MentorService` singleton: agent-aware Q&A over the indexes with a per-agent profile and stored conversation history | 904 |
+| `roboco/services/optimal_brain/ollama_embedder.py` | `OllamaEmbedder`: Ollama native-API embeddings with an LRU content-hash cache, retry and rate-limit backoff, and parallel batch embedding | 848 |
+| `roboco/services/optimal_brain/reviewer.py` | `ReviewerService` singleton: automated code-review feedback (categories, severities) recorded into the reviews index | 623 |
+| `roboco/services/optimal_brain/shared_embedder.py` | Process-wide shared embedder singleton (`get_shared_embedder` / `set_shared_embedder` / `close_shared_embedder`) behind an `Embedder` protocol | 176 |
+| `roboco/services/optimal_brain/text_chunker.py` | `TextChunker`: in-house character-window sliding chunker, plus the `Document`, `Chunk` and `Citation` value types the vector store uses | 218 |
+| `roboco/services/optimal_brain/validator.py` | `ValidatorService` singleton: parses standards markdown into rules (`StandardsParser`) and validates an agent action against the relevant ones with an LLM call | 776 |
 
 ## Key Symbols
 
@@ -73,6 +88,13 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | VectorStore.hybrid_search | method | roboco/services/optimal_brain/vector_store.py:417 | pgvector + full-text hybrid retrieval returning Citation rows |
 | IndexedDocumentRepository.delete_by_source | method | roboco/services/repositories/indexed_document.py:111 | Drop the indexed_documents tracking row by (index_type, source_hash); idempotent bool return |
 | IndexedDocumentRepository.upsert_batch | method | roboco/services/repositories/indexed_document.py:24 | Bulk upsert tracking rows keyed by (index_type, source_hash) |
+| `reclaim_due` | function | `roboco/services/rag_index_failures.py:105` | Re-index due dead-letter rows: delete on success, bump on failure |
+| `enqueue_index_request` | function | `roboco/services/optimal_brain/indexer_worker.py:87` | Producer entry point: enqueue an index write, or run it inline when the stream is unavailable |
+| `run_indexer` | function | `roboco/services/optimal_brain/indexer_worker.py:417` | Consume `roboco:stream:index` and own all embedding work |
+| `reconcile_rag_indexes` | function | `roboco/services/optimal_brain/indexer_worker.py:383` | Boot-time RAG reconcile: playbooks, dead-letter reclaim, backfill |
+| `OllamaEmbedder` | class | `roboco/services/optimal_brain/ollama_embedder.py:149` | Embedding generator over Ollama's native API |
+| `get_shared_embedder` | function | `roboco/services/optimal_brain/shared_embedder.py:73` | Get or create the shared embedder instance |
+| `TextChunker` | class | `roboco/services/optimal_brain/text_chunker.py:86` | Character-based sliding-window chunker |
 
 ## Data Flow
 CAPTURE (task completion): TaskService._extract_completion_learnings (task.py:2837) is fire-and-forget on completion. With org_memory_enabled it calls _completion_learnings_for (task.py:2798) which runs MemoryDistiller().distill(LessonInput(...)) against the local LLM (memory_distiller.py) to produce ONE <=120-word lesson, else falls back to the legacy raw-notes _collect_completion_learnings. The lesson goes to LearningPropagationService.record_learning (learning.py:122) -> _index_learning -> OptimalService.record_learning (optimal.py:1061) -> LearningsIndexPlugin.record_learning (learnings.py:124), which embeds via the shared qwen3 embedder and stores chunks in the chunks_learnings pgvector table with metadata {category, agent_role, shareable, ...}. _create_notifications (learning.py:205) opens a separate DB session and creates formal KNOWLEDGE_SHARE notifications for same-scope non-author, non-human agents (CEO/prompter/secretary excluded via _HUMAN_ONLY_ROLES).

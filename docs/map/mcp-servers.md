@@ -289,7 +289,7 @@ CLAUDE.md "MCP servers running per agent container" table lists 5 servers (`robo
 
 - `roboco/mcp/intake_server.py` (roboco-intake) — omitted from the CLAUDE.md table. Mounted by `grok_intake_main` for the grok intake path, not by `_generate_mcp_config`.
 - `roboco/mcp/secretary_server.py` (roboco-secretary) — omitted from the CLAUDE.md table. Mounted by `grok_secretary_main` for the grok secretary path.
-- `roboco/mcp/search_server.py` (roboco-search) — omitted from the CLAUDE.md table. Mounted by `_generate_mcp_config` (orchestrator.py:2915) only when `settings.research_enabled` AND role in `(cell_pm, main_pm, product_owner, head_marketing)`.
+- `roboco/mcp/search_server.py` (roboco-search) — omitted from the CLAUDE.md table. Mounted by `_generate_mcp_config` (`runtime/engines/spawn_config.py:567`, the research branch at :784) only when `settings.research_enabled` AND role in `(cell_pm, main_pm, product_owner, head_marketing)`.
 
 CLAUDE.md "roboco-optimal" row says the server exposes `roboco_ask_mentor`, `roboco_kb_search` only. The actual `optimal_server.py` registers **18** tools (search/rag/stats/index_code/index_docs/tokens_estimate/ask_mentor/search_error/record_error_solution/check_decision/record_decision/get_standards/validate_action/review_code/record_learning/search_learnings/clear_index/reindex_all/index_status/get_proactive_context). Understatement, not contradiction.
 

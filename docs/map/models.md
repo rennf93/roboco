@@ -37,6 +37,7 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `dashboard.py` | `FlagData`/`ReportData`/`TeamHealthData`/`AuditQueueItem`/`CreateFlagParams`/`DashboardStorage` | 96 |
 | `secretary.py` | `DirectiveKind`/`DirectiveStatus` StrEnums + `GATED_KINDS` frozenset | 41 |
 | `README.md` | Architecture doc for the models package | ~419 |
+| `roboco/models/env_branches.py` | Per-project environment ladder helpers: an ordered `list[{name, branch}]` where index 0 is the head (dev trunk PR target) and the last rung is prod (release target); resolves a null ladder to a single rung from `default_branch`, and derives cascade pairs and the promotion chain | 129 |
 
 ## Key Symbols
 
@@ -85,7 +86,7 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `SpawnGitContext` | dataclass | runtime.py:28 | Git context for spawn (project_slug, branch, `task_short_id` for worktree) |
 | `MODEL_MAP` | dict | runtime.py:112 | short-name→full Claude id (opus→claude-opus-5-5, sonnet→claude-sonnet-5-5, haiku→claude-haiku-5-5) |
 | `ROLE_MODEL_MAP` | dict | runtime.py:120 | per-role default tier: developer/qa/documenter/cell_pm/main_pm→sonnet, pr_reviewer/auditor/board/ceo/prompter/secretary→opus. **Haiku retired from every delivery-lifecycle role (#680, 2026-07-24)**: qa/documenter moved haiku→sonnet — haiku can't reliably emit the structured envelopes the lifecycle runs on (`pass_review`'s per-AC `criteria_verified`, `delegate`'s `covers_parent_criteria`, the findings ledger), so a haiku QA/PM claims, gets validation-rejected, idles, respawns, and loops without progress. A structured-verb capability floor (`_below_capability_floor`/`_floor_below_capability`, `roboco/services/llm.py`) additionally upgrades ANY below-floor Anthropic assignment to sonnet at resolution time — from a pin, a plain ROLE row, or a future map edit — so the floor can't be silently reintroduced. Non-Anthropic providers are untouched (an Anthropic-tier floor, not a provider policy). |
-| `ROLE_EFFORT_MAP` | dict | runtime.py | per-role `CLAUDE_CODE_EFFORT_LEVEL` override injected at spawn; **empty/inert by default** (opt-in per role after verifying the level moves usage) |
+| `ROLE_EFFORT_MAP` | dict | runtime.py | per-role reasoning effort passed to Claude Code as `--effort` at spawn (`spawn_launch.py`); maps `cell_pm`, `product_owner`, `head_marketing` and `auditor` to `medium`, every other role keeps the model default |
 | `MODEL_CATALOG` | tuple | llm_catalog.py:67 | Settings-dropdown source of truth; Anthropic entries derived from `MODEL_MAP` |
 | `PermissionLevel` | IntEnum | permissions.py:15 | CEO=0/BOARD=1/MAIN_PM=2/CELL_PM=3/CELL_MEMBER=4/AUDITOR=99 |
 | `COMMUNICATION_MATRIX` | dict | permissions.py:83 | Who can directly communicate with whom (role→role set) |
@@ -107,6 +108,10 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `AgentConfig` | Pydantic model | agents.py:27 | Runtime agent config (distinct from API `Agent`); convenience `provider`/`model` props |
 | `LLMUsage` | dataclass | llm.py:34 | Token accounting incl. cache creation/read |
 | `StreamBuffer` | dataclass | transcription.py:13 | Stream accumulator with flush heuristic |
+| `effective_environments` | function | `roboco/models/env_branches.py:52` | The project's resolved ladder, never empty (falls back to `default_branch`) |
+| `head_branch / prod_branch` | functions | `roboco/models/env_branches.py:69` | The PR target (rung 0) and the release branch (last rung) |
+| `ladder_pairs` | function | `roboco/models/env_branches.py:79` | Adjacent rung pairs, top-down, for the env-sync prod-to-head cascade |
+| `normalize_environments` | function | `roboco/models/env_branches.py:103` | Validate and normalize a ladder before persistence |
 
 ## Data Flow
 
@@ -205,15 +210,15 @@ models/
 
 ## Config Flags
 
-None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci_watch_enabled`, `dep_update_command`, `dep_update_paths`, `sandbox_services` (project.py:142, validated against `VALID_SANDBOX_SERVICES` — sandboxed dev DB/Redis/Mongo, gated by `ROBOCO_SANDBOX_DB_ENABLED` elsewhere) that other layers gate on, and `llm_catalog` carries the "pure Ollama" defaults, but the models package itself reads no env / toggles nothing.) `VALID_SANDBOX_SERVICES` is now derived from the `SANDBOX_ENGINES` registry in `roboco/models/sandbox.py` (was a hardcoded `{"postgres","redis"}` set) — mongo is just another registry entry, no new migration (rides existing 057) and no new feature flag.
+None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci_watch_enabled`, `dep_update_command`, `dep_update_paths`, `sandbox_services` (project.py:269, validated against `VALID_SANDBOX_SERVICES` — sandboxed dev DB/Redis/Mongo, gated by `ROBOCO_SANDBOX_DB_ENABLED` elsewhere) that other layers gate on, and `llm_catalog` carries the "pure Ollama" defaults, but the models package itself reads no env / toggles nothing.) `VALID_SANDBOX_SERVICES` is now derived from the `SANDBOX_ENGINES` registry in `roboco/models/sandbox.py` (was a hardcoded `{"postgres","redis"}` set) — mongo is just another registry entry, no new migration (rides existing 057) and no new feature flag.
 
 ## Gotchas
 
 - `AgentRole` and `Team` are **not defined in `models/base.py`** — they are `identity.Role` / `identity.Team` aliased at base.py:23–24. The comment says "Removed in Phase 4 housekeeping after every consumer is migrated." SQLAlchemy `sa.Enum(AgentRole, name="agentrole")` still works because Python identity is preserved. New code should import from `roboco.foundation.identity` directly.
 - `ProductCellMapping` deliberately overrides `use_enum_values=False` (product.py:22) so `team` stays a real `Team` enum for `is`-checks and the validator's `.value` error — the only model that deviates from `RobocoBase`'s `use_enum_values=True`.
 - `Task` mutations are not done on the model; `task.py:337` directs callers to `TaskService` (`claim`, `start`, `block`, `complete`, …). Same pattern for `Notification`, `Journal`, `WorkSession` — service-owned state.
-- `TaskCreate` has **no silent defaults** for `task_type` / `nature` / `estimated_complexity` (task.py:350 docstring) — mirrors `foundation.policy.task_completeness.TASK_AT_CREATE`. The 2026-05-08 trace of agents omitting `task_type` and deadlocking the lifecycle is the reason.
-- `TaskCreate._exactly_one_target` (task.py:405) enforces exactly one of `project_id` / `product_id` / `cell_projects`. Old callers passing `cell_projects` alongside either of the others now fail.
+- `TaskCreate` has **no silent defaults** for `task_type` / `nature` / `estimated_complexity` (task.py:384 docstring) — mirrors `foundation.policy.task_completeness.TASK_AT_CREATE`. The 2026-05-08 trace of agents omitting `task_type` and deadlocking the lifecycle is the reason.
+- `TaskCreate._exactly_one_target` (task.py:438) enforces exactly one of `project_id` / `product_id` / `cell_projects`. Old callers passing `cell_projects` alongside either of the others now fail.
 - The "one active WorkSession per task" invariant is **not** in the model — it's a DB partial-unique index (migration 047) + service-layer guard. The model alone won't stop you constructing two active `WorkSession`s.
 - `handoff.py` is **RESERVED** (file header, handoff.py:7) — `DocumenterHandoff`/`HandoffStatus` are defined but not wired into the service layer; current flow uses `dev_notes` + `handoff_summary` on `Task`.
 - `a2a.py` has two parallel model families: the **wire/protocol** models (`AgentCard`, `A2ATask`, `A2AMessage`, parts — A2A spec) and the **persistent** models (`A2AConversation`, `A2AChatMessage`, `A2AInboxSummary` — DB storage). `A2AMessage` (wire) ≠ `A2AChatMessage` (stored). `task_status_to_a2a_state` / `a2a_state_to_task_status` bridge RoboCo `TaskStatus` ↔ `A2ATaskState` (lossy — many states collapse to `WORKING`).
@@ -226,7 +231,7 @@ None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci
 ## Drift from CLAUDE.md
 
 - CLAUDE.md "Agent/Role/Team/ModelProvider in agent.py+base.py" — `Role` and `Team` are no longer *defined* in `base.py`; they are aliases to `roboco/foundation/identity.py` (base.py:21–24). The CLAUDE.md note about `ModelProvider` (`ANTHROPIC`/`GROK`/`LOCAL`/`OLLAMA_CLOUD`/`OPENAI` reserved) matches base.py:197–218 exactly.
-- CLAUDE.md lists the `Task` model key fields (`task_type`, `project_id`, `branch_name`, `work_session_id`, `pr_number`, `pr_url`, `docs_complete`, `pr_created`, `commits: list[CommitRef]`) — all present on `Task` (task.py:163–255). CLAUDE.md does **not** mention `cell_projects` (task.py:179) or `batch_id`/`intends_to_touch`/`adds_migration`/`touches_shared` (task.py:225–236), which the MegaTask/sequencing sections elsewhere in CLAUDE.md do cover — so the model is ahead of the "Data Models" prose but consistent with the MegaTask section.
+- CLAUDE.md lists the `Task` model key fields (`task_type`, `project_id`, `branch_name`, `work_session_id`, `pr_number`, `pr_url`, `docs_complete`, `pr_created`, `commits: list[CommitRef]`) — all present on `Task` (task.py:132–380). CLAUDE.md does **not** mention `cell_projects` (task.py:199) or `batch_id`/`intends_to_touch`/`adds_migration`/`touches_shared` (task.py:245–256), which the MegaTask/sequencing sections elsewhere in CLAUDE.md do cover — so the model is ahead of the "Data Models" prose but consistent with the MegaTask section.
 - CLAUDE.md "A task has at most one active WorkSession" — enforced by DB partial-unique index (migration 047) + service layer, not by the `WorkSession` model itself (work_session.py has no such constraint). Consistent with CLAUDE.md's "enforced both at the service layer and by a DB partial-unique index".
 - The slice prompt named `AuditEvent` and `A2AEnvelope` as landmarks; the actual symbols are `AuditEventType` (audit.py:13, no `AuditEvent` class) and there is no `A2AEnvelope` in `a2a.py` (the gateway `Envelope` lives in `services/gateway/`, not here). Listed the real landmarks instead.
 - Otherwise: `TaskStatus` 15-state enum, `TaskType` 6 values, `NotificationType`/`JournalEntryType` all match CLAUDE.md verbatim.
@@ -246,7 +251,7 @@ Range `fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD`, `git log -- roboco/model
 Logic-touching commits:
 
 - **15effce0 / 3aff6e04 — "Chore: 141 Gaps fill-in (#283)" / "Chore: Close gaps (#285)"** (MegaTask per-cell project map + Ollama catalog refresh)
-  - `task.py`: added `cell_projects: list[ProductCellMapping]` field to `Task` (task.py:171), `TaskCreate` (task.py:390), and `TaskCreateRequest` (task.py:482); imported `ProductCellMapping` from `product.py`; renamed `_project_or_product` → `_exactly_one_target` and widened from 2-way (`project_id`/`product_id`) to 3-way (`+ cell_projects`) with `sum(targets) != 1` rejection. Impact: a MegaTask root-subtask can now target an ad-hoc per-cell project map; old callers passing neither target still fail; callers passing `cell_projects` alongside another target now fail (previously silently passed because `cell_projects` didn't exist).
+  - `task.py`: added `cell_projects: list[ProductCellMapping]` field to `Task` (task.py:132), `TaskCreate` (task.py:383), and `TaskCreateRequest` (task.py:490); imported `ProductCellMapping` from `product.py`; renamed `_project_or_product` → `_exactly_one_target` and widened from 2-way (`project_id`/`product_id`) to 3-way (`+ cell_projects`) with `sum(targets) != 1` rejection. Impact: a MegaTask root-subtask can now target an ad-hoc per-cell project map; old callers passing neither target still fail; callers passing `cell_projects` alongside another target now fail (previously silently passed because `cell_projects` didn't exist).
   - `runtime.py`: `SpawnGitContext` gained `task_short_id: str | None = None` (runtime.py:38) — the per-task worktree id the agent must edit in; branchless coordination roots leave it `None`. Impact: additive, backward-compatible.
   - `llm_catalog.py`: `glm-5.1:cloud` → `glm-5.3:cloud` in `MODEL_CATALOG` and `OLLAMA_ROLE_DEFAULTS`; role defaults reshuffled (`developer` minimax-m3 → kimi-k2.7-code, `cell_pm`/`main_pm`/`auditor` kimi-k2.6 → kimi-k2.7-code, `product_owner`/`head_marketing`/`ceo` kimi-k2.6 → glm-5.3, `documenter` glm-5.1 → kimi-k2.7-code); `OLLAMA_DEFAULT_MODEL` minimax-m3 → kimi-k2.7-code. Impact: catalog/UI labels + "pure Ollama" mode defaults only — **persisted `model_assignments` DB rows are not touched** (spawn model = persisted DB row, per the standing memory note), so an existing fleet doesn't silently switch models; only new "pure Ollama" provisioning picks the new defaults.
 

@@ -118,7 +118,7 @@ telegram_inbound.py (TelegramInboundEngine, V2)
 | NotificationDeliveryService.acknowledge / list_for_agent / get_for_recipient_and_mark_read | roboco/services/notification_delivery.py | api/routes/notifications.py ACK + list endpoints |
 | `reescalation_decision` | roboco/foundation/policy/communications.py:123 | Pure due/wait/capped decision for one notification (`now`, `expires_at`, `count`, `last_reescalated_at`, `ReescalationPolicy`) — called by `_maybe_reescalate` before any delivery is attempted |
 | `NotificationDeliveryService._claim_reescalation_slot` | roboco/services/notification_delivery.py:635 | Compare-and-set `UPDATE ... WHERE reescalation_count = :n` claimed BEFORE delivery — two sweep ticks racing the same row can never both deliver; the slot is consumed (count bumped) even on a subsequent delivery failure, so a permanently-broken chain still counts toward the cap instead of looping forever |
-| sweep_expired_notifications | roboco/services/notification_delivery.py:460 | orchestrator periodic loop (orchestrator.py:5780); re-escalates a still-unacked row only when `reescalation_decision` says it's due, not every tick |
+| sweep_expired_notifications | roboco/services/notification_delivery.py:460 | orchestrator periodic sweep (`runtime/engines/sweeps.py:1131`); re-escalates a still-unacked row only when `reescalation_decision` says it's due, not every tick |
 | TelegramInboundEngine.run_cycle | roboco/services/telegram_inbound.py | orchestrator `_telegram_poll_loop` (default off, `telegram_enabled` AND `telegram_inbound_enabled`) |
 
 ## Config Flags

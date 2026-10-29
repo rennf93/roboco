@@ -133,7 +133,7 @@ Identity binding at spawn: agents_config.issue_agent_token(agent_id, role, team)
 
 Injection guard (runtime, per turn): IntakeDriver.send_turn calls detect_injection(text) before sending to the model; on a match it emits an error chunk with refusal_message(reason) and returns without forwarding. The grok one-shot entrypoint runs `python -m roboco.agent_sdk.prompt_guard <text>` and refuses start (exit 1) on a match. The same five patterns run in docker/scripts/user-prompt-hook.sh for non-SDK Claude sessions.
 
-Callers: orchestrator.py:3238 (compose_prompt), orchestrator.py:3265/3299 (conventions_ambient_layer), intake_driver.py:379-382 (detect_injection/refusal_message). Callees from this slice: roboco.foundation.identity (AGENTS/Role/Team/slugs_for_team), roboco.foundation.policy.communications (NOTIFY_SENDER_ROLES), roboco.seeds.initial_data (AGENT_UUIDS/CEO_AGENT_ID), roboco.services.conventions (get_conventions_service), roboco.config.settings, roboco.models.base (NotificationType/Priority).
+Callers: `runtime/engines/spawn_config.py:846` (compose_prompt), `runtime/engines/spawn_config.py:907` (conventions_ambient_layer), intake_driver.py:379-382 (detect_injection/refusal_message). Callees from this slice: roboco.foundation.identity (AGENTS/Role/Team/slugs_for_team), roboco.foundation.policy.communications (NOTIFY_SENDER_ROLES), roboco.seeds.initial_data (AGENT_UUIDS/CEO_AGENT_ID), roboco.services.conventions (get_conventions_service), roboco.config.settings, roboco.models.base (NotificationType/Priority).
 
 ## Mermaid
 ```mermaid
