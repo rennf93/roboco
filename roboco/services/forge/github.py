@@ -24,6 +24,7 @@ their own client. Passing ``client=`` selects the second mode.
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 from typing import TYPE_CHECKING, Any, cast
 
@@ -34,7 +35,7 @@ from roboco.exceptions import GitError
 from roboco.services.forge.base import GitProvider, RepoRef
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 # GitHub REST API version pinned via header on every versioned call — mirrors
 # git.py's prior inline headers exactly.
@@ -43,6 +44,13 @@ _API_VERSION = "2022-11-28"
 _MARK_READY_MUTATION = (
     "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id})"
     " { pullRequest { isDraft } } }"
+)
+# GitHub writes and signs a commit made this way, for an App installation
+# token and a user's token alike; the tree oid comes back so the caller can
+# check the commit holds exactly the content it meant.
+_CREATE_COMMIT_ON_BRANCH_MUTATION = (
+    "mutation($input: CreateCommitOnBranchInput!) {"
+    " createCommitOnBranch(input: $input) { commit { oid tree { oid } } } }"
 )
 _DEFAULT_ACCEPT = "application/vnd.github+json"
 
@@ -278,6 +286,70 @@ class GitHubProvider(GitProvider):
         payload = {"base": base, "head": head, "commit_message": commit_message}
         return await self._send(
             "post", self._repo_url(repo, "merges"), headers=headers, json_body=payload
+        )
+
+    # -- server-side commits -------------------------------------------------
+
+    async def create_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str
+    ) -> httpx.Response:
+        return await self._send(
+            "post",
+            self._repo_url(repo, "git", "refs"),
+            headers=self._headers(token),
+            json_body={"ref": f"refs/heads/{branch}", "sha": sha},
+        )
+
+    async def update_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str, force: bool
+    ) -> httpx.Response:
+        return await self._send(
+            "patch",
+            self._repo_url(repo, "git", "refs", "heads", branch),
+            headers=self._headers(token),
+            json_body={"sha": sha, "force": force},
+        )
+
+    async def create_commit_on_branch(
+        self,
+        repo: RepoRef,
+        token: str,
+        branch: str,
+        *,
+        expected_head_oid: str,
+        headline: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+        timeout: float | None = None,
+    ) -> httpx.Response:
+        """GraphQL ``createCommitOnBranch``. The token's owner is the author
+        and GitHub the committer and signer. A refused mutation is a 200 with
+        an ``errors`` list: callers check both."""
+        file_changes = {
+            "additions": [
+                {"path": path, "contents": base64.b64encode(contents).decode("ascii")}
+                for path, contents in additions.items()
+            ],
+            "deletions": [{"path": path} for path in deletions],
+        }
+        commit_input = {
+            "branch": {
+                "repositoryNameWithOwner": f"{repo.owner}/{repo.repo}",
+                "branchName": branch,
+            },
+            "expectedHeadOid": expected_head_oid,
+            "message": {"headline": headline},
+            "fileChanges": file_changes,
+        }
+        return await self._send(
+            "post",
+            self._graphql_url(),
+            headers=self._headers(token),
+            json_body={
+                "query": _CREATE_COMMIT_ON_BRANCH_MUTATION,
+                "variables": {"input": commit_input},
+            },
+            timeout=timeout,
         )
 
     # -- CI ------------------------------------------------------------------
