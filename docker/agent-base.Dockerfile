@@ -58,15 +58,14 @@ FROM python:3.13-slim-bookworm AS runner
 # gpg does.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# NodeSource's repository signing key (NSolid). The key is fetched over HTTPS
-# and accepted only if it is exactly this one primary key, so a swapped or
-# padded key file fails the build instead of being trusted. NodeSource's
-# setup_22.x script is not used: it would run a remote script as root and
-# trust whatever key it downloads.
-ARG NODESOURCE_KEY_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4
-
 # Runtime deps: Node.js 22 for claude CLI, git for workspace ops, jq for hooks.
 # gnupg is only needed to add the NodeSource repo, purged after install.
+# NodeSource's signing key (NSolid, 6F71F525...) is fetched over HTTPS and
+# accepted only if it is exactly that one primary key, so a swapped or padded
+# key file fails the build instead of being trusted. The fingerprint is written
+# into the check, not taken from a build arg, so a build can't override it.
+# NodeSource's setup_22.x script is not used: it would run a remote script as
+# root and trust whatever key it downloads.
 # build-essential stays at runtime (NOT purged): when toolchain matching is on,
 # uv provisions the agent's workspace against the TARGET project's Python and
 # must be able to compile an sdist for any dependency that ships no wheel for
@@ -81,7 +80,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         'jq=1.6*' \
         'build-essential=12.9*' \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp/nodesource.asc \
-    && [ "$(gpg --show-keys --with-colons /tmp/nodesource.asc | awk -F: '$1=="pub"{n++; getline; f=$10} END{print n":"f}')" = "1:${NODESOURCE_KEY_FPR}" ] \
+    && [ "$(gpg --show-keys --with-colons /tmp/nodesource.asc | awk -F: '$1=="pub"{n++; getline; f=$10} END{print n":"f}')" = "1:6F71F525282841EEDAF851B42F59B5F99B1BE0B4" ] \
     && gpg --dearmor -o /usr/share/keyrings/nodesource.gpg /tmp/nodesource.asc \
     && printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
         > /etc/apt/sources.list.d/nodesource.sources \
