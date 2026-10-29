@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from roboco.config import settings
 from roboco.db.tables import DecisionLogTable, TaskReviewFindingTable, TaskTable
@@ -145,7 +145,7 @@ def single_subject_slug(
     facts: tuple[str, datetime | None],
     decision_at: datetime,
     now: datetime,
-    rot_after: datetime,
+    rot_horizon: datetime,
     slugs: _FateSlugs,
 ) -> str | None:
     """The shared one-task fate rule: at most one fate applies, and a
@@ -162,7 +162,7 @@ def single_subject_slug(
         slugs.stalled,
         status_now in _ACTIVE_UNFINISHED,
         not moved,
-        now >= rot_after,
+        now >= rot_horizon,
     ):
         return slugs.stalled
     return None
@@ -173,7 +173,7 @@ def idle_legitimacy_slug(
     tasks_now: dict[str, tuple[str, datetime | None]],
     decision_at: datetime,
     now: datetime,
-    rot_after: datetime,
+    rot_horizon: datetime,
 ) -> str | None:
     """The owned-task fate rule for idle_legitimacy: EXACTLY one fate
     across all owned tasks labels the row; conflicting or absent fates
@@ -185,7 +185,7 @@ def idle_legitimacy_slug(
         if not task_id or facts is None:
             continue
         fate = _idle_entry_fate(
-            str(entry.get("status") or ""), facts, decision_at, now, rot_after
+            str(entry.get("status") or ""), facts, decision_at, now, rot_horizon
         )
         if fate:
             candidates.add(fate)
@@ -199,7 +199,7 @@ def _idle_entry_fate(
     facts: tuple[str, datetime | None],
     decision_at: datetime,
     now: datetime,
-    rot_after: datetime,
+    rot_horizon: datetime,
 ) -> str | None:
     """One owned task's fate. A wait that ended with work flowing through
     proves legit-wait; unsubmitted work that reached delivery proves
@@ -227,7 +227,7 @@ def _idle_entry_fate(
         OWNED_TASK_ROTTED_AFTER,
         status_now in _ACTIVE_UNFINISHED,
         not moved,
-        now >= rot_after,
+        now >= rot_horizon,
     ):
         return OWNED_TASK_ROTTED_AFTER
     return None
@@ -286,12 +286,12 @@ def _single_subject_outcome(
     facts: tuple[str, datetime | None],
     decision_at: datetime,
     now: datetime,
-    rot_after: datetime,
+    rot_horizon: datetime,
 ) -> str | None:
     rule = _FATE_RULES.get(pilot)
     if rule is None:
         return None
-    return single_subject_slug(facts, decision_at, now, rot_after, rule)
+    return single_subject_slug(facts, decision_at, now, rot_horizon, rule)
 
 
 # ---------------------------------------------------------------------------
@@ -361,19 +361,22 @@ async def run_trajectory_pass(session: Any) -> int:
     number of rows labeled; never raises (callers loop this)."""
     now = datetime.now(UTC)
     grade_after = now - timedelta(hours=settings.decisions_trajectory_grade_after_hours)
-    rot_after = now - timedelta(hours=settings.decisions_trajectory_rot_hours)
+    # The rot horizon is per decision (its created_at + this window): a
+    # stalled/rotted/never-retrieved fate needs that much time to have
+    # passed since THAT decision. Only parking retires rows by a global age.
+    rot_window = timedelta(hours=settings.decisions_trajectory_rot_hours)
     graded = 0
-    graded += await _grade_idle_legitimacy(session, grade_after, rot_after, now)
-    graded += await _grade_single_subject(session, grade_after, rot_after, now)
-    graded += await _grade_findings_mapping(session, grade_after, rot_after, now)
-    graded += await _grade_parking_stale(session, rot_after)
+    graded += await _grade_idle_legitimacy(session, grade_after, rot_window, now)
+    graded += await _grade_single_subject(session, grade_after, rot_window, now)
+    graded += await _grade_findings_mapping(session, grade_after, rot_window, now)
+    graded += await _grade_parking_stale(session, now - rot_window)
     graded += await _grade_triage_history(session, grade_after)
     graded += await _grade_size(session, grade_after)
     graded += await _grade_heal_severity(session, grade_after)
-    graded += await _grade_ci_history(session, grade_after, rot_after)
-    graded += await _grade_stranded(session, grade_after, rot_after, now)
+    graded += await _grade_ci_history(session, grade_after, rot_window, now)
+    graded += await _grade_stranded(session, grade_after, rot_window, now)
     graded += await _grade_collision_edge(session, grade_after)
-    graded += await _grade_memory_links(session, grade_after, rot_after, now)
+    graded += await _grade_memory_links(session, grade_after, rot_window, now)
     # History retention (best-effort): CI readings and retrieval events
     # past their windows stop being useful and stop the tables growing.
     try:
@@ -382,6 +385,7 @@ async def run_trajectory_pass(session: Any) -> int:
         await ci_history.prune(session)
     except Exception as exc:
         logger.debug("ci history prune failed", error=str(exc))
+    await prune_memory_retrieval_log(session)
     return graded
 
 
@@ -394,7 +398,7 @@ async def _label(session: Any, pilot: str, session_id: str, slug: str | None) ->
 
 
 async def _grade_idle_legitimacy(
-    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+    session: Any, grade_after: datetime, rot_window: timedelta, now: datetime
 ) -> int:
     rows = await _unlabeled_rows(session, "idle_legitimacy", grade_after)
     if not rows:
@@ -414,14 +418,14 @@ async def _grade_idle_legitimacy(
             tasks_now,
             row.created_at,
             now,
-            rot_after,
+            row.created_at + rot_window,
         )
         graded += await _label(session, "idle_legitimacy", row.session_id, slug)
     return graded
 
 
 async def _grade_single_subject(
-    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+    session: Any, grade_after: datetime, rot_window: timedelta, now: datetime
 ) -> int:
     graded = 0
     for pilot in _SINGLE_SUBJECT_PILOTS:
@@ -433,7 +437,11 @@ async def _grade_single_subject(
         for row in rows:
             task_id = str(row.session_id).rsplit(":", 1)[-1]
             slug = _single_subject_outcome(
-                pilot, facts.get(task_id, ("", None)), row.created_at, now, rot_after
+                pilot,
+                facts.get(task_id, ("", None)),
+                row.created_at,
+                now,
+                row.created_at + rot_window,
             )
             graded += await _label(session, pilot, row.session_id, slug)
     return graded
@@ -449,7 +457,7 @@ def _finding_fate(
     updated_at: datetime | None,
     decision_at: datetime,
     now: datetime,
-    rot_after: datetime,
+    rot_horizon: datetime,
 ) -> str | None:
     """One finding's fate from its ledger state: verified (or addressed
     after the decision) proves the diff addressed it; still open past the
@@ -464,7 +472,7 @@ def _finding_fate(
     if (
         status_now == "open"
         and not _moved_after(updated_at, decision_at)
-        and now >= rot_after
+        and now >= rot_horizon
     ):
         return "re_raised"
     return None
@@ -486,14 +494,14 @@ def _findings_fates(
     facts: dict[str, tuple[str, datetime | None]],
     decision_at: datetime,
     now: datetime,
-    rot_after: datetime,
+    rot_horizon: datetime,
 ) -> dict[str, str]:
     """{question_key: fate} for one findings_mapping row's state."""
     fates: dict[str, str] = {}
     for idx, finding_id in _finding_refs(state):
         if finding_id not in facts:
             continue
-        fate = _finding_fate(*facts[finding_id], decision_at, now, rot_after)
+        fate = _finding_fate(*facts[finding_id], decision_at, now, rot_horizon)
         if fate:
             fates[f"finding_{idx}"] = fate
     return fates
@@ -511,7 +519,7 @@ def _collect_finding_ids(rows: list[Any]) -> list[Any]:
 
 
 async def _grade_findings_mapping(
-    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+    session: Any, grade_after: datetime, rot_window: timedelta, now: datetime
 ) -> int:
     rows = await _unlabeled_rows(session, "findings_mapping", grade_after)
     if not rows:
@@ -532,7 +540,9 @@ async def _grade_findings_mapping(
         }
     graded = 0
     for row in rows:
-        fates = _findings_fates(row.state, facts, row.created_at, now, rot_after)
+        fates = _findings_fates(
+            row.state, facts, row.created_at, now, row.created_at + rot_window
+        )
         if not fates:
             continue
         graded += await persist.record_question_outcomes(
@@ -544,11 +554,11 @@ async def _grade_findings_mapping(
     return graded
 
 
-async def _grade_parking_stale(session: Any, rot_after: datetime) -> int:
+async def _grade_parking_stale(session: Any, rotted_before: datetime) -> int:
     """Retire parking rows past the rot horizon with no lift evidence:
     ambiguous (the probe path may simply never have stamped), so they get
     the unusable slug and stop being rescanned."""
-    rows = await _unlabeled_rows(session, "parking", rot_after)
+    rows = await _unlabeled_rows(session, "parking", rotted_before)
     graded = 0
     for row in rows:
         graded += await persist.record_outcome(
@@ -925,24 +935,31 @@ def _dep_update_risk_slug(runs: list[Any]) -> str | None:
 
 
 async def _grade_ci_history(
-    session: Any, grade_after: datetime, rot_after: datetime
+    session: Any, grade_after: datetime, rot_window: timedelta, now: datetime
 ) -> int:
     """ci_watch_route urgency + dep_update_risk from persisted run
-    sequences (the reason ci_runs exists)."""
+    sequences (the reason ci_runs exists), each read over its decision's
+    own window (created_at to created_at + the rot window). A clean
+    sequence is negative evidence, so it labels only once that window has
+    closed; a failure or a flake can label as soon as it is seen."""
     from roboco.services import ci_history
 
     graded = 0
     rows = await _unlabeled_rows(session, "ci_watch_route", grade_after)
     for row in rows:
         project = str(row.session_id).rsplit(":", 1)[-1]
-        runs = await ci_history.runs_for(session, project, row.created_at, rot_after)
+        horizon = row.created_at + rot_window
+        runs = await ci_history.runs_for(session, project, row.created_at, horizon)
         slug = _ci_watch_urgency_slug(runs)
         graded += await _label(session, "ci_watch_route", row.session_id, slug)
     rows = await _unlabeled_rows(session, "dep_update_risk", grade_after)
     for row in rows:
         project = str(row.session_id).rsplit(":", 1)[-1]
-        runs = await ci_history.runs_for(session, project, row.created_at, rot_after)
+        horizon = row.created_at + rot_window
+        runs = await ci_history.runs_for(session, project, row.created_at, horizon)
         slug = _dep_update_risk_slug(runs)
+        if slug == outcomes.UPDATE_RAN_CLEAN and now < horizon:
+            continue
         graded += await _label(session, "dep_update_risk", row.session_id, slug)
     return graded
 
@@ -989,7 +1006,7 @@ def _stranded_fate(
     facts: Mapping[str, tuple[str, datetime | None]],
     decision_at: datetime,
     now: datetime,
-    rot_after: datetime,
+    rot_horizon: datetime,
 ) -> str | None:
     """The blocked batch's fate: every matched task cleared = the wait
     was right; every matched task still stuck past the rot horizon (or
@@ -998,7 +1015,7 @@ def _stranded_fate(
     candidates = {
         fate
         for fate in (
-            _stranded_title_fate(facts.get(title), decision_at, now, rot_after)
+            _stranded_title_fate(facts.get(title), decision_at, now, rot_horizon)
             for title in titles
         )
         if fate
@@ -1012,7 +1029,7 @@ def _stranded_title_fate(
     entry: tuple[str, datetime | None] | None,
     decision_at: datetime,
     now: datetime,
-    rot_after: datetime,
+    rot_horizon: datetime,
 ) -> str | None:
     """One blocked task's fate: cleared after the decision proves the
     wait was right; human-cancelled or stuck past the rot horizon proves
@@ -1027,13 +1044,13 @@ def _stranded_title_fate(
         # A human cancelled it: the strand needed exactly the authority
         # the escalate option describes.
         return "still_stranded_past_window"
-    if status_now in _ACTIVE_UNFINISHED and not moved and now >= rot_after:
+    if status_now in _ACTIVE_UNFINISHED and not moved and now >= rot_horizon:
         return "still_stranded_past_window"
     return None
 
 
 async def _grade_stranded(
-    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+    session: Any, grade_after: datetime, rot_window: timedelta, now: datetime
 ) -> int:
     rows = await _unlabeled_rows(session, "stranded_response", grade_after)
     if not rows:
@@ -1057,7 +1074,7 @@ async def _grade_stranded(
             facts,
             row.created_at,
             now,
-            rot_after,
+            row.created_at + rot_window,
         )
         graded += await _label(session, "stranded_response", str(row.session_id), slug)
     return graded
@@ -1293,7 +1310,7 @@ async def link_memory_source(pilot: str, session_id: str, source: str) -> None:
 
 
 async def _grade_distill_links(
-    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+    session: Any, grade_after: datetime, rot_window: timedelta, now: datetime
 ) -> int:
     """memory_distill_gate: a post-decision retrieval of the recorded
     learning proves the persist-worthy claim held; no retrieval by the
@@ -1330,7 +1347,7 @@ async def _grade_distill_links(
         )
         if retrieved.first() is not None:
             fate = "retrieved"
-        elif now >= rot_after:
+        elif now >= row.created_at + rot_window:
             fate = "never_retrieved"
         else:
             continue
@@ -1412,10 +1429,35 @@ async def _grade_vault_links(session: Any, grade_after: datetime) -> int:
     return graded
 
 
+async def prune_memory_retrieval_log(session: Any) -> int:
+    """Delete retrieval events older than decision_log's retention window.
+
+    Their one reader, _grade_distill_links, grades a decision row by a
+    retrieval made after it, and decision rows older than
+    decisions_log_retention_days are pruned, so an older retrieval can no
+    longer grade anything. created_at is stamped when the row is written,
+    never before retrieved_at. Best-effort, in a savepoint: the pass shares
+    its session, and a failed delete must not poison the labels it wrote."""
+    from roboco.db.tables import MemoryRetrievalLogTable
+
+    cutoff = datetime.now(UTC) - timedelta(days=settings.decisions_log_retention_days)
+    try:
+        async with session.begin_nested():
+            result = await session.execute(
+                delete(MemoryRetrievalLogTable).where(
+                    MemoryRetrievalLogTable.created_at < cutoff
+                )
+            )
+        return int(result.rowcount or 0)
+    except Exception as exc:
+        logger.debug("memory retrieval log prune skipped", error=str(exc))
+        return 0
+
+
 async def _grade_memory_links(
-    session: Any, grade_after: datetime, rot_after: datetime, now: datetime
+    session: Any, grade_after: datetime, rot_window: timedelta, now: datetime
 ) -> int:
     """Wave 5 entry: grade both memory-family pilots through their links."""
-    graded = await _grade_distill_links(session, grade_after, rot_after, now)
+    graded = await _grade_distill_links(session, grade_after, rot_window, now)
     graded += await _grade_vault_links(session, grade_after)
     return graded

@@ -169,6 +169,9 @@ async def test_cell_pm_cannot_patch_task_outside_own_team(
         ("team", "frontend"),
         ("assigned_to", str(uuid4())),
     ],
+    # The field names, not the values: a uuid4() id differs per process, so
+    # pytest-xdist workers would collect different test ids and abort.
+    ids=["dev_notes", "team", "assigned_to"],
 )
 @pytest.mark.asyncio
 async def test_cell_pm_cannot_patch_fields_outside_lighter_allowlist(

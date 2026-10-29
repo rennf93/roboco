@@ -6,16 +6,14 @@ completeness property test.
 
 Why Postgres and not SQLite:
     The production schema uses Postgres-only types — `UUID(as_uuid=True)`,
-    `ARRAY(String)`, `ARRAY(UUID(as_uuid=True))` — across many tables. SQLite
-    cannot compile those via `Base.metadata.create_all`, and migration
-    006_gateway_columns adds `acceptance_criteria_status` /
-    `qa_evidence_inspected` as JSON+Boolean columns that the current ORM
-    model in `roboco/db/tables.py` does NOT yet map (a pre-existing layer
-    drift). The honest path is to spin up a real Postgres test database,
-    build the schema via `Base.metadata.create_all` (sidestepping pre-existing
-    alembic drift in 001's enum casing and 008's nonexistent `agents.skills`
-    column), then apply the additive columns from migration 006 manually so
-    the test reads the same DB-level contract that the live services do.
+    `ARRAY(String)`, `ARRAY(UUID(as_uuid=True))`, JSONB, pgvector — across
+    many tables, which SQLite cannot compile. The suite spins up a real
+    Postgres test database and builds the schema with
+    `Base.metadata.create_all`: faster than replaying the migration chain,
+    and free of the rows migrations seed (providers, settings). It is the
+    same schema production runs: `tests/integration/test_migrations_match_models.py`
+    fails CI when `create_all` and `alembic upgrade head` build different
+    columns, defaults, indexes, constraints or enum labels.
 
 Behaviour:
     Tests that request `db_session` or `smoke_test_batch` are skipped at
@@ -37,11 +35,10 @@ Redis isolation:
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import socket
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -239,17 +236,18 @@ async def _test_database_url() -> AsyncIterator[str]:
 
     test_url_async = _build_url(db_name)
 
-    # 2. Enable pgvector extension (some tables created via create_all reference
-    #    it; harmless if already enabled in the cluster).
+    # 2. Enable pgvector up front. No create_all table uses it: the vector
+    #    tables (chunks_*) are created by VectorStore.initialize, which the
+    #    e2e smoke's C3 test runs against this database and which creates the
+    #    extension itself, so a missing pgvector fails there, by name.
     pgvector_engine = create_async_engine(test_url_async, future=True)
     try:
         async with pgvector_engine.begin() as conn:
             try:
                 await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             except Exception:
-                # Dev/sandbox Postgres may lack pgvector; the core schema does
-                # not require it and the e2e smoke suite does not exercise RAG.
-                # Continue so tests can run in lightweight sandboxes.
+                # Dev/sandbox Postgres may lack pgvector. Only C3 needs it, so
+                # continue and let the rest of the suite run.
                 warnings.warn(
                     "pgvector extension unavailable - continuing without it",
                     stacklevel=2,
@@ -257,45 +255,12 @@ async def _test_database_url() -> AsyncIterator[str]:
     finally:
         await pgvector_engine.dispose()
 
-    # 3. Build the schema. We use `Base.metadata.create_all` (NOT alembic
-    #    upgrade head) for two reasons:
-    #
-    #    a. Migration 001 declares the `agentrole` Postgres enum with
-    #       lowercase string values (`"qa"`, `"developer"`, ...), but the
-    #       SQLAlchemy ORM binds `Enum(AgentRole)` to the StrEnum's member
-    #       NAMES (uppercase: `"QA"`, `"DEVELOPER"`, ...) — they're
-    #       mismatched. Production DBs were bootstrapped via `create_all`
-    #       (which generates uppercase enums to match the ORM) and then
-    #       stamped at 001, masking this drift.
-    #
-    #    b. Migration 008 runs `UPDATE agents SET skills = ... WHERE id = ...`
-    #       against an `agents.skills` column that no migration in this chain
-    #       ever creates — another pre-existing drift item.
-    #
-    #    Neither bug is caused by this PR; both block any "fresh alembic
-    #    upgrade head" run today. `create_all` sidesteps both. After
-    #    `create_all` we manually apply the *additive* columns from migration
-    #    006 (`acceptance_criteria_status`, `qa_evidence_inspected`) since
-    #    those are the columns the tracing-completeness contract reads and
-    #    they are NOT yet on the ORM TaskTable.
+    # 3. Build the schema with `create_all` (see the module docstring for why
+    #    not `alembic upgrade head`, and for the test that keeps the two equal).
     schema_engine = create_async_engine(test_url_async, future=True)
     try:
         async with schema_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            await conn.execute(
-                text(
-                    "ALTER TABLE tasks "
-                    "ADD COLUMN IF NOT EXISTS acceptance_criteria_status "
-                    "JSON NOT NULL DEFAULT '[]'::json"
-                )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE tasks "
-                    "ADD COLUMN IF NOT EXISTS qa_evidence_inspected "
-                    "BOOLEAN NOT NULL DEFAULT FALSE"
-                )
-            )
     finally:
         await schema_engine.dispose()
 
@@ -383,9 +348,8 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
             - dev: TASK_REFLECTION
             - qa:  LEARNING
             - pm:  DECISION_LOG
-        * Raw-SQL UPDATE on `tasks.acceptance_criteria_status` and
-          `tasks.qa_evidence_inspected` (these columns exist in the migrated DB
-          but are NOT mapped on the ORM TaskTable — pre-existing drift).
+        * `tasks.acceptance_criteria_status` (one artifact per criterion) and
+          `tasks.qa_evidence_inspected` set on the task.
     """
     # 1. Creator-of-record system agent (FK target for project.created_by etc.).
     system_agent = AgentTable(
@@ -467,6 +431,7 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
         "API endpoint returns 200 for the happy path",
         "Failure mode returns structured error envelope",
     ]
+    artifact_id = str(uuid4())
     task = TaskTable(
         id=uuid4(),
         title="Add /api/v1/example endpoint",
@@ -501,27 +466,14 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
         ),
         self_verified=True,
         qa_verified=True,
+        acceptance_criteria_status=[
+            {"criterion": criterion, "referencing_artifact_id": artifact_id}
+            for criterion in criteria
+        ],
+        qa_evidence_inspected=True,
     )
     db_session.add(task)
     await db_session.flush()
-
-    # 4b. Migration-only columns the ORM doesn't map: acceptance_criteria_status
-    #     + qa_evidence_inspected. Set them via raw SQL so the test asserts the
-    #     real DB-level contract.
-    artifact_id = str(uuid4())
-    status_payload: list[dict[str, Any]] = [
-        {"criterion": criteria[0], "referencing_artifact_id": artifact_id},
-        {"criterion": criteria[1], "referencing_artifact_id": artifact_id},
-    ]
-    await db_session.execute(
-        text(
-            "UPDATE tasks "
-            "SET acceptance_criteria_status = CAST(:status AS json), "
-            "    qa_evidence_inspected = TRUE "
-            "WHERE id = :tid"
-        ),
-        {"status": json.dumps(status_payload), "tid": task.id},
-    )
 
     # 5. Three audit-log rows — one per state transition, ALL with non-null
     #    agent_id targeting this task's id.
