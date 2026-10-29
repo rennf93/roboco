@@ -233,9 +233,11 @@ class _PostgresEngine(SandboxEngine):
         if not features:
             return None
         # Every name is allowlist-validated upstream; safe to interpolate as an
-        # identifier. IF NOT EXISTS so a re-provision of a warm container is a
-        # no-op rather than a not-error-but-noisy notice.
-        stmts = "; ".join(f"CREATE EXTENSION IF NOT EXISTS {f}" for f in features)
+        # identifier. Quoted, because an allowlisted name need not be a bare
+        # identifier: unquoted, uuid-ossp is a syntax error. IF NOT EXISTS so a
+        # re-provision of a warm container is a no-op rather than a
+        # not-error-but-noisy notice.
+        stmts = "; ".join(f'CREATE EXTENSION IF NOT EXISTS "{f}"' for f in features)
         return [
             [
                 "psql",

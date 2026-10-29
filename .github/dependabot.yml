@@ -34,3 +34,14 @@ updates:
         versions: ["16.2.x"]
       - dependency-name: "eslint-config-next"
         versions: ["16.2.x"]
+
+  # Exact versions of the npm CLIs the agent-base and orchestrator images
+  # install globally (each Dockerfile reads its manifest; nothing installs
+  # from these directories). `increase` keeps every pin exact.
+  - package-ecosystem: "npm"
+    directories:
+      - "/docker/npm/agent-base"
+      - "/docker/npm/orchestrator"
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "increase"

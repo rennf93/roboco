@@ -281,6 +281,10 @@ def _container_options(
         name,
         "--label",
         WORKSPACE_CONTAINER_LABEL,
+        # The image's HEALTHCHECK probes the orchestrator's own /health; a
+        # throwaway run serves nothing, and each probe would be one more
+        # process against --pids-limit and --memory below.
+        "--no-healthcheck",
         "--user",
         f"{settings.agent_uid}:{settings.agent_gid}",
         "--network",

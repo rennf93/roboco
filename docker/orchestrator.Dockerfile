@@ -4,6 +4,17 @@
 # Builder stage compiles the Python venv; runner stage is slim Debian with
 # docker-cli (needed to spawn agent containers over the mounted docker socket)
 # and the pre-built venv copied in.
+#
+# apt pins follow agent-base.Dockerfile's scheme: the upstream series bookworm
+# ships for its whole life (never a Debian revision, which every point or
+# security update replaces), the major for the NodeSource and Docker repos,
+# and ca-certificates by suite (bookworm-security), never by version.
+#
+# The image runs as root, deliberately: the orchestrator holds the Docker
+# socket, drops every workspace git command to the git user with setpriv
+# (roboco/services/workspace_git.py; as non-root that drop silently does not
+# happen), repairs workspace group ownership with fchown, and owns the
+# root-only relays under /data/private. See .claude/rules/workspaces-and-git.md.
 # =============================================================================
 
 # Entire CLI pin (stages below). Same pin as agent-base.Dockerfile: version
@@ -16,8 +27,8 @@ ARG ENTIRE_SHA256_ARM64=f08a1b8c6352d3f78076268dc67b0b273d7f62dbab94b15aec028e7b
 FROM python:3.13-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        git \
+        'build-essential=12.9*' \
+        'git=1:2.39.*' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
@@ -87,35 +98,63 @@ RUN case "$TARGETARCH" in \
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner
 
+# pipefail: the signing-key checks below pipe gpg into awk, and must fail when
+# gpg does.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Runtime apt deps: docker-cli (spawn agents), git (workspace ops),
 # make (backstop for projects whose CI commands use make targets), Node.js 22
 # via NodeSource. Debian's distro nodejs is v18, but current pnpm requires
-# Node >=22.13 — installing v18 made `pnpm install` fail in Node/TS workspaces.
+# Node >=22.13 — installing v18 made `pnpm install` fail in Node/TS workspaces
+# (the nodejs pin now refuses it outright). docker-ce-cli stays on the major
+# the NAS daemon runs.
 # libatomic1: the pnpm a project pins via `packageManager` (pnpm 11's
 # @pnpm/exe) is a native binary linked against libatomic.so.1; without it
 # every pnpm command in such a project exits 127.
 # curl/gnupg/lsb-release are only needed to add the repos, then purged.
+# The NodeSource (NSolid, 6F71F525...) and Docker (9DC85822...) signing keys
+# are fetched over HTTPS and each accepted only if it is exactly that one
+# primary key, so a swapped or padded key file fails the build instead of
+# being trusted. The fingerprints are written into the checks, not taken from
+# build args, so a build can't override them. NodeSource's setup_22.x script
+# is not used: it would run a remote script as root and trust whatever key it
+# downloads.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg lsb-release git make libatomic1 \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg \
-        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+        'curl=7.88.*' \
+        ca-certificates/bookworm-security \
+        'gnupg=2.2.*' \
+        'lsb-release=12.0*' \
+        'git=1:2.39.*' \
+        'make=4.3*' \
+        'libatomic1=12.2.*' \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp/nodesource.asc \
+    && [ "$(gpg --show-keys --with-colons /tmp/nodesource.asc | awk -F: '$1=="pub"{n++; getline; f=$10} END{print n":"f}')" = "1:6F71F525282841EEDAF851B42F59B5F99B1BE0B4" ] \
+    && gpg --dearmor -o /usr/share/keyrings/nodesource.gpg /tmp/nodesource.asc \
+    && printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
+        > /etc/apt/sources.list.d/nodesource.sources \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.asc \
+    && [ "$(gpg --show-keys --with-colons /tmp/docker.asc | awk -F: '$1=="pub"{n++; getline; f=$10} END{print n":"f}')" = "1:9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ] \
+    && gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg /tmp/docker.asc \
     && DEBIAN_CODENAME=$(lsb_release -cs) \
     && if [ "$DEBIAN_CODENAME" = "trixie" ]; then DEBIAN_CODENAME="bookworm"; fi \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian ${DEBIAN_CODENAME} stable" \
         > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && apt-get install -y --no-install-recommends 'nodejs=22.*' 'docker-ce-cli=5:29.*' \
     && apt-get purge -y --auto-remove curl gnupg lsb-release \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /tmp/nodesource.asc /tmp/docker.asc /root/.gnupg
 
 # pnpm lets the orchestrator pre-install the frontend/panel cell's workspace
 # deps (`pnpm install`) the same way uv handles Python cells. Without it the
 # dep-install step gracefully skips (WorkspaceService._run_dep_install catches
 # the missing-tool OSError) and the fe-dev re-installs per task. node/npm come
-# from the NodeSource layer above; pnpm matches how agent-dev-fe installs it.
-RUN npm install -g pnpm
+# from the NodeSource layer above. The version lives in
+# docker/npm/orchestrator/package.json, which Dependabot bumps.
+COPY docker/npm/orchestrator/package.json /tmp/npm-pins/package.json
+RUN version="$(node -p "require('/tmp/npm-pins/package.json').dependencies.pnpm")" \
+    && npm install -g "pnpm@${version}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm /tmp/*
 
 WORKDIR /app
 
@@ -179,6 +218,14 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8000
+
+# The api and dispatcher roles both serve GET /health on 8000; this is the
+# probe and the timing their compose services pin. Two runs of this image
+# serve no HTTP and turn it off: the indexer role (`healthcheck: disable` in
+# both compose files) and the throwaway workspace containers
+# (`--no-healthcheck`, roboco/services/workspace_container.py).
+HEALTHCHECK --interval=10s --timeout=5s --start-period=90s --retries=10 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
 
 # Smart dispatcher spawns agents on-demand. Override with --spawn to pre-start.
 ENTRYPOINT ["python", "-m", "roboco.cli"]

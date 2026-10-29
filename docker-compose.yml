@@ -1213,7 +1213,9 @@ services:
   # Indexer - runs ONLY the KB/embedding worker (consumes the RAG index
   # request stream and the periodic RAG update). No docker socket. No
   # healthcheck: the indexer role runs only the Redis-stream worker, never
-  # uvicorn, so there is no HTTP endpoint to probe.
+  # uvicorn, so there is no HTTP endpoint to probe. The image's own
+  # HEALTHCHECK probes the api/dispatcher /health, so each indexer turns it
+  # off (`disable: true`) rather than just leaving it out.
   # ==========================================================================
   indexer-blue:
     image: roboco-orchestrator-blue
@@ -1239,6 +1241,8 @@ services:
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       ROBOCO_ENVIRONMENT: production
+    healthcheck:
+      disable: true
     profiles: ["blue"]
     depends_on:
       orchestrator-blue:
@@ -1268,6 +1272,8 @@ services:
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       ROBOCO_ENVIRONMENT: production
+    healthcheck:
+      disable: true
     profiles: ["green"]
     depends_on:
       orchestrator-green:

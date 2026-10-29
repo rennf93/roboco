@@ -836,9 +836,12 @@ services:
       ROBOCO_ENVIRONMENT: production
     # No healthcheck: the indexer role runs only the Redis-stream worker
     # (roboco/bootstrap.py's _run_indexer_role), never uvicorn, so there is
-    # no HTTP endpoint to probe. Process death is covered by
-    # restart:unless-stopped; scripts/bootstrap.sh waits on running state,
-    # not health.
+    # no HTTP endpoint to probe. The image's own HEALTHCHECK probes the
+    # api/dispatcher /health, so it is turned off here, not just left out.
+    # Process death is covered by restart:unless-stopped;
+    # scripts/bootstrap.sh waits on running state, not health.
+    healthcheck:
+      disable: true
     depends_on:
       orchestrator:
         condition: service_healthy

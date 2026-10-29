@@ -56,6 +56,8 @@ async def test_the_command_runs_unprivileged_with_only_its_clone_mounted(
     image_at = argv.index("roboco-orch@sha")
     options, command = argv[:image_at], argv[image_at + 1 :]
     assert options[:3] == ["docker", "run", "--rm"]
+    # The image's own /health probe never runs in a throwaway container.
+    assert "--no-healthcheck" in options
     assert options[options.index("--user") + 1] == "1000:1000"
     assert options[options.index("--cap-drop") + 1] == "ALL"
     assert options[options.index("--security-opt") + 1] == "no-new-privileges"
