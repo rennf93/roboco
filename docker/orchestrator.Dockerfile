@@ -98,9 +98,17 @@ RUN case "$TARGETARCH" in \
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner
 
-# pipefail: both repo setups below arrive through a pipe, and without it a
-# failed download exited 0 (bash ran on nothing; gpg dearmored nothing).
+# pipefail: the signing-key checks below pipe gpg into awk, and must fail when
+# gpg does.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# The NodeSource (NSolid) and Docker repository signing keys. Each key is
+# fetched over HTTPS and accepted only if it is exactly this one primary key,
+# so a swapped or padded key file fails the build instead of being trusted.
+# NodeSource's setup_22.x script is not used: it would run a remote script as
+# root and trust whatever key it downloads.
+ARG NODESOURCE_KEY_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4
+ARG DOCKER_KEY_FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
 # Runtime apt deps: docker-cli (spawn agents), git (workspace ops),
 # make (backstop for projects whose CI commands use make targets), Node.js 22
@@ -120,18 +128,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         'git=1:2.39.*' \
         'make=4.3*' \
         'libatomic1=12.2.*' \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends 'nodejs=22.*' \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg \
-        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp/nodesource.asc \
+    && [ "$(gpg --show-keys --with-colons /tmp/nodesource.asc | awk -F: '$1=="pub"{n++; getline; f=$10} END{print n":"f}')" = "1:${NODESOURCE_KEY_FPR}" ] \
+    && gpg --dearmor -o /usr/share/keyrings/nodesource.gpg /tmp/nodesource.asc \
+    && printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
+        > /etc/apt/sources.list.d/nodesource.sources \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.asc \
+    && [ "$(gpg --show-keys --with-colons /tmp/docker.asc | awk -F: '$1=="pub"{n++; getline; f=$10} END{print n":"f}')" = "1:${DOCKER_KEY_FPR}" ] \
+    && gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg /tmp/docker.asc \
     && DEBIAN_CODENAME=$(lsb_release -cs) \
     && if [ "$DEBIAN_CODENAME" = "trixie" ]; then DEBIAN_CODENAME="bookworm"; fi \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian ${DEBIAN_CODENAME} stable" \
         > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends 'docker-ce-cli=5:29.*' \
+    && apt-get install -y --no-install-recommends 'nodejs=22.*' 'docker-ce-cli=5:29.*' \
     && apt-get purge -y --auto-remove curl gnupg lsb-release \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /tmp/nodesource.asc /tmp/docker.asc /root/.gnupg
 
 # pnpm lets the orchestrator pre-install the frontend/panel cell's workspace
 # deps (`pnpm install`) the same way uv handles Python cells. Without it the

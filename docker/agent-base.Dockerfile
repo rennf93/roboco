@@ -54,9 +54,16 @@ RUN uv sync --frozen --no-dev \
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner
 
-# pipefail: the NodeSource setup script arrives through a pipe, and without it
-# a failed download ran `bash` on nothing and exited 0.
+# pipefail: the signing-key check below pipes gpg into awk, and must fail when
+# gpg does.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# NodeSource's repository signing key (NSolid). The key is fetched over HTTPS
+# and accepted only if it is exactly this one primary key, so a swapped or
+# padded key file fails the build instead of being trusted. NodeSource's
+# setup_22.x script is not used: it would run a remote script as root and
+# trust whatever key it downloads.
+ARG NODESOURCE_KEY_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4
 
 # Runtime deps: Node.js 22 for claude CLI, git for workspace ops, jq for hooks.
 # gnupg is only needed to add the NodeSource repo, purged after install.
@@ -73,10 +80,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         'gnupg=2.2.*' \
         'jq=1.6*' \
         'build-essential=12.9*' \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp/nodesource.asc \
+    && [ "$(gpg --show-keys --with-colons /tmp/nodesource.asc | awk -F: '$1=="pub"{n++; getline; f=$10} END{print n":"f}')" = "1:${NODESOURCE_KEY_FPR}" ] \
+    && gpg --dearmor -o /usr/share/keyrings/nodesource.gpg /tmp/nodesource.asc \
+    && printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
+        > /etc/apt/sources.list.d/nodesource.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends 'nodejs=22.*' \
     && apt-get purge -y --auto-remove gnupg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /tmp/nodesource.asc /root/.gnupg
 
 # Split from the apt layer above: this churns with every claude-code CLI
 # release, while the OS/node layer above stays stable across those bumps. The
