@@ -12,7 +12,7 @@ from typing import Any, Final, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import ColumnElement, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
@@ -118,6 +118,13 @@ def render_steering_note(
 # excerpt only — the full body remains readable via the existing REST message
 # endpoints, so the live stream doesn't balloon on long A2A bodies.
 _LIVE_VIEW_EXCERPT_CHARS: Final[int] = 240
+
+
+def awaiting_response() -> ColumnElement[bool]:
+    """Messages that still wait for a reply. Written ``= true`` to match
+    ``ix_a2a_msg_pending``'s predicate (migration 001): the planner cannot
+    use that partial index for ``IS TRUE``, which ``.is_(True)`` emits."""
+    return A2AMessageTable.requires_response == true()
 
 
 def _excerpt(text: str, limit: int = _LIVE_VIEW_EXCERPT_CHARS) -> str:
@@ -1982,7 +1989,7 @@ class A2AService:
             .select_from(A2AMessageTable)
             .where(
                 A2AMessageTable.from_agent == agent_slug,
-                A2AMessageTable.requires_response.is_(True),
+                awaiting_response(),
             )
         )
         pending_result = await self.session.execute(pending_query)
@@ -1999,7 +2006,7 @@ class A2AService:
                     A2AConversationTable.agent_b == agent_slug,
                 ),
                 A2AMessageTable.from_agent != agent_slug,
-                A2AMessageTable.requires_response.is_(True),
+                awaiting_response(),
             )
         )
         unanswered_result = await self.session.execute(unanswered_query)

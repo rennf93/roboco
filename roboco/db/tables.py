@@ -110,8 +110,11 @@ class AgentTable(Base):
     status: Mapped[AgentStatus] = mapped_column(
         _str_enum(AgentStatus), nullable=False, default=AgentStatus.OFFLINE
     )
+    # Foreign key named by migration 001, not by the naming convention.
     current_task_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL", name="fk_agents_current_task"),
+        nullable=True,
     )
 
     # Configuration (stored as JSON)
@@ -976,9 +979,10 @@ class WorkSessionTable(Base):
         nullable=False,
         index=True,
     )
+    # Foreign key named by migration 001, not by the naming convention.
     task_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="CASCADE"),
+        ForeignKey("tasks.id", ondelete="CASCADE", name="fk_work_sessions_task"),
         nullable=False,
         index=True,
     )
@@ -1637,11 +1641,13 @@ class A2AMessageTable(Base):
         # Composite indexes for message queries
         Index("ix_a2a_msg_conv_created", "conversation_id", "created_at"),
         Index("ix_a2a_msg_from_created", "from_agent", "created_at"),
-        # Partial index for pending responses
+        # Partial index for pending responses (migration 001). The predicate
+        # is "= true", not "IS TRUE": the planner only uses the index for a
+        # query that filters the same way (see A2AService.get_inbox_summary).
         Index(
             "ix_a2a_msg_pending",
             "conversation_id",
-            postgresql_where=(requires_response.is_(True)),
+            postgresql_where=text("requires_response = true"),
         ),
     )
 
@@ -2104,9 +2110,12 @@ class TokenUsageSnapshotTable(Base):
     id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
+    # Foreign key named by migration 026, not by the naming convention.
     agent_spawn_session_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("agent_spawn_sessions.id", ondelete="CASCADE"),
+        ForeignKey(
+            "agent_spawn_sessions.id", ondelete="CASCADE", name="fk_snapshot_session"
+        ),
         nullable=False,
     )
     snapshotted_at: Mapped[datetime] = mapped_column(
