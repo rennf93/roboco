@@ -9,7 +9,7 @@ name: Decisions sidecar
 # dead-ended the Laya tier - invisible to mocked adapters, caught live.
 #
 # Two jobs, both fail loudly:
-#   live-contract, venv-based: download the llama-b11361 ubuntu release
+#   live-contract, venv-based: download the llama-b11371 ubuntu release
 #     binary, serve the pinned Laya-GGUF through llama-server on 8111, run
 #     the proxy with CLEF_ENABLED=false, drive
 #     tests/integration/test_decisions_sidecar_live.py: /health shows laya
@@ -50,9 +50,10 @@ concurrency:
 env:
   # The llama.cpp pin MUST stay in lockstep with docker/decisions.Dockerfile's
   # LLAMA_CPP_REF arg: the point of this workflow is to test what ships.
-  # b11361 is the first release tag carrying POST /v1/systemone (PR #29818;
-  # b11352 predates the merge), so both pins name it.
-  LLAMA_CPP_REF: b11361
+  # b11361 is the first release tag carrying POST /v1/systemone (PR #29818),
+  # but the clef architecture (PR #29831) is first in b11371, so both pins
+  # name b11371. tests/unit/test_decisions_sidecar_pins.py checks lockstep.
+  LLAMA_CPP_REF: b11371
   # The GGUF pin MUST stay in lockstep with the Dockerfile's LAYA_HF_REVISION
   # arg and the entrypoint's LAYA_GGUF_PATH default.
   LAYA_HF_REVISION: 22265007700297ba9e128297e82540cf28c5d7d4
