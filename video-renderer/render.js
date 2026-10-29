@@ -216,10 +216,12 @@ export async function renderComposition({
         );
       });
       await Promise.race([
-        executeRenderJob(job, compositionDir, outputLocation, (progress) => {
+        // The producer calls back with (job, stageMessage); job.progress
+        // runs 0-100.
+        executeRenderJob(job, compositionDir, outputLocation, (progressJob) => {
           console.log(
             `hyperframes-renderer: ${compositionId}/${orientation} ${Math.round(
-              (progress?.percent ?? 0) * 100,
+              progressJob.progress ?? 0,
             )}%`,
           );
         }),
