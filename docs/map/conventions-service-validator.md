@@ -15,13 +15,13 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `roboco/conventions/runner.py` | `run()` orchestrator: per-file dispatch by suffix, waiver filtering, `ValidatorCouldNotRun` on grammar failure | 107 |
 | `roboco/conventions/findings.py` | `Finding` frozen dataclass + `as_json()` (one JSONL line) | 27 |
 | `roboco/conventions/grammars.py` | Lazy cached tree-sitter parser construction per language; `GrammarUnavailable` | 57 |
-| `roboco/conventions/placement.py` | `check_placement` — map a file to its module, flag forbidden kinds (`no_<kind>s_in_<leaf>`) | 70 |
+| `roboco/conventions/placement.py` | `check_placement` — map a file to its module, flag forbidden kinds (`no_<kind>s_in_<leaf>`); `is_non_source_path` maps a test/docs file (`tests/`, `__tests__/`, `*.test.*`, `*.spec.*`, ...) to no module | 97 |
 | `roboco/conventions/classify_python.py` | Python top-level definition classifier → `model`/`route`/`helper`/`other` | 101 |
 | `roboco/conventions/classify_ts.py` | TypeScript/TSX top-level definition classifier → `model`/`route`/`component`/`other` | 159 |
 | `roboco/conventions/hygiene.py` | `check_hygiene` — inline-comment + lint/type-suppression findings; sanctioned-code allowlist | 139 |
 | `roboco/conventions/modularity.py` | `check_modularity` — cohesion (1 concern/file), thin routes, thin components, god class | 344 |
 | `roboco/conventions/custom.py` | `check_custom` — project regex rules scoped by language with tsx→typescript dialect relation; `unrecognized_rule_languages` surfaces typo language tags | 85 |
-| `roboco/conventions/scan.py` | `derive_from_scan` — infer modules/languages/rules from a repo; `render_yaml`; CLAUDE.md token lifting | 318 |
+| `roboco/conventions/scan.py` | `derive_from_scan` — infer modules/languages/rules from a repo (drops candidate modules under `NON_SOURCE_SEGMENTS`); `render_yaml`; CLAUDE.md token lifting | 321 |
 
 ## Key Symbols
 
@@ -60,8 +60,9 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `Finding` | dataclass | `conventions/findings.py:13` | One violation; `as_json()` → compact JSONL |
 | `get_parser` | fn | `conventions/grammars.py:48` | Cached tree-sitter parser per language |
 | `GrammarUnavailable` | class | `conventions/grammars.py:16` | Raised when a grammar import fails |
-| `check_placement` | fn | `conventions/placement.py:23` | Placement findings for defs in a file's module |
-| `_module_for` | fn | `conventions/placement.py:37` | Most-specific module whose path is a directory prefix |
+| `check_placement` | fn | `conventions/placement.py:40` | Placement findings for defs in a file's module |
+| `is_non_source_path` | fn | `conventions/placement.py:54` | True for a file under a test/docs segment or named `*.test.*` / `*.spec.*`: never placement-enforced |
+| `_module_for` | fn | `conventions/placement.py:62` | Most-specific module whose path is a directory prefix; `None` for a non-source (test/docs) file |
 | `classify_definitions` (py) | fn | `conventions/classify_python.py:32` | Top-level Python defs → `(name, line, kind)` |
 | `classify_definitions` (ts) | fn | `conventions/classify_ts.py:36` | Top-level TS/TSX defs → `(name, line, kind)` |
 | `check_hygiene` | fn | `conventions/hygiene.py:58` | Inline-comment + suppression findings |
@@ -73,10 +74,10 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `unrecognized_rule_languages` | fn | `conventions/custom.py:37` | Return language tags on a `CustomRule` that the validator never reports — flags typos in the conventions file |
 | `check_custom` | fn | `conventions/custom.py:56` | Project regex rule matches scoped by language |
 | `_rule_applies` | fn | `conventions/custom.py:45` | Language scoping with tsx→typescript dialect relation |
-| `derive_from_scan` | fn | `conventions/scan.py:100` | Infer modules/languages/rules/CLAUDE.md-lifted custom rules |
-| `_seed_rules` | fn | `conventions/scan.py:142` | Seed hygiene + placement + modularity rules (stack-scoped) |
-| `_lift_claude_md` | fn | `conventions/scan.py:223` | Lift imperative CLAUDE.md code-spans into warn custom rules |
-| `render_yaml` | fn | `conventions/scan.py:304` | Render a standard to commented YAML (round-trips via parse_yaml) |
+| `derive_from_scan` | fn | `conventions/scan.py:95` | Infer modules/languages/rules/CLAUDE.md-lifted custom rules |
+| `_seed_rules` | fn | `conventions/scan.py:137` | Seed hygiene + placement + modularity rules (stack-scoped) |
+| `_lift_claude_md` | fn | `conventions/scan.py:220` | Lift imperative CLAUDE.md code-spans into warn custom rules |
+| `render_yaml` | fn | `conventions/scan.py:307` | Render a standard to commented YAML (round-trips via parse_yaml) |
 | `DocsService` | class | `services/docs.py:154` | Documentation file management |
 | `DocsService.write_doc` | method | `services/docs.py:159` | Write/update a doc with RAG dedup + repo commit |
 | `DocsService.read_doc` | method | `services/docs.py:468` | Read a doc (role-gated, path-contained) |

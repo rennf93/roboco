@@ -2,10 +2,12 @@
 #
 # This file overlays the auto-derived scan: every consumer (the validator, the
 # per-task constraints, the spawn-time ambient block) reads the merged effective
-# map, so only project-specific divergences need to live here. The scan already
-# excludes tests/ and docs/, maps the backend (roboco/) + frontend (panel/)
-# layers, and defaults misplaced-helper to warn — so this file is mostly a small
-# set of module declarations plus the rule-level policy below.
+# map, so only project-specific divergences need to live here. Test and docs
+# files are never placement-checked (tests/, docs/, the panel's colocated
+# __tests__/ dirs, and *.test.* / *.spec.* files); the scan maps the backend
+# (roboco/) + frontend (panel/) layers and defaults misplaced-helper to warn, so
+# this file is mostly a small set of module declarations plus the rule-level
+# policy below.
 #
 # Posture: BLOCK every boundary the codebase already honors (a model or helper
 # in a route, a route in a service, a model/route in a panel component, a hook
@@ -123,19 +125,6 @@ waivers:
   # and must be deleted in the same change that removes the suppression; a
   # waiver that describes nothing is worse than no waiver, because it keeps
   # silenced debt plausible that no longer exists.
-  - path: panel/src/hooks/__tests__/use-tasks-null-guards.test.tsx
-    rule: no_components_in_hooks
-    reason: >-
-      `wrapper` is a QueryClientProvider test fixture local to this test file,
-      not a production component — the same pattern already used by the
-      pre-existing use-agents.test.tsx / use-observability.test.tsx hook
-      tests colocated under hooks/__tests__/.
-  - path: panel/src/hooks/__tests__/use-verification.test.tsx
-    rule: no_components_in_hooks
-    reason: >-
-      Same root cause as the use-tasks-null-guards.test.tsx waiver directly
-      above: `wrapper` is a QueryClientProvider test fixture local to this
-      test file, not a production component.
   - path: roboco/api/routes/board_programs.py
     rule: no_models_in_routes
     reason: >-

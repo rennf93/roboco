@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import json
 
-from roboco.conventions.placement import Definition, check_placement
+import pytest
+from roboco.conventions.placement import (
+    Definition,
+    check_placement,
+    is_non_source_path,
+)
 from roboco.foundation.policy.conventions.models import (
     ConventionsStandard,
     Module,
@@ -91,3 +96,49 @@ def test_finding_serializes_to_json_line() -> None:
         "message",
         "fix_hint",
     }
+
+
+_HOOKS = ConventionsStandard(
+    modules=[Module(path="panel/src/hooks", purpose="hooks", forbidden=["component"])]
+)
+_COMPONENT_DEFS: list[Definition] = [("wrapper", 3, "component")]
+
+
+def test_component_in_a_real_hooks_module_is_flagged() -> None:
+    findings = check_placement("panel/src/hooks/use-tasks.tsx", _COMPONENT_DEFS, _HOOKS)
+    assert [f.rule for f in findings] == ["no_components_in_hooks"]
+
+
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        "panel/src/hooks/__tests__/use-tasks.test.tsx",
+        "panel/src/hooks/__tests__/test-utils.tsx",
+        "panel/src/hooks/use-tasks.test.tsx",
+        "panel/src/hooks/use-tasks.spec.ts",
+    ],
+)
+def test_component_in_a_colocated_test_file_is_not_flagged(rel_path: str) -> None:
+    # A test colocated inside a source module is treated like one under a
+    # top-level tests/: a QueryClientProvider wrapper is a fixture, not a
+    # misplaced production component.
+    assert check_placement(rel_path, _COMPONENT_DEFS, _HOOKS) == []
+
+
+@pytest.mark.parametrize(
+    ("rel_path", "expected"),
+    [
+        ("panel/src/hooks/__tests__/use-x.test.tsx", True),
+        ("panel/src/test/setup.ts", True),
+        ("tests/unit/test_x.py", True),
+        ("docs/site/page.ts", True),
+        ("panel/src/hooks/use-x.test.tsx", True),
+        ("panel/src/hooks/use-x.spec.tsx", True),
+        ("panel/src/hooks/use-x.tsx", False),
+        ("panel/src/hooks/use-latest-test.ts", False),
+        ("roboco/api/routes/tests_admin.py", False),
+        ("roboco/services/test_runner.py", False),
+    ],
+)
+def test_is_non_source_path(rel_path: str, expected: bool) -> None:
+    assert is_non_source_path(rel_path) is expected
