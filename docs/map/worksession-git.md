@@ -1,6 +1,6 @@
 # RoboCo Slice Map — `worksession-git`
 
-Scope key: `worksession-git` Repo root: `/Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco` Files in scope:
+Scope key: `worksession-git` Repo root: `.` (the repository root) Files in scope:
 - `roboco/services/work_session.py`
 - `roboco/services/git.py`
 - `roboco/templates/git/` (`__init__.py`, `branch.py`, `commit.py`, `constants.py`, `pr_internal.py`, `pr_root.py`)

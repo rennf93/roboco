@@ -1,6 +1,6 @@
 # RoboCo Slice Map — `api-core-websocket`
 
-Slice key: `api-core-websocket` Repo root: `/Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco` Baseline commit: `fd10cc862c2020b3f639cdb686d427b0198a2441` Head: `15effce0` (2026-06-29, "Chore: 141 Gaps fill-in (#283)")
+Slice key: `api-core-websocket` Repo root: `.` (the repository root) Baseline commit: `fd10cc862c2020b3f639cdb686d427b0198a2441` Head: `15effce0` (2026-06-29, "Chore: 141 Gaps fill-in (#283)")
 
 ## Purpose
 

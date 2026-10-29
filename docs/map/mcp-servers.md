@@ -1,6 +1,6 @@
 # RoboCo Slice Map — `mcp-servers`
 
-Scope: `roboco/mcp/` (every server file + `schemas/` + `utils.py`). Repo root: `/Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco`.
+Scope: `roboco/mcp/` (every server file + `schemas/` + `utils.py`). Repo root: `.` (the repository root).
 
 ## Purpose
 

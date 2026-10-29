@@ -1,6 +1,6 @@
 # RoboCo Slice Map — `engine-docs-sync`
 
-Slice key: `engine-docs-sync`. Repo root: `/Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco`. Scope: `roboco/services/docs_sync_engine.py`, the docs-sync touch points in `roboco/services/release_proposal.py` and `roboco/services/task.py`, and the release-version marker in `roboco/foundation/policy/content/markers.py`.
+Slice key: `engine-docs-sync`. Repo root: `.` (the repository root). Scope: `roboco/services/docs_sync_engine.py`, the docs-sync touch points in `roboco/services/release_proposal.py` and `roboco/services/task.py`, and the release-version marker in `roboco/foundation/policy/content/markers.py`.
 
 ## Purpose
 

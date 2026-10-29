@@ -1,6 +1,6 @@
 # RoboCo Slice Map — `support-services`
 
-Slice key: `support-services` Repo root: `/Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco` Scope: `roboco/services/{agent,health,settings,maintenance_pause,toolchain,provider,llm,proactive,transcription,base,exceptions,second_review}.py`, `roboco/events/`, `roboco/seeds/`, `roboco/utils/`
+Slice key: `support-services` Repo root: `.` (the repository root) Scope: `roboco/services/{agent,health,settings,maintenance_pause,toolchain,provider,llm,proactive,transcription,base,exceptions,second_review}.py`, `roboco/events/`, `roboco/seeds/`, `roboco/utils/`
 
 ## Purpose
 
