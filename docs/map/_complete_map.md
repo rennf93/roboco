@@ -5230,13 +5230,13 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `WorkSessionStatus` | StrEnum | work_session.py:17 | active/completed/abandoned |
 | `Project` | Pydantic model | project.py:47 | Git repo config + CI/dep-update/`sandbox_services` opt-ins + `assigned_cell` |
 | `BranchReason` | StrEnum | project.py:18 | feature/bug/chore/docs/hotfix (branch-name prefixes) |
-| `ExtractedMessage` | Pydantic model | message.py:51 | Stored message with embedding, edit_history, mentions, task_id |
+| `ExtractedMessage` | Pydantic model | message.py:44 | Stored message with edit_history, mentions, task_id |
 | `MessageType` | StrEnum | base.py:128 | reasoning/dialogue/decision/action/blocker/technical |
 | `RawStream` | Pydantic model | message.py:32 | Ephemeral WebSocket chunk payload |
 | `Notification` | Pydantic model | notification.py:26 | Formal signal requiring ACK; from/to_agents, acked_by, acked_at |
 | `NotificationType` | StrEnum | base.py:139 | task_assignment/priority_change/blocker_escalation/review_request/…/a2a_request |
 | `Journal` | Pydantic model | journal.py:75 | Agent's personal journal; entries_by_type, latest_summary |
-| `JournalEntry` | Pydantic model | journal.py:25 | Reflection/learning/struggle/decision entry with embedding + `is_private` |
+| `JournalEntry` | Pydantic model | journal.py:25 | Reflection/learning/struggle/decision entry with `is_private` |
 | `JournalEntryType` | StrEnum | base.py:172 | task_reflection/decision_log/learning/struggle/general |
 | `Playbook` | Pydantic model | playbook.py:17 | Curated procedure (draft→approved/archived); `from_attributes` for ORM load |
 | `PlaybookStatus` | StrEnum | base.py:112 | draft/approved/archived |

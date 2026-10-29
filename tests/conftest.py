@@ -236,17 +236,18 @@ async def _test_database_url() -> AsyncIterator[str]:
 
     test_url_async = _build_url(db_name)
 
-    # 2. Enable pgvector extension (some tables created via create_all reference
-    #    it; harmless if already enabled in the cluster).
+    # 2. Enable pgvector up front. No create_all table uses it: the vector
+    #    tables (chunks_*) are created by VectorStore.initialize, which the
+    #    e2e smoke's C3 test runs against this database and which creates the
+    #    extension itself, so a missing pgvector fails there, by name.
     pgvector_engine = create_async_engine(test_url_async, future=True)
     try:
         async with pgvector_engine.begin() as conn:
             try:
                 await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             except Exception:
-                # Dev/sandbox Postgres may lack pgvector; the core schema does
-                # not require it and the e2e smoke suite does not exercise RAG.
-                # Continue so tests can run in lightweight sandboxes.
+                # Dev/sandbox Postgres may lack pgvector. Only C3 needs it, so
+                # continue and let the rest of the suite run.
                 warnings.warn(
                     "pgvector extension unavailable - continuing without it",
                     stacklevel=2,

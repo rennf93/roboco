@@ -441,7 +441,9 @@ async def init_db() -> None:
         return
     engine = get_engine()
     async with engine.begin() as conn:
-        # pgvector must exist before tables that use the vector type
+        # No ORM table uses the vector type; this enables pgvector for the
+        # knowledge base's chunk tables, which VectorStore.initialize creates
+        # on first use.
         try:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             logger.info("pgvector extension enabled")
