@@ -1479,17 +1479,25 @@ class Settings(BaseSettings):
     )
     release_git_name: str = Field(
         default="RoboCo Release Manager",
-        description="Committer identity for the executor's release commit.",
+        description=(
+            "Identity of the release clone's own commits. It reaches the repo "
+            "only on a forge where the release is pushed with git (Gitea, "
+            "GitLab); on GitHub, GitHub's API writes the commits and the "
+            "token's owner (the RoboCo App, or the PAT's user) is the author."
+        ),
     )
     release_git_email: str = Field(
         default="release-manager@roboco.local",
-        description="Committer email for the executor's release commit.",
+        description="Email of the release clone's own commits (see release_git_name).",
     )
     release_sign_commits: bool = Field(
         default=False,
         description=(
-            "Sign the release commit (-S). Off by default: the orchestrator "
-            "container carries no signing key; arm only with a mounted key."
+            "Sign the release clone's commits (-S) with a mounted key. It "
+            "matters only where the release is pushed with git (Gitea, "
+            "GitLab): on GitHub the commits are written and signed by GitHub, "
+            "so leave it off there. Off by default: the orchestrator container "
+            "carries no signing key."
         ),
     )
     release_min_commits: int = Field(
