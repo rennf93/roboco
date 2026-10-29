@@ -39,7 +39,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
 | roboco/api/routes/x.py | X (Twitter) engine — CEO-only: list/approve/reject held draft posts + set/status OAuth 1.0a credentials. |
 | roboco/api/routes/roadmap.py | Board roadmap engine — CEO-only: list open cycles + per-item approve/reject. |
-| roboco/api/routes/maintenance_pause.py | Operator maintenance pause — CEO-only: list every scope's status (with `read_degraded_since`), pause one scope for N hours, resume it. Schemas in `api/schemas/maintenance_pause.py`; `require_ceo` + `to_response` in `api/utils/maintenance_pause.py`. |
+| roboco/api/routes/maintenance_pause.py | Operator maintenance pause, CEO-only (`require_ceo_role`): list every scope's live status (with `read_degraded_since`), pause a scope for N hours (default 4), resume a scope (idempotent). Schemas in `api/schemas/maintenance_pause.py`; `require_ceo` + `to_response` in `api/utils/maintenance_pause.py`. |
 | roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` object, conditionally mounted (`telegram_miniapp_enabled` AND `cloud_auth_enabled`) directly inline in `app.py`'s `create_app()` (not by a helper function in this module or in `utils/telegram.py` — see the 2026-08-08 correction below); validates a Mini App's `initData` and mints the cloud-auth session cookie; the mount also installs its own unconditional `LoginRateLimiter`. |
 | roboco/api/routes/entire.py | Entire trails bridge CEO surface (`require_ceo_role`; schemas in `api/schemas/entire.py`): GET/POST `/entire/credentials` (write-only token, returns `has_token`; empty clears), GET `/entire/trails/status`, POST `/entire/trails/retry`. Mounted with `telegram_router` by `app.py`'s `_mount_bridge_routers` |
 | roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert; `find_seed_user` is the one lookup of that row, shared with `/telegram/webapp-auth`), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
@@ -57,6 +57,22 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/schemas/*.py | Per-domain Pydantic request/response models (one per route file). |
 | roboco/api/schemas/v1/flow.py | All flow-verb request bodies + `StrList` coercion validator. |
 | roboco/api/schemas/v1/do.py | All do-verb request bodies. |
+| `roboco/api/routes/coroner.py` | Coroner Board Program API, CEO-only: list completed postmortems, approve or reject each one's process change |
+| `roboco/api/routes/dogfood.py` | Dogfood Board Program API, CEO-only: list open friction-fix cycles, approve (BACKLOG task) or reject one item |
+| `roboco/api/routes/mirror.py` | Mirror Board Program API, CEO-only: list open messaging-fix cycles, approve (BACKLOG docs task) or reject one item |
+| `roboco/api/routes/periscope.py` | Periscope Board Program API, CEO-only: list filed market briefs, approve (Main-PM root task) or reject one finding |
+| `roboco/api/routes/pest_control.py` | Pest Control Board Program API, CEO-only: list open bug-hunt cycles, approve (BACKLOG task) or reject one item |
+| `roboco/api/routes/releases.py` | Release certificate API, CEO-only: `GET /api/releases/{version}/certificate` (plural prefix, distinct from the `/api/release` held-proposal router) |
+| `roboco/api/routes/scales.py` | Scales Board Program API, CEO-only: list open portfolio-rebalance cycles, approve (executes against the live target task) or reject one item |
+| `roboco/api/routes/sentinel.py` | Sentinel Board Program API, CEO-only: list filed quality reports, approve (Main-PM root task) or reject one drift item |
+| `roboco/api/routes/spackle.py` | Spackle Board Program API, CEO-only: list open gap-fill cycles, approve (BACKLOG task) or reject one item |
+| `roboco/api/routes/v1/flow_devops.py` | DevOps floater intent verbs under `/api/v1/flow/devops` (`require_devops`): the developer verb set plus `claim_gate_review`, `record_devops_review`, `pr_pass`, `pr_fail`; thin handlers over the Choreographer |
+| `roboco/api/auth/backend.py` | Cloud-auth cookie transport and the JWT strategy that binds a `pwd_fp` password-fingerprint claim, so rotating the seeded password invalidates every prior session |
+| `roboco/api/auth/login_limit.py` | `LoginRateLimiter`: per-IP POST rate limit (Redis counter, client IP from `X-Forwarded-For`) over a set of paths, so `/login` and the Telegram `/webapp-auth` get independent buckets |
+| `roboco/api/auth/manager.py` | `UserManager` (the single CEO login user) and the `get_user_db` / `get_user_manager` FastAPI Users dependency chain over the shared request session |
+| `roboco/api/auth/revocation.py` | Redis-backed JWT `jti` revocation set for cloud-auth logout; `is_jti_revoked` fails open on a Redis error |
+| `roboco/api/auth/seed.py` | Idempotent upsert of the single seeded CEO login user at startup; a no-op unless cloud auth is on and both email and password are set |
+| `roboco/api/auth/session.py` | `resolve_session_user`: validate a cloud-auth session cookie and return the CEO user or None; shared by the HTTP dual-path and the WebSocket panel-token gate |
 
 ## Key Endpoints
 
@@ -81,7 +97,10 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET/POST | /api/playbooks, /{id}/{approve,reject,archive} | playbooks.py | agent context (Auditor/CEO) |
 | GET/POST | /api/x/posts, /posts/{id}/{approve,reject}, /credentials | x.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
-| GET/POST/DELETE | /api/maintenance-pause, /maintenance-pause/{scope} | maintenance_pause.py | `require_ceo_role` (agent context) |
+| GET/POST | /api/{pest-control,spackle,scales,dogfood,mirror}/cycles, /cycles/{id}/items/{id}/{approve,reject} | pest_control.py, spackle.py, scales.py, dogfood.py, mirror.py | CEO-only (`_require_ceo`) |
+| GET/POST | /api/periscope/briefs (findings), /api/sentinel/reports (items), /api/coroner/postmortems (process-change), each with `{approve,reject}` | periscope.py, sentinel.py, coroner.py | CEO-only |
+| GET/POST/DELETE | /api/maintenance-pause, /api/maintenance-pause/{scope} | maintenance_pause.py | `require_ceo_role` (agent context) |
+| GET | /api/releases/{version}/certificate | releases.py | CEO-only |
 | GET/POST | /api/telegram/credentials | telegram.py | `require_ceo_role` (agent context) |
 | GET/POST/DELETE | /api/providers/presets, /presets/{id}/apply, /presets/{id} | provider.py | agent context — save/apply/delete a named full routing snapshot (`docs/map/support-services.md`) |
 | GET/PUT/DELETE | /api/github-app/credentials ; GET /installations, /installations/{id}/repos | github_app.py | agent context — App id + private key CRUD, installation/repo listing for the panel's repo picker |
@@ -92,6 +111,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | POST | /api/git/branches/cleanup | git.py | agent context, PM/CEO role-gated like `/rebase`; rate-limit 5/60 — cursor-resumable stale-branch sweep, `GitBranchCleanupRequest`/`Response` (wave 2, open PR #548) |
 | POST | /api/v1/flow/developer/{give_me_work,i_will_work_on,open_pr,i_am_done,unclaim,resume,sync_branch} | flow_dev.py | `require_dev` (role + HMAC) |
 | POST | /api/v1/flow/qa/{claim_review,pass_review,fail_review} | flow_qa.py | `require_qa` |
+| POST | /api/v1/flow/devops/{give_me_work,i_will_work_on,open_pr,i_am_done,unclaim,sync_branch,i_am_idle,claim_gate_review,record_devops_review,pr_pass,pr_fail} | v1/flow_devops.py | `require_devops` |
 | POST | /api/v1/flow/cell_pm/{delegate,submit_up,complete,triage,unblock,reassign} | flow_cell_pm.py | `require_cell_pm` |
 | POST | /api/v1/flow/main_pm/{submit_root,triage_all,escalate_to_ceo,complete} | flow_main_pm.py | `require_main_pm` |
 | POST | /api/v1/flow/pr_reviewer/{claim_pr_review,claim_gate_review,pr_pass,pr_fail,post_pr_review} | flow_pr_reviewer.py | `require_pr_reviewer` |
@@ -105,21 +125,26 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `require_any_authenticated_agent` | dep | v1/_role_dep.py (instance built from `_require_authenticated_agent()`, impl in utils/v1_role_dep.py) | HMAC-verify X-Agent-ID/role/team token; router-level guard on do + a2a. |
 | `require_<role>` (require_dev/qa/...) | dep | v1/_role_dep.py (instances built from `_require_roles`, impl in utils/v1_role_dep.py) | Per-role guard: HMAC + role assertion, applied as router dependency. |
 | `envelope_to_response` | fn | utils/v1_role_dep.py (re-imported into v1/_role_dep.py) | Convert Choreographer `Envelope` to JSON, set status from `envelope.status`. |
-| `_check_agent_auth_token` | fn | api/deps.py:217 | Core HMAC verify; rejects invalid tokens even in dev; required-only in prod. |
-| `require_panel_token` | dep | api/deps.py:251 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
-| `CurrentAgentContext` | dep | api/deps.py:376 | Resolves agent from headers + HMAC, injects `AgentContext`. |
+| `_check_agent_auth_token` | fn | api/deps.py:251 | Core HMAC verify; rejects invalid tokens even in dev; required-only in prod. |
+| `require_panel_token` | dep | api/deps.py:300 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
+| `CurrentAgentContext` | dep | api/deps.py:592 | Resolves agent from headers + HMAC, injects `AgentContext`. |
 | `_require_ceo` | dep | utils/orchestrator.py:35 (re-imported into routes/orchestrator.py, extracted 2026-08-08, finding F-6342aeab) | Router-level CEO-HMAC guard on orchestrator control routes. |
 | `_validated_agent_id` | fn | utils/orchestrator.py:70 (re-imported into routes/orchestrator.py, extracted 2026-08-08, finding F-6342aeab) | Path-injection guard (rejects empty/`.`/`..`/`/`/`\`/NUL) then normalizes via `_resolve_to_slug` — spawn/stop/status/resolve-wait/mark-waiting accept either a DB UUID or a slug and address the runtime container by the resolved slug; an unknown UUID passes through unchanged. |
 | `_build_manual_spawn_prompt` | fn | utils/orchestrator.py:102 (re-imported into routes/orchestrator.py) | Builds the initial prompt for a CEO-triggered manual (panel) spawn — points the agent at the task id/title/status and trusts the gateway envelope's `next`/`remediate` for the actual claim verb. |
 | `_resolve_manual_spawn_prompt` | fn | utils/orchestrator.py:126 (re-imported into routes/orchestrator.py) | Best-effort task-aware prompt for a manual panel spawn; falls back to the raw `ceo_message` unchanged on any lookup failure (bad `task_id`, DB hiccup, missing task) so enrichment never blocks a CEO-requested spawn. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
-| `request_validation_handler` | fn | api/middleware.py:407 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
-| `_scrub_secrets` | fn | api/middleware.py:389 | Deep-redact known secret fields from logged 422 bodies. |
-| `StrList` | type | schemas/v1/flow.py:20 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
-| `Choreographer` | svc | services/gateway/choreographer.py | Composes service intents behind every flow verb. |
-| `ContentActions` | svc | services/gateway/ | Composes do-verb content actions (commit/note/say/...). |
-| `router` (do) | router | v1/do.py:38 | `/api/v1/do` router, `require_any_authenticated_agent` dep. |
-| `router` (flow_dev) | router | v1/flow_dev.py:24 | `/api/v1/flow/developer` router, `require_dev` dep. |
+| `request_validation_handler` | fn | api/middleware.py:493 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
+| `_scrub_secrets` | fn | api/middleware.py:475 | Deep-redact known secret fields from logged 422 bodies. |
+| `StrList` | type | schemas/v1/flow.py:21 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
+| `Choreographer` | svc | services/gateway/choreographer/__init__.py:30 | Composes service intents behind every flow verb: the per-role mixins (board, doc, QA, PR reviewer, PR gate) over the legacy class in `choreographer/_impl.py`. |
+| `ContentActions` | svc | services/gateway/content_actions.py:827 | Composes do-verb content actions (commit/note/dm/...). |
+| `router` (do) | router | v1/do.py:67 | `/api/v1/do` router, `require_any_authenticated_agent` dep. |
+| `router` (flow_dev) | router | v1/flow_dev.py:29 | `/api/v1/flow/developer` router, `require_dev` dep. |
+| `get_release_certificate` | function | `roboco/api/routes/releases.py:23` | Governance certificate for one published release (leading `v` tolerated) |
+| `pause_scope` | function | `roboco/api/routes/maintenance_pause.py:55` | Pause a scope for `hours`, stamping who, when and why |
+| `revoke_jti / is_jti_revoked` | functions | `roboco/api/auth/revocation.py:27` | Revoke a token id for its remaining life; check revocation (fail-open) |
+| `ensure_seed_user` | function | `roboco/api/auth/seed.py:39` | Upsert the seeded CEO login user |
+| `resolve_session_user` | function | `roboco/api/auth/session.py:23` | Session cookie to CEO user, or None |
 
 ## Data Flow
 Request hits nginx (port 3000) -> FastAPI app (`api/app.py`) registers routers under `/api/*` plus `/api/v1/flow/*` and `/api/v1/do/*`. Middleware chain (CorrelationId -> RequestLogging) attaches a correlation ID and logs; exception handlers intercept 422/HTTP/RobocoError/generic. Router-level `Depends` resolves `DbSession` + agent context (HMAC-verified from `X-Agent-*` headers) and, on agent-gateway routes, the role guard. The thin handler pulls a service via `Depends` (TaskService, Choreographer, ContentActions, GitService, OptimalService, ReleaseProposalService...) and returns a typed Pydantic response; flow/do verbs return the Choreographer `Envelope` via `envelope_to_response`. SSE (`EventSourceResponse`) is used for live-chat streams and a2a send-stream.
@@ -240,7 +265,7 @@ roboco/api/
 - `StrList` BeforeValidator is load-bearing: without it the Claude SDK's XML-nested list input crashes `i_will_plan`/`delegate` with 422 (MegaTask memory Bug 3).
 - `orchestrator.py` and `release.py` use two different `_require_ceo` implementations (HMAC header vs `agent.role==CEO` from context) — keep their semantics aligned.
 - WS endpoints live on `/ws/*` (separate router in `websocket.py`), not under `/api`; the bridge subscribes to `StreamEventBus` and forwards per resource-id.
-- `/api/tasks` PATCH is not a single admin surface: `_pm_editor_scope` (tasks.py:256) routes cell_pm/main_pm to a content-only allowlist (`_PM_LIGHTER_UPDATE_FIELDS`: title/description/acceptance_criteria/priority, zero status changes) enforced by `_enforce_pm_lighter_fields` (tasks.py:278), while CEO/Board/Auditor keep the unrestricted admin bypass; a cell_pm editing a task outside its own team 403s before the field check even runs.
+- `/api/tasks` PATCH is not a single admin surface: `_pm_editor_scope` (tasks.py:170) routes cell_pm/main_pm to a content-only allowlist (`_PM_LIGHTER_UPDATE_FIELDS`: title/description/acceptance_criteria/priority, zero status changes) enforced by `_enforce_pm_lighter_fields` (tasks.py:192), while CEO/Board/Auditor keep the unrestricted admin bypass; a cell_pm editing a task outside its own team 403s before the field check even runs.
 - `GET /api/tasks/summary` and `GET /api/secretary/tasks` both call the same `TaskService.search_tasks` (ILIKE title/description + id-prefix) but through different auth (agent-context view-scope vs Secretary-or-CEO role check) and different response shapes (trimmed `TaskSummaryResponse` vs a hand-built dict list) — don't assume one route's pagination/limit semantics apply to the other.
 
 ## Drift from CLAUDE.md

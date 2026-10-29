@@ -5,87 +5,119 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 
 | Path | Role | LOC |
 |---|---|---|
-| docker-compose.yaml | Build-from-source compose: postgres/redis/ollama/ollama-init, 14 agent-*-image builders, orchestrator, panel, nginx, `backup` pg_dump sidecar on the `roboco_data` DB-isolation network; NAS prod env vars + volume mounts, `ROBOCO_OBSIDIAN_VAULT_ENABLED`/`ROBOCO_VAULT_INTAKE_ENABLED` default `true` | 556 |
-| docker-compose.yml | Byte-identical copy of docker-compose.yaml (kept for the canonical name compose picks up by default) | 556 |
-| docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network | 334 |
-| Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 599 |
-| pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 451 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 1022 |
-| roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 39 |
-| roboco/bootstrap.py | Async bootstrap: DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 161 |
-| roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 59 |
-| roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 252 |
-| roboco/exceptions.py | Exception hierarchy (RobocoError base + NotFound/Validation/InvalidState/Permission/Auth/Task/TaskLifecycle/Agent/Notification/Service/Database/Git/MergeConflict/GitCommand/GitTimeout); includes TaskLifecycle transition hints and git-secret scrubbing | 497 |
-| docker/orchestrator.Dockerfile | Multi-stage build: uv venv builder (python:3.13-slim) + `entire` stage (both architectures' Entire CLI tarballs fetched by `ADD --checksum` against the global ENTIRE_* pins, TARGETARCH's unpacked, any other architecture refused) + runner with docker-cli/git/make/node/npm/pnpm/setpriv and the Entire CLI off PATH at /usr/local/lib/entire/entire; apt pinned to bookworm's upstream series (NodeSource/Docker repos to their major, ca-certificates by suite), pnpm version read from docker/npm/orchestrator/package.json (Dependabot-bumped); group `agent` (gid 1000) + user `roboco-git` (uid 1500, gid 1000) that workspace git drops to; root-owned /opt/roboco/git (git-support hooks + workspace.gitconfig); no global safe.directory; runs as root by design (socket, setpriv drop, fchown repair, /data/private relays); HEALTHCHECK GET :8000/health (the indexer role and throwaway workspace containers turn it off); ENTRYPOINT python -m roboco.cli | 221 |
-| docker/agent-base.Dockerfile | Shared agent runtime: uv venv + Node 22 + @anthropic-ai/claude-code (version read from docker/npm/agent-base/package.json, Dependabot-bumped), apt pinned to bookworm's upstream series, Entire CLI (same ENTIRE_* pins as the orchestrator, sha256-checked; real binary off PATH, `entire` on PATH is docker/scripts/entire-wrapper.sh), agent user (explicit uid/gid 1000, USER 1000:1000), hook scripts, safe.directory * (clones are owned by the orchestrator's git user), HEALTHCHECK NONE (task-scoped job the orchestrator supervises; not every runtime serves the SDK /health), ENTRYPOINT umask-exec.sh claude (umask 002 so the git user can edit what the agent writes) | 203 |
+| docker-compose.yaml | Build-from-source compose: postgres/redis/ollama/ollama-init, 14 agent-*-image builders, orchestrator, panel, nginx, `backup` pg_dump sidecar on the `roboco_data` DB-isolation network; NAS prod env vars + volume mounts, `ROBOCO_OBSIDIAN_VAULT_ENABLED`/`ROBOCO_VAULT_INTAKE_ENABLED` default `true` | 1370 |
+| docker-compose.yml | Byte-identical copy of docker-compose.yaml (kept for the canonical name compose picks up by default) | 1370 |
+| docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network | 913 |
+| Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 627 |
+| pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 704 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3266 |
+| roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
+| roboco/bootstrap.py | Async bootstrap: DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 212 |
+| roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 64 |
+| roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 255 |
+| roboco/exceptions.py | Exception hierarchy (RobocoError base + NotFound/Validation/InvalidState/Permission/Auth/Task/TaskLifecycle/Agent/Notification/Service/Database/Git/MergeConflict/GitCommand/GitTimeout); includes TaskLifecycle transition hints and git-secret scrubbing | 432 |
 | docker/npm/agent-base/package.json | Exact version of the npm CLI agent-base installs globally (`@anthropic-ai/claude-code`); the Dockerfile reads it and runs `npm install -g <name>@<version>`, Dependabot bumps it weekly (`.github/dependabot.yml`). Nothing installs from this directory | 9 |
 | docker/npm/orchestrator/package.json | Exact version of the npm CLI the orchestrator image installs globally (`pnpm`); read by orchestrator.Dockerfile, bumped by Dependabot like the agent-base pins | 9 |
-| docker/agent-pm.Dockerfile | PM agent — FROM roboco-agent-base, no extra tools (MCP-only) | 11 |
-| docker/agent-dev-be.Dockerfile | Backend dev — adds postgresql-client + redis-tools on top of base | 18 |
-| docker/agent-dev-fe.Dockerfile | Frontend dev — adds Playwright system deps + pnpm + chromium browser | 37 |
+| docker/orchestrator.Dockerfile | Multi-stage build: uv venv builder (python:3.13-slim) + `entire` stage (both architectures' Entire CLI tarballs fetched by `ADD --checksum` against the global ENTIRE_* pins, TARGETARCH's unpacked, any other architecture refused) + runner with docker-cli/git/make/node/npm/pnpm/setpriv and the Entire CLI off PATH at /usr/local/lib/entire/entire; apt pinned to bookworm's upstream series (NodeSource/Docker repos to their major, ca-certificates by suite), pnpm version read from docker/npm/orchestrator/package.json (Dependabot-bumped); group `agent` (gid 1000) + user `roboco-git` (uid 1500, gid 1000) that workspace git drops to; root-owned /opt/roboco/git (git-support hooks + workspace.gitconfig); no global safe.directory; runs as root by design (socket, setpriv drop, fchown repair, /data/private relays); HEALTHCHECK GET :8000/health (the indexer role and throwaway workspace containers turn it off); ENTRYPOINT python -m roboco.cli | 232 |
+| docker/agent-base.Dockerfile | Shared agent runtime: uv venv + Node 22 + @anthropic-ai/claude-code (version read from docker/npm/agent-base/package.json, Dependabot-bumped), apt pinned to bookworm's upstream series, Entire CLI (same ENTIRE_* pins as the orchestrator, sha256-checked; real binary off PATH, `entire` on PATH is docker/scripts/entire-wrapper.sh), agent user (explicit uid/gid 1000, USER 1000:1000), hook scripts, safe.directory * (clones are owned by the orchestrator's git user), HEALTHCHECK NONE (task-scoped job the orchestrator supervises; not every runtime serves the SDK /health), ENTRYPOINT umask-exec.sh claude (umask 002 so the git user can edit what the agent writes) | 214 |
+| docker/agent-pm.Dockerfile | PM and Board image (main-pm, cell-pm, product-owner, head-marketing, auditor share it) — FROM roboco-agent-base, MCP tools only, plus the same `chromium-headless-shell` + `@playwright/mcp` as agent-qa-fe for the Product Owner's Dogfood walk (mounted only on a `source=board_dogfood` spawn) | 42 |
+| docker/agent-dev-be.Dockerfile | Backend dev — adds postgresql-client + redis-tools on top of base | 17 |
+| docker/agent-dev-fe.Dockerfile | Frontend dev — adds pnpm on top of base (Playwright was dropped by the lean-images change) | 14 |
 | docker/agent-qa-be.Dockerfile | Backend QA — adds postgresql-client on top of base | 18 |
-| docker/agent-qa-fe.Dockerfile | Frontend QA — pnpm + `chromium-headless-shell` (not full chromium, under `/app/.playwright`) + `@playwright/mcp` for browser-based verification, wrapped by `playwright-mcp-entrypoint.sh` | 36 |
-| docker/agent-ux.Dockerfile | UX/UI agent (shared by ux-dev + ux-qa) — FROM base + the same `chromium-headless-shell` + `@playwright/mcp` as agent-qa-fe (role-gated at registration, not image-gated, so ux-dev never sees the MCP server despite sharing the image) | 13 |
-| docker/agent-doc.Dockerfile | Documenter — FROM base, no extra tools | 12 |
-| docker/agent-prompter.Dockerfile | Intake (Prompter) — persistent Claude Agent SDK session, ENTRYPOINT python -m roboco.agent_sdk.intake_main | 17 |
-| docker/agent-secretary.Dockerfile | Secretary — persistent Claude Agent SDK session with gated CEO-authority tools, ENTRYPOINT python -m roboco.agent_sdk.secretary_main | 19 |
-| docker/agent-pr-reviewer.Dockerfile | PR Reviewer — FROM base, keeps claude entrypoint; read-only reviewer dispatched per review task | 16 |
-| docker/agent-grok.Dockerfile | Grok runtime — base + official grok CLI install (NO version pin since 2026-07-28, latest-at-build), ENTRYPOINT grok-cli-agent-entrypoint.sh | 48 |
-| docker/agent-grok-prompter.Dockerfile | Grok intake — FROM grok, ENTRYPOINT python -m roboco.agent_sdk.grok_intake_main, EXPOSE 9000 | 23 |
-| docker/agent-grok-secretary.Dockerfile | Grok secretary — FROM grok, ENTRYPOINT python -m roboco.agent_sdk.grok_secretary_main, EXPOSE 9000 | 23 |
+| docker/agent-qa-fe.Dockerfile | Frontend QA — pnpm + `chromium-headless-shell` (not full chromium, under `/app/.playwright`) + `@playwright/mcp` for browser-based verification, wrapped by `playwright-mcp-entrypoint.sh` | 35 |
+| docker/agent-ux.Dockerfile | UX/UI agent (shared by ux-dev + ux-qa) — FROM base + the same `chromium-headless-shell` + `@playwright/mcp` as agent-qa-fe (role-gated at registration, not image-gated, so ux-dev never sees the MCP server despite sharing the image) | 40 |
+| docker/agent-doc.Dockerfile | Documenter — FROM base, no extra tools | 11 |
+| docker/agent-prompter.Dockerfile | Intake (Prompter) — persistent Claude Agent SDK session, ENTRYPOINT python -m roboco.agent_sdk.intake_main | 16 |
+| docker/agent-secretary.Dockerfile | Secretary — persistent Claude Agent SDK session with gated CEO-authority tools, ENTRYPOINT python -m roboco.agent_sdk.secretary_main | 18 |
+| docker/agent-pr-reviewer.Dockerfile | PR Reviewer — FROM base, keeps claude entrypoint; read-only reviewer dispatched per review task | 15 |
+| docker/agent-grok.Dockerfile | Grok runtime — base + official grok CLI install (NO version pin since 2026-07-28, latest-at-build), ENTRYPOINT grok-cli-agent-entrypoint.sh | 52 |
+| docker/agent-grok-prompter.Dockerfile | Grok intake — FROM grok, ENTRYPOINT python -m roboco.agent_sdk.grok_intake_main, EXPOSE 9000 | 22 |
+| docker/agent-grok-secretary.Dockerfile | Grok secretary — FROM grok, ENTRYPOINT python -m roboco.agent_sdk.grok_secretary_main, EXPOSE 9000 | 22 |
 | docker/agent-kimi.Dockerfile | Kimi (Moonshot) runtime — base + official kimi-code CLI install (NO version pin, latest-at-build, resolved version stamped to /etc/kimi-cli-version), ENTRYPOINT kimi-cli-agent-entrypoint.sh | 71 |
 | docker/panel.Dockerfile | Multi-stage Next.js build (node:22-alpine, pnpm, shamefully-hoist), non-root nextjs:nodejs runtime (USER 1001:1001) serving server.js on :3000, HEALTHCHECK GET /login (the one prerendered page proxy.ts never sends to the backend) | 86 |
-| docker/postgres-pgvector.Dockerfile | Example custom pgvector build (pg17) — currently unused; compose uses pgvector/pgvector:pg16 image directly | 15 |
-| docker/nginx.conf | nginx default.conf template: /health /ready /api/ /ws/ -> orchestrator (with X-Agent-Token header), everything else -> panel | 67 |
-| docker/postgres-init/01-create-extensions.sql | First-init SQL: CREATE EXTENSION IF NOT EXISTS vector + availability check (used by the pgvector image entrypoint) | 17 |
-| docker/scripts/backup-entrypoint.sh | `backup` sidecar's own loop (not a Claude hook): `pg_dump -Fc` on start + every `BACKUP_INTERVAL_SECONDS` (default 24h), `.tmp`-suffix-then-rename, prune to newest `BACKUP_KEEP` (default 14) by mtime; runs on the data-only network; env-gated off-disk mirror step (`ROBOCO_BACKUP_MIRROR_DIR`) after every successful dump | 80 |
-| docker/scripts/playwright-mcp-entrypoint.sh | Wrapper entrypoint for `@playwright/mcp`: points it at the image's own baked `chromium-headless-shell` instead of letting the MCP package download a second browser | 20 |
-| docker/scripts/sdk-startup-hook.sh | Claude SessionStart hook: start SDK server on :9000 with UV_PROJECT_ENVIRONMENT=/app/.venv + --no-sync, reset budget, print briefing/precompact | 58 |
-| docker/scripts/a2a-check-hook.sh | PostToolUse hook: poll SDK /inbox/count and remind the agent of pending A2A messages (always exits 0) | 30 |
-| docker/scripts/bash-guard-hook.sh | PreToolUse Bash guard: deny compound shell git network ops, PR/merge bypass, credential exfil, and uv run --active / uv targeting /app/.venv (exit 2 to deny) | 354 |
-| docker/scripts/post-tool-budget-hook.sh | PostToolUse: per-session budget counter + loop detector via SDK /budget/tool_called; halts on hard cap, denies on loop+halt | 85 |
-| docker/scripts/usage-report-hook.sh | PostToolUse+Stop: fire-and-forget POST /usage/sync with the transcript_path so the SDK parses token usage | 36 |
-| docker/scripts/stop-hook.sh | Stop hook: block ungraceful exits (exit 2 first time, role-specific terminal-verb reminder); auto-substitute after exceeding allowance | 71 |
-| docker/scripts/user-prompt-hook.sh | UserPromptSubmit: prompt-injection guard (deny classic jailbreak patterns, exit 2) + budget nudge | 72 |
-| docker/scripts/pre-compact-hook.sh | PreCompact: snapshot budget + terminal status to /tmp/roboco-precompact-<agent>.md for session resume | 48 |
-| docker/scripts/session-end-hook.sh | SessionEnd: post a reflective journal post-mortem (tool count, halt/loop, last terminal tool) to the SDK | 49 |
-| docker/scripts/fable-{stop-gate,bash-discipline,honesty-nudge,prompt-nudge,precompact}-hook.sh | 5 vendored fable-mode hook scripts (from `opus-fable-playbook` v0.1.3), installed only when `fable_mode_enabled`: Stop/SubagentStop turn-discipline gate, PreToolUse[Bash] read-tool discipline, PostToolUse[Bash] honesty nudge (the one also ported to grok), UserPromptSubmit shape-matched reminder, PreCompact survival-list injection; all fail-open | ~200 |
-| docker/scripts/grok-cli-agent-entrypoint.sh | Grok runtime entrypoint: render ~/.grok/config.toml, prompt-guard, symlink auth.json from RO mount, grok_auth --check (exit 78 on stale), run grok -p streaming-json, capture usage, exit 75 on 429/quota | 112 |
-| docker/scripts/kimi-cli-agent-entrypoint.sh | Kimi runtime entrypoint: symlink credentials/+oauth/ from the shared RW mount, render config.toml/mcp.json/AGENTS.md, prompt-guard, kimi_cli_config --check (exit 78 on missing/expired credential), run kimi -p stream-json, capture wire.jsonl usage, exit 75 on rate-limit/quota sniff | 144 |
-| docker/scripts/kimi-bash-guard-wrapper.sh | Wrapper `command` for kimi's [[hooks]] TOML entry: exports ROBOCO_GUARD_SKIP_GIT=1 then execs bash-guard-hook.sh — a kimi hooks entry has no `env` field (it silently drops the WHOLE hooks section on one), so the wrapper carries what a hook `env` block would elsewhere | 9 |
-| docker/scripts/tests/bash-guard-tests.sh | bash-guard-hook test harness: run_case allow/deny table incl. the new /app venv-protection cases | 7451 |
-| scripts/build_lifecycle_artifacts.py | Deterministic regeneration of lifecycle artifacts (intent-verbs.md, status-transitions.md, panel/lib/lifecycle.json, per-role prompt fragments) from foundation.policy.lifecycle | 57 |
-| scripts/regenerate_verb_tables.py | Regenerate agents/prompts/_generated/verbs.md + per-role verb tables from role_config ROLE_CONFIGS + Pydantic flow/do schemas (skips driver-based prompter/secretary) | 233 |
-| scripts/verify_postgres_enums.py | Foundation drift gate: compare postgres agentrole/team enum labels to foundation identity; exit 0 on match/skip(unreachable or unmigrated), 1 on drift | 127 |
-| scripts/reflow_md.py | Reflow hard-wrapped markdown prose to one line per paragraph (token-invariant safety check); --apply / --check modes for the CI gate | 214 |
-| scripts/reset_runtime_state.sh | Host/container smoke-test reset: stop agent containers, run reset_runtime_state.sql, FLUSH Redis, optional FULL_RESET data wipe, per-workspace git hard-reset + stray-branch prune | 263 |
-| scripts/bootstrap.sh | `make quickstart` entrypoint: idempotent one-command bring-up for the registry compose — copies `.env.example` to `.env` on first run (never touches a reused `.env`), injects the three required secrets via documented one-liners (the panel token via the exact `issue_panel_token` HMAC formula) with a standing-credential warning (louder if cloud auth is detected), pre-validates the three required vars with pointed remedies before `docker compose ... up -d` (compose's own `:?` guard on an empty token is an opaque interpolation error otherwise), then runs a doctor-style readiness sweep (root `/health`, `/api/auth/status` through nginx, the verbatim "Alembic upgrade finished" log line, `ollama list`), each stage failing loud with the exact next command | 258 |
-| scripts/reset_runtime_state.sql | Transactional DELETE of runtime tables (tasks/.../a2a_*) preserving agents/projects/alembic_version; resets agents.metrics | 159 |
+| docker/postgres-pgvector.Dockerfile | Example custom pgvector build (pg17) — currently unused; compose uses pgvector/pgvector:pg16 image directly | 14 |
+| deploy/nginx.conf | nginx default.conf template (moved from `docker/` with the NAS blue-green deploy): the colour-suffixed upstreams come from the `front/active-upstreams.conf` include and resolve per request through Docker's DNS; /health /ready /api/ /ws/ -> the active orchestrator (with X-Agent-Token header), /api/orchestrator/ and /api/{secretary,prompter}/live/ -> the active dispatcher, a deny-list for scanner paths, everything else -> the active panel | 151 |
+| docker/postgres-init/01-create-extensions.sql | First-init SQL: CREATE EXTENSION IF NOT EXISTS vector + availability check (used by the pgvector image entrypoint) | 16 |
+| docker/scripts/entrypoints/backup-entrypoint.sh | `backup` sidecar's own loop (not a Claude hook): `pg_dump -Fc` on start + every `BACKUP_INTERVAL_SECONDS` (default 24h), `.tmp`-suffix-then-rename, prune to newest `BACKUP_KEEP` (default 14) by mtime; runs on the data-only network; env-gated off-disk mirror step (`ROBOCO_BACKUP_MIRROR_DIR`) after every successful dump | 80 |
+| docker/scripts/entrypoints/playwright-mcp-entrypoint.sh | Wrapper entrypoint for `@playwright/mcp`: points it at the image's own baked `chromium-headless-shell` instead of letting the MCP package download a second browser | 20 |
+| docker/scripts/hooks/sdk-startup-hook.sh | Claude SessionStart hook: start SDK server on :9000 with UV_PROJECT_ENVIRONMENT=/app/.venv + --no-sync, reset budget, print briefing/precompact | 61 |
+| docker/scripts/hooks/a2a-check-hook.sh | Retired PostToolUse hook, kept registered as a non-blocking no-op (always exits 0): the SDK /inbox/count endpoint it polled was deleted; A2A is pull-only through read_a2a | 15 |
+| docker/scripts/hooks/bash-guard-hook.sh | PreToolUse Bash guard: deny compound shell git network ops, PR/merge bypass, credential exfil, and uv run --active / uv targeting /app/.venv (exit 2 to deny) | 410 |
+| docker/scripts/hooks/post-tool-budget-hook.sh | PostToolUse: per-session budget counter + loop detector via SDK /budget/tool_called; halts on hard cap, denies on loop+halt | 84 |
+| docker/scripts/hooks/usage-report-hook.sh | PostToolUse+Stop: fire-and-forget POST /usage/sync with the transcript_path so the SDK parses token usage | 35 |
+| docker/scripts/hooks/stop-hook.sh | Stop hook: block ungraceful exits (exit 2 first time, role-specific terminal-verb reminder); auto-substitute after exceeding allowance | 70 |
+| docker/scripts/hooks/user-prompt-hook.sh | UserPromptSubmit: prompt-injection guard (deny classic jailbreak patterns, exit 2) + budget nudge | 71 |
+| docker/scripts/hooks/pre-compact-hook.sh | PreCompact: snapshot budget + terminal status to /tmp/roboco-precompact-<agent>.md for session resume | 47 |
+| docker/scripts/hooks/session-end-hook.sh | SessionEnd: post a reflective journal post-mortem (tool count, halt/loop, last terminal tool) to the SDK | 48 |
+| docker/scripts/hooks/fable-{stop-gate,bash-discipline,honesty-nudge,prompt-nudge,precompact}-hook.sh | 5 vendored fable-mode hook scripts (from `opus-fable-playbook` v0.1.3), installed only when `fable_mode_enabled`: Stop/SubagentStop turn-discipline gate, PreToolUse[Bash] read-tool discipline, PostToolUse[Bash] honesty nudge (the one also ported to grok), UserPromptSubmit shape-matched reminder, PreCompact survival-list injection; all fail-open | ~200 |
+| docker/scripts/entrypoints/grok-cli-agent-entrypoint.sh | Grok runtime entrypoint: render ~/.grok/config.toml, prompt-guard, symlink auth.json from RO mount, grok_auth --check (exit 78 on stale), run grok -p streaming-json, capture usage, exit 75 on 429/quota | 114 |
+| docker/scripts/entrypoints/kimi-cli-agent-entrypoint.sh | Kimi runtime entrypoint: symlink credentials/+oauth/ from the shared RW mount, render config.toml/mcp.json/AGENTS.md, prompt-guard, kimi_cli_config --check (exit 78 on missing/expired credential), run kimi -p stream-json, capture wire.jsonl usage, exit 75 on rate-limit/quota sniff | 147 |
+| docker/scripts/hooks/kimi-bash-guard-wrapper.sh | Wrapper `command` for kimi's [[hooks]] TOML entry: exports ROBOCO_GUARD_SKIP_GIT=1 then execs bash-guard-hook.sh — a kimi hooks entry has no `env` field (it silently drops the WHOLE hooks section on one), so the wrapper carries what a hook `env` block would elsewhere | 9 |
+| docker/scripts/hooks/tests/bash-guard-tests.sh | bash-guard-hook test harness: run_case allow/deny table incl. the new /app venv-protection cases | 188 |
+| scripts/build_lifecycle_artifacts.py | Deterministic regeneration of lifecycle artifacts (intent-verbs.md, status-transitions.md, panel/lib/lifecycle.json, per-role prompt fragments) from foundation.policy.lifecycle | 56 |
+| scripts/regenerate_verb_tables.py | Regenerate agents/prompts/_generated/verbs.md + per-role verb tables from role_config ROLE_CONFIGS + Pydantic flow/do schemas (skips driver-based prompter/secretary) | 238 |
+| scripts/verify_postgres_enums.py | Foundation drift gate: compare postgres agentrole/team enum labels to foundation identity; exit 0 on match/skip(unreachable or unmigrated), 1 on drift | 126 |
+| scripts/reflow_md.py | Reflow hard-wrapped markdown prose to one line per paragraph (token-invariant safety check); --apply / --check modes for the CI gate | 238 |
+| scripts/verify_codebase_map.py | docs/map reference gate: every path and symbol a map table names must exist (exit 1 otherwise); line-number, LOC and Alembic-range drift are warnings that --fix rewrites; risk/change rows only get suggestions | 1225 |
+| scripts/rebuild_map_concat.py | Rebuild docs/map/_complete_map.md from _front.md + the slices in a fixed order; --check exits 1 when the committed concat is behind | 104 |
+| scripts/reset_runtime_state.sh | Host/container smoke-test reset: stop agent containers, run reset_runtime_state.sql, FLUSH Redis, optional FULL_RESET data wipe, per-workspace git hard-reset + stray-branch prune | 262 |
+| scripts/bootstrap.sh | `make quickstart` entrypoint: idempotent one-command bring-up for the registry compose — copies `.env.example` to `.env` on first run (never touches a reused `.env`), injects the three required secrets via documented one-liners (the panel token via the exact `issue_panel_token` HMAC formula) with a standing-credential warning (louder if cloud auth is detected), pre-validates the three required vars with pointed remedies before `docker compose ... up -d` (compose's own `:?` guard on an empty token is an opaque interpolation error otherwise), then runs a doctor-style readiness sweep (root `/health`, `/api/auth/status` through nginx, the verbatim "Alembic upgrade finished" log line, `ollama list`), each stage failing loud with the exact next command | 333 |
+| scripts/reset_runtime_state.sql | Transactional DELETE of runtime tables (tasks/.../a2a_*) preserving agents/projects/alembic_version; resets agents.metrics | 126 |
+| `docker/agent-codex.Dockerfile` | Codex agent image: OpenAI's `codex` CLI on `roboco-agent-base`, authenticated by a ChatGPT subscription via a mounted `~/.codex/auth.json` | 52 |
+| `docker/agent-codex-live.Dockerfile` | codex live-chat image: the persistent intake/secretary session (`POST /turn` on :9000, one headless CLI run per turn) on top of the one-shot codex image; auth from the same `~/.codex` mount | 22 |
+| `docker/agent-gemini.Dockerfile` | Gemini agent image: Google's `gemini` CLI on `roboco-agent-base`, authenticated by an OAuth login via a mounted `~/.gemini/oauth_creds.json` | 50 |
+| `docker/agent-gemini-live.Dockerfile` | gemini live-chat image: the persistent intake/secretary session (`POST /turn` on :9000, one headless CLI run per turn) on top of the one-shot gemini image; auth from the same `~/.gemini` mount | 22 |
+| `docker/agent-hummin.Dockerfile` | Hummin agent image: the GLM-native `hummin` CLI (pi-harness fork) on `roboco-agent-base`, authenticated by the operator's Z.ai key | 56 |
+| `docker/agent-hummin-live.Dockerfile` | hummin live-chat image: the persistent intake/secretary session (`POST /turn` on :9000, one headless CLI run per turn) on top of the one-shot hummin image; auth `ZAI_API_KEY` passed at spawn | 22 |
+| `docker/agent-kimi-live.Dockerfile` | kimi live-chat image: the persistent intake/secretary session (`POST /turn` on :9000, one headless CLI run per turn) on top of the one-shot kimi image; auth from the `~/.kimi-code` mount | 22 |
+| `docker/agent-nebius.Dockerfile` | Nebius Token Factory agent image: open models (Nemotron, DeepSeek, Qwen and others) through the opencode CLI on `roboco-agent-base`, authenticated by a metered API key from env | 55 |
+| `docker/agent-nebius-live.Dockerfile` | nebius live-chat image: the persistent intake/secretary session (`POST /turn` on :9000, one headless CLI run per turn) on top of the one-shot nebius image; auth `NEBIUS_API_KEY` passed at spawn | 22 |
+| `docker/agent-openrouter.Dockerfile` | OpenRouter agent image: any OpenRouter model through the opencode CLI on `roboco-agent-base`, authenticated by a metered API key from env | 55 |
+| `docker/agent-openrouter-live.Dockerfile` | openrouter live-chat image: the persistent intake/secretary session (`POST /turn` on :9000, one headless CLI run per turn) on top of the one-shot openrouter image; auth `OPENROUTER_API_KEY` passed at spawn | 22 |
+| `docker/agent-devops.Dockerfile` | DevOps floater image: the infra toolchain the agent validates its own output with (compose config, kubectl dry-run from a tag-pinned `registry.k8s.io/kubectl` stage, helm template, terraform validate, hadolint, yamllint, shellcheck), per-architecture pinned downloads | 99 |
+| `docker/sandbox-pg.Dockerfile` | Sandbox Postgres image on `pgvector/pgvector:pg16` carrying every allowlisted extension, so the sandbox provisioner can `CREATE EXTENSION` any requested subset; built at deploy time by the `sandbox-pg-image` one-shot | 45 |
+| `docker/git-support/workspace.gitconfig` | Global git config of the workspace git user (`roboco-git`, the `GIT_CONFIG_GLOBAL` that `roboco/services/workspace_git.py` sets): `safe.directory = *`; root-owned and read-only in the orchestrator image | 10 |
+| `docker/scripts/entire-wrapper.sh` | Installed as `/usr/local/bin/entire` in agent images: with `ROBOCO_ENTIRE_ENABLED` off every hook call is a silent no-op; on, session hooks run the pinned CLI while Brain commands stay unprovisioned | 32 |
+| `docker/scripts/umask-exec.sh` | Entrypoint prefix for images whose real entrypoint is a binary: `umask 002` then exec, so the workspace git user (agent group) can rewrite agent-made files | 9 |
+| `docker/scripts/entrypoints/codex-cli-agent-entrypoint.sh` | Entrypoint of the one-shot `roboco-agent-codex` image (delivery roles): renders the codex runtime config, runs the agent turn, then classifies the terminal state and captures token usage | 126 |
+| `docker/scripts/entrypoints/codex-live-entrypoint.sh` | codex live-chat entrypoint: renders the codex config (role blueprint and tool scoping) from the mounted live mcp-config, then execs the provider-generic driver `roboco.agent_sdk.live_main` | 12 |
+| `docker/scripts/entrypoints/gemini-cli-agent-entrypoint.sh` | Entrypoint of the one-shot `roboco-agent-gemini` image (delivery roles): renders the gemini runtime config, runs the agent turn, then classifies the terminal state and captures token usage | 128 |
+| `docker/scripts/entrypoints/gemini-live-entrypoint.sh` | gemini live-chat entrypoint: renders the gemini config (role blueprint and tool scoping) from the mounted live mcp-config, then execs the provider-generic driver `roboco.agent_sdk.live_main` | 12 |
+| `docker/scripts/entrypoints/hummin-cli-agent-entrypoint.sh` | Entrypoint of the one-shot `roboco-agent-hummin` image (delivery roles): renders the hummin runtime config, runs the agent turn, then classifies the terminal state and captures token usage | 183 |
+| `docker/scripts/entrypoints/hummin-live-entrypoint.sh` | hummin live-chat entrypoint: renders the hummin settings and the pi tool extension (hummin has no MCP client, so the Secretary/Intake tools bridge through it), then execs `roboco.agent_sdk.live_main` | 14 |
+| `docker/scripts/entrypoints/kimi-live-entrypoint.sh` | kimi live-chat entrypoint: renders the kimi config (role blueprint and tool scoping) from the mounted live mcp-config, then execs the provider-generic driver `roboco.agent_sdk.live_main` | 11 |
+| `docker/scripts/entrypoints/nebius-agent-entrypoint.sh` | Entrypoint of the one-shot `roboco-agent-nebius` image (delivery roles): renders the opencode (Nebius dialect) runtime config, runs the agent turn, then classifies the terminal state and captures token usage | 182 |
+| `docker/scripts/entrypoints/nebius-live-entrypoint.sh` | nebius live-chat entrypoint: renders the opencode config (role blueprint and tool scoping) from the mounted live mcp-config, then execs the provider-generic driver `roboco.agent_sdk.live_main` | 12 |
+| `docker/scripts/entrypoints/openrouter-agent-entrypoint.sh` | Entrypoint of the one-shot `roboco-agent-openrouter` image (delivery roles): renders the opencode (OpenRouter dialect) runtime config, runs the agent turn, then classifies the terminal state and captures token usage | 182 |
+| `docker/scripts/entrypoints/openrouter-live-entrypoint.sh` | openrouter live-chat entrypoint: renders the opencode config (role blueprint and tool scoping) from the mounted live mcp-config, then execs the provider-generic driver `roboco.agent_sdk.live_main` | 12 |
+| `docker/scripts/hooks/tests/fable-hooks-tests.sh` | Test harness for `docker/scripts/hooks/fable-*.sh`: feeds each hook synthetic Claude Code JSON on stdin and asserts the output shape (mirrors `bash-guard-tests.sh`) | 163 |
+| `scripts/deploy-nas.sh` | NAS blue-green deploy in one compose file (run on the NAS as root, `--color green|blue`, `--skip-build`): brings up the target color, polls container health instead of `up --wait`, flips `front/active-upstreams.conf` and reloads nginx; the stopped color is the rollback; never `down -v` | 510 |
+| `scripts/gen_docs_redirects.py` | One-off generator of the committed `docs-redirects/` stubs (meta-refresh plus `rel=canonical` to docs.roboco.tech) for every page the retired MkDocs site published; the docs workflow deploys the directory as-is | 177 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
-| Settings | class | roboco/config.py:13 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
-| get_settings | function | roboco/config.py:1015 | lru_cache-backed singleton factory returning the cached Settings instance |
-| internal_api_url | property | roboco/config.py:57 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
-| database_url | property | roboco/config.py:85 | asyncpg connection URL |
-| database_url_sync | property | roboco/config.py:93 | sync psycopg URL for Alembic |
-| redis_url / redis_url_for_db | property / method | roboco/config.py:241 | Redis connection URL carrying the URL-quoted ROBOCO_REDIS_PASSWORD (required by every compose file; Redis runs with requirepass) |
-| _BootstrapHolder | class | roboco/bootstrap.py:27 | Module-level holder for the singleton AgentOrchestrator instance |
-| _run_api_server | function | roboco/bootstrap.py:33 | Build a uvicorn.Config for roboco.api.app:app and serve it (no reload in prod/container) |
-| _wait_for_api_ready | function | roboco/bootstrap.py:46 | Poll http://127.0.0.1:port/health until 200 (up to max_wait) so the orchestrator starts only after lifespan indexing completes |
-| main | function | roboco/bootstrap.py:69 | Async entrypoint: bootstrap_database, init Redis event bus + handlers, websocket bridge, orchestrator, DI wiring, API task, ready poll, optional spawns, graceful shutdown |
-| parse_args | function | roboco/cli.py:15 | argparse: --skip-db, --skip-orchestrator, --spawn, --db-only |
-| cli | function | roboco/cli.py:41 | Console-script entry: dispatch db-only or full bootstrap via asyncio.run |
-| add_app_context | function | roboco/logging.py:25 | structlog processor injecting app/version/environment into every event dict |
-| _redact_secrets | function | roboco/logging.py:60 | Regex-replace GitHub PAT / bearer / embedded-URL-credential shapes with <REDACTED> |
-| redact_event_dict | function | roboco/logging.py:70 | structlog processor running last; redacts every value in the event dict |
-| setup_logging | function | roboco/logging.py:86 | Configure structlog (dev ConsoleRenderer / prod JSONRenderer), stdlib root logger, rotating file handler under /data/logs, quiet noisy libs |
-| _resolve_log_dir | function | roboco/logging.py:169 | Resolve log dir: ROBOCO_LOG_DIR > /data/logs > ${ROBOCO_DATA_DIR:-./data}/logs > None |
-| get_logger | function | roboco/logging.py:192 | Return a configured structlog BoundLogger |
-| LogContext | class | roboco/logging.py:210 | Context manager binding/unbinding contextvars for scoped log context |
-| log_operation | function | roboco/logging.py:231 | Build a structured-log context dict for an operation |
+| Settings | class | roboco/config.py:23 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
+| get_settings | function | roboco/config.py:3260 | lru_cache-backed singleton factory returning the cached Settings instance |
+| internal_api_url | property | roboco/config.py:136 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
+| database_url | property | roboco/config.py:211 | asyncpg connection URL |
+| database_url_sync | property | roboco/config.py:219 | sync psycopg URL for Alembic |
+| redis_url / redis_url_for_db | property / method | roboco/config.py:235 | Redis connection URL carrying the URL-quoted ROBOCO_REDIS_PASSWORD (required by every compose file; Redis runs with requirepass) |
+| _BootstrapHolder | class | roboco/bootstrap.py:28 | Module-level holder for the singleton AgentOrchestrator instance |
+| _run_api_server | function | roboco/bootstrap.py:34 | Build a uvicorn.Config for roboco.api.app:app and serve it (no reload in prod/container) |
+| _wait_for_api_ready | function | roboco/bootstrap.py:79 | Poll http://127.0.0.1:port/health until 200 (up to max_wait) so the orchestrator starts only after lifespan indexing completes |
+| main | function | roboco/bootstrap.py:102 | Async entrypoint: bootstrap_database, init Redis event bus + handlers, websocket bridge, orchestrator, DI wiring, API task, ready poll, optional spawns, graceful shutdown |
+| parse_args | function | roboco/cli.py:16 | argparse: --skip-db, --skip-orchestrator, --spawn, --db-only |
+| cli | function | roboco/cli.py:42 | Console-script entry: dispatch db-only or full bootstrap via asyncio.run |
+| add_app_context | function | roboco/logging.py:26 | structlog processor injecting app/version/environment into every event dict |
+| _redact_secrets | function | roboco/logging.py:59 | Regex-replace GitHub PAT / bearer / embedded-URL-credential shapes with <REDACTED> |
+| redact_event_dict | function | roboco/logging.py:69 | structlog processor running last; redacts every value in the event dict |
+| setup_logging | function | roboco/logging.py:85 | Configure structlog (dev ConsoleRenderer / prod JSONRenderer), stdlib root logger, rotating file handler under /data/logs, quiet noisy libs |
+| _resolve_log_dir | function | roboco/logging.py:173 | Resolve log dir: ROBOCO_LOG_DIR > /data/logs > ${ROBOCO_DATA_DIR:-./data}/logs > None |
+| get_logger | function | roboco/logging.py:196 | Return a configured structlog BoundLogger |
+| LogContext | class | roboco/logging.py:214 | Context manager binding/unbinding contextvars for scoped log context |
+| log_operation | function | roboco/logging.py:235 | Build a structured-log context dict for an operation |
 | RobocoError | class | roboco/exceptions.py:13 | Base exception with message/code/details and to_dict() for API responses |
 | NotFoundError | class | roboco/exceptions.py:50 | Resource not found (code NOT_FOUND) |
 | ValidationError | class | roboco/exceptions.py:77 | Input validation failure (code VALIDATION_ERROR) |
@@ -95,14 +127,14 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | TaskError | class | roboco/exceptions.py:171 | Base task error (code TASK_ERROR), carries task_id |
 | TaskLifecycleError | class | roboco/exceptions.py:191 | Invalid transition; _TRANSITION_HINTS table appends procedural tool-call hints for common footguns |
 | AgentError | class | roboco/exceptions.py:273 | Base agent error carrying agent_id |
-| NotificationError | class | roboco/exceptions.py:364 | Notification error base |
-| ServiceError | class | roboco/exceptions.py:381 | External service error carrying service name |
-| DatabaseError | class | roboco/exceptions.py:400 | Database operation failed |
-| GitError | class | roboco/exceptions.py:424 | Base git operation error |
-| _scrub_git_secrets | function | roboco/exceptions.py:439 | Redact creds a git command may echo into stderr (URL creds, Authorization basic, PATs) |
-| MergeConflictError | class | roboco/exceptions.py:456 | PR merge refused for conflict; routes completion to conflict resolution |
-| GitCommandError | class | roboco/exceptions.py:467 | git command failed; surfaces a secret-free stderr tail in .message |
-| GitTimeoutError | class | roboco/exceptions.py:487 | git command timed out after Ns |
+| NotificationError | class | roboco/exceptions.py:298 | Notification error base |
+| ServiceError | class | roboco/exceptions.py:315 | External service error carrying service name |
+| DatabaseError | class | roboco/exceptions.py:334 | Database operation failed |
+| GitError | class | roboco/exceptions.py:358 | Base git operation error |
+| _scrub_git_secrets | function | roboco/exceptions.py:373 | Redact creds a git command may echo into stderr (URL creds, Authorization basic, PATs) |
+| MergeConflictError | class | roboco/exceptions.py:392 | PR merge refused for conflict; routes completion to conflict resolution |
+| GitCommandError | class | roboco/exceptions.py:403 | git command failed; surfaces a secret-free stderr tail in .message |
+| GitTimeoutError | class | roboco/exceptions.py:423 | git command timed out after Ns |
 | write | function | scripts/build_lifecycle_artifacts.py:24 | mkdir -p + write_text, print relative path |
 | main | function | scripts/build_lifecycle_artifacts.py:30 | Render intent-verbs.md, status-transitions.md, panel/lib/lifecycle.json, per-role lifecycle-{role}.md via foundation._generators |
 | fetch_enum_values | function | scripts/verify_postgres_enums.py:26 | Query pg_enum for a type's labels |
@@ -110,11 +142,13 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | should_skip_for_unmigrated | function | scripts/verify_postgres_enums.py:49 | Skip only when BOTH agentrole and team absent (DB not migrated); partial = drift |
 | enum_drift | function | scripts/verify_postgres_enums.py:59 | Compare DB enum sets vs foundation Role/Team; return (has_drift, messages) |
 | main | function | scripts/verify_postgres_enums.py:82 | Connect via asyncpg, fetch enums, skip-or-report drift against foundation identity (exit 0 skip/match, 1 drift) |
-| reflow | function | scripts/reflow_md.py:141 | Token-invariant reflow of markdown prose (paragraphs, list items, front matter, code fences verbatim) |
-| in_scope | function | scripts/reflow_md.py:162 | Skip SKIP_DIRS / EXCLUDE_PREFIXES (docs/internal, agents/prompts/_generated) / EXCLUDE_GLOBS |
-| main | function | scripts/reflow_md.py:171 | Walk *.md, reflow, enforce token-invariant safety, --apply / --check (exit 1 on wrapped files) |
-| _render_role_section | function | scripts/regenerate_verb_tables.py:138 | Render one role's flow + do verb tables from role_config + schemas |
-| main | function | scripts/regenerate_verb_tables.py:181 | Write agents/prompts/_generated/verbs.md + per-role {role}.md, skipping driver-based prompter/secretary |
+| reflow | function | scripts/reflow_md.py:164 | Token-invariant reflow of markdown prose (paragraphs, list items, front matter, code fences verbatim) |
+| in_scope | function | scripts/reflow_md.py:187 | Skip SKIP_DIRS / EXCLUDE_PREFIXES (docs/internal, agents/prompts/_generated) / EXCLUDE_GLOBS |
+| main | function | scripts/reflow_md.py:196 | Walk *.md, reflow, enforce token-invariant safety, --apply / --check (exit 1 on wrapped files) |
+| check_map | function | scripts/verify_codebase_map.py:1096 | Check every map file's tables against the tree and return the findings (errors: missing-path / missing-symbol) |
+| apply_fixes | function | scripts/verify_codebase_map.py:1156 | Rewrite every fixable finding (line numbers, LOC, migration range) in place |
+| _render_role_section | function | scripts/regenerate_verb_tables.py:144 | Render one role's flow + do verb tables from role_config + schemas |
+| main | function | scripts/regenerate_verb_tables.py:187 | Write agents/prompts/_generated/verbs.md + per-role {role}.md, skipping driver-based prompter/secretary |
 | _reset_workspace | function | scripts/reset_runtime_state.sh:177 | Per-clone git hard-reset to default branch + clean -fdx + delete stray feature branches (as owner) |
 | _resolve_workspaces_root | function | scripts/reset_runtime_state.sh:154 | Resolve WORKSPACES_ROOT from env, then NAS /volume1/roboco/data/workspaces, then /data/workspaces |
 
@@ -205,7 +239,7 @@ deployment-tooling
    ├─ verify_postgres_enums.py (foundation enum parity gate)
    ├─ reflow_md.py (markdown prose reflow CI gate)
    ├─ reset_runtime_state.sh + .sql (smoke-test state wipe + workspace git reset)
-   └─ docker/scripts/tests/bash-guard-tests.sh (hook deny/allow table)
+   └─ docker/scripts/hooks/tests/bash-guard-tests.sh (hook deny/allow table)
 ```
 
 ## Dependencies
@@ -224,6 +258,8 @@ deployment-tooling
 | scripts/build_lifecycle_artifacts.py | scripts/build_lifecycle_artifacts.py | make lifecycle (foundation-check runs it) |
 | scripts/verify_postgres_enums.py | scripts/verify_postgres_enums.py | make foundation-check (final step) |
 | scripts/reflow_md.py --check | scripts/reflow_md.py | make reflow-check / make quality |
+| scripts/verify_codebase_map.py | scripts/verify_codebase_map.py | make quality (check) / make map (--fix) |
+| scripts/rebuild_map_concat.py | scripts/rebuild_map_concat.py | make quality (--check) / make map / make codegen |
 | scripts/regenerate_verb_tables.py | scripts/regenerate_verb_tables.py | manual after role_config / schema change (not wired into make quality) |
 | scripts/reset_runtime_state.sh | scripts/reset_runtime_state.sh | manual smoke-test reset (host or ssh into NAS) |
 | scripts/bootstrap.sh | scripts/bootstrap.sh | `make quickstart` (pull-and-run registry-compose deploy) |
@@ -348,8 +384,8 @@ deployment-tooling
 |---|---|---|---|
 | LLM model rename breaks cached ollama deployments / stale env | docker-compose.yaml:86 | The ollama-init verify now greps for `glm-5.3` exactly. A NAS volume that only has the old `glm-5:cloud` model cached (no network, or a slow registry) will hit the FATAL exit and block the orchestrator's service_completed_successfully gate — whereas the old `glm-5` grep would have passed. Operators with a pre-existing cached `glm-5:cloud` and no pull will fail to boot until the new model is pulled. | high |
 | verify_postgres_enums skip-on-unmigrated masks a real enum drift on a partially-migrated DB | scripts/verify_postgres_enums.py:49 | should_skip_for_unmigrated returns True only when BOTH agentrole and team are absent. A partial schema where one enum type exists and the other does not correctly falls through to enum_drift (exit 1). But if a future migration drops one type temporarily, a DB that previously had both now reports drift instead of skipping — the gate could fail CI on a transitional schema. Low likelihood but the behavior change (baseline exited 1 on any connection failure; now exits 0) shifts the failure mode from 'hard fail' to 'skip' for unreachable postgres, which a CI without a migrated DB used to surface as a real signal. | medium |
-| bash-guard `uv run --active` deny may false-positive on legitimate workspace commands | docker/scripts/bash-guard-hook.sh:341 | The rule denies any `uv run` containing the literal `--active` token anywhere in the command. A command like `uv run --active pytest` is denied even if the agent's intent was a workspace venv (VIRTUAL_ENV is no longer image-baked — 7be10057 — so `--active` simply errors, but the deny still fires first). Conversely the second rule's regex for /app targets (cd /app, --project /app, --directory /app, UV_PROJECT_ENVIRONMENT=/app) could match a benign command that mentions /app in an unrelated argument (e.g. a path under /app/data). The deny is a hard exit 2 with no override. | medium |
-| grok auth.json symlink assumes the host directory mount path | docker/scripts/grok-cli-agent-entrypoint.sh:44 | The entrypoint unconditionally `rm -f /home/agent/.grok/auth.json` then symlinks to /home/agent/.grok-auth-ro/auth.json. If the orchestrator's mount layout changes (e.g. the RO dir is not mounted at .grok-auth-ro, or a future image bakes a real auth.json that should not be replaced), the symlink breaks and grok_auth --check exits 78 on every spawn. The rm -f also removes any pre-baked stub with no fallback. | medium |
+| bash-guard `uv run --active` deny may false-positive on legitimate workspace commands | docker/scripts/hooks/bash-guard-hook.sh:341 | The rule denies any `uv run` containing the literal `--active` token anywhere in the command. A command like `uv run --active pytest` is denied even if the agent's intent was a workspace venv (VIRTUAL_ENV is no longer image-baked — 7be10057 — so `--active` simply errors, but the deny still fires first). Conversely the second rule's regex for /app targets (cd /app, --project /app, --directory /app, UV_PROJECT_ENVIRONMENT=/app) could match a benign command that mentions /app in an unrelated argument (e.g. a path under /app/data). The deny is a hard exit 2 with no override. | medium |
+| grok auth.json symlink assumes the host directory mount path | docker/scripts/entrypoints/grok-cli-agent-entrypoint.sh:44 | The entrypoint unconditionally `rm -f /home/agent/.grok/auth.json` then symlinks to /home/agent/.grok-auth-ro/auth.json. If the orchestrator's mount layout changes (e.g. the RO dir is not mounted at .grok-auth-ro, or a future image bakes a real auth.json that should not be replaced), the symlink breaks and grok_auth --check exits 78 on every spawn. The rm -f also removes any pre-baked stub with no fallback. | medium |
 | Makefile foundation-check no longer tolerates verify_postgres_enums failure | Makefile:540 | The `// echo skipped` was removed, so any non-zero exit from verify_postgres_enums now fails the gate. Correct by design (drift must fail), but if the script's asyncpg connect raises an exception type not in (OSError, asyncpg.PostgresError) — e.g. a permissions error classified differently — the unhandled exception exits non-zero and fails CI where the baseline would have masked it as a skip. | low |
 | Version 0.14.0 bump without a corresponding release tag / image build | pyproject.toml:3 | pyproject, __init__.py, and config.app_version all say 0.14.0 but the branch feature/metrics-granularity is NOT deployed and memory notes say metrics-granularity was stopped mid-Phase-1. If a registry image is built from this tree it will be tagged 0.14.0 while the deployed NAS is on 0.14.0-memory-but-actually-0.13-ish. The agent_image_tag doc example ('0.14.0') could mislead an operator into pulling an unbuilt tag. | low |
 

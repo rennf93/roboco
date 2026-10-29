@@ -24,7 +24,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # The ALTER TYPE must run and COMMIT before migration 095 seeds a row
+    # The ALTER TYPE must run and COMMIT before migration 096 seeds a row
     # using 'openrouter' (Postgres forbids using a freshly added enum value
     # in the same transaction that added it). Mirrors migration 090 (kimi)
     # exactly — including the offline --sql rendering the enum-parity test

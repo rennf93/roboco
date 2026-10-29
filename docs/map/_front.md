@@ -1,57 +1,61 @@
-# RoboCo — The Complete Map (2026-06-29)
+# RoboCo — The Complete Map
 
-> Scope: full codebase, baseline `fd10cc862`..HEAD. The CEO suspects recent changes may have broken the system. This is the exhaustive record + drift/regression audit, built from 35 per-slice maps. Branch: `feature/metrics-granularity` (work merged into `master` via PRs #283 and #285), **NOT deployed**.
+> **What this is.** The agent-facing map of the RoboCo codebase. Each subsystem has a slice file in `docs/map/`; `scripts/rebuild_map_concat.py` concatenates this front matter and every slice into `_complete_map.md`. Both are indexed into the knowledge base at startup (`OptimalService.AUTO_INDEX_DIRS`), so RoboCo's agents retrieve these rows when they orient on a task. A slice is built from the same tables: Files (path, role, line count), Key Symbols (name, kind, `file:line`, responsibility), Entry Points, Config Flags, Gotchas and Regression Risks, around prose on purpose and data flow.
 >
-> Verified range figures: `git log --oneline fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD` returns **2 commits** on `master` (`15effce0` "Chore: 141 Gaps fill-in (#283)" and `3aff6e04` "Chore: Close gaps (#285)"), but the bundled diff is enormous — **577 files changed, +36,653/-4,214 lines** (verified via `git diff --stat`). The two PRs squash months of per-fix work (F0xx audit gaps, F123 worktrees, sequencing, pr_fail loop-closers, model rename, etc.) into two merge commits, so the effective change surface is far larger than the commit count implies. Earlier per-fix commits (e202ce39, 250be5c2, a957e4fa, 82541077, cf7603f3, e52fd05d, 919aa7e2, 12621a36, 9927d248, c03e76c4, 2f322286, c34e978f, 3a4a3fe5, 53d60da3) are ancestors of `15effce0` and are the substance of the gap-fill.
+> **State (2026-10-29).** 37 slices. Every path, symbol and line number in the tables was checked against the code that day. Every Python module under `roboco/` (package `__init__.py` files aside) and every file under `docker/` and `scripts/` (README files aside) has a row, and the migration chain is mapped through 110. Descriptions were checked mechanically (every backticked identifier exists in the repository; every prose `file:line` points inside its file and at the definition it names) and a random sample of the rows whose code had moved was re-read by hand; descriptions are not otherwise machine-checked.
+>
+> **Kept honest mechanically.** `scripts/verify_codebase_map.py`, run by `make quality`, fails when a table names a path or symbol that no longer exists, and when a Python module under `roboco/`, a file under `docker/` or `scripts/`, or a migration has no row; its message names the slice to add the row to. Line-number, size and Alembic-range drift are warnings, because every code edit shifts them: `make map` rewrites them and rebuilds `_complete_map.md`. The checker does not read prose, so a description can still go stale: fix it by hand when you change the code it describes.
+>
+> **History.** The map began as a 2026-06-29 audit of the `fd10cc862..HEAD` range. That audit's findings, its git log and the follow-up deltas are kept at the end of this front matter as a record; the current behaviour is in the slices, and each slice's own Regression Risks table is the live risk list.
 
 ## Table of Contents
 
 **Chapters (this front matter):**
 - System at a Glance
-- Data Model ERD
+- Data Model
 - Task Lifecycle State Machine
 - Cross-Cutting Flows
-- What's Wrong — Drift & Regression Risks
-- Verified Regression Risks *(appended by a later step)*
-- Appendix: Git Log fd10cc862..HEAD
+- History: the 2026-06-29 audit and its follow-up deltas
 
-**Per-slice sections (concatenated after this front matter, in this order):**
+**Slices (concatenated after this front matter, in this order):**
 
-1. foundation-lifecycle
-2. foundation-batch-sequencing
-3. foundation-conventions-identity
-4. foundation-policy-misc
-5. models
-6. db-migrations
-7. api-core-websocket
-8. api-routes-schemas
-9. gateway-support
-10. mcp-servers
-11. choreographer
-12. task-service
-13. worksession-git
-14. workspace
-15. support-services
-16. orchestrator
-17. runtime-providers
-18. prompts-roles-taxonomy
-19. notification
-20. a2a-audit-journal-permissions
-21. pr-gate-review
-22. review-findings
-23. metrics-observability
-24. conventions-service-validator
-25. intake-secretary
-26. product-strategy-research-pitch
-27. engines-heal-ciwatch-depupdate
-28. release-manager
-29. engine-docs-sync
-30. video-engine
-31. org-memory-playbooks
-32. vault
-33. panel
-34. deployment-tooling
-35. tests
+1. `a2a-audit-journal-permissions`: A2A conversations and messages, audit logging, journals, structured notes, message extraction, permissions.
+2. `deployment-tooling`: Compose topologies, Dockerfiles and agent images, entrypoints and hooks, config, Makefile, ops scripts.
+3. `engines-heal-ciwatch-depupdate`: Default-off engines that open one fix/update task: self-heal, CI-watch, dep-update, plus env-sync and CI run history.
+4. `foundation-batch-sequencing`: MegaTask identity predicates and the deterministic collision-sequencing analyzer.
+5. `foundation-conventions-identity`: Roles, teams, the agent roster, and the conventions-standard schema.
+6. `foundation-lifecycle`: The task state machine, intent verbs, claim and team rules (the lifecycle spec).
+7. `foundation-policy-misc`: The other pure policy catalogs: communications, journaling, content models and markers, agent-loop budgets, and more.
+8. `gateway-support`: Envelope, claim guards, content actions (do-tools), evidence, role config, rate-limit tracker, quality gate, merge chain.
+9. `intake-secretary`: CEO-facing Intake (prompter) and Secretary: drafts, MegaTask batches, directives.
+10. `notification`: Notification factory, delivery outbox, dedup, re-escalation backoff.
+11. `orchestrator`: AgentOrchestrator and its engine mixins: spawn, dispatch, reaper, park-and-probe, background loops.
+12. `org-memory-playbooks`: Organizational memory, playbooks, and the Optimal/RAG brain (index plugins, embedder, indexer).
+13. `pr-gate-review`: The PR reviewer's two surfaces: the in-path assembled-PR gate and external/fork PR review.
+14. `prompts-roles-taxonomy`: Prompt composition, the role/team/permission taxonomy, the injection guard.
+15. `release-manager`: The gated release manager: readiness, proposal, executor, certificate.
+16. `runtime-providers`: Agent runtimes and LLM providers (Claude Code, Grok, Gemini, Codex, Kimi, OpenRouter, Nebius, Hummin) and the in-container agent SDK.
+17. `vault`: The Obsidian vault projection, intake watcher, janitor and KB engine.
+18. `video-engine`: Default-off video authoring, rendering and X/TikTok distribution.
+19. `models`: The Pydantic/dataclass domain models.
+20. `db-migrations`: Async SQLAlchemy setup, the ORM tables, and the Alembic chain (one row per migration).
+21. `api-core-websocket`: The FastAPI app shell, dependencies, middleware, security, WebSocket fan-out.
+22. `api-routes-schemas`: Every HTTP route (panel API, agent flow/do gateway, cloud auth) and its schemas.
+23. `mcp-servers`: The MCP servers inside agent containers (flow, do, git-readonly, optimal, docs, search, intake, secretary).
+24. `choreographer`: The Choreographer: intent verbs composed into atomic task actions, and its per-role mixins.
+25. `task-service`: TaskService: CRUD, claim, every status transition, dependencies, completion.
+26. `worksession-git`: GitService, work sessions, forge adapters, the GitHub App.
+27. `workspace`: Per-agent clones and per-task worktrees.
+28. `support-services`: Service base, crypto, event bus, settings and feature flags, model routing, maintenance pause, seed data.
+29. `review-findings`: The revision-findings ledger and its producers.
+30. `metrics-observability`: Metrics, usage, dashboard, governance report.
+31. `conventions-service-validator`: The per-project conventions service, validator and custom rules.
+32. `product-strategy-research-pitch`: Projects, products, kanban, strategy, research, pitches, and the Board Programs.
+33. `engine-docs-sync`: The release-triggered docs-site sync engine.
+34. `panel`: The Next.js control panel.
+35. `tests`: The test infrastructure (fixtures, ephemeral DB, e2e smoke).
+36. `attestation`: The per-task verification attestation.
+37. `decisions`: The Decisions service: pilots, resolver, outcome labelling, corpus export, audit engine, the decisions container.
 
 ---
 
@@ -70,6 +74,7 @@ graph TB
     Aud["Auditor (silent observer)"]
 
     MainPM["Main PM<br/>(coordinates all cells)"]
+    Float["Floaters<br/>cell-pr-reviewer-2 (backs the cell gates)<br/>devops-1 (infra tasks + infra-file PR co-review, ROBOCO_DEVOPS_ENABLED)"]
 
     BE["Backend Cell"]
     FE["Frontend Cell"]
@@ -87,6 +92,7 @@ graph TB
     Board --> HM
     Board --> Aud
     Board --> MainPM
+    MainPM --> Float
     MainPM --> BE
     MainPM --> FE
     MainPM --> UX
@@ -94,15 +100,15 @@ graph TB
     FE --> FEDev
     UX --> UXDev
 
-    Agents["Agent containers<br/>(Claude Code / Grok CLI)"]
+    Agents["Agent containers<br/>(Claude Code default; Grok, Gemini, Codex, Kimi,<br/>OpenRouter, Nebius, Hummin CLIs)"]
     BEDev --> Agents
     FEDev --> Agents
     UXDev --> Agents
 
-    GW["Gateway<br/>Choreographer + MCP servers<br/>(roboco-flow / roboco-do / roboco-git-readonly / roboco-optimal / roboco-docs)"]
+    GW["Gateway<br/>Choreographer + MCP servers<br/>(roboco-flow / roboco-do / roboco-git-readonly / roboco-optimal,<br/>role-scoped roboco-docs / roboco-search / playwright,<br/>roboco-intake / roboco-secretary for the live chats)"]
     Agents -->|intent verbs + content tools| GW
 
-    Svcs["Services<br/>TaskService · GitService · WorkSessionService<br/>WorkspaceService · Messaging · Notification<br/>Optimal/RAG · Journal · Audit · Permissions"]
+    Svcs["Services<br/>TaskService · GitService · WorkSessionService<br/>WorkspaceService · A2A · Notification<br/>Optimal/RAG · Journal · Audit · Permissions · Decisions"]
     GW --> Svcs
 
     PG[("PostgreSQL + pgvector")]
@@ -110,7 +116,7 @@ graph TB
     Svcs --> PG
     Svcs --> Redis
 
-    Orch["Orchestrator<br/>(spawn / reap / park-probe / respawn-tracker / engines)"]
+    Orch["Orchestrator, the dispatcher role<br/>(spawn / reap / park-probe / respawn-tracker / engines)"]
     Orch -->|spawn/reap| Agents
     Orch --> Svcs
 
@@ -120,7 +126,9 @@ graph TB
     Panel["Next.js Panel"]
     Nginx["nginx :3000"]
     Panel --> Nginx
-    Nginx -->|/api/* /ws/*| Orch
+    Nginx -->|/api/* /ws/* except the fleet routes| API["API role (stateless routes)"]
+    Nginx -->|/api/orchestrator/*, /api/secretary/live/*, /api/prompter/live/*| Orch
+    API --> Svcs
     Nginx -->|everything else| Panel
 ```
 
@@ -129,13 +137,13 @@ flowchart TD
   RT["RoboCo"]
   RT --> LC["Lifecycle"]
   LC --> LC1["15 statuses"]
-  LC --> LC2["about 30 intent verbs"]
-  LC --> LC3["22 atomic actions"]
+  LC --> LC2["35 intent verbs"]
+  LC --> LC3["26 atomic actions"]
   LC --> LC4["spec gates and import validators"]
   RT --> GW["Gateway"]
   GW --> GW1["Choreographer"]
   GW --> GW2["VerbRunner SAVEPOINT"]
-  GW --> GW3["MCP servers flow do git optimal docs"]
+  GW --> GW3["MCP servers flow do git optimal docs search intake secretary"]
   GW --> GW4["role manifests"]
   RT --> OR["Orchestrator"]
   OR --> OR1["spawn and reap"]
@@ -155,6 +163,12 @@ flowchart TD
   EN --> EN2["ci_watch"]
   EN --> EN3["dep_update"]
   EN --> EN4["release_manager"]
+  EN --> EN5["env_sync and docs_sync"]
+  EN --> EN6["Board Programs"]
+  EN --> EN7["X, video, vault, Telegram"]
+  RT --> DE["Decisions"]
+  DE --> DE1["pilots and resolver"]
+  DE --> DE2["outcome labels and corpus"]
   RT --> OM["OrgMemory"]
   OM --> OM1["distill learnings"]
   OM --> OM2["briefings injection"]
@@ -167,7 +181,7 @@ flowchart TD
   PA --> PA2["nginx"]
   PA --> PA3["WebSocket streams"]
   RT --> MG["Migrations"]
-  MG --> MG1["001 to 054"]
+  MG --> MG1["001 to 110"]
   MG --> MG2["pgvector"]
   RT --> PR["Prompts"]
   PR --> PR1["roles"]
@@ -177,155 +191,101 @@ flowchart TD
 
 ---
 
-## Data Model ERD
+## Data Model
 
-Synthesized from `models` + `db-migrations` (38 ORM tables in `roboco/db/tables.py`, migrations 001→054). Key fields shown on `Task`; relationships traced through the migration chain (single-active work_session via 047, batch/collision cols via 046, cell-project map via 052, respawn counter via 051, playbooks via 050, conventions cache via 043, observability `revision_count` + audit index via 045).
+Generated from the foreign keys of the 56 ORM tables in `roboco/db/tables.py` (one edge per foreign key, labelled with the referencing column). The RAG chunk tables (`chunks_*`) are created by migrations 030/031 outside the ORM and are not shown. Tables with no foreign key in either direction: `ci_runs`, `company_goals`, `daily_usage_rollups`, `decision_log`, `entire_credentials`, `github_app_credentials`, `indexed_documents`, `member_performance_daily`, `memory_links`, `memory_retrieval_log`, `pitches`, `playbooks`, `rag_index_failures`, `respawn_tracker`, `routing_presets`, `secretary_directives`, `system_settings`, `telegram_credentials`, `tiktok_credentials`, `users`, `vault_seen_notes`, `verb_latency_samples`, `x_credentials`, `x_seen_features`, `x_seen_mentions`. Column-level detail is in the `models` and `db-migrations` slices.
 
 ```mermaid
 erDiagram
-    PROJECT ||--o{ TASK : "project_id"
-    PROJECT ||--o{ TASK_CELL_PROJECT : "per-cell map (052)"
-    PROJECT ||--|| PROJECT_CONVENTIONS_CACHE : "per HEAD sha (043)"
-    AGENT ||--o{ WORK_SESSION : "assignee"
-    TASK ||--o{ WORK_SESSION : "one ACTIVE (047)"
-    TASK ||--o{ COMMIT_REF : "commits"
-    TASK ||--o{ AUDIT_LOG : "transition journey"
-    TASK ||--o{ TASK : "parent_task_id / subtasks"
-    TASK ||--o{ TASK_CELL_PROJECT : "root-subtask map"
-    TASK ||--o{ PLAYBOOK : "draft→approved→indexed (050)"
-    AGENT ||--o{ MESSAGE : "sender"
-    AGENT ||--o{ NOTIFICATION : "to_agents / from_agent"
-    AGENT ||--o{ JOURNAL : "owner"
-    AGENT ||--o{ AGENT_SPAWN_SESSION : "per-spawn token totals (026b)"
-    AGENT ||--o{ AUDIT_LOG : "actor"
-    RESPAWN_TRACKER }o--|| TASK : "durable PM-respawn counter (051)"
-    WAITING_RECORD }o--o{ TASK : "persisted dispatcher waiting (restore at start)"
-    PROJECT ||--o{ PROVIDER_CONFIG : "model routing (004)"
-    PROVIDER_CONFIG ||--o{ MODEL_ASSIGNMENT : "scope=SLUG/ROLE/GLOBAL (004)"
-    PROJECT ||--o{ PRODUCT : "product_projects (016)"
-    PRODUCT ||--o{ TASK : "product_id"
-    PROMPTER_SESSION ||--o{ PROMPTER_MESSAGE : "intake live chat (024)"
-    PROMPTER_SESSION ||--o{ TASK_DRAFT : "drafts (024)"
-    SECRETARY_DIRECTIVE ||--o{ SECRETARY_DIRECTIVE : "gate queue (035)"
-    INDEXED_DOCUMENT ||--o{ CHUNKS : "RAG corpus (pgvector, 017/030/031)"
-    PROJECT ||--o{ PROJECT_CONVENTION_FINDINGS : "violations (044)"
-    AUDIT_LOG ||--o{ AUDIT_LOG : "details JSONB (010)"
-
-    TASK {
-        uuid id PK
-        str title
-        str status "15-value StrEnum"
-        str task_type "code/documentation/research/planning/design/administrative"
-        uuid project_id FK "nullable (018)"
-        uuid product_id FK "nullable (016)"
-        uuid parent_task_id FK
-        str branch_name "auto on claim"
-        int pr_number
-        str pr_url
-        bool docs_complete
-        bool pr_created
-        bool self_verified
-        uuid batch_id "MegaTask (046)"
-        str_arr intends_to_touch "collision globs (046)"
-        bool adds_migration "046"
-        bool touches_shared "046"
-        int revision_count "rework counter (045)"
-        str source "prompter/release_manager (023)"
-        bool confirmed_by_human "CEO-held (023)"
-        uuid claimed_by
-        uuid work_session_id
-        str_arr completed_dependency_ids "026a"
-        bool board_review_complete "021"
-        jsonb markers "original_developer / head_sha (041)"
-    }
-    WORK_SESSION {
-        uuid id PK
-        uuid task_id FK
-        uuid agent_id FK
-        str branch_name
-        str status "ACTIVE superseded by 047 partial-unique"
-        int pr_number
-        str pr_url
-        bool merged
-        uuid merged_by
-    }
-    AGENT {
-        uuid id PK
-        str slug
-        str role "agentrole enum"
-        str team "team enum"
-        str model_provider "ANTHROPIC/GROK/LOCAL/OLLAMA_CLOUD/OPENAI"
-    }
-    PROJECT {
-        uuid id PK
-        str slug
-        str git_url
-        str default_branch "master (022)"
-        bytes git_token_encrypted "Fernet"
-        str quality_command "029"
-        bool ci_watch_enabled "048"
-        str ci_watch_workflow "048"
-        str dep_update_command "049"
-        str_arr dep_update_paths "049"
-    }
-    AUDIT_LOG {
-        uuid id PK
-        uuid task_id FK
-        str event_type "task.<status> / task.qa_fail / task.pr_fail"
-        uuid agent_id FK
-        jsonb details "transition journey (010)"
-    }
-    PLAYBOOK {
-        uuid id PK
-        str status "draft/approved/archived/rejected (050)"
-        uuid approved_by
-        str source_uri "roboco://playbooks/..."
-    }
-    RESPAWN_TRACKER {
-        str agent_slug PK
-        uuid task_id PK
-        int strike_count "durable PM-respawn (051)"
-    }
+    TASKS ||--o{ A2A_CONVERSATIONS : "task_id"
+    A2A_CONVERSATIONS ||--o{ A2A_MESSAGES : "conversation_id"
+    A2A_MESSAGES ||--o{ A2A_MESSAGES : "response_to_id"
+    TASKS ||--o{ AGENTS : "current_task_id"
+    AGENTS ||--o{ AUDIT_LOG : "agent_id"
+    TASKS ||--o{ BOARD_PROGRAM_CYCLES : "exploration_task_id"
+    ENTIRE_TRAILS ||--o{ ENTIRE_TRAIL_CHANGES : "root_task_id"
+    TASK_REVIEW_FINDINGS ||--o{ ENTIRE_TRAIL_FINDINGS : "review_finding_id"
+    ENTIRE_TRAILS ||--o{ ENTIRE_TRAIL_OUTBOX : "root_task_id"
+    TASKS ||--o{ ENTIRE_TRAILS : "root_task_id"
+    TASKS ||--o{ GATEWAY_TRIGGERS : "task_id"
+    AGENTS ||--o{ HANDOFFS : "assigned_to"
+    TASKS ||--o{ HANDOFFS : "task_id"
+    JOURNALS ||--o{ JOURNAL_ENTRIES : "journal_id"
+    TASKS ||--o{ JOURNAL_ENTRIES : "task_id"
+    AGENTS ||--o{ JOURNALS : "agent_id"
+    PROVIDER_CONFIGS ||--o{ MODEL_ASSIGNMENTS : "provider_config_id"
+    AGENTS ||--o{ NOTIFICATIONS : "from_agent"
+    TASKS ||--o{ NOTIFICATIONS : "related_task_id"
+    PRODUCTS ||--o{ PRODUCT_PROJECTS : "product_id"
+    PROJECTS ||--o{ PRODUCT_PROJECTS : "project_id"
+    AGENTS ||--o{ PRODUCTS : "created_by"
+    PROJECTS ||--o{ PROJECT_CONVENTION_FINDINGS : "project_id"
+    PROJECTS ||--o{ PROJECT_CONVENTIONS_CACHE : "project_id"
+    AGENTS ||--o{ PROJECTS : "created_by"
+    PROMPTER_SESSIONS ||--o{ PROMPTER_MESSAGES : "session_id"
+    AGENTS ||--o{ PROMPTER_SESSIONS : "agent_id"
+    PROJECTS ||--o{ TASK_CELL_PROJECTS : "project_id"
+    TASKS ||--o{ TASK_CELL_PROJECTS : "task_id"
+    PROMPTER_SESSIONS ||--o{ TASK_DRAFTS : "session_id"
+    TASKS ||--o{ TASK_DRAFTS : "task_id"
+    TASKS ||--o{ TASK_REVIEW_FINDINGS : "task_id"
+    AGENTS ||--o{ TASKS : "active_claimant_id"
+    AGENTS ||--o{ TASKS : "assigned_to"
+    AGENTS ||--o{ TASKS : "blocker_raised_by"
+    AGENTS ||--o{ TASKS : "claimed_by"
+    AGENTS ||--o{ TASKS : "created_by"
+    AGENTS ||--o{ TASKS : "pre_block_assignee"
+    PRODUCTS ||--o{ TASKS : "product_id"
+    PROJECTS ||--o{ TASKS : "project_id"
+    TASKS ||--o{ TASKS : "parent_task_id"
+    WORK_SESSIONS ||--o{ TASKS : "work_session_id"
+    AGENT_SPAWN_SESSIONS ||--o{ TOKEN_USAGE_SNAPSHOTS : "agent_spawn_session_id"
+    TASKS ||--o{ WAITING_RECORDS : "task_id"
+    AGENTS ||--o{ WORK_SESSIONS : "agent_id"
+    AGENTS ||--o{ WORK_SESSIONS : "merged_by"
+    PROJECTS ||--o{ WORK_SESSIONS : "project_id"
+    TASKS ||--o{ WORK_SESSIONS : "task_id"
 ```
 
 ---
 
 ## Task Lifecycle State Machine
 
-Synthesized from `foundation-lifecycle` (`_STATUS_TRANSITIONS` / `STATUS_GRAPH`). Role labels mark the allowed actor for each edge; the in-path PR-review gate (`awaiting_pr_review`) sits between PM `submit_up`/`submit_root` and `awaiting_pm_review`.
+Generated from `docs/rag/lifecycle/status-transitions.md`, which `make lifecycle` renders from the spec's `_STATUS_TRANSITIONS` in `roboco/foundation/policy/lifecycle.py` (15 statuses, 42 transitions). Each edge is labelled with its action and the roles allowed to take it (`any` means the action itself is not role-gated; the intent verbs that compose it are). Not drawn: `cancel`, which moves every non-terminal status to `cancelled` (cell_pm, main_pm or ceo; from `awaiting_ceo_approval`, ceo only).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> backlog
-    backlog --> pending: activate (PM)
-    pending --> claimed: claim (role matches task type)
-    claimed --> in_progress: start
-    claimed --> pending: unclaim (assignee/PM)
-    in_progress --> blocked: block
-    in_progress --> paused: pause
-    blocked --> in_progress: unblock (PM)
-    blocked --> pending: unblock (never-claimed)
-    blocked --> awaiting_ceo_approval: escalate_to_ceo
-    paused --> in_progress: resume
-    in_progress --> verifying: submit_verification
-    verifying --> awaiting_qa: submit_qa (requires self_verified + commits + pr_number + progress)
-    in_progress --> awaiting_pr_review: submit_up / submit_root (PM, opens assembled PR)
-    awaiting_pr_review --> awaiting_pm_review: pr_pass (PR reviewer)
-    awaiting_pr_review --> needs_revision: pr_fail (PR reviewer)
-    awaiting_qa --> awaiting_documentation: qa_pass (QA)
-    awaiting_qa --> needs_revision: qa_fail (QA)
-    awaiting_documentation --> awaiting_pm_review: docs_complete (documenter/dev)
-    in_progress --> completed: pr_review_done (PR reviewer, external PR)
-    awaiting_pm_review --> completed: complete (PM)
-    awaiting_pm_review --> awaiting_ceo_approval: escalate_to_ceo (PM)
-    awaiting_pm_review --> needs_revision: PM reject
-    awaiting_ceo_approval --> completed: ceo_approve (CEO — merges)
-    awaiting_ceo_approval --> needs_revision: ceo_reject (CEO)
-    awaiting_ceo_approval --> cancelled: ceo_reject (CEO)
-    needs_revision --> claimed: claim (dev/PM)
-    needs_revision --> in_progress: re-entry
-    in_progress --> pending: reaper (stale-claim)
-    [*] --> cancelled: cancel (PM/CEO, any non-terminal)
+    [*] --> pending: create
+    [*] --> backlog: create
+    awaiting_ceo_approval --> completed: ceo_approve (ceo)
+    awaiting_ceo_approval --> needs_revision: ceo_reject (ceo)
+    awaiting_ceo_approval --> pending: ceo_reject_to_pool (ceo)
+    awaiting_documentation --> awaiting_pm_review: docs_complete (documenter)
+    awaiting_documentation --> claimed: claim (documenter)
+    awaiting_pm_review --> awaiting_ceo_approval: escalate_to_ceo (head_marketing, main_pm, product_owner)
+    awaiting_pm_review --> completed: complete (cell_pm, main_pm)
+    awaiting_pm_review --> needs_revision: request_changes (cell_pm, main_pm)
+    awaiting_pr_review --> awaiting_pm_review: pr_pass (devops, pr_reviewer)
+    awaiting_pr_review --> claimed: claim (devops, pr_reviewer)
+    awaiting_pr_review --> needs_revision: pr_fail (devops, pr_reviewer)
+    awaiting_qa --> awaiting_documentation: qa_pass (qa)
+    awaiting_qa --> claimed: claim (qa)
+    awaiting_qa --> needs_revision: qa_fail (qa)
+    backlog --> pending: activate (any)
+    blocked --> awaiting_ceo_approval: escalate_to_ceo (head_marketing, main_pm, product_owner)
+    blocked --> in_progress: unblock (any)
+    blocked --> pending: unblock (any)
+    claimed --> in_progress: start (any)
+    in_progress --> awaiting_pm_review: submit_pm_review (any)
+    in_progress --> awaiting_pr_review: submit_for_review (any)
+    in_progress --> blocked: block (any)
+    in_progress --> completed: pr_review_done (pr_reviewer)
+    in_progress --> paused: pause (any)
+    in_progress --> verifying: submit_verification (any)
+    needs_revision --> claimed: claim (any)
+    paused --> in_progress: resume (any)
+    pending --> claimed: claim (any)
+    verifying --> awaiting_qa: submit_qa (any)
     completed --> [*]
     cancelled --> [*]
 ```
@@ -410,22 +370,26 @@ graph TB
 
 ```mermaid
 stateDiagram-v2
-    in_progress --> awaiting_pr_review: submit_up (cell PM) / submit_root (Main PM)
-    awaiting_pr_review --> awaiting_pm_review: pr_pass (PR reviewer)
-    awaiting_pr_review --> needs_revision: pr_fail (PR reviewer)
-    needs_revision --> in_progress: dev re-entry
-    awaiting_pm_review --> awaiting_ceo_approval: escalate_to_ceo (Main PM)
+    in_progress --> awaiting_pr_review: submit_for_review (submit_up by a cell PM, submit_root by the Main PM)
+    awaiting_pr_review --> claimed: claim (pr_reviewer, devops)
+    awaiting_pr_review --> awaiting_pm_review: pr_pass (pr_reviewer, devops; infra-file PRs also need the DevOps verdict when ROBOCO_DEVOPS_ENABLED)
+    awaiting_pr_review --> needs_revision: pr_fail (pr_reviewer, devops; findings written to task_review_findings)
+    awaiting_pm_review --> completed: complete (cell_pm, main_pm)
+    awaiting_pm_review --> awaiting_ceo_approval: escalate_to_ceo (main_pm; a root PR ends here)
     awaiting_ceo_approval --> completed: ceo_approve (CEO merges)
 ```
 
-### (e) Default-off engines — each originates one task into the normal delivery flow (+ PR-review gate), never auto-merges, bounded by caps, held for CEO where applicable
+### (e) Default-off engines — each originates one held task or artifact into the normal delivery flow (+ PR-review gate), never auto-merges, auto-posts or auto-deploys
 
 ```mermaid
 graph LR
-    SH["self_heal_engine<br/>(ROBOCO_SELF_HEAL_ENABLED)"] -->|HELD task awaiting_ceo_approval| Flow["normal delivery flow"]
-    CIW["ci_watch_engine<br/>(ROBOCO_CI_WATCH_ENABLED)"] -->|READY task| Flow
-    DEP["dep_update_engine<br/>(ROBOCO_DEP_UPDATE_ENABLED)"] -->|READY task| Flow
-    RM["release_manager_engine<br/>(ROBOCO_RELEASE_MANAGER_ENABLED)"] -->|release proposal HELD for CEO| Flow
+    SH["self_heal_engine<br/>(ROBOCO_SELF_HEAL_ENABLED)"] -->|HELD PENDING fix task, confirmed_by_human=False| Flow["normal delivery flow"]
+    CIW["ci_watch_engine<br/>(ROBOCO_CI_WATCH_ENABLED)"] -->|READY fix task| Flow
+    DEP["dep_update_engine<br/>(ROBOCO_DEP_UPDATE_ENABLED)"] -->|READY update task| Flow
+    ENV["env_sync_engine<br/>(ROBOCO_ENV_SYNC_ENABLED)"] -->|sync PR + task per conflicted repo, never pushes prod| Flow
+    DOCS["docs_sync_engine<br/>(ROBOCO_DOCS_SYNC_ENABLED)"] -->|docs-update task per release| Flow
+    RM["release_manager_engine<br/>(ROBOCO_RELEASE_MANAGER_ENABLED)"] -->|release proposal HELD for CEO| CEOGate
+    BP["Board Programs<br/>(per-program arming)"] -->|held exploration cycle| CEOGate
     Flow --> Gate["PR-review gate"]
     Gate --> CEOGate["CEO approval (never auto-merge / never auto-deploy)"]
     OM["org_memory loop<br/>(ROBOCO_ORG_MEMORY_ENABLED)"] -.->|distill on complete + inject on claim| Flow
@@ -433,20 +397,24 @@ graph LR
 
 ---
 
-## What's Wrong — Drift & Regression Risks
+## History: the 2026-06-29 audit and its follow-up deltas
+
+Everything below this heading is a dated record, kept as written apart from file locations the map checker re-points. It describes the codebase as it was on the date of each part, not as it is now: the slices above it, and each slice's own Regression Risks table, are the current map.
+
+### What's Wrong — Drift & Regression Risks
 
 **Method.** Thirty-one per-slice maps were produced from the `fd10cc862..HEAD` tree. Each slice's `## Regression Risks` and `## Drift from CLAUDE.md` sections were extracted with `grep` (480 + 781 lines of raw evidence), then deduplicated and ranked across slices. The table below consolidates the top ~25 risks, critical/high first; the full per-slice risk tables follow in each slice section. A separate "Verified Regression Risks" chapter (appended by a later step) will adversarially verify the top 12 against the live code.
 
-### Top Regression Risks (consolidated across 31 slices)
+#### Top Regression Risks (consolidated across 31 slices)
 
 | # | Risk | Slice | File:Line | Claim | Severity |
 |---|------|-------|-----------|-------|----------|
-| 1 | `ceo_approve` skips work-session close | task-service | `roboco/services/task.py:5146` | `ceo_approve` calls `_remove_task_worktree_on_terminal` but NOT `_close_work_session_for_task` (only `complete()` does). CEO-approved root tasks leave the WorkSession row not marked closed → reporting/session-resolution drift. **FIXED post-snapshot: `536bbb64` added `_close_work_session_for_task(task, reason="ceo approved")` before worktree removal (task.py:5379).** | High |
-| 2 | `fail_qa` route depends on unreliable `original_developer` marker | task-service | `roboco/services/task.py:4228` | Fast path reads the marker; if absent falls to `_resolve_revision_dev`. If both miss (no dev work session, e.g. parent-only edit) task is unassigned to pool → a PM may grab a dev task (the original 2026-06-27 loop). | High |
+| 1 | `ceo_approve` skips work-session close | task-service | `roboco/services/task.py:8343` | `ceo_approve` calls `_remove_task_worktree_on_terminal` but NOT `_close_work_session_for_task` (only `complete()` does). CEO-approved root tasks leave the WorkSession row not marked closed → reporting/session-resolution drift. **FIXED post-snapshot: `536bbb64` added `_close_work_session_for_task(task, reason="ceo approved")` before worktree removal (task.py:5379).** | High |
+| 2 | `fail_qa` route depends on unreliable `original_developer` marker | task-service | `roboco/services/task.py:7047` | Fast path reads the marker; if absent falls to `_resolve_revision_dev`. If both miss (no dev work session, e.g. parent-only edit) task is unassigned to pool → a PM may grab a dev task (the original 2026-06-27 loop). | High |
 | 3 | `do`/`a2a` any-role token gate | api-routes-schemas | `roboco/api/routes/v1/do.py:43`, `a2a.py:114` | `require_any_authenticated_agent` only verifies HMAC + agent exists; does NOT assert role matches the verb's role family. A QA-signed token could call `do/commit`; a dev could call `a2a` admin paths. Service-layer scope is the sole guard → a missed service check = privilege escape. | High |
 | 4 | 422 response echoes secrets | api-routes-schemas / api-core-websocket | `roboco/api/middleware.py:407` (resp body), `:434` | `_scrub_secrets` redacts only the **log** body; the JSON response still contains `body` with the caller's original `git_token`/`api_key`. A 422 returns the secret to the client (and any MITM/log of the response). | High |
 | 5 | `pr_merge` project_id scoping assumes non-None | choreographer | `roboco/services/gateway/choreographer/_verb_runner.py:263` | `project_id=task.project_id` — if a coordination/umbrella task reaches `pr_merge` with `project_id=None`, the cross-repo collision guard silently matches nothing or None-keys the scoping; could merge the wrong PR or no-op. | High |
-| 6 | `_submit_*_unchanged_pr_guard` fails open on resolver regression | choreographer | `roboco/services/gateway/choreographer/_impl.py:6175,6240` | Any future break in `_current_pr_head_sha` / `_project_slug_for` / `git.get_pr_head_sha` makes the pr_fail loop-stopper a no-op, re-opening the 2026-06-27 pr_fail re-submit loop silently. | High |
+| 6 | `_submit_root_unchanged_pr_guard` / `_submit_up_unchanged_pr_guard` fail open on resolver regression | choreographer | `roboco/services/gateway/choreographer/_impl.py:9654,9705` | Any future break in `_current_pr_head_sha` / `_project_slug_for` / `git.get_pr_head_sha` makes the pr_fail loop-stopper a no-op, re-opening the 2026-06-27 pr_fail re-submit loop silently. | High |
 | 7 | Intermediate-None trailing-None contract | choreographer | `_verb_runner.py:89` + `_impl.py:1277,6358` | A verb that forgets the trailing-None guard None-derefs `t.status`; any NEW verb using `run_intent` with a possibly-None last action inherits the trap. **FIXED post-snapshot: `0e7674af` added `if task is not None:` guard before the side_effects loop (_verb_runner.py:107); trailing None now flows out without touching side effects.** | High |
 | 8 | `has_cell_projects` threaded incorrectly breaks branchless exemption | foundation-batch-sequencing | `roboco/foundation/policy/batch.py:66` | `is_branchless_coordination` now requires callers to pass `has_cell_projects`. A call site that omits it (defaults False) for a cell-map root will NOT recognize it as branchless and will demand a branch/PR the root cannot supply — wedging that root in the git gate. Any new call site is a landmine. | High |
 | 9 | Kanban admin-override drag skips lifecycle | panel | `panel/src/components/kanban/core/kanban-board.tsx:160` | A confirmed override routes through `useUpdateTask` (admin status-override), bypassing the in-band validator. `skippedPreconditions` is precision-over-recall — a careless confirm can complete a task with no PR / QA-bypass / docs-incomplete. | High |
@@ -455,21 +423,21 @@ graph LR
 | 12 | Rework cost join on `agent_spawn_sessions.task_id` | metrics-observability | `roboco/services/metrics.py:742` | If spawn sessions stop populating `task_id` (orchestrator regression), rework cost silently drops to $0 — underreported CEO spend. | High |
 | 13 | Release Redis mutex TTL shorter than worst-case execute | release-manager | `roboco/services/release_proposal.py:39` | `_RELEASE_LOCK_TTL_SECONDS=3000` (50min) but execute can run clone+gate+CI+publish ≈ 85min. TTL expires mid-execute → a second approve acquires and `rm -rf`s the in-flight clone, corrupting the release. **FIXED post-snapshot: `05616607`+`2759edf7` added a background `_heartbeat_loop` (`_RELEASE_LOCK_HEARTBEAT_SECONDS=60`) that refreshes the TTL while the lock is held; TTL is now a crash-backstop only and cannot expire under a live execute. Fencing token (compare-and-del Lua script) also prevents a stale first-finally from stealing a usurper's lock.** | High |
 | 14 | Stream-bus handler failure leaves message pending → duplicate side effects | support-services | `roboco/events/stream_bus.py:338` | ACK only when all handlers succeed; `recover_pending` re-runs idle≥60s messages. Non-idempotent notification handlers can double-fire after a crash/restart. **FIXED post-snapshot: `e4ed970f` added per-`(event.id, handler)` SET-NX idempotency guard (`_run_handler_guarded`): successful handlers set a Redis key that blocks replay; failed handlers clear the key so replay re-runs them. Also added a dead-letter stream for undecodable poison pills and a periodic `_reclaim_loop` (every 60s).** | High |
-| 15 | `resolve_for_agent` silently downgrades to Anthropic | support-services | `roboco/services/llm.py:124,193,205` | Decrypt failure / unreachable LOCAL / missing assignment all return the legacy Anthropic route instead of raising — a misconfigured Grok/Ollama fleet spawns against Anthropic with only a log warning. | High |
+| 15 | `resolve_for_agent` silently downgrades to Anthropic | support-services | `roboco/services/llm.py:500` | Decrypt failure / unreachable LOCAL / missing assignment all return the legacy Anthropic route instead of raising — a misconfigured Grok/Ollama fleet spawns against Anthropic with only a log warning. | High |
 | 16 | LLM model rename breaks cached ollama deployments | deployment-tooling | `docker-compose.yaml:86` | `ollama-init` verify now greps for `glm-5.3` exactly. A NAS volume with only the old `glm-5:cloud` cached (no network) hits FATAL exit and blocks boot until the new model is pulled. | High |
-| 17 | Gateway-health over-reap of live containers | orchestrator | `roboco/runtime/orchestrator.py:8689` | `_maybe_recover_broken_gateway` kills a live container past `gateway_health_grace_seconds`; a flaky false-broken probe streak could kill a healthy agent mid-long-edit. | Medium-High |
-| 18 | Readopt liveness false-positive | orchestrator | `roboco/runtime/orchestrator.py:8547` | `_readopt_running_agents` registers ACTIVE for any running `roboco-agent-{slug}` container at startup, including a zombie from a prior orchestrator that already released the claim — blocks re-spawn until the stale container is noticed. | Medium |
-| 19 | Stalled-claim reaper live-skip blind spot | orchestrator | `roboco/runtime/orchestrator.py:8750` | `_should_skip_live_reap` spares any live container that is neither grok-wedged nor gateway-broken; a Claude agent alive but stuck in a non-verb loop keeps its claim forever. | Medium |
-| 20 | DB purpose-dedup gated to ack-required types only; `_persist_and_deliver` skips it entirely | messaging-notification | `roboco/services/notification.py:521`, `notification_delivery.py:875` | Task-handoff notifications (blocker/escalation/ceo-rejection) are not DB-deduped past the 60s Redis window — a retried `i_am_blocked`/`escalate` beyond 60s re-creates an unacked duplicate (the inbox-inflation + i_am_idle soft-block the DB dedup was added to prevent). | Medium |
-| 21 | `acknowledge` publishes `NOTIFICATION_ACKED` directly, not via the transactional outbox | messaging-notification | `roboco/services/notification_delivery.py:451` | Same phantom-event class F107 fixed for `deliver`, left unfixed for the ACK path — a rollback after a successful ACK publish emits a phantom ACK. | Medium |
+| 17 | Gateway-health over-reap of live containers | orchestrator | `roboco/runtime/engines/dispatch_breaker.py:854` | `_maybe_recover_broken_gateway` kills a live container past `gateway_health_grace_seconds`; a flaky false-broken probe streak could kill a healthy agent mid-long-edit. | Medium-High |
+| 18 | Readopt liveness false-positive | orchestrator | `roboco/runtime/engines/reconcile.py:499` | `_readopt_running_agents` registers ACTIVE for any running `roboco-agent-{slug}` container at startup, including a zombie from a prior orchestrator that already released the claim — blocks re-spawn until the stale container is noticed. | Medium |
+| 19 | Stalled-claim reaper live-skip blind spot | orchestrator | `roboco/runtime/engines/dispatch_breaker.py:917` | `_should_skip_live_reap` spares any live container that is neither grok-wedged nor gateway-broken; a Claude agent alive but stuck in a non-verb loop keeps its claim forever. | Medium |
+| 20 | DB purpose-dedup gated to ack-required types only; `_persist_and_deliver` skips it entirely | messaging-notification | `roboco/services/notification.py:521`, `notification_delivery.py:1934` | Task-handoff notifications (blocker/escalation/ceo-rejection) are not DB-deduped past the 60s Redis window — a retried `i_am_blocked`/`escalate` beyond 60s re-creates an unacked duplicate (the inbox-inflation + i_am_idle soft-block the DB dedup was added to prevent). | Medium |
+| 21 | ~~`acknowledge` publishes `NOTIFICATION_ACKED` directly, not via the transactional outbox~~ **STALE CLAIM** (see `docs/map/notification.md`: `acknowledge` defers the event through `defer_bus_publish`, the after_commit outbox `deliver` uses) | messaging-notification | `roboco/services/notification_delivery.py:857` | Same phantom-event class F107 fixed for `deliver`, left unfixed for the ACK path — a rollback after a successful ACK publish emits a phantom ACK. | Medium |
 | 22 | A2A legacy notification suppressed by new loop-prone re-fire guard | a2a-audit-journal-permissions | `roboco/services/a2a.py:640` | Since `3aff6e04`, `send_a2a_notification` runs the 60s Redis guard for loop-prone types before creating the notification. A legitimate A2A peer notification re-sent within 60s (real state change, not a respawn loop) can be silently dropped. | Medium |
 | 23 | `sync_branch` has no source-status gate — callable on terminal/paused/blocked tasks | foundation-lifecycle | `roboco/foundation/policy/lifecycle.py:1085` | `sync_branch` composes=() and is not in the special-case list, so `can_invoke_intent` only checks role + OWNERSHIP. A dev who owns a COMPLETED/CANCELLED task passes the spec gate; the rebase runs against a finished task's branch. | Medium |
-| 24 | `_curate_playbook` explicit `session.commit` before index | gateway-support | `roboco/services/gateway/content_actions.py:847` | If the caller's session is in `PendingRollbackError` (prior mid-verb failure poisoned it), this commit raises and the whole curation verb 500s instead of a clean envelope. | Medium |
+| 24 | `_curate_playbook` explicit `session.commit` before index | gateway-support | `roboco/services/gateway/content_actions.py:1442` | If the caller's session is in `PendingRollbackError` (prior mid-verb failure poisoned it), this commit raises and the whole curation verb 500s instead of a clean envelope. | Medium |
 | 25 | Coverage omit list hides orchestrator/git/workspace regressions from the 80% gate | tests | `pyproject.toml:259` | `[tool.coverage.run].omit` excludes `orchestrator.py`, `git.py`, `workspace.py`, `mcp/*`, `agents/*`. A regression in the respawn-tracker upsert, pr_merge cross-repo scoping, or worktree routing will NOT fail `make quality`'s `--cov-fail-under=80`. | Medium |
 
 > Additional notable Medium risks not deduplicated into the table above (see per-slice sections): `archive_playbook` behavior change (gateway-support); notify to prompter/secretary now refused (gateway-support); blocked task now blocks new claims (gateway-support); `apply_escalation` bypasses validator (task-service); branchless `ceo_reject` uses `admin_set_status` (task-service); `revision_count` bump is in audit helper only (task-service); `cancel` cascade swallows role violations (task-service); `_merge_with_retry` 405 → `MergeConflictError` (worksession-git); `close_pull_request` deletes branch on close by default (worksession-git); F123 worktree merge-sync runs in clone root not worktree (worksession-git); 1-cell map silently drops `product_id` (intake-secretary); malformed `project_id` in multi-cell map silently collapses shape (intake-secretary); collision-surface declaration is prompt-only not gate-enforced (prompts-roles-taxonomy); `submit_root` branch-keyed-vs-task_type-keyed prompt assertion (prompts-roles-taxonomy); `resolve_task_project_slug` cell_projects branch `AttributeError` (pr-gate-review); breaker substitution masks fixable rejection (mcp-servers); 404 synthesis assumes every route returns 200 (mcp-servers); intake composer SSE stuck (panel); panel token on live-chat bridges (panel); `/ws/system` ungated while siblings require panel token (api-core-websocket); cross-repo PR collision via `/api/work-sessions/{id}/pr/merge` (api-routes-schemas); orchestrator CEO gate vs release CEO gate divergence (api-routes-schemas); Grok directory mount widens RO exposure (runtime-providers); 6h `expires_at` default can burn the single-use refresh_token (runtime-providers); worktree `.venv` symlink self-heal depends on a later ensure (workspace); `ensure_worktree` reuses existing branch ref without validating base (workspace); `commit_and_push` RuntimeError unhandled by execute (release-manager); Redis outage fully blocks release approval (release-manager); `TranscriptionService` sync callbacks stall flush (support-services); `get_ready_buffers` unbounded growth (support-services); pitch partial-failure orphans GitHub repos (product-strategy-research-pitch); self-heal CEO notification spam (engines); ci_watch multi-workflow monorepo under-count (engines).
 
-### Drift from CLAUDE.md (consolidated)
+#### Drift from CLAUDE.md (consolidated)
 
 | Slice | Drift |
 |-------|-------|
@@ -505,7 +473,7 @@ graph LR
 | tests | None material. |
 | prompts-roles-taxonomy | Stale agent count in `base.md` (22 vs CLAUDE.md's 25). |
 
-### Assessment
+#### Assessment
 
 The baseline→HEAD diff is unusual: only two commits appear on `master`'s first-parent line (`15effce0` and `3aff6e04`), but they bundle a **+36,653/-4,214 line, 577-file** change that squashes months of per-fix work — F0xx audit gaps, F123 per-task worktrees, sequencing S1/S2/S3, the pr_fail loop-closer, the model rename, the enum-gate fix, and the bash-guard `/app` venv protection. Read against the 2026-06-28 logic-gap audit (140 confirmed gaps, all resolved), the picture is not "the system is broken"; it is "a hardened system that absorbed a massive consolidation pass and, in doing so, opened several new seams."
 
@@ -521,9 +489,9 @@ The baseline→HEAD diff is unusual: only two commits appear on `master`'s first
 
 <!-- VERIFIED_RISKS: appended by a later step -->
 
-## Appendix: Git Log fd10cc862..HEAD
+### Appendix: Git Log fd10cc862..HEAD
 
-`git -C /Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco log --oneline fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD`:
+`git log --oneline fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD` (run in the repository on 2026-06-29):
 
 ```
 3aff6e04 Chore: Close gaps (#285)
@@ -535,7 +503,7 @@ Two commits on `master`'s first-parent line, bundling a **577-file, +36,653/-4,2
 > Post-snapshot updates (since 2026-06-29, branch `chore/logical-gaps-element-sweep-fixes` + merged via PR #286 `536bbb64`): logical-gap sweep fixed ceo_approve work-session closure (Risk #1), verb_runner trailing-None side-effect guard (Risk #7), release-mutex heartbeat (Risk #13), and stream-bus idempotency guard + dead-letter (Risk #14). Two new migrations landed: `053_playbook_archived_attr` and `054_a2a_message_skill` (total now 001→054; ORM table count increased from 37 to 38). Chat-subsystem commits (`76ce53e3` MESSAGE_SENT wired end-to-end in websocket_bridge, `0065ecbb` session task_links, `2da72f3f` closed-session/reply_to guard, `77958c1e` read IDOR fixes, `5cb4e85f` secretary SSE hardening, `a1127daf` session-task endpoint fix) landed after the snapshot. A2A-routes hardening: `5bec3ec5` stamped authenticated caller slug as responder (spoof fix) and added PM-only gate on cancel_task. Hotfixes: `cfe725da` worktree clone-root recovery, `00513399` push_branch named-branch, `9faf2763`/`7be10057` VIRTUAL_ENV agent-image strip. Key sweep commits: `ec2e49af` pr_review_claim active_claimant_id, `d8a5bb48` a2a hierarchy gate + skill persist, `e4ed970f` stream-bus (see Risk #14), `0e7674af` verb_runner (see Risk #7), `05616607`+`2759edf7` release executor (see Risk #13), `ef33d56c` lifecycle-enforcement validators, `16b71be8` lifecycle 6-gap fix, `f90565ea` pr_gate MegaTask-root classification, `b49337e7` route-layer force/privileged-field gates, `115061f3` notification_delivery over-fetch fix.
 
 ---
-## Delta 2026-07-02 — hotfix batch (PR #293 `0f1ed3cc` + local `8e5f84c4`)
+### Delta 2026-07-02 — hotfix batch (PR #293 `0f1ed3cc` + local `8e5f84c4`)
 
 Nine live-run fixes, all merged to `master` the same day (commits `81f448bb`, `011158db`, `9d10217c`, `7dff3237`, `1cf24ff1`, `569a6157`, `c1acbd5b`, `298751e6`, `53bb0420`, `4de81d92`, `a260f903`, `caecb816`, `fe9e5589`, `8e5f84c4`):
 
@@ -552,7 +520,7 @@ Nine live-run fixes, all merged to `master` the same day (commits `81f448bb`, `0
 Slices touched: worksession-git (2, 3), choreographer/gateway-support (9), orchestrator (6, 7, 8), foundation-lifecycle (7, 9), mcp-servers (1), api-routes-schemas (4), panel (5). `docs/map/_complete_map.md` is the pre-delta concatenation — not regenerated.
 
 ---
-## Delta 2026-07-02 (evening) — leak-fix batch (branch `fix/leak-fix-batch`)
+### Delta 2026-07-02 (evening) — leak-fix batch (branch `fix/leak-fix-batch`)
 
 The remaining live-run leak fixes from the S6/fb836f80 postmortems, TDD'd per item:
 
@@ -569,7 +537,7 @@ The remaining live-run leak fixes from the S6/fb836f80 postmortems, TDD'd per it
 Slices touched: orchestrator (1, 7), api-routes-schemas + taskservice (2), panel (3), choreographer/gateway-support (6, 7), tests (4, 5, 6, 7). `docs/map/_complete_map.md` still not regenerated.
 
 ---
-## Delta 2026-07-02 (late) — CEO-ratified follow-ups (branch `fix/leak-fix-batch`)
+### Delta 2026-07-02 (late) — CEO-ratified follow-ups (branch `fix/leak-fix-batch`)
 
 1. **Dead spawn-cooldown path deleted** (see item 7 above; commit `78fa0f6f`).
 2. **uv serialization in the Makefile** (`cf5043fe`) — `export UV_NO_SYNC := 1` + `sync` prerequisite on quality/quality-fast/gate: gate recipes never implicitly re-sync the venv (the recurring rich/pip/bandit corruption came from two uv writers racing one `.venv`).
@@ -580,7 +548,7 @@ Slices touched: orchestrator (1, 7), api-routes-schemas + taskservice (2), panel
 Slices touched: worksession-git (3), orchestrator (1), deployment-tooling (2, 4), tests (5).
 
 ---
-## Delta 2026-07-02 (night) — wave 1 begins (branch `feat/wave-1`, post-v0.16.0)
+### Delta 2026-07-02 (night) — wave 1 begins (branch `feat/wave-1`, post-v0.16.0)
 
 1. **PR-gate turn cut** — `orchestrator._try_auto_submit` (+ `_AUTO_SUBMIT_VERB_BY_ROLE`), hooked in `_maybe_spawn_pm_closure` after the all-descendants-terminal check: POSTs the real `submit_up`/`submit_root` through the internal API as the owning PM (X-Agent-ID = task.assigned_to, fallback static `AGENT_UUIDS`); any refusal falls back to the classic PM closure spawn. Flag `ROBOCO_PR_GATE_AUTO_SUBMIT_ENABLED` (config, default on); audit `task.auto_submitted`. Tests: `tests/unit/runtime/test_pr_gate_auto_submit.py` (7) + e2e scenario 2b.
 2. **e2e scenarios 2/2b** — `tests/e2e_smoke/arcs.py` (canonical-company seeding — A2A resolves roles from static agents_config so slugs must match; `seed_hierarchy` with task-short-id branch chains; dev/qa/doc/reviewer arcs; `dispatcher_assign` mirroring `_dispatch_pm_review_work`'s claim-for-PM lane since `pr_pass` clears ownership BY DESIGN) + `test_pm_merge_chain.py`. Seams scripted: commit-subject validator ≥20 chars; reviewer learning-note gate before pr_pass; child PR bases on the parent's branch via ancestor resolution.
@@ -592,35 +560,35 @@ Slices touched: worksession-git (3), orchestrator (1), deployment-tooling (2, 4)
 Slices touched: orchestrator (1), tests (1, 2), taskservice + api-routes-schemas (3, 4, 5), panel (3, 4), secretary (5).
 
 ---
-## Delta 2026-07-02 (late night) — e2e scenario 3 (branch `feat/wave-1`)
+### Delta 2026-07-02 (late night) — e2e scenario 3 (branch `feat/wave-1`)
 
 `tests/e2e_smoke/test_root_ceo_chain.py`: 3a pr_fail→needs_revision→`i_will_plan` re-entry (route demands approach≥150 + sub_tasks even on re-claim — pydantic fires before the gateway short-circuit)→real fix commit (`origin_commit` helper)→resubmit→pass→merge; 3b submit_root→gate→complete-escalates→REAL `approve-and-merge` (tasks router now mounted in the harness app; CEO row seeded)→hello.txt on origin master. Seed corrections that ARE the documentation: delivery roots are team=main_pm + planning-typed (backend-team roots get closure-routed to the cell PM; code-typed roots hit the main_pm+code impossibility guard). Fake GitHub `get_pr` now recomputes head.sha live (the unchanged-PR gate reads it via the REST API, not local refs). Latent fix en route: dep-update probe env scrub (VIRTUAL_ENV). uv-rot root cause: shared ~/.cache/uv with long-lived uvx MCP servers — per-repo UV_CACHE_DIR pinned.
 
 ---
-## Delta 2026-07-03 — wave 2 begins (branch `feat/wave-2`)
+### Delta 2026-07-03 — wave 2 begins (branch `feat/wave-2`)
 
 1. **Five dead comms panel components deleted** (−422 lines; audit-verified zero consumers; MessageComposer/MessageTypeBadge stay).
 2. **e2e scenario 4 (MegaTask umbrella)** — `tests/e2e_smoke/test_megatask_umbrella.py` + arcs helpers (`wire_dependency` via the real sequencing edge, `seed_cell_and_dev`, `set_branch_name`). Proves: sequencing hold (`unmet_dependency` on RS2's i_will_plan), serial root merges to master, umbrella branchless close via ceo-approve (never approve-and-merge).
 3. **PRODUCT FIX: batch root-subtask completion wall** — `_main_pm_complete_guard` (_impl.py ~6708) + `escalate_to_ceo` (task.py ~5321) refused ALL parented tasks; both now consult `is_batch_root_subtask`. Live root-subtasks previously closed only via CEO god-mode. Regression tests in test_choreographer_pm.py + test_task_service_transitions.py. First product bug found BY the harness (subagent-built, Sonnet 5, reviewed).
 
 ---
-## Delta 2026-07-03 (2) — A2A live view (branch `feat/wave-2b`, SDD/Sonnet 5, reviewed)
+### Delta 2026-07-03 (2) — A2A live view (branch `feat/wave-2b`, SDD/Sonnet 5, reviewed)
 
 Backend: `EventType.A2A_MESSAGE_SENT` published from `A2AService.send` (excerpt-capped payload), `websocket_bridge` forwarder → `/ws/system` `a2a.message` frames; admin REST (`/a2a/chat/admin/conversations{,/{id}/messages}`, CEO-only) + CEO reply route via the publish-bearing `send` path. `agents_config.can_a2a_direct`: `from ceo` → allowed to anyone (the one asymmetry); `to ceo` stays blocked at creation. **Reply budget** (`_enforce_ceo_reply_budget` in `send_chat_message`): agent msgs ≥ CEO msgs in the conversation ⇒ reject; three-layer enforcement (matrix block → reply-channel resolve → budget). Panel: `/a2a` page + components, `use-a2a-live` hook over `useWebSocket("/system")`, composer gated on task-linked conversations. v1 seams flagged: legacy raw REST chat sends don't publish the live event; agent→CEO reply lookup matches topic-less conversations only; deduped re-send re-publishes an identical frame (idempotent consumer).
 
 ---
-## Delta 2026-07-03 (3) — prompter memory (branch `feat/wave-2b`, SDD/Sonnet 5, reviewed)
+### Delta 2026-07-03 (3) — prompter memory (branch `feat/wave-2b`, SDD/Sonnet 5, reviewed)
 
 `TaskService.list_recent_for_project` (recency = coalesce(completed,updated,created)); pure digest builders in `prompter.py` (15 lines/project, 70-char titles, 4000-char total cap); orchestrator `_resolve_history_digest_ambient` (+`_resolve_intake_ambient` merge, best-effort/non-blocking) injected at `_spawn_intake_container` → `_generate_composed_prompt(ambient=…)`; `GET /prompter/live/{id}/search-tasks` (session-liveness = trust boundary, q 2–200, limit ≤10); `query_past_tasks`/`format_search_results` shared by the grok MCP tool AND the Claude SDK in-process tool (full parity, one implementation). FLAGGED pre-existing gap (untouched): `_resolve_conventions_ambient` doesn't cover the MegaTask `project_ids` scope — conventions ambient absent on MegaTask intakes.
 
 ---
-## Delta 2026-07-03 (4) — switchboard + task access (branch `feat/wave-2c`, SDD/Sonnet 5, reviewed)
+### Delta 2026-07-03 (4) — switchboard + task access (branch `feat/wave-2c`, SDD/Sonnet 5, reviewed)
 
 1. **Switchboard**: `A2A_ALLOWED_PAIRS` (agents_config, import-time; 70 pairs: 15×3 cells, 6 pm-chain, 3 board, 16 cross), `A2AService.list_admin_pairs` (bulk tuple_ IN join, latest conversation per pair), `GET /a2a/chat/admin/pairs` (CEO-gated); panel `a2a-switchboard{,-utils,-pair-card}` (pure lighting utils, rAF/CSS 45s fade, no timers), /a2a defaults to switchboard w/ v1-list toggle. FLAGGED pre-existing: `agent-utils.ts` static maps miss the per-cell pr-reviewer slugs.
 2. **Task access**: Secretary `_EDITABLE_TASK_FIELDS` full content surface + enum coercion + claim-aware reassign (`reassign_active_claim` when claimed/in_progress); `read_task` full detail (progress bounded 50). PM lighter: `_pm_editor_scope`/`_enforce_pm_lighter_fields` in routes/tasks.py — closed the pre-existing PM-unrestricted-admin hole (cross-team cell PM hard-403; content allowlist; zero status via PATCH). submit_directive tool docs never mentioned `edit` (fixed — undiscoverable).
 
 ---
-## Delta 2026-07-03 (5) — wave 3 → v0.17.0 (branch `feat/wave-3`, SDD/Sonnet 5, reviewed)
+### Delta 2026-07-03 (5) — wave 3 → v0.17.0 (branch `feat/wave-3`, SDD/Sonnet 5, reviewed)
 
 Six subsystems, all default-off + additive:
 1. **Sandboxed dev DB/Redis/Mongo** (`ROBOCO_SANDBOX_DB_ENABLED`, migration 057 `projects.sandbox_services`): `SandboxProvisioner` (`roboco/runtime/sandbox.py`) `docker run`s throwaway `postgres:16-alpine`/`redis:8-alpine`/`mongo:8` sibling containers per spawn (random creds, tmpfs, labeled), injecting `ROBOCO_TEST_DB_*`/`ROBOCO_TEST_REDIS_*`/`ROBOCO_TEST_MONGO_*` in place of the prod-creds gate-env. The service set is a pluggable engine registry (`roboco/models/sandbox.py`: `SandboxEngine` ABC + `_PostgresEngine`/`_RedisEngine`/`_MongoEngine`, `SANDBOX_ENGINES` / `VALID_SANDBOX_SERVICES` derived from it); adding an engine is one class + one registry line — no provisioner or env-emitter branch. Container-tracked lifetime + orphan janitor (grace-windowed). REVIEW FIX: pre-spawn stale-clear must not tear down the just-provisioned sandbox (`teardown_sandbox=False`) + provision pre-clears stale + janitor grace; `_ensure_image` inspects+pulls (300s) before `docker run` so a NAS cold pull isn't killed at the 20s run deadline.
@@ -633,7 +601,7 @@ Six subsystems, all default-off + additive:
 Compose: every optional feature armed `:-true` in the NAS composes, OFF in registry; two opt-in exceptions (`CLOUD_AUTH`, `ROUTING_STRICT`) default off (change auth/failure behavior, not capability).
 
 ---
-## Delta 2026-07-04 — v0.18.0
+### Delta 2026-07-04 — v0.18.0
 
 Three workstreams plus a migration-chain catch-up (all reviewed; all default-off except the doc-only design bar):
 

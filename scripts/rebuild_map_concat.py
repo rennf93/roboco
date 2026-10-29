@@ -57,6 +57,7 @@ SLICE_ORDER = [
     "panel",
     "tests",
     "attestation",
+    "decisions",
 ]
 
 

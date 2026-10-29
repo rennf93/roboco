@@ -1,6 +1,6 @@
 """Idempotently seed the Nebius provider row.
 
-The ``modelprovider`` enum carries ``'nebius'`` as of migration 097.
+The ``modelprovider`` enum carries ``'nebius'`` as of migration 099.
 This migration seeds the corresponding ``provider_configs`` row so the
 Settings UI can list it for role/agent model assignment.
 
