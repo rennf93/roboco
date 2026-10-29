@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { TgSheet, useCountUp } from "../motion";
 
 describe("useCountUp", () => {
@@ -26,8 +26,35 @@ describe("useCountUp", () => {
 
   it("settles on the exact target when animating", async () => {
     const { result } = renderHook(() => useCountUp(12.34, 50));
-    // Generous timeout: rAF frames starve under parallel test workers.
-    await waitFor(() => expect(result.current).toBe(12.34), { timeout: 4000 });
+    await waitFor(() => expect(result.current).toBe(12.34));
+  });
+
+  it("counts up on the frame clock even when it lags performance.now()", () => {
+    // Frames are driven by hand on a clock 1.2 s behind performance.now(),
+    // the lag jsdom shows: the count must still finish after its duration
+    // and never dip below where it started.
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((cb) => frames.push(cb));
+    const caf = vi
+      .spyOn(window, "cancelAnimationFrame")
+      .mockImplementation(() => {});
+    try {
+      const frameClock = performance.now() - 1200;
+      const { result } = renderHook(() => useCountUp(12.34, 50));
+      const seen: number[] = [];
+      for (let i = 0; i < 6 && frames.length > 0; i++) {
+        const frame = frames.shift() as FrameRequestCallback;
+        act(() => frame(frameClock + i * 16));
+        seen.push(result.current);
+      }
+      expect(result.current).toBe(12.34);
+      expect(Math.min(...seen)).toBeGreaterThanOrEqual(0);
+    } finally {
+      raf.mockRestore();
+      caf.mockRestore();
+    }
   });
 });
 
