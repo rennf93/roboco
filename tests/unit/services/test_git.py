@@ -784,6 +784,7 @@ async def test_diff_and_files_runs_subprocesses_concurrently() -> None:
     _bind(svc, "_resolve_diff_base", AsyncMock(return_value="origin/master"))
 
     leg_seconds = 0.02
+    legs = 2  # the full diff and the --name-only diff
     in_flight = 0
     peak = 0
 
@@ -807,7 +808,7 @@ async def test_diff_and_files_runs_subprocesses_concurrently() -> None:
     assert diff == "diff\n"
     assert files == ["a.py"]
     # Structural proof: both subprocess legs were in-flight at once.
-    assert peak == 2  # noqa: PLR2004
+    assert peak == legs
 
 
 @pytest.mark.asyncio

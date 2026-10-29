@@ -135,9 +135,9 @@ class _Permissions:
         self,
         agent: AgentContext,
         action: str,
-        team: Team | None = None,  # noqa: ARG002
+        team: Team | None = None,
     ) -> bool:
-        del agent
+        del agent, team
         if action == "claim":
             return self._can_claim
         if action == "assign":

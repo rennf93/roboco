@@ -12,7 +12,7 @@ from typing import Any, Final, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import ColumnElement, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
@@ -21,7 +21,7 @@ from roboco.agents_config import (
     get_agent_skills,
     get_agent_team,
 )
-from roboco.config import settings
+from roboco.config import reachable_url_host, settings
 from roboco.db.tables import (
     A2AConversationTable,
     A2AMessageTable,
@@ -120,6 +120,13 @@ def render_steering_note(
 _LIVE_VIEW_EXCERPT_CHARS: Final[int] = 240
 
 
+def awaiting_response() -> ColumnElement[bool]:
+    """Messages that still wait for a reply. Written ``= true`` to match
+    ``ix_a2a_msg_pending``'s predicate (migration 001): the planner cannot
+    use that partial index for ``IS TRUE``, which ``.is_(True)`` emits."""
+    return A2AMessageTable.requires_response == true()
+
+
 def _excerpt(text: str, limit: int = _LIVE_VIEW_EXCERPT_CHARS) -> str:
     """Truncate ``text`` to ``limit`` chars, appending an ellipsis marker
     only when truncation actually happened."""
@@ -145,18 +152,10 @@ class A2AService:
         """Build service endpoint URL from settings.
 
         When the API binds to the all-interfaces address (dev default),
-        we can't use it for outbound callbacks — dial loopback instead.
-        `is_unspecified` covers both 0.0.0.0 and ::, and avoids a bare
-        literal that trips bandit B104.
+        we can't use it for outbound callbacks; ``reachable_url_host`` dials
+        the loopback of the same address family instead.
         """
-        import ipaddress
-
-        try:
-            is_any_iface = ipaddress.ip_address(settings.host).is_unspecified
-        except ValueError:
-            is_any_iface = False
-        connect_host = "127.0.0.1" if is_any_iface else settings.host
-        return f"http://{connect_host}:{settings.port}"
+        return f"http://{reachable_url_host(settings.host)}:{settings.port}"
 
     @staticmethod
     def build_system_agent_card() -> AgentCard:
@@ -1982,7 +1981,7 @@ class A2AService:
             .select_from(A2AMessageTable)
             .where(
                 A2AMessageTable.from_agent == agent_slug,
-                A2AMessageTable.requires_response.is_(True),
+                awaiting_response(),
             )
         )
         pending_result = await self.session.execute(pending_query)
@@ -1999,7 +1998,7 @@ class A2AService:
                     A2AConversationTable.agent_b == agent_slug,
                 ),
                 A2AMessageTable.from_agent != agent_slug,
-                A2AMessageTable.requires_response.is_(True),
+                awaiting_response(),
             )
         )
         unanswered_result = await self.session.execute(unanswered_query)

@@ -21,10 +21,11 @@ from roboco.agent_sdk.live_providers import LiveReplyAccumulator
 _OVERRUN_THEN_EOF_CALLS = 2  # first call overflows, second hits EOF
 
 
-class _OverrunThenEofReader:
+class _OverrunThenEofReader(asyncio.StreamReader):
     """readline() overflows once (the huge JSONL line), then hits EOF."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.readline_calls = 0
         self.read_sizes: list[int] = []
 
@@ -34,7 +35,7 @@ class _OverrunThenEofReader:
             raise asyncio.LimitOverrunError("chunk exceed the limit", 0)
         return b""
 
-    async def read(self, n: int) -> bytes:
+    async def read(self, n: int = -1) -> bytes:
         self.read_sizes.append(n)
         return b'{"partial": true}'
 
@@ -45,10 +46,7 @@ async def test_live_drain_survives_limit_overrun() -> None:
     session._turn_timeout = 30.0
     reader = _OverrunThenEofReader()
 
-    chunks = [
-        chunk
-        async for chunk in session._drain(reader, LiveReplyAccumulator())  # type: ignore[arg-type]
-    ]
+    chunks = [chunk async for chunk in session._drain(reader, LiveReplyAccumulator())]
 
     assert [c.kind for c in chunks] == []
     assert reader.readline_calls == _OVERRUN_THEN_EOF_CALLS
@@ -61,10 +59,7 @@ async def test_grok_drain_survives_limit_overrun() -> None:
     session._turn_timeout = 30.0
     reader = _OverrunThenEofReader()
 
-    chunks = [
-        chunk
-        async for chunk in session._drain(reader, _StreamAssembler())  # type: ignore[arg-type]
-    ]
+    chunks = [chunk async for chunk in session._drain(reader, _StreamAssembler())]
 
     assert [c.kind for c in chunks] == []
     assert reader.readline_calls == _OVERRUN_THEN_EOF_CALLS

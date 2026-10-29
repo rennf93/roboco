@@ -3,7 +3,8 @@ import {
   buildReviewerChain,
   groupFindingsByRound,
   parseAcVerificationStamps,
-  PR_CI_VERDICT_UNAVAILABLE,
+  prCiVerdictFromAttestation,
+  PR_CI_VERDICT_NOT_AVAILABLE,
   RELEASE_NO_MEMBER_TASKS_MESSAGE,
   type ReviewerChainEntry,
 } from "../verification";
@@ -182,13 +183,66 @@ describe("buildReviewerChain", () => {
   });
 });
 
-describe("PR_CI_VERDICT_UNAVAILABLE", () => {
-  it("reports unavailable with a short reader-facing reason distinct from the technical escalation detail", () => {
-    expect(PR_CI_VERDICT_UNAVAILABLE.available).toBe(false);
-    expect(PR_CI_VERDICT_UNAVAILABLE.reason.length).toBeGreaterThan(0);
-    expect(PR_CI_VERDICT_UNAVAILABLE.reason).not.toMatch(/endpoint|escalate/i);
-    expect(PR_CI_VERDICT_UNAVAILABLE.technicalDetail).toMatch(
-      /endpoint|escalate/i,
+describe("prCiVerdictFromAttestation", () => {
+  it.each([
+    "success",
+    "failure",
+    "pending",
+    "pending_not_scheduled",
+    "no_ci_configured",
+    "error",
+  ])("carries get_pr_ci_status's %s state through as available", (state) => {
+    expect(
+      prCiVerdictFromAttestation({
+        state,
+        head_sha: "abc1234def",
+        failing_checks: [],
+      }),
+    ).toEqual({
+      available: true,
+      state,
+      headSha: "abc1234def",
+      failingChecks: [],
+    });
+  });
+
+  it("keeps the failing checks by name", () => {
+    const verdict = prCiVerdictFromAttestation({
+      state: "failure",
+      head_sha: "abc1234def",
+      failing_checks: ["Python quality gate", "Panel (Next.js)"],
+    });
+    expect(verdict).toMatchObject({
+      available: true,
+      failingChecks: ["Python quality gate", "Panel (Next.js)"],
+    });
+  });
+
+  it("reads a missing head sha as null", () => {
+    expect(
+      prCiVerdictFromAttestation({ state: "pending", failing_checks: [] }),
+    ).toMatchObject({ available: true, headSha: null });
+  });
+
+  it.each(["not_available", "unknown", ""])(
+    "reads the attestation's %j state as no verdict, never as a pass",
+    (state) => {
+      expect(
+        prCiVerdictFromAttestation({
+          state,
+          head_sha: null,
+          failing_checks: [],
+        }),
+      ).toBe(PR_CI_VERDICT_NOT_AVAILABLE);
+    },
+  );
+
+  it("gives the approver a reason that names no internals", () => {
+    expect(PR_CI_VERDICT_NOT_AVAILABLE.available).toBe(false);
+    if (PR_CI_VERDICT_NOT_AVAILABLE.available) return;
+    expect(PR_CI_VERDICT_NOT_AVAILABLE.reason.length).toBeGreaterThan(0);
+    expect(PR_CI_VERDICT_NOT_AVAILABLE.reason).not.toMatch(
+      /endpoint|escalate|attestation|get_pr_ci_status/i,
     );
   });
 });

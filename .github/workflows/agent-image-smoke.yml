@@ -15,6 +15,7 @@ on:
   push:
     paths:
       - 'docker/agent-base.Dockerfile'
+      - 'docker/npm/agent-base/**'
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
       - 'docker/agent-devops.Dockerfile'
@@ -29,6 +30,7 @@ on:
     # real evidence at the dev-PR review stage this task exists for.
     paths:
       - 'docker/agent-base.Dockerfile'
+      - 'docker/npm/agent-base/**'
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
       - 'docker/agent-devops.Dockerfile'

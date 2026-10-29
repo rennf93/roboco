@@ -2,10 +2,12 @@
 #
 # This file overlays the auto-derived scan: every consumer (the validator, the
 # per-task constraints, the spawn-time ambient block) reads the merged effective
-# map, so only project-specific divergences need to live here. The scan already
-# excludes tests/ and docs/, maps the backend (roboco/) + frontend (panel/)
-# layers, and defaults misplaced-helper to warn — so this file is mostly a small
-# set of module declarations plus the rule-level policy below.
+# map, so only project-specific divergences need to live here. Test and docs
+# files are never placement-checked (tests/, docs/, the panel's colocated
+# __tests__/ dirs, and *.test.* / *.spec.* files); the scan maps the backend
+# (roboco/) + frontend (panel/) layers and defaults misplaced-helper to warn, so
+# this file is mostly a small set of module declarations plus the rule-level
+# policy below.
 #
 # Posture: BLOCK every boundary the codebase already honors (a model or helper
 # in a route, a route in a service, a model/route in a panel component, a hook
@@ -91,19 +93,17 @@ rules:
     level: warn
   # A handful of unavoidable framework suppressions are auto-allowed
   # (TC001-003, pydantic prop-decorator). The 2026-07 suppression audit
-  # resolved every other inline noqa/type:ignore in roboco/ + panel/: two
-  # were fixed at source (orchestrator.py's magic-number noqa, hoisted to a
-  # module constant, and panel/src/components/journals/journals-view.tsx's
-  # eslint-disable, replaced by a useRef mount-guard), and the two
-  # structurally-unavoidable ones now carry accurate waivers below
-  # (prompter_live.py's route-symmetry param, lifecycle.py's circular-import
-  # E402). roboco/ and panel/ are clean, but tests/ still carries ~90
-  # unwaived noqa/type:ignore markers across ~36 files that this audit never
-  # scoped in and the validator does not exclude — so this rule stays warn
-  # until that backlog is cleared or the validator gains a tests/ exclusion;
-  # promoting to block today would hard-fail the gate on unrelated diffs
-  # touching any of those files. See
-  # docs/backend/lint-suppression-reconciliation.md for the full audit.
+  # resolved every inline noqa/type:ignore in roboco/ + panel/ except two it
+  # waived (prompter_live.py's route-symmetry param, lifecycle.py's E402); see
+  # docs/backend/lint-suppression-reconciliation.md. The 2026-10 sweep removed
+  # every remaining noqa/type:ignore from roboco/ and tests/, those two
+  # included: a false positive now lives as a commented per-file-ignores entry
+  # in pyproject.toml, never inline. That clears the tests/ backlog that kept
+  # this rule at warn. The check now counts only real directives (a marker
+  # where ruff, mypy, bandit, ESLint or TypeScript reads it, nosec included),
+  # never prose that names one, so the only finding left in the tree is the
+  # nosec B108 on the Nebius microVM path. Promoting the rule to block is a
+  # separate decision, so it stays warn for now.
   no_lint_suppressions:
     level: warn
   # RoboCo routes deliberately call db.commit() (get_db auto-commit is unreliable
@@ -118,68 +118,13 @@ rules:
   # routes, no routes in services, no models/routes in panel components, etc.
 
 custom: []
-waivers:
-  # Waiver entries must describe a suppression that exists in the named file at
-  # the current branch HEAD. When the suppressed code is gone — removed
-  # upstream, by a fix, or by a rebase revert — its waiver becomes an orphan
-  # and must be deleted in the same change that removes the suppression; a
-  # waiver that describes nothing is worse than no waiver, because it keeps
-  # silenced debt plausible that no longer exists.
-  - path: panel/src/hooks/__tests__/use-tasks-null-guards.test.tsx
-    rule: no_components_in_hooks
-    reason: >-
-      `wrapper` is a QueryClientProvider test fixture local to this test file,
-      not a production component — the same pattern already used by the
-      pre-existing use-agents.test.tsx / use-observability.test.tsx hook
-      tests colocated under hooks/__tests__/.
-  - path: panel/src/hooks/__tests__/use-verification.test.tsx
-    rule: no_components_in_hooks
-    reason: >-
-      Same root cause as the use-tasks-null-guards.test.tsx waiver directly
-      above: `wrapper` is a QueryClientProvider test fixture local to this
-      test file, not a production component.
-  - path: roboco/api/routes/prompter_live.py
-    rule: no_lint_suppressions
-    reason: >-
-      preview_live_batch's `session_id` path parameter is unused in the
-      function body (the endpoint is a pure precompute). FastAPI only binds
-      path params a handler actually declares, so a zero-arg handler on
-      `/live/{session_id}/preview-batch` would route and run fine — dropping
-      the param would NOT break routing. It stays for route symmetry with
-      every sibling `/live/{session_id}/*` handler in this file (`confirm_live`,
-      `confirm_live_batch`, `send_message`, ...), all of which take
-      `session_id` even where the body could look it up another way, so the
-      ARG001 suppression documents a deliberate consistency choice, not
-      silenced debt.
-  - path: roboco/foundation/policy/lifecycle.py
-    rule: no_lint_suppressions
-    reason: >-
-      The module-load-time `_run_all_lifecycle_validators` import sits below
-      other module code deliberately: its validators live in
-      `roboco.foundation._validate_lifecycle`, a sibling of
-      `foundation/_validate.py`, and `roboco.foundation.__init__` eagerly
-      imports `_validate` — importing it at the top of this file would
-      create a real import cycle. The E402 suppression documents a genuine
-      circular-import constraint, not silenced debt.
-  - path: roboco/api/routes/board_programs.py
-    rule: no_models_in_routes
-    reason: >-
-      `BoardProgramResponse` is this route's own `response_model` and predates
-      the route-helper extraction task (2026-08-08) that cleared every
-      `no_helpers_in_routes` finding in this file. That task's explicit
-      instructions forbade moving, renaming, or deleting any response schema
-      (to avoid repeating the reverted d48463f7/#769/#793 regression, which
-      deleted live handlers during a similar extraction) — only the plain
-      helper functions `_require_ceo`/`_to_response` were relocated into
-      `roboco/api/utils/board_programs.py`. Moving the model out is a
-      legitimate follow-up but is deliberately out of scope for that task.
-  - path: roboco/api/routes/board_programs.py
-    rule: modular_cohesion
-    reason: >-
-      Same root cause as the `no_models_in_routes` waiver directly above:
-      `BoardProgramResponse` staying colocated with the route handlers is
-      what trips this file's mixed-concern (model + route) finding. Tracked
-      as the same pre-existing, explicitly out-of-scope item.
+# Waiver entries must describe a suppression that exists in the named file at
+# the current branch HEAD. When the suppressed code is gone — removed
+# upstream, by a fix, or by a rebase revert — its waiver becomes an orphan
+# and must be deleted in the same change that removes the suppression; a
+# waiver that describes nothing is worse than no waiver, because it keeps
+# silenced debt plausible that no longer exists.
+waivers: []
 
 # Declared infrastructure paths: PRs whose changed files match these globs
 # require review by the DevOps agent (devops-1) before pr_pass composes.

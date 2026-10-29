@@ -25,13 +25,13 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `roboco/templates/git/pr_internal.py` | Internal (subtask→parent) PR title/body builder | 140 |
 | `roboco/templates/git/pr_root.py` | Root (→master, CEO-level) PR title/body builder with task tree | 245 |
 | `roboco/services/forge/__init__.py` | Package re-exports (`ForgeRouter`, `GitProvider`, `GitHubProvider`, `GiteaProvider`, `GitLabProvider`, `RepoRef`, `provider_for`, `register_project_forge`) | 32 |
-| `roboco/services/forge/base.py` | Pure contract: `RepoRef` dataclass + the `GitProvider` ABC (~20 abstract methods every forge implements) | 208 |
-| `roboco/services/forge/github.py` | GitHub.com/GHE REST transport — the pre-existing inline `httpx` logic pulled out unchanged; owns the sole retry policy in the package (`list_ci_runs`) | 432 |
-| `roboco/services/forge/gitea.py` | Self-hosted Gitea REST transport, adapting the wire contract back into GitHub shapes | 471 |
+| `roboco/services/forge/base.py` | Pure contract: `RepoRef` dataclass + the `GitProvider` ABC (~20 abstract methods every forge implements) | 252 |
+| `roboco/services/forge/github.py` | GitHub.com/GHE REST transport — the pre-existing inline `httpx` logic pulled out unchanged; owns the sole retry policy in the package (`list_ci_runs`) | 530 |
+| `roboco/services/forge/gitea.py` | Self-hosted Gitea REST transport, adapting the wire contract back into GitHub shapes | 535 |
 | `roboco/services/forge/gitlab.py` | GitLab REST v4 transport — heaviest adaptation (MR `iid`, diff reassembly, pipelines) | 679 |
 | `roboco/services/forge/registry.py` | Host↔provider(+scheme) map + `provider_for(project)` resolution, self-healing per-process | 104 |
-| `roboco/services/forge/router.py` | `ForgeRouter` — implements `GitProvider` by picking a transport per call from `RepoRef.host` | 195 |
-| `roboco/services/forge/shaping.py` | `ShapedResponse` — an `httpx.Response`-compatible stand-in a non-GitHub provider returns when it must synthesize a status the wire call didn't produce (e.g. a shaped 501 for `merge_branch`) | 51 |
+| `roboco/services/forge/router.py` | `ForgeRouter` — implements `GitProvider` by picking a transport per call from `RepoRef.host` | 223 |
+| `roboco/services/forge/shaping.py` | `ShapedResponse` — an `httpx.Response`-compatible stand-in a non-GitHub provider returns when it must synthesize a status the wire call didn't produce (e.g. a shaped 501 for `merge_branch`); `not_implemented(origin, message)` builds that shaped 501 | 66 |
 | `roboco/foundation/policy/forge.py` | Pure host/provider detection (`extract_host`, `detect_provider`) + registration-time validation (`validate_project_forge`) | 99 |
 | `roboco/foundation/policy/pr_labels.py` | `derive_pr_labels` — the org-structure label vocabulary (`to <base_branch>`, `root`, `MegaTask`, layer labels) applied at every PR-open site | ~69 |
 | `roboco/services/github_app_auth.py` | GitHub App installation-token minting, the drop-in replacement for a PAT: JWT from the App credentials, cached installation tokens, installation and repository listing | 213 |
@@ -136,24 +136,24 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `build_pr_body_root` / `build_pr_title_root` | funcs | templates/git/pr_root.py:167/235 | Root PR rendering with task tree + AC checklist |
 | `MAX_TASK_DEPTH` | const | templates/git/constants.py:45 | 4 (umbrella→root→cell→dev) |
 | `BRANCH_TYPES` / `COMMIT_TYPES` | consts | templates/git/constants.py:10/21 | Allowed prefixes |
-| `RepoRef` | dataclass | forge/base.py:27 | Provider-opaque repo identity (`owner`, `repo`, `host`); GitLab packs the full URL-encoded namespace path into `owner`, leaving `repo` empty |
-| `GitProvider` | ABC | forge/base.py:49 | The ~20-method transport contract every forge implements (PR CRUD, review flow, `merge_branch`, CI signal surface, repo/label/branch/release/provisioning) |
+| `RepoRef` | dataclass | forge/base.py:30 | Provider-opaque repo identity (`owner`, `repo`, `host`); GitLab packs the full URL-encoded namespace path into `owner`, leaving `repo` empty |
+| `GitProvider` | ABC | forge/base.py:52 | The ~25-method transport contract every forge implements (PR CRUD, review flow, `merge_branch`, server-side commits — `create_branch_ref` / `update_branch_ref` / `create_commit_on_branch` — CI signal surface, repo/label/branch/release/provisioning) |
 | `GitService._forge` | property | git.py:491 | A fresh `ForgeRouter()` per access (cheap, no I/O — built this way, not `__init__`-cached, so tests can `GitService.__new__` bypass the constructor) |
 | `ForgeRouter` | class | forge/router.py:37 | Implements `GitProvider` by picking a transport per call from `RepoRef.host` |
 | `ForgeRouter._provider_for_ref` | staticmethod | forge/router.py:41 | `None` host → `GitHubProvider()`; a registered `"gitea"`/`"gitlab"` host → that provider constructed with its remembered scheme; unregistered → `GitError` naming the fix |
 | `register_project_forge` | func | forge/registry.py:50 | Records a project's host→provider(+scheme) mapping; called from `ProjectService.create`/`update`/`get`/`get_by_slug` — in-memory, per-process, self-healing (a restart forgets it; the next project read re-registers) |
 | `provider_for` | func | forge/registry.py:77 | Resolve a `GitProvider` for a project (duck-typed on `.git_provider`/`.git_url`) |
-| `GitHubProvider` | class | forge/github.py:76 | GitHub.com/GHE REST transport — the pre-existing inline `httpx` logic, byte-for-byte; owns the sole retry policy in the package (`list_ci_runs`, 3 attempts/0.5s backoff, retryable on 429+5xx) |
-| `GiteaProvider` | class | forge/gitea.py:55 | Self-hosted Gitea transport: `token`-scheme auth (Bearer is rejected by classic PATs); duplicate-PR 409→422 reshape on `create_pr`; `merge_pr` POSTs (not PUTs) with the method under a `"Do"` key; commit-status → synthetic `check_runs`/`workflow_runs`; branch names with slashes URL-`quote()`-encoded before hitting Gitea's router (caught live by the e2e suite) |
-| `GitLabProvider` | class | forge/gitlab.py:85 | GitLab REST v4 transport — the most semantically divergent: MR `iid`→`number`, `source_branch`/`target_branch`→`head.ref`/`base.ref`; `get_pr_diff` reassembles a unified-diff string from up to 3 pages of per-file JSON diffs (no raw-diff media type); `post_review` routes APPROVE to `/approve` and everything else to a plain note (no request-changes verb exists); `request_reviewers` synthetic-skips (needs numeric user ids RoboCo doesn't store); `create_org_repo` resolves a group path to a numeric namespace id, falling back to the token's personal namespace on 404 |
-| `ShapedResponse` | class | forge/shaping.py:17 | `httpx.Response`-compatible stand-in a non-GitHub provider returns to synthesize a status the wire call didn't produce (e.g. `merge_branch`'s shaped 501) |
+| `GitHubProvider` | class | forge/github.py:84 | GitHub.com/GHE REST transport — the pre-existing inline `httpx` logic, byte-for-byte; owns the sole retry policy in the package (`list_ci_runs`, 3 attempts/0.5s backoff, retryable on 429+5xx) |
+| `GiteaProvider` | class | forge/gitea.py:62 | Self-hosted Gitea transport: `token`-scheme auth (Bearer is rejected by classic PATs); duplicate-PR 409→422 reshape on `create_pr`; `merge_pr` POSTs (not PUTs) with the method under a `"Do"` key; commit-status → synthetic `check_runs`/`workflow_runs`; branch names with slashes URL-`quote()`-encoded before hitting Gitea's router (caught live by the e2e suite) |
+| `GitLabProvider` | class | forge/gitlab.py:92 | GitLab REST v4 transport — the most semantically divergent: MR `iid`→`number`, `source_branch`/`target_branch`→`head.ref`/`base.ref`; `get_pr_diff` reassembles a unified-diff string from up to 3 pages of per-file JSON diffs (no raw-diff media type); `post_review` routes APPROVE to `/approve` and everything else to a plain note (no request-changes verb exists); `request_reviewers` synthetic-skips (needs numeric user ids RoboCo doesn't store); `create_org_repo` resolves a group path to a numeric namespace id, falling back to the token's personal namespace on 404 |
+| `ShapedResponse` | class | forge/shaping.py:18 | `httpx.Response`-compatible stand-in a non-GitHub provider returns to synthesize a status the wire call didn't produce (e.g. `merge_branch`'s shaped 501) |
 | `extract_host` / `detect_provider` / `validate_project_forge` | funcs | foundation/policy/forge.py:27/45/62 | Pure host extraction (https/ssh/scp-like URLs), github.com/gitlab.com auto-detection, and registration-time validation (a self-hosted host with no explicit `git_provider` is a registration-time rejection — the GHE/self-hosted escape hatch requires the operator to set the column) |
 | `derive_pr_labels` | func | foundation/policy/pr_labels.py | Org-structure label vocabulary: `base_branch` (required kwarg, the PR's real resolved target — never assumed from `is_root_pr`) → `f"to {base_branch}"`, plus `root`/`MegaTask`/layer labels (`main-pm`, `cell/{team}`, `subtask/{team}`) |
 | `mint_installation_token` | function | `roboco/services/github_app_auth.py:127` | A live installation token, minted and cached as needed |
 | `list_installations` | function | `roboco/services/github_app_auth.py:168` | Every installation of the configured App (JWT-authenticated) |
 | `GitHubAppCredentialsService` | class | `roboco/services/github_app_credentials.py:52` | CRUD for the single App-credentials row |
 
-Neither Gitea nor GitLab has GitHub's server-side merges API for the env-sync cascade: both return a shaped 501 from `merge_branch`, landing `GitService.sync_env_branch` on the local-git fallback (`_local_merge_branch`: throwaway clone → merge → push; a conflict aborts leaving the remote untouched, same status vocabulary as the GitHub server-side path) — this fallback lives entirely in `GitService`, not the forge package; its throwaway clone lives under `<private_root>/scratch/<slug>` and reaches origin through the relay. Plain git (clone/fetch/push) needed zero forge-specific work: all three forges accept a PAT as the Basic-auth password with username ignored, so the relay's `x-access-token:<token>` header works unchanged (verified live against a dockerized Gitea).
+Neither Gitea nor GitLab has GitHub's server-side merges API for the env-sync cascade: both return a shaped 501 from `merge_branch`, landing `GitService.sync_env_branch` on the local-git fallback (`_local_merge_branch`: throwaway clone → merge → push; a conflict aborts leaving the remote untouched, same status vocabulary as the GitHub server-side path) — this fallback lives entirely in `GitService`, not the forge package; its throwaway clone lives under `<private_root>/scratch/<slug>` and reaches origin through the relay. Plain git (clone/fetch/push) needed zero forge-specific work: all three forges accept a PAT as the Basic-auth password with username ignored, so the relay's `x-access-token:<token>` header works unchanged (verified live against a dockerized Gitea). The server-side commit calls are GitHub-only the same way: `GitHubProvider` creates/moves branch refs over REST (`POST /git/refs`, `PATCH /git/refs/heads/{b}` with `force`) and writes a commit from whole-file contents over GraphQL `createCommitOnBranch` (base64 contents, `expectedHeadOid`; GitHub signs the commit, the token's owner is the author), which the release executor uses so its commits show Verified; Gitea and GitLab answer all three with `not_implemented`, and the executor pushes with git instead.
 
 ## Data Flow
 
@@ -312,16 +312,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:214 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2182 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2233 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2255 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2266 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:1963 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:1967 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2375 | Commit/PR template link base (`+ /api`) |
-| `settings.internal_api_url` | config.py:137 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1040 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1508 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.git_command_timeout_seconds` | config.py:2183 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2234 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2256 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2267 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:1964 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:1968 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2376 | Commit/PR template link base (`+ /api`) |
+| `settings.internal_api_url` | config.py:136 | Internal PR body link base |
+| `settings.github_api_base_url` | config.py:1033 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1509 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 

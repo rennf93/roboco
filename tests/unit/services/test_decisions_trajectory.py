@@ -343,6 +343,48 @@ async def test_pass_grades_rows_and_stamps_outcomes(
 
 
 @pytest.mark.asyncio
+async def test_pass_leaves_an_untouched_task_unlabeled_inside_its_rot_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An idle decision 3 days old whose owned task has not moved is not yet
+    "rotted": the default rot window is 7 days from THAT decision. Before
+    the fix the pass compared now with now - 7 days, always past, and
+    labeled it rotted as soon as it was old enough to grade (2 days)."""
+    monkeypatch.setattr(cfg.settings, "decisions_enabled", True)
+    monkeypatch.setattr(cfg.settings, "decisions_trajectory_grade_after_hours", 48)
+    monkeypatch.setattr(cfg.settings, "decisions_trajectory_rot_hours", 168)
+    task = "33333333-3333-3333-3333-333333333333"
+    recent = datetime.now(UTC) - timedelta(days=3)
+    old = datetime.now(UTC) - timedelta(days=30)
+    recent_row = _row(
+        "idle_legitimacy",
+        "idle:be-dev-1",
+        {"owned_tasks": [_owned(task, "in_progress")]},
+        recent,
+    )
+    facts = [(UUID(task), "in_progress", recent - timedelta(hours=1))]
+    labeled: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        labeled.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_outcome", _capture)
+    assert await trajectory.run_trajectory_pass(_FakeSession([recent_row], facts)) == 0
+    assert labeled == []
+
+    old_row = _row(
+        "idle_legitimacy",
+        "idle:be-dev-2",
+        {"owned_tasks": [_owned(task, "in_progress")]},
+        old,
+    )
+    old_facts = [(UUID(task), "in_progress", old - timedelta(hours=1))]
+    assert await trajectory.run_trajectory_pass(_FakeSession([old_row], old_facts)) == 1
+    assert labeled[0]["outcome"] == OWNED_TASK_ROTTED_AFTER
+
+
+@pytest.mark.asyncio
 async def test_pass_is_a_noop_when_everything_is_labeled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -368,8 +410,12 @@ async def test_engine_loop_disabled_is_a_noop(
     from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 
     monkeypatch.setattr(cfg.settings, "decisions_enabled", False)
-    engine = DecisionsLabelerEngine()  # type: ignore[abstract]
-    engine._record_loop_heartbeat = lambda *a, **kw: None  # type: ignore[method-assign]
+    # The mixin's TYPE_CHECKING-only Protocol base makes it abstract to mypy;
+    # at runtime the base is `object`, so route the class through type[Any]
+    # and hand the instance the heartbeat its host orchestrator provides.
+    engine_cls: type[Any] = DecisionsLabelerEngine
+    engine = engine_cls()
+    engine._record_loop_heartbeat = lambda *_a, **_kw: None
     engine._running = True
     sleep = AsyncMock()
     monkeypatch.setattr("asyncio.sleep", sleep)
@@ -863,7 +909,7 @@ async def test_distill_link_retrieved_proves_the_claim(
     graded = await trajectory._grade_memory_links(
         session,
         datetime.now(UTC) - timedelta(days=10),
-        datetime.now(UTC) + timedelta(days=1),
+        timedelta(days=60),
         datetime.now(UTC),
     )
     assert graded == 1
@@ -892,10 +938,42 @@ async def test_distill_no_retrieval_past_rot_disproves(
     await trajectory._grade_memory_links(
         session,
         datetime.now(UTC) - timedelta(days=10),
-        datetime.now(UTC) - timedelta(days=5),
+        timedelta(days=5),
         datetime.now(UTC),
     )
     assert stamped[0]["fates"] == {"gate": "never_retrieved"}
+
+
+@pytest.mark.asyncio
+async def test_distill_no_retrieval_inside_its_window_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rot horizon is the decision's own: a 3-day-old decision with a
+    7-day window has not had the time to be retrieved yet. The grader once
+    compared now with now - window, which is always past, and labeled it
+    never_retrieved as soon as it was old enough to grade."""
+    recent = datetime.now(UTC) - timedelta(days=3)
+    row = _row("memory_distill_gate", "distill:97a8553991823b", {"title": "t"}, recent)
+    link = SimpleNamespace(
+        pilot="memory_distill_gate",
+        session_id="distill:97a8553991823b",
+        source="roboco://learnings/lrn-abc123",
+    )
+    session = _FakeSession([row], [], links=[link], retrievals=[])
+    stamped: list[dict[str, object]] = []
+
+    async def _capture(_session: object, **kwargs: object) -> int:
+        stamped.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(trajectory.persist, "record_question_outcomes", _capture)
+    await trajectory._grade_memory_links(
+        session,
+        datetime.now(UTC) - timedelta(days=2),
+        timedelta(days=7),
+        datetime.now(UTC),
+    )
+    assert stamped == []
 
 
 def test_learning_source_uri_is_content_addressed() -> None:

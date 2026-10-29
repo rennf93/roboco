@@ -8,9 +8,8 @@ the empty case explicitly and never blocks a spawn on a digest failure.
 
 Extracted from ``MegaphoneEngine`` so roadmap, Pest Control, and Spackle
 exploration prompts share one assembly path with the Megaphone editorial
-cycle. Side-effect-free at module level: the workspace service is imported
-lazily inside ``_unreleased_changelog`` so ``roboco/utils/`` stays clear of
-service-module imports at import time (per the architectural standard).
+cycle. A service, not a ``roboco/utils`` helper: it queries the database and
+ensures the RoboCo project's read clone, which can clone a repository.
 """
 
 from __future__ import annotations
@@ -21,8 +20,11 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from roboco.db.tables import ProjectTable, TaskTable
 from roboco.logging import get_logger
 from roboco.models.base import TaskStatus
+from roboco.services.release_readiness import _read_changelog, _unreleased_body
+from roboco.services.workspace import get_workspace_service
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,8 +56,6 @@ async def shipped_work_digest(session: AsyncSession, roboco_project_slug: str) -
 
 async def _shipped_this_week(session: AsyncSession) -> list[str]:
     """Formatted bullet lines for COMPLETED tasks in the last 7 days, capped."""
-    from roboco.db.tables import ProjectTable, TaskTable  # noqa: PLC0415
-
     cutoff = datetime.now(UTC) - timedelta(days=7)
     result = await session.execute(
         select(TaskTable.title, TaskTable.team, ProjectTable.name)
@@ -79,12 +79,6 @@ async def _unreleased_changelog(session: AsyncSession, roboco_project_slug: str)
     clone; ``""`` when the file/section is absent, blank, or unreadable —
     never raises (caller renders the empty case explicitly)."""
     try:
-        from roboco.services.release_readiness import (  # noqa: PLC0415
-            _read_changelog,
-            _unreleased_body,
-        )
-        from roboco.services.workspace import get_workspace_service  # noqa: PLC0415
-
         root = await get_workspace_service(session).ensure_read_clone(
             roboco_project_slug
         )

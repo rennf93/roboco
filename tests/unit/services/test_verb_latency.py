@@ -27,26 +27,24 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def _seed_samples(  # noqa: PLR0913
+async def _seed_samples(
     session: AsyncSession,
     verb: str,
     durations: list[float],
     *,
-    role: str = "developer",
-    outcome: str = "success",
-    status_code: int | None = 200,
     age_hours: float = 0.0,
 ) -> None:
+    """Insert one successful developer sample per duration, ``age_hours`` old."""
     created = datetime.now(UTC) - timedelta(hours=age_hours)
     for d in durations:
         session.add(
             VerbLatencySampleTable(
                 id=uuid4(),
                 verb=verb,
-                role=role,
+                role="developer",
                 duration_ms=d,
-                outcome=outcome,
-                status_code=status_code,
+                outcome="success",
+                status_code=200,
                 created_at=created,
             )
         )
@@ -63,24 +61,24 @@ async def test_verb_latency_stats_percentiles(db_session: AsyncSession) -> None:
     """Known samples produce exact p50/p95 values, sorted by p95 descending."""
     await db_session.execute(delete(VerbLatencySampleTable))
     # 10 samples: 10,20,30,...,100 ms → p50=55, p95=95.5
-    await _seed_samples(db_session, "give_me_work", list(range(10, 101, 10)))
+    give_me_work_ms: list[float] = list(range(10, 101, 10))
+    await _seed_samples(db_session, "give_me_work", give_me_work_ms)
     # 4 samples: 100,200,300,400 ms → p50=250, p95=385 (linear interpolation)
-    await _seed_samples(db_session, "i_am_done", [100, 200, 300, 400])
+    i_am_done_ms: list[float] = [100, 200, 300, 400]
+    await _seed_samples(db_session, "i_am_done", i_am_done_ms)
     await db_session.commit()
 
     stats = await get_metrics_service(db_session).get_verb_latency_stats(hours=24)
-    assert len(stats) == 2  # noqa: PLR2004
 
     # Sorted by p95 descending: i_am_done (385) first, give_me_work (95.5) second
-    assert stats[0].verb == "i_am_done"
+    assert [s.verb for s in stats] == ["i_am_done", "give_me_work"]
     assert stats[0].p95_ms == pytest.approx(385, abs=1)
     assert stats[0].p50_ms == pytest.approx(250, abs=1)
-    assert stats[0].sample_count == 4  # noqa: PLR2004
+    assert stats[0].sample_count == len(i_am_done_ms)
 
-    assert stats[1].verb == "give_me_work"
     assert stats[1].p95_ms == pytest.approx(95.5, abs=1)
     assert stats[1].p50_ms == pytest.approx(55, abs=1)
-    assert stats[1].sample_count == 10  # noqa: PLR2004
+    assert stats[1].sample_count == len(give_me_work_ms)
 
 
 @pytest.mark.asyncio
@@ -113,7 +111,8 @@ async def test_verb_latency_stats_respects_time_window(
 async def test_verb_latency_stats_to_dict(db_session: AsyncSession) -> None:
     """to_dict rounds and includes all fields."""
     await db_session.execute(delete(VerbLatencySampleTable))
-    await _seed_samples(db_session, "open_pr", [100, 200, 300])
+    open_pr_ms: list[float] = [100, 200, 300]
+    await _seed_samples(db_session, "open_pr", open_pr_ms)
     await db_session.commit()
 
     stats = await get_metrics_service(db_session).get_verb_latency_stats(hours=24)
@@ -122,7 +121,7 @@ async def test_verb_latency_stats_to_dict(db_session: AsyncSession) -> None:
     assert d["verb"] == "open_pr"
     assert "p50_ms" in d
     assert "p95_ms" in d
-    assert d["sample_count"] == 3  # noqa: PLR2004
+    assert d["sample_count"] == len(open_pr_ms)
 
 
 # ---------------------------------------------------------------------------

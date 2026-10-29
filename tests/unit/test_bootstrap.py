@@ -37,7 +37,7 @@ def _inject_fake_indexer_module(
     """Simulate the parallel leg's module landing: a real import of
     ``_INDEXER_MODULE`` would otherwise ImportError in this checkout."""
     fake_module = types.ModuleType(_INDEXER_MODULE)
-    fake_module.run_indexer = run_indexer  # type: ignore[attr-defined]
+    monkeypatch.setattr(fake_module, "run_indexer", run_indexer, raising=False)
     monkeypatch.setitem(sys.modules, _INDEXER_MODULE, fake_module)
 
 

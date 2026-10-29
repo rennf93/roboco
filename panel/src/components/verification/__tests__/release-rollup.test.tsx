@@ -97,12 +97,11 @@ const FINDINGS_BY_TASK: Record<string, ReviewRoundFindings[]> = {
 };
 
 const CI_BY_TASK: Record<string, PrCiVerdict> = {
-  t1: { available: false, reason: "no route", technicalDetail: "no route" },
-  // t2 is the deliberate no-CI-repo case with its own distinct reason.
+  t1: { available: false, reason: "No CI verdict yet." },
+  // t2 has its own distinct reason, to tell the two rows' verdicts apart.
   t2: {
     available: false,
-    reason: "no REST route exists for this repo",
-    technicalDetail: "no REST route exists for this repo",
+    reason: "The task's verification record couldn't be loaded.",
   },
 };
 
@@ -145,7 +144,6 @@ function setup() {
     data: CI_BY_TASK[taskId] ?? {
       available: false,
       reason: "unknown",
-      technicalDetail: "unknown",
     },
     isLoading: false,
   }));

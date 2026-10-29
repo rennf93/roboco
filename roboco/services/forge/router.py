@@ -130,6 +130,27 @@ class ForgeRouter(GitProvider):
     async def merge_branch(self, repo: RepoRef, token: str, **kwargs: Any) -> Any:
         return await self._provider_for_ref(repo).merge_branch(repo, token, **kwargs)
 
+    async def create_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, **kwargs: Any
+    ) -> Any:
+        return await self._provider_for_ref(repo).create_branch_ref(
+            repo, token, branch, **kwargs
+        )
+
+    async def update_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, **kwargs: Any
+    ) -> Any:
+        return await self._provider_for_ref(repo).update_branch_ref(
+            repo, token, branch, **kwargs
+        )
+
+    async def create_commit_on_branch(
+        self, repo: RepoRef, token: str, branch: str, **kwargs: Any
+    ) -> Any:
+        return await self._provider_for_ref(repo).create_commit_on_branch(
+            repo, token, branch, **kwargs
+        )
+
     async def list_ci_runs(self, repo: RepoRef, token: str, **kwargs: Any) -> Any:
         return await self._provider_for_ref(repo).list_ci_runs(repo, token, **kwargs)
 

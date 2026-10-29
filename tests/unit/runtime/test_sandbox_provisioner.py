@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from roboco.models.sandbox import SANDBOX_ENGINES, SANDBOX_PG_EXTENSIONS
 from roboco.runtime import sandbox as sandbox_module
 from roboco.runtime.sandbox import SandboxProvisioner, SandboxProvisionError
 
@@ -447,8 +448,8 @@ async def test_provision_pg_features_runs_enable_then_verify() -> None:
     execs = _exec_calls(runner, "psql")
     enable = next(c for c in execs if "CREATE EXTENSION" in " ".join(c))
     verify = next(c for c in execs if "pg_extension" in " ".join(c))
-    assert "CREATE EXTENSION IF NOT EXISTS vector" in " ".join(enable)
-    assert "CREATE EXTENSION IF NOT EXISTS postgis" in " ".join(enable)
+    assert 'CREATE EXTENSION IF NOT EXISTS "vector"' in " ".join(enable)
+    assert 'CREATE EXTENSION IF NOT EXISTS "postgis"' in " ".join(enable)
     assert "ON_ERROR_STOP=1" in enable
     assert "SELECT extname FROM pg_extension" in " ".join(verify)
 
@@ -677,3 +678,17 @@ async def test_as_payload_no_extensions_key_when_bare() -> None:
 
     payload = info.as_payload()
     assert "available_extensions" not in payload["postgres"]
+
+
+def test_pg_enable_step_quotes_every_allowlisted_extension() -> None:
+    """Unquoted, `CREATE EXTENSION IF NOT EXISTS uuid-ossp` is a syntax
+    error (checked on pgvector/pgvector:pg16), so every request for that
+    allowlisted extension failed. Each name is a quoted identifier."""
+    features = sorted(SANDBOX_PG_EXTENSIONS)
+    step = SANDBOX_ENGINES["postgres"].enable_step("unused", features)
+    assert step is not None
+    (argv,) = step
+    sql = argv[-1]
+    for name in features:
+        assert f'CREATE EXTENSION IF NOT EXISTS "{name}"' in sql
+    assert 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"' in sql

@@ -104,6 +104,9 @@ _HDR = {"X-Agent-ID": "ignored", "X-Agent-Role": "developer"}
         ("team", "frontend"),
         ("parent_task_id", str(uuid4())),
     ],
+    # The field names, not the values: a uuid4() id differs per process, so
+    # pytest-xdist workers would collect different test ids and abort.
+    ids=["assigned_to", "team", "parent_task_id"],
 )
 async def test_owner_cannot_patch_privileged_fields(
     dev_client: dict, field: str, value: object

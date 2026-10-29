@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 # auth.json must stay readable by its owner (the agent uid) alone.
 _OWNER_ONLY_MODE = 0o600
 
+# Bounds, in seconds, around a token expiring in ~54 minutes (3240 s).
+_ABOUT_54_MINUTES_MIN = 3100
+_ABOUT_54_MINUTES_MAX = 3300
+
 
 def _jwt(exp_unix: int) -> str:
     """Build a minimal JWT (header.payload.signature) carrying an ``exp`` claim."""
@@ -66,7 +70,7 @@ def test_seconds_until_expiry_and_is_valid(tmp_path: Path) -> None:
     _write(path, _bundle(token))
     remaining = ca.seconds_until_expiry(path)
     assert remaining is not None
-    assert 3100 < remaining < 3300  # noqa: PLR2004 — ~54 minutes
+    assert _ABOUT_54_MINUTES_MIN < remaining < _ABOUT_54_MINUTES_MAX
     assert ca.is_valid(path)
     assert not ca.is_valid(path, skew_seconds=3600)  # <1h left, 1h skew fails
 

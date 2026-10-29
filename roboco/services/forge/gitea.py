@@ -20,6 +20,9 @@ Deliberate Phase-2 postures (per the spec):
   equivalent; it returns a shaped 501 so ``_env_merge_status`` lands on its
   existing ``missing_ref`` branch. The shared local-git fallback is a
   follow-up, not silently faked here.
+- The server-side commit calls (``create_branch_ref``, ``update_branch_ref``,
+  ``create_commit_on_branch``) are shaped 501s too, so the release executor
+  pushes its commits with git, exactly as before GitHub's path existed.
 - Plain git (clone/fetch/push) needs no provider work: Gitea, like GitHub
   and GitLab, accepts a PAT as the Basic-auth password with the username
   ignored, so the existing ``x-access-token:<token>`` extraheader works.
@@ -36,16 +39,20 @@ import httpx
 from roboco.config import settings
 from roboco.exceptions import GitError
 from roboco.services.forge.base import GitProvider, RepoRef
-from roboco.services.forge.shaping import ShapedResponse
+from roboco.services.forge.shaping import ShapedResponse, not_implemented
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 # Gitea review-event vocabulary differs from GitHub's by one word.
 _REVIEW_EVENT_MAP = {"APPROVE": "APPROVED"}
 
 # Gitea commit-status states → GitHub check-run/workflow-run vocabulary.
 _STATUS_CONCLUSION = {"success": "success", "failure": "failure", "error": "failure"}
+
+_NO_SERVER_SIDE_COMMITS = (
+    "Gitea: server-side commits are not implemented; push with git"
+)
 
 
 def _default_timeout() -> int:
@@ -256,13 +263,10 @@ class GiteaProvider(GitProvider):
         """Only GitHub-backed PRs are adopted from Entire, so nothing here
         is ever un-drafted: a shaped 501."""
         _ = (repo, token, pr_node_id)
-        request = httpx.Request("post", f"https://{self._host}/unsupported")
-        real = httpx.Response(
-            httpx.codes.NOT_IMPLEMENTED,
-            request=request,
-            json={"message": "Gitea: un-drafting a pull request is not supported"},
+        return not_implemented(
+            f"https://{self._host}",
+            "Gitea: un-drafting a pull request is not supported",
         )
-        return ShapedResponse(real)
 
     async def merge_branch(
         self, repo: RepoRef, token: str, *, base: str, head: str, commit_message: str
@@ -270,13 +274,59 @@ class GiteaProvider(GitProvider):
         """No server-side merges API on Gitea — a shaped 501 lands
         ``_env_merge_status`` on its existing ``missing_ref`` branch."""
         _ = (repo, token, base, head, commit_message)
-        request = httpx.Request("post", f"https://{self._host}/unsupported")
-        real = httpx.Response(
-            httpx.codes.NOT_IMPLEMENTED,
-            request=request,
-            json={"message": "Gitea has no server-side branch-merge API"},
+        return not_implemented(
+            f"https://{self._host}", "Gitea has no server-side branch-merge API"
         )
-        return ShapedResponse(real)
+
+    # -- server-side commits -------------------------------------------------
+    # Not implemented for Gitea: the release executor pushes its commit with
+    # git instead. Gitea signs only the commits it creates itself, and only
+    # when the instance has a key configured (``[repository.signing]``).
+
+    async def create_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str
+    ) -> Any:
+        _ = (repo, token, branch, sha)
+        return not_implemented(
+            f"https://{self._host}",
+            _NO_SERVER_SIDE_COMMITS,
+        )
+
+    async def update_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str, force: bool
+    ) -> Any:
+        _ = (repo, token, branch, sha, force)
+        return not_implemented(
+            f"https://{self._host}",
+            _NO_SERVER_SIDE_COMMITS,
+        )
+
+    async def create_commit_on_branch(
+        self,
+        repo: RepoRef,
+        token: str,
+        branch: str,
+        *,
+        expected_head_oid: str,
+        headline: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+        timeout: float | None = None,
+    ) -> Any:
+        _ = (
+            repo,
+            token,
+            branch,
+            expected_head_oid,
+            headline,
+            additions,
+            deletions,
+            timeout,
+        )
+        return not_implemented(
+            f"https://{self._host}",
+            _NO_SERVER_SIDE_COMMITS,
+        )
 
     # -- CI ----------------------------------------------------------------
 

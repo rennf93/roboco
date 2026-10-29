@@ -42,7 +42,7 @@ class _FakeResponse:
             raise httpx.HTTPStatusError(
                 f"HTTP {self.status_code}",
                 request=request,
-                response=self,  # type: ignore[arg-type]
+                response=httpx.Response(self.status_code, request=request),
             )
 
     def json(self) -> Any:

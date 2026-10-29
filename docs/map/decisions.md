@@ -22,11 +22,11 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | `roboco/services/decisions/context.py` | Recipient work context composed for the A2A steer-gate verdict | 203 |
 | `roboco/services/decisions/persist.py` | Fire-and-forget `decision_log` persistence: buffered `record_decision` with a background flusher, and outcome stamping (`record_outcome`, `record_question_outcomes`) on a subject's unlabeled rows | 310 |
 | `roboco/services/decisions/outcomes.py` | Outcome label vocabulary shared by outcome producers and the corpus exporter, with the slug-to-gold-probability mapping and gold-shape validation | 327 |
-| `roboco/services/decisions/trajectory.py` | Task-trajectory outcome labeler: grades unlabeled rows of trajectory-class pilots against what the tasks table recorded afterwards, plus stamp helpers for parking, secretary confirmation and release decisions, and decision-to-learning provenance links | 1421 |
+| `roboco/services/decisions/trajectory.py` | Task-trajectory outcome labeler: grades unlabeled rows of trajectory-class pilots against what the tasks table recorded afterwards, plus stamp helpers for parking, secretary confirmation and release decisions, and decision-to-learning provenance links | 1463 |
 | `roboco/services/decisions/export.py` | Exports labelled `decision_log` rows as the JSONL fine-tune corpus (`python -m roboco.services.decisions.export`) | 286 |
 | `roboco/services/decisions/spend_guard.py` | Per-tier spend accounting from `usage.cost`; alerts the CEO on two HTTP 402s in a rolling hour or when the OpenRouter total crosses `decisions_cost_alert_usd` | 194 |
 | `roboco/services/decisions_audit_engine.py` | Decisions Audit Board Program (Auditor): daily cycle prunes `decision_log` past retention, originates one held review task, and injects the previous day's per-pilot aggregates into the Auditor's prompt | 275 |
-| `docker/decisions.Dockerfile` | CPU-only `roboco-decisions` sidecar image: two llama.cpp decision servers (Clef and Laya weights) behind the FastAPI proxy | 159 |
+| `docker/decisions.Dockerfile` | CPU-only `roboco-decisions` sidecar image: two llama.cpp decision servers (Clef and Laya weights) behind the FastAPI proxy | 170 |
 | `docker/decisions/entrypoint.sh` | Sidecar supervisor: starts the Clef (127.0.0.1:8110) and Laya (127.0.0.1:8111) llama-servers, waits for each `/health`, then runs the proxy in the foreground | 178 |
 | `docker/decisions/server.py` | Sidecar FastAPI proxy serving the OpenRouter Decisions wire shape at `POST /api/alpha/decisions`, forwarding to the routed llama.cpp backend and normalizing answers; `GET /health` returns 503 while Clef is unreachable so traffic moves to a fallback tier | 512 |
 

@@ -24,6 +24,18 @@ logger = get_logger(__name__)
 _password_helper = PasswordHelper()
 
 
+async def find_seed_user(db: AsyncSession) -> UserTable | None:
+    """The single seeded CEO login user, or ``None`` before it is seeded.
+
+    Ordered by the primary key's text label (not UserTable.id — under the
+    TYPE_CHECKING split, mypy sees that as a bare UUID, not a column
+    expression) so a hypothetical multi-row state is still deterministic.
+    """
+    return (
+        await db.execute(select(UserTable).order_by("id").limit(1))
+    ).scalar_one_or_none()
+
+
 async def ensure_seed_user(db: AsyncSession) -> None:
     """No-op unless cloud_auth_enabled and both email/password are set.
 
@@ -42,13 +54,7 @@ async def ensure_seed_user(db: AsyncSession) -> None:
         )
         return
 
-    # Ordered by the primary key's text label (not UserTable.id — under the
-    # TYPE_CHECKING split, mypy sees that as a bare UUID, not a column
-    # expression) so a hypothetical multi-row state is still deterministic.
-    existing = (
-        await db.execute(select(UserTable).order_by("id").limit(1))
-    ).scalar_one_or_none()
-
+    existing = await find_seed_user(db)
     if existing is None:
         db.add(
             UserTable(

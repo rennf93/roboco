@@ -21,7 +21,6 @@ import {
   useSetComplexityOverride,
   useSetGrokKey,
   useSetOllamaKey,
-  useZaiKey,
   useSelfHostedModels,
 } from "@/hooks/use-providers";
 import {
@@ -133,11 +132,6 @@ const AGENT_GROUP_DEFS: {
     select: getSupportAgents,
   },
 ];
-
-// Every provider powers the interactive Intake/Secretary chats since
-// 2026-09-17 (the provider-generic live driver), so this group's per-agent
-// picker renders the FULL catalog - no exclusions.
-const INTERACTIVE_ONLY_GROUP_TITLE = "Intake / Secretary / PR Review";
 
 // Stable within-group ordering (PM/lead first, devs, QA, doc, reviewer last)
 // so the picker doesn't churn alphabetically as the live roster loads —
@@ -339,9 +333,6 @@ export function AIRoutingCard() {
   // --- OpenRouter API key status + model search ---
   const { data: openRouterKeyStatus } = useOpenRouterKey();
   const hasOpenRouterKey = !!openRouterKeyStatus?.has_key;
-  // --- Z.ai API key status (key row lives in ZaiProviderKeyRow) ---
-  const { data: zaiKeyStatus } = useZaiKey();
-  const hasZaiKey = !!zaiKeyStatus?.has_key;
   // --- hummin (GLM Coding Plan) key status (row lives in
   // HumminProviderKeyRow) — the ZAI row's key does NOT carry over; the
   // providers stay independent.
@@ -604,28 +595,6 @@ export function AIRoutingCard() {
       });
       toast.success(
         "Role/global routing now on Nebius (per-agent pins and complexity overrides kept)",
-      );
-    } catch (e) {
-      toast.error("Switch failed: " + errMsg(e));
-    }
-  };
-
-  const flipToZai = async () => {
-    if (!hasZaiKey) {
-      toast.error("Save the Z.ai API key first");
-      return;
-    }
-    if (
-      !confirm(
-        "Switch every agent to Z.ai GLM? Per-agent pins and complexity " +
-          "overrides are kept; other role/global assignments are replaced.",
-      )
-    )
-      return;
-    try {
-      await applyMode.mutateAsync({ mode: "zai" });
-      toast.success(
-        "Role/global routing now on Z.ai GLM — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));

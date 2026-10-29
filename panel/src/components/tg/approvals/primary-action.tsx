@@ -1,7 +1,7 @@
 "use client";
 
-import { useMainButton } from "@/lib/telegram/hooks";
-import { useTgWebApp } from "@/lib/telegram/hooks";
+import { useMainButton } from "@/hooks/use-tg-webapp";
+import { useTgWebApp } from "@/hooks/use-tg-webapp";
 import { Button } from "@/components/ui/button";
 import { CircleNotch } from "@phosphor-icons/react";
 

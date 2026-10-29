@@ -245,7 +245,7 @@ async def test_pr_merge_locks_parent_task_with_for_update() -> None:
     parent_stmt = parent_call.args[0]
     # SQLAlchemy's compiled SELECT with for_update has `_for_update_arg` set.
     # Read via getattr so mypy doesn't trip on the protected attr name and
-    # we don't need a `# type: ignore` escape hatch.
+    # needs no inline suppression.
     assert getattr(parent_stmt, "_for_update_arg", None) is not None
 
 

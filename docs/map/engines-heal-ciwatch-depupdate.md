@@ -11,7 +11,7 @@ Three default-off background "engine" services that watch CI / dependencies and 
 | roboco/runtime/orchestrator.py | Owns the three background loops (_self_heal_loop, _ci_watch_loop, _dep_update_loop) that construct the engines, call run_cycle, and commit the session | (slice within a shared file) |
 | roboco/services/task.py | Provides SELF_HEAL/CI_WATCH/DEP_UPDATE source tags, list_open_*_tasks dedupe queries, extract_self_heal_fingerprint, and the give_me_work self-heal hold filter | (slice within a shared file) |
 | roboco/services/telemetry/source.py | TelemetrySource protocol + GitHubCITelemetrySource (single repo) + MultiProjectCITelemetrySource (fan-out) feeding breach samples to the engines | (slice within a shared file) |
-| `roboco/services/ci_history.py` | CI run history: the ci-watch and self-heal engines hand their fetched telemetry samples to `record_runs` (deduped on project, workflow, completion stamp) so the trajectory graders see a run sequence; `prune` enforces the 45-day retention | 122 |
+| `roboco/services/ci_history.py` | CI run history: the ci-watch and self-heal engines hand their fetched telemetry samples to `record_runs` (deduped on project, workflow, completion stamp) so the trajectory graders see a run sequence; `prune` enforces the 45-day retention | 130 |
 | `roboco/services/env_sync_engine.py` | Env-sync engine (default off, `env_sync_enabled`): cascades each opted-in project's env ladder prod to head through GitHub's merges API; a clean merge auto-pushes the lower rung, a conflict opens one sync-PR task and stops that project's cascade; prod is never a target | 232 |
 
 ## Key Symbols
@@ -44,7 +44,7 @@ Three default-off background "engine" services that watch CI / dependencies and 
 | DepUpdateEngine._open_task | method | roboco/services/dep_update_engine.py:163 | Create the PENDING READY-to-start (confirmed_by_human=True) Main-PM coordination root dep-update task |
 | get_dep_update_engine | function | roboco/services/dep_update_engine.py:227 | Factory: construct DepUpdateEngine bound to a session with optional test workspace probe |
 | `record_runs` | function | `roboco/services/ci_history.py:75` | Persist the distinct readings a sweep observed (conflict-nothing insert) |
-| `runs_for` | function | `roboco/services/ci_history.py:95` | Post-decision run sequence for one project, oldest first |
+| `runs_for` | function | `roboco/services/ci_history.py:100` | Post-decision run sequence for one project, oldest first |
 | `EnvSyncEngine.run_cycle` | method | `roboco/services/env_sync_engine.py:50` | Cascade each opted-in project's ladder; returns the conflict-PR tasks opened |
 
 ## Data Flow

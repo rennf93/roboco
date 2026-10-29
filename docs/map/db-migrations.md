@@ -1,7 +1,7 @@
 # db-migrations slice
 
 ## Purpose
-The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→110) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~3.1k lines, 56 table classes as of migration 110; `scripts/verify_codebase_map.py` keeps the chain range in this paragraph current, the table count is not checked).
+The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→111) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~3.1k lines, 56 table classes as of migration 110; `scripts/verify_codebase_map.py` keeps the chain range in this paragraph current, the table count is not checked).
 
 ## Files
 
@@ -13,7 +13,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `roboco/db/seed.py` | `bootstrap_database()` — runs `init_db` then seeds agents. |
 | `alembic/env.py` | Async Alembic env; imports `roboco.db.tables` to register metadata, overrides `sqlalchemy.url` from settings, `compare_type` + `compare_server_default` on. |
 | `alembic.ini` | Standard config; `script_location=alembic`, `prepend_sys_path=.`, no URL (set in env.py). |
-| `alembic/versions/` | 112 migration files 001..110 (two numbers are shared, 026 and 095; each pair is chained, not a collision). |
+| `alembic/versions/` | 113 migration files 001..111 (two numbers are shared, 026 and 095; each pair is chained, not a collision). |
 
 ## Key Symbols
 
@@ -26,23 +26,23 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `init_db` | fn | db/base.py:415 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
 | `run_migrations` | fn | db/base.py:354 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
 | `bootstrap_database` | fn | db/seed.py:82 | `init_db` + seed default agents. |
-| `TaskTable` | class | tables.py:156 | Core task entity (largest table, drives lifecycle). |
-| `WorkSessionTable` | class | tables.py:926 | Per-claim session; single-active enforced by 047 partial-unique index. |
-| `AgentTable` | class | tables.py:90 | Agent identity, role, team, model provider assignment. |
-| `ProjectTable` | class | tables.py:511 | Git repo config + CI/watch/dep-update/quality_command/`sandbox_services` (057) cols. |
-| `AuditLogTable` | class | tables.py:1685 | Transition journey; `details` JSONB (010); composite query index (045). |
-| `AgentSpawnSessionTable` | class | tables.py:1955 | Per-spawn token totals; feeds usage dashboard. |
-| `ProjectConventionsCacheTable` | class | tables.py:2299 | Effective conventions map per (project, HEAD sha). |
-| `PlaybookTable` | class | tables.py:826 | Curated procedures (draft→approved→indexed). |
-| `RespawnTrackerTable` | class | tables.py:1646 | Durable PM-respawn circuit breaker mirror. |
-| `TaskCellProjectTable` | class | tables.py:737 | Per-cell project map for a MegaTask root-subtask (052). |
-| `WaitingRecordTable` | class | tables.py:1616 | Persisted dispatcher waiting records (restore at start). |
-| `IndexedDocumentTable` | class | tables.py:1384 | RAG corpus docs (added to chain by 017). |
-| `VerbLatencySampleTable` | class | tables.py:2722 | Per-verb HTTP duration samples persisted from `RequestLoggingMiddleware` for p50/p95 aggregation by `MetricsService.get_verb_latency_stats`. Migration 094; indexes on `verb`, `created_at`, composite `(verb, created_at)`. |
-| `UserTable` | class | tables.py:2439 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
-| `XCredentialsTable` | class | tables.py:2486 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
-| `XSeenMentionTable` | class | tables.py:2555 | X mentions-poll dedup ledger, keyed by mention id (059). |
-| `XSeenFeatureTable` | class | tables.py:2569 | X feature-spotlight dedup ledger, keyed by feature slug (061). |
+| `TaskTable` | class | tables.py:160 | Core task entity (largest table, drives lifecycle). |
+| `WorkSessionTable` | class | tables.py:967 | Per-claim session; single-active enforced by 047 partial-unique index. |
+| `AgentTable` | class | tables.py:91 | Agent identity, role, team, model provider assignment. |
+| `ProjectTable` | class | tables.py:527 | Git repo config + CI/watch/dep-update/quality_command/`sandbox_services` (057) cols. |
+| `AuditLogTable` | class | tables.py:1740 | Transition journey; `details` JSONB (010); composite query index (045). |
+| `AgentSpawnSessionTable` | class | tables.py:2023 | Per-spawn token totals; feeds usage dashboard. |
+| `ProjectConventionsCacheTable` | class | tables.py:2434 | Effective conventions map per (project, HEAD sha). |
+| `PlaybookTable` | class | tables.py:851 | Curated procedures (draft→approved→indexed). |
+| `RespawnTrackerTable` | class | tables.py:1690 | Durable PM-respawn circuit breaker mirror. |
+| `TaskCellProjectTable` | class | tables.py:753 | Per-cell project map for a MegaTask root-subtask (052). |
+| `WaitingRecordTable` | class | tables.py:1660 | Persisted dispatcher waiting records (restore at start). |
+| `IndexedDocumentTable` | class | tables.py:1426 | RAG corpus docs (added to chain by 017). |
+| `VerbLatencySampleTable` | class | tables.py:2899 | Per-verb HTTP duration samples persisted from `RequestLoggingMiddleware` for p50/p95 aggregation by `MetricsService.get_verb_latency_stats`. Migration 094; indexes on `verb`, `created_at`, composite `(verb, created_at)`. |
+| `UserTable` | class | tables.py:2577 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
+| `XCredentialsTable` | class | tables.py:2626 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
+| `XSeenMentionTable` | class | tables.py:2704 | X mentions-poll dedup ledger, keyed by mention id (059). |
+| `XSeenFeatureTable` | class | tables.py:2721 | X feature-spotlight dedup ledger, keyed by feature slug (061). |
 | `run_async_migrations` | fn | env.py | Async online migration runner (NullPool). |
 
 ## Migration Chain
@@ -161,6 +161,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | 108 | 108_ci_history.py | `ci_runs` (every distinct CI reading: project, workflow, conclusion, breach flag, observed-at; unique per reading) + `memory_retrieval_log` (which institutional-memory items were injected into which spawn): Decisions training-corpus inputs. |
 | 109 | 109_memory_links.py | `memory_links` (`pilot`, `session_id`, `source`): links a memory-family decision row to the knowledge item it produced, for later grading. |
 | 110 | 110_entire_trails.py | Entire trails bridge: `projects.entire_trails_enabled` (Boolean, `server_default` false), `entire_credentials` (singleton Fernet-encrypted token), `entire_trails` (per tree top: Entire project, trail id/number/url, frozen `create_fields` JSONB, `synced_at`, `closed_at`), `entire_trail_changes` (repository+branch unique; `task_id` deliberately not a FK, so the inline link never share-locks a task row), `entire_trail_findings` (ledger id -> Entire finding id + repository/branch), `entire_trail_outbox` (BigInteger id order, op, payload JSONB, attempts, dead, last_error, next_attempt_at). Purely additive. |
+| 111 | 111_ci_runs_reading_key.py | `ci_runs.ux_ci_runs_reading` (the `ON CONFLICT` key `ci_history.record_runs` deduplicates on) rebuilt as a unique index with NULLS NOT DISTINCT. 108's plain unique constraint treated NULLs as distinct, and the ci-watch engine records `workflow=NULL`, so every sweep re-inserted the run it had already seen (and the ci_watch_route grader read one red run seen twice as a hard red). Deletes those duplicates first, keeping each reading's earliest row, and drops the old key in either shape with `IF EXISTS`. The downgrade restores 108's constraint; deleted duplicates stay deleted. |
 
 ## Data Flow
 On boot, `init_db()` probes for application tables and `alembic_version`; if a pre-Alembic DB exists it stamps it at revision 001, then always runs `run_migrations()` → `alembic upgrade head` (in a thread via `asyncio.to_thread`). `env.py` imports `roboco.db.tables` so `Base.metadata` is fully populated, overrides `sqlalchemy.url` from `settings.database_url`, and runs online with an async NullPool engine. `compare_type` + `compare_server_default` are on so autogenerate drift is detectable. `tables.py` classes are the ORM mapping the migrations build; the domain layer reads them through `roboco/models/` dataclasses, not the tables directly.

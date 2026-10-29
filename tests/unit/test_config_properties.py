@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 
 import pytest
 from pydantic import ValidationError
-from roboco.config import Settings, resolve_uvicorn_loop_factory
+from roboco.config import Settings, reachable_url_host, resolve_uvicorn_loop_factory
 
 
 def test_internal_api_url_uses_api_url_when_set() -> None:
@@ -25,9 +26,49 @@ def test_internal_api_url_uses_host_when_api_url_unset() -> None:
 
 
 def test_internal_api_url_swaps_bind_all_to_localhost() -> None:
-    """Line 70: host='0.0.0.0' becomes '127.0.0.1' for connecting."""
+    """host='0.0.0.0' becomes '127.0.0.1' for connecting."""
     s = Settings(api_url=None, host="0.0.0.0", port=8000)
     assert s.internal_api_url == "http://127.0.0.1:8000/api"
+
+
+def test_internal_api_url_swaps_ipv6_bind_all_to_ipv6_loopback() -> None:
+    """host='::' used to build the invalid 'http://:::8000/api'."""
+    s = Settings(api_url=None, host="::", port=8000)
+    assert s.internal_api_url == "http://[::1]:8000/api"
+
+
+@pytest.mark.parametrize(
+    ("bind_host", "url_host"),
+    [
+        ("0.0.0.0", "127.0.0.1"),
+        ("::", "[::1]"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("10.1.2.3", "10.1.2.3"),
+        ("::1", "[::1]"),
+        ("fd00::5", "[fd00::5]"),
+        ("localhost", "localhost"),
+        ("orchestrator", "orchestrator"),
+    ],
+)
+def test_reachable_url_host(bind_host: str, url_host: str) -> None:
+    assert reachable_url_host(bind_host) == url_host
+
+
+async def test_reachable_url_host_reaches_a_server_bound_to_ipv6_any() -> None:
+    """asyncio binds '::' IPv6-only, so the IPv4 loopback is refused there:
+    the URL host must be '[::1]', which is what the server answers on."""
+    server = await asyncio.get_running_loop().create_server(
+        asyncio.Protocol, host="::", port=0
+    )
+    try:
+        port = server.sockets[0].getsockname()[1]
+        host = reachable_url_host("::").strip("[]")
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 5)
+        writer.close()
+        with pytest.raises(OSError):
+            await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), 5)
+    finally:
+        server.close()
 
 
 def test_redis_url_with_password_includes_credential() -> None:
@@ -181,9 +222,10 @@ def test_uvicorn_loop_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> No
     assert Settings().uvicorn_loop == "uvloop"
 
 
-def test_uvicorn_loop_rejects_unknown_value() -> None:
+def test_uvicorn_loop_rejects_unknown_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_UVICORN_LOOP", "unknown")
     with pytest.raises(ValidationError):
-        Settings(uvicorn_loop="unknown")  # type: ignore[arg-type]
+        Settings()
 
 
 def test_resolve_uvicorn_loop_factory_asyncio_is_none() -> None:

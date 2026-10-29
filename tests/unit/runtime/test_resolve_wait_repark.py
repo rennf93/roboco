@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from roboco.models.runtime import AgentInstance, WaitingRecord
+from roboco.models.runtime import AgentInstance, SpawnGitContext, WaitingRecord
 from roboco.runtime.orchestrator import (
     AgentOrchestrator,
     AgentReadinessError,
@@ -197,3 +197,28 @@ class TestResolveWaitReparkKeepsRecord:
 
         assert "be-dev-1" in orch._waiting_records
         delete_mock.assert_not_awaited()
+
+
+async def test_resume_passes_the_tasks_current_git_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rate-limit resume re-resolves the git context from the parked
+    task and must hand spawn_agent the resolved context itself, not the
+    un-awaited coroutine the async helper returns without await."""
+    orch = _make_orchestrator()
+    record = _record()
+    orch._waiting_records = {"be-dev-1": record}
+    fresh = SpawnGitContext(project_slug="roboco-api", branch_name="feature/backend/x")
+    monkeypatch.setattr(
+        orch, "_git_context_from_task_id", AsyncMock(return_value=fresh)
+    )
+    spawn = AsyncMock(return_value=_instance(AgentState.OFFLINE))
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+    monkeypatch.setattr(orch, "_delete_waiting_record", AsyncMock())
+
+    await orch.resolve_wait(
+        "be-dev-1", {"reason": "rate_limit_lifted", "provider": "anthropic"}
+    )
+
+    assert spawn.await_args is not None
+    assert spawn.await_args.kwargs["git_context"] is fresh

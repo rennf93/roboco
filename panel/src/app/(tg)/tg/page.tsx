@@ -9,7 +9,7 @@ import {
   type TelegramWebApp,
 } from "@/lib/telegram/webapp";
 import { startTelegramThemeSync } from "@/lib/telegram/theme";
-import { TgWebAppProvider } from "@/lib/telegram/hooks";
+import { TgWebAppProvider } from "@/components/providers/tg-webapp-provider";
 import { TgTabBar, type TgTab } from "@/components/tg/tg-tab-bar";
 import { TgTodayTab } from "@/components/tg/tg-today-tab";
 import { TgApprovalsTab } from "@/components/tg/tg-approvals-tab";

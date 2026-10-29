@@ -46,6 +46,8 @@ CI_WATCH_SOURCE = "ci_watch"
 
 _COST_TOL = 0.005
 _TOKENS_FLOOR = 1
+# The spend and velocity series cover the trailing week, one point per day.
+_SERIES_DAYS = 7
 
 
 def _spawn_session(
@@ -144,8 +146,8 @@ async def test_today_brief_shape(db_session: AsyncSession) -> None:
     brief = await get_tg_cockpit_service(db_session).today()
 
     assert set(brief) == {"needs_you", "fleet", "spend", "velocity", "ship"}
-    assert len(brief["spend"]["series"]) == 7  # noqa: PLR2004
-    assert len(brief["velocity"]["series"]) == 7  # noqa: PLR2004
+    assert len(brief["spend"]["series"]) == _SERIES_DAYS
+    assert len(brief["velocity"]["series"]) == _SERIES_DAYS
     needs = brief["needs_you"]
     assert needs["total"] == (
         needs["awaiting_ceo_count"]

@@ -1740,7 +1740,7 @@ class AgentOrchestrator(
         isolated on-demand actions with no fleet-state dependency (see
         roboco/api/deps.py; e.g. supersede_external_pr's branch cut) - the
         secretary/intake live chats route to the dispatcher instead (see
-        docker/nginx.conf) - but the fleet-wide background loops and the
+        deploy/nginx.conf) - but the fleet-wide background loops and the
         once-per-fleet startup reconciliation belong to the dispatcher role,
         so they must not also run here. 'dispatcher' and 'all' fall through
         unchanged.

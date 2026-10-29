@@ -50,12 +50,12 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `get_choreographer`/`get_content_actions` | funcs | deps.py:735/765 | Build Choreographer / ContentActions with all service deps + orchestrator/bus |
 | `get_pagination` | func | deps.py:793 | Clamp limit 1-100, offset ≥0 |
 | `CorrelationIdMiddleware` | class | middleware.py:63 | X-Correlation-ID in/out + structlog bind |
-| `RequestLoggingMiddleware` | class | middleware.py:151 | Log request/response + `X-Response-Time-Ms` header |
+| `RequestLoggingMiddleware` | class | middleware.py:167 | Log request/response + `X-Response-Time-Ms` header |
 | `get_status_code`/`roboco_exception_handler`/`service_exception_handler`/`rate_limit_exception_handler`/`generic_exception_handler`/`http_exception_handler`/`request_validation_handler` | funcs | middleware.py:143-441 | Exception → structured JSONResponse chain |
-| `_SERVICE_ERROR_STATUS` | const | middleware.py:264 | Maps service exception types → HTTP status |
-| `_uuid_field_remediation` | func | middleware.py:416 | Actionable hint when an agent sends an 8-char task prefix as UUID |
-| `_SECRET_FIELD_NAMES`/`_scrub_secrets` | const/func | middleware.py:445/462 | Redact credential fields from 422 log bodies |
-| `setup_middleware` | func | middleware.py:525 | Register exception handlers + middleware in order |
+| `_SERVICE_ERROR_STATUS` | const | middleware.py:277 | Maps service exception types → HTTP status |
+| `_uuid_field_remediation` | func | middleware.py:429 | Actionable hint when an agent sends an 8-char task prefix as UUID |
+| `_SECRET_FIELD_NAMES`/`_scrub_secrets` | const/func | middleware.py:458/475 | Redact credential fields from 422 log bodies |
+| `setup_middleware` | func | middleware.py:538 | Register exception handlers + middleware in order |
 | `DOCS_PERMISSIONS` | const | middleware_docs.py:55 | Path-prefix → read/write role matrix |
 | `check_docs_access`/`require_docs_access`/`get_allowed_docs_paths` | funcs | middleware_docs.py:222/265/303 | Docs path permission checks |
 | `_fast_path_access_decision` | func | middleware_docs.py:203 | CEO/auditor/main_pm short-circuit |
@@ -273,7 +273,7 @@ Logic-touching changes in that commit, scoped to this slice:
 | `get_orchestrator_or_none` + `clear_orchestrator` added | deps.py:96-119 | New accessor for shutdown + test teardown; `get_orchestrator` still 503s. |
 | `require_panel_token` HTTP dep added (CEO HMAC for live-chat bridges) | deps.py:300-350 | New gate; mirrors WS `_require_panel_token`. Browser EventSource can't set headers, so token-only. |
 | `CEO_AGENT_ID` import added to deps.py | deps.py:18 | Required by `require_panel_token` + reused by WS gate. |
-| `_SECRET_FIELD_NAMES` + `_scrub_secrets` added; 422 log scrubs credential fields | middleware.py:445-477, 499 | Plaintext GitHub PAT / provider API key / bearer tokens no longer dumped to structlog on a 422. Response body unchanged. |
+| `_SECRET_FIELD_NAMES` + `_scrub_secrets` added; 422 log scrubs credential fields | middleware.py:458-490, 512 | Plaintext GitHub PAT / provider API key / bearer tokens no longer dumped to structlog on a 422. Response body unchanged. |
 | WS panel-token gate (`_require_panel_token`) added to channel/agent/session/notifications streams | websocket.py:91, 348/413 | `/ws/*` now CEO-HMAC-gated in prod; dev allows missing token but rejects forged. **`/ws/system` was NOT gated** (inconsistency; gated since `536bbb64`). The channel and session streams were later removed by the comms teardown, so the current lines are the agents and notifications streams. |
 | Per-connection bounded send queue + sender task (`_ClientConnection`, `_register_sender`, `_run_sender`, `_enqueue_or_send`, `_send_with_timeout`) | websocket.py:75-193, 247-284 | Replaced `asyncio.gather(*[conn.send_text(data)])` with non-blocking enqueue. One slow client can no longer back-pressure the fan-out; full queue drops+warns. `_run_sender` reaps dead sockets on hard send error. |
 | `IDLE_TIMEOUT_SECONDS` (90s) `asyncio.wait_for` on `receive_text` | websocket.py:65, 380/432/476 | Half-open sockets from dead containers no longer block the receive loop forever; `TimeoutError` → `finally disconnect`. |

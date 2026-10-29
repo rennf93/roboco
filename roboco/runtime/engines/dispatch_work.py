@@ -882,7 +882,7 @@ class DispatchWorkEngine(_Base):
         Product Owner's prompts don't depend on ``MegaphoneEngine``."""
         try:
             from roboco.db import get_db_context
-            from roboco.utils.shipped_work_digest import shipped_work_digest
+            from roboco.services.shipped_work_digest import shipped_work_digest
 
             slug = (settings.self_heal_project_slug or "roboco-api").strip()
             async with get_db_context() as db:

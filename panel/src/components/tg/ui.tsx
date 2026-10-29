@@ -22,7 +22,7 @@ import {
   TEAM_COLOR_CLASSES,
 } from "@/lib/agent-utils";
 import { haptics } from "@/lib/telegram/webapp";
-import { useBackButton, useTgWebApp } from "@/lib/telegram/hooks";
+import { useBackButton, useTgWebApp } from "@/hooks/use-tg-webapp";
 
 /** The press language every tappable surface shares: a soft spring-ish
  * scale-down, transform-only. */

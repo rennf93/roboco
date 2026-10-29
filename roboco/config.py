@@ -16,7 +16,7 @@ from typing import Literal
 from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,7 +57,7 @@ class Settings(BaseSettings):
             "external-PR-supersede branch cut, /api/tasks/{id}/"
             "supersede-external-pr) - NOT the secretary/intake live chats, "
             "which nginx routes to the dispatcher instead (see "
-            "docker/nginx.conf) because spawning them needs the SAME "
+            "deploy/nginx.conf) because spawning them needs the SAME "
             "process as the reconciliation/reaper loops that must see them. "
             "'dispatcher': the fleet owner - runs the startup reconciliation "
             "+ every Orchestrator loop, AND (via nginx) the /api/orchestrator/*, "
@@ -132,7 +132,6 @@ class Settings(BaseSettings):
     )
     cors_allow_credentials: bool = True
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def internal_api_url(self) -> str:
         """
@@ -142,12 +141,10 @@ class Settings(BaseSettings):
         regardless of api_url (which is the agent-facing URL handed to
         spawned containers, not the dispatcher's own address). Every other
         role uses api_url if set, otherwise builds from host/port.
-        Note: 0.0.0.0 is only valid for binding, not connecting - use
-        127.0.0.1 instead.
+        A bind-all host is only valid for binding, not connecting; see
+        ``reachable_url_host``.
         """
-        # String COMPARISON against the bind-all literal (not a bind call);
-        # the conditional maps 0.0.0.0 to loopback for connect URLs.
-        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
+        connect_host = reachable_url_host(self.host)
         if self.role == "dispatcher":
             return f"http://{connect_host}:{self.port}/api"
         if self.api_url:
@@ -210,7 +207,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
         """Async PostgreSQL connection URL."""
@@ -219,7 +215,6 @@ class Settings(BaseSettings):
             f"@{self.database_host}:{self.database_port}/{self.database_name}"
         )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url_sync(self) -> str:
         """Sync PostgreSQL connection URL (for Alembic)."""
@@ -236,7 +231,6 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_password: str | None = None
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def redis_url(self) -> str:
         """Redis connection URL."""
@@ -292,7 +286,6 @@ class Settings(BaseSettings):
         description="Embed batch size for the indexer's own embedder",
     )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def rag_store_url(self) -> str:
         """PostgreSQL connection URL for the in-house vector store."""
@@ -1479,17 +1472,25 @@ class Settings(BaseSettings):
     )
     release_git_name: str = Field(
         default="RoboCo Release Manager",
-        description="Committer identity for the executor's release commit.",
+        description=(
+            "Identity of the release clone's own commits. It reaches the repo "
+            "only on a forge where the release is pushed with git (Gitea, "
+            "GitLab); on GitHub, GitHub's API writes the commits and the "
+            "token's owner (the RoboCo App, or the PAT's user) is the author."
+        ),
     )
     release_git_email: str = Field(
         default="release-manager@roboco.local",
-        description="Committer email for the executor's release commit.",
+        description="Email of the release clone's own commits (see release_git_name).",
     )
     release_sign_commits: bool = Field(
         default=False,
         description=(
-            "Sign the release commit (-S). Off by default: the orchestrator "
-            "container carries no signing key; arm only with a mounted key."
+            "Sign the release clone's commits (-S) with a mounted key. It "
+            "matters only where the release is pushed with git (Gitea, "
+            "GitLab): on GitHub the commits are written and signed by GitHub, "
+            "so leave it off there. Off by default: the orchestrator container "
+            "carries no signing key."
         ),
     )
     release_min_commits: int = Field(
@@ -3203,6 +3204,25 @@ class Settings(BaseSettings):
                         "must not double-index a projection/intake dir."
                     )
         return self
+
+
+def reachable_url_host(bind_host: str) -> str:
+    """``bind_host`` as the host part of a URL that reaches the server bound to it.
+
+    A bind-all address can't be dialled, so it maps to the loopback of its own
+    family: ``0.0.0.0`` to ``127.0.0.1`` and ``::`` to ``::1``. The family
+    matters: asyncio sets ``IPV6_V6ONLY`` on a socket it binds to ``::``, so
+    that server never answers on 127.0.0.1. An IPv6 address is bracketed
+    (``http://[::1]:8000``); a hostname is returned unchanged.
+    """
+    try:
+        address = ipaddress.ip_address(bind_host)
+    except ValueError:
+        return bind_host
+    is_ipv6 = isinstance(address, ipaddress.IPv6Address)
+    if address.is_unspecified:
+        address = ipaddress.ip_address("::1" if is_ipv6 else "127.0.0.1")
+    return f"[{address}]" if is_ipv6 else str(address)
 
 
 def _vault_dirs_overlap(a: str, b: str) -> bool:

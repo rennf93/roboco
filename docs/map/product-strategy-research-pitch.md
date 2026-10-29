@@ -28,13 +28,16 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/api/schemas/x.py` | `XPostResponse` + `XMentionRefModel` / `XFeatureRefModel` response shapes | 126 |
 | `roboco/foundation/policy/board_programs.py` | Board Program registry: `BoardProgram` dataclass, `PROGRAMS` (14 entries), `program_due`/`project_participates`/`validate_board_programs_field` (pure) | 424 |
 | `roboco/services/board_programs.py` | `BoardProgramEngine` — trigger/dedup/originate/LEARN over every registered program; `program_armed` settings-store chokepoint; `pick_rotation_target` for project-scoped round-robin | 998 |
-| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now` | 159 |
+| `roboco/api/schemas/board_programs.py` | `BoardProgramResponse` / `BoardProgramCycleResponse` / `BoardProgramDecisionResponse` response shapes | 51 |
+| `roboco/api/utils/board_programs.py` | Route glue: `require_ceo`, `to_response` (engine state → `BoardProgramResponse`), `cycle_to_response` | 65 |
+| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now`, `GET /{key}/cycles` (LEARN history) | 116 |
 | `roboco/services/pest_control_engine.py` | `PestControlEngine` — weekly+metric cron, project-scoped; evidence context (rework hotspots, recurring/waived findings) | 199 |
 | `roboco/services/spackle_engine.py` | `SpackleEngine` — biweekly cron, project-scoped gap-fill audit | 142 |
 | `roboco/services/scales_engine.py` | `ScalesEngine` — monthly cron, org-scoped portfolio rebalance; stale-backlog snapshot | 176 |
 | `roboco/services/dogfood_engine.py` | `DogfoodEngine` — event-only, project-scoped; real `_ORIGINATORS` binding (unlike Coroner's stub) | 152 |
 | `roboco/services/periscope_engine.py` | `PeriscopeEngine` — weekly cron, org-scoped market-research brief; `latest_brief_context` feeds Printer | 157 |
 | `roboco/services/megaphone_engine.py` | `MegaphoneEngine` — 3-day cron, org-scoped editorial calendar; shipped-this-week digest + Unreleased changelog | 141 |
+| `roboco/services/shipped_work_digest.py` | `shipped_work_digest` — "Completed this week" (COMPLETED tasks, last 7 days, capped at 15) + the CHANGELOG `## [Unreleased]` body from the RoboCo read clone; degrades to explicit lines, never raises; shared by Megaphone and the roadmap / Pest Control / Spackle prompts | 91 |
 | `roboco/services/mirror_engine.py` | `MirrorEngine` — quarterly cron, project-scoped messaging-drift audit | 143 |
 | `roboco/services/barfly_engine.py` | `BarflyEngine` — 2-day cron, org-scoped; screens X search candidates through `injection_guard`, marks seen | 223 |
 | `roboco/services/war_room_engine.py` | `WarRoomEngine` — event-triggered (`open_for_release` release hook + CEO run-now); campaign posts w/ `publish_after` | 231 |
@@ -49,7 +52,6 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/scales_service.py` | CEO's per-item approve/reject over a held Scales portfolio-rebalance cycle; approve executes the item's action against its live target task rather than creating a task | 287 |
 | `roboco/services/sentinel_service.py` | CEO's per-item approve/reject over a completed Sentinel quality report; approve materializes one drift item as a Main-PM-owned root task | 272 |
 | `roboco/services/spackle_service.py` | CEO's per-item approve/reject over a held Spackle cycle; approve materializes one gap-fill item as a BACKLOG task | 266 |
-| `roboco/utils/shipped_work_digest.py` | Shared shipped-this-week digest (capped completed-task list plus the CHANGELOG `## [Unreleased]` body), best-effort with an explicit unavailable line on a read failure; used by the Megaphone cycle and the roadmap, Pest Control and Spackle exploration prompts | 97 |
 
 ## Key Symbols
 
@@ -161,7 +163,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `get_pest_control_engine` / `get_spackle_engine` / `get_scales_engine` / `get_dogfood_engine` / `get_periscope_engine` / `get_megaphone_engine` / `get_mirror_engine` / `get_barfly_engine` / `get_war_room_engine` / `get_coroner_engine` / `get_sentinel_engine` / `get_librarian_engine` / `get_board_program_engine` | factory | each engine's own file | Session-bound constructors, one per engine |
 | `CoronerService.approve_process_change` | method | `roboco/services/coroner_service.py:77` | Materialize the postmortem's process change as a Main-PM-owned root task |
 | `ScalesService.approve_item` | method | `roboco/services/scales_service.py:71` | Execute one proposed rebalance action against its live target task; idempotent |
-| `shipped_work_digest` | function | `roboco/utils/shipped_work_digest.py:37` | Assemble the shipped-this-week digest for a board-program prompt |
+| `shipped_work_digest` | function | `roboco/services/shipped_work_digest.py:39` | Assemble the shipped-this-week digest for a board-program prompt |
 
 ## Data Flow
 
@@ -361,7 +363,9 @@ product-strategy-research-pitch
 │   └── each: run_cycle + context builder; war_room_engine also exposes open_for_release (release-hook bypass of _ORIGINATORS); barfly_engine screens candidates through injection_guard
 ├── coroner_engine.py / sentinel_engine.py / librarian_engine.py — Auditor programs
 │   └── coroner_engine: open_for_incident is the ONLY real entry point (event-only, no run_cycle path through the loop); sentinel_engine/librarian_engine: run_cycle (CRON) + context builder
-└── api/routes/board_programs.py — CEO-only status + run-now routes
+├── api/schemas/board_programs.py — BoardProgramResponse / BoardProgramCycleResponse / BoardProgramDecisionResponse
+└── api/utils/board_programs.py — require_ceo + to_response / cycle_to_response
+├── api/routes/board_programs.py — CEO-only status + run-now + cycles routes
 ```
 
 ## Dependencies
@@ -411,7 +415,7 @@ product-strategy-research-pitch
   - `dashboard.py` — `get_product_service` / `get_project_service` for dashboard views.
   - `roadmap.py` — `GET /api/roadmap/cycles`, `POST /cycles/{id}/items/{id}/{approve,reject}` (CEO-only) → `get_roadmap_service`.
   - `x.py` — `GET /api/x/posts`, `POST /posts/{id}/{approve,reject}` (CEO-only) → `get_x_post_service`.
-  - `board_programs.py` — `GET /api/board-programs` (list all 14 with live status), `POST /api/board-programs/{key}/run-now` (CEO-only) → `get_board_program_engine`.
+  - `board_programs.py` — `GET /api/board-programs` (list all 14 with live status), `POST /api/board-programs/{key}/run-now`, `GET /api/board-programs/{key}/cycles` (LEARN history, newest first; all CEO-only) → `get_board_program_engine`.
 - **Orchestrator loop tick:** `_strategy_engine_loop` (`runtime/engines/strategy.py:25`) — created at `start()` (`runtime/orchestrator.py:1820`) and cancelled in `stop()`; dormant unless `strategy_engine_enabled`; ticks every `strategy_engine_interval_seconds` and runs `_strategy_engine_cycle`, which calls `StrategyEngine.run_cycle`. `_x_mentions_poll_loop` (`runtime/engines/x_mentions.py:23`) — same lifecycle shape, dormant unless `x_engine_enabled` AND `x_replies_enabled`, ticks every `x_mentions_interval_seconds`, calls `XEngine.run_cycle`. `_board_program_loop` (`runtime/engines/reconcile.py:615`) replaced the old bespoke `_roadmap_engine_loop` / `_x_feature_spotlight_loop`: it ticks on a floor interval (`_board_program_interval_seconds`: shortest registered program cadence, clamped 300s-3600s) and calls `BoardProgramEngine.run_due_programs` through `_run_board_program_cycle`; each program's own enablement is checked per tick inside the engine. `_dispatch_pm_work` (`runtime/engines/dispatch_work.py:1168`) hands every assigned pending task to `_dispatch_board_program_exploration` first (a module-level dict-dispatch function, not a method — `runtime/orchestrator.py:1169`), which routes each program's held exploration task by `source` to its own one-shot dispatcher (`_dispatch_roadmap_exploration` at `runtime/engines/dispatch_work.py:268`, `_dispatch_feature_spotlight_exploration` at :657, `_dispatch_pest_control_exploration`, `_dispatch_periscope_exploration`, etc.), each spawning its program's role solo and bypassing the two-reviewer board-review gate; only a non-program task falls through to `_handle_board_assigned_task` / `_handle_pm_assigned_task`.
 - **MCP mount (orchestrator spawn):** `roboco-search` MCP mounted into Board/PM agent containers only when `research_enabled` (`runtime/engines/spawn_config.py:784`); the MCP server calls the `/api/research/*` routes. `playwright` MCP mounted task-scoped (not role-blanket) for a `board_dogfood` spawn only, via `_is_dogfood_spawn` (`runtime/engines/spawn_launch.py:1447`, consulted at `runtime/engines/spawn_config.py:702`).
 - **Event hooks (bypass the loop entirely):** `TaskService`'s bounce-into-`needs_revision` transition and cancel-after-work path both call `CoronerEngine.open_for_incident` (`_fire_coroner_bounce_hook` at `services/task.py:908` / `TaskService._alert_coroner_of_cancel` at `:1666`); the orchestrator's budget-block path calls it too (`_fire_coroner_budget_hook`, `runtime/engines/sweeps.py:1639`); `StrategyEngine.run_cycle`'s `stranded_blocked` branch calls it a fourth way, through its own `_trigger_coroner_incident` helper (`strategy_engine.py:288`), which re-derives the most-stale stranded task on every strategy-engine tick rather than firing off a single state transition; `ReleaseProposalService.approve`'s publish-success branch calls `WarRoomEngine.open_for_release` (`services/release_proposal.py:351`) alongside the pre-existing `XEngine.draft_release_post` hook.
@@ -422,32 +426,32 @@ product-strategy-research-pitch
 
 | Flag | Default | File:Line | Effect |
 |------|---------|-----------|--------|
-| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:703 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
-| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:809 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:816 | `tavily`/`brave`/`exa`/`null` adapter selection |
-| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:829 | Server-side only; unset → `NullProvider` |
-| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:847 | Hard cap on `web_search` results (1–20) |
-| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:853 | Hard cap on `web_fetch` extracted chars |
-| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:858 | Outbound provider HTTP timeout |
-| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:863 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1022 | Pitch auto-provisioning master switch (still inert without token+org) |
-| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1029 | GitHub PAT for repo creation (server-side only) |
-| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1036 | GitHub org where repos are provisioned |
-| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1040 | Override for GitHub Enterprise |
-| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1044 | Outbound GitHub provisioning timeout |
-| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1049 | Whether provisioned repos are private |
-| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1053 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
-| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1062 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
-| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1078 | Master switch — loop never starts when off |
-| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1085 | Seconds between strategy assessment passes |
-| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1090 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2306 | Denylist — `ProjectService` rejects `git_url` containing any entry |
-| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:875 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1860 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1870 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1875 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1880 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1893 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:696 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
+| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:802 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:809 | `tavily`/`brave`/`exa`/`null` adapter selection |
+| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:822 | Server-side only; unset → `NullProvider` |
+| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:840 | Hard cap on `web_search` results (1–20) |
+| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:846 | Hard cap on `web_fetch` extracted chars |
+| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:851 | Outbound provider HTTP timeout |
+| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:856 | Per-agent/day call ceiling (Redis, fail-open) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1015 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1022 | GitHub PAT for repo creation (server-side only) |
+| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1029 | GitHub org where repos are provisioned |
+| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1033 | Override for GitHub Enterprise |
+| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1037 | Outbound GitHub provisioning timeout |
+| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1042 | Whether provisioned repos are private |
+| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1046 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
+| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1055 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
+| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1071 | Master switch — loop never starts when off |
+| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1078 | Seconds between strategy assessment passes |
+| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1083 | Blocked-task threshold for "stranded" observation |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2307 | Denylist — `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:868 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1861 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1871 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1876 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1881 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1894 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 

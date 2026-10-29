@@ -166,6 +166,12 @@ async def app_client_with_ollama(
 
 _HDR_PM = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "main_pm"}
 
+# The deepseek entry of the fake OpenRouter catalog below; the route parses
+# the payload's decimal price strings into these floats.
+_DEEPSEEK_CONTEXT_LENGTH = 64000
+_DEEPSEEK_PROMPT_PRICE = 0.000001
+_DEEPSEEK_COMPLETION_PRICE = 0.000002
+
 
 @pytest.mark.asyncio
 async def test_get_catalog(app_client_with_ollama: AsyncClient) -> None:
@@ -617,10 +623,11 @@ async def test_post_test_self_hosted_when_reachable(
         json={"base_url": "http://192.168.1.10:11434"},
         headers=_HDR_PM,
     )
+    tags = ["llama3.1:8b", "gemma2:9b"]
     with patch(
         "roboco.api.routes.provider.probe_ollama_tags",
         new_callable=AsyncMock,
-        return_value=(["llama3.1:8b", "gemma2:9b"], None),
+        return_value=(tags, None),
     ):
         response = await app_client_with_local.post(
             "/api/providers/self-hosted/test",
@@ -634,7 +641,7 @@ async def test_post_test_self_hosted_when_reachable(
     assert "error" in body
     assert isinstance(body["ok"], bool)
     assert body["ok"] is True
-    assert body["model_count"] == 2  # noqa: PLR2004
+    assert body["model_count"] == len(tags)
     assert body["error"] is None
 
 
@@ -733,10 +740,11 @@ async def test_get_self_hosted_models_returns_list(
         json={"base_url": "http://192.168.1.10:11434"},
         headers=_HDR_PM,
     )
+    tags = ["llama3.1:8b", "gemma2:9b", "qwen2.5:14b"]
     with patch(
         "roboco.api.routes.provider.probe_ollama_tags",
         new_callable=AsyncMock,
-        return_value=(["llama3.1:8b", "gemma2:9b", "qwen2.5:14b"], None),
+        return_value=(tags, None),
     ):
         response = await app_client_with_local.get(
             "/api/providers/self-hosted/models",
@@ -745,7 +753,7 @@ async def test_get_self_hosted_models_returns_list(
     assert response.status_code == HTTPStatus.OK
     models = response.json()
     assert isinstance(models, list)
-    assert len(models) == 3  # noqa: PLR2004
+    assert len(models) == len(tags)
     # Contract: each entry must be an object with model_name and display_name.
     first = models[0]
     assert isinstance(first, dict)
@@ -1353,7 +1361,7 @@ async def test_openrouter_models_returns_results_with_key(
         {
             "id": "deepseek/deepseek-chat",
             "name": "DeepSeek Chat",
-            "context_length": 64000,
+            "context_length": _DEEPSEEK_CONTEXT_LENGTH,
             "supported_parameters": ["tools"],
             "pricing": {"prompt": "0.000001", "completion": "0.000002"},
         },
@@ -1385,9 +1393,9 @@ async def test_openrouter_models_returns_results_with_key(
     assert len(body) == 1  # only deepseek matches the query
     assert body[0]["id"] == "deepseek/deepseek-chat"
     assert body[0]["name"] == "DeepSeek Chat"
-    assert body[0]["context_length"] == 64000  # noqa: PLR2004
-    assert body[0]["prompt_price"] == 0.000001  # noqa: PLR2004
-    assert body[0]["completion_price"] == 0.000002  # noqa: PLR2004
+    assert body[0]["context_length"] == _DEEPSEEK_CONTEXT_LENGTH
+    assert body[0]["prompt_price"] == _DEEPSEEK_PROMPT_PRICE
+    assert body[0]["completion_price"] == _DEEPSEEK_COMPLETION_PRICE
     # The key must never appear in the response body
     assert "sk-or-v1-test-key-abcdef" not in response.text
     # The ?q= query param reached the probe

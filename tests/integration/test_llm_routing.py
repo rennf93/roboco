@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from roboco.services.llm import AgentRoute
     from sqlalchemy.ext.asyncio import AsyncSession
 
+# An AGENT_SLUG pin plus one GLOBAL row: what a mode switch must leave behind
+# when a per-agent pin exists.
+_PIN_AND_GLOBAL_ROWS = 2
+
 
 def _first_model_for_type(provider_type: ModelProvider) -> str:
     for entry in MODEL_CATALOG:
@@ -422,7 +426,7 @@ async def test_apply_mode_ollama_preserves_agent_pin(llm_setup: dict) -> None:
     )
     await svc.apply_mode(mode="ollama", default_model=ollama_model)
     assignments = await svc.list_assignments()
-    assert len(assignments) == 2  # noqa: PLR2004  AGENT_SLUG pin kept + new GLOBAL row.
+    assert len(assignments) == _PIN_AND_GLOBAL_ROWS
     by_scope = {a.scope: a for a in assignments}
     assert by_scope[AssignmentScope.AGENT_SLUG].scope_value == "be-dev-1"
     assert by_scope[AssignmentScope.AGENT_SLUG].model_name == anthropic_model
@@ -1561,10 +1565,10 @@ async def test_apply_mode_self_hosted_clears_prior_assignments(
         scope_value=None,
         model_name=anthropic_model,
     )
-    assert len(await svc.list_assignments()) == 2  # noqa: PLR2004
+    assert len(await svc.list_assignments()) == _PIN_AND_GLOBAL_ROWS
     await svc.apply_mode(mode="self_hosted", default_model="gemma2:9b")
     assignments = await svc.list_assignments()
-    assert len(assignments) == 2  # noqa: PLR2004  AGENT_SLUG pin kept + new GLOBAL row.
+    assert len(assignments) == _PIN_AND_GLOBAL_ROWS
     by_scope = {a.scope: a for a in assignments}
     assert by_scope[AssignmentScope.AGENT_SLUG].scope_value == "be-dev-1"
     assert by_scope[AssignmentScope.AGENT_SLUG].model_name == anthropic_model
@@ -1851,3 +1855,49 @@ async def test_apply_routing_preset_skips_entry_whose_provider_went_disabled(
 
     remaining = await svc.list_assignments()
     assert remaining == []  # the disabled-provider entry was never written
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_zai_replaces_the_previous_modes_role_rows(
+    llm_setup: dict, db_session: AsyncSession
+) -> None:
+    """Every mode switch wipes the plain ROLE/GLOBAL rows before setting its
+    own; zai skipped the wipe, so the previous mode's ROLE rows kept
+    overriding the new GLOBAL GLM default. Pins and complexity overrides
+    survive, as on every mode."""
+    db_session.add(
+        ProviderConfigTable(
+            name="zai-test",
+            type=ModelProvider.ZAI,
+            enabled=False,
+            auth_token_encrypted="stored-key",
+        )
+    )
+    await db_session.flush()
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    pin_model = _first_model_for_type(ModelProvider.OPENAI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG, scope_value="be-dev-1", model_name=pin_model
+    )
+    override_model = _first_model_for_type(ModelProvider.GROK)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=override_model,
+    )
+
+    await svc.apply_mode(mode="zai")
+
+    rows = {
+        (a.scope, a.scope_value, a.model_name) for a in await svc.list_assignments()
+    }
+    assert rows == {
+        (AssignmentScope.GLOBAL, None, "glm-5.3-flash"),
+        (AssignmentScope.AGENT_SLUG, "be-dev-1", pin_model),
+        (AssignmentScope.ROLE, "developer:low", override_model),
+    }
+    # The GLM ids in the catalog resolve to HUMMIN since 2026-09-17: the
+    # GLOBAL row must still point at the ZAI provider, or "zai" mode is
+    # hummin mode under another name.
+    assert await svc.derive_mode() == "zai"

@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { haptics } from "@/lib/telegram/webapp";
-import { useBackButton } from "@/lib/telegram/hooks";
+import { useBackButton } from "@/hooks/use-tg-webapp";
 
 function reducedMotion(): boolean {
   // No matchMedia (SSR, bare jsdom) counts as reduced — jump to the target.
@@ -34,9 +34,15 @@ export function useCountUp(target: number, durationMs = 650): number {
       raf = requestAnimationFrame(() => setValue(target));
       return () => cancelAnimationFrame(raf);
     }
-    const start = performance.now();
+    // Timed from the first frame's own timestamp, not performance.now() in
+    // the effect: a frame timestamp can be earlier than that (by up to a
+    // frame in browsers, ~1.2 s in jsdom), and a negative t would ease the
+    // value backwards below `from` and stall the count until the frame
+    // clock caught up.
+    let start: number | null = null;
     const tick = (now: number) => {
-      const t = Math.min((now - start) / durationMs, 1);
+      start ??= now;
+      const t = Math.min(Math.max((now - start) / durationMs, 0), 1);
       const eased = 1 - Math.pow(1 - t, 3);
       setValue(from + (target - from) * eased);
       if (t < 1) raf = requestAnimationFrame(tick);

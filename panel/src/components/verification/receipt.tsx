@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { CheckCircle2, HelpCircle, XCircle } from "lucide-react";
 import type {
   AcVerificationStamp,
+  PrCiState,
   PrCiVerdict,
   ReviewerChainEntry,
   ReviewRoundFindings,
@@ -153,21 +154,80 @@ export function FindingsByRoundList({
   );
 }
 
-// (c) The PR CI verdict bound to the head commit — always renders the
-// documented-unavailable state today (no backend route exists yet); shaped
-// as its own component so the day a real endpoint ships, only this render
-// branch changes.
+const CI_STATE_BADGE: Record<
+  PrCiState,
+  { label: string; hint: string; className: string }
+> = {
+  success: {
+    label: "CI passed",
+    hint: "Every check on the PR's head commit passed.",
+    className:
+      "border-green-300 text-green-700 dark:border-green-800 dark:text-green-300",
+  },
+  failure: {
+    label: "CI failed",
+    hint: "At least one check on the PR's head commit failed.",
+    className:
+      "border-red-300 text-red-700 dark:border-red-800 dark:text-red-300",
+  },
+  pending: {
+    label: "CI running",
+    hint: "Checks on the PR's head commit haven't finished yet.",
+    className:
+      "border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300",
+  },
+  pending_not_scheduled: {
+    label: "CI not started",
+    hint: "The repository has CI workflows, but none has started on the PR's head commit yet.",
+    className:
+      "border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300",
+  },
+  no_ci_configured: {
+    label: "No CI",
+    hint: "The repository has no CI workflows, so there are no checks to verify.",
+    className: "border-border text-muted-foreground",
+  },
+  error: {
+    label: "CI unreadable",
+    hint: "GitHub returned an error while reading the PR's checks.",
+    className: "border-border text-muted-foreground",
+  },
+};
+
+// (c) The PR CI verdict bound to the head commit (GET /tasks/{id}/attestation
+// `ci`): the check-runs state, the head commit it was read on, and the
+// failing checks by name.
 export function CiVerdictBadge({
   data,
   isLoading,
 }: LoadableProps<PrCiVerdict>) {
   if (isLoading) return <Skeleton className="h-6 w-36" />;
+  if (!data.available) {
+    return (
+      <HelpTip label={data.reason}>
+        <Badge variant="outline" className="text-muted-foreground">
+          CI verdict unavailable
+        </Badge>
+      </HelpTip>
+    );
+  }
+  const badge = CI_STATE_BADGE[data.state];
+  const commit = data.headSha
+    ? ` Head commit ${data.headSha.slice(0, 7)}.`
+    : "";
   return (
-    <HelpTip label={data.reason}>
-      <Badge variant="outline" className="text-muted-foreground">
-        CI verdict unavailable
-      </Badge>
-    </HelpTip>
+    <div className="flex flex-wrap items-center gap-2">
+      <HelpTip label={badge.hint + commit}>
+        <Badge variant="outline" className={badge.className}>
+          {badge.label}
+        </Badge>
+      </HelpTip>
+      {data.failingChecks.length > 0 && (
+        <span className="text-xs text-muted-foreground">
+          Failing: {data.failingChecks.join(", ")}
+        </span>
+      )}
+    </div>
   );
 }
 

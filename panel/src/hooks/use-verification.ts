@@ -1,16 +1,19 @@
 // Data-fetching hooks for the verification receipt (task-detail Verification
-// tab; release-proposal rollup). Every hook rides an existing query
-// (`useTask` / `useTaskFindings` / `conventionsApi.findings`) — no new query
-// path is introduced anywhere in this file.
+// tab; release-proposal rollup). Every hook rides an existing endpoint
+// (`useTask` / `useTaskFindings` / `conventionsApi.findings` /
+// `tasksApi.getAttestation`) — no new backend route is needed by this file.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { conventionsApi, type ConventionFinding } from "@/lib/api/conventions";
 import { dashboardApi } from "@/lib/api/dashboard";
+import { tasksApi } from "@/lib/api/tasks";
 import {
   buildReviewerChain,
   groupFindingsByRound,
   parseAcVerificationStamps,
-  PR_CI_VERDICT_UNAVAILABLE,
+  prCiVerdictFromAttestation,
+  PR_CI_VERDICT_NOT_AVAILABLE,
+  PR_CI_VERDICT_UNREADABLE,
   type AcVerificationStamp,
   type PrCiVerdict,
   type ReviewerChainEntry,
@@ -98,15 +101,23 @@ export function useTaskConventionFindings(taskId: string): {
   return { data: filtered, isLoading: isTaskLoading || isFindingsLoading };
 }
 
-// The PR CI verdict bound to the task's PR head commit. Always reads
-// unavailable — see `PR_CI_VERDICT_UNAVAILABLE` for why (no backend route
-// exists to fetch it). Shaped as a hook, not a bare constant, so both UI
-// leaves consume one uniform {data, isLoading} shape across every
-// verification data source, and the day a real endpoint ships only this
-// hook's body changes.
-export function usePrCiVerdict(_taskId: string): {
+// The PR CI verdict bound to the task's PR head commit, off
+// GET /tasks/{id}/attestation's `ci`. The attestation endpoint resolves the
+// task's project, PR and git service server-side, so the panel needs no
+// dedicated CI route; a failed load reads as unavailable, never as a pass.
+export function usePrCiVerdict(taskId: string): {
   data: PrCiVerdict;
-  isLoading: false;
+  isLoading: boolean;
 } {
-  return { data: PR_CI_VERDICT_UNAVAILABLE, isLoading: false };
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["task-attestation", taskId],
+    queryFn: () => tasksApi.getAttestation(taskId),
+  });
+  const verdict = useMemo(() => {
+    if (isError) return PR_CI_VERDICT_UNREADABLE;
+    return data
+      ? prCiVerdictFromAttestation(data.ci)
+      : PR_CI_VERDICT_NOT_AVAILABLE;
+  }, [data, isError]);
+  return { data: verdict, isLoading };
 }

@@ -39,9 +39,10 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
 | roboco/api/routes/x.py | X (Twitter) engine — CEO-only: list/approve/reject held draft posts + set/status OAuth 1.0a credentials. |
 | roboco/api/routes/roadmap.py | Board roadmap engine — CEO-only: list open cycles + per-item approve/reject. |
+| roboco/api/routes/maintenance_pause.py | Operator maintenance pause, CEO-only (`require_ceo_role`): list every scope's live status (with `read_degraded_since`), pause a scope for N hours (default 4), resume a scope (idempotent). Schemas in `api/schemas/maintenance_pause.py`; `require_ceo` + `to_response` in `api/utils/maintenance_pause.py`. |
 | roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` object, conditionally mounted (`telegram_miniapp_enabled` AND `cloud_auth_enabled`) directly inline in `app.py`'s `create_app()` (not by a helper function in this module or in `utils/telegram.py` — see the 2026-08-08 correction below); validates a Mini App's `initData` and mints the cloud-auth session cookie; the mount also installs its own unconditional `LoginRateLimiter`. |
 | roboco/api/routes/entire.py | Entire trails bridge CEO surface (`require_ceo_role`; schemas in `api/schemas/entire.py`): GET/POST `/entire/credentials` (write-only token, returns `has_token`; empty clears), GET `/entire/trails/status`, POST `/entire/trails/retry`. Mounted with `telegram_router` by `app.py`'s `_mount_bridge_routers` |
-| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
+| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert; `find_seed_user` is the one lookup of that row, shared with `/telegram/webapp-auth`), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
 | roboco/api/routes/v1/_role_dep.py | Thin: builds the module-level per-role guard instances (`require_dev`, `require_qa`, ...) from `_require_roles` + `require_any_authenticated_agent` from `_require_authenticated_agent()` — both re-imported, along with `envelope_to_response`/`_log_rejection`/`_require_authenticated_agent`, from `roboco/api/utils/v1_role_dep.py` (extracted 2026-08-08, see below). |
 | roboco/api/routes/v1/do.py | Content verbs `/api/v1/do/*` (commit/note/say/dm/evidence/playbook...). |
 | roboco/api/routes/v1/flow_dev.py | Developer flow verbs. |
@@ -58,7 +59,6 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/schemas/v1/do.py | All do-verb request bodies. |
 | `roboco/api/routes/coroner.py` | Coroner Board Program API, CEO-only: list completed postmortems, approve or reject each one's process change |
 | `roboco/api/routes/dogfood.py` | Dogfood Board Program API, CEO-only: list open friction-fix cycles, approve (BACKLOG task) or reject one item |
-| `roboco/api/routes/maintenance_pause.py` | Operator maintenance pause, `require_ceo_role`: list every scope's live status, pause a scope for N hours (default 4), resume a scope (idempotent) |
 | `roboco/api/routes/mirror.py` | Mirror Board Program API, CEO-only: list open messaging-fix cycles, approve (BACKLOG docs task) or reject one item |
 | `roboco/api/routes/periscope.py` | Periscope Board Program API, CEO-only: list filed market briefs, approve (Main-PM root task) or reject one finding |
 | `roboco/api/routes/pest_control.py` | Pest Control Board Program API, CEO-only: list open bug-hunt cycles, approve (BACKLOG task) or reject one item |
@@ -99,7 +99,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/{pest-control,spackle,scales,dogfood,mirror}/cycles, /cycles/{id}/items/{id}/{approve,reject} | pest_control.py, spackle.py, scales.py, dogfood.py, mirror.py | CEO-only (`_require_ceo`) |
 | GET/POST | /api/periscope/briefs (findings), /api/sentinel/reports (items), /api/coroner/postmortems (process-change), each with `{approve,reject}` | periscope.py, sentinel.py, coroner.py | CEO-only |
-| GET/POST/DELETE | /api/maintenance-pause, /api/maintenance-pause/{scope} | maintenance_pause.py | `require_ceo_role` |
+| GET/POST/DELETE | /api/maintenance-pause, /api/maintenance-pause/{scope} | maintenance_pause.py | `require_ceo_role` (agent context) |
 | GET | /api/releases/{version}/certificate | releases.py | CEO-only |
 | GET/POST | /api/telegram/credentials | telegram.py | `require_ceo_role` (agent context) |
 | GET/POST/DELETE | /api/providers/presets, /presets/{id}/apply, /presets/{id} | provider.py | agent context — save/apply/delete a named full routing snapshot (`docs/map/support-services.md`) |
@@ -133,17 +133,17 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `_build_manual_spawn_prompt` | fn | utils/orchestrator.py:102 (re-imported into routes/orchestrator.py) | Builds the initial prompt for a CEO-triggered manual (panel) spawn — points the agent at the task id/title/status and trusts the gateway envelope's `next`/`remediate` for the actual claim verb. |
 | `_resolve_manual_spawn_prompt` | fn | utils/orchestrator.py:126 (re-imported into routes/orchestrator.py) | Best-effort task-aware prompt for a manual panel spawn; falls back to the raw `ceo_message` unchanged on any lookup failure (bad `task_id`, DB hiccup, missing task) so enrichment never blocks a CEO-requested spawn. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
-| `request_validation_handler` | fn | api/middleware.py:480 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
-| `_scrub_secrets` | fn | api/middleware.py:462 | Deep-redact known secret fields from logged 422 bodies. |
+| `request_validation_handler` | fn | api/middleware.py:493 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
+| `_scrub_secrets` | fn | api/middleware.py:475 | Deep-redact known secret fields from logged 422 bodies. |
 | `StrList` | type | schemas/v1/flow.py:21 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
 | `Choreographer` | svc | services/gateway/choreographer/__init__.py:30 | Composes service intents behind every flow verb: the per-role mixins (board, doc, QA, PR reviewer, PR gate) over the legacy class in `choreographer/_impl.py`. |
 | `ContentActions` | svc | services/gateway/content_actions.py:827 | Composes do-verb content actions (commit/note/dm/...). |
 | `router` (do) | router | v1/do.py:67 | `/api/v1/do` router, `require_any_authenticated_agent` dep. |
 | `router` (flow_dev) | router | v1/flow_dev.py:29 | `/api/v1/flow/developer` router, `require_dev` dep. |
 | `get_release_certificate` | function | `roboco/api/routes/releases.py:23` | Governance certificate for one published release (leading `v` tolerated) |
-| `pause_scope` | function | `roboco/api/routes/maintenance_pause.py:103` | Pause a scope for `hours`, stamping who, when and why |
+| `pause_scope` | function | `roboco/api/routes/maintenance_pause.py:55` | Pause a scope for `hours`, stamping who, when and why |
 | `revoke_jti / is_jti_revoked` | functions | `roboco/api/auth/revocation.py:27` | Revoke a token id for its remaining life; check revocation (fail-open) |
-| `ensure_seed_user` | function | `roboco/api/auth/seed.py:27` | Upsert the seeded CEO login user |
+| `ensure_seed_user` | function | `roboco/api/auth/seed.py:39` | Upsert the seeded CEO login user |
 | `resolve_session_user` | function | `roboco/api/auth/session.py:23` | Session cookie to CEO user, or None |
 
 ## Data Flow
@@ -229,7 +229,7 @@ roboco/api/
 │   ├── backend.py               cookie transport + password-fingerprint-bound JWT strategy
 │   ├── manager.py                UserManager + get_user_db/get_user_manager DI chain
 │   ├── session.py               resolve_session_user (shared HTTP + WS cookie validation)
-│   ├── seed.py                  ensure_seed_user / ensure_seed_user_startup (single CEO row)
+│   ├── seed.py                  find_seed_user / ensure_seed_user / ensure_seed_user_startup (single CEO row)
 │   ├── routes.py                always-public /status + conditional login/logout mount
 │   └── login_limit.py           LoginRateLimiter (per-IP POST limit; path-keyed, shared with telegram.py webapp-auth)
 └── schemas/

@@ -85,11 +85,6 @@ class ExtractedMessage(TimestampMixin):
     # Metadata
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    # Embedding for RAG (stored as list of floats, actual Vector type in DB)
-    embedding: list[float] | None = Field(
-        default=None, description="Vector embedding for RAG"
-    )
-
     # Extraction metadata
     confidence: float = Field(
         default=1.0, ge=0.0, le=1.0, description="Extraction confidence"

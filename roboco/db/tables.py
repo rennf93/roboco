@@ -23,6 +23,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -109,8 +110,11 @@ class AgentTable(Base):
     status: Mapped[AgentStatus] = mapped_column(
         _str_enum(AgentStatus), nullable=False, default=AgentStatus.OFFLINE
     )
+    # Foreign key named by migration 001, not by the naming convention.
     current_task_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL", name="fk_agents_current_task"),
+        nullable=True,
     )
 
     # Configuration (stored as JSON)
@@ -176,12 +180,12 @@ class TaskTable(Base):
     # Stable id per acceptance_criteria element (1:1, same order). Lets a child
     # task's parent_ac_refs point at specific parent criteria (migration 036).
     acceptance_criteria_ids: Mapped[list[str]] = mapped_column(
-        ARRAY(String), nullable=False, default=list
+        ARRAY(String), nullable=False, default=list, server_default="{}"
     )
     # On a decomposition child: the parent AC ids this child is responsible for
     # (empty on non-children). Powers the coverage + roll-up AC gates.
     parent_ac_refs: Mapped[list[str]] = mapped_column(
-        ARRAY(String), nullable=False, default=list
+        ARRAY(String), nullable=False, default=list, server_default="{}"
     )
 
     if TYPE_CHECKING:
@@ -263,7 +267,7 @@ class TaskTable(Base):
     # finish, so the CEO's Approve & Start button appears only after the board
     # is actually done — never on a freshly created pending board task.
     board_review_complete: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
+        Boolean, nullable=False, default=False, server_default="false"
     )
 
     # Ownership
@@ -449,9 +453,11 @@ class TaskTable(Base):
     # Prompter origin tracking: tasks drafted by the Prompter LLM assistant
     # require human confirmation before entering the workflow. The task creation
     # route enforces that prompter-originated tasks cannot bypass human review.
-    source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
+    source: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="manual", server_default="manual"
+    )
     confirmed_by_human: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
+        Boolean, nullable=False, default=False, server_default="false"
     )
 
     # Durable stalled/needs-human marker (migration 092). Set when the
@@ -500,6 +506,16 @@ class TaskTable(Base):
         Index("ix_tasks_created_by_status", "created_by", "status"),
         Index("ix_tasks_project_status", "project_id", "status"),
         Index("ix_tasks_product_status", "product_id", "status"),
+        # Backs list_completed_video_tasks' bounded newest-first scan of one
+        # source + status (migration 066).
+        Index("ix_tasks_source_status_created", "source", "status", "created_at"),
+        # Partial: only stalled rows (the common case is NULL), backing
+        # list_stalled_tasks' current-stalled-set read (migration 092).
+        Index(
+            "ix_tasks_stalled_reason",
+            "stalled_reason",
+            postgresql_where=text("stalled_reason IS NOT NULL"),
+        ),
     )
 
 
@@ -525,7 +541,7 @@ class ProjectTable(Base):
     # Git Configuration
     git_url: Mapped[str] = mapped_column(String(500), nullable=False)
     default_branch: Mapped[str] = mapped_column(
-        String(100), nullable=False, default="master"
+        String(100), nullable=False, default="master", server_default="master"
     )
     protected_branches: Mapped[list[str]] = mapped_column(
         ARRAY(String), default=lambda: ["main", "master"]
@@ -793,14 +809,20 @@ class PitchTable(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    slug: Mapped[str] = mapped_column(
-        String(50), unique=True, nullable=False, index=True
-    )
+    # A unique constraint (uq_pitches_slug, migration 033); its own index
+    # serves the by-slug lookup, so no separate index.
+    slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     problem: Mapped[str] = mapped_column(Text, nullable=False)
     proposed_solution: Mapped[str] = mapped_column(Text, nullable=False)
-    target_cells: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    target_cells: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'::json")
+    )
     status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="proposed", index=True
+        String(20),
+        nullable=False,
+        default="proposed",
+        index=True,
+        server_default="proposed",
     )
     created_by: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     decided_by: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -816,7 +838,10 @@ class PitchTable(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -845,14 +870,18 @@ class PlaybookTable(Base):
     )
     problem: Mapped[str] = mapped_column(Text, nullable=False)
     procedure: Mapped[str] = mapped_column(Text, nullable=False)
-    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    tags: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'::json")
+    )
     team: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="org")
+    scope: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="org", server_default="org"
+    )
     source_task_ids: Mapped[list[str]] = mapped_column(
-        JSON, nullable=False, default=list
+        JSON, nullable=False, default=list, server_default=text("'[]'::json")
     )
     status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="draft", index=True
+        String(20), nullable=False, default="draft", index=True, server_default="draft"
     )
     # The Board Program that drafted this playbook directly via
     # PlaybookService.draft() (e.g. "coroner", "librarian"), None for an
@@ -865,7 +894,10 @@ class PlaybookTable(Base):
         UUID(as_uuid=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     approved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -903,13 +935,22 @@ class SecretaryDirectiveTable(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default=text("'{}'::json")
+    )
     status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending", index=True
+        String(16),
+        nullable=False,
+        default="pending",
+        index=True,
+        server_default="pending",
     )
     requested_by: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     requested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     decided_by: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(
@@ -938,9 +979,10 @@ class WorkSessionTable(Base):
         nullable=False,
         index=True,
     )
+    # Foreign key named by migration 001, not by the naming convention.
     task_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="CASCADE"),
+        ForeignKey("tasks.id", ondelete="CASCADE", name="fk_work_sessions_task"),
         nullable=False,
         index=True,
     )
@@ -1599,11 +1641,13 @@ class A2AMessageTable(Base):
         # Composite indexes for message queries
         Index("ix_a2a_msg_conv_created", "conversation_id", "created_at"),
         Index("ix_a2a_msg_from_created", "from_agent", "created_at"),
-        # Partial index for pending responses
+        # Partial index for pending responses (migration 001). The predicate
+        # is "= true", not "IS TRUE": the planner only uses the index for a
+        # query that filters the same way (see A2AService.get_inbox_summary).
         Index(
             "ix_a2a_msg_pending",
             "conversation_id",
-            postgresql_where=(requires_response.is_(True)),
+            postgresql_where=text("requires_response = true"),
         ),
     )
 
@@ -1662,16 +1706,27 @@ class RespawnTrackerTable(Base):
 
     agent_slug: Mapped[str] = mapped_column(String(64), primary_key=True)
     task_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     last_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_check: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    tracing_resets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    revisit_resets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tracing_resets: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    revisit_resets: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    notified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
 
     __table_args__ = (Index("ix_respawn_tracker_last_check", "last_check"),)
@@ -1787,6 +1842,7 @@ class SystemSettingTable(Base):
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
         nullable=False,
+        server_default=func.now(),
     )
 
 
@@ -1801,29 +1857,38 @@ class CompanyGoalsTable(Base):
     __tablename__ = "company_goals"
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    north_star: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    objectives: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSON, nullable=False, default=list
+    north_star: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
     )
-    constraints: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    objectives: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'::json")
+    )
+    constraints: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'::json")
+    )
     operating_policy: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
+        JSON, nullable=False, default=dict, server_default=text("'{}'::json")
     )
     # CEO-authored brand-voice sample/direction — a first-class, long charter
     # field (like north_star), not folded into the catch-all operating_policy
     # JSON blob, so it gets the same discoverability. Feeds XEngine._voice_guide
     # and the Head of Marketing's briefing; empty until the CEO sets it.
-    brand_voice: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    brand_voice: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     # CEO-authored product/company name — brands X/video drafting prompts
     # when a project name isn't available (mirrors brand_voice's shape).
     # Feeds XEngine/VideoEngine's product-name resolution; "RoboCo" is the
     # final fallback when this is also unset.
-    company_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    company_name: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
         nullable=False,
+        server_default=func.now(),
     )
     updated_by: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
@@ -1905,7 +1970,10 @@ class RoutingPresetTable(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
 
     __table_args__ = (UniqueConstraint("name", name="uq_routing_presets_name"),)
@@ -1974,24 +2042,33 @@ class AgentSpawnSessionTable(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         nullable=False,
+        server_default=func.now(),
     )
     ended_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     # BIGINT — token counts can exceed INT32 for long sessions
-    tokens_input: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    tokens_output: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_input: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    tokens_output: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     tokens_cache_read: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+        BigInteger, nullable=False, default=0, server_default="0"
     )
     tokens_cache_write: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+        BigInteger, nullable=False, default=0, server_default="0"
     )
     # LLM iterations (unique assistant messages) + tool invocations for this
     # stint, captured at finalize from the SDK /usage/status (turns has a
     # transcript fallback). Default 0 — historical/Grok rows read 0 ("n/a").
-    turns: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    tool_calls: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    turns: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    tool_calls: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     exit_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
     estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Short hash of the composed system prompt this spawn ran with (migration
@@ -2033,23 +2110,31 @@ class TokenUsageSnapshotTable(Base):
     id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
+    # Foreign key named by migration 026, not by the naming convention.
     agent_spawn_session_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("agent_spawn_sessions.id", ondelete="CASCADE"),
+        ForeignKey(
+            "agent_spawn_sessions.id", ondelete="CASCADE", name="fk_snapshot_session"
+        ),
         nullable=False,
     )
     snapshotted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         nullable=False,
+        server_default=func.now(),
     )
-    tokens_input: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    tokens_output: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_input: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    tokens_output: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     tokens_cache_read: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+        BigInteger, nullable=False, default=0, server_default="0"
     )
     tokens_cache_write: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+        BigInteger, nullable=False, default=0, server_default="0"
     )
 
     session: Mapped["AgentSpawnSessionTable"] = relationship(
@@ -2079,16 +2164,24 @@ class DailyUsageRollupTable(Base):
     agent_slug: Mapped[str] = mapped_column(String(100), nullable=False)
     team: Mapped[str] = mapped_column(String(50), nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
-    tokens_input: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    tokens_output: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_input: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    tokens_output: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     tokens_cache_read: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+        BigInteger, nullable=False, default=0, server_default="0"
     )
     tokens_cache_write: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+        BigInteger, nullable=False, default=0, server_default="0"
     )
-    total_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    session_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_cost_usd: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    session_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -2121,34 +2214,66 @@ class MemberPerformanceDailyTable(Base):
     )
     date: Mapped[Any] = mapped_column(Date, nullable=False)  # datetime.date
     member_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    agent_slug: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    agent_slug: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="", server_default=""
+    )
     team: Mapped[str | None] = mapped_column(String(50), nullable=True)
     role: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    tasks_completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tasks_first_pass: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    revisions_caused: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    revisions_received: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    active_runtime_seconds: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+    tasks_completed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
     )
-    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    tasks_first_pass: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    revisions_caused: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    revisions_received: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    active_runtime_seconds: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    turns: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    tool_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    cost_usd: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
     ceo_approval_dwell_seconds: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+        BigInteger, nullable=False, default=0, server_default="0"
     )
     ceo_unblock_dwell_seconds: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
+        BigInteger, nullable=False, default=0, server_default="0"
     )
-    godmode_actions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    godmode_actions: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     # The four CEO-approved extras (+ blocked_seconds).
-    qa_reviews_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    qa_reviews_passed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    escalations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    blocked_others: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    idle_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    blocked_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    qa_reviews_total: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    qa_reviews_passed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    escalations: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    blocked_others: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    idle_seconds: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    blocked_seconds: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -2189,9 +2314,13 @@ class PrompterSessionTable(Base):
         ),
         nullable=False,
         default="active",
+        server_default="active",
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -2237,7 +2366,10 @@ class PrompterMessageTable(Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
 
     # Relationships
@@ -2274,7 +2406,10 @@ class TaskDraftTable(Base):
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -2420,7 +2555,10 @@ class TaskReviewFindingTable(Base):
     addressed_by_commit: Mapped[str | None] = mapped_column(String(100), nullable=True)
     resolution_note: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -2469,12 +2607,14 @@ class UserTable(Base):
             String(320), unique=True, index=True, nullable=False
         )
         hashed_password: Mapped[str] = mapped_column(String(1024), nullable=False)
-        is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+        is_active: Mapped[bool] = mapped_column(
+            Boolean, default=True, nullable=False, server_default="true"
+        )
         is_superuser: Mapped[bool] = mapped_column(
-            Boolean, default=False, nullable=False
+            Boolean, default=False, nullable=False, server_default="false"
         )
         is_verified: Mapped[bool] = mapped_column(
-            Boolean, default=False, nullable=False
+            Boolean, default=False, nullable=False, server_default="false"
         )
 
 
@@ -2501,7 +2641,10 @@ class XCredentialsTable(Base):
         Text, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -2522,7 +2665,10 @@ class TelegramCredentialsTable(Base):
     bot_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     chat_id_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -2545,7 +2691,10 @@ class GitHubAppCredentialsTable(Base):
     app_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     private_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -2562,7 +2711,10 @@ class XSeenMentionTable(Base):
 
     mention_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
 
 
@@ -2575,7 +2727,10 @@ class XSeenFeatureTable(Base):
 
     feature_slug: Mapped[str] = mapped_column(String(128), primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
 
 
@@ -2593,7 +2748,10 @@ class VaultSeenNoteTable(Base):
     note_path: Mapped[str] = mapped_column(String(512), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     processed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -2632,16 +2790,25 @@ class BoardProgramCycleTable(Base):
         nullable=True,
     )
     opened_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    items_proposed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    items_approved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    items_rejected: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_proposed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    items_approved: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    items_rejected: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     decisions: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSON, nullable=False, default=list
+        JSON, nullable=False, default=list, server_default=text("'[]'::json")
     )
     # Set only by the ``nothing_to_propose`` do-verb — an explorer's
     # "genuinely nothing worth proposing this cycle" verdict, distinct from
@@ -2672,7 +2839,10 @@ class TikTokCredentialsTable(Base):
     access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -2703,14 +2873,21 @@ class RagIndexFailureTable(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
     doc_source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     last_error: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     next_retry_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
+        DateTime(timezone=True), nullable=False, index=True, server_default=func.now()
     )
 
 
@@ -2738,6 +2915,7 @@ class VerbLatencySampleTable(Base):
         default=lambda: datetime.now(UTC),
         nullable=False,
         index=True,
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -2776,6 +2954,7 @@ class DecisionLogTable(Base):
         default=lambda: datetime.now(UTC),
         nullable=False,
         index=True,
+        server_default=func.now(),
     )
 
     # Which pilot spoke, on which backend tier, in which mode. mode is
@@ -2854,6 +3033,7 @@ class CiRunTable(Base):
         default=lambda: datetime.now(UTC),
         nullable=False,
         index=True,
+        server_default=func.now(),
     )
     project_slug: Mapped[str] = mapped_column(String(200), nullable=False)
     workflow: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -2867,13 +3047,20 @@ class CiRunTable(Base):
     )
 
     __table_args__ = (
+        # The record_runs ON CONFLICT key. NULLS NOT DISTINCT (migration
+        # 111) because the ci-watch engine records workflow=None: with NULLs
+        # distinct, every sweep re-inserted the run it had already seen.
         Index(
             "ux_ci_runs_reading",
             "project_slug",
             "workflow",
             "observed_at_str",
             unique=True,
+            postgresql_nulls_not_distinct=True,
         ),
+        # Backs runs_for: one project's readings in a created_at window,
+        # oldest first (migration 108).
+        Index("ix_ci_runs_project_created", "project_slug", "created_at"),
     )
 
 
@@ -2884,7 +3071,8 @@ class MemoryRetrievalLogTable(Base):
     This is the evidence future knowledge-family graders need: whether a
     stored lesson/vault note was EVER retrieved for real work. Written
     best-effort at injection time from the choreographer's memory keystone;
-    pruned by the trajectory labeler pass. No decisions pilot is graded
+    pruned by the trajectory labeler pass past decision_log's retention
+    window (prune_memory_retrieval_log). No decisions pilot is graded
     from it yet - transcript_notes/vault_prefilter grading additionally
     needs a stable note->lesson identity, tracked in the map.
     """
@@ -2898,13 +3086,18 @@ class MemoryRetrievalLogTable(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         nullable=False,
-        index=True,
+        server_default=func.now(),
     )
     source: Mapped[str] = mapped_column(String(500), nullable=False)
     task_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     agent_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
     retrieved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        # Named by migration 108, not by the naming convention.
+        Index("ix_memory_retrieval_created_at", "created_at"),
     )
 
 
@@ -2928,6 +3121,7 @@ class MemoryLinkTable(Base):
         default=lambda: datetime.now(UTC),
         nullable=False,
         index=True,
+        server_default=func.now(),
     )
     pilot: Mapped[str] = mapped_column(String(60), nullable=False)
     session_id: Mapped[str] = mapped_column(String(280), nullable=False)
@@ -2958,7 +3152,10 @@ class EntireCredentialsTable(Base):
     )
     token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
@@ -2986,13 +3183,16 @@ class EntireTrailTable(Base):
     )
     entire_project: Mapped[str] = mapped_column(String(200), nullable=False)
     create_fields: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, nullable=False
+        JSONB, default=dict, nullable=False, server_default=text("'{}'::jsonb")
     )
     trail_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     trail_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     trail_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     # When the trail's text last matched the tree; the drain re-syncs a trail
     # whose tasks changed after it.
@@ -3028,7 +3228,10 @@ class EntireTrailChangeTable(Base):
     base: Mapped[str] = mapped_column(String(500), nullable=False)
     change_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     linked_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -3053,7 +3256,10 @@ class EntireTrailFindingTable(Base):
     repository: Mapped[str] = mapped_column(String(300), nullable=False)
     branch: Mapped[str] = mapped_column(String(500), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
 
 
@@ -3074,18 +3280,26 @@ class EntireTrailOutboxTable(Base):
         index=True,
     )
     op: Mapped[str] = mapped_column(String(32), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     dead: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
     )
     next_attempt_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         nullable=False,
         index=True,
+        server_default=func.now(),
     )
