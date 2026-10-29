@@ -110,3 +110,23 @@ def test_other_verbs_are_passed_through() -> None:
 )
 def test_config_keys_are_classified(key: str, expected: str) -> None:
     assert wg.classify_git_config_key(key) == expected
+
+
+@pytest.mark.parametrize(("euid", "started"), [(0, "setpriv"), (1000, "git")])
+def test_the_program_is_named_apart_from_its_arguments(
+    monkeypatch: pytest.MonkeyPatch, euid: int, started: str
+) -> None:
+    """``executable`` is the program that starts; the arguments never are."""
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> object:
+        calls.append((argv, kwargs))
+        return object()
+
+    monkeypatch.setattr(wg.os, "geteuid", lambda: euid)
+    monkeypatch.setattr(wg.subprocess, "run", fake_run)
+    wg.run_as_workspace_user("git", "status", "--", "-x", timeout=1)
+    argv, kwargs = calls[0]
+    assert kwargs["executable"] == started
+    assert argv[0] == started
+    assert argv[-4:] == ["git", "status", "--", "-x"]

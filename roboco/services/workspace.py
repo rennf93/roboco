@@ -66,6 +66,7 @@ from roboco.services.workspace_git import (
     write_workspace_file,
 )
 from roboco.utils.workspace_paths import clone_root_of as _resolve_clone_root
+from roboco.utils.workspace_paths import worktree_path_of
 
 logger = get_logger(__name__)
 
@@ -238,7 +239,12 @@ def _lockfile_digest(workspace: Path) -> str | None:
     swapped for a symlink would be read from anywhere.
     """
     result = run_as_workspace_user(
-        [sys.executable, "-I", "-S", "-c", _LOCKFILE_DIGEST_SCRIPT, str(workspace)],
+        sys.executable,
+        "-I",
+        "-S",
+        "-c",
+        _LOCKFILE_DIGEST_SCRIPT,
+        str(workspace),
         timeout=_REFS_PRUNE_TIMEOUT_SECONDS,
     )
     digest = result.stdout.strip()
@@ -344,12 +350,17 @@ class WorkspaceService:
                 "Add the agent to AGENT_TEAM_MAP in roboco/agents_config.py."
             )
         team_str = team.value if isinstance(team, Team) else str(team)
-        return (
+        path = os.path.normpath(
             self.root
             / _safe_segment(project_slug, "project slug")
             / _safe_segment(team_str, "team")
             / _safe_segment(agent_slug, "agent slug")
         )
+        # Containment on the normalized path, on top of the per-segment
+        # checks: the one test every later file and git operation relies on.
+        if not path.startswith(f"{os.path.normpath(self.root)}{os.sep}"):
+            raise WorkspaceError(f"workspace path {path!r} is outside {self.root}")
+        return Path(path)
 
     def get_clone_root_path(
         self,
@@ -385,7 +396,10 @@ class WorkspaceService:
                 "task_short_id is empty."
             )
         clone_root = self.get_clone_root_path(project_slug, team, agent_slug)
-        return clone_root / ".worktrees" / task_short_id
+        try:
+            return worktree_path_of(clone_root, task_short_id)
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
 
     @staticmethod
     def _worktree_git(
@@ -474,13 +488,11 @@ class WorkspaceService:
         # As the git user: the worktree is agent-writable, so a root mkdir or
         # symlink here could be steered anywhere by a planted link.
         run_as_workspace_user(
-            [
-                "sh",
-                "-c",
-                'mkdir -p -- "$1" && ln -s ../../.venv "$1/.venv"',
-                "sh",
-                str(worktree),
-            ],
+            "sh",
+            "-c",
+            'mkdir -p -- "$1" && ln -s ../../.venv "$1/.venv"',
+            "sh",
+            str(worktree),
             timeout=settings.git_command_timeout_seconds,
         )
 
@@ -1001,14 +1013,12 @@ class WorkspaceService:
         if not refs_dir.is_dir():
             return
         result = run_as_workspace_user(
-            [
-                sys.executable,
-                "-I",
-                "-S",
-                "-c",
-                _PRUNE_BROKEN_REFS_SCRIPT,
-                str(refs_dir),
-            ],
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            _PRUNE_BROKEN_REFS_SCRIPT,
+            str(refs_dir),
             timeout=_REFS_PRUNE_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:

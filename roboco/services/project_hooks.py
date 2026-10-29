@@ -127,7 +127,10 @@ async def run_project_hook(
         if stdin_file is not None:
             await asyncio.to_thread(
                 run_as_workspace_user,
-                ["rm", "-f", "--", str(stdin_file)],
+                "rm",
+                "-f",
+                "--",
+                str(stdin_file),
                 timeout=_REMOVE_TIMEOUT_SECONDS,
             )
     if result.timed_out:

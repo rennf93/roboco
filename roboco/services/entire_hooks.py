@@ -179,7 +179,11 @@ def is_entire_hook(hook: Path) -> bool:
     starts Entire's CLI and chains to the hook it replaced. Read as the git
     user, and only its first bytes: the file is the agent's."""
     head = run_as_workspace_user(
-        ["head", "-c", _HOOK_HEAD_BYTES, "--", str(hook)],
+        "head",
+        "-c",
+        _HOOK_HEAD_BYTES,
+        "--",
+        str(hook),
         timeout=_FILE_CHECK_TIMEOUT_SECONDS,
     )
     lines = head.stdout.splitlines()[:_HOOK_HEAD_LINES]
@@ -191,7 +195,12 @@ def hook_entire_replaced(hook: Path) -> Path | None:
     when git would run it (an executable file)."""
     chained = hook.with_name(f"{hook.name}.pre-entire")
     runnable = run_as_workspace_user(
-        ["test", "-f", str(chained), "-a", "-x", str(chained)],
+        "test",
+        "-f",
+        str(chained),
+        "-a",
+        "-x",
+        str(chained),
         timeout=_FILE_CHECK_TIMEOUT_SECONDS,
     )
     return chained if runnable.returncode == 0 else None

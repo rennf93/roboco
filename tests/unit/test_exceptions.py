@@ -7,6 +7,7 @@ no DB, no fixtures.
 
 from __future__ import annotations
 
+import time
 from uuid import uuid4
 
 from roboco.exceptions import (
@@ -270,3 +271,19 @@ def test_git_timeout_error() -> None:
     assert err.command == "git fetch"
     assert err.timeout == _TIMEOUT_SECONDS
     assert err.details["timeout"] == _TIMEOUT_SECONDS
+
+
+def test_git_command_error_redacts_an_extraheader_basic_credential() -> None:
+    err = GitCommandError(
+        "git push", "fatal: -c http.extraheader=Authorization:Basic Zm9vOmJhcg== x"
+    )
+    assert "Zm9vOmJhcg" not in err.message
+    assert "extraheader=Authorization:Basic ***" in err.message
+
+
+def test_git_command_error_scrubs_a_repeated_extraheader_in_linear_time() -> None:
+    # The old lazy ``\S*?`` restarted at every "extraheader=" and went
+    # quadratic: seconds on this input instead of milliseconds.
+    started = time.perf_counter()
+    GitCommandError("git push", "extraheader=" * 20_000)
+    assert time.perf_counter() - started < 1.0

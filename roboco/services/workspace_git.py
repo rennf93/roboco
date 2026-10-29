@@ -195,6 +195,9 @@ def workspace_repository_env(path: Path) -> dict[str, str]:
     }
 
 
+_SETPRIV = "setpriv"
+
+
 def workspace_user_argv(argv: Sequence[str]) -> list[str]:
     """``argv`` prefixed to run as the git user, when this process is root.
 
@@ -203,7 +206,7 @@ def workspace_user_argv(argv: Sequence[str]) -> list[str]:
     if os.geteuid() != 0:
         return list(argv)
     return [
-        "setpriv",
+        _SETPRIV,
         f"--reuid={settings.git_user_uid}",
         f"--regid={settings.agent_gid}",
         "--clear-groups",
@@ -214,21 +217,30 @@ def workspace_user_argv(argv: Sequence[str]) -> list[str]:
     ]
 
 
+def workspace_user_executable(program: str) -> str:
+    """The program ``workspace_user_argv([program, ...])`` starts: ``setpriv``
+    when this process is root, else ``program`` itself."""
+    return _SETPRIV if os.geteuid() == 0 else program
+
+
 def run_as_workspace_user(
-    argv: Sequence[str],
-    *,
+    program: str,
+    *args: str,
     cwd: Path | None = None,
     timeout: float,
     input_text: str | None = None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run any command as the git user (umask 002, workspace env). No check.
+    """Run ``program args`` as the git user (umask 002, workspace env). No check.
 
-    Without ``cwd`` the command runs from ``/``: the caller's own working
-    directory may be one the git user cannot even stat.
+    The program is named apart from its arguments and passed as
+    ``executable``: arguments (paths, refs) never decide what runs. Without
+    ``cwd`` the command runs from ``/``: the caller's own working directory
+    may be one the git user cannot even stat.
     """
     return subprocess.run(
-        workspace_user_argv(argv),
+        workspace_user_argv([program, *args]),
+        executable=workspace_user_executable(program),
         cwd=str(cwd) if cwd is not None else "/",
         env=env if env is not None else workspace_git_env(),
         input=input_text,
@@ -242,10 +254,15 @@ def run_as_workspace_user(
 
 def workspace_git_argv(args: Sequence[str]) -> list[str]:
     """``git <overrides> <args>``, with diff programs disabled on diff verbs."""
+    return ["git", *_workspace_git_arguments(args)]
+
+
+def _workspace_git_arguments(args: Sequence[str]) -> list[str]:
+    """What follows ``git`` in ``workspace_git_argv``."""
     args = list(args)
     if args and args[0] in _DIFF_VERBS:
         args = [args[0], "--no-ext-diff", "--no-textconv", *args[1:]]
-    return ["git", *workspace_git_overrides(), *args]
+    return [*workspace_git_overrides(), *args]
 
 
 def run_workspace_git(
@@ -265,18 +282,20 @@ def run_workspace_git(
     clone_root = clone_root_of(Path(os.path.normpath(cwd)))
     audit_workspace_git_config(cwd)
     _regroup_clone_once(clone_root)
-    argv = workspace_git_argv(args)
+    git_args = _workspace_git_arguments(args)
     env = workspace_git_env() | workspace_repository_env(cwd)
-    result = run_as_workspace_user(argv, cwd=cwd, timeout=timeout, env=env)
+    result = run_as_workspace_user("git", *git_args, cwd=cwd, timeout=timeout, env=env)
     if (
         result.returncode != 0
         and _PERMISSION_DENIED in result.stderr
         and _repair_clone_permissions(clone_root)
     ):
-        result = run_as_workspace_user(argv, cwd=cwd, timeout=timeout, env=env)
+        result = run_as_workspace_user(
+            "git", *git_args, cwd=cwd, timeout=timeout, env=env
+        )
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
-            result.returncode, argv, result.stdout, result.stderr
+            result.returncode, ["git", *git_args], result.stdout, result.stderr
         )
     return result
 
@@ -295,23 +314,28 @@ def workspace_hook_path(cwd: Path, name: str) -> Path | None:
     run one (absent, or not an executable file).
     """
     audit_workspace_git_config(cwd)
-    argv = [
+    env = workspace_git_env() | workspace_repository_env(cwd)
+    located = run_as_workspace_user(
         "git",
         *_overrides_except_hooks_path(),
         "rev-parse",
         "--git-path",
         f"hooks/{name}",
-    ]
-    env = workspace_git_env() | workspace_repository_env(cwd)
-    located = run_as_workspace_user(
-        argv, cwd=cwd, timeout=_FILE_IO_TIMEOUT_SECONDS, env=env
+        cwd=cwd,
+        timeout=_FILE_IO_TIMEOUT_SECONDS,
+        env=env,
     )
     relative = located.stdout.strip()
     if located.returncode != 0 or not relative:
         return None
     hook = Path(os.path.normpath(Path(cwd) / relative))
     runnable = run_as_workspace_user(
-        ["test", "-f", str(hook), "-a", "-x", str(hook)],
+        "test",
+        "-f",
+        str(hook),
+        "-a",
+        "-x",
+        str(hook),
         timeout=_FILE_IO_TIMEOUT_SECONDS,
     )
     return hook if runnable.returncode == 0 else None
@@ -333,6 +357,7 @@ def archive_workspace_ref(repo: Path, ref: str, archive: Path) -> tuple[bool, st
             workspace_user_argv(
                 workspace_git_argv(["archive", "--format=tar.gz", ref])
             ),
+            executable=workspace_user_executable("git"),
             cwd=str(repo),
             env=workspace_git_env() | workspace_repository_env(repo),
             stdout=handle,
@@ -356,7 +381,7 @@ def read_workspace_file(path: Path) -> str | None:
     to /proc/1/environ); the git user can only read what agents could too.
     """
     result = run_as_workspace_user(
-        ["cat", "--", str(path)], timeout=_FILE_IO_TIMEOUT_SECONDS
+        "cat", "--", str(path), timeout=_FILE_IO_TIMEOUT_SECONDS
     )
     if result.returncode != 0:
         return None
@@ -392,7 +417,11 @@ def _write_as_workspace_user(
 ) -> subprocess.CompletedProcess[str]:
     script = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"'
     return run_as_workspace_user(
-        ["sh", "-c", script, "sh", str(path)],
+        "sh",
+        "-c",
+        script,
+        "sh",
+        str(path),
         timeout=_FILE_IO_TIMEOUT_SECONDS,
         input_text=content,
     )
@@ -607,7 +636,13 @@ def _stat_signature(path: Path) -> tuple[int, ...]:
 def _config_keys(path: Path) -> list[str]:
     """Keys of one config file, listed by the git user (no includes followed)."""
     result = run_as_workspace_user(
-        ["git", "config", "--file", str(path), "--no-includes", "--list", "--null"],
+        "git",
+        "config",
+        "--file",
+        str(path),
+        "--no-includes",
+        "--list",
+        "--null",
         timeout=_AUDIT_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:

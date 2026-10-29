@@ -124,7 +124,7 @@ from roboco.templates.git import (
 from roboco.templates.git.pr_internal import InternalCommitInfo
 from roboco.templates.git.pr_root import CommitInfo as PRCommitInfo
 from roboco.utils.converters import require_uuid
-from roboco.utils.workspace_paths import clone_root_of
+from roboco.utils.workspace_paths import clone_root_of, worktree_path_of
 
 
 # Git command timeout in seconds. Sourced from settings so operators can
@@ -315,18 +315,20 @@ def _remove_stale_git_locks(workspace: Path) -> None:
     as the git user, so a planted link cannot steer a root delete anywhere.
     Best-effort: errors are swallowed — this only ever *helps*, never blocks.
     """
-    argv = ["find", str(_git_admin_dir(workspace)), "-name", "*.lock"]
-    argv += ["-type", "f", "-delete"]
+    find_args = [str(_git_admin_dir(workspace)), "-name", "*.lock"]
+    find_args += ["-type", "f", "-delete"]
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         if is_dispatcher_owned(workspace):
             subprocess.run(
-                argv,
+                ["find", *find_args],
                 capture_output=True,
                 timeout=_LOCK_SWEEP_TIMEOUT_SECONDS,
                 check=False,
             )
         else:
-            run_as_workspace_user(argv, timeout=_LOCK_SWEEP_TIMEOUT_SECONDS)
+            run_as_workspace_user(
+                "find", *find_args, timeout=_LOCK_SWEEP_TIMEOUT_SECONDS
+            )
 
 
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
@@ -1198,7 +1200,7 @@ class GitService(BaseService):
         layout so commit/checkout/rebase paths resolve the same worktree the
         claim cut and the spawn cwd pointed the agent at.
         """
-        return clone_root / ".worktrees" / str(task_id)[:8]
+        return worktree_path_of(clone_root, str(task_id)[:8])
 
     async def _ensure_worktree_for_commit(
         self, clone_root: Path, worktree: Path, branch: str | None
@@ -1609,7 +1611,7 @@ class GitService(BaseService):
         # `git worktree add`; the clone's HEAD is never moved by a claim, so
         # sibling roots' trees are isolated. This runs only on a FRESH claim
         # (resume short-circuits in _dev_reentry before reaching here).
-        worktree_path = workspace / ".worktrees" / str(task_id)[:8]
+        worktree_path = self._worktree_for_task(workspace, task_id)
 
         # Branch from the fetched remote tip (matches the old
         # `merge --ff-only origin/<base>` intent — build on the latest remote

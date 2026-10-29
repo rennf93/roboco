@@ -124,13 +124,13 @@ import subprocess
 GIT = ("git", "-c", "x=y")
 argv = ["git", "status"]
 subprocess.run([*GIT, "log"])
-run_as_workspace_user(argv)
+run_as_workspace_user("git", *argv[1:])
 subprocess.CompletedProcess(["git", "fetch"], 0, "", "")
 raise subprocess.CalledProcessError(1, ["git", "push"])
 run_in_workspace_container(cwd, ["git", "status"], timeout=1)
 """
     assert _builds_git_argv(source) == [3, 4]
-    assert _spawns_git('run_as_workspace_user(["git", "status"])') == [1]
+    assert _spawns_git('run_as_workspace_user("git", "status")') == [1]
 
 
 @pytest.mark.parametrize(

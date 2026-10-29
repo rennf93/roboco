@@ -51,80 +51,80 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `WorkSessionService.has_unpushed_commits` | method | work_session.py:699 | PR-existence proxy for unpushed commit detection |
 | `WorkSessionService.task_team_for_session` | method | work_session.py:159 | Return the task's team (cell) for a given session; used by route layer's PM cell-ownership check on `merge_pr` |
 | `get_work_session_service` | factory | work_session.py:719 | Construct service from AsyncSession |
-| `GitService` | class | git.py:470 | All git operations + GitHub API |
+| `GitService` | class | git.py:472 | All git operations + GitHub API |
 | `_GIT_EXECUTOR` | module const | git.py:208 | Dedicated ThreadPoolExecutor for git subprocesses (16 workers) |
 | `_run_local_git` | func | git.py:249 | A non-origin git command: `run_private_git` (root) only in a dispatcher-owned repo under the private root, else `run_workspace_git` (the git user) |
 | `_write_repo_file` | func | git.py:258 | Write a file into a repo's working tree: root only in a dispatcher-owned repo, else as the git user (`write_workspace_file`) |
 | `_git_admin_dir` | func | git.py:272 | A repo's admin dir by layout (clone `.git/` or `<clone>/.git/worktrees/<name>`), never by reading an agent-writable `.git` file |
 | `_remove_stale_git_locks` | func | git.py:305 | Best-effort clear orphaned `*.lock` under the admin dir after a timeout SIGKILL, via `find` run as the git user |
-| `_select_ci_head_run` | func | git.py:431 | Pick CI run matching current HEAD (anti-stale-green) |
-| `GitService._run_git` | method | git.py:498 | Run git in the dedicated pool: an `origin` command (`is_origin_command`) is served through the project's relay (`_origin_context` → `run_origin_command`), anything else via `_run_local_git`; no token parameter exists; lock cleanup on timeout |
-| `GitService._run_project_hooks` | method | git.py:586 | Before a workspace `commit` / `push` (not dispatcher-owned repos, not `--no-verify`): the project's own pre-commit + commit-msg, or pre-push with git's args (`origin <db url>`) and stdin (`<local ref> <local sha> <remote ref> <remote sha>`, remote sha from an `ls-remote` through the relay), each run in the throwaway container (`project_hooks`); a refusal surfaces like git's |
-| `GitService._entire_before` / `_run_entire_after` / `_push_entire_checkpoints` | methods | git.py:627 | When Entire records the agent's session (`entire_hooks.records_entire_sessions`), worked out before a workspace commit or push (`_EntireAfter`): `post-commit` after a commit (sealed container), or the checkpoint refs named by the `Entire-Checkpoint` trailers of the commits on no `origin/*` ref, pushed after the push through the relay (`push_checkpoint_refs`, only those the clone has); only when the command succeeded; best-effort, logged |
-| `GitService._relay_for_repo` / `_project_for_repo` | methods | git.py:736 | The relay (and project row) a repo belongs to, from its path taken lexically (`<workspaces_root>/<slug>/...`, `<private_root>/{read,release,scratch}/<slug>`, else `get_by_workspace_path`) — never from its config |
-| `GitService._repo_ref_for_workspace` | method | git.py:765 | The forge repo for REST calls: the project's DB `git_url`, never the clone's agent-writable `remote.origin.url` (replaces `_parse_github_remote`) |
-| `GitService._token_for_project` | method | git.py:780 | Decrypted project PAT (logs loudly on key-rotation failure) |
-| `GitService.get_workspace` | method | git.py:806 | Resolve/clone agent workspace (auto_clone aware) |
-| `GitService.get_status` | method | git.py:991 | Porcelain status + ahead/behind |
-| `GitService._classify_porcelain` | static | git.py:929 | Split porcelain into staged/unstaged/untracked (column-safe) |
-| `GitService._parse_git_url` | static | git.py:1049 | Extract (owner,repo) from tokened/https/ssh GitHub URL |
-| `GitService.create_commit` | method | git.py:1087 | Stage + commit with template message + worktree ensure |
-| `GitService._worktree_for_task` | static | git.py:1194 | Per-task worktree path `{clone_root}/.worktrees/{task_id[:8]}` (F123) |
-| `GitService._ensure_worktree_for_commit` | method | git.py:1203 | Re-attach a pruned worktree before cwd-dependent op |
-| `GitService._assert_on_task_branch` | method | git.py:1218 | Recover drifted clone onto task branch (never discards work) |
-| `GitService.commit_for_task` | method | git.py:1325 | Agent-facing commit verb backing the `commit` content tool |
-| `GitService.create_branch` | method | git.py:1536 | Build branch name, fetch base, `worktree add` (F123), push -u |
-| `GitService.create_branch_for_task` | method | git.py:1800 | Resolve workspace/team, create branch, commit DB |
-| `GitService.checkout_branch_for_agent` | method | git.py:1886 | Allowlist-bounded checkout for agent verb |
-| `GitService.push_for_task` | method | git.py:2034 | Push the task's recorded branch by name (clone-checkout-independent); runs `_run_codegen_and_commit` first so any codegen drift lands in the SAME push |
-| `GitService._codegen_command_for` | staticmethod | git.py:4662 | The project's `codegen_command` (nullable string column, migration 078), or `None` — a bare `MagicMock` test double auto-vivifies attributes, so the `isinstance` check also keeps unrelated tests inert |
-| `GitService._run_codegen_and_commit` | method | git.py:4739 | Runs the project's `codegen_command` in the task's worktree right before push (hooked at both `push_for_task`/`push_branch` at git.py:1886 and `push_task_branch` at git.py:4689); fail-open (a broken/timeout command logs a warning and lets the push proceed — CI's own drift gate is the safety net) and a no-op for the common case of no declared command; a clean run with actual drift stages + commits it under the task's normal commit format before the push carries it |
-| `GitService.push_task_branch` | method | git.py:2073 | Gateway branch-keyed push |
-| `GitService.create_pull_request` | method | git.py:2855 | Open PR via GitHub API (legacy project-scoped) |
-| `GitService.create_pr_for_task` | method | git.py:3830 | Agent-facing open_pr verb |
-| `GitService.update_pr_for_task` | method | git.py:3687 | Patch PR title/body; 404→typed GitError |
-| `GitService.get_pr_head_sha` | method | git.py:3406 | PR head SHA for pr_fail re-submit loop guard (fail-open) |
-| `GitService.get_latest_ci_conclusion` | method | git.py:2598 | Per-project CI signal (unknown never false-green) |
-| `GitService.get_pr_ci_status` | method | git.py:3452 | CI status of a PR's current head commit for the in-path pr_pass gate; returns {state, failing_checks?, head_sha} or None on config gaps (fail-open) |
-| `GitService._ci_status_config` / `_resolve_ci_head_sha` | methods | git.py:3510 | `(repo_ref, git_token)` for a CI-status lookup, else a terminal `no_ci_configured` gap dict; then the PR's head SHA through the forge (`no_ci_configured` on a network error or 404, `error` on any other failure) |
-| `GitService._fetch_check_runs` | method | git.py:3574 | GET check-runs for head_sha; None on any API failure |
-| `GitService._classify_check_runs` | method | git.py:3621 | State classification: success/failure/pending from check-run conclusions list |
-| `GitService._classify_zero_check_runs` | method | git.py:3644 | State classification when zero check-runs exist: pending_not_scheduled or no_ci_configured (depends on workflow count) |
-| `GitService.list_open_prs` | method | git.py:2483 | Normalized open-PR list |
-| `GitService.post_pr_review` | method | git.py:3298 | Post reviewer comments via GitHub API |
-| `GitService.merge_pull_request` | method | git.py:4347 | GitHub merge API + method fallback + already-merged disambiguation |
-| `GitService.merge_pr_for_task` | method | git.py:4479 | Role-gated merge + recorded-PR verification + auto-complete |
-| `GitService._assert_merge_role` | method | git.py:4422 | PM/CEO approval-chain role gate |
-| `GitService.pr_merge` | method | git.py:5284 | Gateway merge: project_id-scoped, parent row lock, 409 retry, CEO-only default guard |
-| `GitService._merge_with_retry` | method | git.py:5161 | Single 409 retry + already-merged disambiguation → MergeConflictError |
-| `GitService._lock_parent_task_for_merge` | method | git.py:5110 | SELECT FOR UPDATE on parent task (sibling merge serialization) |
-| `GitService._resolve_merger_id` | static | git.py:5137 | merged_by attribution: actor→assigned→created→UUID(0) |
-| `GitService.rebase_onto_base` | method | git.py:5416 | Rebase primitive: rebased/superseded/conflicts/**diverged** classification. Post-fetch, `_reset_head_or_diverged` classifies local vs `origin/<head_branch>` BEFORE the old unconditional `reset --hard`: behind-or-equal resets to origin (unchanged); strictly ahead skips the reset and rebases from the local tip (the committed-but-unpushed-work case `commit` leaves behind); a real divergence returns `{"status": "diverged", "local_only", "origin_only"}` untouched — no reset, no rebase, no push. A patch-equivalence probe (`rev-list --right-only --cherry-pick`) first tries to recognize the diverged shape as a prior rebase whose force-push failed (self-heals as "ahead" on retry) before declaring a genuine two-sided divergence (#683). |
-| `GitService.rebase_pr_for_task` | method | git.py:5652 | PR-keyed rebase via PR refs (project_id scoped) |
-| `GitService.sync_task_branch` | method | git.py:5706 | Task-keyed rebase through dev `sync_branch` verb (pre-PR) |
-| `GitService.is_behind_base` | method | git.py:5870 | `(behind, ahead)` counts for i_am_done submit gate |
-| `GitService.close_pull_request` | method | git.py:5967 | Close superseded PR + optional comment + branch cleanup (idempotent) |
-| `GitService._delete_remote_branch_best_effort` | method | git.py:3978 | Best-effort remote delete; skips main/master/develop + open-dependent-PR branches, UNIONED with `_protected_branches_for_deletion(project_slug)` — the shared chokepoint every remote-delete path (task cleanup, PR-merge/close cleanup, the stale-branch sweep) routes through; returns `bool` (issued vs skipped/failed) |
-| `GitService._protected_branches_for` | method | git.py:1409 | The project's own declared `protected_branches`, normalized (stripped, deduped into a `frozenset`) and unioned into the hardcoded `{master, main}` floor for rebase refusal (`rebase_onto_base`) and `sync_task_branch`'s force-push refusal; fails OPEN (empty set, logs a warning) on a project-lookup error — a wrongly-blocked rebase over a transient DB blip is the worse tradeoff |
-| `GitService._protected_branches_for_deletion` | method | git.py:1445 | Deletion-only superset of `_protected_branches_for`: the declared field UNIONED with the project's env-ladder rung branches (`effective_environments` — a null ladder's synthesized single rung off `default_branch` is protected too, so a renamed trunk like `trunk` is covered even with no declared list); fails CLOSED (returns the hardcoded floor only, on a lookup error) since a skipped delete is free (next sweep retries) but silently deleting a real declared rung on an unresolvable project is not |
-| `GitService.delete_task_branch` | method | git.py:4069 | Cancel-path remote branch delete; chokepoint for the environment-ladder skip (`effective_environments`) so a task's `branch_name` can never collide-delete a ladder rung; returns `bool` |
-| `GitService.close_task_pr_best_effort` | method | git.py:4102 | No-clone-needed cancel-path cleanup: resolves the project token + `git_url`→`RepoRef`, fetches the PR via `self._forge.get_pr`, no-ops unless `state=="open"`, else `update_pr(payload={"state":"closed"})`; every failure path (missing token/project, unparseable URL, `httpx.HTTPError`) returns `False` rather than raising |
-| `GitService.cleanup_stale_branches` | method | git.py:4144 | `POST /git/branches/cleanup` backing sweep: terminal (completed/cancelled) tasks' branches, remote (`delete_task_branch`) + local force-delete in the assignee's clone; capped 200/call, cursor-resumable |
-| `GitService._stale_branch_window` | method | git.py:4214 | One deterministic `ORDER BY id` window of sweep candidates; ladder rungs excluded from results but still advance the cursor |
-| `GitService._live_task_dependents` | method | git.py:4257 | Companion sweep guard: excludes a terminal candidate's branch when a non-terminal task still records that exact `branch_name`, or when a non-terminal task is a direct child of the candidate (the child's future PR base would resolve to the parent's branch via `resolve_parent_branch` even before it has opened a PR — catches what the OPEN-PR-only `_branch_has_open_dependents` can't see) |
-| `GitService._cleanup_one_stale_branch` | method | git.py:4288 | Per-branch remote+local delete for one sweep candidate; raises on unexpected failure so the caller's try/except counts it as an error |
-| `GitService.pr_target` | method | git.py:6039 | Return PR base branch (project_id scoped) |
-| `GitService.create_pr` | method | git.py:5000 | Branch-keyed open PR (gateway path; ensures base on remote) |
-| `GitService._record_pr_atomically` | method | git.py:3788 | Atomic pr_number/url write to task |
-| `GitService.run_pre_submit_quality_gate` | method | git.py:4641 | `make quality` gate before submit |
-| `GitService.conventions_check_for_task` | method | git.py:6527 | Run conventions validator on changed files (fail-closed); optional `changed_files` kwarg lets a caller that already resolved the branch's file list (e.g. via `diff_and_files`) thread it in instead of paying for a third `list_changed_files` resolution + subprocess |
-| `GitService._run_conventions_validator` | method | git.py:6619 | Subprocess `python -m roboco.conventions` with 120s cap |
-| `GitService.open_conventions_pr` | method | git.py:6674 | Scaffold `.roboco/conventions.yml` on a branch + open PR |
-| `GitService._resolve_diff_refs` | method | git.py:6235 | Shared `(workspace, head_ref, base_ref)` resolution for the whole diff family (`diff`/`list_changed_files`/`diff_and_files`) — factored out so the four sequential lookups (workspace, token, head ref, base ref) aren't repeated per method body |
+| `_select_ci_head_run` | func | git.py:433 | Pick CI run matching current HEAD (anti-stale-green) |
+| `GitService._run_git` | method | git.py:500 | Run git in the dedicated pool: an `origin` command (`is_origin_command`) is served through the project's relay (`_origin_context` → `run_origin_command`), anything else via `_run_local_git`; no token parameter exists; lock cleanup on timeout |
+| `GitService._run_project_hooks` | method | git.py:588 | Before a workspace `commit` / `push` (not dispatcher-owned repos, not `--no-verify`): the project's own pre-commit + commit-msg, or pre-push with git's args (`origin <db url>`) and stdin (`<local ref> <local sha> <remote ref> <remote sha>`, remote sha from an `ls-remote` through the relay), each run in the throwaway container (`project_hooks`); a refusal surfaces like git's |
+| `GitService._entire_before` / `_run_entire_after` / `_push_entire_checkpoints` | methods | git.py:629 | When Entire records the agent's session (`entire_hooks.records_entire_sessions`), worked out before a workspace commit or push (`_EntireAfter`): `post-commit` after a commit (sealed container), or the checkpoint refs named by the `Entire-Checkpoint` trailers of the commits on no `origin/*` ref, pushed after the push through the relay (`push_checkpoint_refs`, only those the clone has); only when the command succeeded; best-effort, logged |
+| `GitService._relay_for_repo` / `_project_for_repo` | methods | git.py:738 | The relay (and project row) a repo belongs to, from its path taken lexically (`<workspaces_root>/<slug>/...`, `<private_root>/{read,release,scratch}/<slug>`, else `get_by_workspace_path`) — never from its config |
+| `GitService._repo_ref_for_workspace` | method | git.py:767 | The forge repo for REST calls: the project's DB `git_url`, never the clone's agent-writable `remote.origin.url` (replaces `_parse_github_remote`) |
+| `GitService._token_for_project` | method | git.py:782 | Decrypted project PAT (logs loudly on key-rotation failure) |
+| `GitService.get_workspace` | method | git.py:808 | Resolve/clone agent workspace (auto_clone aware) |
+| `GitService.get_status` | method | git.py:993 | Porcelain status + ahead/behind |
+| `GitService._classify_porcelain` | static | git.py:931 | Split porcelain into staged/unstaged/untracked (column-safe) |
+| `GitService._parse_git_url` | static | git.py:1051 | Extract (owner,repo) from tokened/https/ssh GitHub URL |
+| `GitService.create_commit` | method | git.py:1089 | Stage + commit with template message + worktree ensure |
+| `GitService._worktree_for_task` | static | git.py:1196 | Per-task worktree path `{clone_root}/.worktrees/{task_id[:8]}` (F123), via `worktree_path_of` |
+| `GitService._ensure_worktree_for_commit` | method | git.py:1205 | Re-attach a pruned worktree before cwd-dependent op |
+| `GitService._assert_on_task_branch` | method | git.py:1220 | Recover drifted clone onto task branch (never discards work) |
+| `GitService.commit_for_task` | method | git.py:1327 | Agent-facing commit verb backing the `commit` content tool |
+| `GitService.create_branch` | method | git.py:1538 | Build branch name, fetch base, `worktree add` (F123), push -u |
+| `GitService.create_branch_for_task` | method | git.py:1802 | Resolve workspace/team, create branch, commit DB |
+| `GitService.checkout_branch_for_agent` | method | git.py:1888 | Allowlist-bounded checkout for agent verb |
+| `GitService.push_for_task` | method | git.py:2036 | Push the task's recorded branch by name (clone-checkout-independent); runs `_run_codegen_and_commit` first so any codegen drift lands in the SAME push |
+| `GitService._codegen_command_for` | staticmethod | git.py:4664 | The project's `codegen_command` (nullable string column, migration 078), or `None` — a bare `MagicMock` test double auto-vivifies attributes, so the `isinstance` check also keeps unrelated tests inert |
+| `GitService._run_codegen_and_commit` | method | git.py:4741 | Runs the project's `codegen_command` in the task's worktree right before push (hooked at both `push_for_task`/`push_branch` at git.py:1886 and `push_task_branch` at git.py:4689); fail-open (a broken/timeout command logs a warning and lets the push proceed — CI's own drift gate is the safety net) and a no-op for the common case of no declared command; a clean run with actual drift stages + commits it under the task's normal commit format before the push carries it |
+| `GitService.push_task_branch` | method | git.py:2075 | Gateway branch-keyed push |
+| `GitService.create_pull_request` | method | git.py:2857 | Open PR via GitHub API (legacy project-scoped) |
+| `GitService.create_pr_for_task` | method | git.py:3832 | Agent-facing open_pr verb |
+| `GitService.update_pr_for_task` | method | git.py:3689 | Patch PR title/body; 404→typed GitError |
+| `GitService.get_pr_head_sha` | method | git.py:3408 | PR head SHA for pr_fail re-submit loop guard (fail-open) |
+| `GitService.get_latest_ci_conclusion` | method | git.py:2600 | Per-project CI signal (unknown never false-green) |
+| `GitService.get_pr_ci_status` | method | git.py:3454 | CI status of a PR's current head commit for the in-path pr_pass gate; returns {state, failing_checks?, head_sha} or None on config gaps (fail-open) |
+| `GitService._ci_status_config` / `_resolve_ci_head_sha` | methods | git.py:3512 | `(repo_ref, git_token)` for a CI-status lookup, else a terminal `no_ci_configured` gap dict; then the PR's head SHA through the forge (`no_ci_configured` on a network error or 404, `error` on any other failure) |
+| `GitService._fetch_check_runs` | method | git.py:3576 | GET check-runs for head_sha; None on any API failure |
+| `GitService._classify_check_runs` | method | git.py:3623 | State classification: success/failure/pending from check-run conclusions list |
+| `GitService._classify_zero_check_runs` | method | git.py:3646 | State classification when zero check-runs exist: pending_not_scheduled or no_ci_configured (depends on workflow count) |
+| `GitService.list_open_prs` | method | git.py:2485 | Normalized open-PR list |
+| `GitService.post_pr_review` | method | git.py:3300 | Post reviewer comments via GitHub API |
+| `GitService.merge_pull_request` | method | git.py:4349 | GitHub merge API + method fallback + already-merged disambiguation |
+| `GitService.merge_pr_for_task` | method | git.py:4481 | Role-gated merge + recorded-PR verification + auto-complete |
+| `GitService._assert_merge_role` | method | git.py:4424 | PM/CEO approval-chain role gate |
+| `GitService.pr_merge` | method | git.py:5286 | Gateway merge: project_id-scoped, parent row lock, 409 retry, CEO-only default guard |
+| `GitService._merge_with_retry` | method | git.py:5163 | Single 409 retry + already-merged disambiguation → MergeConflictError |
+| `GitService._lock_parent_task_for_merge` | method | git.py:5112 | SELECT FOR UPDATE on parent task (sibling merge serialization) |
+| `GitService._resolve_merger_id` | static | git.py:5139 | merged_by attribution: actor→assigned→created→UUID(0) |
+| `GitService.rebase_onto_base` | method | git.py:5418 | Rebase primitive: rebased/superseded/conflicts/**diverged** classification. Post-fetch, `_reset_head_or_diverged` classifies local vs `origin/<head_branch>` BEFORE the old unconditional `reset --hard`: behind-or-equal resets to origin (unchanged); strictly ahead skips the reset and rebases from the local tip (the committed-but-unpushed-work case `commit` leaves behind); a real divergence returns `{"status": "diverged", "local_only", "origin_only"}` untouched — no reset, no rebase, no push. A patch-equivalence probe (`rev-list --right-only --cherry-pick`) first tries to recognize the diverged shape as a prior rebase whose force-push failed (self-heals as "ahead" on retry) before declaring a genuine two-sided divergence (#683). |
+| `GitService.rebase_pr_for_task` | method | git.py:5654 | PR-keyed rebase via PR refs (project_id scoped) |
+| `GitService.sync_task_branch` | method | git.py:5708 | Task-keyed rebase through dev `sync_branch` verb (pre-PR) |
+| `GitService.is_behind_base` | method | git.py:5872 | `(behind, ahead)` counts for i_am_done submit gate |
+| `GitService.close_pull_request` | method | git.py:5969 | Close superseded PR + optional comment + branch cleanup (idempotent) |
+| `GitService._delete_remote_branch_best_effort` | method | git.py:3980 | Best-effort remote delete; skips main/master/develop + open-dependent-PR branches, UNIONED with `_protected_branches_for_deletion(project_slug)` — the shared chokepoint every remote-delete path (task cleanup, PR-merge/close cleanup, the stale-branch sweep) routes through; returns `bool` (issued vs skipped/failed) |
+| `GitService._protected_branches_for` | method | git.py:1411 | The project's own declared `protected_branches`, normalized (stripped, deduped into a `frozenset`) and unioned into the hardcoded `{master, main}` floor for rebase refusal (`rebase_onto_base`) and `sync_task_branch`'s force-push refusal; fails OPEN (empty set, logs a warning) on a project-lookup error — a wrongly-blocked rebase over a transient DB blip is the worse tradeoff |
+| `GitService._protected_branches_for_deletion` | method | git.py:1447 | Deletion-only superset of `_protected_branches_for`: the declared field UNIONED with the project's env-ladder rung branches (`effective_environments` — a null ladder's synthesized single rung off `default_branch` is protected too, so a renamed trunk like `trunk` is covered even with no declared list); fails CLOSED (returns the hardcoded floor only, on a lookup error) since a skipped delete is free (next sweep retries) but silently deleting a real declared rung on an unresolvable project is not |
+| `GitService.delete_task_branch` | method | git.py:4071 | Cancel-path remote branch delete; chokepoint for the environment-ladder skip (`effective_environments`) so a task's `branch_name` can never collide-delete a ladder rung; returns `bool` |
+| `GitService.close_task_pr_best_effort` | method | git.py:4104 | No-clone-needed cancel-path cleanup: resolves the project token + `git_url`→`RepoRef`, fetches the PR via `self._forge.get_pr`, no-ops unless `state=="open"`, else `update_pr(payload={"state":"closed"})`; every failure path (missing token/project, unparseable URL, `httpx.HTTPError`) returns `False` rather than raising |
+| `GitService.cleanup_stale_branches` | method | git.py:4146 | `POST /git/branches/cleanup` backing sweep: terminal (completed/cancelled) tasks' branches, remote (`delete_task_branch`) + local force-delete in the assignee's clone; capped 200/call, cursor-resumable |
+| `GitService._stale_branch_window` | method | git.py:4216 | One deterministic `ORDER BY id` window of sweep candidates; ladder rungs excluded from results but still advance the cursor |
+| `GitService._live_task_dependents` | method | git.py:4259 | Companion sweep guard: excludes a terminal candidate's branch when a non-terminal task still records that exact `branch_name`, or when a non-terminal task is a direct child of the candidate (the child's future PR base would resolve to the parent's branch via `resolve_parent_branch` even before it has opened a PR — catches what the OPEN-PR-only `_branch_has_open_dependents` can't see) |
+| `GitService._cleanup_one_stale_branch` | method | git.py:4290 | Per-branch remote+local delete for one sweep candidate; raises on unexpected failure so the caller's try/except counts it as an error |
+| `GitService.pr_target` | method | git.py:6041 | Return PR base branch (project_id scoped) |
+| `GitService.create_pr` | method | git.py:5002 | Branch-keyed open PR (gateway path; ensures base on remote) |
+| `GitService._record_pr_atomically` | method | git.py:3790 | Atomic pr_number/url write to task |
+| `GitService.run_pre_submit_quality_gate` | method | git.py:4643 | `make quality` gate before submit |
+| `GitService.conventions_check_for_task` | method | git.py:6529 | Run conventions validator on changed files (fail-closed); optional `changed_files` kwarg lets a caller that already resolved the branch's file list (e.g. via `diff_and_files`) thread it in instead of paying for a third `list_changed_files` resolution + subprocess |
+| `GitService._run_conventions_validator` | method | git.py:6621 | Subprocess `python -m roboco.conventions` with 120s cap |
+| `GitService.open_conventions_pr` | method | git.py:6676 | Scaffold `.roboco/conventions.yml` on a branch + open PR |
+| `GitService._resolve_diff_refs` | method | git.py:6237 | Shared `(workspace, head_ref, base_ref)` resolution for the whole diff family (`diff`/`list_changed_files`/`diff_and_files`) — factored out so the four sequential lookups (workspace, token, head ref, base ref) aren't repeated per method body |
 | `GitService.diff` / `list_changed_files` / `diff_and_files` / `read_file_at_branch` | methods | git.py:5990/6030/6063/6097 | Read-only git queries (gateway + routes). `diff` and `list_changed_files` each resolve through `_resolve_diff_refs` then run one subprocess; `diff_and_files` resolves ONCE and runs the full diff + the `--name-only` diff CONCURRENTLY via `asyncio.gather`, for a caller (`_build_qa_claim_evidence` in `choreographer/qa.py`, `content_actions.evidence()`) that previously called `diff()` then `list_changed_files()` back to back — each re-resolving workspace/token/head/base from scratch and spawning its own subprocess. `read_file_at_branch` resolves separately through `_resolve_head_ref` (it has no base ref to resolve). |
-| `GitService._resolve_head_ref` | method | git.py:6189 | Shared reader-ref resolution for `diff`/`list_changed_files`/`read_file_at_branch`/`/api/git/log`. Fetches `branch_name`, then prefers `origin/<branch_name>` over the bare local ref whenever origin carries commits local lacks (`origin_only > 0` via `rev-list`) — a reviewer's clone parked on pre-rebase history no longer stays frozen there across every later round; local wins only when it strictly contains everything origin has. Unlike the write-path's `_reset_head_or_diverged`, a read never needs to tell genuine divergence apart from a rewritten history — both resolve to "serve origin" (#690). |
-| `GitService.commit` | method | git.py:6445 | Gateway content-verb commit (branch-keyed) |
-| `get_git_service` | factory | git.py:6830 | Construct GitService from AsyncSession |
+| `GitService._resolve_head_ref` | method | git.py:6191 | Shared reader-ref resolution for `diff`/`list_changed_files`/`read_file_at_branch`/`/api/git/log`. Fetches `branch_name`, then prefers `origin/<branch_name>` over the bare local ref whenever origin carries commits local lacks (`origin_only > 0` via `rev-list`) — a reviewer's clone parked on pre-rebase history no longer stays frozen there across every later round; local wins only when it strictly contains everything origin has. Unlike the write-path's `_reset_head_or_diverged`, a read never needs to tell genuine divergence apart from a rewritten history — both resolve to "serve origin" (#690). |
+| `GitService.commit` | method | git.py:6447 | Gateway content-verb commit (branch-keyed) |
+| `get_git_service` | factory | git.py:6832 | Construct GitService from AsyncSession |
 | `build_branch_name` | func | templates/git/branch.py:37 | `{type}/{team}/{root}--{sub}--...` up to MAX_TASK_DEPTH |
 | `get_root_task_id` | func | templates/git/branch.py:97 | Walk parent chain to root |
 | `BranchNameError` | exc | templates/git/branch.py:33 | Bad type / missing task / over-depth |
@@ -136,7 +136,7 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `BRANCH_TYPES` / `COMMIT_TYPES` | consts | templates/git/constants.py:10/21 | Allowed prefixes |
 | `RepoRef` | dataclass | forge/base.py:27 | Provider-opaque repo identity (`owner`, `repo`, `host`); GitLab packs the full URL-encoded namespace path into `owner`, leaving `repo` empty |
 | `GitProvider` | ABC | forge/base.py:49 | The ~20-method transport contract every forge implements (PR CRUD, review flow, `merge_branch`, CI signal surface, repo/label/branch/release/provisioning) |
-| `GitService._forge` | property | git.py:484 | A fresh `ForgeRouter()` per access (cheap, no I/O — built this way, not `__init__`-cached, so tests can `GitService.__new__` bypass the constructor) |
+| `GitService._forge` | property | git.py:486 | A fresh `ForgeRouter()` per access (cheap, no I/O — built this way, not `__init__`-cached, so tests can `GitService.__new__` bypass the constructor) |
 | `ForgeRouter` | class | forge/router.py:37 | Implements `GitProvider` by picking a transport per call from `RepoRef.host` |
 | `ForgeRouter._provider_for_ref` | staticmethod | forge/router.py:41 | `None` host → `GitHubProvider()`; a registered `"gitea"`/`"gitlab"` host → that provider constructed with its remembered scheme; unregistered → `GitError` naming the fix |
 | `register_project_forge` | func | forge/registry.py:50 | Records a project's host→provider(+scheme) mapping; called from `ProjectService.create`/`update`/`get`/`get_by_slug` — in-memory, per-process, self-healing (a restart forgets it; the next project read re-registers) |
