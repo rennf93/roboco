@@ -6,6 +6,7 @@ Route-glue helpers backing roboco/api/routes/video.py.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -124,13 +125,24 @@ def _resolve_preview_path(root: Path, file_path: str) -> Path | None:
     """Resolve ``file_path`` against the workspace ``root``, refusing
     anything that escapes it. A leading ``/`` is stripped before joining —
     pathlib's ``/`` operator otherwise lets an absolute right operand
-    discard ``root`` entirely — then the joined path must resolve to an
-    existing file still under ``root``. The confinement check shared by the
-    CEO composition-HTML proxy and the preview-frame streamer below."""
-    candidate = (root / file_path.lstrip("/")).resolve()
-    if not candidate.is_relative_to(root) or not candidate.is_file():
+    discard ``root`` entirely — then the joined path, symlinks resolved,
+    must be an existing file under ``root``'s own real path. The
+    confinement check shared by the CEO composition-HTML proxy and the
+    preview-frame streamer below.
+
+    ``os.path.realpath`` + ``startswith(base + os.sep)`` (the containment
+    idiom ``spawn_exit`` uses) rather than ``Path.resolve`` +
+    ``is_relative_to``: same semantics, but CodeQL's path-injection query
+    recognises only the former as a barrier, and counts ``resolve()`` on
+    the raw request path as a filesystem access in itself."""
+    base = os.path.realpath(root)
+    candidate = os.path.realpath(root / file_path.lstrip("/"))
+    if not candidate.startswith(base + os.sep):
         return None
-    return candidate
+    resolved = Path(candidate)
+    if not resolved.is_file():
+        return None
+    return resolved
 
 
 # request_render's self-describing filename (video-renderer/render.js):
@@ -141,14 +153,10 @@ _FRAME_NAME_RE = re.compile(r"^frame-(\d+)-of-\d+-at-([\d.]+)s\.png$")
 def _previews_root(project_slug: str, task_id: UUID) -> Path:
     """The container-shared dir request_render extracts frames to — same
     path every agent container mounts (content_actions._render_extract_frames),
-    so this resolves identically regardless of who rendered. Resolved (like
-    the sibling composition-preview route resolves its workspace root before
-    calling ``_resolve_preview_path``) — otherwise a symlinked
-    ``workspaces_root`` makes ``candidate.is_relative_to(root)`` mismatch and
-    every legit frame 404s."""
-    return (
-        Path(settings.workspaces_root) / project_slug / ".previews" / task_id.hex[:8]
-    ).resolve()
+    so this resolves identically regardless of who rendered. Left unresolved:
+    ``_resolve_preview_path`` compares real paths on both sides, so a
+    symlinked ``workspaces_root`` still serves its frames."""
+    return Path(settings.workspaces_root) / project_slug / ".previews" / task_id.hex[:8]
 
 
 def _list_orientation_frames(dir_path: Path) -> list[PreviewFrameResponse]:
