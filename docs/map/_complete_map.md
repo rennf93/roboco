@@ -933,9 +933,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker/agent-grok-secretary.Dockerfile | Grok secretary — FROM grok, ENTRYPOINT python -m roboco.agent_sdk.grok_secretary_main, EXPOSE 9000 | 22 |
 | docker/agent-kimi.Dockerfile | Kimi (Moonshot) runtime — base + official kimi-code CLI install (NO version pin, latest-at-build, resolved version stamped to /etc/kimi-cli-version), ENTRYPOINT kimi-cli-agent-entrypoint.sh | 71 |
 | docker/panel.Dockerfile | Multi-stage Next.js build (node:22-alpine, pnpm, shamefully-hoist), non-root nextjs:nodejs runtime (USER 1001:1001) serving server.js on :3000, HEALTHCHECK GET /login (the one prerendered page proxy.ts never sends to the backend) | 86 |
-| docker/postgres-pgvector.Dockerfile | Example custom pgvector build (pg17) — currently unused; compose uses pgvector/pgvector:pg16 image directly | 14 |
 | deploy/nginx.conf | nginx default.conf template (moved from `docker/` with the NAS blue-green deploy): the colour-suffixed upstreams come from the `front/active-upstreams.conf` include and resolve per request through Docker's DNS; /health /ready /api/ /ws/ -> the active orchestrator (with X-Agent-Token header), /api/orchestrator/ and /api/{secretary,prompter}/live/ -> the active dispatcher, a deny-list for scanner paths, everything else -> the active panel | 151 |
-| docker/postgres-init/01-create-extensions.sql | First-init SQL: CREATE EXTENSION IF NOT EXISTS vector + availability check (used by the pgvector image entrypoint) | 16 |
 | docker/scripts/entrypoints/backup-entrypoint.sh | `backup` sidecar's own loop (not a Claude hook): `pg_dump -Fc` on start + every `BACKUP_INTERVAL_SECONDS` (default 24h), `.tmp`-suffix-then-rename, prune to newest `BACKUP_KEEP` (default 14) by mtime; runs on the data-only network; env-gated off-disk mirror step (`ROBOCO_BACKUP_MIRROR_DIR`) after every successful dump | 80 |
 | docker/scripts/entrypoints/playwright-mcp-entrypoint.sh | Wrapper entrypoint for `@playwright/mcp`: points it at the image's own baked `chromium-headless-shell` instead of letting the MCP package download a second browser | 20 |
 | docker/scripts/hooks/sdk-startup-hook.sh | Claude SessionStart hook: start SDK server on :9000 with UV_PROJECT_ENVIRONMENT=/app/.venv + --no-sync, reset budget, print briefing/precompact | 61 |
@@ -1118,9 +1116,7 @@ deployment-tooling
 │  ├─ grok family: agent-grok.Dockerfile (+ grok CLI latest-at-build, grok-cli-agent-entrypoint.sh)
 │  │  └─ agent-grok-prompter / agent-grok-secretary (FROM grok, agent_sdk drivers)
 │  ├─ panel.Dockerfile (Next.js standalone, non-root nextjs)
-│  ├─ postgres-pgvector.Dockerfile (example, unused)
-│  ├─ nginx.conf (proxy template)
-│  └─ postgres-init/01-create-extensions.sql
+│  └─ nginx.conf (proxy template)
 ├─ Python runtime core
 │  ├─ roboco/config.py (Settings + derived URL properties + get_settings lru_cache)
 │  ├─ roboco/__init__.py (version + re-exports)
