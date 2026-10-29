@@ -8937,6 +8937,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/dogfood_engine.py` | `DogfoodEngine` — event-only, project-scoped; real `_ORIGINATORS` binding (unlike Coroner's stub) | 152 |
 | `roboco/services/periscope_engine.py` | `PeriscopeEngine` — weekly cron, org-scoped market-research brief; `latest_brief_context` feeds Printer | 157 |
 | `roboco/services/megaphone_engine.py` | `MegaphoneEngine` — 3-day cron, org-scoped editorial calendar; shipped-this-week digest + Unreleased changelog | 191 |
+| `roboco/services/shipped_work_digest.py` | `shipped_work_digest` — "Completed this week" (COMPLETED tasks, last 7 days, capped at 15) + the CHANGELOG `## [Unreleased]` body from the RoboCo read clone; degrades to explicit lines, never raises; shared by Megaphone and the roadmap / Pest Control / Spackle prompts | 91 |
 | `roboco/services/mirror_engine.py` | `MirrorEngine` — quarterly cron, project-scoped messaging-drift audit | 143 |
 | `roboco/services/barfly_engine.py` | `BarflyEngine` — 2-day cron, org-scoped; screens X search candidates through `injection_guard`, marks seen | 223 |
 | `roboco/services/war_room_engine.py` | `WarRoomEngine` — event-triggered (`open_for_release` release hook + CEO run-now); campaign posts w/ `publish_after` | 231 |

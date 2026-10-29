@@ -2,7 +2,7 @@
 
 Regression test: pins the helper's output format so the megaphone refactor
 (moving ``digest_context``/``_shipped_this_week``/``_unreleased_changelog`` out
-of ``MegaphoneEngine`` into ``roboco/utils/shipped_work_digest.py``) preserves
+of ``MegaphoneEngine`` into ``roboco/services/shipped_work_digest.py``) preserves
 the exact output the megaphone exploration prompt rendered before.
 
 Degradation test: when the digest cannot be assembled (no completed tasks,
@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from roboco.models.base import Team
-from roboco.utils.shipped_work_digest import shipped_work_digest
+from roboco.services.shipped_work_digest import shipped_work_digest
 
 if TYPE_CHECKING:
     import pytest
@@ -44,7 +44,7 @@ async def test_regression_digest_output_format_unchanged() -> None:
     changelog_body = "### Added\n- New thing\n- Another thing\n"
 
     with patch(
-        "roboco.utils.shipped_work_digest._unreleased_changelog",
+        "roboco.services.shipped_work_digest._unreleased_changelog",
         AsyncMock(return_value=changelog_body),
     ):
         got = await shipped_work_digest(session, "roboco-api")
@@ -65,7 +65,7 @@ async def test_degradation_empty_shipped_and_missing_changelog() -> None:
     session = _mock_session(rows=[])
 
     with patch(
-        "roboco.utils.shipped_work_digest._unreleased_changelog",
+        "roboco.services.shipped_work_digest._unreleased_changelog",
         AsyncMock(return_value=""),
     ):
         got = await shipped_work_digest(session, "roboco-api")
@@ -84,7 +84,7 @@ async def test_degradation_changelog_exception_does_not_raise() -> None:
     session = _mock_session(rows=[])
 
     with patch(
-        "roboco.services.workspace.get_workspace_service",
+        "roboco.services.shipped_work_digest.get_workspace_service",
         side_effect=RuntimeError("clone blew up"),
     ):
         got = await shipped_work_digest(session, "roboco-api")
@@ -105,11 +105,11 @@ async def test_changelog_exception_emits_warning_log(
     logger's first-use cache)."""
     session = _mock_session(rows=[])
     fake_logger = MagicMock()
-    _swd = importlib.import_module("roboco.utils.shipped_work_digest")
+    _swd = importlib.import_module("roboco.services.shipped_work_digest")
     monkeypatch.setattr(_swd, "logger", fake_logger)
 
     with patch(
-        "roboco.services.workspace.get_workspace_service",
+        "roboco.services.shipped_work_digest.get_workspace_service",
         side_effect=RuntimeError("clone blew up"),
     ):
         await shipped_work_digest(session, "roboco-api")

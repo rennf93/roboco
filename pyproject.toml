@@ -393,11 +393,6 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # the api and dispatcher roles never pay for the KB worker's import graph at
 # process start.
 "roboco/bootstrap.py" = ["PLC0415"]
-# shipped_work_digest defers its DB-table and service imports to call time:
-# roboco/utils/__init__.py re-exports it, so top-level imports would load the
-# workspace and release-readiness service graph into every importer of
-# roboco.utils.
-"roboco/utils/shipped_work_digest.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior.
 # ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
 # for mypy's override check, so unused override-stub args can't be renamed.

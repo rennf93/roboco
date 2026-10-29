@@ -1,17 +1,17 @@
 # Shipped-work digest: shared helper + board-program prompt injection
 
-The shipped-work digest is a server-assembled "what the fleet shipped this week" context block injected into Product Owner exploration prompts so the PO does not re-propose work that already shipped. It combines recently completed task titles (capped at 15) with the CHANGELOG.md `## [Unreleased]` body, degrades explicitly when either half is unavailable, and is shared across four Board Program prompts via one helper in `roboco/utils/`.
+The shipped-work digest is a server-assembled "what the fleet shipped this week" context block injected into Product Owner exploration prompts so the PO does not re-propose work that already shipped. It combines recently completed task titles (capped at 15) with the CHANGELOG.md `## [Unreleased]` body, degrades explicitly when either half is unavailable, and is shared across four Board Program prompts via one helper in `roboco/services/`.
 
-## The shared helper — `roboco/utils/shipped_work_digest.py`
+## The shared helper — `roboco/services/shipped_work_digest.py`
 
-`shipped_work_digest(session, roboco_project_slug) -> str` is an async, side-effect-free helper that assembles both halves of the digest:
+`shipped_work_digest(session, roboco_project_slug) -> str` is an async service function that assembles both halves of the digest:
 
 - **Completed this week** — queries `TaskTable` for `COMPLETED` tasks with `completed_at` in the last 7 days, outer-joined to `ProjectTable` for the project name, ordered by `completed_at` descending, capped at `_DIGEST_TASK_LIMIT = 15`. Each row renders as `- {title} ({project_name}, {team})`. An empty set degrades to `- (nothing completed)`.
-- **CHANGELOG Unreleased section** — reads the RoboCo project's read clone via `get_workspace_service(session).ensure_read_clone(slug)`, then calls `_read_changelog` and `_unreleased_body` from `roboco/services/release_readiness.py` to extract the `## [Unreleased]` body. A read failure (missing file, missing section, clone error) degrades to `(not available this cycle)`. The import of `get_workspace_service` is lazy (inside the function body, `noqa: PLC0415`) so `roboco/utils/` stays clear of service-module imports at import time, per the architectural standard.
+- **CHANGELOG Unreleased section** — reads the RoboCo project's read clone via `get_workspace_service(session).ensure_read_clone(slug)`, then calls `_read_changelog` and `_unreleased_body` from `roboco/services/release_readiness.py` to extract the `## [Unreleased]` body. A read failure (missing file, missing section, clone error) degrades to `(not available this cycle)`. Ensuring the read clone can clone a repository, which is why the module lives in `roboco/services/` and not in `roboco/utils/` (side-effect-free helpers), where it first shipped.
 
 The helper never raises and never returns an empty string — both halves always carry an explicit line so the rendered section is never a bare header.
 
-The helper is re-exported from `roboco/utils/__init__.py`.
+Callers import it from `roboco.services.shipped_work_digest`; it is not re-exported from a package `__init__`.
 
 ## Megaphone refactor — delegation
 
@@ -74,5 +74,5 @@ A digest failure never blocks a cycle. The prompt either carries the digest with
 
 Two test files, nine tests total:
 
-- `tests/unit/test_shipped_work_digest.py` — regression (pins the exact output format), degradation (empty shipped + missing changelog, changelog exception does not raise).
+- `tests/unit/services/test_shipped_work_digest.py` — regression (pins the exact output format), degradation (empty shipped + missing changelog, changelog exception does not raise).
 - `tests/unit/runtime/test_board_program_shipped_digest_prompts.py` — digest block rendering (present + empty), digest presence in each of the three prompts (roadmap, Pest Control, Spackle), instruction text presence, and omission when no digest is available.
