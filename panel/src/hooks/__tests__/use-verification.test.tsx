@@ -3,21 +3,26 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode } from "react";
 
-const { get, getFindings, conventionsFindings, getTaskMetrics } = vi.hoisted(
-  () => ({
-    get: vi.fn(),
-    getFindings: vi.fn(),
-    conventionsFindings: vi.fn(),
-    getTaskMetrics: vi.fn(),
-  }),
-);
+const {
+  get,
+  getFindings,
+  getAttestation,
+  conventionsFindings,
+  getTaskMetrics,
+} = vi.hoisted(() => ({
+  get: vi.fn(),
+  getFindings: vi.fn(),
+  getAttestation: vi.fn(),
+  conventionsFindings: vi.fn(),
+  getTaskMetrics: vi.fn(),
+}));
 
 vi.mock("@/lib/api/tasks", async () => {
   const actual =
     await vi.importActual<typeof import("@/lib/api/tasks")>("@/lib/api/tasks");
   return {
     ...actual,
-    tasksApi: { ...actual.tasksApi, get, getFindings },
+    tasksApi: { ...actual.tasksApi, get, getFindings, getAttestation },
   };
 });
 
@@ -49,7 +54,15 @@ import {
   useTaskConventionFindings,
 } from "@/hooks/use-verification";
 import type { Task } from "@/types";
-import type { TaskFinding, TaskFindingsResponse } from "@/lib/api/tasks";
+import type {
+  TaskAttestation,
+  TaskFinding,
+  TaskFindingsResponse,
+} from "@/lib/api/tasks";
+import {
+  PR_CI_VERDICT_NOT_AVAILABLE,
+  PR_CI_VERDICT_UNREADABLE,
+} from "@/lib/api/verification";
 import type { ConventionFinding } from "@/lib/api/conventions";
 
 function finding(overrides: Partial<TaskFinding>): TaskFinding {
@@ -237,13 +250,46 @@ describe("useTaskConventionFindings", () => {
 });
 
 describe("usePrCiVerdict", () => {
-  it("always reads unavailable — no backend endpoint exists (the no-CI-repo case)", () => {
+  it("reads the PR head's CI verdict off the task's attestation", async () => {
+    getAttestation.mockResolvedValue({
+      task_id: "t1",
+      ci: {
+        state: "failure",
+        head_sha: "abc1234def",
+        failing_checks: ["Python quality gate"],
+      },
+    } as TaskAttestation);
+
     const { result } = renderHook(() => usePrCiVerdict("t1"), { wrapper });
-    expect(result.current.isLoading).toBe(false);
-    expect(result.current.data.available).toBe(false);
-    // reason is the short, reader-facing sentence; the endpoint-level
-    // escalation detail lives in technicalDetail, never in the visible copy.
-    expect(result.current.data.reason).not.toContain("REST route");
-    expect(result.current.data.technicalDetail).toContain("REST route");
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(getAttestation).toHaveBeenCalledWith("t1");
+    expect(result.current.data).toEqual({
+      available: true,
+      state: "failure",
+      headSha: "abc1234def",
+      failingChecks: ["Python quality gate"],
+    });
+  });
+
+  it("reads a task with no PR yet as no verdict", async () => {
+    getAttestation.mockResolvedValue({
+      task_id: "t1",
+      ci: { state: "not_available", head_sha: null, failing_checks: [] },
+    } as unknown as TaskAttestation);
+
+    const { result } = renderHook(() => usePrCiVerdict("t1"), { wrapper });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.data).toBe(PR_CI_VERDICT_NOT_AVAILABLE);
+  });
+
+  it("reads a failed attestation load as unavailable, never as a pass", async () => {
+    getAttestation.mockRejectedValue(new Error("500"));
+
+    const { result } = renderHook(() => usePrCiVerdict("t1"), { wrapper });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.data).toBe(PR_CI_VERDICT_UNREADABLE);
   });
 });

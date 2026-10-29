@@ -1,8 +1,9 @@
 // Pure client-side derivations for the task-detail Verification receipt and
 // the release-proposal rollup. No new backend endpoints or capture: every
-// export here reshapes data GET /tasks/{id}, GET /tasks/{id}/findings, and
-// GET /projects/{id}/conventions/findings already return.
-import type { TaskFinding } from "./tasks";
+// export here reshapes data GET /tasks/{id}, GET /tasks/{id}/findings,
+// GET /tasks/{id}/attestation, and GET /projects/{id}/conventions/findings
+// already return.
+import type { AttestationCiVerdict, TaskFinding } from "./tasks";
 import type { TaskMetricsReviewerChainEntry } from "./dashboard";
 
 // One acceptance criterion's QA verification state, parsed from the
@@ -107,34 +108,66 @@ export function buildReviewerChain(
   return [...entries].sort((a, b) => a.round - b.round);
 }
 
-// The PR CI verdict bound to the task's PR head commit — NOT reachable from
-// any existing endpoint. `GitService.get_pr_ci_status` exists server-side
-// (roboco/services/git.py) but is only called internally by the in-path PR
-// gate and the self-heal loop; no REST route wraps it, so the panel has no
-// way to fetch it without a new backend endpoint. Per this task's intake
-// facts ("no new backend data capture"), that gap is reported here for
-// escalation instead of invented — the shape below always reads as
-// unavailable until a real route (e.g. GET /tasks/{id}/pr-ci-status) ships.
-export interface PrCiVerdict {
-  available: false;
-  /** Short sentence safe to render directly to the approver. */
-  reason: string;
-  /**
-   * The backend-facing escalation detail (which endpoint is missing, why) —
-   * for a HelpTip, code comment, or the docs. Never render this as the
-   * primary visible sentence; it names internals the approver has no use for.
-   */
-  technicalDetail: string;
-}
+// The PR CI verdict bound to the task's PR head commit, read off
+// GET /tasks/{id}/attestation's `ci` (roboco/services/attestation.py
+// `_ci_verdict`, which wraps `GitService.get_pr_ci_status`: the same
+// check-runs signal the in-path PR gate reads). `PrCiState` is
+// get_pr_ci_status's own vocabulary; the attestation reports
+// `not_available` instead when the task has no PR yet or no CI signal
+// could be resolved, which maps to the unavailable branch below.
+export type PrCiState =
+  | "success"
+  | "failure"
+  | "pending"
+  | "pending_not_scheduled"
+  | "no_ci_configured"
+  | "error";
 
-export const PR_CI_VERDICT_UNAVAILABLE: PrCiVerdict = {
+const PR_CI_STATES: readonly PrCiState[] = [
+  "success",
+  "failure",
+  "pending",
+  "pending_not_scheduled",
+  "no_ci_configured",
+  "error",
+];
+
+export type PrCiVerdict =
+  | {
+      available: true;
+      state: PrCiState;
+      headSha: string | null;
+      failingChecks: string[];
+    }
+  | {
+      available: false;
+      /** Short sentence safe to render directly to the approver. */
+      reason: string;
+    };
+
+export const PR_CI_VERDICT_NOT_AVAILABLE: PrCiVerdict = {
   available: false,
-  reason: "Per-task PR CI verification isn't available yet.",
-  technicalDetail:
-    "No backend endpoint exposes PR CI status for a task " +
-    "(GitService.get_pr_ci_status has no REST route) — needs a new " +
-    "endpoint; escalate rather than invent.",
+  reason:
+    "No CI verdict yet: the task has no pull request, or its CI can't be read.",
 };
+
+export const PR_CI_VERDICT_UNREADABLE: PrCiVerdict = {
+  available: false,
+  reason: "The task's verification record couldn't be loaded.",
+};
+
+export function prCiVerdictFromAttestation(
+  ci: AttestationCiVerdict,
+): PrCiVerdict {
+  const state = PR_CI_STATES.find((s) => s === ci.state);
+  if (state === undefined) return PR_CI_VERDICT_NOT_AVAILABLE;
+  return {
+    available: true,
+    state,
+    headSha: ci.head_sha ?? null,
+    failingChecks: ci.failing_checks,
+  };
+}
 
 // The release proposal's member-task set. GET /release/proposal's
 // `member_task_ids` (roboco/api/schemas/release.py ReleaseProposalResponse)
