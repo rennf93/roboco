@@ -14,6 +14,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import roboco.services.git_relay as git_relay_module
 import roboco.services.release_proposal as release_proposal_module
 from roboco.runtime.orchestrator import AgentOrchestrator
 from roboco.services import uptime
@@ -111,6 +112,7 @@ async def test_start_calls_mark_running_and_beat_before_other_setup(
     before anything else can fail partway through boot - is unambiguous."""
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch.dispatcher_interval = 30
+    orch._bg_tasks = set()
     call_order: list[str] = []
 
     def _record(name: str) -> AsyncMock:
@@ -131,9 +133,11 @@ async def test_start_calls_mark_running_and_beat_before_other_setup(
     monkeypatch.setattr(
         release_proposal_module, "sweep_orphan_release_locks", _record("release_locks")
     )
+    monkeypatch.setattr(git_relay_module, "remove_pre_move_copies", MagicMock())
 
     def _fake_create_task(coro: Any) -> MagicMock:
-        coro.close()  # never actually scheduled - these are the ~18 bg loops
+        # Never actually scheduled: these are the ~18 background loops.
+        coro.close()
         return MagicMock()
 
     monkeypatch.setattr("asyncio.create_task", _fake_create_task)

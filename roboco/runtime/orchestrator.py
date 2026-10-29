@@ -233,7 +233,8 @@ _PM_DISPATCH_FETCH_LIMIT = 500
 _PARENT_BRANCH_WAIT = "waiting for parent branch provisioning"
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
-_HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
+# First non-2xx status; 2xx == [_HTTP_OK, this).
+_HTTP_MULTIPLE_CHOICES = 300
 
 # The orchestrator calls its own write API as a trusted internal actor. Those
 # routes require an agent identity (X-Agent-ID); a self-call without it is
@@ -472,7 +473,8 @@ AGENT_IMAGES: dict[str, str] = {
     # UX/UI
     "ux-dev-1": "roboco-agent-ux",
     "ux-dev-2": "roboco-agent-ux",
-    "ux-qa": "roboco-agent-ux",  # Uses same as dev for now
+    # Uses the same image as the UX devs for now.
+    "ux-qa": "roboco-agent-ux",
     "ux-pm": "roboco-agent-pm",
     "ux-doc": "roboco-agent-doc",
     # Board
@@ -563,8 +565,10 @@ _GROK_RATE_LIMIT_RETRY_AFTER_S = 60.0
 # off exponentially within one episode so the churn dampens (60 -> 120 -> 240
 # -> ... capped) instead of spinning flat. The episode gap resets the count
 # once the rate limit has actually lifted.
-_GROK_REPARK_BACKOFF_CAP = 4  # max 2**4 = 16x base (~16min cycle)
-_GROK_REPARK_EPISODE_GAP_S = 1500.0  # 25min — > the capped ~16min cycle
+# Max 2**4 = 16x base (~16min cycle).
+_GROK_REPARK_BACKOFF_CAP = 4
+# 25min, longer than the capped ~16min cycle.
+_GROK_REPARK_EPISODE_GAP_S = 1500.0
 # A one-shot Grok container exits with this code (EX_CONFIG) when the
 # entrypoint's `grok_auth --check` backstop found the access token missing or
 # expired (it can't be refreshed headlessly, so the CLI would hang at an
@@ -1797,6 +1801,13 @@ class AgentOrchestrator(
         # assets on first enable (idempotent — never overwrites an operator's
         # own edits). No-op when the flag is off.
         self._ensure_vault_assets_on_startup()
+
+        # The read and release clones moved under the private root; their
+        # old copies under the workspaces root go once, in a thread (gigabytes
+        # on a long-lived install), off the startup path.
+        from roboco.services.git_relay import remove_pre_move_copies
+
+        self._schedule_bg(asyncio.to_thread(remove_pre_move_copies))
 
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())

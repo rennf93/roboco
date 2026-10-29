@@ -37,9 +37,11 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from roboco.config import settings
+from roboco.logging import get_logger
 from roboco.models.env_branches import head_branch
 from roboco.services.workspace_git import (
     SAFE_PATH,
+    remove_workspace_tree,
     workspace_git_env,
     workspace_git_overrides,
     workspace_repository,
@@ -50,6 +52,8 @@ from roboco.services.workspace_git import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from typing import Any
+
+logger = get_logger(__name__)
 
 INCOMING_REF_PREFIX = "refs/roboco/incoming/"
 
@@ -95,6 +99,88 @@ def read_clone_path(project_slug: str) -> Path:
 def release_clone_path(project_slug: str) -> Path:
     """The project's writable release clone."""
     return private_root() / "release" / project_slug
+
+
+_PRE_MOVE_COPIES_REMOVED = "pre-move-copies-removed"
+
+
+def remove_pre_move_copies() -> None:
+    """Delete, once, the read and release clones the old layout kept under
+    the workspaces root (``<slug>/_meta/conventions``, ``_release/<slug>``).
+
+    Both now live under the private root, so nothing reads the old copies.
+    Agents write the workspaces root, so a tree counts as an old copy only
+    when it is still exactly that layout of real directories holding a
+    ``.git``, and it is removed with ``remove_workspace_tree`` (no symlink
+    followed). A marker in the private root records a pass that removed
+    everything it found, so a tree created at those paths later is never
+    touched; the lock keeps a second dispatcher (blue-green) out of a pass
+    already running. Best-effort: a pass that fails is logged and retried on
+    the next start.
+    """
+    try:
+        _remove_pre_move_copies_once(private_root() / _PRE_MOVE_COPIES_REMOVED)
+    except OSError as e:
+        logger.warning("removing pre-move copies failed", error=str(e))
+
+
+def _remove_pre_move_copies_once(marker: Path) -> None:
+    if marker.exists():
+        return
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    with marker.with_name(f"{marker.name}.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        if marker.exists():
+            return
+        if _remove_trees(_pre_move_copies(Path(settings.workspaces_root))):
+            marker.touch()
+
+
+def _pre_move_copies(workspaces_root: Path) -> list[Path]:
+    """``<slug>/_meta`` holding only a ``conventions`` clone, and
+    ``_release`` holding only clones; anything else there is left alone."""
+    if not _is_real_dir(workspaces_root):
+        return []
+    copies = [
+        project / "_meta"
+        for project in sorted(workspaces_root.iterdir())
+        if _is_real_dir(project)
+        and _holds_only_clones(project / "_meta", names={"conventions"})
+    ]
+    release = workspaces_root / "_release"
+    if _holds_only_clones(release, names=None):
+        copies.append(release)
+    return copies
+
+
+def _holds_only_clones(directory: Path, *, names: set[str] | None) -> bool:
+    if not _is_real_dir(directory):
+        return False
+    entries = list(directory.iterdir())
+    if not entries or (names is not None and {e.name for e in entries} != names):
+        return False
+    return all(_is_real_dir(e) and _is_real_dir(e / ".git") for e in entries)
+
+
+def _is_real_dir(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+
+def _remove_trees(trees: list[Path]) -> bool:
+    """Remove each tree; False when one could not be (retried next start)."""
+    removed_all = True
+    for tree in trees:
+        try:
+            remove_workspace_tree(tree)
+        except OSError as e:
+            removed_all = False
+            logger.warning("pre-move copy not removed", path=str(tree), error=str(e))
+        else:
+            logger.info("pre-move copy removed", path=str(tree))
+    return removed_all
 
 
 def _private_env(extra: dict[str, str] | None = None) -> dict[str, str]:
