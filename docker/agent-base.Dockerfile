@@ -81,16 +81,15 @@ RUN case "$TARGETARCH" in \
     && curl -fsSL --connect-timeout 15 --retry 5 --retry-all-errors --retry-delay 2 \
         "https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_${TARGETARCH}.tar.gz" \
         -o /tmp/entire.tar.gz \
-    && printf '%s  %s\n' "${ENTIRE_SHA256}" /tmp/entire.tar.gz > /tmp/entire.sha256 \
-    && sha256sum -c /tmp/entire.sha256 \
+    && echo "${ENTIRE_SHA256}  /tmp/entire.tar.gz" > /tmp/entire.tar.gz.sha256 \
+    && sha256sum -c /tmp/entire.tar.gz.sha256 \
     && mkdir -p /usr/local/lib/entire \
     && tar -xzf /tmp/entire.tar.gz -C /usr/local/lib/entire entire git-remote-entire \
     && ln -s /usr/local/lib/entire/git-remote-entire /usr/local/bin/git-remote-entire \
     && rm -rf /tmp/*
 COPY docker/scripts/entire-wrapper.sh /usr/local/bin/entire
-RUN chmod 0755 /usr/local/bin/entire /usr/local/lib/entire/entire /usr/local/lib/entire/git-remote-entire
-
-RUN useradd -m -s /bin/bash agent
+RUN chmod 0755 /usr/local/bin/entire /usr/local/lib/entire/entire /usr/local/lib/entire/git-remote-entire \
+    && useradd -m -s /bin/bash agent
 
 # uv is required at runtime: mcp-config.json spawns every MCP server via
 # `uv run python -m roboco.mcp.<server>`. Without it, all 10 roboco MCP

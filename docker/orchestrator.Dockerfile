@@ -6,6 +6,13 @@
 # and the pre-built venv copied in.
 # =============================================================================
 
+# Entire CLI pin (stages below). Same pin as agent-base.Dockerfile: version
+# AND sha256 written here, not fetched from the release.
+ARG ENTIRE_VERSION=0.12.2
+ARG ENTIRE_SHA256_AMD64=bfc5c8d5b599f328775b89b735db020c963e307b6a324fc30ce371fe8fa789e8
+ARG ENTIRE_SHA256_ARM64=f08a1b8c6352d3f78076268dc67b0b273d7f62dbab94b15aec028e7b4257ad0c
+ARG TARGETARCH
+
 # ---- Builder ----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS builder
 
@@ -53,24 +60,29 @@ RUN uv sync --frozen --no-dev
 # Entire (entire.io) records agent sessions as git checkpoints. Agents run its
 # session hooks in their own containers; its commit hooks run in the throwaway
 # workspace container (roboco/services/entire_hooks.py), started from this
-# image. Same pin as agent-base.Dockerfile: version AND sha256 written here.
-FROM python:3.13-slim-bookworm AS entire
+# image. BuildKit fetches the release and checks its sha256 itself (`ADD
+# --checksum`, a mismatch fails the build): no package manager or downloader
+# in the stage. One stage per architecture, each with its own pinned sum; the
+# build runs only TARGETARCH's.
+FROM scratch AS entire-download-amd64
+ARG ENTIRE_VERSION
+ARG ENTIRE_SHA256_AMD64
+ADD --checksum=sha256:${ENTIRE_SHA256_AMD64} \
+    https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_amd64.tar.gz \
+    /entire.tar.gz
 
-ARG ENTIRE_VERSION=0.12.2
-ARG ENTIRE_SHA256_AMD64=bfc5c8d5b599f328775b89b735db020c963e307b6a324fc30ce371fe8fa789e8
-ARG ENTIRE_SHA256_ARM64=f08a1b8c6352d3f78076268dc67b0b273d7f62dbab94b15aec028e7b4257ad0c
-ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && case "$TARGETARCH" in \
-        amd64) ENTIRE_SHA256="$ENTIRE_SHA256_AMD64" ;; \
-        arm64) ENTIRE_SHA256="$ENTIRE_SHA256_ARM64" ;; \
-        *) echo "unsupported TARGETARCH: '$TARGETARCH'" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL --connect-timeout 15 --retry 5 --retry-all-errors --retry-delay 2 \
-        "https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_${TARGETARCH}.tar.gz" \
-        -o /tmp/entire.tar.gz \
-    && echo "${ENTIRE_SHA256}  /tmp/entire.tar.gz" | sha256sum -c - \
-    && mkdir -p /usr/local/lib/entire \
+FROM scratch AS entire-download-arm64
+ARG ENTIRE_VERSION
+ARG ENTIRE_SHA256_ARM64
+ADD --checksum=sha256:${ENTIRE_SHA256_ARM64} \
+    https://github.com/entireio/cli/releases/download/v${ENTIRE_VERSION}/entire_linux_arm64.tar.gz \
+    /entire.tar.gz
+
+FROM entire-download-${TARGETARCH} AS entire-download
+
+FROM python:3.13-slim-bookworm AS entire
+COPY --from=entire-download /entire.tar.gz /tmp/entire.tar.gz
+RUN mkdir -p /usr/local/lib/entire \
     && tar --no-same-owner -xzf /tmp/entire.tar.gz -C /usr/local/lib/entire entire
 
 # ---- Runner -----------------------------------------------------------------
