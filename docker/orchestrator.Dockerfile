@@ -56,9 +56,12 @@ FROM python:3.13-slim-bookworm AS runner
 # make (backstop for projects whose CI commands use make targets), Node.js 22
 # via NodeSource. Debian's distro nodejs is v18, but current pnpm requires
 # Node >=22.13 — installing v18 made `pnpm install` fail in Node/TS workspaces.
+# libatomic1: the pnpm a project pins via `packageManager` (pnpm 11's
+# @pnpm/exe) is a native binary linked against libatomic.so.1; without it
+# every pnpm command in such a project exits 127.
 # curl/gnupg/lsb-release are only needed to add the repos, then purged.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg lsb-release git make \
+        curl ca-certificates gnupg lsb-release git make libatomic1 \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && curl -fsSL https://download.docker.com/linux/debian/gpg \
