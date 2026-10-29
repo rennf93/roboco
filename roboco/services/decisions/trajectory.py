@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from roboco.config import settings
 from roboco.db.tables import DecisionLogTable, TaskReviewFindingTable, TaskTable
@@ -382,6 +382,7 @@ async def run_trajectory_pass(session: Any) -> int:
         await ci_history.prune(session)
     except Exception as exc:
         logger.debug("ci history prune failed", error=str(exc))
+    await prune_memory_retrieval_log(session)
     return graded
 
 
@@ -1410,6 +1411,31 @@ async def _grade_vault_links(session: Any, grade_after: datetime) -> int:
             fates=fates,
         )
     return graded
+
+
+async def prune_memory_retrieval_log(session: Any) -> int:
+    """Delete retrieval events older than decision_log's retention window.
+
+    Their one reader, _grade_distill_links, grades a decision row by a
+    retrieval made after it, and decision rows older than
+    decisions_log_retention_days are pruned, so an older retrieval can no
+    longer grade anything. created_at is stamped when the row is written,
+    never before retrieved_at. Best-effort, in a savepoint: the pass shares
+    its session, and a failed delete must not poison the labels it wrote."""
+    from roboco.db.tables import MemoryRetrievalLogTable
+
+    cutoff = datetime.now(UTC) - timedelta(days=settings.decisions_log_retention_days)
+    try:
+        async with session.begin_nested():
+            result = await session.execute(
+                delete(MemoryRetrievalLogTable).where(
+                    MemoryRetrievalLogTable.created_at < cutoff
+                )
+            )
+        return int(result.rowcount or 0)
+    except Exception as exc:
+        logger.debug("memory retrieval log prune skipped", error=str(exc))
+        return 0
 
 
 async def _grade_memory_links(

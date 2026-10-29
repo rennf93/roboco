@@ -3071,7 +3071,8 @@ class MemoryRetrievalLogTable(Base):
     This is the evidence future knowledge-family graders need: whether a
     stored lesson/vault note was EVER retrieved for real work. Written
     best-effort at injection time from the choreographer's memory keystone;
-    pruned by the trajectory labeler pass. No decisions pilot is graded
+    pruned by the trajectory labeler pass past decision_log's retention
+    window (prune_memory_retrieval_log). No decisions pilot is graded
     from it yet - transcript_notes/vault_prefilter grading additionally
     needs a stable note->lesson identity, tracked in the map.
     """
