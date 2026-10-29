@@ -1,0 +1,24 @@
+Create a repository-scoped project trail, then link its branch. In the current repository, publish the local branch first; no separate commit or push is required. Uses the current feature branch, or derives a new branch from the title when on the base branch. Use --branch to choose a branch, or --no-branch for intent only. With --no-branch, the current or --repo repository becomes the Trail scope and requires repository write access; --project without --repo creates unscoped intent instead. Repository writers can create scoped trails and link branches. Unscoped creation requires project management. With a branch, --idempotency-key applies only to linking; if linking fails, retry with trail link rather than creating another trail. With --repo, no local branch is published: link existing remote work or use --branch-action create to create it on the server from --base. This command does not commit changes or change the local checkout. Branches are preserved if creation fails.
+
+Usage:
+  entire trail create [flags]
+
+Flags:
+      --assignee strings         Assignee logins; replaces the complete list (--assignee= clears it)
+      --base string              Base branch for new code work
+      --body string              Trail description (--body= clears it on update)
+      --branch string            Branch to use (defaults to the current feature branch; create derives one from the title on the base branch)
+      --branch-action string     Branch action: link existing remote work, or create a new branch (default "link")
+  -h, --help                     help for create
+      --idempotency-key string   Retry key for linking a branch; with intent-only creation, requires project management
+      --json                     Output raw JSON instead of a table
+      --no-branch                Create intent scoped to the current or --repo repository; --project alone creates unscoped intent
+      --priority string          Priority (urgent, high, medium, low, none)
+      --status string            Lifecycle status (open, closed)
+      --title string             Trail title
+      --type string              Type (bug, feature, task)
+
+Global Flags:
+      --context name     Act as this saved login name for this command only — including the git and agent processes it spawns — instead of the active context (entire auth contexts lists them)
+      --project string   Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace
+      --repo string      Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project

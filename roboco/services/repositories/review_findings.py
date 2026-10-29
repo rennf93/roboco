@@ -4,7 +4,9 @@ Append-only: ``insert_many`` adds one row per finding for a single producer
 call (fail_review / pr_fail / request_changes / ceo_reject); ``mark_addressed``
 / ``mark_verified`` / ``mark_waived`` advance a row's status without ever
 deleting or overwriting the original finding — history is the point (contrast
-``ProjectConventionFindingTable``, which replaces per-task).
+``ProjectConventionFindingTable``, which replaces per-task). Each write also
+queues its Entire trails mirror in the same transaction (a no-op unless the
+task's tree is bridged; see ``roboco.services.entire_trails``).
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from sqlalchemy import func, select
 
 from roboco.db.tables import TaskReviewFindingTable, TaskTable
 from roboco.models.base import TaskStatus
+from roboco.services.entire_trails import hooks as entire_trails
 from roboco.services.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -69,6 +72,7 @@ class ReviewFindingsRepository(BaseRepository[TaskReviewFindingTable]):
         for row in rows:
             self.session.add(row)
         await self.session.flush()
+        await entire_trails.findings_recorded(self.session, rows)
         return rows
 
     async def list_for_task(
@@ -134,10 +138,15 @@ class ReviewFindingsRepository(BaseRepository[TaskReviewFindingTable]):
         if note:
             row.resolution_note = note[:_RESOLUTION_NOTE_CAP]
         await self.session.flush()
+        await entire_trails.finding_addressed(self.session, row)
         return row
 
-    async def mark_verified(self, ids: list[UUID]) -> int:
+    async def mark_verified(
+        self, ids: list[UUID], *, verified_by: str | None = None
+    ) -> int:
         """Bulk-stamp ``verified`` on already-addressed findings by full id.
+        ``verified_by`` (the reviewer's slug) is recorded on their trail
+        findings.
 
         Returns the number of rows updated (0 for an empty/unmatched list).
         """
@@ -150,6 +159,9 @@ class ReviewFindingsRepository(BaseRepository[TaskReviewFindingTable]):
         for row in rows:
             row.status = STATUS_VERIFIED
         await self.session.flush()
+        await entire_trails.findings_verified(
+            self.session, rows, verified_by=verified_by
+        )
         return len(rows)
 
     async def mark_waived(self, finding_id: UUID, note: str) -> bool:
@@ -163,6 +175,7 @@ class ReviewFindingsRepository(BaseRepository[TaskReviewFindingTable]):
         row.status = STATUS_WAIVED
         row.resolution_note = note[:_RESOLUTION_NOTE_CAP]
         await self.session.flush()
+        await entire_trails.finding_waived(self.session, row)
         return True
 
     async def recurring_file_counts(

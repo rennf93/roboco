@@ -363,6 +363,20 @@ class GitLabProvider(GitProvider):
             json_body={"body": body},
         )
 
+    async def mark_pr_ready_for_review(
+        self, repo: RepoRef, token: str, pr_node_id: str
+    ) -> Any:
+        """Only GitHub-backed PRs are adopted from Entire, so nothing here
+        is ever un-drafted: a shaped 501."""
+        _ = (repo, token, pr_node_id)
+        request = httpx.Request("post", f"{self._scheme}://{self._host}/unsupported")
+        real = httpx.Response(
+            httpx.codes.NOT_IMPLEMENTED,
+            request=request,
+            json={"message": "GitLab: un-drafting a pull request is not supported"},
+        )
+        return ShapedResponse(real)
+
     async def merge_branch(
         self, repo: RepoRef, token: str, *, base: str, head: str, commit_message: str
     ) -> Any:

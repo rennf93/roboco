@@ -1336,6 +1336,7 @@ from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
 from roboco.runtime.engines.dispatch_prompts import DispatchPromptsEngine
 from roboco.runtime.engines.dispatch_routing import DispatchRoutingEngine
 from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
+from roboco.runtime.engines.entire_trails import EntireTrailsEngine
 from roboco.runtime.engines.env_sync import EnvSyncEngine
 from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngine
 from roboco.runtime.engines.rate_limit_probe import RateLimitProbeEngine
@@ -1362,6 +1363,7 @@ class AgentOrchestrator(
     DispatchPromptsEngine,
     DispatchRoutingEngine,
     DispatchWorkEngine,
+    EntireTrailsEngine,
     EnvSyncEngine,
     InteractiveSessionsEngine,
     RateLimitProbeEngine,
@@ -1725,6 +1727,7 @@ class AgentOrchestrator(
         self._vault_janitor_task: asyncio.Task | None = None
         self._vault_kb_task: asyncio.Task | None = None
         self._telegram_poll_task: asyncio.Task | None = None
+        self._entire_trails_task: asyncio.Task | None = None
 
     # =========================================================================
     # LIFECYCLE
@@ -1831,6 +1834,7 @@ class AgentOrchestrator(
         self._vault_janitor_task = asyncio.create_task(self._vault_janitor_loop())
         self._vault_kb_task = asyncio.create_task(self._vault_kb_loop())
         self._telegram_poll_task = asyncio.create_task(self._telegram_poll_loop())
+        self._entire_trails_task = asyncio.create_task(self._entire_trails_loop())
 
         logger.info(
             "Orchestrator started",
@@ -1934,6 +1938,7 @@ class AgentOrchestrator(
             self._vault_janitor_task,
             self._vault_kb_task,
             self._telegram_poll_task,
+            self._entire_trails_task,
         ):
             await self._cancel_background_task(task)
 

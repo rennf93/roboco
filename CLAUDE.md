@@ -156,6 +156,7 @@ If the orchestrator is pegged at high CPU and nobody can say why, profile it liv
 - `notifications-and-a2a.md`: re-escalation backoff, outbox + savepoint interaction
 - `agent-providers.md`: routing presets, Grok/Gemini/Codex/Kimi auth and tool-scoping
 - `autonomy-engines.md`: self-heal, CI-watch, dep-update, docs-sync, release manager, env-branch ladder
+- `entire-trails.md`: task trees mirrored onto Entire trails (one way, RoboCo canonical), what Entire 0.12.2 allows (a change never moves, link before the first PR, byte-identical retries), the outbox and its drain
 - `board-programs-and-x.md`: the fourteen Board Programs, X account posting rules
 - `sandbox.md`, `cloud-auth.md`, `conventions-standard.md`, `megatask.md`, `api-streams.md`, `doctrine-memory-eval.md`
 - `video-engine.md`, `obsidian-vault.md`, `telegram-bridge.md` (pre-existing)

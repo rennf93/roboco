@@ -27,6 +27,7 @@ from roboco.api.routes.coroner import router as coroner_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
 from roboco.api.routes.dogfood import router as dogfood_router
+from roboco.api.routes.entire import router as entire_router
 from roboco.api.routes.git import router as git_router
 from roboco.api.routes.github_app import router as github_app_router
 from roboco.api.routes.health import router as health_router
@@ -359,6 +360,26 @@ def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
     app.include_router(dogfood_router, prefix=f"{api_prefix}/dogfood", tags=["Dogfood"])
 
 
+def _mount_bridge_routers(app: FastAPI, api_prefix: str) -> None:
+    """The CEO surfaces of the server-side bridges to outside services.
+    Grouped to keep ``create_app``'s own statement count bounded (same
+    rationale as ``_mount_board_program_routers``)."""
+    # Telegram notifications bridge — CEO-managed bot-token + chat-id credentials
+    # (write-only); the fan-out itself runs server-side from the CEO producers.
+    app.include_router(
+        telegram_router,
+        prefix=f"{api_prefix}/telegram",
+        tags=["Telegram"],
+    )
+    # Entire trails bridge — the CEO's Entire token (write-only), the bridge's
+    # status and the retry of stopped operations; the bridge runs server-side.
+    app.include_router(
+        entire_router,
+        prefix=f"{api_prefix}/entire",
+        tags=["Entire"],
+    )
+
+
 def _mount_release_routers(app: FastAPI, api_prefix: str) -> None:
     """The release manager's CEO surface, singular and plural.
 
@@ -538,13 +559,7 @@ def create_app() -> FastAPI:
         tags=["TikTok"],
     )
 
-    # Telegram notifications bridge — CEO-managed bot-token + chat-id credentials
-    # (write-only); the fan-out itself runs server-side from the CEO producers.
-    app.include_router(
-        telegram_router,
-        prefix=f"{api_prefix}/telegram",
-        tags=["Telegram"],
-    )
+    _mount_bridge_routers(app, api_prefix)
     # Telegram Mini App sign-in — public, pre-auth; mounted only when both
     # telegram_miniapp_enabled and cloud_auth_enabled are armed — mirrors
     # mount_cloud_auth's conditional-mount pattern above. Off (either flag):

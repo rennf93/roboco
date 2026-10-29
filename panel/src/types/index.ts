@@ -1171,6 +1171,9 @@ export interface Project {
   ci_watch_enabled: boolean;
   ci_watch_workflow: string | null;
   video_engine_enabled: boolean;
+  // Mirror this project's task trees onto Entire trails (needs
+  // ROBOCO_ENTIRE_TRAILS_ENABLED and an Entire token; GitHub projects only).
+  entire_trails_enabled: boolean;
   dep_update_command: string | null;
   dep_update_paths: string[] | null;
   // Calendar-month cap on summed agent-spawn spend across this project's
@@ -1247,6 +1250,7 @@ export interface ProjectUpdate {
   ci_watch_enabled?: boolean;
   ci_watch_workflow?: string;
   video_engine_enabled?: boolean;
+  entire_trails_enabled?: boolean;
   dep_update_command?: string;
   dep_update_paths?: string[];
   // null clears the cap (no cap); omitted leaves unchanged.

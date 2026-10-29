@@ -48,6 +48,9 @@ export function BudgetOpsCard({ project }: { project: Project }) {
   const [videoEngineEnabled, setVideoEngineEnabled] = useState(
     project.video_engine_enabled,
   );
+  const [entireTrailsEnabled, setEntireTrailsEnabled] = useState(
+    project.entire_trails_enabled,
+  );
   const [depUpdateCommand, setDepUpdateCommand] = useState(
     project.dep_update_command || "",
   );
@@ -88,6 +91,7 @@ export function BudgetOpsCard({ project }: { project: Project }) {
     ciWatchEnabled !== project.ci_watch_enabled ||
     ciWatchWorkflow !== (project.ci_watch_workflow || "") ||
     videoEngineEnabled !== project.video_engine_enabled ||
+    entireTrailsEnabled !== project.entire_trails_enabled ||
     depUpdateCommand !== (project.dep_update_command || "") ||
     depUpdatePaths !== (project.dep_update_paths || []).join(", ") ||
     !sameStringSet(boardProgramsSet, originalBoardPrograms);
@@ -109,6 +113,7 @@ export function BudgetOpsCard({ project }: { project: Project }) {
       ci_watch_enabled: ciWatchEnabled,
       ci_watch_workflow: ciWatchWorkflow || undefined,
       video_engine_enabled: videoEngineEnabled,
+      entire_trails_enabled: entireTrailsEnabled,
       dep_update_command: depUpdateCommand || undefined,
       dep_update_paths: depUpdatePaths.trim()
         ? depUpdatePaths
@@ -215,6 +220,19 @@ export function BudgetOpsCard({ project }: { project: Project }) {
             id="video_engine_enabled"
             checked={videoEngineEnabled}
             onCheckedChange={setVideoEngineEnabled}
+          />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <HelpTip label="Mirrors this project's task trees onto Entire trails: plans, branches, review findings and your approvals show on entire.com. GitHub projects only; also needs Entire trails armed fleet-wide (Settings -> Feature Flags) with a token. A public repository's trails show its plans and findings, so opt in deliberately. Trees already running keep Entire's own per-PR trails.">
+            <Label htmlFor="entire_trails_enabled">
+              Entire trails (mirror task trees onto Entire)
+            </Label>
+          </HelpTip>
+          <Switch
+            id="entire_trails_enabled"
+            checked={entireTrailsEnabled}
+            onCheckedChange={setEntireTrailsEnabled}
           />
         </div>
 

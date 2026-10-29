@@ -1,0 +1,22 @@
+Update project intent and lifecycle
+
+Usage:
+  entire trail update [<trail>] [flags]
+
+Flags:
+      --add-assignee strings      Add assignee logins
+      --assignee strings          Assignee logins; replaces the complete list (--assignee= clears it)
+      --body string               Trail description (--body= clears it on update)
+      --branch string             Discover the project trail through this repository branch (defaults to current branch when no trail is given)
+  -h, --help                      help for update
+      --json                      Output raw JSON instead of a table
+      --priority string           Priority (urgent, high, medium, low, none)
+      --remove-assignee strings   Remove assignee logins
+      --status string             Lifecycle status (open, closed)
+      --title string              Trail title
+      --type string               Type (bug, feature, task)
+
+Global Flags:
+      --context name     Act as this saved login name for this command only — including the git and agent processes it spawns — instead of the active context (entire auth contexts lists them)
+      --project string   Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace
+      --repo string      Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project

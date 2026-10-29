@@ -82,6 +82,7 @@ from roboco.services.base import (
     ValidationError,
 )
 from roboco.services.content_notes import apply_structured_note
+from roboco.services.entire_trails import hooks as entire_trails
 from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.uptime import UptimeLedger
 from roboco.services.work_session import WorkSessionService
@@ -3492,6 +3493,17 @@ class TaskService(BaseService):
             # (F123). Best-effort, no-op if the worktree was never created.
             await self._remove_task_worktree(workspace, require_uuid(task.id))
             raise
+
+        # Entire trails: start the tree's trail / queue this branch's link, in
+        # this claim's transaction (a no-op unless the project is bridged).
+        await entire_trails.branch_created(
+            self.session,
+            task,
+            project,
+            entire_trails.BranchCut(
+                name=branch_name, base=actual_base, claimed_by=agent_id
+            ),
+        )
 
         # Best-effort, never fails the claim: backfill dependency content
         # outside this branch's own ancestor chain (the cross-subtree/
@@ -8400,7 +8412,9 @@ class TaskService(BaseService):
             # shared session on a mid-flush failure — every completion
             # side-effect below (and the caller's eventual commit) reuses it.
             async with self.session.begin_nested():
-                await stamp_addressed_verified(self.session, task_id, origin="ceo")
+                await stamp_addressed_verified(
+                    self.session, task_id, origin="ceo", verified_by="ceo"
+                )
         except Exception as exc:
             self.log.warning(
                 "ceo-origin findings verify-stamp failed (best-effort)",

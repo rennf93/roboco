@@ -39,6 +39,11 @@ if TYPE_CHECKING:
 # GitHub REST API version pinned via header on every versioned call — mirrors
 # git.py's prior inline headers exactly.
 _API_VERSION = "2022-11-28"
+# GitHub's REST API cannot take a pull request out of draft; GraphQL can.
+_MARK_READY_MUTATION = (
+    "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id})"
+    " { pullRequest { isDraft } } }"
+)
 _DEFAULT_ACCEPT = "application/vnd.github+json"
 
 # Transient-failure retry policy for the CI-runs list — GitHub Actions is
@@ -79,6 +84,14 @@ class GitHubProvider(GitProvider):
 
     def _api_base(self) -> str:
         return self._base_url_override or _settings_api_base()
+
+    def _graphql_url(self) -> str:
+        """``/graphql`` beside the REST root: api.github.com/graphql, or a
+        GitHub Enterprise Server's /api/graphql for its /api/v3."""
+        base = self._api_base()
+        if base.endswith("/api/v3"):
+            return f"{base.removesuffix('/v3')}/graphql"
+        return f"{base}/graphql"
 
     def _repo_url(self, repo: RepoRef, *segments: str) -> str:
         base = f"{self._api_base()}/repos/{repo.owner}/{repo.repo}"
@@ -210,6 +223,19 @@ class GitHubProvider(GitProvider):
             self._repo_url(repo, "pulls", str(pr_number)),
             headers=headers,
             json_body=payload,
+        )
+
+    async def mark_pr_ready_for_review(
+        self, repo: RepoRef, token: str, pr_node_id: str
+    ) -> httpx.Response:
+        """GraphQL ``markPullRequestReadyForReview``. GraphQL reports a
+        refused mutation as 200 with an ``errors`` list: callers check both."""
+        _ = repo
+        return await self._send(
+            "post",
+            self._graphql_url(),
+            headers=self._headers(token),
+            json_body={"query": _MARK_READY_MUTATION, "variables": {"id": pr_node_id}},
         )
 
     async def merge_pr(

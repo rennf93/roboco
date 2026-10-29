@@ -32,6 +32,7 @@ import {
 import { XCredentialsForm } from "@/components/settings/x-credentials-card";
 import { TikTokCredentialsForm } from "@/components/settings/tiktok-credentials-card";
 import { TelegramCredentialsForm } from "@/components/settings/telegram-credentials-card";
+import { EntireTrailsForm } from "@/components/settings/entire-trails-form";
 import { HelpTip } from "@/components/ui/help-tip";
 import { cn } from "@/lib/utils";
 import { Flag, ChevronDown, ChevronRight } from "lucide-react";
@@ -69,6 +70,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Routes infra tasks to the floating DevOps agent (devops-1): PM delegation + board materialization pre-assignment spawn it, and it authors through the normal developer lifecycle (PR before QA). Off by default: the agent is seeded but inert: nothing spawns it.",
   entire_enabled:
     "Records each agent's Claude Code session with Entire (entire.io) so every task commit carries a redacted transcript checkpoint, pushed with the branch to the project's own repository: anyone who can read that repository can read the transcripts. Off by default: Entire's hooks do nothing in agent containers and RoboCo runs none for their commits.",
+  entire_trails_enabled:
+    "Mirrors the task trees of opted-in GitHub projects onto Entire trails: the root's plan is the trail, every branch a change, review findings trail findings, your approval a trail approval. RoboCo stays canonical and keeps merging. Needs an Entire token below and a per-project opt-in on each project's settings page; off by default, so nothing reaches Entire.",
   rag_auto_update_enabled:
     "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled:
@@ -155,6 +158,8 @@ const FLAG_TOOLTIPS: Record<string, string> = {
     "Spawns the floating DevOps agent (devops-1) for assigned infra work.",
   entire_enabled:
     "Attaches each agent's redacted session transcript to its commits.",
+  entire_trails_enabled:
+    "Mirrors opted-in projects' task trees onto Entire trails.",
   rag_auto_update_enabled:
     "Keeps the RAG knowledge index automatically refreshed.",
   transcript_prune_enabled:
@@ -207,6 +212,7 @@ export function FeatureFlagsCard() {
   const [xCredsOpen, setXCredsOpen] = useState(false);
   const [tiktokCredsOpen, setTiktokCredsOpen] = useState(false);
   const [telegramCredsOpen, setTelegramCredsOpen] = useState(false);
+  const [entireTrailsOpen, setEntireTrailsOpen] = useState(false);
   // Off-transition awaiting operator confirm. Null = no dialog open.
   const [confirmFlag, setConfirmFlag] = useState<FeatureFlag | null>(null);
   // Every in-flight toggle key — added on mutate, removed on settle. Tracks
@@ -279,12 +285,14 @@ export function FeatureFlagsCard() {
             const isXEngine = flag.key === "x_engine_enabled";
             const isVideoEngine = flag.key === "video_engine_enabled";
             const isTelegram = flag.key === "telegram_enabled";
+            const isEntireTrails = flag.key === "entire_trails_enabled";
             return (
               <div
                 key={flag.key}
                 className={cn(
                   "rounded-lg border p-4",
-                  (isXEngine || isVideoEngine || isTelegram) && "md:col-span-2",
+                  (isXEngine || isVideoEngine || isTelegram || isEntireTrails) &&
+                    "md:col-span-2",
                 )}
               >
                 <div className="flex items-start justify-between gap-4">
@@ -401,6 +409,33 @@ export function FeatureFlagsCard() {
                     </CollapsibleTrigger>
                     <CollapsibleContent className="pt-3">
                       <TelegramCredentialsForm />
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+                {isEntireTrails && (
+                  <Collapsible
+                    open={entireTrailsOpen}
+                    onOpenChange={setEntireTrailsOpen}
+                    className="mt-3"
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-between px-2 text-muted-foreground"
+                      >
+                        <HelpTip label="The token and queue only matter once entire_trails_enabled above is on and a project has opted in.">
+                          <span className="text-sm">Entire token and queue</span>
+                        </HelpTip>
+                        {entireTrailsOpen ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-3">
+                      <EntireTrailsForm />
                     </CollapsibleContent>
                   </Collapsible>
                 )}

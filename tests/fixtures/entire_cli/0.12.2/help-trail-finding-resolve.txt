@@ -1,0 +1,15 @@
+Resolve a finding
+
+Usage:
+  entire trail finding resolve [<trail>] <finding-id> [flags]
+
+Flags:
+  -h, --help             help for resolve
+  -m, --message string   Status reason to record
+
+Global Flags:
+      --branch string    Select a repository branch within the trail
+      --context name     Act as this saved login name for this command only — including the git and agent processes it spawns — instead of the active context (entire auth contexts lists them)
+      --project string   Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace
+      --repo string      Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project
+      --trail string     Project trail number, ID, or <repo>/<number> (defaults to the current branch's parent)

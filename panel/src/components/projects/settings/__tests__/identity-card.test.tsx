@@ -104,6 +104,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     ci_watch_enabled: false,
     ci_watch_workflow: null,
     video_engine_enabled: false,
+    entire_trails_enabled: false,
     dep_update_command: null,
     dep_update_paths: null,
     monthly_budget_usd: null,

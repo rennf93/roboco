@@ -21,7 +21,7 @@ from uuid import UUID
 import structlog
 
 from roboco.exceptions import MergeConflictError
-from roboco.foundation.identity import Team
+from roboco.foundation.identity import Team, slug_for_uuid_or_none
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.batch import is_batch_root_subtask, is_batch_umbrella
 from roboco.foundation.policy.content import (
@@ -9122,7 +9122,10 @@ class Choreographer:
             # cleanly reaching the PM.
             async with self.task.session.begin_nested():
                 await findings_lib.stamp_addressed_verified(
-                    self.task.session, t.id, origin="pm"
+                    self.task.session,
+                    t.id,
+                    origin="pm",
+                    verified_by=slug_for_uuid_or_none(agent_id),
                 )
         except Exception as exc:
             return await self._emit_rejection(
