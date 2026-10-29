@@ -47,8 +47,6 @@ on:
       # Slave carries docs/panel-only commits too; the release gate needs a
       # verdict on every head, so cover what actually lands there.
       - 'panel/**'
-      - 'CLAUDE.md'
-      - 'CHANGELOG.md'
       - 'docs/**'
       # `make quality`'s prose gate lints motion/**, so a motion-only commit
       # can still turn the gate red — without this it fires no run and a PR
@@ -58,6 +56,16 @@ on:
       # tip fired no run, and the fail-closed release gate read the missing
       # conclusion as "unknown" — silently blocking every release proposal.
       - 'docs-redirects/**'
+      # The prose gate (scripts/reflow_md.py) also reads every root-level
+      # Markdown file (AGENTS.md, README.md, ...) and .github's templates,
+      # ruff lints .github/scripts/, and vulture reads vulture_whitelist.py.
+      # A commit touching only one of those fired no run, so a gate it broke
+      # stayed unseen until some later run. tests/unit/test_ci_workflow_paths.py
+      # fails when a gate input falls outside these paths.
+      - '*.md'
+      - '.github/**.md'
+      - '.github/scripts/**'
+      - 'vulture_whitelist.py'
   pull_request:
     branches:
       - master
@@ -94,11 +102,13 @@ on:
       # PR touching only these (panel/docs-only, motion-only, ...) still
       # fires CI instead of merging on a false "no checks required" green.
       - 'panel/**'
-      - 'CLAUDE.md'
-      - 'CHANGELOG.md'
       - 'docs/**'
       - 'motion/**'
       - 'docs-redirects/**'
+      - '*.md'
+      - '.github/**.md'
+      - '.github/scripts/**'
+      - 'vulture_whitelist.py'
   workflow_dispatch:
 
 # A fleet branch that's also an open PR head can get both a `push` and a
