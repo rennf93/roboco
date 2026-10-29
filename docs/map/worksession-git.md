@@ -243,7 +243,8 @@ roboco/
 │           ├── PR context: _build_root_pr_context / _build_internal_pr_context / _generate_pr_title_body
 │           ├── PR list/find: _find_existing_pr / list_open_prs / _fetch_open_prs / _normalize_open_pr
 │           ├── PR create: create_pull_request / create_pr_for_task / create_pr (branch-keyed)
-│           ├── PR update/review: update_pr_for_task / post_pr_review / _patch_pr_title_body
+│           ├── PR update/review: update_pr_for_task / post_pr_review / _patch_pr_title_body (keeps Entire's PR-body markers)
+│           ├── Entire trails: create_pr links the branch first (link_before_pr); a 422 'already exists' PR Entire opened is adopted (_adopt_entire_pr: RoboCo's title/body, markers kept, un-drafted via _mark_pr_ready / forge.mark_pr_ready_for_review GraphQL); merge_pr_for_task mirrors the CEO's approval first (approve_before_merge)
 │           ├── PR read: get_pr_diff / get_pr_head_sha / pr_target
 │           ├── CI: get_latest_ci_conclusion / _get_ci_runs_response / _fetch_latest_ci_run
 │           ├── merge: merge_pull_request / merge_pr_for_task / pr_merge / _merge_with_retry
