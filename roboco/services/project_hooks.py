@@ -22,8 +22,8 @@ RoboCo runs itself (``roboco.services.entire_hooks``), between ``pre-commit``
 and ``commit-msg`` as git would. A non-zero exit refuses the commit or push
 with the hook's output, as git does; so does a hook that could not be run at
 all (the container did not start): a check that did not run is not a pass.
-``--no-verify`` skips them, as with git. Each hook gets the time budget of
-the git command it gates.
+``--no-verify`` skips them, as with git. The commit hooks get the commit's
+own time budget; ``pre-push`` gets ``project_hook_push_timeout_seconds``.
 """
 
 from __future__ import annotations

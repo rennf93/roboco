@@ -2209,6 +2209,17 @@ class Settings(BaseSettings):
             "tree, so the commit choreography uses this longer budget."
         ),
     )
+    project_hook_push_timeout_seconds: int = Field(
+        default=240,
+        ge=30,
+        description=(
+            "Time a project's own pre-push hook may run (in the throwaway "
+            "container) before RoboCo pushes for an agent; past it the push is "
+            "refused. Projects run their test suites there. It has to fit, "
+            "with the quality gate (up to 600 s), inside i_am_done's "
+            "flow_verb_slow_timeout_seconds wall (900 s)."
+        ),
+    )
     git_network_timeout_seconds: int = Field(
         default=120,
         ge=30,

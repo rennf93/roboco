@@ -595,13 +595,15 @@ class GitService(BaseService):
             return args, None
         if args[0] == "commit":
             return await run_commit_hooks(workspace, args, timeout=timeout)
-        return args, await self._run_pre_push_hook(workspace, args, timeout)
+        return args, await self._run_pre_push_hook(workspace, args)
 
     async def _run_pre_push_hook(
-        self, workspace: Path, args: list[str], timeout: int
+        self, workspace: Path, args: list[str]
     ) -> subprocess.CompletedProcess[str] | None:
         """``pre-push origin <url>`` with git's one-line input, when the
-        project has one; None when there is none or it passed."""
+        project has one; None when there is none or it passed. It gets its
+        own budget (``project_hook_push_timeout_seconds``): projects run
+        their test suites there, far past a push's network timeout."""
         if skips_hooks(args) or not is_origin_command(args):
             return None
         hook = await find_project_hook(workspace, "pre-push")
@@ -618,7 +620,7 @@ class GitService(BaseService):
             workspace,
             hook,
             ["origin", relay.git_url],
-            timeout=timeout,
+            timeout=settings.project_hook_push_timeout_seconds,
             stdin=" ".join(update) + "\n",
         )
 

@@ -30,6 +30,8 @@ from tests.unit.local_origin_relay import serve_origin_through_relay
 
 _SUPPORT = Path(__file__).parents[2] / "docker" / "git-support"
 _ZERO_SHA = "0" * 40
+_PRE_PUSH_BUDGET = 240
+_PUSH_TIMEOUT = 120
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -53,7 +55,9 @@ class _Runner:
         env: dict[str, str] | None = None,
         merge_stderr: bool = False,
     ) -> WorkspaceContainerResult:
-        self.calls.append({"cwd": cwd, "argv": argv, "env": env or {}})
+        self.calls.append(
+            {"cwd": cwd, "argv": argv, "env": env or {}, "timeout": timeout}
+        )
         done = subprocess.run(
             argv,
             cwd=cwd,
@@ -207,6 +211,23 @@ async def test_pre_push_gets_gits_arguments_and_input(ws: Path, tmp_path: Path) 
     )
     assert _git(tmp_path / "origin.git", "rev-parse", "feature/x") == local_sha
     assert not list((ws / ".git").glob("roboco-*.stdin"))
+
+
+@pytest.mark.asyncio
+async def test_pre_push_gets_its_own_budget_not_the_pushs(
+    ws: Path, runner: _Runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "project_hook_push_timeout_seconds", _PRE_PUSH_BUDGET)
+    _hook(ws, "pre-push", "exit 0")
+    _git(ws, "checkout", "-q", "-b", "feature/z")
+    await _commit(ws, "feature")
+
+    await GitService(MagicMock())._run_git(
+        ws, ["push", "-u", "origin", "feature/z"], timeout=_PUSH_TIMEOUT
+    )
+
+    (call,) = runner.calls
+    assert call["timeout"] == _PRE_PUSH_BUDGET
 
 
 @pytest.mark.asyncio
