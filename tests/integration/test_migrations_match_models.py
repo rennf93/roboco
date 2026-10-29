@@ -8,15 +8,12 @@ way, in indexes and unique keys a query or an ``ON CONFLICT`` relies on.
 
 This builds a fresh database with ``alembic upgrade head`` (the path every
 deployed database takes) and fails on any difference alembic's autogenerate
-comparison reports, with ``compare_type`` on as in ``alembic/env.py``. It also
+comparison reports, with ``compare_type`` and ``compare_server_default`` on
+as in ``alembic/env.py`` (so ``make migration`` would propose nothing). It also
 compares which indexes are partial, since autogenerate ignores an index's
 WHERE clause (the predicate's text is not compared). The SAWarning about the
 agents/products/projects/tasks/work_sessions foreign-key cycle concerns only
 the order tables are walked in; their foreign keys are still compared.
-
-Server defaults are not compared yet: many migrations set column defaults
-that the models leave to a Python-side ``default=``, and reconciling those
-is a separate change.
 
 On a difference, fix the side that is wrong: the model when the migration
 built what the code needs, or a new migration when the model is right.
@@ -117,7 +114,9 @@ async def migrated_database_url() -> AsyncIterator[str]:
 
 
 def _autogenerate_differences(connection: Connection) -> list[Any]:
-    context = MigrationContext.configure(connection, opts={"compare_type": True})
+    context = MigrationContext.configure(
+        connection, opts={"compare_type": True, "compare_server_default": True}
+    )
     return list(compare_metadata(context, Base.metadata))
 
 
