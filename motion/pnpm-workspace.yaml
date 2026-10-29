@@ -1,8 +1,24 @@
+# Each value must be true or false: pnpm 11 fails `pnpm install` (and so
+# `pnpm test`) on any other value. None of these scripts is needed by
+# `pnpm test`, `pnpm lint` or `pnpm preview`, so none runs: esbuild loads its
+# prebuilt platform package, onnxruntime-node's script only downloads CUDA
+# binaries, and the other two are a version check and a no-op. (sharp left the
+# list at 0.35, which dropped its install script.)
 allowBuilds:
-  '@google/genai': set this to true or false
-  esbuild: set this to true or false
-  onnxruntime-node: set this to true or false
-  protobufjs: set this to true or false
-  sharp: set this to true or false
+  '@google/genai': false
+  esbuild: false
+  onnxruntime-node: false
+  protobufjs: false
+# hyperframes is pinned to the 0.7.36 the video-renderer renders with, and its
+# own ranges stop short of these fixes, so they are lifted here.
 overrides:
-  adm-zip: '>=0.6.0'
+  # adm-zip 0.6.1 fixes GHSA-7q85-xj36-vmfc, GHSA-j5f4-cc29-5x44,
+  # GHSA-p634-w6r4-rjp2 and GHSA-vwc7-r8mq-g2x9 (hyperframes asks for ^0.5.16).
+  adm-zip: ^0.6.1
+  # get-uri still asks for basic-ftp ^5; 6.2.1+ fixes GHSA-c475-qrg2-pj4r and
+  # keeps the 5.x client API.
+  basic-ftp: ^6.2.3
+  # hyperframes asks for sharp ^0.34.5; 0.35.5 carries the libvips, libheif and
+  # librsvg fixes. hyperframes only calls metadata, resize and composite, which
+  # 0.35 leaves unchanged.
+  sharp: ^0.35.5
