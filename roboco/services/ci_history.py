@@ -81,12 +81,17 @@ async def record_runs(session: Any, samples: list[Any], workflow: str | None) ->
     if not rows:
         return 0
     try:
+        # RETURNING lists only the rows actually inserted; a bulk insert's
+        # result carries no rowcount.
         result = await session.execute(
-            insert(CiRunTable).on_conflict_do_nothing(index_elements=_DEDUP_ELEMENTS),
+            insert(CiRunTable)
+            .on_conflict_do_nothing(index_elements=_DEDUP_ELEMENTS)
+            .returning(CiRunTable.id),
             rows,
         )
+        inserted = len(result.all())
         await session.commit()
-        return int(result.rowcount or 0)
+        return inserted
     except Exception as exc:
         logger.debug("ci history write skipped", error=str(exc))
         return 0

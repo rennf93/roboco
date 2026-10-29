@@ -57,8 +57,8 @@ async def test_a_reading_seen_on_two_sweeps_is_stored_once(
     """None is the ci-watch engine's workflow; a name is self-heal's."""
     red = _sample("2026-10-29T10:00:00Z", failed=True)
 
-    await record_runs(db_session, [red], workflow=workflow)
-    await record_runs(db_session, [red], workflow=workflow)
+    assert await record_runs(db_session, [red], workflow=workflow) == 1
+    assert await record_runs(db_session, [red], workflow=workflow) == 0
 
     assert await _stored_rows(db_session) == 1
 
@@ -97,6 +97,25 @@ async def test_distinct_readings_are_each_stored(db_session: AsyncSession) -> No
         (_PROJECT, None, "2026-10-29T11:00:00Z"),
         ("other-proj", None, "2026-10-29T10:00:00Z"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_record_runs_returns_the_rows_it_inserted(
+    db_session: AsyncSession,
+) -> None:
+    """The count the write reports is the rows that landed, not a failure
+    swallowed after the commit."""
+    first_sweep = [
+        _sample("2026-10-29T10:00:00Z", failed=True),
+        _sample("2026-10-29T11:00:00Z", failed=False),
+        _sample("2026-10-29T10:00:00Z", failed=True, project="other-proj"),
+    ]
+    second_sweep = [first_sweep[1], _sample("2026-10-29T12:00:00Z", failed=False)]
+
+    first = await record_runs(db_session, first_sweep, workflow=None)
+    second = await record_runs(db_session, second_sweep, workflow=None)
+
+    assert (first, second) == (len(first_sweep), 1)
 
 
 @pytest.mark.asyncio
