@@ -359,8 +359,9 @@ html, body {
 
 /* An enter+exit pair for a pill being swapped out (e.g. progress -> another
  * status). Apply alongside a variant class; delays are set per-instance via
- * --pk-pill-enter-delay / --pk-pill-exit-delay (composition-absolute
- * seconds, same convention as every other animation-delay in this house). */
+ * --pk-pill-enter-delay / --pk-pill-exit-delay, counted like every other
+ * animation-delay from the data-start of the nearest element that carries
+ * one (motion/README.md, "The animation clock"). */
 .pk-pill--swap-out {
   opacity: 0;
   transform: translateY(6px);

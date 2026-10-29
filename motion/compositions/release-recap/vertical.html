@@ -63,7 +63,11 @@
       }
 
       /* ---- Panel chrome: labeled sidebar mirroring the real panel -------- */
-      .pk-frame { animation-delay: 3.2s; }
+      /* The frame clip starts at 0 like every structural layer, so this
+         delay is composition time. 6.4s keeps the cut as shipped (the clip
+         used to start at 3.2s with a 3.2s delay, which ran at 6.4s);
+         moving the entrance to 3.2s is a separate, visible change. */
+      .pk-frame { animation-delay: 6.4s; }
       .pk-frame__sidebar {
         width: 250px;
         align-items: stretch;
@@ -148,8 +152,8 @@
       @keyframes rc-stats-out { to { opacity: 0; } }
 
       /* Cursor: base-hidden + a delayed animation, per motion/README.md's
-         clip-window rule (the renderer's per-clip scheduler drifts on long
-         compositions - beats never carry the clip class). kit.css's
+         animation clock rule (beats carry no data-start of their own, so
+         every delay is composition time). kit.css's
          single-glide --pk-cursor-x0/x1 API has no opacity component of its
          own, so fold a fade into a local copy of its glide keyframe rather
          than touching kit.css. */
@@ -205,7 +209,7 @@
       </div>
 
       <!-- Beat 2: the panel assembles - labeled sidebar like the real UI. -->
-      <div class="pk-frame clip" data-start="3.2" data-duration="14.8" data-track-index="1">
+      <div class="pk-frame clip" data-start="0" data-duration="18" data-track-index="1">
         <aside class="pk-frame__sidebar">
           <div class="rc-side__logo"><img src="../../public/roboco-logo.png" alt="" /></div>
           <div class="rc-nav">Overview</div>
@@ -221,7 +225,7 @@
         <header class="pk-frame__topbar">
           <div class="pk-frame__search">Search tasks, agents...</div>
           <div class="rc-user">
-            <div class="pk-frame__status clip" data-start="3.2" data-duration="14.8" data-track-index="0">
+            <div class="pk-frame__status clip" data-start="0" data-duration="18" data-track-index="0">
               <span class="pk-frame__statusdot"></span>
               <span>Live</span>
             </div>
@@ -231,7 +235,7 @@
 
         <div class="pk-frame__content">
           <!-- Beat 3: the recap line types into intake. Base-hidden +
-               delayed animation (motion/README.md's clip-window rule) -
+               delayed animation (motion/README.md's animation clock rule) -
                pk-intake's own kit.css entrance already owns this. -->
           <div class="pk-intake" style="animation-delay: 4.2s;">
             <div class="pk-intake__label">New task</div>
@@ -241,7 +245,7 @@
           <!-- Beat 4: three releases stack and accumulate, each with a
                one-line explainer; each flips completed as the next ships.
                Base-hidden + animation-delay per motion/README.md's
-               clip-window rule - never the clip class on a beat. Pills reuse
+               animation clock rule - never a data-start on a beat. Pills reuse
                kit.css's pk-pill--swap-out/-in, which already own their own
                enter+exit via --pk-pill-enter-delay/--pk-pill-exit-delay. -->
           <div class="pk-column">
@@ -285,7 +289,7 @@
           </div>
 
           <!-- One cursor, one glide, one click at the newest pill's edge.
-               Base-hidden + a delayed animation (clip-window rule); see the
+               Base-hidden + a delayed animation (animation clock rule); see the
                local .pk-cursor override in <style> above for the fade. -->
           <div class="pk-cursor" style="--pk-cursor-delay: 11s; --pk-cursor-x0: 700px; --pk-cursor-y0: 500px; --pk-cursor-x1: 240px; --pk-cursor-y1: 1210px;">
             <div class="pk-cursor__glyph"></div>

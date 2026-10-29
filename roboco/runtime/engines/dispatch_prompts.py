@@ -582,8 +582,13 @@ Craft bar (motion/README.md "Cinematography & rhythm"): storyboard a shot
 list before building — camera moves (pk-camera data-shots) and a cursor
 that behaves like a hand (pk-cursor data-waypoints). A locked-off camera,
 a frozen or popping cursor, or metronomic identical beats are automatic
-revision. Clip windows are for structural layers ONLY — drive beats with
-base-hidden delayed CSS animations, or the renderer drops your tail scenes.
+revision. Animation clock: a CSS animation's clock starts at the
+data-start of the nearest element that carries one (the element itself
+included), and animation-delay counts from there. Clips that hold beats
+start at 0 and run the full duration; a layer that appears later gets its
+entrance from animation-delay, not data-start; never give one element both
+data-start and a composition-time delay (they add: 2.6 + 2.6s = 5.2s).
+motion/compositions/animation-clock.test.js (pnpm test) enforces it.
 Read the vendored renderer doctrine in motion/skills/ (hyperframes-core,
 -keyframes, -creative) before authoring. You have browser tools (playwright
 MCP) on this task: open your composition HTML (file://.../vertical.html)

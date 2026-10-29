@@ -88,13 +88,17 @@ _OCCASION_LOCK_PREFIX = "roboco:video_engine:occasion:"
 _OCCASION_LOCK_TTL_SECONDS = 60  # the check+insert completes in ms; crash backstop
 
 # Shared by every open_video_task caller (release/spotlight/on-demand) so the
-# authoring dev always lands on the demo kit instead of a text card.
+# authoring dev always lands on the demo kit instead of a text card. The
+# template is release-0.28.0, not panel-demo: panel-demo's beats still double
+# their start (motion/README.md, "The animation clock"), so copying it fails
+# compositions/animation-clock.test.js.
 _MOTION_DESIGN_POINTER = (
     "Before authoring: read motion/README.md's design bar and motion/kit/"
-    "README.md. Build in the panel-demo register on motion/kit/ — extend "
-    "compositions/panel-demo/ rather than starting from scratch or shipping "
-    "a text card. Before submitting: call request_render and read every "
-    "returned frame to verify the RENDERED cut, not just the source."
+    "README.md. Build in the panel-demo register on motion/kit/ — model the "
+    "composition on compositions/release-0.28.0/ rather than starting from "
+    "scratch or shipping a text card. Before submitting: call request_render "
+    "and read every returned frame to verify the RENDERED cut, not just the "
+    "source."
 )
 
 
