@@ -154,6 +154,14 @@ select = [
     "RUF",    # Ruff-specific
 ]
 
+# Pydantic resolves a model's field annotations at runtime, even under
+# `from __future__ import annotations`, so an import used only in one (e.g.
+# `task_id: UUID`) must stay a real import. Naming the base class here stops
+# flake8-type-checking (TC001-TC003) from asking to move such an import into a
+# TYPE_CHECKING block.
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+
 # Lazy imports to avoid circular dependencies
 [tool.ruff.lint.per-file-ignores]
 # MCP tool surfaces ARE the LLM-facing contract — every parameter must be
@@ -215,6 +223,12 @@ select = [
 # (task_id, assignee, completed_dependency_id, from_agent, to_ceo, db_session) —
 # db_session is the caller's session for event-loop-safe notification creation.
 "roboco/services/notification.py" = ["PLR0913"]
+# duplicate_unacked_notification_exists is the one purpose-dedup query both
+# notification create paths share: primitive-typed (db, sender, type, task,
+# recipients) because NotificationDeliveryService holds no params object, plus
+# the optional subject/body pair that opts into the Decisions semantic screen.
+# Same >5-kwarg rationale as roboco/services/notification.py above.
+"roboco/services/notification_dedup.py" = ["PLR0913"]
 # record_decision carries the LEARN-write contract (program_key, item_ref,
 # verdict, reason, exploration_task_id, item_payload) shared by every one of
 # its ~10 per-program callers; bundling would just relocate the same named
@@ -264,6 +278,11 @@ select = [
 # `agent: CurrentAgentContext`) can't be deferred into TYPE_CHECKING without
 # breaking route registration.
 "roboco/api/routes/*.py" = ["PLC0415", "PLR0913", "TC001", "TC003"]
+# ARG001: preview_live_batch declares the `session_id` path parameter it never
+# reads (the preview is a pure precompute). Every sibling `/live/{session_id}/*`
+# handler in the file declares it, and FastAPI documents a path parameter in
+# the OpenAPI operation only when the handler declares it.
+"roboco/api/routes/prompter_live.py" = ["ARG001"]
 # deps.py is the DI wiring hub; it defers a few service imports to call time
 # to avoid import cycles with the modules it wires (same rationale as above).
 # get_agent_context's dual-path helpers carry the same header/cookie contract
@@ -378,6 +397,11 @@ select = [
 # the api and dispatcher roles never pay for the KB worker's import graph at
 # process start.
 "roboco/bootstrap.py" = ["PLC0415"]
+# shipped_work_digest defers its DB-table and service imports to call time:
+# roboco/utils/__init__.py re-exports it, so top-level imports would load the
+# workspace and release-readiness service graph into every importer of
+# roboco.utils.
+"roboco/utils/shipped_work_digest.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior.
 # ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
 # for mypy's override check, so unused override-stub args can't be renamed.
@@ -406,7 +430,7 @@ select = [
 # OpenRouter CLI usage test: _step_finish carries the full 4-bucket token shape
 # (input, output, reasoning, cache_read, cache_write, cost) — the same named
 # fields the event carries, not reducible to fewer without dropping a bucket.
-"tests/unit/llm/providers/test_openrouter_cli_usage.py" = ["PLR0913", "PLR2004"]
+"tests/unit/llm/providers/test_openrouter_cli_usage.py" = ["PLR0913"]
 # Config test renders opencode.json inside a temp dir — tempfile imports are
 # deferred to the test bodies that need them.
 "tests/unit/llm/providers/test_openrouter_cli_config.py" = ["PLC0415"]
@@ -418,7 +442,11 @@ select = [
 # same rule relaxations apply for the same reasons (usage 4-bucket event
 # shape, deferred tempfile imports in the config-render tests, the
 # spawn-config contract kwarg count).
-"tests/unit/llm/providers/test_nebius_cli_usage.py" = ["PLR0913", "PLR2004"]
+"tests/unit/llm/providers/test_nebius_cli_usage.py" = ["PLR0913"]
+# The CLI usage-parser tests (one per provider) pin exact token, cost and
+# exit-code arithmetic, e.g. two turns of 1000 and 500 input tokens must sum to
+# 1500. The literal is the specification there, so PLR2004 does not fit them.
+"tests/unit/llm/providers/test_*_cli_usage.py" = ["PLR2004"]
 "tests/unit/llm/providers/test_nebius_cli_config.py" = ["PLC0415"]
 "tests/unit/llm/providers/test_nebius_provider.py" = ["PLR0913"]
 

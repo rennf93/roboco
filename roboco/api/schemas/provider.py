@@ -12,13 +12,13 @@ Minimal surface that backs the Settings UI:
 
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003  (pydantic needs the type at runtime)
+from datetime import datetime
 from typing import TYPE_CHECKING, Literal
-from uuid import UUID  # noqa: TC003  (pydantic needs the type at runtime)
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from roboco.models.base import AssignmentScope, ModelProvider  # noqa: TC001
+from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:

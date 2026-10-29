@@ -7,7 +7,7 @@ models live with the other API schemas (architectural-conventions placement).
 from __future__ import annotations
 
 from typing import Any, Literal
-from uuid import UUID  # noqa: TC003 — pydantic resolves these annotations at runtime
+from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 

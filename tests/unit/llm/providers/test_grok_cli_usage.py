@@ -40,7 +40,7 @@ def _write_updates(path: Path, totals: list[int]) -> None:
 def test_total_tokens_is_the_running_max(tmp_path: Path) -> None:
     upd = tmp_path / "updates.jsonl"
     _write_updates(upd, [3863, 18133, 18220, 18253, 18220])
-    assert gu.total_tokens_from_updates(upd) == 18253  # noqa: PLR2004
+    assert gu.total_tokens_from_updates(upd) == 18253
 
 
 def test_total_tokens_zero_for_missing_or_empty(tmp_path: Path) -> None:
@@ -56,7 +56,7 @@ def test_total_tokens_tolerates_bad_lines(tmp_path: Path) -> None:
         'not json\n{"params":{"_meta":{"totalTokens":42}}}\n{"x":1}\n',
         encoding="utf-8",
     )
-    assert gu.total_tokens_from_updates(upd) == 42  # noqa: PLR2004
+    assert gu.total_tokens_from_updates(upd) == 42
 
 
 def test_find_updates_path_encodes_cwd(tmp_path: Path) -> None:
@@ -82,8 +82,8 @@ def test_find_updates_path_none_when_absent(tmp_path: Path) -> None:
 def test_usage_and_cost_prices_total_at_output_rate() -> None:
     # grok-build output rate is $2.00/1M → 1M tokens = $2.00.
     tokens, cost = gu.usage_and_cost("grok-build", 1_000_000)
-    assert tokens == 1_000_000  # noqa: PLR2004
-    assert abs(cost - 2.00) < 1e-6  # noqa: PLR2004
+    assert tokens == 1_000_000
+    assert abs(cost - 2.00) < 1e-6
 
 
 def test_main_writes_usage_file(
@@ -103,7 +103,7 @@ def test_main_writes_usage_file(
     monkeypatch.setenv("ROBOCO_AGENT_MODEL", "grok-build")
     assert gu.main() == 0
     data = json.loads(out.read_text())
-    assert data["total_tokens"] == 1234  # noqa: PLR2004
+    assert data["total_tokens"] == 1234
     assert data["model"] == "grok-build"
     assert data["cost_usd"] > 0.0
 
@@ -118,9 +118,9 @@ def test_capture_session_usage_writes_running_total(tmp_path: Path) -> None:
     tokens = gu.capture_session_usage(
         cwd=cwd, session_id=sid, model="grok-build", out_path=out, grok_home=home
     )
-    assert tokens == 900  # noqa: PLR2004 — the running max is the chat total
+    assert tokens == 900  # the running max is the chat total
     data = json.loads(out.read_text())
-    assert data["total_tokens"] == 900  # noqa: PLR2004
+    assert data["total_tokens"] == 900
     assert data["cost_usd"] > 0.0
 
 
@@ -190,7 +190,7 @@ def test_main_prefers_run_log_session_id(
     monkeypatch.setenv("ROBOCO_AGENT_SESSION_ID", "ignored-fallback")
     monkeypatch.setenv("ROBOCO_AGENT_MODEL", "grok-build")
     assert gu.main() == 0
-    assert json.loads(out.read_text())["total_tokens"] == 777  # noqa: PLR2004
+    assert json.loads(out.read_text())["total_tokens"] == 777
 
 
 def test_main_warns_when_run_log_yields_no_session_id(
