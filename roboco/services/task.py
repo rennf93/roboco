@@ -3114,7 +3114,7 @@ class TaskService(BaseService):
             frontier = []
             for child in result.scalars().all():
                 # Use string-literal cast('UUID', ...) to avoid a typing-only UUID
-                # import and to keep ruff/mypy happy without noqa/type: ignore.
+                # import and to keep ruff/mypy happy without an inline suppression.
                 child_id = cast("UUID", child.id)
                 if child_id in seen:
                     continue
@@ -10567,7 +10567,7 @@ class TaskService(BaseService):
             for child in children:
                 descendants.append(child)
                 # String-literal cast tells mypy the SQLAlchemy Mapped[UUID]
-                # resolves to uuid.UUID at runtime, without a type: ignore.
+                # resolves to uuid.UUID at runtime, without an inline suppression.
                 to_process.append(cast("UUID", child.id))
 
         return descendants

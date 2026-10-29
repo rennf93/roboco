@@ -151,16 +151,6 @@ waivers:
       `session_id` even where the body could look it up another way, so the
       ARG001 suppression documents a deliberate consistency choice, not
       silenced debt.
-  - path: roboco/foundation/policy/lifecycle.py
-    rule: no_lint_suppressions
-    reason: >-
-      The module-load-time `_run_all_lifecycle_validators` import sits below
-      other module code deliberately: its validators live in
-      `roboco.foundation._validate_lifecycle`, a sibling of
-      `foundation/_validate.py`, and `roboco.foundation.__init__` eagerly
-      imports `_validate` — importing it at the top of this file would
-      create a real import cycle. The E402 suppression documents a genuine
-      circular-import constraint, not silenced debt.
   - path: roboco/api/routes/board_programs.py
     rule: no_models_in_routes
     reason: >-

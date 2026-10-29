@@ -64,12 +64,12 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
-| Settings | class | roboco/config.py:13 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + computed fields (database_url, redis_url, internal_api_url, rag_store_url) |
+| Settings | class | roboco/config.py:13 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
 | get_settings | function | roboco/config.py:1015 | lru_cache-backed singleton factory returning the cached Settings instance |
-| internal_api_url | property | roboco/config.py:57 | computed_field: service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
-| database_url | property | roboco/config.py:85 | computed_field: asyncpg connection URL |
-| database_url_sync | property | roboco/config.py:93 | computed_field: sync psycopg URL for Alembic |
-| redis_url / redis_url_for_db | property / method | roboco/config.py:241 | computed_field: Redis connection URL carrying the URL-quoted ROBOCO_REDIS_PASSWORD (required by every compose file; Redis runs with requirepass) |
+| internal_api_url | property | roboco/config.py:57 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
+| database_url | property | roboco/config.py:85 | asyncpg connection URL |
+| database_url_sync | property | roboco/config.py:93 | sync psycopg URL for Alembic |
+| redis_url / redis_url_for_db | property / method | roboco/config.py:241 | Redis connection URL carrying the URL-quoted ROBOCO_REDIS_PASSWORD (required by every compose file; Redis runs with requirepass) |
 | _BootstrapHolder | class | roboco/bootstrap.py:27 | Module-level holder for the singleton AgentOrchestrator instance |
 | _run_api_server | function | roboco/bootstrap.py:33 | Build a uvicorn.Config for roboco.api.app:app and serve it (no reload in prod/container) |
 | _wait_for_api_ready | function | roboco/bootstrap.py:46 | Poll http://127.0.0.1:port/health until 200 (up to max_wait) so the orchestrator starts only after lifespan indexing completes |
@@ -188,7 +188,7 @@ deployment-tooling
 │  ├─ nginx.conf (proxy template)
 │  └─ postgres-init/01-create-extensions.sql
 ├─ Python runtime core
-│  ├─ roboco/config.py (Settings + computed fields + get_settings lru_cache)
+│  ├─ roboco/config.py (Settings + derived URL properties + get_settings lru_cache)
 │  ├─ roboco/__init__.py (version + re-exports)
 │  ├─ roboco/cli.py (argparse -> bootstrap.main / db-only)
 │  ├─ roboco/bootstrap.py (DB+bus+orchestrator+uvicorn+ready-poll)

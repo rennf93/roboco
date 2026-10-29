@@ -106,6 +106,7 @@ HUMMIN provider support (the GLM go-to, GLM-native hummin CLI):
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import httpx
@@ -280,7 +281,7 @@ async def probe_openrouter_models(
         return [], "Could not connect to OpenRouter — service may be offline"
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code
-        if status_code == 401:  # noqa: PLR2004
+        if status_code == HTTPStatus.UNAUTHORIZED:
             return [], "OpenRouter API key is invalid or expired"
         return [], f"OpenRouter returned HTTP {status_code}"
     except Exception as exc:
@@ -335,7 +336,7 @@ async def probe_nebius_models(
         return [], "Could not connect to Nebius - service may be offline"
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code
-        if status_code == 401:  # noqa: PLR2004
+        if status_code == HTTPStatus.UNAUTHORIZED:
             return [], "Nebius API key is invalid or expired"
         return [], f"Nebius returned HTTP {status_code}"
     except Exception as exc:

@@ -16,7 +16,7 @@ from typing import Literal
 from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -132,7 +132,6 @@ class Settings(BaseSettings):
     )
     cors_allow_credentials: bool = True
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def internal_api_url(self) -> str:
         """
@@ -145,9 +144,7 @@ class Settings(BaseSettings):
         Note: 0.0.0.0 is only valid for binding, not connecting - use
         127.0.0.1 instead.
         """
-        # String COMPARISON against the bind-all literal (not a bind call);
-        # the conditional maps 0.0.0.0 to loopback for connect URLs.
-        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
+        connect_host = "127.0.0.1" if _is_unspecified_ipv4(self.host) else self.host
         if self.role == "dispatcher":
             return f"http://{connect_host}:{self.port}/api"
         if self.api_url:
@@ -210,7 +207,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
         """Async PostgreSQL connection URL."""
@@ -219,7 +215,6 @@ class Settings(BaseSettings):
             f"@{self.database_host}:{self.database_port}/{self.database_name}"
         )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url_sync(self) -> str:
         """Sync PostgreSQL connection URL (for Alembic)."""
@@ -236,7 +231,6 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_password: str | None = None
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def redis_url(self) -> str:
         """Redis connection URL."""
@@ -292,7 +286,6 @@ class Settings(BaseSettings):
         description="Embed batch size for the indexer's own embedder",
     )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def rag_store_url(self) -> str:
         """PostgreSQL connection URL for the in-house vector store."""
@@ -3203,6 +3196,18 @@ class Settings(BaseSettings):
                         "must not double-index a projection/intake dir."
                     )
         return self
+
+
+def _is_unspecified_ipv4(host: str) -> bool:
+    """True if ``host`` is the IPv4 bind-all address (``0.0.0.0``).
+
+    A hostname or any other address is ``False``; an IPv6 address is too,
+    since only the IPv4 wildcard maps to the IPv4 loopback.
+    """
+    try:
+        return ipaddress.IPv4Address(host).is_unspecified
+    except ValueError:
+        return False
 
 
 def _vault_dirs_overlap(a: str, b: str) -> bool:
