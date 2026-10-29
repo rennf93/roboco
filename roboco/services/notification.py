@@ -995,7 +995,9 @@ class NotificationService:
         that function's docstring for the dedup semantics (same sender +
         type + task, EXACT recipient-set equality, prior still unacked).
         Kept here so callers that already hold a ``CreateNotificationParams``
-        don't have to unpack it themselves.
+        don't have to unpack it themselves. Subject and body ride along so
+        the B12 semantic screen can lift a suppression when the Decisions
+        pilot is on; with it off they change nothing.
         """
         return await duplicate_unacked_notification_exists(
             db,
@@ -1003,6 +1005,8 @@ class NotificationService:
             notification_type=params.notification_type,
             related_task_id=params.related_task_id,
             to_agents=to_agents_uuids,
+            subject=params.subject,
+            body=params.body,
         )
 
     async def _create_notification(

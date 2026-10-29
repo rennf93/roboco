@@ -1994,6 +1994,8 @@ class NotificationDeliveryService(BaseService):
                     notification_type=notification.type,
                     related_task_id=cast("UUID | None", notification.related_task_id),
                     to_agents=cast("list[UUID]", notification.to_agents),
+                    subject=notification.subject,
+                    body=notification.body,
                 )
             )
         )

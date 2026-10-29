@@ -30,6 +30,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings
+from roboco.db.tables import NotificationTable
 from roboco.foundation.policy.communications import (
     ReescalationPolicy,
     reescalation_decision,
@@ -38,9 +39,10 @@ from roboco.models import NotificationPriority, NotificationType
 from roboco.services.notification_delivery import NotificationDeliveryService
 from sqlalchemy import Update
 
-# duplicate_unacked_notification_exists' dedup SELECT names exactly 2
-# columns (id, to_agents) — distinct from the sweep's whole-entity SELECT.
-_DEDUP_SELECT_COLUMN_COUNT = 2
+# duplicate_unacked_notification_exists' dedup SELECT names exactly 4
+# columns (id, to_agents, subject, body; the last two since the B12 semantic
+# screen) — distinct from the sweep's whole-entity SELECT.
+_DEDUP_SELECT_COLUMN_COUNT = 4
 
 
 def _stale_notification(
@@ -116,7 +118,7 @@ def _session_returning(
     notifications: list[MagicMock],
     *,
     claim_succeeds: bool = True,
-    dedup_rows: list[tuple[UUID, list[UUID]]] | None = None,
+    dedup_rows: list[tuple[UUID, list[UUID], str, str]] | None = None,
 ) -> MagicMock:
     """A session whose SELECT (the sweep's stale-notifications query) returns
     `notifications`; every re-escalation CAS UPDATE (`_claim_reescalation_slot`)
@@ -130,10 +132,11 @@ def _session_returning(
     iterating the ORM instances directly).
 
     `duplicate_unacked_notification_exists` (called from `_persist_and_deliver`)
-    runs its OWN SELECT — `select(NotificationTable.id, NotificationTable.to_agents)`
+    runs its OWN SELECT — `select(NotificationTable.id, NotificationTable.to_agents,
+    NotificationTable.subject, NotificationTable.body)`
     — and reads it via `result.all()` directly, not `.scalars().all()` like the
     sweep query above. The two are told apart by column count (the sweep query
-    selects the whole mapped entity; the dedup query selects exactly 2 columns)
+    selects the whole mapped entity; the dedup query selects exactly 4 columns)
     so each gets its own configured mock result — `.all()` on a bare MagicMock
     silently yields an empty iterator regardless of what's configured on
     `.scalars().all()`, which is exactly how a real "existing duplicate" could
@@ -224,7 +227,9 @@ async def test_sweep_re_escalation_not_suppressed_by_existing_unacked_duplicate(
         requires_ack=True, acked=False, recipient_id=recipient.id
     )
 
-    session = _session_returning([notif], dedup_rows=[(uuid4(), [target.id])])
+    session = _session_returning(
+        [notif], dedup_rows=[(uuid4(), [target.id], "Re-escalation", "prior")]
+    )
     svc = _svc_with_agents(session, recipient=recipient, escalation_target=target)
 
     with (
@@ -727,3 +732,42 @@ async def test_resolve_terminal_task_escalations_query_scoped_correctly() -> Non
     compiled = str(statement)
     assert "requires_ack" in compiled
     assert "tasks.status IN" in compiled
+
+
+@pytest.mark.asyncio
+async def test_persist_and_deliver_hands_the_dedup_the_notifications_content() -> None:
+    """The task-handoff path's purpose-dedup gets the new notification's
+    subject and body, so an armed B12 semantic screen can lift a
+    suppression here too, as on NotificationService's path."""
+    sender, recipient = uuid4(), uuid4()
+    notification = NotificationTable(
+        type=NotificationType.BLOCKER_ESCALATION,
+        from_agent=sender,
+        to_agents=[recipient],
+        subject="Blocked: migration 111",
+        body="ci_runs index build needs a decision",
+        related_task_id=uuid4(),
+        requires_ack=True,
+        acked_by=[],
+    )
+    svc = _svc_with_agents(
+        _session_returning([]), recipient=_agent("be-pm"), escalation_target=None
+    )
+    dedup = AsyncMock(return_value=True)
+    with (
+        patch(
+            "roboco.services.notification_delivery.all_recipients_recently_notified",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "roboco.services.notification_delivery.duplicate_unacked_notification_exists",
+            dedup,
+        ),
+    ):
+        delivered = await svc._persist_and_deliver(notification)
+
+    assert delivered is False
+    call = dedup.await_args
+    assert call is not None
+    assert call.kwargs["subject"] == "Blocked: migration 111"
+    assert call.kwargs["body"] == "ci_runs index build needs a decision"
