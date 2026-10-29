@@ -57,7 +57,7 @@ class Settings(BaseSettings):
             "external-PR-supersede branch cut, /api/tasks/{id}/"
             "supersede-external-pr) - NOT the secretary/intake live chats, "
             "which nginx routes to the dispatcher instead (see "
-            "docker/nginx.conf) because spawning them needs the SAME "
+            "deploy/nginx.conf) because spawning them needs the SAME "
             "process as the reconciliation/reaper loops that must see them. "
             "'dispatcher': the fleet owner - runs the startup reconciliation "
             "+ every Orchestrator loop, AND (via nginx) the /api/orchestrator/*, "

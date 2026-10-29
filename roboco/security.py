@@ -353,7 +353,7 @@ _THREAT_BAN_CONFIG: MappingProxyType[str, ThreatBanConfig] = MappingProxyType(
         # detected on the URL-path scan; these thresholds turn repeated
         # probes into a ban. Only /api|/ws paths reach the app behind nginx;
         # the classic root probes are dropped at the edge (444) in
-        # docker/nginx.conf. Requires redis (24h ban > in-memory cap) and
+        # deploy/nginx.conf. Requires redis (24h ban > in-memory cap) and
         # only bans in active mode; passive logs the recon hit.
         "recon": ThreatBanConfig(threshold=5, duration=86400),
         "sensitive_file": ThreatBanConfig(threshold=3, duration=86400),
