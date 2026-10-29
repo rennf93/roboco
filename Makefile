@@ -304,6 +304,8 @@ quality: sync
 	@uv run python scripts/reflow_md.py --check
 	@echo "==> codebase map (every path and symbol docs/map names exists)"
 	@uv run python scripts/verify_codebase_map.py
+	@echo "==> codebase map concatenation up to date"
+	@uv run python scripts/rebuild_map_concat.py --check
 	@echo "==> mypy"
 	@uv run mypy roboco/ tests/
 	@echo "==> pytest with coverage"
@@ -611,8 +613,13 @@ ci-lifecycle-check: foundation-check
 # Write counterpart to foundation-check's read: regenerates the same checked-in
 # artifacts IN PLACE (no diff/exit-code guard) so a project can point its
 # `codegen_command` at this and have drift committed before a push, instead of
-# only ever discovering it at CI's foundation-check hard-fail.
+# only ever discovering it at CI's foundation-check hard-fail. It also rebuilds
+# docs/map/_complete_map.md, which `quality` checks, so a slice edit never
+# reaches CI with a stale concatenation. It does NOT run the map checker's
+# --fix: two parallel branches would both rewrite the same rows' line numbers
+# and conflict at merge (`make map` is the manual refresh).
 .PHONY: codegen
 codegen:
 	@$(MAKE) lifecycle
 	@uv run python scripts/regenerate_verb_tables.py
+	@uv run python scripts/rebuild_map_concat.py

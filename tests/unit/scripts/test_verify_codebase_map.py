@@ -430,6 +430,16 @@ def test_quality_target_runs_the_map_check() -> None:
         "reference gate) — wiring was removed"
     )
     assert "scripts/verify_codebase_map.py --fix" not in quality_block
+    assert "scripts/rebuild_map_concat.py --check" in quality_block, (
+        "make quality must fail when _complete_map.md is behind its slices"
+    )
+
+
+def test_codegen_rebuilds_the_concatenation_but_never_rewrites_lines() -> None:
+    text = MAKEFILE.read_text()
+    codegen_block = text.split("\n.PHONY: codegen\n", 1)[1].split("\n\n", 1)[0]
+    assert "scripts/rebuild_map_concat.py" in codegen_block
+    assert "verify_codebase_map.py" not in codegen_block
 
 
 def test_committed_map_has_no_errors() -> None:
