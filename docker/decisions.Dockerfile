@@ -42,11 +42,14 @@ FROM python:3.12-slim-bookworm AS builder
 # first release tag carrying the clef architecture (see header).
 ARG LLAMA_CPP_REF=b11371
 
+# apt pins follow agent-base.Dockerfile's scheme: the upstream series bookworm
+# ships for its whole life, never a Debian revision (every point or security
+# update replaces it), and ca-certificates by suite, never by version.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        cmake \
-        git \
+        'build-essential=12.9*' \
+        ca-certificates/bookworm-security \
+        'cmake=3.25.*' \
+        'git=1:2.39.*' \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -82,8 +85,8 @@ ARG LAYA_HF_REVISION=22265007700297ba9e128297e82540cf28c5d7d4
 ARG FETCH_CLEF_WEIGHTS=true
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
+        ca-certificates/bookworm-security \
+        'curl=7.88.*' \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
@@ -110,7 +113,7 @@ FROM python:3.12-slim-bookworm
 # llama-server's CPU backend uses OpenMP (GGML_OPENMP=ON): libgomp1 at
 # runtime, matching llama.cpp's own runtime image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgomp1 \
+        'libgomp1=12.2.*' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
@@ -145,7 +148,15 @@ ENV CLEF_MODEL_ID=ggml-org/Clef-GGUF:Q4_K_M \
 WORKDIR /app
 COPY docker/decisions/server.py /app/server.py
 COPY docker/decisions/entrypoint.sh /app/entrypoint.sh
-RUN chmod 0755 /app/entrypoint.sh /usr/local/bin/llama-server
+# Nothing here needs root: the proxy and both llama-servers bind ports above
+# 1024 and only read the weights, the binary and the proxy source, which stay
+# root-owned so the served process cannot alter them. A dedicated system user
+# with a fixed, numeric uid:gid.
+RUN chmod 0755 /app/entrypoint.sh /usr/local/bin/llama-server \
+    && groupadd --system --gid 10001 decisions \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin decisions
+USER 10001:10001
 
 # Same probe contract compose pins: python stdlib urllib against /health,
 # 200 = healthy. The image's start-period is longer than compose's 60s
