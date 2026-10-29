@@ -4,9 +4,11 @@ A forked head (two migrations whose ``down_revision`` is None, or two migrations
 off the same parent that never got rebased linear) makes ``alembic upgrade head``
 ambiguous and the deploy pick one branch silently. A dangling ``down_revision``
 (a typo, or a rename that dropped the referenced id) breaks ``upgrade head`` with
-a confusing "Can't locate revision identified by '...'" mid-deploy. Neither is
-caught by the test suite (the suite builds its DB via ``Base.metadata.create_all``,
-not ``alembic upgrade head``), so this guard walks the migration files statically.
+a confusing "Can't locate revision identified by '...'" mid-deploy. The suite
+builds its DB via ``Base.metadata.create_all``; only
+``tests/integration/test_migrations_match_models.py`` runs a real ``upgrade
+head``, and only when Postgres is reachable. This guard walks the migration
+files statically, so it needs no database and names the broken edge.
 
 The revision-id length limit (alembic's ``alembic_version.version_num`` is
 ``VARCHAR(32)``) is covered by ``test_enum_migration_parity``; this test covers

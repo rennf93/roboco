@@ -77,10 +77,11 @@ def test_every_migration_revision_id_fits_the_alembic_version_column() -> None:
     """Revision ids must fit alembic's ``alembic_version.version_num`` VARCHAR(32).
 
     A longer id raises ``value too long for type character varying(32)`` when
-    alembic records the migration on a real ``upgrade head`` — but NOT in the
-    test suite, whose DB is built via ``Base.metadata.create_all`` and whose
-    parity test only renders SQL offline. So nothing else catches it; this guard
-    does, statically.
+    alembic records the migration on a real ``upgrade head``. The suite's DB is
+    built via ``Base.metadata.create_all``; only the drift test
+    (``tests/integration/test_migrations_match_models.py``) runs a real
+    ``upgrade head``, and only when Postgres is reachable. This guard catches
+    it statically, with no database.
     """
     versions = _ROOT / "alembic" / "versions"
     too_long: dict[str, int] = {}
