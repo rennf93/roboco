@@ -91,31 +91,20 @@ rules:
   # permanently is the lower-risk path; level stays warn indefinitely.
   no_inline_comments:
     level: warn
-  # A handful of unavoidable framework suppressions are auto-allowed
-  # (TC001-003, pydantic prop-decorator). The 2026-07 suppression audit
-  # resolved every inline noqa/type:ignore in roboco/ + panel/ except two it
-  # waived (prompter_live.py's route-symmetry param, lifecycle.py's E402); see
-  # docs/backend/lint-suppression-reconciliation.md. The 2026-10 sweep removed
-  # every remaining noqa/type:ignore from roboco/ and tests/, those two
-  # included: a false positive now lives as a commented per-file-ignores entry
-  # in pyproject.toml, never inline. That clears the tests/ backlog that kept
-  # this rule at warn. The check now counts only real directives (a marker
-  # where ruff, mypy, bandit, ESLint or TypeScript reads it, nosec included),
-  # never prose that names one, so the only finding left in the tree is the
-  # nosec B108 on the Nebius microVM path. Promoting the rule to block is a
-  # separate decision, so it stays warn for now.
-  no_lint_suppressions:
-    level: warn
   # RoboCo routes deliberately call db.commit() (get_db auto-commit is unreliable
-  # under BaseHTTPMiddleware); explicit commits no longer count as data access,
-  # so this stays advisory for the few routes that still read/write directly.
+  # under BaseHTTPMiddleware); explicit commits no longer count as data access.
+  # The 2026-10 conventions sweep (#1188) cleared every finding; promoting this
+  # to block is a separate decision.
   thin_routes:
     level: warn
-  # A few panel components still fetch inline; extract into hooks, then promote.
+  # The 2026-10 conventions sweep (#1188) moved the last inline fetches into
+  # hooks, so nothing is flagged; promoting this to block is a separate decision.
   thin_components:
     level: warn
   # Everything else inherits the derived BLOCK level — no models/helpers in
-  # routes, no routes in services, no models/routes in panel components, etc.
+  # routes, no routes in services, no models/routes in panel components, no
+  # inline lint/type suppressions (no_lint_suppressions, block since 2026-10:
+  # the sweep left one suppression, waived below), etc.
 
 custom: []
 # Waiver entries must describe a suppression that exists in the named file at
@@ -124,7 +113,17 @@ custom: []
 # and must be deleted in the same change that removes the suppression; a
 # waiver that describes nothing is worse than no waiver, because it keeps
 # silenced debt plausible that no longer exists.
-waivers: []
+waivers:
+  - path: roboco/llm/providers/nebius_sandboxes.py
+    rule: no_lint_suppressions
+    reason: >-
+      `# nosec B108` on `_SANDBOX_ARCHIVE_PATH = "/tmp/roboco-ws.tar.gz"`: the
+      path is where the Token Factory Sandboxes API drops the uploaded
+      workspace archive inside the disposable, single-tenant microVM, so
+      bandit's shared-/tmp concern does not apply. It was verified live on
+      2026-09-15 (486daea4). Moving it off /tmp needs one more live run to
+      prove the API accepts the new path, which the CEO declined on
+      2026-10-29; until then the path, and this waiver, stay.
 
 # Declared infrastructure paths: PRs whose changed files match these globs
 # require review by the DevOps agent (devops-1) before pr_pass composes.
