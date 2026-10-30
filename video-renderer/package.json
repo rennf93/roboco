@@ -13,8 +13,8 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@hyperframes/engine": "^0.7.36",
-    "@hyperframes/producer": "0.7.36",
+    "@hyperframes/engine": "0.8.216",
+    "@hyperframes/producer": "0.8.216",
     "express": "^5.3.0",
     "express-rate-limit": "^8.5.2",
     "multer": "^2.5.0",

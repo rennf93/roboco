@@ -18,6 +18,10 @@ FROM node:22-bookworm-slim
 # missing-library error.
 # ffmpeg: required by @hyperframes/producer's local render mode — see top
 # comment; without it renders fail with "FFmpeg not found".
+# unzip: puppeteer 25's @puppeteer/browsers 3 dropped extract-zip. It unpacks
+# the Chrome Headless Shell download with the system unzip and falls back to
+# its optional yauzl peer only when unzip is missing; with unzip installed the
+# download no longer depends on pnpm auto-installing that optional peer.
 # Pins follow agent-base.Dockerfile's scheme: the upstream series bookworm
 # (fixed by the tag) ships for its whole life, never a Debian revision, and
 # ca-certificates by suite (bookworm-security), never by version.
@@ -37,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     'libcairo2=1.16.*' \
     'libcups2=2.4.*' \
     'ffmpeg=7:5.1.*' \
+    'unzip=6.0-*' \
     ca-certificates/bookworm-security \
   && rm -rf /var/lib/apt/lists/*
 

@@ -1,9 +1,11 @@
-<!-- Vendored from https://github.com/heygen-com/hyperframes (skills/hyperframes-creative/SKILL.md @ 9d148d28, Apache-2.0).
+<!-- Vendored from https://github.com/heygen-com/hyperframes (skills/hyperframes-creative/SKILL.md @ 207c8a4d, Apache-2.0).
      Authoring doctrine for the HyperFrames renderer the video sidecar runs. Re-vendor when bumping @hyperframes/producer, then run make reflow-docs (prose is reflowed to house style). -->
 
 ---
 name: hyperframes-creative description: Non-animation creative direction for HyperFrames videos. Use for design spec (frame.md / design.md) handling, palettes, typography, narration, beat planning, audio-reactive visuals, composition patterns, and brand / style decisions. For atomic motion patterns and scene blueprints, use `hyperframes-animation`.
 ---
+
+**Plugin installs:** Before setup or freshness commands, follow [plugin execution rules](../hyperframes/references/plugin-installation.md) when this skill is inside a HyperFrames plugin. Standalone installs keep the update instructions below.
 
 # HyperFrames Creative
 
@@ -33,23 +35,23 @@ For motion patterns, scene blueprints, transitions, and CSS marker effects, use 
 
 ## Routing
 
-| Topic                                                                         | Read                                           |
-| ----------------------------------------------------------------------------- | ---------------------------------------------- |
-| Adopt a ready-made frame-preset as `frame.md` (optional)                      | `frame-presets/` · `references/design-spec.md` |
-| Default palettes, motion, typography, lazy defaults to question               | `references/house-style.md`                    |
-| Named style presets, mood-to-style routing                                    | `references/visual-styles.md`                  |
-| Palette-specific color tokens                                                 | `palettes/*.md`                                |
-| Composition patterns — PiP, text-behind-subject, title card, slide show       | `references/composition-patterns.md`           |
-| Stats / infographic presentation                                              | `references/data-in-motion.md`                 |
-| Structured expansion for open-ended prompts                                   | `references/prompt-expansion.md`               |
-| Video-medium density, scale, color, frame composition                         | `references/video-composition.md`              |
-| Per-beat direction, rhythm planning, transition timing                        | `references/beat-direction.md`                 |
-| Post-authoring spec verification (colors, type, corners, spacing, depth)      | `references/design-adherence.md`               |
-| High-level motion guardrails and GSAP-quality rules                           | `references/motion-principles.md`              |
-| Font selection, pairings, rendered-video type guardrails                      | `references/typography.md`                     |
-| Story doctrine — hook language, value-before-evidence, storyboard-as-proposal | `references/story-spine.md`                    |
-| Script pacing, tone, openings, number pronunciation                           | `references/narration.md`                      |
-| Precomputed audio bands mapped to motion                                      | `references/audio-reactive.md`                 |
+| Topic                                                                                                   | Read                                           |
+| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Adopt a ready-made frame-preset as `frame.md` (optional)                                                | `frame-presets/` · `references/design-spec.md` |
+| Default palettes, motion, typography, lazy defaults to question                                         | `references/house-style.md`                    |
+| Named style presets, mood-to-style routing                                                              | `references/visual-styles.md`                  |
+| Palette-specific color tokens                                                                           | `palettes/*.md`                                |
+| Composition patterns — PiP, text-behind-subject, title card, slide show                                 | `references/composition-patterns.md`           |
+| Stats / infographic presentation                                                                        | `references/data-in-motion.md`                 |
+| Structured expansion for open-ended prompts                                                             | `references/prompt-expansion.md`               |
+| Video-medium density, scale, color, frame composition                                                   | `references/video-composition.md`              |
+| Per-beat direction, rhythm planning, transition timing                                                  | `references/beat-direction.md`                 |
+| Post-authoring spec verification (colors, type, corners, spacing, depth)                                | `references/design-adherence.md`               |
+| High-level motion guardrails and GSAP-quality rules                                                     | `references/motion-principles.md`              |
+| Font selection, pairings, rendered-video type guardrails                                                | `references/typography.md`                     |
+| Story doctrine — hook language, value-before-evidence, storyboard-as-proposal, source-traceable visuals | `references/story-spine.md`                    |
+| Script pacing, tone, openings, number pronunciation                                                     | `references/narration.md`                      |
+| Precomputed audio bands mapped to motion                                                                | `references/audio-reactive.md`                 |
 
 ## Scripts
 
@@ -59,10 +61,10 @@ For motion patterns, scene blueprints, transitions, and CSS marker effects, use 
 
 `contrast-report.mjs` resolves helper packages from the current project first, then can bootstrap the bundled HyperFrames package version. Set `HYPERFRAMES_SKILL_PKG_VERSION=<version>` only when running the skill outside the bundled CLI/skill install and you need to pin that bootstrap version explicitly.
 
-Run from the repo root with explicit paths, for example:
+Run with explicit paths, for example:
 
 ```bash
-python skills/hyperframes-creative/scripts/extract-audio-data.py <audio-file>
+python <SKILL_DIR>/scripts/extract-audio-data.py <audio-file>
 ```
 
 Animation analysis (`animation-map.mjs`) lives in `hyperframes-animation/scripts/`.

@@ -1,4 +1,4 @@
-<!-- Vendored from https://github.com/heygen-com/hyperframes (skills/hyperframes-creative/references/beat-direction.md @ 9d148d28, Apache-2.0).
+<!-- Vendored from https://github.com/heygen-com/hyperframes (skills/hyperframes-creative/references/beat-direction.md @ 207c8a4d, Apache-2.0).
      Reference doc hyperframes-creative.md points at for non-trivial compositions. Re-vendor when bumping @hyperframes/producer, then run make reflow-docs (prose is reflowed to house style). -->
 
 # Beat Direction

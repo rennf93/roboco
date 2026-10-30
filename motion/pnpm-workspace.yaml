@@ -1,24 +1,26 @@
 # Each value must be true or false: pnpm 11 fails `pnpm install` (and so
-# `pnpm test`) on any other value. None of these scripts is needed by
-# `pnpm test`, `pnpm lint` or `pnpm preview`, so none runs: esbuild loads its
-# prebuilt platform package, onnxruntime-node's script only downloads CUDA
-# binaries, and the other two are a version check and a no-op. (sharp left the
-# list at 0.35, which dropped its install script.)
+# `pnpm test`) on any other value. esbuild is the only package left with an
+# install script, and `pnpm test`, `pnpm lint` and `pnpm preview` do not need
+# it: esbuild loads its prebuilt platform package. (hyperframes 0.8 dropped
+# onnxruntime-node, @google/genai and protobufjs; sharp 0.35 has no install
+# script.)
 allowBuilds:
-  '@google/genai': false
   esbuild: false
-  onnxruntime-node: false
-  protobufjs: false
-# hyperframes is pinned to the 0.7.36 the video-renderer renders with, and its
-# own ranges stop short of these fixes, so they are lifted here.
+# hyperframes is pinned to the 0.8.216 the video-renderer renders with. pnpm
+# holds back releases younger than its minimum release age, so the exact pin
+# is excluded from that check, as video-renderer/pnpm-workspace.yaml does.
+minimumReleaseAgeExclude:
+  - hyperframes@0.8.216
+# hyperframes' own ranges admit releases without these fixes, so the floors
+# are lifted here.
 overrides:
   # adm-zip 0.6.1 fixes GHSA-7q85-xj36-vmfc, GHSA-j5f4-cc29-5x44,
-  # GHSA-p634-w6r4-rjp2 and GHSA-vwc7-r8mq-g2x9 (hyperframes asks for ^0.5.16).
+  # GHSA-p634-w6r4-rjp2 and GHSA-vwc7-r8mq-g2x9, all of which 0.6.0 has
+  # (hyperframes asks for ^0.6.0).
   adm-zip: ^0.6.1
-  # get-uri still asks for basic-ftp ^5; 6.2.1+ fixes GHSA-c475-qrg2-pj4r and
-  # keeps the 5.x client API.
-  basic-ftp: ^6.2.3
-  # hyperframes asks for sharp ^0.34.5; 0.35.5 carries the libvips, libheif and
-  # librsvg fixes. hyperframes only calls metadata, resize and composite, which
-  # 0.35 leaves unchanged.
+  # hyperframes asks for sharp ^0.35.0 (optional); 0.35.5 carries the libvips,
+  # libheif and librsvg fixes.
   sharp: ^0.35.5
+  # hyperframes pins undici to exactly 7.25.0, which carries 29 advisories;
+  # 7.30.1 is the first 7.x release that fixes all of them.
+  undici: ^7.30.1

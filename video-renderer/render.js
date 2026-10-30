@@ -32,11 +32,11 @@ const MAX_FPS = 60;
 
 /**
  * Read the composition-declared frame rate off its HTML text (the
- * `data-fps` attribute motion/README.md instructs authors to set — it
- * appears on both `<html>` and `#stage` in every composition seen so far;
- * a plain regex over the whole file catches either). Falls back to
- * DEFAULT_FPS when absent, unparsable, or outside the sane broadcast bound —
- * never lets a bad attribute wedge the job at an undefined rate.
+ * `data-fps` attribute motion/README.md instructs authors to set on the
+ * `#stage` root; a plain regex over the whole file finds it wherever it
+ * sits). Falls back to DEFAULT_FPS when absent, unparsable, or outside the
+ * sane broadcast bound — never lets a bad attribute wedge the job at an
+ * undefined rate.
  */
 export function parseFps(html) {
   const match = /data-fps=["'](\d+)["']/.exec(html);
@@ -197,7 +197,7 @@ export async function renderComposition({
     outDir = await mkdtemp(path.join(tmpdir(), "hyperframes-out-"));
     const outputLocation = path.join(outDir, "render.mp4");
 
-    // createRenderJob carries only render params; @hyperframes/producer@0.7.36
+    // createRenderJob carries only render params; @hyperframes/producer@0.8.216
     // takes the source dir + output path as executeRenderJob args (they moved
     // out of the job config), and resolves the cut's HTML from entryFile
     // relative to projectDir.

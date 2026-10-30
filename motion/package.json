@@ -1,6 +1,7 @@
 {
   "name": "motion",
   "version": "1.0.0",
+  "packageManager": "pnpm@11.10.0",
   "private": true,
   "description": "RoboCo motion-video compositions (HyperFrames) — bespoke marketing clips authored per release, feature-spotlight, or on-demand request, rendered by the video-renderer sidecar.",
   "type": "module",
@@ -13,7 +14,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "hyperframes": "0.7.36",
+    "hyperframes": "0.8.216",
     "vitest": "^4.1.12"
   }
 }
