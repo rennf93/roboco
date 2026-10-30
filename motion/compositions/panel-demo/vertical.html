@@ -38,7 +38,7 @@
 
         <div class="pk-frame__content">
           <!-- Intake: a task title typing out character-by-character. -->
-          <div class="pk-intake clip" data-start="0.2" data-duration="11.8" data-track-index="2" style="animation-delay: 0.2s;">
+          <div class="pk-intake clip" data-start="0" data-duration="12" data-track-index="2" style="animation-delay: 0.4s;">
             <div class="pk-intake__label">New task</div>
             <div class="pk-intake__field"><span id="typeTitle">Ship the panel-demo kit</span><span class="pk-caret"></span></div>
           </div>
@@ -72,7 +72,9 @@
             </div>
           </div>
 
-          <!-- Cursor glide to the card, then a click pulse on the pill. -->
+          <!-- Cursor glide to the card, then a click pulse on the pill. The
+               ring is its own clip so its click delay counts from its own
+               start: 6s + 1.2s = 7.2s, the click as shipped. -->
           <div
             class="pk-cursor clip"
             data-start="6"
@@ -81,7 +83,7 @@
             style="--pk-cursor-delay: 6s; --pk-cursor-x0: 620px; --pk-cursor-y0: 160px; --pk-cursor-x1: 152px; --pk-cursor-y1: 380px;"
           >
             <div class="pk-cursor__glyph"></div>
-            <div class="pk-cursor__ring" style="--pk-click-delay: 7.2s;"></div>
+            <div class="pk-cursor__ring clip" data-start="6" data-duration="6" data-track-index="9" style="--pk-click-delay: 1.2s;"></div>
           </div>
 
           <!-- Toast: the completion notification. -->

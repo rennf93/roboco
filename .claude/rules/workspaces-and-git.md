@@ -7,6 +7,7 @@ paths:
   - "roboco/services/work_session.py"
   - "roboco/services/forge/**"
   - "roboco/foundation/policy/forge.py"
+  - "roboco/utils/docker_subcommands.py"
 ---
 
 # Workspaces, work sessions, forge providers, protected branches
@@ -41,6 +42,7 @@ Every agent container mounts ALL of `/data/workspaces` read-write, so an agent (
 - **Fail closed** (`settings.workspace_git_drop`, `ROBOCO_WORKSPACE_GIT_DROP`): `required` in the orchestrator image (its Dockerfile sets it), `off` by default (dev and CI on the host, where processes run as the caller). Required: a missing helper or a helper refusal raises `GitUserDropError` and nothing runs as the orchestrator instead; the api and dispatcher (and `all`) refuse to start (`bootstrap.main`, before the database) unless `cat /proc/self/status` started through the helper shows uid 1500 x4, gid 1000 x4, no group but 1000, `NoNewPrivs: 1` and no capability (`verify_git_user_drop`); and the permission repair, `prepare_clone_parent` and `remove_workspace_tree` take their descriptor-based paths. Those used to be chosen by `euid == 0`, which as non-root silently skipped the drop; now only the setting chooses.
 - **The orchestrator's own git** in `/data/private` (`git_relay._private_env`) reads `/opt/roboco/git/private.gitconfig` (`safe.directory = *`, root-owned) as its global config: both deploy colors share those repositories and need not run as the same uid. The image itself still sets no global `safe.directory`.
 - `tests/unit/services/test_git_runs_only_through_the_runners.py` fails if any other module starts git (including through `run_as_workspace_user` / `workspace_user_argv`), builds a `["git", ...]` argv to start later, or builds git credentials; `tests/integration/test_hostile_workspace_clone.py` is the hostile-clone suite. `scripts/orchestrator_image_suites.sh IMAGE WORKDIR` runs it, `tests/integration/test_git_user_helper_live.py` and the live workspace-container and Entire hook suites inside a built image as root, failing on any skip; the "Orchestrator image suites" workflow runs the same script.
+- **Docker** is reached only through the `docker` CLI, and `roboco/utils/docker_subcommands.py` lists every subcommand RoboCo runs. `tests/unit/utils/test_docker_runs_only_listed_subcommands.py` reads every docker argv in `roboco/` (a `["docker", ...]` list wherever it is built, which covers the spawn argv every agent provider extends; `create_subprocess_exec("docker", ...)`; the sandbox runner's callers) and fails on a subcommand the list lacks, on a listed one nothing runs, and on an argv whose subcommand it cannot read, so adding a docker call means adding its subcommand to the list. An inspect always names its object type (`docker container inspect`, `docker image inspect`): a bare `docker inspect` of a name no container has goes on to report an image, network or volume of that name.
 
 **HTTPS URLs require tokens** - attempting to clone without a token will raise `WorkspaceError`.
 

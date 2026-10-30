@@ -131,10 +131,21 @@ html, body {
   animation-delay: 0.8s; /* ~24 frames @30fps */
 }
 
+/* #highlights runs from data-start 0, so its items count their delays from
+   0 on every HyperFrames runtime (see motion/README.md, "The animation
+   clock"). It still joins the layout at 1.667s, as it did when its clip
+   window opened there: the runtime takes an out-of-window clip out of
+   layout, and the bottom-anchored stack above rises when the list joins. */
 .highlights {
   list-style: none;
   padding: 0;
   margin: 0;
+  max-height: 0;
+  overflow: hidden;
+  animation: highlights-join 0.001s linear 1.667s forwards;
+}
+@keyframes highlights-join {
+  to { max-height: none; overflow: visible; }
 }
 .highlights__item {
   display: flex;

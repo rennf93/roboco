@@ -40,6 +40,19 @@ async def test_video_source_prompt_includes_request_render_instruction() -> None
 
 
 @pytest.mark.asyncio
+async def test_video_source_prompt_states_the_animation_clock_rule() -> None:
+    """The craft bar teaches the clock the runtime really uses (start at the
+    nearest data-start, never data-start plus an equal delay), not the old
+    "the clip scheduler drifts" diagnosis, and names the test that enforces
+    it."""
+    prompt = await _orch()._build_dev_prompt(_task(source=VIDEO_SOURCE))
+    assert "Animation clock" in prompt
+    assert "motion/compositions/animation-clock.test.js" in prompt
+    assert "Clip windows are for structural layers" not in prompt
+    assert "drops your tail" not in prompt
+
+
+@pytest.mark.asyncio
 async def test_non_video_source_prompt_omits_request_render_instruction() -> None:
     prompt = await _orch()._build_dev_prompt(_task(source="code"))
     assert "request_render" not in prompt
