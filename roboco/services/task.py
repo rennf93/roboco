@@ -4629,10 +4629,44 @@ class TaskService(BaseService):
             )
             return False
 
-        if error := self._validate_not_self_review(task, agent, agent_id):
+        if error := await self._claimant_conflict(task, agent, agent_id):
             self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
             return False
         return True
+
+    async def _claimant_conflict(
+        self, task: TaskTable, agent: AgentTable | None, agent_id: UUID
+    ) -> str | None:
+        """Why this claimant may not own ``task`` right now, or None: it
+        reviewed its own work, or it is a work author still holding another
+        task."""
+        if error := self._validate_not_self_review(task, agent, agent_id):
+            return error
+        return await self._work_author_still_holds_work(task, agent, agent_id)
+
+    _SINGLE_ACTIVE_TASK_ROLES: ClassVar[frozenset[AgentRole]] = frozenset(
+        {AgentRole.DEVELOPER, AgentRole.DEVOPS}
+    )
+
+    async def _work_author_still_holds_work(
+        self, task: TaskTable, agent: AgentTable | None, agent_id: UUID
+    ) -> str | None:
+        """Refuse a work author a second task (the claimant may be the target of
+        a claim made on its behalf).
+
+        The gateway's ``already_active`` / ``paused`` guards only run on the
+        agent's own verbs. The dispatcher's on-behalf ``POST /tasks/{id}/claim``
+        never crosses them, so it kept claiming new tasks for developers that
+        still held claimed / blocked / paused work, which their own
+        ``i_will_work_on`` then refused (live 2026-10-28: be-dev-1 and be-dev-2
+        each ended up holding tasks they could neither start nor idle out of).
+        """
+        if agent is None or agent.role not in self._SINGLE_ACTIVE_TASK_ROLES:
+            return None
+        held = await self.held_task_blocking_claim(agent_id, require_uuid(task.id))
+        if held is None:
+            return None
+        return f"{agent.slug} still holds {held.status} task {held.id}"
 
     async def _apply_claim_fields(
         self,
@@ -13658,26 +13692,72 @@ class TaskService(BaseService):
         return task if applied else None
 
     async def list_in_progress_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """Tasks the agent is still on the hook for — in_progress OR blocked.
+        """Tasks the agent is still on the hook for: every status
+        ``already_active_guard`` counts as actively worked (claimed,
+        in_progress, verifying, blocked), not only ``in_progress``.
 
         F018: ``blocked`` is included because a blocked task is still owned and
         ``unblock_with_restore`` resumes it to ``in_progress``; the claim guard
         (``already_active_guard``) must see it or a dev could claim a second
         task while blocked and end up with two ``in_progress`` tasks once the
-        first is unblocked. Callers that only want pausable (in_progress) tasks
-        — the ``i_am_idle`` auto-pause path — filter on ``status`` themselves
+        first is unblocked. The same holds for a task escalated AWAY from the
+        agent: escalation moves ``assigned_to`` to the resolver but snapshots
+        the agent into ``pre_block_assignee``, which ``unblock_with_restore``
+        hands the task straight back to (live 2026-10-28: be-dev-1 escalated
+        11a83407, claimed f5d66db6 a minute later, and the PM's restore left it
+        two in_progress tasks). ``claimed`` / ``verifying`` were already in the
+        guard's status set but never fetched here, so a dev holding a claimed,
+        not-yet-started task could start a second one.
+
+        Callers that only want pausable (in_progress) tasks — the
+        ``i_am_idle`` auto-pause path — filter on ``status`` themselves
         (``pause()`` no-ops on non-in_progress regardless).
         """
         query = (
             select(TaskTable)
             .where(
-                TaskTable.assigned_to == agent_id,
-                TaskTable.status.in_([TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]),
+                or_(
+                    and_(
+                        TaskTable.assigned_to == agent_id,
+                        TaskTable.status.in_(
+                            [
+                                TaskStatus.CLAIMED,
+                                TaskStatus.IN_PROGRESS,
+                                TaskStatus.VERIFYING,
+                                TaskStatus.BLOCKED,
+                            ]
+                        ),
+                    ),
+                    and_(
+                        TaskTable.pre_block_assignee == agent_id,
+                        TaskTable.status == TaskStatus.BLOCKED,
+                    ),
+                )
             )
             .order_by(TaskTable.priority, TaskTable.updated_at.desc())
         )
         result = await self.session.execute(query)
         return list(result.scalars().all())
+
+    async def held_task_blocking_claim(
+        self, agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """The held task that keeps ``agent_id`` from starting ``task_id``.
+
+        The single-active-task rule the gateway's ``already_active_guard`` and
+        ``paused_tasks_guard`` apply to a developer's own ``i_will_work_on``
+        (an actively worked task first, else a paused one, never ``task_id``
+        itself), as one service predicate. The claim chokepoint, the
+        dispatcher's spawn/claim pre-filters and the PM ``reassign`` verb ask
+        it, so none of them hands a developer work it would be refused.
+        """
+        for held in await self.list_in_progress_for_agent(agent_id):
+            if held.id != task_id:
+                return held
+        for held in await self.list_paused_for_agent(agent_id):
+            if held.id != task_id:
+                return held
+        return None
 
     async def pause_for_agent(
         self, agent_id: UUID, task_id: UUID, agent_role: str | None = None

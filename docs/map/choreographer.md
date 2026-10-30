@@ -38,26 +38,26 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `_behind_base_gate` | async helper | `_impl.py:3566` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
 | `_toolchain_broken_guard` | async helper | `_impl.py:3163` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
 | `_conventions_guard` | async helper | `_impl.py:3267` | Run architectural-conventions validator; `block` finding refuses gate. |
-| `_pm_task_type_error` | static method | `_impl.py:7670` | Reject a code/non-planning task_type delegated to a PM (cell or main); extracted from `_validate_assignee_task_type` to keep that dispatcher under complexity budget. |
+| `_pm_task_type_error` | static method | `_impl.py:7700` | Reject a code/non-planning task_type delegated to a PM (cell or main); extracted from `_validate_assignee_task_type` to keep that dispatcher under complexity budget. |
 | `i_am_blocked` | async verb | `_impl.py:5064` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
 | `_handle_rate_limited_parking` | async helper | `_impl.py:4960` | Park provider on 429/overload/session-limit. |
 | `unclaim` | async verb | `_impl.py:5169` | Release claimed task → pending (optional reassign). |
-| `reassign` | async verb | `_impl.py:5336` | Reassign task with `_validate_reassign`. |
-| `resume` | async verb | `_impl.py:5847` | Resume paused/blocked task. |
-| `sync_branch` | async verb | `_impl.py:5955` | Gate-level rebase verb (new since baseline). |
-| `i_am_idle` | async verb | `_impl.py:6192` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
-| `i_will_plan` | async verb | `_impl.py:6839` | PM plan verb; `_pm_sub_tasks_gate` enforces substantive approach/sub_tasks. |
-| `delegate` | async verb | `_impl.py:6947` | PM creates subtask; sizing, sibling-dedup, spine-cap, lifecycle guards; `_create_subtask_from_inputs`. |
-| `submit_up` | async verb | `_impl.py:8350` | Cell PM opens cell→root PR + enters `awaiting_pr_review`; unchanged-PR guard. |
-| `submit_root` | async verb | `_impl.py:9745` | Main PM opens root→master PR + enters gate; umbrella hard-reject + unchanged-PR guard. |
-| `_submit_root_unchanged_pr_guard` | async helper | `_impl.py:9674` | Loop-stopper: refuse re-submit when PR head SHA == last `pr_fail` SHA. Fail-open on ambiguity. |
-| `_current_pr_head_sha` | async helper | `_impl.py:9689` | Best-effort current PR head SHA via `_project_slug_for` + `git.get_pr_head_sha`. |
-| `complete` | async verb | `_impl.py:10143` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
-| `main_pm_complete` | async verb | `_impl.py:10028` | Main PM merge + escalate to CEO (never merges master itself). |
-| `escalate_to_ceo` | async verb | `_impl.py:10683` | Escalate to `awaiting_ceo_approval`. |
-| `unblock` | async verb | `_impl.py:8807` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
-| `_oscillation_unblock_guard` | async helper | `_impl.py:8903` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
-| `_maybe_trip_oscillation_breaker` | async helper | `_impl.py:8932` | Task-scoped strike counter (#685) at the `unblock()` chokepoint (agent-agnostic — legitimate `needs_revision` rework never calls `unblock`, so it structurally can't trip this): `markers.bump_oscillation_strikes(t, progress_fp)` where the progress fingerprint is commit count + `revision_count` + `terminal_children_count` (a coordination root's children advancing between escalations resets the count); past threshold, sets `blocker_resolver_type=HUMAN`, marks the task oscillation-tripped, and best-effort notifies the CEO (`_notify_ceo_oscillation`) naming both agents + the cycle count. |
+| `reassign` | async verb | `_impl.py:5366` | Reassign task with `_validate_reassign`. |
+| `resume` | async verb | `_impl.py:5877` | Resume paused/blocked task. |
+| `sync_branch` | async verb | `_impl.py:5985` | Gate-level rebase verb (new since baseline). |
+| `i_am_idle` | async verb | `_impl.py:6222` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
+| `i_will_plan` | async verb | `_impl.py:6869` | PM plan verb; `_pm_sub_tasks_gate` enforces substantive approach/sub_tasks. |
+| `delegate` | async verb | `_impl.py:6977` | PM creates subtask; sizing, sibling-dedup, spine-cap, lifecycle guards; `_create_subtask_from_inputs`. |
+| `submit_up` | async verb | `_impl.py:8380` | Cell PM opens cell→root PR + enters `awaiting_pr_review`; unchanged-PR guard. |
+| `submit_root` | async verb | `_impl.py:9775` | Main PM opens root→master PR + enters gate; umbrella hard-reject + unchanged-PR guard. |
+| `_submit_root_unchanged_pr_guard` | async helper | `_impl.py:9704` | Loop-stopper: refuse re-submit when PR head SHA == last `pr_fail` SHA. Fail-open on ambiguity. |
+| `_current_pr_head_sha` | async helper | `_impl.py:9719` | Best-effort current PR head SHA via `_project_slug_for` + `git.get_pr_head_sha`. |
+| `complete` | async verb | `_impl.py:10173` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
+| `main_pm_complete` | async verb | `_impl.py:10058` | Main PM merge + escalate to CEO (never merges master itself). |
+| `escalate_to_ceo` | async verb | `_impl.py:10713` | Escalate to `awaiting_ceo_approval`. |
+| `unblock` | async verb | `_impl.py:8837` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
+| `_oscillation_unblock_guard` | async helper | `_impl.py:8933` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
+| `_maybe_trip_oscillation_breaker` | async helper | `_impl.py:8962` | Task-scoped strike counter (#685) at the `unblock()` chokepoint (agent-agnostic — legitimate `needs_revision` rework never calls `unblock`, so it structurally can't trip this): `markers.bump_oscillation_strikes(t, progress_fp)` where the progress fingerprint is commit count + `revision_count` + `terminal_children_count` (a coordination root's children advancing between escalations resets the count); past threshold, sets `blocker_resolver_type=HUMAN`, marks the task oscillation-tripped, and best-effort notifies the CEO (`_notify_ceo_oscillation`) naming both agents + the cycle count. |
 | `VerbRunner.run_intent` | async method | `_verb_runner.py:55` | pre_side_effects → SAVEPOINT(composes) → side_effects; intermediate-None raises INVALID_STATE. |
 | `VerbRunner._do_pr_merge` | async handler | `_verb_runner.py:461` | `pr_merge` with `project_id` scoping (cross-repo collision fix) + `resolve_parent_branch`. |
 | `ChoreographerHelpers` | stub class | `_protocol.py:31` | TYPE_CHECKING-only typed view of `self` helpers for role mixins. |
@@ -182,11 +182,11 @@ Choreographer (composed class, _impl.py)
 |-------|-----------|-------|----------|
 | Intermediate-None contract depends on every verb body handling trailing None | `_verb_runner.py:89` + `_impl.py:1277,6358` | A verb that forgets the trailing-None guard None-derefs `t.status`; submit_root + claim_plan_start handle it, but any NEW verb using `run_intent` with a possibly-None last action inherits the trap. **Side-effect crash path closed (0e7674af)**: `run_intent` now skips the `side_effects` loop on a trailing `None`, so `_do_push_branch(None)` no longer crashes. Verb bodies still need to handle `None` return for their own error messaging but will not AttributeError. Risk reduced: runner-level crash path fixed; verb-body None-deref in messaging remains a code-discipline risk. | High → Medium |
 | `pr_merge` project_id scoping assumes `task.project_id` is non-None | `_verb_runner.py:263` | `project_id=task.project_id` — if a coordination/umbrella task ever reaches `pr_merge` with `project_id=None`, the cross-repo collision guard silently matches nothing or None-keys the scoping; could merge the wrong PR or no-op. | High |
-| `_submit_root_unchanged_pr_guard` / `_submit_up_unchanged_pr_guard` fail open on resolver regressions | `_impl.py:9674,9725` | Any future break in `_current_pr_head_sha` / `_project_slug_for` / `git.get_pr_head_sha` makes the loop-stopper a no-op, re-opening the 2026-06-27 pr_fail re-submit loop. **Partially mitigated (536bbb64)**: `_current_pr_head_sha` now emits a `structlog.warning` on resolver failure so the fail-open path is observable in logs; the underlying fail-open behavior is intentional and unchanged. | High |
+| `_submit_root_unchanged_pr_guard` / `_submit_up_unchanged_pr_guard` fail open on resolver regressions | `_impl.py:9704,9755` | Any future break in `_current_pr_head_sha` / `_project_slug_for` / `git.get_pr_head_sha` makes the loop-stopper a no-op, re-opening the 2026-06-27 pr_fail re-submit loop. **Partially mitigated (536bbb64)**: `_current_pr_head_sha` now emits a `structlog.warning` on resolver failure so the fail-open path is observable in logs; the underlying fail-open behavior is intentional and unchanged. | High |
 | `_lane_claim_guard` calls `release_dependency_blocked_claim` on lookup error | `_impl.py:1866` | Fail-closed path releases the claim before returning the error envelope; if the lookup error is transient the dev is bounced + work-session abandoned even though the lane was actually free. | Medium |
 | `complete` umbrella-in-progress bypass skips the spec AWAITING_PM_REVIEW status check | `_impl.py:10183` | `_is_umbrella_in_progress` mis-classification (e.g. a non-batch branchless task with matching predicates) lets a non-awaiting_pm_review task reach `main_pm_complete`/`cell_pm_complete`. | Medium |
 | `_run_claim_guards` dependency re-check narrows but does not close the race | `_impl.py:1490` | The re-check returns None (skip release) when fresh read sees deps met, but the window between re-check and the caller's claim is still unlocked; a concurrent terminal transition there is benign (monotonic), but a non-monotonic future status could re-open. | Low |
-| `submit_root` runs `create_root_pr` as a pre_side_effect OUTSIDE the savepoint | `_verb_runner.py:67` + `_impl.py:9745` | If a later composed `submit_for_review` raises, the root→master PR is already opened and NOT rolled back; re-issue is idempotent-by-contract but a non-idempotent future pre_side_effect would leak. | Medium |
+| `submit_root` runs `create_root_pr` as a pre_side_effect OUTSIDE the savepoint | `_verb_runner.py:67` + `_impl.py:9775` | If a later composed `submit_for_review` raises, the root→master PR is already opened and NOT rolled back; re-issue is idempotent-by-contract but a non-idempotent future pre_side_effect would leak. | Medium |
 | `_i_am_done_gate` writes AC criteria status AFTER all gates pass but BEFORE `run_intent` | `_impl.py:3059` | `_write_criteria_status` runs in the gate phase; if `run_intent("i_am_done")` then raises, the AC status rows persist for a task that did not transition — a stale write the next attempt must overwrite. | Low |
 
 ## Health

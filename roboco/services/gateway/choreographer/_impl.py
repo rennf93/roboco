@@ -5333,6 +5333,36 @@ class Choreographer:
             )
         return None
 
+    async def _reassign_guard(
+        self, t: Any, agent_id: UUID, task_id: UUID, new_assignee: str
+    ) -> Envelope | None:
+        """``_validate_reassign`` plus the target's own single-active-task rule.
+
+        Handing an active task to a developer that still holds claimed,
+        in_progress, blocked or paused work stacks a task that developer's own
+        ``i_will_work_on`` refuses (live 2026-10-28: be-pm reassigned 6d4baecf
+        to be-dev-2 while it held a blocked and a paused task, and neither dev
+        could start it afterwards).
+        """
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        if guard := self._validate_reassign(t, agent_id, new_assignee):
+            return guard
+        held = await self.task.held_task_blocking_claim(
+            UUID(AGENT_UUIDS[new_assignee]), task_id
+        )
+        if held is None:
+            return None
+        return Envelope.invalid_state(
+            message=f"{new_assignee} still holds {held.status} task {held.id}",
+            remediate=(
+                "reassign to a developer with no claimed, in_progress, blocked"
+                " or paused task; a busy developer's own i_will_work_on refuses"
+                " this task until that work is finished"
+            ),
+            context_briefing={},
+        )
+
     async def reassign(
         self, agent_id: UUID, task_id: UUID, new_assignee: str
     ) -> Envelope:
@@ -5384,7 +5414,7 @@ class Choreographer:
                 task_id=task_id,
                 verb="reassign",
             )
-        guard = self._validate_reassign(t, agent_id, new_assignee)
+        guard = await self._reassign_guard(t, agent_id, task_id, new_assignee)
         if guard is not None:
             return await self._emit_rejection(
                 guard.with_introspection(task=t, role=role_str),
