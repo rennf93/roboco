@@ -7,7 +7,10 @@ carries the same rules as ``CLAUDE.md`` and is read by the same prose gate,
 but sat outside the filters. These tests take the gate's inputs from the
 tracked files (every Python file, which ruff, mypy and vulture read, and the
 Markdown that ``scripts/reflow_md.py`` checks) and fail when one falls outside
-the filters, or when the two triggers' filters drift apart.
+the filters, or when the two triggers' filters drift apart. One more test
+covers every workflow: a path filter that names no tracked file (a file that
+moved or was deleted) never fires, so its workflow silently stops running for
+the file it was meant to watch.
 """
 
 from __future__ import annotations
@@ -29,7 +32,8 @@ if TYPE_CHECKING:
 #   parents[1] = tests
 #   parents[2] = <repo root>
 ROOT = Path(__file__).parents[2]
-_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+_WORKFLOWS = ROOT / ".github" / "workflows"
+_WORKFLOW = _WORKFLOWS / "ci.yml"
 _REFLOW_MD = ROOT / "scripts" / "reflow_md.py"
 
 
@@ -104,3 +108,32 @@ def test_every_python_file_fires_ci() -> None:
     python = [f for f in _tracked_files() if f.endswith(".py")]
     assert python, "found no tracked Python files"
     assert _uncovered(python) == []
+
+
+def _every_workflow_path_filter() -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+        doc = cast("dict[Any, Any]", yaml.safe_load(workflow.read_text()))
+        # PyYAML parses the bare `on:` key as boolean True under YAML 1.1 rules.
+        triggers = doc.get(True)
+        if not isinstance(triggers, dict):
+            continue
+        for event, config in triggers.items():
+            if isinstance(config, dict):
+                found.extend(
+                    (f"{workflow.name} {event}", pattern)
+                    for pattern in config.get("paths") or []
+                )
+    return found
+
+
+def test_every_workflow_path_filter_matches_a_tracked_file() -> None:
+    filters = _every_workflow_path_filter()
+    assert filters, "found no path filters in .github/workflows"
+    files = _tracked_files()
+    dead = [
+        f"{where}: {pattern}"
+        for where, pattern in filters
+        if not any(_github_glob(pattern).match(f) for f in files)
+    ]
+    assert dead == []
