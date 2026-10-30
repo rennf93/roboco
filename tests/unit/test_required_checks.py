@@ -115,6 +115,20 @@ def test_each_required_check_is_one_job_in_its_own_workflow() -> None:
     assert owners == {check: [wf] for check, wf in REQUIRED_CHECKS.items()}
 
 
+@pytest.mark.parametrize(("check", "workflow"), sorted(REQUIRED_CHECKS.items()))
+def test_no_required_check_job_has_a_matrix(check: str, workflow: str) -> None:
+    # GitHub appends a matrix job's values to its check name (the CodeQL jobs
+    # reported `code-ql (python, none)`), so the bare required name would
+    # never report.
+    jobs = [
+        job
+        for job_id, job in _jobs(workflow).items()
+        if _check_name(job_id, job) == check
+    ]
+    assert jobs
+    assert all("matrix" not in job.get("strategy", {}) for job in jobs)
+
+
 @pytest.mark.parametrize("workflow", sorted(set(REQUIRED_CHECKS.values())))
 def test_pull_requests_start_the_workflow_whatever_they_touch(workflow: str) -> None:
     pull_request = _triggers(workflow)["pull_request"] or {}
