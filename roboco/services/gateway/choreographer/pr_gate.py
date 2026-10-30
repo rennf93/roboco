@@ -72,16 +72,23 @@ logger = structlog.get_logger()
 # codeql-js-ts.yml), i.e. the scope CodeQL actually analyzed. A task whose
 # declared `intends_to_touch` scope never overlaps that filter can still see
 # the check fail on a pre-existing alert elsewhere in the codebase — that
-# failure is not this task's to fix.
+# failure is not this task's to fix. The checks are named `code-ql` and
+# `codeql-js-ts`, the names master's ruleset requires; `Analyze (<language>)`
+# is what they were called before, still reported by push runs on branches
+# cut before the rename.
+_CODEQL_PYTHON_SCOPE = (
+    "roboco/**",
+    "agents/**",
+    "alembic/**",
+    "scripts/**",
+    "pyproject.toml",
+)
+_CODEQL_JS_TS_SCOPE = ("panel/**",)
 _CODEQL_CHECK_SCOPES: dict[str, tuple[str, ...]] = {
-    "Analyze (python)": (
-        "roboco/**",
-        "agents/**",
-        "alembic/**",
-        "scripts/**",
-        "pyproject.toml",
-    ),
-    "Analyze (javascript-typescript)": ("panel/**",),
+    "code-ql": _CODEQL_PYTHON_SCOPE,
+    "codeql-js-ts": _CODEQL_JS_TS_SCOPE,
+    "Analyze (python)": _CODEQL_PYTHON_SCOPE,
+    "Analyze (javascript-typescript)": _CODEQL_JS_TS_SCOPE,
 }
 
 
@@ -1824,7 +1831,7 @@ class PRGateMixin(_Base):
                     branch_name=t.branch_name, preferred_parent=gate_parent
                 )
             )
-        except Exception as exc:  # best-effort; drift omits on failure
+        except Exception as exc:
             logger.warning(
                 "gate_review_files_changed_skip",
                 task_id=str(t.id),

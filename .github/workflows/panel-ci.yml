@@ -23,9 +23,9 @@ on:
       - master
       # Fleet PRs target the dev branch — see ci.yml's pull_request note.
       - slave
-    paths:
-      - 'panel/**'
-      - '.github/workflows/panel-ci.yml'
+    # No `paths:` here: master's ruleset requires the `panel-ci` check, and a
+    # workflow a paths filter skips never reports it. The job's first step
+    # applies the push trigger's paths instead (see ci.yml).
   workflow_dispatch:
 
 # A fleet branch that's also an open PR head can get both a `push` and a
@@ -35,13 +35,16 @@ on:
 # resolve to the SAME branch name, so the two event shapes share one group —
 # plain `github.ref` would NOT (it's `refs/pull/<n>/merge` for pull_request
 # vs `refs/heads/<branch>` for push, so it'd never collapse them).
+# Named after the required check, not the workflow, so a branch still on the
+# pre-rename definition never cancels this one (see ci.yml).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: check-panel-ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   panel:
-    name: Panel (Next.js)
+    # Master's ruleset requires a check with exactly this name.
+    name: panel-ci
     runs-on: ubuntu-latest
 
     defaults:
@@ -62,7 +65,21 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Match the PR's files against the push trigger's paths
+        id: paths
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # The push trigger's paths, verbatim (tests/unit/test_required_checks.py
+          # keeps the two lists equal).
+          PATHS: |
+            panel/**
+            .github/workflows/panel-ci.yml
+        run: python3 .github/scripts/required_checks.py match-paths
+
       - name: Set up Node
+        if: steps.paths.outputs.relevant == 'true'
         uses: actions/setup-node@v7
         with:
           # pnpm 11 (pinned in panel/package.json via packageManager) requires
@@ -70,19 +87,25 @@ jobs:
           node-version: '22'
 
       - name: Enable corepack (pnpm)
+        if: steps.paths.outputs.relevant == 'true'
         run: corepack enable
 
       - name: Install dependencies
+        if: steps.paths.outputs.relevant == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Format check
+        if: steps.paths.outputs.relevant == 'true'
         run: pnpm format:check
 
       - name: Lint
+        if: steps.paths.outputs.relevant == 'true'
         run: pnpm lint
 
       - name: Type-check
+        if: steps.paths.outputs.relevant == 'true'
         run: pnpm exec tsc --noEmit
 
       - name: Test (vitest + coverage)
+        if: steps.paths.outputs.relevant == 'true'
         run: pnpm test

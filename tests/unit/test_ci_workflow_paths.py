@@ -1,22 +1,21 @@
 """``.github/workflows/ci.yml`` runs on every file ``make quality`` reads.
 
-Both CI triggers are path-filtered, and a commit that touches only files
-outside the filters runs no CI at all: whatever gate it breaks stays red but
-unseen until a later commit happens to fire a run. ``AGENTS.md``, for one,
-carries the same rules as ``CLAUDE.md`` and is read by the same prose gate,
-but sat outside the filters. These tests take the gate's inputs from the
-tracked files (every Python file, which ruff, mypy and vulture read, and the
-Markdown that ``scripts/reflow_md.py`` checks) and fail when one falls outside
-the filters, or when the two triggers' filters drift apart. One more test
-covers every workflow: a path filter that names no tracked file (a file that
-moved or was deleted) never fires, so its workflow silently stops running for
-the file it was meant to watch.
+The push trigger is path-filtered (a pull request applies the same paths
+inside the job, see ``test_required_checks.py``), and a commit that touches
+only files outside the filters runs no CI at all: whatever gate it breaks
+stays red but unseen until a later commit happens to fire a run.
+``AGENTS.md``, for one, carries the same rules as ``CLAUDE.md`` and is read by
+the same prose gate, but sat outside the filters. These tests take the gate's
+inputs from the tracked files (every Python file, which ruff, mypy and vulture
+read, and the Markdown that ``scripts/reflow_md.py`` checks) and fail when one
+falls outside the filters. One more test covers every workflow: a path filter
+that names no tracked file (a file that moved or was deleted) never fires, so
+its workflow silently stops running for the file it was meant to watch.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import re
 import subprocess
 from functools import cache
 from pathlib import Path
@@ -25,7 +24,9 @@ from typing import TYPE_CHECKING, Any, cast
 import yaml
 
 if TYPE_CHECKING:
+    import re
     from collections.abc import Callable
+    from types import ModuleType
 
 # tests/unit/test_ci_workflow_paths.py
 #   parents[0] = unit
@@ -35,6 +36,7 @@ ROOT = Path(__file__).parents[2]
 _WORKFLOWS = ROOT / ".github" / "workflows"
 _WORKFLOW = _WORKFLOWS / "ci.yml"
 _REFLOW_MD = ROOT / "scripts" / "reflow_md.py"
+_REQUIRED_CHECKS = ROOT / ".github" / "scripts" / "required_checks.py"
 
 
 @cache
@@ -44,27 +46,31 @@ def _triggers() -> dict[str, Any]:
     return cast("dict[str, Any]", doc[True])
 
 
-def _paths(trigger: str) -> list[str]:
-    return cast("list[str]", _triggers()[trigger]["paths"])
+def _push_paths() -> list[str]:
+    return cast("list[str]", _triggers()["push"]["paths"])
+
+
+def _load_script(name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@cache
+def _required_checks() -> ModuleType:
+    return _load_script("required_checks", _REQUIRED_CHECKS)
 
 
 def _github_glob(pattern: str) -> re.Pattern[str]:
-    """Compile a paths-filter pattern with GitHub's meaning of ``*`` and ``**``.
-
-    ``*`` matches within one path segment and ``**`` across segments. The
-    filters use no other glob syntax; refuse it rather than misread it.
-    """
-    assert not set(pattern) & set("?+[]!"), f"unsupported glob in {pattern!r}"
-    parts = re.split(r"(\*\*|\*)", pattern)
-    regex = "".join(
-        ".*" if part == "**" else "[^/]*" if part == "*" else re.escape(part)
-        for part in parts
-    )
-    return re.compile(rf"{regex}\Z")
+    """GitHub's reading of a paths-filter pattern (``required_checks.github_glob``)."""
+    return cast("re.Pattern[str]", _required_checks().github_glob(pattern))
 
 
 def _uncovered(files: list[str]) -> list[str]:
-    filters = [_github_glob(pattern) for pattern in _paths("push")]
+    filters = [_github_glob(pattern) for pattern in _push_paths()]
     return [f for f in files if not any(p.match(f) for p in filters)]
 
 
@@ -83,18 +89,8 @@ def _tracked_files() -> list[str]:
 
 
 def _prose_gate_in_scope() -> Callable[[Path], bool]:
-    spec = importlib.util.spec_from_file_location("reflow_md", _REFLOW_MD)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_script("reflow_md", _REFLOW_MD)
     return cast("Callable[[Path], bool]", module.in_scope)
-
-
-def test_push_and_pull_request_filter_the_same_paths() -> None:
-    # A fork PR only fires `pull_request`, a fleet branch push only `push`:
-    # a path missing from either one leaves that route with no run.
-    assert _paths("push") == _paths("pull_request")
 
 
 def test_every_markdown_file_the_prose_gate_checks_fires_ci() -> None:

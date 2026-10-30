@@ -77,38 +77,12 @@ on:
       # one. Basing on the target branch (what the PR merges INTO) instead
       # of the head's name makes coverage independent of branch naming.
       - slave
-    paths:
-      - 'roboco/**'
-      - 'agents/**'
-      - 'alembic/**'
-      - 'tests/**'
-      - 'scripts/**'
-      - 'docker/**'
-      - 'docker-compose.yml'
-      # The compose-sync gate (Makefile) enforces docker-compose.yaml ==
-      # docker-compose.yml, and docker-compose.registry.yml is what
-      # `make quickstart` pulls. A commit touching only the twin or the
-      # registry file fired no run, so the fail-closed release gate read
-      # the missing conclusion as "unknown" and blocked every proposal;
-      # a compose-sync drift also slipped through uncaught. Watch all three.
-      - 'docker-compose.yaml'
-      - 'docker-compose.registry.yml'
-      - 'Makefile'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'alembic.ini'
-      - '.github/workflows/ci.yml'
-      # Kept identical to the push trigger's paths above so an external-fork
-      # PR touching only these (panel/docs-only, motion-only, ...) still
-      # fires CI instead of merging on a false "no checks required" green.
-      - 'panel/**'
-      - 'docs/**'
-      - 'motion/**'
-      - 'docs-redirects/**'
-      - '*.md'
-      - '.github/**.md'
-      - '.github/scripts/**'
-      - 'vulture_whitelist.py'
+    # No `paths:` here. Master's ruleset requires this workflow's `ci` check,
+    # and a workflow a paths filter skips never reports it, which blocks the
+    # PR for good. The job's first step applies the push trigger's paths
+    # instead (.github/scripts/required_checks.py), so an external-fork PR
+    # touching only panel/docs/motion files still runs the gate, and every
+    # PR into master runs it in full.
   workflow_dispatch:
 
 # A fleet branch that's also an open PR head can get both a `push` and a
@@ -118,13 +92,19 @@ on:
 # resolve to the SAME branch name, so the two event shapes share one group —
 # plain `github.ref` would NOT (it's `refs/pull/<n>/merge` for pull_request
 # vs `refs/heads/<branch>` for push, so it'd never collapse them).
+# The group carries the required check's name rather than the workflow's: a
+# branch cut before the job became `ci` still runs the old definition on
+# push, and if the two shared a group a cancelled run would leave its check
+# under a name no later run reports again (the fleet keeps the newest run per
+# check name, so that cancelled check would read as red for good).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: check-ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   quality:
-    name: Python quality gate
+    # Master's ruleset requires a check with exactly this name.
+    name: ci
     runs-on: ubuntu-latest
 
     services:
@@ -189,19 +169,56 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Match the PR's files against the push trigger's paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # The push trigger's paths, verbatim (tests/unit/test_required_checks.py
+          # keeps the two lists equal).
+          PATHS: |
+            roboco/**
+            agents/**
+            alembic/**
+            tests/**
+            scripts/**
+            docker/**
+            docker-compose.yml
+            docker-compose.yaml
+            docker-compose.registry.yml
+            Makefile
+            pyproject.toml
+            uv.lock
+            alembic.ini
+            .github/workflows/ci.yml
+            panel/**
+            docs/**
+            motion/**
+            docs-redirects/**
+            *.md
+            .github/**.md
+            .github/scripts/**
+            vulture_whitelist.py
+        run: python3 .github/scripts/required_checks.py match-paths
+
       - name: Set up Python
+        if: steps.paths.outputs.relevant == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
       - name: Install uv
+        if: steps.paths.outputs.relevant == 'true'
         run: pip install uv
 
       - name: Install dependencies
+        if: steps.paths.outputs.relevant == 'true'
         run: uv sync --extra dev
 
       - name: Apply database migrations
+        if: steps.paths.outputs.relevant == 'true'
         run: uv run alembic upgrade head
 
       - name: Run quality gate
+        if: steps.paths.outputs.relevant == 'true'
         run: make quality
