@@ -113,6 +113,8 @@ echo "[deploy] app/$COLOR: content-gated image builds..."
 #     agent images rebuild (they bake the roboco venv) - panel does NOT.
 #   - panel/ changes -> panel rebuilds only.
 #   - docker/ changes (Dockerfiles, entrypoints) -> everything rebuilds.
+#     The Docker gate (docker/docker-gate/) reads nothing else, so it
+#     rebuilds on docker/ changes alone.
 # Missing images always build (the fixpoint pass below is unchanged, so the
 # 2026-09-25 total-wipe recovery still works). The global CONTEXT_HASH label
 # stamped on builds stays as provenance; freshness is decided here, per
@@ -138,11 +140,12 @@ PANEL_HASH=$(hash_paths panel)
 DOCKER_HASH=$(hash_paths docker)
 echo "[deploy] content hashes: roboco=$ROBOCO_HASH panel=$PANEL_HASH docker=$DOCKER_HASH"
 
-family_hash() { # family_hash <agent|orch|panel>
+family_hash() { # family_hash <agent|orch|panel|gate>
   case "$1" in
     agent) printf '%s' "agent $ROBOCO_HASH $DOCKER_HASH" ;;
     orch)  printf '%s' "orch $ROBOCO_HASH $DOCKER_HASH" ;;
     panel) printf '%s' "panel $PANEL_HASH $DOCKER_HASH" ;;
+    gate)  printf '%s' "gate $DOCKER_HASH" ;;
   esac | sha256sum | cut -c1-16
 }
 
@@ -151,6 +154,7 @@ image_family() { # image_family <name-without-roboco-prefix>
     panel*) echo panel ;;
     orchestrator*|indexer*|dispatcher*|decisions*|video-renderer*|sandbox*)
       echo orch ;;
+    docker-gate*) echo gate ;;
     *) echo agent ;;
   esac
 }
@@ -243,7 +247,7 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
           continue
         fi
         case "$name" in
-          orchestrator-*|panel-*)
+          orchestrator-*|panel-*|docker-gate-*)
             # Compose-defined builds (the live color's app services).
             echo "[deploy] building $img (compose) ..."
             if "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name"; then
@@ -326,7 +330,7 @@ for round in 1 2 3 4 5 6; do
         name="${img#roboco-}"
         case "$name" in
           orchestrator|panel) continue ;;
-          orchestrator-*|panel-*)
+          orchestrator-*|panel-*|docker-gate-*)
             echo "[deploy] building $img (compose, round $round) ..."
             if "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name"; then
               record_fresh
@@ -408,11 +412,12 @@ echo "[deploy] bringing up $COLOR ..."
 # them, so a named-service up would otherwise never start the store
 # ROBOCO_MINIO_ENDPOINT points at or the default research provider.
 if [ "$COLOR" = "green" ]; then
-  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green decisions rustfs rustfs-init searxng
+  "${COMPOSE[@]}" up -d --build docker-gate-green orchestrator-green dispatcher-green indexer-green panel-green decisions rustfs rustfs-init searxng
   "${COMPOSE[@]}" up -d nginx
 else
-  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions rustfs rustfs-init searxng nginx
+  "${COMPOSE[@]}" up -d --build docker-gate-blue orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions rustfs rustfs-init searxng nginx
 fi
+wait_healthy "roboco-docker-gate-$COLOR"
 wait_healthy "roboco-orchestrator-$COLOR"
 wait_healthy roboco-postgres
 wait_healthy roboco-ollama
@@ -500,7 +505,7 @@ fi
 # finished handing off, so stopping it now drops nothing.
 if [ -n "$("${COMPOSE[@]}" ps -q "orchestrator-$OTHER")" ]; then
   echo "[deploy] stopping $OTHER (kept for rollback: re-run with --color $OTHER)..."
-  "${COMPOSE[@]}" stop "orchestrator-$OTHER" "dispatcher-$OTHER" "indexer-$OTHER" "panel-$OTHER"
+  "${COMPOSE[@]}" stop "orchestrator-$OTHER" "dispatcher-$OTHER" "indexer-$OTHER" "panel-$OTHER" "docker-gate-$OTHER"
 fi
 
 wait_healthy roboco-nginx || wait_healthy roboco-nginx

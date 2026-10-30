@@ -326,8 +326,10 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_TASK_BUDGETS_ENABLED: ${ROBOCO_TASK_BUDGETS_ENABLED:-true}
 
 x-orchestrator-volumes: &orchestrator-volumes
-  # Docker socket - allows spawning agent containers
-  - /var/run/docker.sock:/var/run/docker.sock
+  # Docker only through the gate (docker-gate-<color>, trail #34): the gate
+  # holds the host socket, and each service's DOCKER_HOST points the docker
+  # CLI at its own color's gate socket in this volume.
+  - docker-gate:/run/roboco-docker
   # Claude Code auth - mount your ~/.claude directory
   - ${CLAUDE_AUTH_DIR:-/home/renzof/.claude}:/root/.claude
   # SuperGrok auth — mount the host ~/.grok at the SAME host path the
@@ -1059,6 +1061,63 @@ services:
   # must never overwrite the image blue stands on. Agent image builders keep
   # SHARED tags (forward-compatible runtime clay, no per-color rollback).
   # ==========================================================================
+  # ==========================================================================
+  # Docker gate (trail #34) - the orchestrator's only way to Docker. Each
+  # color's gate holds the host socket and serves that color's api and
+  # dispatcher on /run/roboco-docker/<color>.sock (the docker-gate volume),
+  # forwarding only the Engine API calls RoboCo makes
+  # (docker/docker-gate/gate.py). It runs as 0:0 because the host socket is
+  # root:docker 0660 and the docker group's gid differs per host; the image's
+  # own USER is 65534, and every capability but CHOWN is dropped. Builds pass
+  # here (GATE_ALLOW_BUILD) because this file builds agent images locally;
+  # the registry file's gate refuses them.
+  # ==========================================================================
+  docker-gate-blue:
+    build:
+      context: .
+      dockerfile: docker/docker-gate.Dockerfile
+    image: roboco-docker-gate-blue
+    container_name: roboco-docker-gate-blue
+    restart: unless-stopped
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GATE_LISTEN: /run/roboco-docker/blue.sock
+      GATE_ALLOW_BUILD: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - docker-gate:/run/roboco-docker
+
+  docker-gate-green:
+    build:
+      context: .
+      dockerfile: docker/docker-gate.Dockerfile
+    image: roboco-docker-gate-green
+    container_name: roboco-docker-gate-green
+    restart: unless-stopped
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GATE_LISTEN: /run/roboco-docker/green.sock
+      GATE_ALLOW_BUILD: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - docker-gate:/run/roboco-docker
+
   orchestrator-blue:
     build:
       context: .
@@ -1087,6 +1146,7 @@ services:
       # loopback here (2026-09-06 incident: it flows to every agent).
       ROBOCO_API_URL: http://roboco-dispatcher-blue:8000
       ROBOCO_ROLE: api
+      DOCKER_HOST: unix:///run/roboco-docker/blue.sock
     volumes: *orchestrator-volumes
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
@@ -1105,6 +1165,8 @@ services:
         condition: service_completed_successfully
       agent-base-image:
         condition: service_completed_successfully
+      docker-gate-blue:
+        condition: service_healthy
   orchestrator-green:
     build:
       context: .
@@ -1129,6 +1191,7 @@ services:
       # Agent-facing API URL, green's own dispatcher (see orchestrator-blue).
       ROBOCO_API_URL: http://roboco-dispatcher-green:8000
       ROBOCO_ROLE: api
+      DOCKER_HOST: unix:///run/roboco-docker/green.sock
     volumes: *orchestrator-volumes
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
@@ -1147,6 +1210,8 @@ services:
         condition: service_completed_successfully
       agent-base-image:
         condition: service_completed_successfully
+      docker-gate-green:
+        condition: service_healthy
   # ==========================================================================
   # Dispatcher - runs every Orchestrator background loop (dispatch, reaper,
   # rate-limit probe, self-heal, CI-watch, dep-update, release manager, board
@@ -1171,6 +1236,7 @@ services:
       # Agent-facing API URL, blue's own dispatcher (see orchestrator-blue).
       ROBOCO_API_URL: http://roboco-dispatcher-blue:8000
       ROBOCO_ROLE: dispatcher
+      DOCKER_HOST: unix:///run/roboco-docker/blue.sock
     volumes: *orchestrator-volumes
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
@@ -1181,6 +1247,8 @@ services:
     profiles: ["blue"]
     depends_on:
       orchestrator-blue:
+        condition: service_healthy
+      docker-gate-blue:
         condition: service_healthy
 
   dispatcher-green:
@@ -1197,6 +1265,7 @@ services:
       # Agent-facing API URL, green's own dispatcher (see orchestrator-blue).
       ROBOCO_API_URL: http://roboco-dispatcher-green:8000
       ROBOCO_ROLE: dispatcher
+      DOCKER_HOST: unix:///run/roboco-docker/green.sock
     volumes: *orchestrator-volumes
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
@@ -1207,6 +1276,8 @@ services:
     profiles: ["green"]
     depends_on:
       orchestrator-green:
+        condition: service_healthy
+      docker-gate-green:
         condition: service_healthy
 
   # ==========================================================================
@@ -1365,6 +1436,9 @@ networks:
     name: roboco_render
 
 volumes:
+  # The Docker gate's sockets, one per color (docker-gate-<color>). It holds
+  # nothing but sockets, so nothing is lost when it is recreated.
+  docker-gate:
   # Named volume for RustFS: keeps rendered-video storage out of the
   # ${ROBOCO_DATA_DIR} bind-mount sprawl; docker-managed durable store.
   rustfs-data:

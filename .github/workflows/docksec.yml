@@ -10,6 +10,7 @@ on:
       - 'docker/video-renderer.Dockerfile'
       - 'docker/decisions.Dockerfile'
       - 'docker/sandbox-pg.Dockerfile'
+      - 'docker/docker-gate.Dockerfile'
       - '.github/workflows/docksec.yml'
   pull_request:
     paths:
@@ -19,6 +20,7 @@ on:
       - 'docker/video-renderer.Dockerfile'
       - 'docker/decisions.Dockerfile'
       - 'docker/sandbox-pg.Dockerfile'
+      - 'docker/docker-gate.Dockerfile'
       - '.github/workflows/docksec.yml'
   schedule:
     - cron: '0 6 * * 1'
@@ -44,6 +46,7 @@ jobs:
           - docker/video-renderer.Dockerfile
           - docker/decisions.Dockerfile
           - docker/sandbox-pg.Dockerfile
+          - docker/docker-gate.Dockerfile
     env:
       DOCKERFILE: ${{ matrix.dockerfile }}
     steps:

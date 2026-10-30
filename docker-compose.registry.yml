@@ -265,7 +265,10 @@ x-orchestrator-env: &orchestrator-env
   # FileResponse. Arm via a custom override file.
 
 x-orchestrator-volumes: &orchestrator-volumes
-  - /var/run/docker.sock:/var/run/docker.sock
+  # Docker only through the gate (docker-gate, trail #34): the gate holds the
+  # host socket, and DOCKER_HOST points each service's docker CLI at the
+  # gate's socket in this volume.
+  - docker-gate:/run/roboco-docker
   - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude
   # SuperGrok auth — mount host ~/.grok at the SAME host path the orchestrator
   # hands each Grok agent's `-v`, so its auth.json exists() check passes here
@@ -705,6 +708,36 @@ services:
     restart: "no"
 
   # --------------------------------------------------------------------------
+  # Docker gate (trail #34) - the orchestrator's only way to Docker. It holds
+  # the host socket and serves the orchestrator and dispatcher on
+  # /run/roboco-docker/gate.sock (the docker-gate volume), forwarding only
+  # the Engine API calls RoboCo makes (docker/docker-gate/gate.py). It runs
+  # as 0:0 because the host socket is root:docker 0660 and the docker group's
+  # gid differs per host; the image's own USER is 65534, and every capability
+  # but CHOWN is dropped. Image builds are refused: this file pulls every
+  # image from the registry.
+  # --------------------------------------------------------------------------
+  docker-gate:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-docker-gate:${ROBOCO_VERSION:-latest}
+    container_name: roboco-docker-gate
+    restart: unless-stopped
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GATE_LISTEN: /run/roboco-docker/gate.sock
+      GATE_ALLOW_BUILD: "false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - docker-gate:/run/roboco-docker
+
+  # --------------------------------------------------------------------------
   # Orchestrator — API server + agent spawner
   # --------------------------------------------------------------------------
   orchestrator:
@@ -738,6 +771,7 @@ services:
       # run on the dispatcher service instead;
       # see roboco/runtime/orchestrator.py's AgentOrchestrator.start().
       ROBOCO_ROLE: api
+      DOCKER_HOST: unix:///run/roboco-docker/gate.sock
     volumes: *orchestrator-volumes
     healthcheck:
       # curl is purged from the runtime image after the docker-cli install
@@ -758,6 +792,8 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+      docker-gate:
+        condition: service_healthy
       agent-base-image:
         condition: service_completed_successfully
 
@@ -791,6 +827,7 @@ services:
       # loopback (2026-09-06 incident, see above).
       ROBOCO_API_URL: http://roboco-orchestrator:8000
       ROBOCO_ROLE: dispatcher
+      DOCKER_HOST: unix:///run/roboco-docker/gate.sock
     volumes: *orchestrator-volumes
     healthcheck:
       # curl is purged from the runtime image after the docker-cli install
@@ -804,6 +841,8 @@ services:
       start_period: 90s
     depends_on:
       orchestrator:
+        condition: service_healthy
+      docker-gate:
         condition: service_healthy
 
   # --------------------------------------------------------------------------
@@ -911,3 +950,8 @@ networks:
   # else on roboco_default or roboco_data.
   render:
     name: roboco_render
+
+volumes:
+  # The Docker gate's socket (docker-gate). It holds nothing but the socket,
+  # so nothing is lost when it is recreated.
+  docker-gate:
