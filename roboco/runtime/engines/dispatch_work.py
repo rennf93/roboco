@@ -1618,10 +1618,19 @@ class DispatchWorkEngine(_Base):
         # Tasks owned by PM/board/QA roles aren't this dispatcher's lane;
         # `_dispatch_pm_work` and the QA-pool path own them. Silently skip
         # so the warning only fires on actual dev/doc misassignments.
-        if agent_slug and not self._dev_dispatch_assignee_ok(task, agent_slug):
+        if not owner_uuid or not agent_slug:
+            return
+        if not self._dev_dispatch_assignee_ok(task, agent_slug):
             return
 
-        if agent_slug and status in (
+        # One task at a time: never boot the author onto a task its own
+        # i_will_work_on is refused for while it still holds other work.
+        if await self._work_author_holds_other_work(
+            client, task, owner_uuid, agent_slug
+        ):
+            return
+
+        if status in (
             "needs_revision",
             "in_progress",
             "claimed",
@@ -1631,8 +1640,7 @@ class DispatchWorkEngine(_Base):
             return
 
         # Pending tasks pre-assigned by PM.
-        if agent_slug:
-            await self._spawn_pending_dev(client, task, agent_slug)
+        await self._spawn_pending_dev(client, task, agent_slug)
 
     async def _spawn_assigned_qa(self, task: dict[str, Any], assigned_to: str) -> bool:
         """If task.assigned_to is a QA slug, spawn/skip-if-running; else False.
