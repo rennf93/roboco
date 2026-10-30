@@ -42,8 +42,11 @@ const R2_KEPT_AS_SHIPPED = new Set(["panel-demo", "release-announcement"]);
 
 const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 const RAW_TEXT_TAGS = new Set(["script", "style"]);
-const TOKEN = /<!--[\s\S]*?-->|<![^>]*>|<\/([a-zA-Z][\w-]*)\s*>|<([a-zA-Z][\w-]*)((?:\s+[^\s=>/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(\/?)>/g;
-const ATTRIBUTE = /([^\s=>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+// An unquoted attribute value excludes quotes, =, <, > and ` (as in the HTML
+// spec), so it can never also read as a quoted value: each attribute list has
+// one parse, and TOKEN cannot backtrack exponentially on a malformed tag.
+const TOKEN = /<!--[\s\S]*?-->|<![^>]*>|<\/([a-zA-Z][\w-]*)\s*>|<([a-zA-Z][\w-]*)((?:\s+[^\s=>/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>/g;
+const ATTRIBUTE = /([^\s=>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 function parseAttributes(source) {
   const attrs = {};
@@ -251,6 +254,8 @@ function choreographyDelay(element) {
   return Number.isFinite(first) ? [first] : [];
 }
 
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 function typeTextTargetIds(scripts) {
   const all = scripts.join("\n");
   const ids = [];
@@ -259,7 +264,7 @@ function typeTextTargetIds(scripts) {
     const arg = m[1].trim();
     const direct = /^document\.getElementById\(\s*["']([^"']+)["']\s*\)$/.exec(arg);
     const viaVariable = /^[A-Za-z_$][\w$]*$/.test(arg)
-      ? new RegExp(`\\b${arg.replace(/\$/g, "\\$")}\\s*=\\s*document\\.getElementById\\(\\s*["']([^"']+)["']\\s*\\)`).exec(all)
+      ? new RegExp(`\\b${escapeRegExp(arg)}\\s*=\\s*document\\.getElementById\\(\\s*["']([^"']+)["']\\s*\\)`).exec(all)
       : null;
     const id = direct?.[1] ?? viaVariable?.[1];
     if (id) ids.push(id);
