@@ -30,7 +30,11 @@ vi.mock("@/store/rate-limit-store", () => ({
 // ---------------------------------------------------------------------------
 // Import the function under test AFTER mocks are in place
 // ---------------------------------------------------------------------------
-import { getErrorMessage, isTgSurfacePath, isRetrySafe } from "@/lib/api/client";
+import {
+  getErrorMessage,
+  isTgSurfacePath,
+  isRetrySafe,
+} from "@/lib/api/client";
 import { AxiosHeaders } from "axios";
 
 // ---------------------------------------------------------------------------

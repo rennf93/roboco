@@ -62,7 +62,12 @@ describe("AgentGrid", () => {
 
   it("reflects a zero-agent group truthfully in the count badge", () => {
     render(
-      <AgentGrid title="Support" agents={[]} agentStatuses={{}} isLoading={false} />,
+      <AgentGrid
+        title="Support"
+        agents={[]}
+        agentStatuses={{}}
+        isLoading={false}
+      />,
     );
     expect(screen.getByText("Support")).toBeInTheDocument();
     expect(screen.getByText("0")).toBeInTheDocument();

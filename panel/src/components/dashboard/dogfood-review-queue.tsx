@@ -78,7 +78,9 @@ function FrictionFixItemRow({
         <HelpTip label="The project (repository) this friction item targets">
           <Badge variant="outline">{item.project_slug}</Badge>
         </HelpTip>
-        <HelpTip label={`Priority P${item.priority} — ${item.priority === 0 ? "critical" : item.priority === 1 ? "high" : item.priority === 2 ? "medium" : "low"}`}>
+        <HelpTip
+          label={`Priority P${item.priority} — ${item.priority === 0 ? "critical" : item.priority === 1 ? "high" : item.priority === 2 ? "medium" : "low"}`}
+        >
           <Badge variant="secondary">P{item.priority}</Badge>
         </HelpTip>
         {itemStatusBadge(item)}

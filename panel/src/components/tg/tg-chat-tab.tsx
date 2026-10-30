@@ -307,9 +307,7 @@ function SecretaryView({ onBack }: { onBack: () => void }) {
                   )}
                 >
                   {m.role === "user" ? (
-                    <p className="whitespace-pre-wrap break-words">
-                      {m.text}
-                    </p>
+                    <p className="whitespace-pre-wrap break-words">{m.text}</p>
                   ) : (
                     <Markdown
                       compact

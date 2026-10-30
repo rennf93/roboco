@@ -160,9 +160,7 @@ export function AccessCard({ project }: { project: Project }) {
             )}
           </div>
         ) : (
-          <HelpTip
-            label="No restriction is in place: every agent assigned to the cell can claim this project's tasks."
-          >
+          <HelpTip label="No restriction is in place: every agent assigned to the cell can claim this project's tasks.">
             <Badge
               variant="outline"
               className="border-green-300 text-green-700 dark:border-green-800 dark:text-green-300 w-fit"

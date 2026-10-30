@@ -25,7 +25,8 @@ const { listCycles, approveItem, rejectItem } = vi.hoisted(() => ({
               project_slug: "backend-svc",
               team: "backend",
               priority: 2,
-              evidence: "task_review_findings row F-abc123 waived 4x on this file",
+              evidence:
+                "task_review_findings row F-abc123 waived 4x on this file",
               status: "proposed",
             },
             {
@@ -90,7 +91,9 @@ describe("PestControlReviewQueue", () => {
     expect(
       await screen.findByText("Fix stale worktree venv"),
     ).toBeInTheDocument();
-    expect(screen.getByText("Panel drops error toast on 500")).toBeInTheDocument();
+    expect(
+      screen.getByText("Panel drops error toast on 500"),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/task_review_findings row F-abc123/),
     ).toBeInTheDocument();

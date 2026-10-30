@@ -30,11 +30,7 @@ export function SegmentedControl({
   ...rest
 }: SegmentedControlProps) {
   return (
-    <Tabs
-      value={value}
-      onValueChange={onValueChange}
-      className={className}
-    >
+    <Tabs value={value} onValueChange={onValueChange} className={className}>
       <TabsList {...rest}>
         {options.map((opt) => (
           <TabsTrigger key={opt.value} value={opt.value}>

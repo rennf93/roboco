@@ -82,9 +82,7 @@ function KBCategoryViewInner({ category }: { category: KBIndexType }) {
                       <KBIndexTypeBadge indexType={category} />
                     </div>
                     <HelpTip label={doc.source}>
-                      <p className="text-sm font-mono truncate">
-                        {doc.source}
-                      </p>
+                      <p className="text-sm font-mono truncate">{doc.source}</p>
                     </HelpTip>
                     <HelpTip label={new Date(doc.indexed_at).toLocaleString()}>
                       <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground w-fit">

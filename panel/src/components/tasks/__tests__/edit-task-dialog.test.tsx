@@ -207,9 +207,9 @@ describe("EditTaskDialog — Sequence input", () => {
         onOpenChange={vi.fn()}
       />,
     );
-    expect(
-      (screen.getByLabelText("Sequence") as HTMLInputElement).value,
-    ).toBe("2");
+    expect((screen.getByLabelText("Sequence") as HTMLInputElement).value).toBe(
+      "2",
+    );
   });
 
   it("rejects a negative sequence with a toast and does not submit", async () => {

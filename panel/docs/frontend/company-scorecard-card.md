@@ -19,11 +19,11 @@ Loading, error, and empty states are handled at the card level: `ScorecardSkelet
 
 Each card shows the objective label, the live metric value (or "No data yet"), and the target:
 
-| Canonical key | Charter objective (matched by keyword against `objectives[].metric`) | Target | Metric field | Format |
-|---|---|---|---|---|
-| `first_pass_yield` | Tasks shipped to merge with no human code edits | `90%` | `first_pass_yield` | percentage, `(v * 100).toFixed(0)%` |
-| `median_lead_time` | Median lead time, intake → merged | `< 24h` | `median_lead_time_hours` | `{value.toFixed(1)}h` |
-| `escaped_defects` | Critical escaped defects per release | `0` | `escaped_defects` | count, `${value}` |
+| Canonical key      | Charter objective (matched by keyword against `objectives[].metric`) | Target  | Metric field             | Format                              |
+| ------------------ | -------------------------------------------------------------------- | ------- | ------------------------ | ----------------------------------- |
+| `first_pass_yield` | Tasks shipped to merge with no human code edits                      | `90%`   | `first_pass_yield`       | percentage, `(v * 100).toFixed(0)%` |
+| `median_lead_time` | Median lead time, intake → merged                                    | `< 24h` | `median_lead_time_hours` | `{value.toFixed(1)}h`               |
+| `escaped_defects`  | Critical escaped defects per release                                 | `0`     | `escaped_defects`        | count, `${value}`                   |
 
 The lead-time metric is the same value `SpeedSection` renders in the Speed section above — `ObjectivesSection` reads `data.delivery.median_lead_time_hours` a second time and presents it as an objective card alongside the other two. `SpeedSection` is intentionally kept as-is.
 

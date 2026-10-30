@@ -31,7 +31,8 @@ const typeConfig: Record<
   [JournalEntryType.STRUGGLE]: {
     label: "Struggle",
     color: "bg-orange-100 text-orange-700",
-    description: "A difficulty the agent hit; a later entry may mark it resolved",
+    description:
+      "A difficulty the agent hit; a later entry may mark it resolved",
   },
   [JournalEntryType.GENERAL]: {
     label: "Note",

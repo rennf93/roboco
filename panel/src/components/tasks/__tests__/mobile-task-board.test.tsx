@@ -30,7 +30,9 @@ describe("MobileTaskBoard", () => {
   it("renders skeletons while loading", () => {
     useTasks.mockReturnValue({ data: undefined, isLoading: true });
     const { container } = render(<MobileTaskBoard />);
-    expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
+    expect(
+      container.querySelectorAll('[data-slot="skeleton"]').length,
+    ).toBeGreaterThan(0);
   });
 
   it("shows an empty state when there are no tasks", () => {
@@ -42,9 +44,24 @@ describe("MobileTaskBoard", () => {
   it("groups tasks into per-status collapsible sections with title/assignee rows", () => {
     useTasks.mockReturnValue({
       data: [
-        buildTask({ id: "a", title: "In progress task", status: TaskStatus.IN_PROGRESS, assigned_to: "be-dev-1" }),
-        buildTask({ id: "b", title: "Another in-progress task", status: TaskStatus.IN_PROGRESS, assigned_to: "be-dev-2" }),
-        buildTask({ id: "c", title: "Done task", status: TaskStatus.COMPLETED, assigned_to: null }),
+        buildTask({
+          id: "a",
+          title: "In progress task",
+          status: TaskStatus.IN_PROGRESS,
+          assigned_to: "be-dev-1",
+        }),
+        buildTask({
+          id: "b",
+          title: "Another in-progress task",
+          status: TaskStatus.IN_PROGRESS,
+          assigned_to: "be-dev-2",
+        }),
+        buildTask({
+          id: "c",
+          title: "Done task",
+          status: TaskStatus.COMPLETED,
+          assigned_to: null,
+        }),
       ],
       isLoading: false,
     });

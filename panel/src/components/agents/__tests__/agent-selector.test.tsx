@@ -16,7 +16,9 @@ vi.mock("@/hooks/use-agents", () => ({ useAgentDefinitions }));
 // Render Select content directly — no Radix portal/pointer machinery needed
 // for a static "which items are present" assertion.
 vi.mock("@/components/ui/select", () => ({
-  Select: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Select: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
   SelectTrigger: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),

@@ -14,7 +14,7 @@ The pytest test suite for RoboCo: 571 test_*.py files across tests/foundation, t
 | tests/integration/test_bash_guard_message.sh | Standalone bash smoke: asserts docker/scripts/bash-guard-hook.sh denial blocks are <=3 lines (token-budget guard) | 43 |
 | tests/integration/test_stop_hook_verb_names.sh | Standalone bash smoke: asserts stop-hook.sh + bash-guard-hook.sh list only current gateway verbs (no pre-gateway legacy verb names) | 36 |
 | pyproject.toml | [tool.pytest.ini_options] (asyncio_mode=auto, testpaths, cov addopts) + [tool.coverage.run] (sysmon core, omit list) — the coverage-architecture source of truth | 704 |
-| Makefile | quality/quality-fast/panel-gate/test/test-3.10..3.14 targets wiring pytest+ruff+mypy+xenon+vulture into the merge gate | 627 |
+| Makefile | quality/quality-fast/panel-gate/test/test-3.10..3.14 targets wiring pytest+ruff+mypy+xenon+vulture into the merge gate | 628 |
 | tests/foundation/ | 21 structural/parity tests: agents_config parity, lifecycle consumer/generator parity, role-set parity, seed-orchestrator parity, tracing-verb parity, route-guard consolidation, smoke replay, lifecycle spec, pr_review_gate, identity, communications, journaling, cell_teams, agent_loop, validate, task_completeness |  |
 | tests/integration/ | 100 real-DB + FastAPI integration tests: full lifecycle real DB (_StubGit), task_service_*, *_routes, migrations 013-049, sequencing, conventions e2e, metrics, release, ci_watch, dep_update, prompter_live, secretary |  |
 | tests/integration/services/ | 10 autonomy-engine integration tests: ci_watch_engine/notify/source, dep_update_engine/probe/source, docs_sync_engine, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping |  |
@@ -175,7 +175,7 @@ tests/
 | make quality | Makefile | developer/CI merge gate — runs ruff format-check + ruff check + mypy roboco/ tests/ + pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80 + xenon + vulture |
 | make quality-fast | Makefile | pre-submit fast gate — ruff + mypy + pytest -q -x --no-cov (no coverage threshold) |
 | make e2e-smoke | Makefile | scripted-agent lifecycle smoke — `ROBOCO_E2E_SMOKE=1 uv run pytest tests/e2e_smoke -q --no-cov`; needs test Postgres + git on PATH |
-| make gate (panel-gate) | Makefile | panel pnpm lint + typecheck + vitest |
+| make gate (panel-gate) | Makefile | panel pnpm format:check + lint + typecheck + vitest |
 | make test/test-3.10..3.14/test-all | Makefile | docker compose run roboco pytest -v --cov=. across Python versions |
 | uv run pytest | pyproject.toml | direct invocation — auto-applies addopts (--cov=roboco --cov-report=term-missing), testpaths=tests, asyncio_mode=auto |
 | tests/integration/test_bash_guard_message.sh | tests/integration/test_bash_guard_message.sh | standalone bash smoke (NOT pytest-collected); run manually/CI to assert bash-guard denial <=3 lines |

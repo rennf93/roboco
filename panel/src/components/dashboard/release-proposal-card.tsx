@@ -118,7 +118,10 @@ function readStoredPointer(): CertificatePointer | null {
 
 function writeStoredPointer(pointer: CertificatePointer): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(_CERTIFICATE_POINTER_KEY, JSON.stringify(pointer));
+  window.localStorage.setItem(
+    _CERTIFICATE_POINTER_KEY,
+    JSON.stringify(pointer),
+  );
 }
 
 function clearStoredPointer(): void {
@@ -136,8 +139,9 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
   // Re-confirmed against the server on every mount (see the poll query below)
   // rather than trusted as-is — this is what survives a reload/navigation
   // during the ~40min background publish.
-  const [storedPointer, setStoredPointer] =
-    useState<CertificatePointer | null>(() => readStoredPointer());
+  const [storedPointer, setStoredPointer] = useState<CertificatePointer | null>(
+    () => readStoredPointer(),
+  );
 
   const {
     data: proposal,
@@ -364,8 +368,8 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
               Published v{pointer.version}
             </CardTitle>
             <CardDescription>
-              Release published — the governance certificate for this version
-              is ready below.
+              Release published — the governance certificate for this version is
+              ready below.
             </CardDescription>
           </CardHeader>
           <CardContent>
