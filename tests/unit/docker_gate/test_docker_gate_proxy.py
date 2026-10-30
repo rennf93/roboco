@@ -21,7 +21,7 @@ import tempfile
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import h11
@@ -140,6 +140,7 @@ class FakeDocker:
 class Running:
     listen: str
     docker: FakeDocker
+    settings: Any
 
 
 @contextlib.asynccontextmanager
@@ -163,7 +164,7 @@ async def _running(*, record: bool = False) -> AsyncIterator[Running]:
             if Path(settings.listen).exists():
                 break
             await asyncio.sleep(0.01)
-        yield Running(settings.listen, docker)
+        yield Running(settings.listen, docker, settings)
         serving.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await serving
@@ -320,3 +321,39 @@ def test_an_unknown_mode_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GATE_MODE", "allow-all")
     with pytest.raises(ValueError, match="GATE_MODE"):
         _gate().Settings.from_env()
+
+
+async def test_health_passes_when_the_listener_and_docker_are_right() -> None:
+    async with _running() as gate:
+        code = await asyncio.to_thread(_gate().health, gate.settings)
+    assert code == 0
+
+
+@pytest.mark.parametrize(
+    ("break_it", "expected"),
+    [
+        (lambda listen: Path(listen).chmod(0o666), "mode 666"),
+        (lambda listen: Path(listen).unlink(), "no listener"),
+    ],
+)
+async def test_health_fails_and_says_why(
+    break_it: Any, expected: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async with _running() as gate:
+        break_it(gate.listen)
+        code = await asyncio.to_thread(_gate().health, gate.settings)
+    assert code == 1
+    assert expected in capsys.readouterr().err
+
+
+async def test_health_fails_when_the_listener_has_another_owner() -> None:
+    async with _running() as gate:
+        other = _gate().Settings(
+            listen=gate.listen,
+            upstream=gate.settings.upstream,
+            socket_uid=gate.settings.socket_uid + 1,
+            socket_gid=gate.settings.socket_gid,
+            allow_build=False,
+            record=False,
+        )
+        assert "is owned by" in (_gate().listener_problem(other) or "")

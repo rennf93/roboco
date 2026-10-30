@@ -25,8 +25,12 @@ Environment:
 - ``GATE_MODE``: ``enforce`` (default), or ``record``, which forwards every
   request and logs what enforce mode would have decided.
 
-``python gate.py --health`` pings Docker through the gate's own socket and
-exits 0 on success, for the compose health check.
+``python gate.py --health`` exits 0 when the listener is an owner-only
+socket with the configured owner and Docker answers a ping on the upstream
+socket, for the compose health check. It does not connect through the
+listener: the gate runs as root without CAP_DAC_OVERRIDE, so it cannot open a
+0600 socket owned by another uid, which is exactly what the listener is once
+the orchestrator stops running as root.
 
 Standard library and h11 only: no roboco imports.
 """
@@ -38,6 +42,7 @@ import json
 import logging
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +66,7 @@ _READ_CHUNK = 65536
 _MAX_HEADER = 1 << 20
 _FORBIDDEN = 403
 _SWITCHING_PROTOCOLS = 101
+_OWNER_ONLY = 0o600
 
 
 @dataclass(frozen=True)
@@ -215,7 +221,7 @@ class Gate:
         server = await asyncio.start_unix_server(
             self._client, path=self.settings.listen
         )
-        listen.chmod(0o600)
+        listen.chmod(_OWNER_ONLY)
         os.chown(
             self.settings.listen, self.settings.socket_uid, self.settings.socket_gid
         )
@@ -368,20 +374,50 @@ async def _splice(client: _Peer, upstream: _Peer) -> None:
     )
 
 
-async def _health(listen: str) -> int:
-    reader, writer = await asyncio.open_unix_connection(listen)
-    writer.write(b"GET /_ping HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n")
+def listener_problem(settings: Settings) -> str | None:
+    """Why the listener is not the owner-only socket it should be; None if it is."""
+    try:
+        st = Path(settings.listen).stat()
+    except OSError as exc:
+        return f"no listener at {settings.listen}: {exc}"
+    if not stat.S_ISSOCK(st.st_mode):
+        return f"{settings.listen} is not a socket"
+    if stat.S_IMODE(st.st_mode) != _OWNER_ONLY:
+        return f"{settings.listen} has mode {stat.S_IMODE(st.st_mode):o}, not 600"
+    if (st.st_uid, st.st_gid) != (settings.socket_uid, settings.socket_gid):
+        return f"{settings.listen} is owned by {st.st_uid}:{st.st_gid}"
+    return None
+
+
+async def _upstream_answers(upstream: str) -> bool:
+    reader, writer = await asyncio.open_unix_connection(upstream)
+    writer.write(b"HEAD /_ping HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n")
     await writer.drain()
     status = await reader.readline()
     writer.close()
-    return 0 if status.split(b" ")[1:2] == [b"200"] else 1
+    return status.split(b" ")[1:2] == [b"200"]
+
+
+def health(settings: Settings) -> int:
+    """0 when the listener is right and Docker answers; 1 with the reason otherwise."""
+    problem = listener_problem(settings)
+    if problem is None:
+        try:
+            if not asyncio.run(_upstream_answers(settings.upstream)):
+                problem = f"Docker did not answer a ping on {settings.upstream}"
+        except OSError as exc:
+            problem = f"cannot reach Docker on {settings.upstream}: {exc}"
+    if problem is not None:
+        print(problem, file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv: list[str]) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     settings = Settings.from_env()
     if argv[1:] == ["--health"]:
-        return asyncio.run(_health(settings.listen))
+        return health(settings)
     asyncio.run(Gate(settings).serve())
     return 0
 
