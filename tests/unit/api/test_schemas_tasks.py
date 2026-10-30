@@ -379,6 +379,17 @@ def _response_for(stub: Any) -> Any:
         return task_to_response(stub)
 
 
+def test_task_to_response_carries_the_active_claimant() -> None:
+    """The dispatcher pins a claimed gate task to its live claimant from this
+    payload; without the field the pin never fired and a second reviewer was
+    spawned onto a task another reviewer had already claimed."""
+    claimant = uuid4()
+    stub = _stub_task()
+    stub.active_claimant_id = claimant
+
+    assert _response_for(stub).active_claimant_id == claimant
+
+
 def test_task_to_response_carries_orchestration_markers() -> None:
     """The field is declared on TaskResponse, so omitting it from the builder
     served null instead of failing loudly."""

@@ -1070,12 +1070,23 @@ class ContentActions:
         generic git failure the agent should inspect and retry.
         """
         text = str(exc)
-        if files and (
+        nothing_staged = (
             "no changes added to commit" in text or "nothing to commit" in text
-        ):
+        )
+        if files and nothing_staged:
             remediate = (
                 f"the files list {files!r} matched no modified paths; omit "
                 "files to stage all changes, or pass the exact modified paths"
+            )
+        elif nothing_staged:
+            # Live 2026-10-28: 8 of 11 failed commits were this, each answered
+            # with "inspect and retry", and agents retried the same empty
+            # commit.
+            remediate = (
+                "your task workspace has no changes to commit: either the work "
+                "is already committed (check the branch log, then continue with "
+                "open_pr / i_am_done), or your edits were made outside this "
+                "task's workspace and must be re-applied there"
             )
         else:
             remediate = "inspect the git error above and retry"
@@ -5737,10 +5748,9 @@ class ContentActions:
 
         Short-id resolution (``_resolve_task_ref``), existence, and the
         ownership rule: reads are allowed for the assignee, an unassigned
-        task, a board co-reviewer of a shared coordination task, OR a caller
-        whose own work depends on this task - strict ownership only blocks
-        snooping an unrelated, actively-owned task. Returns the TaskTable or
-        the error Envelope to propagate.
+        task, or a caller ``_caller_may_read_evidence`` admits - strict
+        ownership only blocks snooping an unrelated, actively-owned task.
+        Returns the TaskTable or the error Envelope to propagate.
         """
         resolved = await self._resolve_task_ref(str(task_id))
         if isinstance(resolved, Envelope):
@@ -5752,11 +5762,44 @@ class ContentActions:
         if (
             t.assigned_to is not None
             and t.assigned_to != agent_id
-            and not await self._board_may_co_review(agent_id, t)
-            and not await self._is_caller_dependency(agent_id, t)
+            and not await self._caller_may_read_evidence(agent_id, t)
         ):
             return _ownership_violation(task_id)
         return cast("TaskTable", t)
+
+    async def _caller_may_read_evidence(self, agent_id: UUID, t: Any) -> bool:
+        """Who besides the assignee may read ``t``'s evidence.
+
+        A board co-reviewer of a shared coordination task, a caller whose own
+        work depends on it, the read-only observer (the auditor's brief is to
+        "read everything"), and the owner of any ancestor: the PM coordinating
+        the subtree, or the reviewer holding the assembled parent PR. The PM
+        and auditor prompts direct exactly these reads, yet only the first two
+        were admitted (live 2026-10-28: 41 evidence calls refused in under two
+        hours, the auditor's and the PMs' own subtree among them).
+        """
+        return (
+            await self._board_may_co_review(agent_id, t)
+            or await self._is_caller_dependency(agent_id, t)
+            or await self._caller_is_claimless_role(agent_id)
+            or await self._caller_owns_an_ancestor(agent_id, t)
+        )
+
+    _ANCESTOR_WALK_LIMIT = 8
+
+    async def _caller_owns_an_ancestor(self, agent_id: UUID, t: Any) -> bool:
+        """True when ``agent_id`` is assigned a task above ``t`` in its tree."""
+        parent_id = getattr(t, "parent_task_id", None)
+        for _ in range(self._ANCESTOR_WALK_LIMIT):
+            if parent_id is None:
+                return False
+            parent = await self.task.get(parent_id)
+            if parent is None:
+                return False
+            if parent.assigned_to == agent_id:
+                return True
+            parent_id = parent.parent_task_id
+        return False
 
     async def evidence(
         self,
@@ -5768,9 +5811,11 @@ class ContentActions:
 
         Fetches the dev branch into the agent's workspace before diffing.
         Allows inspection when the caller is the assignee, the task is
-        unassigned, the caller co-reviews a shared board task, or the task is a
-        dependency the caller is waiting on — strict ownership only blocks
-        snooping an unrelated, actively-owned task.
+        unassigned, the caller co-reviews a shared board task, the task is a
+        dependency the caller is waiting on, the caller is the read-only
+        observer (auditor), or the caller owns an ancestor of the task —
+        strict ownership only blocks snooping an unrelated, actively-owned
+        task.
 
         ``task_id`` accepts the full UUID or the 8+ char hex prefix the task
         cards display (``#372eac39`` style) - see ``_resolve_task_ref``.

@@ -38,7 +38,7 @@ When the briefing carries `company_goals`, let the charter guide how you scope a
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `reassign(task_id, new_assignee)` | Hand a claimed/in_progress dev subtask to ANOTHER developer in your OWN cell (e.g. the assigned dev went idle mid-task). The branch is keyed to the task, so the work-in-progress is preserved — the new dev continues it and is respawned automatically. Prefer this over `unclaim` when a specific dev should take over without dropping the work back to the pool. `new_assignee` is a dev slug in your cell (`be-dev-2`, `fe-dev-1`, …). | Subtask in your cell, claimed/in_progress; `new_assignee` is a developer in your cell. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
-| `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `i_will_plan` / `delegate` / `unblock` / `complete` / `submit_up` / `escalate_up`. | None. |
+| `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `delegate` / `unblock` / `complete` / `submit_up` / `escalate_up` (`i_will_plan` records its own plan's approach as the decision). | None. |
 | `dm(recipient, text)` / `read_a2a()` | A2A: direct-message a peer (agent slug, e.g. `be-dev-1`), and read your unread incoming messages. Coordination itself rides task state + `note(scope='handoff')`, not chat. | None. |
 | `notify(target, text, priority?)` | Send a formal ack-required notification to an agent (`be-dev-1`, `ceo`, etc.). `priority` is one of `normal`/`high`/`urgent` (default `normal`). | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |
@@ -53,7 +53,7 @@ Before calling a subtask stale, stuck, blocked too long, or unattended in `reque
 
 | Task status | Next call |
 |---|---|
-| `pending` (assigned to you) | `evidence(task_id)` to read scope → `note(scope='decision', ...)` → `i_will_plan(task_id, plan='...')` |
+| `pending` (assigned to you) | `evidence(task_id)` to read scope → `i_will_plan(task_id, plan='...')` (it claims the task and records the plan's approach as your planning decision; `note` cannot write to a task you have not claimed yet) |
 | `claimed` (your prior claim is intact) | `i_will_plan(task_id, plan='resume: <next step>')` — composes claim+set_plan+start; resumes from `claimed`. **Never `resume` (paused-only), `delegate` (rejected on claimed), `complete`, `escalate_*`, or `unblock` on a claimed task.** |
 | `in_progress` (just claimed, no children yet) | `note(scope='handoff', task_id, section={'done':'...','next':'...'})` (fills quick_context, required before delegate) → `delegate(parent_task_id, ...)` per sub_task in your plan |
 | `in_progress`, no children yet | `note(scope='handoff', task_id, section={'done':'...','next':'...'})` → `delegate(parent_task_id=task_id, ...)` — one subtask per independent unit; split the units across BOTH devs and delegate the full queue now (each dev works its queue in order, both build in parallel) |
@@ -170,7 +170,7 @@ The PM journal is what makes the cell legible to Main PM and CEO. Skipping entri
 | Scope | When | How to call |
 |---|---|---|
 | `note` | Quick observations | `note(scope='note', text='be-dev-1 has a paused task from yesterday; will reuse rather than create new')` |
-| `decision` | Before EVERY `i_will_plan` / `delegate` / `complete` / `submit_up` / `escalate_*` (gateway-required for several of these) | `note(scope='decision', text='<one-line decision>', context='<situation: what task, what choices>', options=['Option A: …', 'Option B: …'], chosen='<which one>', rationale='<why this one>', consequences='<what this commits the cell to>')` |
+| `decision` | Before EVERY `delegate` / `complete` / `submit_up` / `escalate_*` (gateway-required for several of these; `i_will_plan` records its plan as the decision) | `note(scope='decision', text='<one-line decision>', context='<situation: what task, what choices>', options=['Option A: …', 'Option B: …'], chosen='<which one>', rationale='<why this one>', consequences='<what this commits the cell to>')` |
 | `struggle` | When delegation is unclear or a dev is stuck and you can't help | `note(scope='struggle', text="be-dev-2 keeps failing the same migration test; not sure if it's their misunderstanding or my unclear acceptance criterion. Going to add detail then dm them.")` |
 | `learning` | When a cell pattern emerges worth surfacing | `note(scope='learning', text='We keep splitting "add endpoint + add tests" into 2 subtasks. Should be 1 — TDD inside a single subtask is faster.')` |
 | `reflect` | Before `submit_up` — aggregate review of the whole slice | `note(scope='reflect', text='<short summary>', what_done='Cell delivered 1 dev subtask covering all 4 acceptance criteria', what_learned='<patterns from this slice>', what_struggled='<friction points>', next_steps='<what Main PM should look at first>')` |
