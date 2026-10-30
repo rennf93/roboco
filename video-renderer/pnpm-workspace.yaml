@@ -13,3 +13,10 @@ overrides:
   # advisories; 7.30.1 is the first 7.x release that fixes all of them. The
   # minor bump keeps the 7.x API the engine imports.
   undici: ^7.30.1
+  # @hyperframes/engine and /producer ask for puppeteer ~25.11.0 while their
+  # puppeteer-core (^25.11.0) resolves to 25.16.0. 25.11.0 brings a second
+  # puppeteer-core with chromium-bidi 17.0.2, whose zod 3.25.76 carries
+  # GHSA-mrhx-c7xc-m3w5 (fixed only in zod 4.6.6). Following puppeteer-core
+  # drops that tree, and the Chrome Headless Shell puppeteer downloads becomes
+  # the one puppeteer-core drives (156 instead of 153).
+  puppeteer: ^25.16.0
