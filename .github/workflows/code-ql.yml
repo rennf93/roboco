@@ -8,11 +8,20 @@ on:
     # it's the redundant trigger for a required check that must not go
     # ABSENT on a fleet-authored PR revision.
     branches: [master, slave, 'feature/**', 'bug/**', 'chore/**', 'docs/**', 'hotfix/**']
+    # CodeQL analyzes every Python file in the checkout, not only the files
+    # under these paths, so they list every directory that holds one: a
+    # change outside them would land unanalyzed until some later run.
+    # tests/unit/test_required_checks.py fails when a tracked .py file falls
+    # outside.
     paths:
       - 'roboco/**'
       - 'agents/**'
       - 'alembic/**'
       - 'scripts/**'
+      - 'tests/**'
+      - '.github/scripts/**'
+      - 'docker/decisions/**'
+      - 'vulture_whitelist.py'
       - 'pyproject.toml'
       - '.github/workflows/code-ql.yml'
   pull_request:
@@ -72,6 +81,10 @@ jobs:
             agents/**
             alembic/**
             scripts/**
+            tests/**
+            .github/scripts/**
+            docker/decisions/**
+            vulture_whitelist.py
             pyproject.toml
             .github/workflows/code-ql.yml
         run: python3 .github/scripts/required_checks.py match-paths
