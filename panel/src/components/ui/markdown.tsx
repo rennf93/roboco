@@ -20,20 +20,29 @@ interface MarkdownProps {
 type HastChildren = NonNullable<ExtraProps["node"]>["children"];
 
 /**
- * Rehype plugin: numbers every task-list checkbox in document order, so each
- * checkbox's index comes from the parsed markdown rather than from the order
- * React happens to render the checkboxes in.
+ * Rehype plugin: tags every task-list checkbox with the source offset of its
+ * list item, so a toggle rewrites that item's own marker. Only the bullet,
+ * whitespace and blockquote markers can sit between a list item's start and
+ * its `[ ]`, so the marker is the first `[` from that offset, whatever else
+ * (fenced examples, inline code, other bullet styles) the markdown contains.
  */
-function numberTaskCheckboxes() {
+function tagTaskCheckboxesWithListItemOffset() {
   return (tree: { children: HastChildren }) => {
-    let index = 0;
-    const visit = (parent: { children: HastChildren }) => {
+    const visit = (
+      parent: { children: HastChildren },
+      listItemOffset?: number,
+    ) => {
       for (const child of parent.children) {
         if (child.type !== "element") continue;
         if (child.tagName === "input" && child.properties.type === "checkbox") {
-          child.properties.dataCheckboxIndex = index++;
+          child.properties.dataListItemOffset = listItemOffset;
         }
-        visit(child);
+        visit(
+          child,
+          child.tagName === "li"
+            ? child.position?.start.offset
+            : listItemOffset,
+        );
       }
     };
     visit(tree);
@@ -52,23 +61,16 @@ export function Markdown({
   disabled,
   compact,
 }: MarkdownProps) {
-  // Toggle checkbox in markdown content
   const toggleCheckbox = useCallback(
-    (index: number, checked: boolean) => {
+    (listItemOffset: number, checked: boolean) => {
       if (!onCheckboxChange) return;
 
-      // Find and replace the nth checkbox in the markdown
-      let currentIndex = 0;
-      const newContent = children.replace(/- \[([ xX])\]/g, (match) => {
-        if (currentIndex === index) {
-          currentIndex++;
-          return checked ? "- [x]" : "- [ ]";
-        }
-        currentIndex++;
-        return match;
-      });
-
-      onCheckboxChange(newContent);
+      const marker = children.indexOf("[", listItemOffset);
+      onCheckboxChange(
+        children.slice(0, marker + 1) +
+          (checked ? "x" : " ") +
+          children.slice(marker + 2),
+      );
     },
     [children, onCheckboxChange],
   );
@@ -78,13 +80,13 @@ export function Markdown({
     ? {
         input: ({ type, checked, node, ...props }) => {
           if (type === "checkbox") {
-            const index = Number(node?.properties.dataCheckboxIndex);
+            const listItemOffset = Number(node?.properties.dataListItemOffset);
             return (
               <Checkbox
                 checked={!!checked}
                 disabled={disabled}
                 onCheckedChange={(newChecked) =>
-                  toggleCheckbox(index, !!newChecked)
+                  toggleCheckbox(listItemOffset, !!newChecked)
                 }
                 className="mr-2 align-middle"
               />
@@ -155,7 +157,9 @@ export function Markdown({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={onCheckboxChange ? [numberTaskCheckboxes] : []}
+        rehypePlugins={
+          onCheckboxChange ? [tagTaskCheckboxesWithListItemOffset] : []
+        }
         components={components}
       >
         {children}
