@@ -3,12 +3,14 @@
 # =============================================================================
 # docker/docker-gate/gate.py listens on an owner-only Unix socket in the
 # docker-gate volume and forwards to the host's /var/run/docker.sock only the
-# Engine API calls RoboCo makes. No node, git or docker CLI: Python and h11.
+# Engine API calls RoboCo makes, and only with what RoboCo asks for. No node,
+# git or docker CLI: Python and h11.
 #
 # USER is 65534 so the image never runs as root by default. The compose files
-# run it as 0:0 (with every capability dropped but CHOWN) because the host
-# socket is root:docker 0660, and the docker group's gid differs per host;
-# the compose comment says so where it happens.
+# run it as 0:0 (with every capability dropped but CHOWN, for the socket's
+# owner, and DAC_READ_SEARCH, to walk owner-only bind roots for symlinks)
+# because the host socket is root:docker 0660, and the docker group's gid
+# differs per host; the compose comment says so where it happens.
 # =============================================================================
 
 FROM python:3.12-slim-bookworm
