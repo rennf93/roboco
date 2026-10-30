@@ -70,10 +70,10 @@
 
       /* ---- Panel chrome --------------------------------------------------- */
       /* The frame clip starts at 0 like every structural layer, so this
-         delay is composition time. 5.2s keeps the cut as shipped (the clip
-         used to start at 2.6s with a 2.6s delay, which ran at 5.2s);
-         moving the entrance to 2.6s is a separate, visible change. */
-      .pk-frame { animation-delay: 5.2s; }
+         delay is composition time: the frame fades in at 2.6s, as in
+         release-0.26.0 onwards. (It used to start its clip at 2.6s with a
+         2.6s delay, which ran at 5.2s and left the panel empty until then.) */
+      .pk-frame { animation-delay: 2.6s; }
       .pk-frame__sidebar {
         width: 250px;
         align-items: stretch;

@@ -113,8 +113,10 @@ html, body {
   transform-origin: left bottom;
   opacity: 0;
   transform: translateY(22px) scale(0.94);
+  /* No delay: the clip's data-start (0.267s, ~8 frames @30fps) times the
+     entrance, and a delay would add to it (motion/README.md, "The
+     animation clock"). */
   animation: enter-rise-scale 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  animation-delay: 0.267s; /* ~8 frames @30fps */
 }
 
 .script {
@@ -127,8 +129,8 @@ html, body {
   margin-bottom: 40px;
   opacity: 0;
   transform: translateY(22px);
+  /* No delay: the clip's data-start (0.8s, ~24 frames @30fps) times it. */
   animation: enter-rise 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  animation-delay: 0.8s; /* ~24 frames @30fps */
 }
 
 /* #highlights runs from data-start 0, so its items count their delays from
@@ -183,8 +185,9 @@ html, body {
   color: var(--color-muted);
   opacity: 0;
   transform: translateY(14px);
+  /* No delay: the clip's data-start (7.667s, durationInFrames - 70 = 230
+     frames @30fps) times it. */
   animation: enter-rise 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  animation-delay: 7.667s; /* durationInFrames - 70 = 230 frames @30fps */
 }
 
 @keyframes enter-rise {
