@@ -269,7 +269,7 @@ support-services
 | `get_agent_service` | `api/routes/agents.py`, `services/task.py`, `services/pitch.py` | `/api/agents`; task/pitch main-pm lookup |
 | `check_database` / `check_redis` | `api/routes/health.py:43` | `GET /health` |
 | `resolve_target_python` | `services/workspace.py:1631` | `WorkspaceService.install_dev_deps` (on clone and on `ensure_workspace` re-entry) via `_resolve_toolchain_target`, only when `toolchain_match_enabled` |
-| `init_event_bus` / `register_default_handlers` / `set_event_context` | `bootstrap.py:154,158,181` | App bootstrap (orchestrator process; `set_event_context` runs after the orchestrator is constructed) |
+| `init_event_bus` / `register_default_handlers` / `set_event_context` | `bootstrap.py:180,185,208` | App bootstrap (orchestrator process; `set_event_context` runs after the orchestrator is constructed) |
 | `bus.publish` / `publish_task_event` | services, orchestrator, websocket_bridge | Status transitions, live events |
 | `get_proactive_service` | `services/task.py:2548`, `api/routes/optimal.py:1257` | claim_task, `/api/optimal/context` |
 | `TranscriptionService` | `api/app.py:105`, `services/extraction.py` | Lifespan construct; extraction pipeline |

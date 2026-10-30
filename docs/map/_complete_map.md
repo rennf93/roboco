@@ -903,14 +903,14 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 
 | Path | Role | LOC |
 |---|---|---|
-| docker-compose.yaml | Build-from-source compose: postgres/redis/ollama/ollama-init, 14 agent-*-image builders, orchestrator, panel, nginx, `backup` pg_dump sidecar on the `roboco_data` DB-isolation network; NAS prod env vars + volume mounts, `ROBOCO_OBSIDIAN_VAULT_ENABLED`/`ROBOCO_VAULT_INTAKE_ENABLED` default `true` | 1370 |
-| docker-compose.yml | Byte-identical copy of docker-compose.yaml (kept for the canonical name compose picks up by default) | 1370 |
-| docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network | 913 |
+| docker-compose.yaml | Build-from-source compose: postgres/redis/ollama/ollama-init, 14 agent-*-image builders, orchestrator, panel, nginx, `backup` pg_dump sidecar on the `roboco_data` DB-isolation network; NAS prod env vars + volume mounts, `ROBOCO_OBSIDIAN_VAULT_ENABLED`/`ROBOCO_VAULT_INTAKE_ENABLED` default `true`; Docker only through `docker-gate-blue`/`-green` (the only services that mount the host socket; each color's api and dispatcher get `DOCKER_HOST` on its own socket in the shared `docker-gate` volume and wait for that gate to be healthy) | 1444 |
+| docker-compose.yml | Byte-identical copy of docker-compose.yaml (kept for the canonical name compose picks up by default) | 1444 |
+| docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled) serves the orchestrator and dispatcher | 957 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 704 |
 | roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3283 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
-| roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 232 |
+| roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 64 |
 | roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 256 |
 | roboco/exceptions.py | Exception hierarchy (RobocoError base + NotFound/Validation/InvalidState/Permission/Auth/Task/TaskLifecycle/Agent/Notification/Service/Database/Git/MergeConflict/GitCommand/GitTimeout); includes TaskLifecycle transition hints and git-secret scrubbing | 432 |
@@ -976,6 +976,8 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | `docker/git-support/private.gitconfig` | Global git config of the orchestrator's own git in the dispatcher-owned repositories under /data/private (the `GIT_CONFIG_GLOBAL` that `roboco/services/git_relay.py` sets): `safe.directory = *`, since both deploy colors share those repositories and need not share a uid; root-owned and read-only in the orchestrator image | 12 |
 | `scripts/orchestrator_image_suites.sh` | `IMAGE WORKDIR`: runs, inside a built orchestrator image as root (docker socket and WORKDIR mounted at the same path, tests/.entire/docker/git-support read-only, dev extras synced from the image's lock), the git-user helper live suite, the hostile-clone suite and the live workspace-container and Entire hook suites, and fails when any test skips; what the "Orchestrator image suites" workflow runs | 66 |
 | `docker/git-support/workspace.gitconfig` | Global git config of the workspace git user (`roboco-git`, the `GIT_CONFIG_GLOBAL` that `roboco/services/workspace_git.py` sets): `safe.directory = *`; root-owned and read-only in the orchestrator image | 10 |
+| `docker/docker-gate/gate.py` | The Docker gate (trail #34): a standalone asyncio + h11 proxy, no roboco imports, from an owner-only Unix socket (`GATE_LISTEN`, chowned to `GATE_SOCKET_UID`/`GID`, mode 0600) to the host's /var/run/docker.sock. Stage 1 decides by method and path (`decide()` over `RULES`): only the Engine API calls RoboCo makes pass, container create only under a `roboco-(agent|sandbox|wsx)-` name, exec/logs/remove only on those names or a container ID; BuildKit's /session and /grpc and /build only with `GATE_ALLOW_BUILD`. Streams bodies, splices both directions on a 101 upgrade, checks every request on a keep-alive connection, refuses with a 403 JSON body and one log line; `GATE_MODE=record` forwards everything and logs it. `--health` checks the listener's owner and mode and pings the upstream | 426 |
+| `docker/docker-gate.Dockerfile` | The Docker gate's image: python:3.12-slim-bookworm, `h11==0.16.0`, gate.py, USER 65534 (the compose files run it as 0:0 with every capability dropped but CHOWN, no network, a read-only root and no-new-privileges, because the host socket is root:docker 0660 and the docker gid differs per host), HEALTHCHECK `gate.py --health` | 29 |
 | `docker/scripts/entire-wrapper.sh` | Installed as `/usr/local/bin/entire` in agent images: with `ROBOCO_ENTIRE_ENABLED` off every hook call is a silent no-op; on, session hooks run the pinned CLI while Brain commands stay unprovisioned | 32 |
 | `docker/scripts/umask-exec.sh` | Entrypoint prefix for images whose real entrypoint is a binary: `umask 002` then exec, so the workspace git user (agent group) can rewrite agent-made files | 9 |
 | `docker/scripts/entrypoints/codex-cli-agent-entrypoint.sh` | Entrypoint of the one-shot `roboco-agent-codex` image (delivery roles): renders the codex runtime config, runs the agent turn, then classifies the terminal state and captures token usage | 126 |
@@ -990,7 +992,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | `docker/scripts/entrypoints/openrouter-agent-entrypoint.sh` | Entrypoint of the one-shot `roboco-agent-openrouter` image (delivery roles): renders the opencode (OpenRouter dialect) runtime config, runs the agent turn, then classifies the terminal state and captures token usage | 182 |
 | `docker/scripts/entrypoints/openrouter-live-entrypoint.sh` | openrouter live-chat entrypoint: renders the opencode config (role blueprint and tool scoping) from the mounted live mcp-config, then execs the provider-generic driver `roboco.agent_sdk.live_main` | 12 |
 | `docker/scripts/hooks/tests/fable-hooks-tests.sh` | Test harness for `docker/scripts/hooks/fable-*.sh`: feeds each hook synthetic Claude Code JSON on stdin and asserts the output shape (mirrors `bash-guard-tests.sh`) | 163 |
-| `scripts/deploy-nas.sh` | NAS blue-green deploy in one compose file (run on the NAS as root, `--color green|blue`, `--skip-build`): brings up the target color, polls container health instead of `up --wait`, flips `front/active-upstreams.conf` and reloads nginx; the stopped color is the rollback; never `down -v` | 510 |
+| `scripts/deploy-nas.sh` | NAS blue-green deploy in one compose file (run on the NAS as root, `--color green|blue`, `--skip-build`): brings up the target color and its Docker gate (`docker-gate-<color>`, its own image family hashed over docker/ alone), polls container health instead of `up --wait`, flips `front/active-upstreams.conf` and reloads nginx; the stopped color is the rollback; never `down -v` | 510 |
 | `scripts/gen_docs_redirects.py` | One-off generator of the committed `docs-redirects/` stubs (meta-refresh plus `rel=canonical` to docs.roboco.tech) for every page the retired MkDocs site published; the docs workflow deploys the directory as-is | 177 |
 
 ## Key Symbols
@@ -1003,10 +1005,10 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | database_url | property | roboco/config.py:211 | asyncpg connection URL |
 | database_url_sync | property | roboco/config.py:219 | sync psycopg URL for Alembic |
 | redis_url / redis_url_for_db | property / method | roboco/config.py:235 | Redis connection URL carrying the URL-quoted ROBOCO_REDIS_PASSWORD (required by every compose file; Redis runs with requirepass) |
-| _BootstrapHolder | class | roboco/bootstrap.py:29 | Module-level holder for the singleton AgentOrchestrator instance |
-| _run_api_server | function | roboco/bootstrap.py:35 | Build a uvicorn.Config for roboco.api.app:app and serve it (no reload in prod/container) |
-| _wait_for_api_ready | function | roboco/bootstrap.py:97 | Poll http://127.0.0.1:port/health until 200 (up to max_wait) so the orchestrator starts only after lifespan indexing completes |
-| main | function | roboco/bootstrap.py:120 | Async entrypoint: bootstrap_database, init Redis event bus + handlers, websocket bridge, orchestrator, DI wiring, API task, ready poll, optional spawns, graceful shutdown |
+| _BootstrapHolder | class | roboco/bootstrap.py:34 | Module-level holder for the singleton AgentOrchestrator instance |
+| _run_api_server | function | roboco/bootstrap.py:40 | Build a uvicorn.Config for roboco.api.app:app and serve it (no reload in prod/container) |
+| _wait_for_api_ready | function | roboco/bootstrap.py:122 | Poll http://127.0.0.1:port/health until 200 (up to max_wait) so the orchestrator starts only after lifespan indexing completes |
+| main | function | roboco/bootstrap.py:145 | Async entrypoint: bootstrap_database, init Redis event bus + handlers, websocket bridge, orchestrator, DI wiring, API task, ready poll, optional spawns, graceful shutdown |
 | parse_args | function | roboco/cli.py:16 | argparse: --skip-db, --skip-orchestrator, --spawn, --db-only |
 | cli | function | roboco/cli.py:42 | Console-script entry: dispatch db-only or full bootstrap via asyncio.run |
 | add_app_context | function | roboco/logging.py:26 | structlog processor injecting app/version/environment into every event dict |
@@ -1052,7 +1054,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | _resolve_workspaces_root | function | scripts/reset_runtime_state.sh:154 | Resolve WORKSPACES_ROOT from env, then NAS /volume1/roboco/data/workspaces, then /data/workspaces |
 
 ## Data Flow
-Compose brings up infra (postgres/redis/ollama + ollama-init verifying models) then the orchestrator image, whose ENTRYPOINT `python -m roboco.cli` calls `roboco.cli.cli` -> `asyncio.run(bootstrap.main(...))`. bootstrap.main reads `roboco.config.settings` (env-injected by compose), runs `bootstrap_database()` (Alembic/migrations via the sync URL), inits the Redis event bus, starts the websocket bridge, constructs `AgentOrchestrator`, sets it on the API deps, launches uvicorn on `roboco.api.app:app`, polls `/health`, then `orchestrator.start()`. The orchestrator spawns per-role agent containers from the agent-*-image family (or registry pre-builts when ROBOCO_AGENT_IMAGE_REGISTRY set); each agent container runs `claude` (or the grok-cli entrypoint / agent_sdk driver for prompter/secretary/grok-*), with host volumes (workspaces, manifests, briefings, grok-usage, logs, ~/.claude, ~/.grok) bind-mounted in. Inside an agent container, Claude Code's hook system calls the docker/scripts/* hooks, which POST to the in-container SDK server on :9000 (budget/terminal/usage/inbox); the usage-report + post-tool-budget hooks feed token/loop state back to the SDK, and stop-hook forces a terminal verb before exit. nginx (port 3000) proxies /api and /ws to the orchestrator with the CEO panel token injected, and everything else to the Next.js panel. The Makefile `quality`/`foundation-check` gates run offline (ruff/mypy/pytest/xenon/.../verify_postgres_enums/build_lifecycle_artifacts) and are the merge barrier. reset_runtime_state.sh/.sql wipe runtime rows between smoke runs while preserving org scaffolding.
+Compose brings up infra (postgres/redis/ollama + ollama-init verifying models) then the orchestrator image, whose ENTRYPOINT `python -m roboco.cli` calls `roboco.cli.cli` -> `asyncio.run(bootstrap.main(...))`. bootstrap.main reads `roboco.config.settings` (env-injected by compose), runs `bootstrap_database()` (Alembic/migrations via the sync URL), inits the Redis event bus, starts the websocket bridge, constructs `AgentOrchestrator`, sets it on the API deps, launches uvicorn on `roboco.api.app:app`, polls `/health`, then `orchestrator.start()`. The orchestrator spawns per-role agent containers, through the Docker gate (its docker CLI's `DOCKER_HOST` is the gate's socket; only the gate mounts the host's), from the agent-*-image family (or registry pre-builts when ROBOCO_AGENT_IMAGE_REGISTRY set); each agent container runs `claude` (or the grok-cli entrypoint / agent_sdk driver for prompter/secretary/grok-*), with host volumes (workspaces, manifests, briefings, grok-usage, logs, ~/.claude, ~/.grok) bind-mounted in. Inside an agent container, Claude Code's hook system calls the docker/scripts/* hooks, which POST to the in-container SDK server on :9000 (budget/terminal/usage/inbox); the usage-report + post-tool-budget hooks feed token/loop state back to the SDK, and stop-hook forces a terminal verb before exit. nginx (port 3000) proxies /api and /ws to the orchestrator with the CEO panel token injected, and everything else to the Next.js panel. The Makefile `quality`/`foundation-check` gates run offline (ruff/mypy/pytest/xenon/.../verify_postgres_enums/build_lifecycle_artifacts) and are the merge barrier. reset_runtime_state.sh/.sql wipe runtime rows between smoke runs while preserving org scaffolding.
 
 ## Mermaid
 ```mermaid
@@ -1063,6 +1065,7 @@ graph TD
         OLL["ollama:latest"]
         OLLI["ollama-init (curl pull+verify models)"]
         ORC["orchestrator (python -m roboco.cli)"]
+        GATE["docker-gate (allowlist proxy to the host docker.sock)"]
         PN["panel (node server.js)"]
         NG["nginx :3000"]
     end
@@ -1075,7 +1078,10 @@ graph TD
     ORC --> NG
     NG -->|/api /ws /health| ORC
     NG -->|everything else| PN
-    ORC -->|docker.sock + host volumes| AGENT
+    GATE -->|service_healthy| ORC
+    ORC -->|DOCKER_HOST: gate socket| GATE
+    GATE -->|Engine API| AGENT
+    ORC -->|host volumes| AGENT
     AGENT -->|hooks POST :9000| SDK["in-container SDK server"]
     SDK -->|usage/budget/terminal| AGENT
 
@@ -1103,16 +1109,19 @@ deployment-tooling
 │  ├─ docker-compose.yaml / .yml (build-from-source)
 │  │  ├─ infra: postgres, redis, ollama, ollama-init, backup (pg_dump sidecar, always on)
 │  │  ├─ agent-*-image builders (14, FROM docker/agent-*.Dockerfile)
+│  │  ├─ docker-gate-blue / -green (only holders of the host Docker socket)
 │  │  ├─ orchestrator (build context=.)
 │  │  ├─ panel (build)
 │  │  └─ nginx (image) — single :3000 entry, ROBOCO_PANEL_AGENT_TOKEN envsubst
 │  └─ docker-compose.registry.yml (pre-built images via ROBOCO_REGISTRY/ROBOCO_VERSION)
 │     ├─ infra (byte-identical)
 │     ├─ agent-* one-shot pre-pulls
+│     ├─ docker-gate (image, builds refused)
 │     ├─ orchestrator (image, ROBOCO_AGENT_IMAGE_REGISTRY/TAG)
 │     └─ panel + nginx (image)
 ├─ Dockerfiles (docker/)
 │  ├─ orchestrator.Dockerfile (builder + entire + runner w/ docker-cli, git, make, node, pnpm, uv, Entire CLI off PATH)
+│  ├─ docker-gate.Dockerfile + docker-gate/gate.py (the Docker gate: allowlist proxy to the host socket)
 │  ├─ agent-base.Dockerfile (venv + Node22 + claude-code + Entire CLI + hooks, USER agent)
 │  │  └─ docker/scripts/*.sh (sdk-startup, a2a-check, bash-guard, post-tool-budget, usage-report, stop, user-prompt, pre-compact, session-end, + 5 default-off fable-*.sh gated by fable_mode_enabled)
 │  ├─ role images FROM agent-base: pm, dev-be, dev-fe, qa-be, qa-fe, ux, doc, prompter, secretary, pr-reviewer
@@ -8274,7 +8283,7 @@ support-services
 | `get_agent_service` | `api/routes/agents.py`, `services/task.py`, `services/pitch.py` | `/api/agents`; task/pitch main-pm lookup |
 | `check_database` / `check_redis` | `api/routes/health.py:43` | `GET /health` |
 | `resolve_target_python` | `services/workspace.py:1631` | `WorkspaceService.install_dev_deps` (on clone and on `ensure_workspace` re-entry) via `_resolve_toolchain_target`, only when `toolchain_match_enabled` |
-| `init_event_bus` / `register_default_handlers` / `set_event_context` | `bootstrap.py:154,158,181` | App bootstrap (orchestrator process; `set_event_context` runs after the orchestrator is constructed) |
+| `init_event_bus` / `register_default_handlers` / `set_event_context` | `bootstrap.py:180,185,208` | App bootstrap (orchestrator process; `set_event_context` runs after the orchestrator is constructed) |
 | `bus.publish` / `publish_task_event` | services, orchestrator, websocket_bridge | Status transitions, live events |
 | `get_proactive_service` | `services/task.py:2548`, `api/routes/optimal.py:1257` | claim_task, `/api/optimal/context` |
 | `TranscriptionService` | `api/app.py:105`, `services/extraction.py` | Lifespan construct; extraction pipeline |
