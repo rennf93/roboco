@@ -217,3 +217,36 @@ async def test_board_program_loop_records_heartbeat() -> None:
     assert "board_program" in orch._loop_heartbeats
     _, interval = orch._loop_heartbeats["board_program"]
     assert interval == orch._board_program_interval_seconds()
+
+
+_TELEGRAM_POLL_INTERVAL = 5.0
+_TELEGRAM_POLL_TIMEOUT = 25
+
+
+@pytest.mark.asyncio
+async def test_telegram_poll_heartbeat_measures_the_long_poll_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A healthy Telegram cycle is the sleep plus a getUpdates long-poll of up
+    to telegram_poll_timeout_seconds. Registering only the sleep made the
+    watchdog report "stalled" on every healthy cycle (live 2026-10-28)."""
+    orch = _orch()
+    monkeypatch.setattr(settings, "telegram_enabled", True)
+    monkeypatch.setattr(settings, "telegram_inbound_enabled", True)
+    monkeypatch.setattr(
+        settings, "telegram_poll_interval_seconds", _TELEGRAM_POLL_INTERVAL
+    )
+    monkeypatch.setattr(
+        settings, "telegram_poll_timeout_seconds", _TELEGRAM_POLL_TIMEOUT
+    )
+
+    async def _stop_after_cycle() -> None:
+        orch._running = False
+
+    orch._run_telegram_poll_cycle = AsyncMock(side_effect=_stop_after_cycle)
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await orch._telegram_poll_loop()
+
+    _last, cadence = orch._loop_heartbeats["telegram_poll"]
+    assert cadence == _TELEGRAM_POLL_INTERVAL + _TELEGRAM_POLL_TIMEOUT

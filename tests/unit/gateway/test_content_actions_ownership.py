@@ -474,6 +474,74 @@ async def test_evidence_allows_dependency_inspection() -> None:
     task_svc.list_assigned_for_agent.assert_awaited()
 
 
+def _owned_task(owner: object, parent_id: object = None) -> MagicMock:
+    return MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        assigned_to=owner,
+        parent_task_id=parent_id,
+        branch_name="feature/backend/abc",
+        work_session_id=uuid4(),
+        commits=[],
+        pr_number=None,
+        pr_url="",
+        dev_notes="",
+        acceptance_criteria_status=[],
+    )
+
+
+def _evidence_reader(tasks: list[MagicMock], role: str) -> ContentActions:
+    by_id = {t.id: t for t in tasks}
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = by_id.get
+    task_svc.list_assigned_for_agent.return_value = []
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+    deps = _make_deps(task=task_svc)
+    task_svc.agent_for.return_value = MagicMock(role=role)
+    return ContentActions(deps)
+
+
+@pytest.mark.asyncio
+async def test_evidence_lets_the_owner_of_an_ancestor_inspect_the_subtree() -> None:
+    """The PM coordinating a subtree reads its leaves (cell_pm.md / main_pm.md
+    direct evidence(subtask_id)); refused live 2026-10-28."""
+    pm_id = uuid4()
+    root = _owned_task(pm_id)
+    cell_task = _owned_task(uuid4(), parent_id=root.id)
+    leaf = _owned_task(uuid4(), parent_id=cell_task.id)
+    ca = _evidence_reader([root, cell_task, leaf], role="main_pm")
+
+    env = await ca.evidence(agent_id=pm_id, task_id=leaf.id)
+
+    assert env.error is None
+
+
+@pytest.mark.asyncio
+async def test_evidence_lets_the_read_only_observer_inspect_any_task() -> None:
+    """The auditor's brief is to read everything."""
+    target = _owned_task(uuid4())
+    ca = _evidence_reader([target], role="auditor")
+
+    env = await ca.evidence(agent_id=uuid4(), task_id=target.id)
+
+    assert env.error is None
+
+
+@pytest.mark.asyncio
+async def test_evidence_still_refuses_an_unrelated_task() -> None:
+    parent = _owned_task(uuid4())
+    target = _owned_task(uuid4(), parent_id=parent.id)
+    ca = _evidence_reader([parent, target], role="developer")
+
+    env = await ca.evidence(agent_id=uuid4(), task_id=target.id)
+
+    assert env.error == "not_authorized"
+
+
 # ---------------------------------------------------------------------------
 # Reaped/handoff window: assigned_to persists, active_claimant_id is cleared
 # on release. A reaped agent must not keep posting to its former task.

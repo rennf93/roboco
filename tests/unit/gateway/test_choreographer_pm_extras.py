@@ -239,6 +239,125 @@ async def test_i_will_plan_blocks_when_journal_decision_at_claim_missing() -> No
     task_svc.start.assert_awaited_once_with(task_id, pm_id)
 
 
+_APPROACH = (
+    "Two-cell decomposition: backend owns the API slice and lands first, "
+    "frontend then wires the panel against the frozen contract, and QA "
+    "reviews each leaf PR before the cell PM submits the assembled branch."
+)
+
+
+def _plan_claim_choreographer(
+    pm_id: UUID, task_id: UUID, started_plan: dict[str, Any] | None
+) -> tuple[Choreographer, AsyncMock]:
+    """A pending cell-PM task whose claim+set_plan+start succeeds, persisting
+    ``started_plan``; the journal answers has_decision from its own writes."""
+    pending = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        team="backend",
+        task_type="planning",
+        parent_task_id=None,
+        sequence=0,
+    )
+    started = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan=started_plan,
+        assigned_to=pm_id,
+        task_type="planning",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = [pending, started]
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="cell_pm", team="backend", slug=None
+    )
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.claim.return_value = MagicMock(
+        id=task_id, status="claimed", plan=None, assigned_to=pm_id
+    )
+    task_svc.set_plan.return_value = MagicMock(
+        id=task_id, status="claimed", plan=started_plan, assigned_to=pm_id
+    )
+    task_svc.start.return_value = started
+    journal_svc = AsyncMock()
+    journal_svc.latest_decision_at.return_value = None
+    journal_svc.has_decision_for_task.side_effect = lambda *_a, **_k: (
+        journal_svc.write_decision.await_count > 0
+    )
+    return Choreographer(_make_deps(task=task_svc, journal=journal_svc)), journal_svc
+
+
+_RICH_PLAN: dict[str, Any] = {
+    "approach": _APPROACH,
+    "sub_tasks": [
+        {
+            "title": "Backend slice",
+            "description": (
+                "be-dev-1 implements the API endpoint with unit tests "
+                "and opens the leaf PR."
+            ),
+        },
+        {
+            "title": "Frontend slice",
+            "description": (
+                "fe-dev-1 wires the panel integration with loading states "
+                "and opens the PR."
+            ),
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_records_its_plan_as_the_planning_decision() -> None:
+    """Write-then-gate: the plan i_will_plan persisted is the PM's planning
+    rationale, so no separate note is needed. The old prompted order
+    (note(scope='decision') first) was refused because the PM held no
+    claim yet, and PMs idled on the tracing_gap (live 2026-10-28)."""
+    pm_id, task_id = uuid4(), uuid4()
+    chor, journal_svc = _plan_claim_choreographer(pm_id, task_id, _RICH_PLAN)
+
+    env = await chor.i_will_plan(
+        pm_id, task_id, plan="decompose by cell", rich_plan=_RICH_PLAN
+    )
+
+    assert env.as_dict().get("error") is None
+    journal_svc.write_decision.assert_awaited_once_with(
+        agent_id=pm_id, task_id=task_id, content=_APPROACH
+    )
+
+
+@pytest.mark.asyncio
+async def test_i_will_plan_keeps_a_fresh_decision_instead_of_duplicating_it() -> None:
+    pm_id, task_id = uuid4(), uuid4()
+    chor, journal_svc = _plan_claim_choreographer(pm_id, task_id, _RICH_PLAN)
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_decision_for_task.side_effect = None
+    journal_svc.has_decision_for_task.return_value = True
+
+    env = await chor.i_will_plan(
+        pm_id, task_id, plan="decompose by cell", rich_plan=_RICH_PLAN
+    )
+
+    assert env.as_dict().get("error") is None
+    journal_svc.write_decision.assert_not_awaited()
+
+
+def test_planning_rationale_prefers_the_approach_then_the_text() -> None:
+    assert (
+        Choreographer._planning_rationale(
+            MagicMock(plan={"approach": "a", "text": "t"})
+        )
+        == "a"
+    )
+    assert Choreographer._planning_rationale(MagicMock(plan={"text": "t"})) == "t"
+    assert Choreographer._planning_rationale(MagicMock(plan=None)) is None
+
+
 @pytest.mark.asyncio
 async def test_i_will_plan_rejects_non_pm_role() -> None:
     pm_id = uuid4()

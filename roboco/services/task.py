@@ -3841,6 +3841,23 @@ class TaskService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def get_for_update(self, task_id: UUID) -> TaskTable | None:
+        """``get``, holding the task's row lock until the caller's transaction
+        ends.
+
+        For a read-modify-write of a JSON payload stored on the task, such as
+        a board program's per-item CEO decisions: without the lock two
+        overlapping requests both read the old payload and the later write
+        silently drops the earlier one's change. ``of=TaskTable`` scopes the
+        lock to tasks (``project`` is lazy="joined"; see ``claim``).
+        """
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        return result.scalar_one_or_none()
+
     async def mark_stalled(self, task_id: UUID, reason: str) -> None:
         """Set the durable stalled marker (see `roboco.models.base.StalledReason`).
 
@@ -4366,9 +4383,7 @@ class TaskService(BaseService):
         claim — a mid-lifecycle claim (QA/doc on an ``awaiting_*`` task) already
         cleared its dependencies at the original claim.
         """
-        if task.status != TaskStatus.PENDING or not task.dependency_ids:
-            return False
-        unmet = await self.unmet_dependency_ids(list(task.dependency_ids))
+        unmet = await self._unmet_claim_dependencies(task)
         if not unmet:
             return False
         self.log.warning(
@@ -4377,6 +4392,12 @@ class TaskService(BaseService):
             unmet=[str(dep_id) for dep_id in unmet],
         )
         return True
+
+    async def _unmet_claim_dependencies(self, task: TaskTable) -> list[UUID]:
+        """The still-open ``depends_on`` tasks holding a PENDING claim, if any."""
+        if task.status != TaskStatus.PENDING or not task.dependency_ids:
+            return []
+        return await self.unmet_dependency_ids(list(task.dependency_ids))
 
     async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None:
         """Non-None (naming the blocking sibling) when a same-parent sibling
@@ -4563,7 +4584,13 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return False
-        return await self._claim_blocked_by_sequencing(task)
+        # A probe, not a claim: the same guards without the "Cannot claim
+        # task" warning a refused claim logs. Every dispatch tick re-probes
+        # each held task (live 2026-10-28: 221 such warnings in 100 minutes,
+        # none of them a claim).
+        if await self._unmet_claim_dependencies(task):
+            return True
+        return await self._claim_blocked_by_sequence(task) is not None
 
     async def _validate_claim_preconditions(
         self,

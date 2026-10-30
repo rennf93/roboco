@@ -164,7 +164,7 @@ class ScalesService(BaseService):
         ``RoadmapService._find_item``'s identical dirty-check rationale."""
         from roboco.services.task import get_task_service
 
-        task = await get_task_service(self.session).get(task_id)
+        task = await get_task_service(self.session).get_for_update(task_id)
         if task is None or task.source != SCALES_SOURCE:
             return None, None, None
         stored = markers.get_rebalance_plan(task)

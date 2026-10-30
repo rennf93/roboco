@@ -166,7 +166,7 @@ class RoadmapService(BaseService):
         mutable structure, not a snapshot, so an in-place edit followed by
         reassignment can compare equal to itself and the UPDATE gets skipped.
         """
-        task = await get_task_service(self.session).get(task_id)
+        task = await get_task_service(self.session).get_for_update(task_id)
         if task is None or task.source != ROADMAP_SOURCE:
             return None, None, None
         stored = markers.get_roadmap_cycle(task)

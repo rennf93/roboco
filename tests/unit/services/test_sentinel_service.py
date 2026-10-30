@@ -7,6 +7,7 @@ test, plus the docs-area task_type override (mirrors MirrorService).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -32,6 +33,7 @@ from roboco.services import board_programs as bp_module
 from roboco.services.sentinel_service import SentinelService, get_sentinel_service
 from roboco.services.task import SENTINEL_ITEM_SOURCE, SENTINEL_SOURCE
 from sqlalchemy import delete, select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -404,3 +406,71 @@ async def test_approve_survives_learn_recording_failure(
     )
     assert result is not None
     assert result.status == "approved"
+
+
+# ---------------------------------------------------------------------------
+# Overlapping CEO decisions on one report (live 2026-10-28: four approvals on
+# one report overlapped, each wrote the whole payload back, later writes erased
+# earlier approvals, and those items, still "proposed", were materialized
+# again as duplicate tasks).
+# ---------------------------------------------------------------------------
+
+
+async def _approve_while_another_request_holds_the_report(
+    db_session: AsyncSession, task_id: UUID, first_item: str, second_item: str
+) -> None:
+    """Approve ``first_item`` uncommitted, start a second request approving
+    ``second_item`` on its own connection, then commit the first."""
+    await db_session.commit()
+    factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with factory() as other:
+        await _svc(db_session).approve_item(task_id, first_item, created_by=CEO_UUID)
+        second = asyncio.create_task(
+            _svc(other).approve_item(task_id, second_item, created_by=CEO_UUID)
+        )
+        await asyncio.sleep(0.3)
+        await db_session.commit()
+        await second
+        await other.commit()
+    db_session.expire_all()
+
+
+@pytest.mark.asyncio
+async def test_overlapping_approvals_of_two_items_both_persist(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed_roboco_project(db_session, monkeypatch)
+    task_id = _id(await _seed_report(db_session, items=[_item(0), _item(1)]))
+
+    await _approve_while_another_request_holds_the_report(
+        db_session, task_id, "item-0", "item-1"
+    )
+
+    fresh = await db_session.get(TaskTable, task_id)
+    assert fresh is not None
+    report = markers.get_quality_report(fresh)
+    assert report is not None
+    assert {it["id"]: it["status"] for it in report["items"]} == {
+        "item-0": "approved",
+        "item-1": "approved",
+    }
+
+
+@pytest.mark.asyncio
+async def test_overlapping_approvals_of_one_item_materialize_it_once(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed_roboco_project(db_session, monkeypatch)
+    task_id = _id(await _seed_report(db_session, items=[_item(0)]))
+
+    await _approve_while_another_request_holds_the_report(
+        db_session, task_id, "item-0", "item-0"
+    )
+
+    result = await db_session.execute(
+        select(TaskTable).where(
+            TaskTable.source == SENTINEL_ITEM_SOURCE,
+            TaskTable.title.like("Sentinel [waivers]: Convert item 0%"),
+        )
+    )
+    assert len(result.scalars().all()) == ONE
