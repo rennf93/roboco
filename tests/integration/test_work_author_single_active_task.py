@@ -113,7 +113,8 @@ async def test_escalated_away_task_still_blocks_its_author(
         target_slug=pm.slug,
         reason="needs a PM decision",
     )
-    assert escalated.assigned_to == pm.id  # ownership moved to the PM...
+    # Ownership moved to the PM...
+    assert escalated.assigned_to == pm.id
     new = await _task(cell)
 
     held = await svc.held_task_blocking_claim(dev.id, new.id)
