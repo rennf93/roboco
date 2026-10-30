@@ -273,6 +273,8 @@ jobs:
         # compose-level registry pins check STRINGS, this checks reality.
         # docker CLI is present for `docker compose config` validation only:
         # no daemon is mounted, so anything needing a socket must fail here.
+        # That includes `docker version`, which always asks the daemon too;
+        # `docker --version` reads the client alone.
         run: |
           {
             echo
@@ -280,7 +282,7 @@ jobs:
             echo
           } | tee -a /tmp/devops-smoke-report.md
           docker run --rm --entrypoint /bin/sh agent-devops:smoke -c '
-            docker version --format "docker-cli {{.Client.Version}}" || exit 1
+            docker --version || exit 1
             docker compose version || exit 1
             kubectl version --client=true --output=yaml | head -2 || exit 1
             helm version --short || exit 1
