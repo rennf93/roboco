@@ -37,11 +37,7 @@ describe("TaskBreadcrumb", () => {
       data: { id: "parent-1", title: "Parent task" },
       isLoading: false,
     });
-    render(
-      <TaskBreadcrumb
-        task={buildTask({ parent_task_id: "parent-1" })}
-      />,
-    );
+    render(<TaskBreadcrumb task={buildTask({ parent_task_id: "parent-1" })} />);
     const link = screen.getByRole("link", { name: "Parent task" });
     expect(link).toHaveAttribute("href", "/tasks/parent-1");
     expect(screen.getByText("Child task")).toBeInTheDocument();

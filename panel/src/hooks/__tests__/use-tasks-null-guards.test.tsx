@@ -19,9 +19,7 @@ const { get, getSubtasks } = vi.hoisted(() => ({
 
 vi.mock("@/lib/api/tasks", async () => {
   const actual =
-    await vi.importActual<typeof import("@/lib/api/tasks")>(
-      "@/lib/api/tasks",
-    );
+    await vi.importActual<typeof import("@/lib/api/tasks")>("@/lib/api/tasks");
   return {
     ...actual,
     tasksApi: { ...actual.tasksApi, get, getSubtasks },

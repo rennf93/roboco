@@ -82,7 +82,11 @@ describe("NotificationAlerts", () => {
 
     mockStream.list = [
       ...mockStream.list,
-      notification({ notification_id: "2", subject: "New task", priority: "high" }),
+      notification({
+        notification_id: "2",
+        subject: "New task",
+        priority: "high",
+      }),
     ];
     rerender(<NotificationAlerts />);
 

@@ -132,8 +132,7 @@ api.interceptors.response.use(
     const url = error.config?.url;
     const method = error.config?.method?.toUpperCase();
     const errorData = error.response?.data as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     const errorDetail = errorData?.detail || error.message;
 
     // -------------------------------------------------------------------------

@@ -7,7 +7,12 @@ const { mutate } = vi.hoisted(() => ({ mutate: vi.fn() }));
 vi.mock("@/hooks/use-agents", () => ({
   useAgentDefinitions: () => ({
     data: [
-      { id: "be-dev-1", name: "Backend Dev 1", role: "developer", team: "backend" },
+      {
+        id: "be-dev-1",
+        name: "Backend Dev 1",
+        role: "developer",
+        team: "backend",
+      },
       { id: "auditor", name: "Auditor", role: "auditor", team: "board" },
     ],
   }),
@@ -76,7 +81,9 @@ describe("A2ANewDmDialog", () => {
     fireEvent.change(screen.getByPlaceholderText(/what do you want to say/i), {
       target: { value: "Status update please" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /start conversation/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /start conversation/i }),
+    );
 
     expect(mutate).toHaveBeenCalledWith(
       { target_agent: "be-dev-1", initial_message: "Status update please" },
@@ -94,7 +101,9 @@ describe("A2ANewDmDialog", () => {
     fireEvent.change(screen.getByPlaceholderText(/what do you want to say/i), {
       target: { value: "Hello" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /start conversation/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /start conversation/i }),
+    );
 
     const [, callbacks] = mutate.mock.calls[0] as [
       unknown,

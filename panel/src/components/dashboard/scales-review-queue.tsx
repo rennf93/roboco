@@ -64,7 +64,9 @@ function actionBadge(item: RebalanceItem) {
   }
   return (
     <HelpTip label={`Approving sets priority to P${item.new_priority ?? "?"}`}>
-      <Badge variant="secondary">Reprioritize → P{item.new_priority ?? "?"}</Badge>
+      <Badge variant="secondary">
+        Reprioritize → P{item.new_priority ?? "?"}
+      </Badge>
     </HelpTip>
   );
 }
@@ -196,7 +198,10 @@ export function ScalesReviewQueue({ className }: { className?: string }) {
       scalesApi.approveItem(taskId, itemId),
     onSuccess: (result) => {
       invalidate();
-      if (result.status === "approved" || result.status === "already_approved") {
+      if (
+        result.status === "approved" ||
+        result.status === "already_approved"
+      ) {
         toast.success(result.detail || "Item approved");
       } else {
         toast.warning(result.detail);

@@ -77,66 +77,66 @@ export function GitLogPanel({
                 key={commit.hash}
                 label={onSelectCommit ? "Select this commit" : ""}
               >
-              <Button
-                onClick={() => onSelectCommit?.(commit)}
-                variant="ghost"
-                className={cn(
-                  "w-full h-auto justify-start text-left p-3 font-normal whitespace-normal relative",
-                  selectedHash === commit.hash
-                    ? "bg-primary/10 hover:bg-primary/10"
-                    : "",
-                )}
-              >
-                {/* Timeline line */}
-                {index < log.commits.length - 1 && (
-                  <div className="absolute left-6 top-10 bottom-0 w-0.5 bg-border" />
-                )}
+                <Button
+                  onClick={() => onSelectCommit?.(commit)}
+                  variant="ghost"
+                  className={cn(
+                    "w-full h-auto justify-start text-left p-3 font-normal whitespace-normal relative",
+                    selectedHash === commit.hash
+                      ? "bg-primary/10 hover:bg-primary/10"
+                      : "",
+                  )}
+                >
+                  {/* Timeline line */}
+                  {index < log.commits.length - 1 && (
+                    <div className="absolute left-6 top-10 bottom-0 w-0.5 bg-border" />
+                  )}
 
-                <div className="flex gap-3">
-                  {/* Commit dot */}
-                  <div className="relative z-10">
-                    <div
-                      className={
-                        "h-4 w-4 rounded-full border-2 mt-0.5 " +
-                        (index === 0
-                          ? "bg-primary border-primary"
-                          : "bg-background border-muted-foreground")
-                      }
-                    />
-                  </div>
-
-                  {/* Commit info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm font-medium leading-snug line-clamp-2">
-                        {commit.message}
-                      </p>
-                      <HelpTip label="Short commit hash">
-                        <Badge
-                          variant="outline"
-                          className="font-mono text-xs shrink-0"
-                        >
-                          {commit.short_hash}
-                        </Badge>
-                      </HelpTip>
+                  <div className="flex gap-3">
+                    {/* Commit dot */}
+                    <div className="relative z-10">
+                      <div
+                        className={
+                          "h-4 w-4 rounded-full border-2 mt-0.5 " +
+                          (index === 0
+                            ? "bg-primary border-primary"
+                            : "bg-background border-muted-foreground")
+                        }
+                      />
                     </div>
-                    <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <User className="h-3 w-3" />
-                        {commit.author}
-                      </span>
-                      <HelpTip label={new Date(commit.date).toLocaleString()}>
-                        <span className="flex items-center gap-1 w-fit">
-                          <Calendar className="h-3 w-3" />
-                          {formatDistanceToNow(new Date(commit.date), {
-                            addSuffix: true,
-                          })}
+
+                    {/* Commit info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm font-medium leading-snug line-clamp-2">
+                          {commit.message}
+                        </p>
+                        <HelpTip label="Short commit hash">
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-xs shrink-0"
+                          >
+                            {commit.short_hash}
+                          </Badge>
+                        </HelpTip>
+                      </div>
+                      <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <User className="h-3 w-3" />
+                          {commit.author}
                         </span>
-                      </HelpTip>
+                        <HelpTip label={new Date(commit.date).toLocaleString()}>
+                          <span className="flex items-center gap-1 w-fit">
+                            <Calendar className="h-3 w-3" />
+                            {formatDistanceToNow(new Date(commit.date), {
+                              addSuffix: true,
+                            })}
+                          </span>
+                        </HelpTip>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </Button>
+                </Button>
               </HelpTip>
             ))}
           </div>

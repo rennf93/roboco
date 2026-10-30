@@ -48,14 +48,22 @@ import { ConventionsTab } from "../conventions-tab";
 // save), including the infra declaration.
 // ---------------------------------------------------------------------------
 
-function buildStandard(overrides: Partial<ConventionsStandard> = {}): ConventionsStandard {
+function buildStandard(
+  overrides: Partial<ConventionsStandard> = {},
+): ConventionsStandard {
   return {
     version: 1,
     languages: ["python", "typescript"],
     modules: [
-      { path: "roboco/services", purpose: "business logic", forbidden: ["route"] },
+      {
+        path: "roboco/services",
+        purpose: "business logic",
+        forbidden: ["route"],
+      },
     ],
-    rules: { no_lint_suppressions: { name: "no_lint_suppressions", level: "block" } },
+    rules: {
+      no_lint_suppressions: { name: "no_lint_suppressions", level: "block" },
+    },
     custom: [],
     waivers: [],
     infra: ["Dockerfile*", "docker/**"],
@@ -67,7 +75,10 @@ function setup(standard: ConventionsStandard) {
   mockUseQuery.mockImplementation((args: { queryKey: string[] }) => {
     if (args.queryKey[0] === "conventions") {
       return {
-        data: { standard, health: { status: "ok", head_sha: "s", last_ok_sha: null } },
+        data: {
+          standard,
+          health: { status: "ok", head_sha: "s", last_ok_sha: null },
+        },
         isLoading: false,
       };
     }

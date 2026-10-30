@@ -37,7 +37,8 @@ const FORBIDDABLE_KINDS: DefinitionKind[] = [
 const KIND_HINTS: Record<DefinitionKind, string> = {
   model: "Pydantic / ORM data models",
   route: "FastAPI route handlers",
-  helper: "Standalone top-level functions — placement here only warns, never blocks",
+  helper:
+    "Standalone top-level functions — placement here only warns, never blocks",
   business_logic: "Service-layer logic (the classes services/ owns)",
   component: "Frontend components (.tsx)",
   other: "Anything the classifier can't place in the kinds above",
@@ -173,8 +174,7 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
     edit({
       infra: (standard.infra ?? []).map((g, i) => (i === index ? glob : g)),
     });
-  const addInfraPath = () =>
-    edit({ infra: [...(standard.infra ?? []), ""] });
+  const addInfraPath = () => edit({ infra: [...(standard.infra ?? []), ""] });
   const removeInfraPath = (index: number) =>
     edit({ infra: (standard.infra ?? []).filter((_, i) => i !== index) });
   const resetInfra = () => edit({ infra: null });
@@ -454,10 +454,10 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
       <CardHeader>
         <CardTitle className="text-sm">Infrastructure paths</CardTitle>
         <CardDescription>
-          Globs for infra files (Dockerfiles, compose, CI workflows, deploy
-          and IaC manifests). PRs touching these paths require review by the
-          DevOps agent. An empty list opts out; remove all rows to use the
-          shipped defaults.
+          Globs for infra files (Dockerfiles, compose, CI workflows, deploy and
+          IaC manifests). PRs touching these paths require review by the DevOps
+          agent. An empty list opts out; remove all rows to use the shipped
+          defaults.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -550,7 +550,9 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
               }
             >
               <Badge
-                variant={finding.level === "block" ? "destructive" : "secondary"}
+                variant={
+                  finding.level === "block" ? "destructive" : "secondary"
+                }
               >
                 {finding.rule}
               </Badge>

@@ -67,7 +67,8 @@ export function ProductsView() {
   // Sorting is client-side over the already-loaded list — only relevant to
   // the card view; the table keeps its own (unsorted, creation-order) render.
   const sortedProducts = useMemo(
-    () => (products ? sortProducts(products, sortKey, sortDirection) : products),
+    () =>
+      products ? sortProducts(products, sortKey, sortDirection) : products,
     [products, sortKey, sortDirection],
   );
 

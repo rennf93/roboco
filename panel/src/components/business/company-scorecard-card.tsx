@@ -256,7 +256,8 @@ function SpeedSection({ medianLeadTimeHours }: SpeedSectionProps) {
 // content match, not a guaranteed-unique key.
 // ---------------------------------------------------------------------------
 
-type CanonicalMetricKey = "first_pass_yield" | "median_lead_time" | "escaped_defects";
+type CanonicalMetricKey =
+  "first_pass_yield" | "median_lead_time" | "escaped_defects";
 
 // Full distinguishing phrases, not single common words, to avoid the
 // keyword-collision case above (e.g. /defect/i alone matches both a
@@ -309,7 +310,10 @@ function ObjectiveCard({
   targetText,
 }: ObjectiveCardProps) {
   return (
-    <div data-testid="objective-card" className="rounded-lg border bg-card p-3 space-y-1">
+    <div
+      data-testid="objective-card"
+      className="rounded-lg border bg-card p-3 space-y-1"
+    >
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="flex items-center justify-between text-sm">
         {hasData ? (

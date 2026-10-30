@@ -78,8 +78,20 @@ describe("parseAcVerificationStamps", () => {
   it("marks every criterion unverified when qa_notes is null", () => {
     const stamps = parseAcVerificationStamps(["A", "B"], null);
     expect(stamps).toEqual([
-      { criterion: "A", matched: false, verified: false, unresolved: false, evidence: null },
-      { criterion: "B", matched: false, verified: false, unresolved: false, evidence: null },
+      {
+        criterion: "A",
+        matched: false,
+        verified: false,
+        unresolved: false,
+        evidence: null,
+      },
+      {
+        criterion: "B",
+        matched: false,
+        verified: false,
+        unresolved: false,
+        evidence: null,
+      },
     ]);
   });
 
@@ -89,7 +101,13 @@ describe("parseAcVerificationStamps", () => {
       "[AC] A — verified: yep";
     const stamps = parseAcVerificationStamps(["A"], qaNotes);
     expect(stamps).toEqual([
-      { criterion: "A", matched: true, verified: true, unresolved: false, evidence: "yep" },
+      {
+        criterion: "A",
+        matched: true,
+        verified: true,
+        unresolved: false,
+        evidence: "yep",
+      },
     ]);
   });
 

@@ -45,7 +45,8 @@ function makeUpdates(count: number) {
 function makeLongCriteria(count: number) {
   return Array.from(
     { length: count },
-    (_, i) => `[ ] Criterion ${i} requires a fairly detailed description to be meaningful`,
+    (_, i) =>
+      `[ ] Criterion ${i} requires a fairly detailed description to be meaningful`,
   );
 }
 

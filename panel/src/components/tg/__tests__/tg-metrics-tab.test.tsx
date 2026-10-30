@@ -7,7 +7,9 @@ import { TgMetricsTab } from "../tg-metrics-tab";
 // A mutable ref (not a bare boolean) so a later describe block can flip it to
 // false for the non-demo error-state tests without a second module factory.
 const { demoMode } = vi.hoisted(() => ({ demoMode: { current: true } }));
-vi.mock("@/lib/telegram/demo", () => ({ isTgDemoMode: () => demoMode.current }));
+vi.mock("@/lib/telegram/demo", () => ({
+  isTgDemoMode: () => demoMode.current,
+}));
 // Scorecard resolution needs the roster only outside demo mode (the demo
 // scorecard fixture returns unconditionally) — an empty roster keeps this
 // hook off the network without affecting anything the tests assert on.

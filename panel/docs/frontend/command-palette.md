@@ -12,12 +12,12 @@ The global command palette enables keyboard-driven navigation across the entire 
 
 ### Keyboard Navigation
 
-| Key | Action |
-|-----|--------|
-| Arrow Down | Move selection down (wraps at end) |
-| Arrow Up | Move selection up (wraps at start) |
-| Enter | Navigate to the currently selected item |
-| Escape | Close the palette (Radix Dialog built-in dismiss) |
+| Key        | Action                                            |
+| ---------- | ------------------------------------------------- |
+| Arrow Down | Move selection down (wraps at end)                |
+| Arrow Up   | Move selection up (wraps at start)                |
+| Enter      | Navigate to the currently selected item           |
+| Escape     | Close the palette (Radix Dialog built-in dismiss) |
 
 ### Search Categories
 
@@ -29,6 +29,7 @@ Results are grouped into four categories, appearing in this order:
 4. **Pages** — fuzzy-matched on page title from the sidebar navigation (client-side)
 
 Each category shows up to 6 results. Enter navigates to the entity's detail page:
+
 - Task: `/tasks/{id}`
 - Agent: `/agents/{id}`
 - Project: `/projects?q={name}` (filters the project list since no dedicated detail route exists)
@@ -49,6 +50,7 @@ When the input is empty (before or after clearing a search), the palette shows *
 **File**: `panel/src/components/layout/command-palette.tsx`
 
 A thin Radix Dialog renderer around the `useCommandPalette` hook. The component:
+
 - Mounts once in the dashboard layout (`panel/src/app/(dashboard)/layout.tsx`) so the hotkey works on every page
 - Listens for Cmd+K / Ctrl+K globally and opens the dialog
 - Delegates all search/navigation logic to the hook
@@ -58,6 +60,7 @@ A thin Radix Dialog renderer around the `useCommandPalette` hook. The component:
 **Props**: None — fully self-contained.
 
 **Key Features**:
+
 - Auto-focuses the input on open (via Radix's `onOpenAutoFocus`)
 - Wrapping text (long titles are truncated with `text-truncate`)
 - Shows "No results" when a search returns nothing; "No recent items yet" when recents are empty
@@ -85,6 +88,7 @@ Manages all data, keyboard navigation, and navigation state for the palette. Ret
 ```
 
 **Features**:
+
 - **Dialog state driven by UI Store**: `useUIStore().commandPaletteOpen` and `.setCommandPaletteOpen()` manage open/close (so other components like header search can open it via the store)
 - **Debounced search**: Typed input is debounced 150ms before triggering results (cheap debounce, not caching the query)
 - **Server-side task search**: Tasks are fetched via `tasksApi.list({ q: trimmedQuery })` only while the dialog is open and the query is non-empty; client-side for agents/projects/pages

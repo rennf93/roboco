@@ -129,7 +129,13 @@ export function A2AFilterBar({
     <div className="mb-2 shrink-0">
       <div className="flex items-center justify-end">
         <Popover>
-          <HelpTip label={count > 0 ? `${count} active filter${count === 1 ? "" : "s"} — click to edit` : "Narrow by agent, task, status, or date"}>
+          <HelpTip
+            label={
+              count > 0
+                ? `${count} active filter${count === 1 ? "" : "s"} — click to edit`
+                : "Narrow by agent, task, status, or date"
+            }
+          >
             <PopoverTrigger asChild>
               <Button
                 type="button"
@@ -164,7 +170,9 @@ export function A2AFilterBar({
                       variant="ghost"
                       size="sm"
                       className="h-6 px-2 text-xs"
-                      onClick={() => onFiltersChange({ ...filters, agents: [] })}
+                      onClick={() =>
+                        onFiltersChange({ ...filters, agents: [] })
+                      }
                     >
                       Clear
                     </Button>
@@ -227,7 +235,10 @@ export function A2AFilterBar({
               </HelpTip>
               <div className="mt-1 flex items-center gap-1">
                 {STATUS_OPTIONS.map((opt) => (
-                  <HelpTip key={opt.value} label={`Toggle showing ${opt.label.toLowerCase()} conversations`}>
+                  <HelpTip
+                    key={opt.value}
+                    label={`Toggle showing ${opt.label.toLowerCase()} conversations`}
+                  >
                     <Button
                       type="button"
                       variant={

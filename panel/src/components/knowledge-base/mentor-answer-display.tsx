@@ -210,7 +210,10 @@ export function MentorAnswerDisplay({
             </div>
             <div className="flex flex-wrap gap-2">
               {response.suggested_followups.map((followup, index) => (
-                <HelpTip key={index} label="Ask this next, in the same conversation">
+                <HelpTip
+                  key={index}
+                  label="Ask this next, in the same conversation"
+                >
                   <Button
                     variant="outline"
                     size="sm"
