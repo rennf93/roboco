@@ -16,7 +16,7 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `roboco/foundation/policy/content/enums.py` | `Severity` StrEnum (`blocker`/`major`/`minor`/`nit`) | 35 |
 | `roboco/foundation/policy/content/models.py` | `Finding` (extended: `fix`/`evidence`, caps, repo-relative `file`), `QaNote.findings`, new `PmReviewContent` ("pm_review"), `validate_findings` | 667 (whole content-model file) |
 | `roboco/services/content_notes.py` | `_MIRROR_COLUMN["pm_review"] = "pm_notes"` | (1-line addition within a shared file) |
-| `roboco/services/gateway/choreographer/findings.py` | Shared producer helpers: shim, count guard, criterion check, ledger insert/render, verify-stamp | 322 |
+| `roboco/services/gateway/choreographer/findings.py` | Shared producer helpers: shim, count guard, criterion check, ledger insert/render, verify-stamp | 350 |
 | `roboco/services/gateway/choreographer/qa.py` | `fail_review` — QA-origin producer | (slice within a shared file) |
 | `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer; `pr_pass` — verify-stamp; `_run_second_review_pass` — advisory second_review-origin producer (no verify-stamp) | (slice within a shared file) |
 | `roboco/services/gateway/choreographer/second_review_gate.py` | `SECOND_REVIEW_ORIGIN="second_review"`; `insert_second_review_findings` — thin wrapper over `findings_lib.insert_and_render` for this origin | 181 |
@@ -29,7 +29,7 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `roboco/mcp/flow_server.py` | MCP param wiring: `findings`/`resolved_findings` on the 6 affected tools | (slice within a shared file) |
 | `roboco/api/schemas/v1/flow.py` | `ResolvedFindingInput`; `findings`/`resolved_findings` fields on the flow request schemas | (slice within a shared file) |
 | `roboco/api/routes/tasks.py` | `GET /{task_id}/findings` route | (slice within a shared file) |
-| `roboco/api/schemas/tasks.py` | `TaskFindingResponse`/`TaskFindingsSummaryRow`/`TaskFindingsResponse`; `TaskResponse.revision_count`/`.pm_notes` | 1163 (whole schema file) |
+| `roboco/api/schemas/tasks.py` | `TaskFindingResponse`/`TaskFindingsSummaryRow`/`TaskFindingsResponse`; `TaskResponse.revision_count`/`.pm_notes` | 1167 (whole schema file) |
 | `roboco/services/metrics.py` | `_REWORK_EVENT_TYPES`/`_REWORK_EVENT_TO_FIELD`, `pm_rejects`/`ceo_rejects` on `AgentReworkRate`, `findings_open`/`findings_total` on `get_task_metrics` | (slice within a shared file) |
 | `roboco/models/metrics.py` | `AgentReworkRate`/`TaskMetrics` gain `pm_rejects`/`ceo_rejects`(/`findings_open`/`findings_total`) | (slice within a shared file) |
 | `roboco/services/vault_assembly.py` | `_resolve_findings` — fail-open findings fetch for `TaskNoteData` | (slice within a shared file) |
@@ -51,9 +51,9 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `findings_count_guard` / `findings_count_hint` | functions | `roboco/services/gateway/choreographer/findings.py:103,120` | Hard-reject `Envelope` above `FINDINGS_HARD_CAP=10`; non-blocking hint above `FINDINGS_NUDGE_COUNT=5`. |
 | `issues_to_findings` / `merge_findings_and_issues` | functions | `roboco/services/gateway/choreographer/findings.py:62,86` | Legacy `issues: list[str]` shim → file-less `severity=major` findings (deprecation-logged); merges with any `findings` sent in the same call rather than one silently dropping the other. |
 | `next_round` | function | `roboco/services/gateway/choreographer/findings.py:48` | `(task.revision_count or 0) + 1`, read BEFORE the transition — the round a finding written during this call belongs to. |
-| `unknown_finding_criteria` / `criterion_mismatch_rejection` | functions | `roboco/services/gateway/choreographer/findings.py:197,210` | A supplied `criterion` must match an `acceptance_criteria_ids` entry or exact AC text, or the call is rejected. |
-| `insert_and_render` / `render_findings_summary` / `render_finding_line` | functions | `roboco/services/gateway/choreographer/findings.py:249,239,226` | Ledger insert chokepoint (all 3 choreographer producers share it) + the deterministic `[F-id8] file:line (severity) — expected → actual → fix` rendering used for both the structured note's `summary` and the A2A body. |
-| `stamp_addressed_verified` | function | `roboco/services/gateway/choreographer/findings.py:306` | Bulk-promotes `addressed→verified` for one `origin` on a task, passing `verified_by` (the QA / PR-gate / PM reviewer's slug, or `ceo`) through to `mark_verified`; not best-effort except at the `ceo_approve` call site. |
+| `unknown_finding_criteria` / `criterion_mismatch_rejection` | functions | `roboco/services/gateway/choreographer/findings.py:197,230` | A supplied `criterion` must match an `acceptance_criteria_ids` entry or exact AC text, or the call is rejected. |
+| `insert_and_render` / `render_findings_summary` / `render_finding_line` | functions | `roboco/services/gateway/choreographer/findings.py:277,267,254` | Ledger insert chokepoint (all 3 choreographer producers share it) + the deterministic `[F-id8] file:line (severity) — expected → actual → fix` rendering used for both the structured note's `summary` and the A2A body. |
+| `stamp_addressed_verified` | function | `roboco/services/gateway/choreographer/findings.py:334` | Bulk-promotes `addressed→verified` for one `origin` on a task, passing `verified_by` (the QA / PR-gate / PM reviewer's slug, or `ceo`) through to `mark_verified`; not best-effort except at the `ceo_approve` call site. |
 | `fail_review` | async verb | `roboco/services/gateway/choreographer/qa.py` | QA-origin producer: `(qa_agent_id, task_id, issues=None, findings=None)`. |
 | `pr_fail` | async verb | `roboco/services/gateway/choreographer/pr_gate.py` | pr_gate-origin producer, same shape; findings insert happens before `_record_gate_verdict_for` so the verdict note reads real ledger ids. |
 | `request_changes` | async verb | `roboco/services/gateway/choreographer/_impl.py` | pm-origin producer, same shape; writes `PmReviewContent` → `pm_notes`. |

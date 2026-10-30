@@ -120,8 +120,8 @@ foundation-batch-sequencing
 | Name | File | Trigger |
 |---|---|---|
 | PrompterService.confirm_live_batch / _sequence_drafts | roboco/services/prompter.py | POST /prompter/live/{session}/confirm-batch (CEO confirms a MegaTask review card); `_sequence_drafts` builds the DraftSurfaces and calls SequencingService.analyze to wire kind-1 root-subtask edges (also the single source for `preview_batch`) |
-| TaskService.wire_sibling_collision_dag | roboco/services/task.py:10123 | `Choreographer._create_subtask_from_inputs` after every delegate; calls dev_task_collision_edges (or semantic_collision_edges when `decisions_enabled`) and add_dependency |
-| TaskService.wire_cell_task_wave_chain / wire_by_osmosis_edge | roboco/services/task.py:10199/10237 | `Choreographer._create_subtask_from_inputs` (`services/gateway/choreographer/_impl.py`) after every delegate: a MAIN_PM parent wires kind 2 via cell_task_wave_chain_depends_on, a cell-team parent wires kind 4 via by_osmosis_tail_dev_tasks |
+| TaskService.wire_sibling_collision_dag | roboco/services/task.py:10150 | `Choreographer._create_subtask_from_inputs` after every delegate; calls dev_task_collision_edges (or semantic_collision_edges when `decisions_enabled`) and add_dependency |
+| TaskService.wire_cell_task_wave_chain / wire_by_osmosis_edge | roboco/services/task.py:10226/10264 | `Choreographer._create_subtask_from_inputs` (`services/gateway/choreographer/_impl.py`) after every delegate: a MAIN_PM parent wires kind 2 via cell_task_wave_chain_depends_on, a cell-team parent wires kind 4 via by_osmosis_tail_dev_tasks |
 | orchestrator._is_coordination_task | roboco/runtime/orchestrator.py:839 | spawn / dispatch tick; consults is_branchless_coordination |
 | TaskService.create / approve_and_start / reassign_active_claim / escalate_to_ceo | roboco/services/task.py | gateway verbs (delegate, CEO approve, reassign, escalate); consult is_batch_umbrella / is_valid_batch_shape / main_pm_cannot_own_code. `Choreographer._submit_root_preflight` (`services/gateway/choreographer/_impl.py`) checks is_batch_umbrella for submit_root |
 
