@@ -1,4 +1,4 @@
-<!-- Vendored from https://github.com/heygen-com/hyperframes (skills/hyperframes-creative/references/motion-principles.md @ 9d148d28, Apache-2.0).
+<!-- Vendored from https://github.com/heygen-com/hyperframes (skills/hyperframes-creative/references/motion-principles.md @ 207c8a4d, Apache-2.0).
      Reference doc hyperframes-creative.md points at for non-trivial compositions. Re-vendor when bumping @hyperframes/producer, then run make reflow-docs (prose is reflowed to house style). -->
 
 # Motion Principles
@@ -78,6 +78,7 @@ You build for the web. Video frames are not pages.
 - **Anchor to edges.** Pin content to left/top or right/bottom. Centered-and-floating is a web pattern.
 - **Split frames.** Data panel on the left, content on the right. Top bar with metadata, full-width below. Zone-based layouts, not centered stacks.
 - **Use structural elements.** Rules, dividers, border panels. They create paths for the eye and animate well (scaleX from 0).
+- **Connector lines earn their place.** Any beam, rail, scan line, or drawn underline must be able to name its start anchor, its end anchor (real elements, not empty space), and its job — revealing, routing, validating, or emphasizing something. A line the frame can lose without losing meaning is decoration: cut it. An edge-lit component (a card's top highlight, a state dot) usually reads as more designed than a free-floating arc.
 
 ## Image Motion Treatment
 
