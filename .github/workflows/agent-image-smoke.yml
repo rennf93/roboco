@@ -28,19 +28,47 @@ on:
     # master, so a `branches: [master]` filter here would only ever fire
     # once the assembled PR reaches root->master — too late to give QA/PM
     # real evidence at the dev-PR review stage this task exists for.
-    paths:
-      - 'docker/agent-base.Dockerfile'
-      - 'docker/npm/agent-base/**'
-      - 'docker/agent-qa-fe.Dockerfile'
-      - 'docker/agent-ux.Dockerfile'
-      - 'docker/agent-devops.Dockerfile'
-      - 'docker/scripts/entrypoints/playwright-mcp-entrypoint.sh'
-      - '.github/workflows/agent-image-smoke.yml'
+    # No `paths:` either: master's ruleset requires the `agent-image-smoke`
+    # check, and a workflow a paths filter skips never reports it. The
+    # `paths` job applies the push trigger's paths instead (see ci.yml).
   workflow_dispatch:
 
 jobs:
+  paths:
+    name: Match the PR's files against the push trigger's paths
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.paths.outputs.relevant }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          # The base commit (the PR merge commit's first parent) for the
+          # paths match below.
+          fetch-depth: 2
+
+      - name: Match the PR's files against the push trigger's paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # The push trigger's paths, verbatim (tests/unit/test_required_checks.py
+          # keeps the two lists equal).
+          PATHS: |
+            docker/agent-base.Dockerfile
+            docker/npm/agent-base/**
+            docker/agent-qa-fe.Dockerfile
+            docker/agent-ux.Dockerfile
+            docker/agent-devops.Dockerfile
+            docker/scripts/entrypoints/playwright-mcp-entrypoint.sh
+            .github/workflows/agent-image-smoke.yml
+        run: python3 .github/scripts/required_checks.py match-paths
+
   playwright-smoke:
     name: Build QA images, verify headless chromium launch + size delta
+    needs: paths
+    if: needs.paths.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -207,6 +235,8 @@ jobs:
             });
   devops-toolchain-smoke:
     name: Build devops image, verify the pinned infra toolchain runs
+    needs: paths
+    if: needs.paths.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     permissions:
       # The PR-comment step below posts the smoke report on the PR — same
@@ -265,3 +295,28 @@ jobs:
               issue_number: context.issue.number,
               body: `## DevOps image toolchain smoke results\n\n${body}`,
             });
+
+  agent-image-smoke:
+    # Master's ruleset requires a check with exactly this name. The two smoke
+    # jobs keep their own names, so this job reports for both: it passes when
+    # they passed (the PR touches their paths) or were skipped (it doesn't).
+    # A result job is safe here, unlike in the single-job workflows, because
+    # this workflow has no concurrency group: no run is ever cancelled, so no
+    # cancelled run's verdict can stand in for a newer one (see ci.yml).
+    # tests/unit/test_required_checks.py fails if a concurrency group is added.
+    name: agent-image-smoke
+    needs: [paths, playwright-smoke, devops-toolchain-smoke]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Check each smoke job ended the way the paths match expects
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          PATHS_JOB: paths
+        run: python3 .github/scripts/required_checks.py verdict

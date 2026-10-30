@@ -28,14 +28,9 @@ on:
       - master
       # Fleet PRs target the dev branch — see ci.yml's pull_request note.
       - slave
-    paths:
-      - 'roboco/**'
-      - 'alembic/**'
-      - 'tests/**'
-      - 'Makefile'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/e2e-smoke.yml'
+    # No `paths:` here: master's ruleset requires the `e2e-smoke` check, and a
+    # workflow a paths filter skips never reports it. The job's first step
+    # applies the push trigger's paths instead (see ci.yml).
   workflow_dispatch:
 
 # A fleet branch that's also an open PR head can get both a `push` and a
@@ -45,13 +40,16 @@ on:
 # resolve to the SAME branch name, so the two event shapes share one group —
 # plain `github.ref` would NOT (it's `refs/pull/<n>/merge` for pull_request
 # vs `refs/heads/<branch>` for push, so it'd never collapse them).
+# Named after the required check, not the workflow, so a branch still on the
+# pre-rename definition never cancels this one (see ci.yml).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: check-e2e-smoke-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   e2e-smoke:
-    name: e2e lifecycle smoke (scripted agents)
+    # Master's ruleset requires a check with exactly this name.
+    name: e2e-smoke
     runs-on: ubuntu-latest
 
     services:
@@ -85,22 +83,48 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7.0.1
+        with:
+          # The base commit (the PR merge commit's first parent) for the
+          # paths match below.
+          fetch-depth: 2
+
+      - name: Match the PR's files against the push trigger's paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # The push trigger's paths, verbatim (tests/unit/test_required_checks.py
+          # keeps the two lists equal).
+          PATHS: |
+            roboco/**
+            alembic/**
+            tests/**
+            Makefile
+            pyproject.toml
+            uv.lock
+            .github/workflows/e2e-smoke.yml
+        run: python3 .github/scripts/required_checks.py match-paths
 
       - name: Set up Python
+        if: steps.paths.outputs.relevant == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
       - name: Install uv
+        if: steps.paths.outputs.relevant == 'true'
         run: pip install uv
 
       - name: Install dependencies
+        if: steps.paths.outputs.relevant == 'true'
         run: uv sync --extra dev
 
       - name: Configure git identity for the scripted agents
+        if: steps.paths.outputs.relevant == 'true'
         run: |
           git config --global user.name "roboco-e2e"
           git config --global user.email "e2e@roboco.local"
 
       - name: Run the lifecycle smoke
+        if: steps.paths.outputs.relevant == 'true'
         run: make e2e-smoke

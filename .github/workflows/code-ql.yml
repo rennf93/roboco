@@ -18,13 +18,9 @@ on:
   pull_request:
     # Fleet PRs target the dev branch — see ci.yml's pull_request note.
     branches: [master, slave]
-    paths:
-      - 'roboco/**'
-      - 'agents/**'
-      - 'alembic/**'
-      - 'scripts/**'
-      - 'pyproject.toml'
-      - '.github/workflows/code-ql.yml'
+    # No `paths:` here: master's ruleset requires the `code-ql` check, and a
+    # workflow a paths filter skips never reports it. The job's first step
+    # applies the push trigger's paths instead (see ci.yml).
   schedule:
     - cron: '0 0 * * 1'
   workflow_dispatch:
@@ -36,13 +32,17 @@ on:
 # resolve to the SAME branch name, so the two event shapes share one group —
 # plain `github.ref` would NOT (it's `refs/pull/<n>/merge` for pull_request
 # vs `refs/heads/<branch>` for push, so it'd never collapse them).
+# Named after the required check, not the workflow, so a branch still on the
+# pre-rename definition never cancels this one (see ci.yml).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: check-code-ql-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    # Master's ruleset requires a check with exactly this name, and the fleet's
+    # PR gate maps it to the scope it analyzes (pr_gate._CODEQL_CHECK_SCOPES).
+    name: code-ql
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -59,14 +59,36 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7.0.1
+        with:
+          # The base commit (the PR merge commit's first parent) for the
+          # paths match below.
+          fetch-depth: 2
+
+      - name: Match the PR's files against the push trigger's paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # The push trigger's paths, verbatim (tests/unit/test_required_checks.py
+          # keeps the two lists equal).
+          PATHS: |
+            roboco/**
+            agents/**
+            alembic/**
+            scripts/**
+            pyproject.toml
+            .github/workflows/code-ql.yml
+        run: python3 .github/scripts/required_checks.py match-paths
 
       - name: Initialize CodeQL
+        if: steps.paths.outputs.relevant == 'true'
         uses: github/codeql-action/init@v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
       - name: Perform CodeQL Analysis
+        if: steps.paths.outputs.relevant == 'true'
         uses: github/codeql-action/analyze@v4.39.1
         with:
           category: "/language:${{ matrix.language }}"
