@@ -412,6 +412,42 @@ class DispatchClaimEngine(_Base):
             if claimed is not None:
                 self._clear_claim_in_flight(agent_id)
 
+    @staticmethod
+    def _cell_candidates(cell: str | None, role: str) -> list[str]:
+        """The agent slugs that fill ``role`` in ``cell``, in preference order."""
+        prefix = {"backend": "be", "frontend": "fe", "ux_ui": "ux"}.get(cell or "")
+        if not prefix:
+            return []
+        return {
+            "dev": [f"{prefix}-dev-1", f"{prefix}-dev-2"],
+            "qa": [f"{prefix}-qa"],
+            "doc": [f"{prefix}-doc"],
+            "pm": [f"{prefix}-pm"],
+            "pr_reviewer": [f"{prefix}-pr-reviewer", "cell-pr-reviewer-2"],
+        }.get(role, [])
+
+    async def _free_cell_dev(self, task: dict[str, Any]) -> str | None:
+        """The first idle cell dev holding no other work, or None to defer.
+
+        ``_select_agent_for_cell`` only knows which containers are running. A
+        dev between spawns can still hold claimed, blocked or paused work, and
+        an on-behalf claim for it is refused at the claim chokepoint (before
+        that check it was handed a task its own ``i_will_work_on`` refused).
+        """
+        for slug in self._cell_candidates(task.get("team"), "dev"):
+            if self._is_agent_active(slug) or self._is_claim_in_flight(slug):
+                continue
+            agent_uuid = AGENT_UUIDS.get(slug)
+            if agent_uuid and not await self._held_task_blocking_claim(
+                agent_uuid, task["id"]
+            ):
+                return slug
+        logger.debug(
+            "dev routing: every idle cell dev still holds work, deferring",
+            task_id=task.get("id"),
+        )
+        return None
+
     def _select_agent_for_cell(self, cell: str, role: str) -> str | None:
         """
         Select the best available agent for a cell and role.
@@ -419,24 +455,7 @@ class DispatchClaimEngine(_Base):
         Prefers agents that are not currently active.
         For developers, uses round-robin among candidates.
         """
-        prefix_map = {"backend": "be", "frontend": "fe", "ux_ui": "ux"}
-        prefix = prefix_map.get(cell)
-        if not prefix:
-            return None
-
-        # Build candidate list based on role
-        if role == "dev":
-            candidates = [f"{prefix}-dev-1", f"{prefix}-dev-2"]
-        elif role == "qa":
-            candidates = [f"{prefix}-qa"]
-        elif role == "doc":
-            candidates = [f"{prefix}-doc"]
-        elif role == "pm":
-            candidates = [f"{prefix}-pm"]
-        elif role == "pr_reviewer":
-            candidates = [f"{prefix}-pr-reviewer", "cell-pr-reviewer-2"]
-        else:
-            return None
+        candidates = self._cell_candidates(cell, role)
 
         # Prefer an agent that is neither active nor mid-claim/spawn.
         for agent_id in candidates:
@@ -678,6 +697,122 @@ class DispatchClaimEngine(_Base):
                 error=str(exc),
             )
             return False
+
+    async def _held_task_blocking_claim(
+        self, agent_uuid: str, task_id: str
+    ) -> tuple[str, str] | None:
+        """Dispatch-time probe: ``(status, id)`` of the task ``agent_uuid``
+        still holds that its own ``i_will_work_on`` on ``task_id`` is refused
+        for, or None.
+
+        Reuses ``TaskService.held_task_blocking_claim``, the rule the gateway
+        guards and the claim chokepoint apply, so this can't drift from what
+        the agent is actually refused. Fails open (None) on any lookup error,
+        like ``_pending_claim_blocked``: the claim remains the safety net.
+        """
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                held = await TaskService(db).held_task_blocking_claim(
+                    UUID(agent_uuid), UUID(task_id)
+                )
+                return None if held is None else (str(held.status), str(held.id))
+        except Exception as exc:
+            logger.warning(
+                "Held-work probe failed; falling through to dispatch",
+                agent_uuid=agent_uuid,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return None
+
+    async def _work_author_holds_other_work(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+        owner_uuid: str,
+        agent_slug: str,
+    ) -> bool:
+        """True when ``agent_slug`` must not be spawned on ``task`` yet.
+
+        A pending / needs_revision / claimed task still needs the author's own
+        ``i_will_work_on``, which the gateway refuses while the author holds
+        any other claimed, in_progress, blocked or paused task. Spawning it
+        anyway was pure churn (live 2026-10-28: be-dev-1 was spawned 14 times
+        in an hour on tasks it was refused, never once on the two paused tasks
+        every refusal told it to resume). Instead:
+
+        - a held paused task is resumed and the idle author spawned on it;
+        - a second never-started claimed task (two claims neither can start,
+          left by on-behalf claims the chokepoint now refuses) is released to
+          the pool, which breaks the deadlock;
+        - any other held work is waited on: it gets its own dispatch, or its
+          PM unblocks it.
+        """
+        status = task.get("status")
+        if status not in ("pending", "needs_revision", "claimed"):
+            return False
+        held = await self._held_task_blocking_claim(owner_uuid, task["id"])
+        if held is None:
+            return False
+        held_status, held_id = held
+        if held_status == "paused" and not self._is_agent_active(agent_slug):
+            await self._resume_paused_task_for_author(client, held_id, agent_slug)
+        elif held_status == "claimed" and status == "claimed":
+            await self._release_claim_to_pending(task["id"])
+        return True
+
+    async def _resume_paused_task_for_author(
+        self, client: httpx.AsyncClient, task_id: str, agent_slug: str
+    ) -> None:
+        """Resume an idle work author's paused task and spawn it there.
+
+        ``i_am_idle`` auto-pauses the author's in_progress task and the gateway
+        then refuses all new work until it is resumed, yet no dispatch path
+        ever spawned a developer on a paused task. The dev twin of
+        ``_auto_resume_paused_parent`` (weak models reliably fail to call
+        ``resume()`` themselves), behind the same respawn breaker as every
+        other task-keyed spawn, so a task that keeps getting paused pages the
+        CEO instead of looping.
+        """
+        task = await self._fetch_task_fields(client, task_id)
+        if task is None or task.get("status") != "paused":
+            return
+        if await self._pm_respawn_should_gate(agent_slug, task):
+            return
+        try:
+            resp = await client.patch(
+                f"{self._api_url}/tasks/{task_id}", json={"status": "in_progress"}
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to resume paused task", task_id=task_id, error=str(exc)
+            )
+            return
+        if resp.status_code != http_status.HTTP_200_OK:
+            logger.warning(
+                "Paused task resume refused",
+                task_id=task_id,
+                status=resp.status_code,
+            )
+            return
+        task["status"] = "in_progress"
+        logger.info(
+            "Auto-resumed paused task for its idle author",
+            task_id=task_id,
+            agent=agent_slug,
+        )
+        await self.spawn_agent(
+            agent_id=agent_slug,
+            task_id=task_id,
+            initial_prompt=await self._build_dev_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_resume_paused_task_for_author",
+        )
 
     async def _task_has_children(self, task_id: str | None) -> bool:
         """Dispatch-time probe: does ``task_id`` already have subtasks?

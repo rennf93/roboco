@@ -2056,6 +2056,27 @@ async def test_claim_blocked_by_lower_sequence_sibling_no_dependency_edge(
     assert claimed.status == TaskStatus.CLAIMED
 
 
+async def _second_backend_developer(db_session: AsyncSession) -> UUID:
+    """Parallel claims go to different developers: one developer holds a
+    single unfinished task at a time (the claim chokepoint refuses a second)."""
+    dev = AgentTable(
+        id=uuid4(),
+        name="Dev 2",
+        slug=f"be-dev-two-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(dev)
+    await db_session.flush()
+    return cast("UUID", dev.id)
+
+
 @pytest.mark.asyncio
 async def test_claim_allows_equal_sequence_siblings_in_parallel(
     task_setup: dict, db_session: AsyncSession
@@ -2074,7 +2095,7 @@ async def test_claim_allows_equal_sequence_siblings_in_parallel(
     await db_session.flush()
 
     claimed_a = await svc.claim(a.id, task_setup["agent_id"])
-    claimed_b = await svc.claim(b.id, task_setup["agent_id"])
+    claimed_b = await svc.claim(b.id, await _second_backend_developer(db_session))
     assert claimed_a is not None
     assert claimed_b is not None
 
@@ -2150,7 +2171,8 @@ async def test_claim_sequence_zero_or_parentless_unaffected(
     await db_session.flush()
 
     assert (await svc.claim(seq0.id, task_setup["agent_id"])) is not None
-    assert (await svc.claim(lone.id, task_setup["agent_id"])) is not None
+    second_dev = await _second_backend_developer(db_session)
+    assert (await svc.claim(lone.id, second_dev)) is not None
 
 
 @pytest.mark.asyncio
@@ -2606,7 +2628,8 @@ async def test_stamp_wave_sequence_independent_siblings_tie_and_claim_parallel(
     b.branch_name = "feature/backend/bbbb0002"
     await db_session.flush()
     assert await svc.claim(a.id, task_setup["agent_id"]) is not None
-    assert await svc.claim(b.id, task_setup["agent_id"]) is not None
+    second_dev = await _second_backend_developer(db_session)
+    assert await svc.claim(b.id, second_dev) is not None
 
 
 @pytest.mark.asyncio
