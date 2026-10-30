@@ -1407,3 +1407,137 @@ async def test_pending_assignment_guard_still_blocks_developer() -> None:
     guard = await c._pending_assignment_guard(uuid4(), {})
     assert guard is not None
     assert guard.as_dict()["error"] == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_allows_idle_with_active_work() -> None:
+    """Regression (be-pm, 2026-09-27): a cell PM holding one root in_progress
+    with two more roots assigned could NEVER satisfy this guard — the claim
+    gate refuses a second claim, so the refusal demanded the impossible and
+    every run wedged at the exit until the CEO paused the roots by hand. The
+    spawn-per-pending dispatcher gives each pending root its own run."""
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [
+        MagicMock(id=uuid4(), status="in_progress"),
+        MagicMock(id=uuid4(), status="pending"),
+        MagicMock(id=uuid4(), status="pending"),
+    ]
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm", team="backend", slug=None
+    )
+    c = Choreographer(_make_deps(task=task_svc))
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_allows_idle_when_claim_blocked() -> None:
+    """Regression (be-dev-2, 2026-09-27): a pending assignment the claim gate
+    itself holds (dependency/sequence reachability) must not block the exit —
+    "gate A refuses the action, gate B refuses the exit" is a dead-end, and
+    the orchestrator re-spawns when the hold clears."""
+    task_svc = AsyncMock()
+    held = MagicMock(id=uuid4(), status="pending")
+    task_svc.list_assigned_for_agent.return_value = [held]
+    task_svc.agent_for.return_value = MagicMock(
+        role="developer", team="backend", slug=None
+    )
+    task_svc.is_pending_claim_blocked.return_value = True
+    c = Choreographer(_make_deps(task=task_svc))
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+    task_svc.is_pending_claim_blocked.assert_awaited_once_with(held.id)
+
+
+# ---------------------------------------------------------------------------
+# F-ff8bc25a / F-52ac54a5 (pr_gate round-1): _notify_qa and
+# _notify_request_changes_owner must savepoint their post-transition
+# a2a.send guard, not just try/except it. A bare try/except catches the
+# send call raising, but a mid-flush failure elsewhere in the guarded body
+# (e.g. reassign()'s own flush, or a2a.send's internal flush) still leaves
+# the shared request session rollback-only — the response commit
+# (DbCommitMiddleware) reuses it right after the guard returns and would
+# hit PendingRollbackError. begin_nested() contains the failure to a
+# savepoint instead.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notify_qa_survives_mid_flush_failure_inside_savepoint() -> None:
+    """A mid-flush failure inside the guarded body (simulated here as
+    reassign()'s own flush raising, not a2a.send itself raising a
+    policy/lookup error) must be contained by the begin_nested() savepoint.
+    The session must still be usable afterward for the response commit."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    qa_id = uuid4()
+    t = MagicMock(id=task_id, team="backend", pr_url="https://x/pr/9")
+    qa_agent = MagicMock(id=qa_id, skills=[{"id": "code_review"}])
+
+    task_svc = AsyncMock()
+    task_svc.qa_agent_for_team.return_value = qa_agent
+    a2a_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, a2a=a2a_svc)
+    c = Choreographer(deps)
+
+    # First flush (inside the savepoint) raises a mid-flush DB error; a
+    # second flush (the outer response commit reusing the session
+    # afterward) must succeed — proving the session was not left poisoned.
+    task_svc.session.flush = AsyncMock(
+        side_effect=[RuntimeError("mid-flush db error"), None]
+    )
+    task_svc.session.refresh = AsyncMock()
+
+    async def _reassign_flushes(_task_id: Any, _new_assignee: Any) -> None:
+        await task_svc.session.flush()
+
+    task_svc.reassign = AsyncMock(side_effect=_reassign_flushes)
+
+    warning = await c._notify_qa(agent_id, task_id, t)
+
+    # The savepoint was actually engaged, not merely a bare try/except.
+    task_svc.session.begin_nested.assert_called_once()
+    assert warning is not None
+    assert str(qa_id) in warning
+    assert "RuntimeError" in warning
+    a2a_svc.send.assert_not_awaited()  # reassign's flush blew up first
+    task_svc.session.refresh.assert_awaited_once_with(t)
+    # No PendingRollbackError on reuse — this is exactly what the bare
+    # try/except (pre-fix) failed to guarantee.
+    await task_svc.session.flush()
+
+
+@pytest.mark.asyncio
+async def test_notify_request_changes_owner_survives_mid_flush_failure() -> None:
+    """A2AService.send's own internal flush failing mid-operation (not a
+    policy/lookup error the send raises directly) must still be contained
+    by the begin_nested() savepoint — the needs_revision transition, the
+    findings-ledger rows, and the pm_notes note already committed this
+    request must survive the response commit that reuses this session
+    right after this returns."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    owner_id = uuid4()
+    t = MagicMock(id=task_id, assigned_to=owner_id)
+
+    task_svc = AsyncMock()
+    a2a_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, a2a=a2a_svc)
+    c = Choreographer(deps)
+
+    task_svc.session.flush = AsyncMock(
+        side_effect=[RuntimeError("mid-flush db error"), None]
+    )
+    task_svc.session.refresh = AsyncMock()
+
+    async def _send_flushes(**_kwargs: Any) -> None:
+        await task_svc.session.flush()
+
+    a2a_svc.send = AsyncMock(side_effect=_send_flushes)
+
+    warning = await c._notify_request_changes_owner(pm_id, task_id, t, "summary text")
+
+    task_svc.session.begin_nested.assert_called_once()
+    assert warning is not None
+    assert str(owner_id) in warning
+    assert "RuntimeError" in warning
+    task_svc.session.refresh.assert_awaited_once_with(t)
+    await task_svc.session.flush()

@@ -36,6 +36,7 @@ export enum AgentRole {
   HEAD_MARKETING = "head_marketing",
   AUDITOR = "auditor",
   PR_REVIEWER = "pr_reviewer",
+  DEVOPS = "devops",
   MAIN_PM = "main_pm",
   CELL_PM = "cell_pm",
   DEVELOPER = "developer",
@@ -108,6 +109,10 @@ export enum ModelProvider {
   GROK = "grok",
   GEMINI = "gemini",
   KIMI = "kimi",
+  OPENROUTER = "openrouter",
+  NEBIUS = "nebius",
+  ZAI = "zai",
+  HUMMIN = "hummin",
 }
 
 export enum AssignmentScope {
@@ -175,17 +180,18 @@ export interface DocRef {
   version: string | null;
 }
 
-export interface FileRef {
-  path: string;
-  description: string;
-  file_type: string;
-  size_bytes: number | null;
-}
-
-export interface ExecutionLog {
-  events: Record<string, unknown>[];
-  errors: Record<string, unknown>[];
-  total_duration_seconds: number | null;
+// Embedded work-session summary on TaskResponse, mirroring the backend's
+// WorkSessionSummaryInTask (roboco/api/schemas/tasks.py). Distinct from
+// WorkSessionSummary above, which is the work-sessions list endpoint's row.
+export interface WorkSessionInTask {
+  id: string;
+  branch_name: string;
+  status: WorkSessionStatus;
+  commits: string[];
+  files_modified: string[];
+  pr_number: number | null;
+  pr_url: string | null;
+  pr_status: string | null;
 }
 
 export interface SubTask {
@@ -268,7 +274,10 @@ export interface Task {
   task_type: TaskType;
   project_id: string | null; // null for a fan-out task that carries product_id
   product_id?: string | null;
-  work_session_id?: string | null;
+  // Work session created when an agent claims this task (embedded by
+  // TaskResponse as WorkSessionSummaryInTask). Null while unclaimed; list
+  // summaries omit it entirely.
+  work_session?: WorkSessionInTask | null;
   // PR Tracking (parallel execution in awaiting_documentation)
   docs_complete: boolean;
   pr_created: boolean;
@@ -281,11 +290,9 @@ export interface Task {
   // Execution
   checkpoints: Checkpoint[];
   progress_updates: ProgressUpdate[];
-  execution_log?: ExecutionLog | null;
   // Artifacts
   commits: CommitRef[];
   documents?: DocRef[];
-  outputs?: FileRef[];
   // Documentation
   dev_notes: string | null;
   qa_notes: string | null;
@@ -378,6 +385,45 @@ export interface SubstituteRequest {
 
 export interface TaskCountResponse {
   counts: Record<string, number>;
+}
+
+// ============================================================================
+// Per-task governance report (panel Governance tab)
+// ============================================================================
+
+// One stage in the task's quality-gate chain (conventions -> self-verification
+// -> QA -> PR-gate -> PM review -> CEO approval). Matches the backend
+// GateStageResponse schema (roboco/api/schemas/tasks.py). status is "passed",
+// "failed", "pending" (reached but not yet evaluated), or "not_reached" (the
+// task hasn't progressed far enough).
+export interface GovernanceGateStep {
+  gate: string;
+  status: string;
+  timestamp: string | null;
+  detail: string | null;
+}
+
+// Per-origin revision-finding counts — the same row shape the Findings tab
+// renders (TaskFindingsSummaryRow in lib/api/tasks); mirrored here so the
+// governance report stays a self-contained contract.
+export interface GovernanceFindingsSummaryRow {
+  origin: string;
+  open: number;
+  addressed: number;
+  verified: number;
+  waived: number;
+}
+
+// The per-task governance report. Matches the backend
+// TaskGovernanceReportResponse schema (roboco/api/schemas/tasks.py).
+export interface GovernanceReportResponse {
+  task_id: string;
+  task_status: string;
+  revision_count: number;
+  gate_chain: GovernanceGateStep[];
+  findings_summary: GovernanceFindingsSummaryRow[];
+  conventions_block_count: number;
+  conventions_warn_count: number;
 }
 
 export interface ModelConfig {
@@ -484,15 +530,15 @@ export interface Notification {
   subject: string;
   body: string;
   requires_ack: boolean;
+  // Per-recipient ack state is resolved server-side from the viewer's
+  // perspective (NotificationResponse): is_acknowledged = the viewer is in
+  // the acked set, is_fully_acknowledged = every to_agents member is.
   is_acknowledged: boolean;
   is_fully_acknowledged: boolean;
   is_read: boolean;
   related_task_id: string | null;
-  related_message_ids: string[];
   timestamp: string;
   expires_at: string | null;
-  acked_by: string[];
-  acked_at: Record<string, string>; // Agent ID -> timestamp
 }
 
 export interface KanbanBoard {
@@ -674,6 +720,22 @@ export interface CEOOverview {
   key_metrics: Record<string, unknown>;
   auditor_alerts: Record<string, unknown>;
   roadmap_progress: Record<string, unknown>;
+}
+
+// =============================================================================
+// PORTFOLIO (matching backend schemas/dashboard.py PortfolioProjectMetrics)
+// =============================================================================
+
+/** One per-project row of the CEO portfolio view - GET /dashboard/portfolio, most active first */
+export interface PortfolioCard {
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+  active_task_count: number;
+  median_lead_time_hours: number | null;
+  rework_rate: number;
+  open_findings_count: number;
+  monthly_budget_burn_usd: number;
 }
 
 // =============================================================================
@@ -1061,6 +1123,15 @@ export interface EnvironmentRung {
   branch: string;
 }
 
+// One agent in a project's allowed-access list — the backend resolves the
+// stored agent UUIDs to slug/name for display (AllowedAgentSummary in
+// roboco/api/schemas/project.py).
+export interface AllowedAgentSummary {
+  id: string;
+  slug: string;
+  name: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -1077,6 +1148,14 @@ export interface Project {
   environments: EnvironmentRung[] | null;
   protected_branches: string[];
   assigned_cell: Team;
+  // Access restriction (backend slice 0e99f678): null/undefined allowed_agents
+  // = the whole assigned cell has access (today's default); a list = access
+  // restricted to only those agents. access_restricted spells out the
+  // None-vs-list distinction explicitly so a typed client never has to treat
+  // a null array as ambiguous. Optional on the wire: backends predating the
+  // restriction slice omit both fields.
+  access_restricted?: boolean;
+  allowed_agents?: AllowedAgentSummary[] | null;
   // Git authentication (token never exposed, only boolean indicator)
   has_git_token: boolean;
   is_active: boolean;

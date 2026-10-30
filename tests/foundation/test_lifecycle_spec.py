@@ -34,6 +34,7 @@ def test_role_enum_has_every_pre_gateway_role() -> None:
         "head_marketing",
         "auditor",
         "pr_reviewer",  # reviews inbound external/fork PRs (read-only)
+        "devops",  # floating infra author + second PR-gate reviewer
         "prompter",  # post-gateway intake role (human-only, drafts tasks)
         "secretary",  # CEO's chief-of-staff (human-only, gated CEO authority)
         "ceo",
@@ -563,16 +564,17 @@ def test_intent_verbs_table_has_every_gateway_verb() -> None:
     )
 
 
-def test_i_will_work_on_composes_claim_set_plan_start() -> None:
+def test_i_will_work_on_composes_claim_set_plan() -> None:
+    """start is not composed: it runs after the branch is provisioned."""
     iv = spec._INTENT_VERBS["i_will_work_on"]
-    assert iv.composes == ("claim", "set_plan", "start")
+    assert iv.composes == ("claim", "set_plan")
     assert spec.Role.DEVELOPER in iv.allowed_roles
 
 
-def test_i_will_plan_composes_claim_set_plan_start() -> None:
+def test_i_will_plan_composes_claim_set_plan() -> None:
     """PMs use i_will_plan; the composition mirrors i_will_work_on."""
     iv = spec._INTENT_VERBS["i_will_plan"]
-    assert iv.composes == ("claim", "set_plan", "start")
+    assert iv.composes == ("claim", "set_plan")
     assert iv.allowed_roles == frozenset({spec.Role.CELL_PM, spec.Role.MAIN_PM})
 
 
@@ -825,7 +827,7 @@ def test_valid_next_verbs_pm_pending_includes_i_will_plan() -> None:
 
 
 def test_composed_actions_for_returns_intent_composition() -> None:
-    assert spec.composed_actions_for("i_will_work_on") == ("claim", "set_plan", "start")
+    assert spec.composed_actions_for("i_will_work_on") == ("claim", "set_plan")
     assert spec.composed_actions_for("open_pr") == ()
 
 

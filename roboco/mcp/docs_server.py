@@ -13,10 +13,16 @@ Tools:
 
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from roboco.mcp.schemas import WriteDocInput
-from roboco.mcp.utils import ApiClient, format_error_response
+from roboco.mcp.utils import ApiClient, configure_stdio_logging, format_error_response
+
+# See flow_server.py: __name__ is already "__main__" at this point when run
+# as the real stdio server, so this guards a plain in-process test import
+# from clobbering the ambient structlog config for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 # =============================================================================
 # HANDLER FUNCTIONS
@@ -157,7 +163,7 @@ async def _handle_delete(
 # =============================================================================
 
 
-def create_docs_mcp_server(agent_id: str) -> FastMCP:
+def create_docs_mcp_server(agent_id: str) -> MCPServer:
     """
     Create a Documentation MCP server for a specific agent.
 
@@ -165,9 +171,9 @@ def create_docs_mcp_server(agent_id: str) -> FastMCP:
         agent_id: The agent identifier (e.g., "be-doc")
 
     Returns:
-        Configured FastMCP server
+        Configured MCPServer server
     """
-    mcp = FastMCP(f"roboco-docs-{agent_id}", json_response=True)
+    mcp = MCPServer(f"roboco-docs-{agent_id}")
     client = ApiClient(agent_id)
 
     @mcp.tool()
@@ -256,7 +262,7 @@ if __name__ == "__main__":
 
     MIN_ARGS = 2
     if len(sys.argv) < MIN_ARGS:
-        print("Usage: python docs_server.py <agent_id>")
+        print("Usage: python docs_server.py <agent_id>", file=sys.stderr)
         sys.exit(1)
 
     agent_id_arg = sys.argv[1]

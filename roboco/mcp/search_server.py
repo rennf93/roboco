@@ -9,9 +9,15 @@ external request itself. Mounted conditionally per role by the orchestrator
 
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-from roboco.mcp.utils import ApiClient, format_error_response
+from roboco.mcp.utils import ApiClient, configure_stdio_logging, format_error_response
+
+# See flow_server.py: __name__ is already "__main__" at this point when run
+# as the real stdio server, so this guards a plain in-process test import
+# from clobbering the ambient structlog config for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 _NOT_CONFIGURED = (
     "Web research is not configured on this deployment (no provider key). "
@@ -80,9 +86,9 @@ async def _handle_fetch(
     }
 
 
-def create_search_mcp_server(agent_id: str) -> FastMCP:
+def create_search_mcp_server(agent_id: str) -> MCPServer:
     """Create a Web Research MCP server bound to a specific agent."""
-    mcp = FastMCP(f"roboco-search-{agent_id}", json_response=True)
+    mcp = MCPServer(f"roboco-search-{agent_id}")
     client = ApiClient(agent_id)
 
     @mcp.tool()
@@ -105,10 +111,9 @@ def create_search_mcp_server(agent_id: str) -> FastMCP:
     async def web_fetch(url: str, max_chars: int | None = None) -> dict[str, Any]:
         """Fetch the readable content of a specific web page.
 
-        Uses the configured provider's content-extraction endpoint, so it works
-        only with providers that support extraction (Tavily, Exa). Content is
-        truncated to the server's character cap.
-
+        Uses the configured provider's content extraction: a remote endpoint
+        (Tavily, Exa) or SearXNG's local extractor. Brave has none. Content
+        is truncated to the server's character cap.
         Args:
             url: The page URL to extract.
             max_chars: Optional cap on returned characters (clamped server-side).
@@ -123,7 +128,7 @@ if __name__ == "__main__":
 
     MIN_ARGS = 2
     if len(sys.argv) < MIN_ARGS:
-        print("Usage: python search_server.py <agent_id>")
+        print("Usage: python search_server.py <agent_id>", file=sys.stderr)
         sys.exit(1)
 
     server = create_search_mcp_server(sys.argv[1])

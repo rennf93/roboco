@@ -25,10 +25,16 @@ import os
 from typing import Any
 
 from fastapi import status as http_status
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 
-from roboco.mcp.utils import ApiClient, format_error_response
+from roboco.mcp.utils import ApiClient, configure_stdio_logging, format_error_response
+
+# See flow_server.py: __name__ is already "__main__" at this point when run
+# as the real stdio server, so this guards a plain in-process test import
+# from clobbering the ambient structlog config for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 
 class RecordDecisionInput(BaseModel):
@@ -75,14 +81,12 @@ _RESULT_CONTENT_CAP = 800
 # in-flight doc read indistinguishably from one describing merged/deployed
 # reality. See DocsIndexPlugin.prepare_metadata for how the marker is set.
 #
-# ponytail: the marker never flips back to "repo_tree" on merge — there's no
-# lifecycle hook from PR-merge back into the KB, and the periodic re-scan
-# only walks docs/rag + docs/map (siblings of the team dirs roboco_docs_write
-# targets), so a caveat persists until an operator/startup reindex re-derives
-# the doc's metadata from the repo tree. Treat it as "verify against git",
-# not "this is unmerged". Upgrade path: stamp the doc's task_id (already
-# carried in metadata) and flip provenance to "repo_tree" when that task's
-# root chain reaches a terminal completed state.
+# Lifecycle: the marker is temporary now. TaskService's completion hook
+# (_flip_docs_provenance_background → DocsIndexPlugin.flip_task_provenance)
+# flips the stamped task_id's chunk provenance back to "repo_tree" once the
+# writing task's ROOT chain reaches terminal completed, so a caveat only
+# outlives its own PR — never the master merge. Do not also gate this
+# append on the flip service; it stays purely provenance-gated.
 _LIVE_WRITE_CAVEAT = (
     "[caveat: written during in-flight work — verify the contract exists on "
     "the deployed tree/git before relying on it]"
@@ -125,7 +129,7 @@ def _append_live_write_caveat(items: list[Any]) -> list[Any]:
     return out
 
 
-def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_search_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register search tools available to all agents."""
 
     @mcp.tool()
@@ -176,6 +180,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
 
         result = resp.json()
         total = result.get("total", 0)
+        gaps = result.get("gaps", [])
         # Caveat AFTER capping content, so the cap can never truncate it away.
         capped = _cap_result_content(result.get("results", []))
         results = _append_live_write_caveat(capped)
@@ -185,7 +190,13 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             "total": total,
             "results": results,
         }
-        if total == 0:
+        if gaps:
+            response["gaps"] = gaps
+            response["hint"] = (
+                f"Partial results: {len(gaps)} index(es) timed out"
+                f" ({', '.join(gaps)}). Results may be incomplete."
+            )
+        if total == 0 and not gaps:
             response["hint"] = (
                 "No results. Try roboco_ask_mentor(question) for better answers."
             )
@@ -239,6 +250,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
         result = resp.json()
         answer = result.get("answer", "")
         context_used = result.get("context_used", 0)
+        gaps = result.get("gaps", [])
         # Caveat AFTER capping content, so the cap can never truncate it away.
         capped_citations = _cap_result_content(result.get("citations", []), limit=8)
         citations = _append_live_write_caveat(capped_citations)
@@ -249,8 +261,14 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             "citations": citations,
             "context_used": context_used,
         }
+        if gaps:
+            response["gaps"] = gaps
+            response["hint"] = (
+                f"Partial results: {len(gaps)} index(es) timed out"
+                f" ({', '.join(gaps)}). Answer may be incomplete."
+            )
         # Guide to mentor for better results
-        if context_used == 0 or "couldn't find" in answer.lower():
+        if (context_used == 0 or "couldn't find" in answer.lower()) and not gaps:
             response["hint"] = (
                 "Limited results. roboco_ask_mentor(question) searches more sources "
                 "and supports follow-up questions."
@@ -281,7 +299,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_indexing_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_indexing_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register indexing tools (permission-controlled at API level)."""
 
     @mcp.tool()
@@ -381,7 +399,7 @@ def _register_indexing_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_utility_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_utility_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register utility tools."""
 
     @mcp.tool()
@@ -432,7 +450,7 @@ def _register_utility_tools(mcp: FastMCP, client: ApiClient) -> None:
 # =========================================================================
 
 
-def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_mentor_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register mentor (conversational RAG) tools."""
 
     @mcp.tool()
@@ -503,7 +521,7 @@ def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_error_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_error_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register error pattern tools."""
 
     @mcp.tool()
@@ -606,7 +624,7 @@ def _register_error_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_decision_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_decision_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register decision memory tools."""
 
     @mcp.tool()
@@ -696,7 +714,7 @@ def _register_decision_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_standards_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_standards_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register standards and validation tools."""
 
     @mcp.tool()
@@ -836,7 +854,7 @@ def _register_standards_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_learning_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register learning tools."""
 
     @mcp.tool()
@@ -888,10 +906,25 @@ def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
                 {"api_error": resp.text},
             )
 
+        body = resp.json()
+        # The route returns status="skipped" (learning_id="") when the embedding
+        # backend is transiently down — best-effort, not a hard failure. Surface
+        # it honestly so the agent doesn't re-record a dropped lesson in a loop.
+        status = body.get("status", "recorded")
+        learning_id = body.get("learning_id", "")
+        if status == "skipped" or not learning_id:
+            return {
+                "status": "skipped",
+                "message": (
+                    "Learning could not be indexed (knowledge backend "
+                    "unavailable); no action needed, it will not be retried."
+                ),
+                "learning_id": "",
+            }
         return {
             "status": "recorded",
             "message": "Learning recorded for future agents",
-            "learning_id": resp.json().get("learning_id", ""),
+            "learning_id": learning_id,
         }
 
     @mcp.tool()
@@ -946,7 +979,7 @@ def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
         return response
 
 
-def _register_index_management_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_index_management_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register index management tools for administrative operations."""
 
     @mcp.tool()
@@ -1064,7 +1097,7 @@ def _register_index_management_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
-def _register_proactive_tools(mcp: FastMCP, client: ApiClient) -> None:
+def _register_proactive_tools(mcp: MCPServer, client: ApiClient) -> None:
     """Register proactive context tools."""
 
     @mcp.tool()
@@ -1162,9 +1195,9 @@ def _role_wants(group: str, role: str) -> bool:
     return role in allowed
 
 
-def create_optimal_mcp_server(agent_id: str) -> FastMCP:
+def create_optimal_mcp_server(agent_id: str) -> MCPServer:
     """Create an Optimal MCP server for a specific agent, scoped to its role."""
-    mcp = FastMCP(f"roboco-optimal-{agent_id}", json_response=True)
+    mcp = MCPServer(f"roboco-optimal-{agent_id}")
     client = ApiClient(agent_id)
     role = os.environ.get("ROBOCO_AGENT_ROLE", "")
     full_toolset = bool(os.environ.get("ROBOCO_ALLOW_FULL_TOOLSET"))
@@ -1198,7 +1231,7 @@ if __name__ == "__main__":
 
     _MIN_ARGS = 2
     if len(sys.argv) < _MIN_ARGS:
-        print("Usage: python -m roboco.mcp.optimal_server <agent_id>")
+        print("Usage: python -m roboco.mcp.optimal_server <agent_id>", file=sys.stderr)
         sys.exit(1)
 
     agent_id_cli = sys.argv[1]

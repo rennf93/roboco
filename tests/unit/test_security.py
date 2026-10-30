@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from fastapi import FastAPI
 from guard import SecurityMiddleware
+from guard_core.models import VALID_CLOUD_PROVIDERS
 from pydantic import ValidationError
 from roboco import security
 from roboco.api.app import create_app
@@ -382,6 +383,39 @@ def test_whitelist_is_immutable_after_construction() -> None:
         _append(cfg.whitelist, "1.2.3.4")
 
 
+# --- log_sensitive_headers: guard log lines never carry the mesh HMAC token -
+
+
+def test_build_security_config_redacts_agent_token_in_guard_logs() -> None:
+    """guard-core 4.0's default redaction set (authorization, proxy-
+    authorization, cookie, x-api-key) does not cover roboco's own
+    X-Agent-Token, so it must be added rather than relied on by default."""
+    cfg = security.build_security_config()
+    assert "x-agent-token" in cfg.log_sensitive_headers
+
+
+# --- log_sensitive_body_fields: request-body secrets guard-core's default -
+# --- set misses never carry into guard logs -------------------------------
+
+
+def test_build_security_config_redacts_secret_body_fields_in_guard_logs() -> None:
+    """guard-core 4.0's default log_sensitive_body_fields (access_token,
+    refresh_token, api_key, apikey, token, password, secret, client_secret,
+    signature) misses several roboco request-body fields that carry real
+    credentials, so each must be added rather than relied on by default."""
+    cfg = security.build_security_config()
+    for field in (
+        "api_secret",
+        "access_token_secret",
+        "client_key",
+        "bot_token",
+        "private_key",
+        "auth_token",
+        "git_token",
+    ):
+        assert field in cfg.log_sensitive_body_fields
+
+
 # --- agent_sensitive_headers: telemetry payloads never carry auth material -
 
 
@@ -389,10 +423,23 @@ def test_agent_kwargs_empty_when_telemetry_off() -> None:
     assert security._agent_kwargs() == {}
 
 
+def test_agent_kwargs_empty_when_armed_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The NAS compose ships telemetry armed with an empty key: guard-core
+    rejects enable_agent without agent_api_key at construction, so the kwargs
+    must stay empty and the import-time config must still build."""
+    monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    monkeypatch.setattr(settings, "guard_agent_api_key", "")
+    assert security._agent_kwargs() == {}
+    assert security.build_security_config().enable_agent is False
+
+
 def test_agent_sensitive_headers_present_when_telemetry_armed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    monkeypatch.setattr(settings, "guard_agent_api_key", "k")
     kwargs = security._agent_kwargs()
     assert kwargs["agent_sensitive_headers"] == [
         "x-agent-token",
@@ -400,6 +447,47 @@ def test_agent_sensitive_headers_present_when_telemetry_armed(
         "cookie",
         "x-api-key",
     ]
+
+
+def test_agent_kwargs_dynamic_rules_cache_path_follows_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """guard-core 3.17.0 file snapshot: unset = redis only (None), set = path."""
+    monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    monkeypatch.setattr(settings, "guard_agent_api_key", "k")
+    assert security._agent_kwargs()["dynamic_rules_cache_path"] is None
+    monkeypatch.setattr(
+        settings, "guard_dynamic_rules_cache_path", "/data/logs/guard-rules.json"
+    )
+    assert (
+        security._agent_kwargs()["dynamic_rules_cache_path"]
+        == "/data/logs/guard-rules.json"
+    )
+
+
+def test_security_config_builds_when_telemetry_armed_with_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Armed + keyed telemetry builds at import (guard-core's validators
+    accept the kwargs) and the 3.17.0 cache path is coerced to a Path."""
+    monkeypatch.setattr(settings, "guard_telemetry_enabled", True)
+    monkeypatch.setattr(settings, "guard_agent_api_key", "k")
+    monkeypatch.setattr(settings, "guard_project_id", "p")
+    monkeypatch.setattr(
+        settings, "guard_dynamic_rules_cache_path", "/data/logs/guard-rules.json"
+    )
+    cfg = security.build_security_config()
+    assert cfg.enable_dynamic_rules
+    assert str(cfg.dynamic_rules_cache_path) == "/data/logs/guard-rules.json"
+
+
+def test_rate_limit_auto_ban_armed() -> None:
+    """429s feed the ban engine; the rate_limit pseudo-category sets the bar."""
+    cfg = security.security_config
+    assert cfg.enable_rate_limit_auto_ban is True
+    assert (
+        cfg.threat_ban_config["rate_limit"] is security._THREAT_BAN_CONFIG["rate_limit"]
+    )
 
 
 # --- guard_scan_response_body: default-off response-body inspection -------
@@ -444,8 +532,9 @@ def test_block_clouds_argless_route_still_resolves_route_config() -> None:
     """block_cloud_providers at CONFIG level raises on an unrecognized name;
     the block_clouds() DECORATOR path instead silently filters unknown names.
     An argless route must still resolve a real route config carrying the
-    default trio, guarding against a future named-provider typo silently
-    vanishing the whole route's config instead of just the bad name."""
+    library's full default provider set, guarding against a future
+    named-provider typo silently vanishing the whole route's config instead
+    of just the bad name."""
 
     @security.guard_deco.block_clouds()
     async def _guard_test_block_clouds_route() -> dict[str, bool]:
@@ -454,7 +543,8 @@ def test_block_clouds_argless_route_still_resolves_route_config() -> None:
     route_id = _guard_test_block_clouds_route._guard_route_id
     route_config = security.guard_deco.get_route_config(route_id)
     assert route_config is not None
-    # guard-core 3.13.0 will widen the argless default to all six supported
-    # providers (adds DigitalOcean/Linode/Vultr). When this pin breaks on
-    # that bump, decide: accept all six, or pass the classic three explicitly.
-    assert route_config.block_cloud_providers == {"AWS", "GCP", "Azure"}
+    # Argless block_clouds() fills set(VALID_CLOUD_PROVIDERS); guard-core
+    # 3.13.0 widened that default from the classic trio (AWS/GCP/Azure) to
+    # all six supported providers (adds DigitalOcean/Linode/Vultr). Derived
+    # from the library constant so it tracks future additions automatically.
+    assert route_config.block_cloud_providers == set(VALID_CLOUD_PROVIDERS)

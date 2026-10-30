@@ -29,6 +29,7 @@ class Role(StrEnum):
     HEAD_MARKETING = "head_marketing"
     AUDITOR = "auditor"
     PR_REVIEWER = "pr_reviewer"  # reviews PRs (inbound external/fork PRs first)
+    DEVOPS = "devops"  # floating infra author + second PR-gate reviewer
     PROMPTER = "prompter"  # intake interviewer — talks only to the human, drafts tasks
     SECRETARY = "secretary"  # CEO's chief-of-staff — acts only under CEO command
     CEO = "ceo"
@@ -222,6 +223,16 @@ AGENTS: dict[str, AgentRow] = {
         Team.BOARD,
         _u("00000000-0000-0000-0004-000000000007"),
     ),
+    # DevOps: a floating infra author + second PR-gate reviewer. Board-team
+    # like cell-pr-reviewer-2 (no fixed cell, serves any project), but unlike
+    # the read-only reviewers it AUTHORS infra changes in clones (a hybrid of
+    # developer and PR_REVIEWER). Inert until a dispatcher routes to it.
+    "devops-1": AgentRow(
+        "devops-1",
+        Role.DEVOPS,
+        Team.BOARD,
+        _u("00000000-0000-0000-0004-000000000009"),
+    ),
     # In-path PR-review gate reviewers, one per cell, team-scoped so the
     # dispatcher routes each cell's assembled cell→root PR to its own reviewer.
     # Same PR_REVIEWER role/image as pr-reviewer-1 (which serves the root→master
@@ -272,7 +283,7 @@ BOARD_ROLES: frozenset[Role] = frozenset(
     {Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR}
 )
 DEV_ROLES: frozenset[Role] = frozenset({Role.DEVELOPER})
-REVIEWER_ROLES: frozenset[Role] = frozenset({Role.PR_REVIEWER})
+REVIEWER_ROLES: frozenset[Role] = frozenset({Role.PR_REVIEWER, Role.DEVOPS})
 ALL_ROLES: frozenset[Role] = frozenset(Role)
 
 # Hierarchical level for "X or above" checks. SYSTEM is the sentinel below all
@@ -289,6 +300,7 @@ ROLE_LEVEL: dict[Role, RoleLevel] = {
     Role.HEAD_MARKETING: RoleLevel.BOARD,
     Role.AUDITOR: RoleLevel.AUDITOR,
     Role.PR_REVIEWER: RoleLevel.QA,  # a code reviewer, peer to QA in authority
+    Role.DEVOPS: RoleLevel.QA,  # infra author + second reviewer, peer to PR_REVIEWER
     Role.PROMPTER: RoleLevel.INTAKE,
     Role.SECRETARY: RoleLevel.BOARD,
     Role.CEO: RoleLevel.CEO,
@@ -351,12 +363,15 @@ def is_human_only_role(role: Role | None) -> bool:
 # mirrors the gateway commit tool's RBAC (content_actions._COMMIT_ALLOWED_ROLES).
 # Every other role (qa, pr_reviewer, cell_pm, main_pm, board) only ever reads a
 # task's worktree, so a stale respawn checkout there is always safe to reset to
-# origin — it can never be discarding real unpushed work.
-WORKTREE_AUTHOR_ROLES: frozenset[Role] = frozenset({Role.DEVELOPER, Role.DOCUMENTER})
+# origin — it can never be discarding real unpushed work. devops-1 is an
+# author (infra changes in clones), not a reader.
+WORKTREE_AUTHOR_ROLES: frozenset[Role] = frozenset(
+    {Role.DEVELOPER, Role.DOCUMENTER, Role.DEVOPS}
+)
 
 
 def is_worktree_author_role(role: str | None) -> bool:
-    """True for developer/documenter. See :data:`WORKTREE_AUTHOR_ROLES`."""
+    """True for developer/documenter/devops. See :data:`WORKTREE_AUTHOR_ROLES`."""
     return role in WORKTREE_AUTHOR_ROLES
 
 

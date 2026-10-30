@@ -7,7 +7,7 @@ auto-blocking it on a "short description" wedges the held-artifact flow.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -75,6 +75,42 @@ async def test_non_held_pending_task_still_auto_blocked() -> None:
     auto_block.assert_awaited_once()
     assert auto_block.await_args is not None
     assert auto_block.await_args.args[1] == "normal-1"
+
+
+class _FakeLedger:
+    """Reports a fixed `active_elapsed` for any start/end - a stand-in for a
+    real `UptimeLedger` carrying a known downtime window."""
+
+    def __init__(self, active_elapsed: timedelta) -> None:
+        self._active_elapsed = active_elapsed
+
+    def active_elapsed(self, start: datetime, end: datetime | None = None) -> timedelta:
+        del start, end
+        return self._active_elapsed
+
+
+@pytest.mark.asyncio
+async def test_task_old_by_wall_clock_but_young_by_active_time_not_auto_blocked() -> (
+    None
+):
+    """The 30-minute-old task from `_old_task` reads as only 5 minutes old
+    in active time (a 25-minute CEO pause) - under the 10-minute stuck
+    threshold, so it must NOT be auto-blocked even though its wall-clock age
+    would trip the reaper."""
+    orch = _make_orch()
+    orch._uptime = cast("Any", _FakeLedger(timedelta(minutes=5)))
+    normal = _old_task("young-active-1", "manual")
+    client: Any = MagicMock()
+
+    with (
+        patch.object(orch, "_fetch_tasks", new=AsyncMock(return_value=[normal])),
+        patch.object(orch, "_check_dev_subtask_issue", new=AsyncMock(return_value=[])),
+        patch.object(orch, "_detect_sla_exceeded", new=AsyncMock()),
+        patch.object(orch, "_auto_block_task", new=AsyncMock()) as auto_block,
+    ):
+        await orch._detect_stuck_tasks(client)
+
+    auto_block.assert_not_awaited()
 
 
 if __name__ == "__main__":

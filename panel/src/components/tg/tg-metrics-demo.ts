@@ -106,7 +106,7 @@ export const DEMO_TEAM_USAGE: TeamUsageRow[] = (
 export const DEMO_MODEL_USAGE: ModelUsageSlice[] = (
   [
     ["claude-opus-5", 42.1],
-    ["glm-5.2:cloud", 16.8],
+    ["glm-5.3:cloud", 16.8],
     ["grok-build", 7.64],
   ] as Array<[string, number]>
 ).map(([model, cost]) => modelRow(model, cost, TOTAL_COST));

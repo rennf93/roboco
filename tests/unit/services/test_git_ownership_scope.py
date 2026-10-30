@@ -64,6 +64,8 @@ def test_read_only_verbs_classify_none(args: list[str]) -> None:
         ["fetch", "origin"],
         ["push", "-u", "origin", "branch"],
         ["push", "--force-with-lease", "origin", "HEAD:branch"],
+        ["remote", "prune", "origin"],
+        ["remote", "add", "origin", "https://example.com/r.git"],
     ],
 )
 def test_git_scoped_verbs_classify_git(args: list[str]) -> None:
@@ -169,6 +171,30 @@ async def test_git_scoped_op_calls_git_repair_not_full_repair(
     monkeypatch.setattr("roboco.services.workspace._ensure_git_dir_owned", git_repair)
 
     await _svc()._run_git(tmp_path, ["commit", "-m", "msg"])
+
+    git_repair.assert_called_once_with(tmp_path)
+    full_repair.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remote_prune_calls_git_repair_not_full_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: `remote` fell through the classifier's default ("full")
+    unclassified, so the branch-list route's read-only self-heal
+    (`git remote prune origin`) paid a whole-workspace chown walk, it only
+    ever touches refs/packed-refs under `.git/`, never the working tree."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        "roboco.services.git.subprocess.run",
+        lambda *_a, **_k: _ok(["remote", "prune", "origin"]),
+    )
+    full_repair = MagicMock()
+    git_repair = MagicMock()
+    monkeypatch.setattr("roboco.services.workspace._ensure_agent_owned", full_repair)
+    monkeypatch.setattr("roboco.services.workspace._ensure_git_dir_owned", git_repair)
+
+    await _svc()._run_git(tmp_path, ["remote", "prune", "origin"])
 
     git_repair.assert_called_once_with(tmp_path)
     full_repair.assert_not_called()

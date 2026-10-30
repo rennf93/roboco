@@ -7,6 +7,7 @@ session boundary and checks the method's contract.
 
 from __future__ import annotations
 
+from collections import namedtuple
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -625,6 +626,45 @@ async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
             await svc.wire_sibling_collision_dag(parent_id)
     mock_ns.send_collision_sequencing_notification.assert_awaited_once()
     assert add_dep_mock.await_count == wiring_passes
+
+
+@pytest.mark.asyncio
+async def test_wire_sibling_collision_dag_uses_semantic_edges_when_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B5 collision_edge: master flag on -> the DAG comes from the semantic
+    superset (deterministic edges authoritative, decisions verdicts may
+    only add); flag off keeps the pure analyzer with no decisions call."""
+    parent_id = uuid4()
+    held_back = _build_task(id=uuid4(), assigned_to=uuid4())
+    blocking = _build_task(id=uuid4())
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get_subtasks", AsyncMock(return_value=[held_back, blocking]))
+    _bind(svc, "add_dependency", AsyncMock(return_value=True))
+    mock_ns = MagicMock()
+    mock_ns.send_collision_sequencing_notification = AsyncMock()
+    semantic = AsyncMock(return_value=[(blocking.id, held_back.id)])
+    monkeypatch.setattr(settings, "decisions_enabled", True)
+    monkeypatch.setattr("roboco.services.sequencing.semantic_collision_edges", semantic)
+    with patch(
+        "roboco.services.notification.NotificationService",
+        return_value=mock_ns,
+    ):
+        await svc.wire_sibling_collision_dag(parent_id)
+    semantic.assert_awaited_once()
+    mock_ns.send_collision_sequencing_notification.assert_awaited_once()
+
+    # Flag off: the pure analyzer runs, the semantic screen never fires.
+    monkeypatch.setattr(settings, "decisions_enabled", False)
+    pure = MagicMock(return_value=[])
+    monkeypatch.setattr("roboco.services.sequencing.dev_task_collision_edges", pure)
+    with patch(
+        "roboco.services.notification.NotificationService",
+        return_value=mock_ns,
+    ):
+        await svc.wire_sibling_collision_dag(parent_id)
+    pure.assert_called_once()
+    semantic.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1926,13 +1966,34 @@ async def test_unclaimed_parent_acs_counts_live_children_not_just_completed() ->
     ]
 
 
+_BASE_WIDTH = 2  # (status, sequence) — the minimal padded row width
+_SiblingRow = namedtuple(
+    "_SiblingRow",
+    ["id", "status", "sequence", "created_at", "dependency_ids"],
+)
+
+
 def _svc_with_sibling_status_seq(rows: list[tuple]) -> TaskService:
-    """TaskService whose execute() yields (status, sequence[, created_at])
-    sibling rows; 2-tuples are padded with created_at=None (only compared on
-    a sequence tie)."""
-    row_width = 3  # (status, sequence, created_at)
+    """TaskService whose execute() yields (status, sequence[, created_at]
+    [, dependency_ids]) sibling rows; 2-tuples are padded with created_at=None
+    (only compared on a sequence tie). Each row gets a fresh id so the lane
+    predicate's dependency-successor exclusion can key on it."""
+    padded = []
+    for r in rows:
+        status, seq = r[0], r[1]
+        created = r[2] if len(r) > _BASE_WIDTH else None
+        dep_ids = r[3] if len(r) > _BASE_WIDTH + 1 else ()
+        padded.append(
+            _SiblingRow(
+                id=uuid4(),
+                status=status,
+                sequence=seq,
+                created_at=created,
+                dependency_ids=dep_ids,
+            )
+        )
     res = MagicMock()
-    res.all.return_value = [r if len(r) == row_width else (*r, None) for r in rows]
+    res.all.return_value = padded
     return TaskService(MagicMock(execute=AsyncMock(return_value=res)))
 
 
@@ -1980,6 +2041,58 @@ async def test_earlier_incomplete_code_sibling_tie_breaks_by_created_at() -> Non
     svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 1, earlier)])
     assert await svc.has_earlier_incomplete_code_sibling(task) is True
     svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 1, later)])
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_lane_sibling_depending_on_task_is_never_earlier() -> None:
+    """Regression (be-dev-2, 2026-09-27, claim-side): the PM wired the
+    dependency opposite to creation order — the earlier-created tied sibling
+    DEPENDS on the later-created task. The dependency guard refuses the
+    sibling; if the lane predicate also refused the task, the dev bounced
+    between the two rejections forever. Dependency order outranks the
+    created-at tiebreak here, mirroring the dispatch barrier."""
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=0,
+        created_at=datetime(2026, 9, 27, 2, 26, tzinfo=UTC),
+    )
+    svc = _svc_with_sibling_status_seq(
+        [(TaskStatus.PENDING, 0, datetime(2026, 9, 27, 1, 14, tzinfo=UTC), (task.id,))]
+    )
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_lane_sibling_transitively_depending_on_task_is_never_earlier() -> None:
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=0,
+        created_at=datetime(2026, 9, 27, 3, 0, tzinfo=UTC),
+    )
+    # Both rows are tied AND created earlier than the task — the ONLY reason
+    # they must not hold the lane is the dependency-successor exclusion.
+    mid = _SiblingRow(
+        id=uuid4(),
+        status=TaskStatus.PENDING,
+        sequence=0,
+        created_at=datetime(2026, 9, 27, 2, 0, tzinfo=UTC),
+        dependency_ids=(task.id,),
+    )
+    head = _SiblingRow(
+        id=uuid4(),
+        status=TaskStatus.PENDING,
+        sequence=0,
+        created_at=datetime(2026, 9, 27, 2, 30, tzinfo=UTC),
+        dependency_ids=(mid.id,),
+    )
+    res = MagicMock()
+    res.all.return_value = [head, mid]
+    svc = TaskService(MagicMock(execute=AsyncMock(return_value=res)))
     assert await svc.has_earlier_incomplete_code_sibling(task) is False
 
 
@@ -2223,7 +2336,7 @@ async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _finalize_claim — branch-creation failure rollback (F060)
+# _apply_claim_fields / _provision_claim, branch-creation failure rollback (F060)
 # ---------------------------------------------------------------------------
 
 
@@ -2265,8 +2378,9 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
         AsyncMock(side_effect=RuntimeError("branch boom")),
     )
 
+    snapshot = await svc._apply_claim_fields(task, agent, agent.id)
     with pytest.raises(RuntimeError, match="branch boom"):
-        await svc._finalize_claim(task, agent, agent.id)
+        await svc._provision_claim(task, agent, agent.id, snapshot)
 
     # The task reverted to its pre-claim status (the existing behavior).
     assert task.status == TaskStatus.PENDING
@@ -2279,7 +2393,7 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_claim_sets_agent_active_then_rolls_back_on_failure() -> None:
-    """_finalize_claim must flip agent.status/current_task_id to ACTIVE/this
+    """_apply_claim_fields must flip agent.status/current_task_id to ACTIVE/this
     task BEFORE the branch step runs (previously nothing ever wrote these
     fields at all — the fleet-status bug), and roll them back to their
     pre-claim values on a branch-creation failure, same as the task fields.
@@ -2316,8 +2430,9 @@ async def test_finalize_claim_sets_agent_active_then_rolls_back_on_failure() -> 
 
     _bind(svc, "_ensure_branch_for_task", _boom)
 
+    snapshot = await svc._apply_claim_fields(task, agent, agent.id)
     with pytest.raises(RuntimeError, match="branch boom"):
-        await svc._finalize_claim(task, agent, agent.id)
+        await svc._provision_claim(task, agent, agent.id, snapshot)
 
     # Set to ACTIVE/this-task before the branch step ran...
     assert captured["status"] == AgentStatus.ACTIVE

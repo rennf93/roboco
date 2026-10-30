@@ -80,6 +80,7 @@ const AGENT_UUIDS: Record<string, string> = {
   "00000000-0000-0000-0004-000000000006": "secretary-1",
   "00000000-0000-0000-0004-000000000007": "pr-reviewer-1",
   "00000000-0000-0000-0004-000000000008": "cell-pr-reviewer-2",
+  "00000000-0000-0000-0004-000000000009": "devops-1",
 };
 
 // Static agent name mapping (slug -> display name)
@@ -119,6 +120,7 @@ const AGENT_NAMES: Record<string, string> = {
   "secretary-1": "Secretary",
   "pr-reviewer-1": "PR Reviewer",
   "cell-pr-reviewer-2": "PR Reviewer (Overflow)",
+  "devops-1": "DevOps",
   // Backend-authored notifications/events (not an agent)
   system: "System",
 };
@@ -212,6 +214,7 @@ const AGENT_CODES: Record<string, string> = {
   "secretary-1": "SEC",
   "pr-reviewer-1": "PRR",
   "cell-pr-reviewer-2": "PR2",
+  "devops-1": "DEV",
 };
 
 /**
@@ -288,7 +291,8 @@ export function getAgentTeamColor(
     slug === "main-pm" ||
     slug === "product-owner" ||
     slug === "head-marketing" ||
-    slug === "auditor"
+    slug === "auditor" ||
+    slug === "devops-1"
   ) {
     return "board";
   }

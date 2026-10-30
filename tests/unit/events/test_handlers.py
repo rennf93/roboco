@@ -11,12 +11,14 @@ if TYPE_CHECKING:
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.events.bus import Event, EventType
 from roboco.events.handlers import (
     _get_doc_id,
     _get_pm_id,
     _get_qa_id,
     get_event_context,
+    handle_auditor_spawn,
     handle_blocker_resolved,
     handle_handoff_created,
     handle_qa_result,
@@ -469,3 +471,58 @@ def test_register_default_handlers_uses_global_bus_when_none_passed() -> None:
     with patch("roboco.events.handlers.get_event_bus", return_value=fake_bus):
         register_default_handlers()
     fake_bus.subscribe.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# register_default_handlers - ROBOCO_ROLE gate on fleet-side-effect handlers
+#
+# handle_qa_result / handle_blocker_resolved / handle_question_answered read
+# AgentOrchestrator._waiting_records (via get_waiting_agents()) and
+# handle_auditor_spawn calls spawn_agent() - both only meaningful where the
+# real fleet runs. role='api' always has an empty copy of that state (see
+# AgentOrchestrator.start()'s role gate), so these must not subscribe there;
+# pure DB/notification handlers (task-status, handoff) subscribe everywhere.
+# ---------------------------------------------------------------------------
+
+_FLEET_SIDE_EFFECT_HANDLERS = (
+    handle_qa_result,
+    handle_blocker_resolved,
+    handle_question_answered,
+    handle_auditor_spawn,
+)
+
+
+def test_register_default_handlers_skips_fleet_side_effect_handlers_for_api_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "role", "api")
+    bus = MagicMock()
+    bus.subscribe = MagicMock()
+
+    register_default_handlers(bus=bus)
+
+    subscribed_handlers = [call.args[1] for call in bus.subscribe.call_args_list]
+    for handler in _FLEET_SIDE_EFFECT_HANDLERS:
+        assert handler not in subscribed_handlers, (
+            f"{handler.__name__} must not subscribe in role='api'"
+        )
+    # Pure DB/notification handlers still subscribe in every role.
+    assert handle_task_status_change in subscribed_handlers
+    assert handle_handoff_created in subscribed_handlers
+
+
+@pytest.mark.parametrize("role", ["dispatcher", "all"])
+def test_register_default_handlers_subscribes_fleet_handlers_for_fleet_roles(
+    monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    monkeypatch.setattr(settings, "role", role)
+    bus = MagicMock()
+    bus.subscribe = MagicMock()
+
+    register_default_handlers(bus=bus)
+
+    subscribed_handlers = [call.args[1] for call in bus.subscribe.call_args_list]
+    for handler in _FLEET_SIDE_EFFECT_HANDLERS:
+        assert handler in subscribed_handlers, (
+            f"{handler.__name__} must subscribe in role={role!r}"
+        )

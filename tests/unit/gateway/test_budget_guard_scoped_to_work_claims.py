@@ -50,6 +50,7 @@ def _make_deps(task_svc: AsyncMock, **overrides: Any) -> ChoreographerDeps:
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
     )
+    task_svc.session.commit = AsyncMock()
     base: dict[str, Any] = {
         "task": task_svc,
         "work_session": AsyncMock(),
@@ -77,6 +78,7 @@ async def test_claim_review_succeeds_at_cap() -> None:
         id=uuid4(),
         status="awaiting_qa",
         assigned_to=uuid4(),
+        active_claimant_id=None,
         parent_task_id=uuid4(),
         task_type="code",
         dependency_ids=[],
@@ -112,6 +114,7 @@ async def test_claim_gate_review_succeeds_at_cap() -> None:
         id=uuid4(),
         status="awaiting_pr_review",
         assigned_to=uuid4(),
+        active_claimant_id=None,
         parent_task_id=uuid4(),
         task_type="planning",
         dependency_ids=[],
@@ -148,6 +151,7 @@ async def test_claim_doc_task_succeeds_at_cap() -> None:
         id=uuid4(),
         status="awaiting_documentation",
         assigned_to=None,
+        active_claimant_id=None,
         parent_task_id=None,
         task_type="documentation",
         team="backend",

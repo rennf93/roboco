@@ -103,6 +103,16 @@ class TestMcpConfigPinsBakedVenv:
                 f"a drifted workspace-clone lock can't trigger a resync stall; "
                 f"got args={spec['args']}"
             )
+            # cwd = the agent's workspace, often a RoboCo clone. Without this,
+            # cwd lands on sys.path[0] and a stale/foreign clone's `roboco`
+            # package shadows the image's installed one in /app/.venv,
+            # crashing the server on import.
+            assert spec["env"].get("PYTHONSAFEPATH") == "1", (
+                f"MCP server {name!r} is missing PYTHONSAFEPATH=1. cwd is "
+                f"the agent's workspace, so a stale/foreign clone's `roboco` "
+                f"package can shadow the image's installed one. "
+                f"env={spec['env']}"
+            )
 
     @pytest.mark.asyncio
     async def test_mcp_env_mirrors_flow_verb_timeout_settings(self) -> None:

@@ -53,6 +53,9 @@ def test_get_agent_image_local_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(orch.settings, "agent_image_registry", "")
     monkeypatch.setattr(orch.settings, "agent_image_tag", "")
     assert orch.get_agent_image("be-dev-1") == "roboco-agent-dev-be"
+    # DevOps has its own dedicated infra-toolchain image (not the reused
+    # backend dev image anymore).
+    assert orch.get_agent_image("devops-1") == "roboco-agent-devops"
     # The PR reviewer has its own image (parity with the other agents).
     assert orch.get_agent_image("pr-reviewer-1") == "roboco-agent-pr-reviewer"
     # A genuinely unknown agent id falls back to the base image.

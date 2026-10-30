@@ -177,3 +177,69 @@ def test_planning_with_missing_team_still_rejected() -> None:
         new_assignee="be-pm-2",
     )
     assert env2 is not None, "Empty team on new task must NOT bypass the cap"
+
+
+def test_rephrased_code_title_to_same_dev_is_rejected() -> None:
+    """Regression (be-pm, 2026-09-27): re-planning a paused parent
+    re-delegated live work with a suffixed title. '...queue' vs
+    '...queue (cap growth; optional prune-on-ack)' is a duplicate, not a
+    distinct queue item."""
+    sib = _sibling(
+        task_type="code",
+        team="backend",
+        assignee="be-dev-2",
+        title="Bound the in-memory learning notification queue in learning.py",
+    )
+    env = Choreographer._sibling_cap_envelope(
+        siblings=[sib],
+        new_type="code",
+        new_team="backend",
+        new_assignee="be-dev-2",
+        new_title=(
+            "Bound the in-memory learning notification queue in learning.py "
+            "(cap growth; optional prune-on-ack)"
+        ),
+    )
+    assert env is not None
+
+
+def test_stopword_drift_code_title_to_same_dev_is_rejected() -> None:
+    """'Rewrite the stale X' vs 'Rewrite stale X to assert Y' — article drift
+    plus a suffix must not dodge the dedup."""
+    sib = _sibling(
+        task_type="code",
+        team="backend",
+        assignee="be-dev-1",
+        title="Rewrite the stale cell-scope learning test",
+    )
+    env = Choreographer._sibling_cap_envelope(
+        siblings=[sib],
+        new_type="code",
+        new_team="backend",
+        new_assignee="be-dev-1",
+        new_title=(
+            "Rewrite stale cell-scope learning test to assert post-914 team filter"
+        ),
+    )
+    assert env is not None
+
+
+def test_genuinely_distinct_code_title_still_allowed() -> None:
+    """Two different queue items for one dev pass: the containment rule fires
+    only when the shorter title is nearly fully contained in the longer."""
+    sib = _sibling(
+        task_type="code",
+        team="backend",
+        assignee="be-dev-1",
+        title="Bound the in-memory learning notification queue in learning.py",
+    )
+    env = Choreographer._sibling_cap_envelope(
+        siblings=[sib],
+        new_type="code",
+        new_team="backend",
+        new_assignee="be-dev-1",
+        new_title=(
+            "Rewrite the stale cell-scope learning test to assert the team filter"
+        ),
+    )
+    assert env is None

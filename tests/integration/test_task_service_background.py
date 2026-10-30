@@ -470,27 +470,28 @@ async def test_index_decisions_swallows_errors(
 async def test_index_docs_with_paths_calls_index(
     task_setup: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Docs are enqueued for the indexer worker, not indexed inline."""
     svc = task_setup["svc"]
-    fake_optimal = MagicMock()
-    fake_optimal.index_documentation = AsyncMock(return_value=2)
-
-    async def _get_optimal() -> Any:
-        return fake_optimal
-
-    monkeypatch.setattr("roboco.services.optimal.get_optimal_service", _get_optimal)
+    mock_enqueue = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.optimal_brain.indexer_worker.enqueue_index_request",
+        mock_enqueue,
+    )
     docs = [{"path": "doc1.md"}, {"path": "doc2.md"}]
     task_id = uuid4()
     await svc._index_docs_background(task_id, docs)
-    fake_optimal.index_documentation.assert_awaited_once()
+    mock_enqueue.assert_awaited_once()
 
     # These docs are re-indexed off the task's OWN in-flight documents,
     # captured before the task's PR merges (including ones authored via
     # Edit/Write and picked up by _capture_workspace_docs, which bypass
     # roboco_docs_write entirely) — same live-write bug class as
     # DocsService._index_doc_in_rag, so it must carry the same marker.
-    _, kwargs = fake_optimal.index_documentation.await_args
-    assert kwargs["provenance"] == "live_write"
-    assert kwargs["task_id"] == str(task_id)
+    assert mock_enqueue.await_args is not None
+    kind, payload = mock_enqueue.await_args.args
+    assert kind == "documentation"
+    assert payload["provenance"] == "live_write"
+    assert payload["task_id"] == str(task_id)
 
 
 @pytest.mark.asyncio
@@ -498,11 +499,10 @@ async def test_index_docs_swallows_errors(
     task_setup: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc = task_setup["svc"]
-
-    async def _bad() -> None:
-        raise RuntimeError("oops")
-
-    monkeypatch.setattr("roboco.services.optimal.get_optimal_service", _bad)
+    monkeypatch.setattr(
+        "roboco.services.optimal_brain.indexer_worker.enqueue_index_request",
+        AsyncMock(side_effect=RuntimeError("oops")),
+    )
     # Should not raise
     await svc._index_docs_background(uuid4(), [{"path": "x.md"}])
 
@@ -693,14 +693,13 @@ async def test_index_blocker_swallows_errors(
 async def test_index_lifecycle_event_calls_index_journal(
     task_setup: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A lifecycle event is enqueued as a journal_entry index request."""
     svc = task_setup["svc"]
-    fake_optimal = MagicMock()
-    fake_optimal.index_journal_entry = AsyncMock()
-
-    async def _get_optimal() -> Any:
-        return fake_optimal
-
-    monkeypatch.setattr("roboco.services.optimal.get_optimal_service", _get_optimal)
+    mock_enqueue = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.optimal_brain.indexer_worker.enqueue_index_request",
+        mock_enqueue,
+    )
     await svc._index_lifecycle_event_background(
         uuid4(),
         "block",
@@ -708,7 +707,10 @@ async def test_index_lifecycle_event_calls_index_journal(
         Team.BACKEND,
         details={"reason": "x"},
     )
-    fake_optimal.index_journal_entry.assert_awaited_once()
+    mock_enqueue.assert_awaited_once()
+    assert mock_enqueue.await_args is not None
+    kind, _payload = mock_enqueue.await_args.args
+    assert kind == "journal_entry"
 
 
 @pytest.mark.asyncio
@@ -716,17 +718,15 @@ async def test_index_lifecycle_event_no_team(
     task_setup: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc = task_setup["svc"]
-    fake_optimal = MagicMock()
-    fake_optimal.index_journal_entry = AsyncMock()
-
-    async def _get_optimal() -> Any:
-        return fake_optimal
-
-    monkeypatch.setattr("roboco.services.optimal.get_optimal_service", _get_optimal)
+    mock_enqueue = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.optimal_brain.indexer_worker.enqueue_index_request",
+        mock_enqueue,
+    )
     await svc._index_lifecycle_event_background(
         uuid4(), "cancel", "title", task_team=None
     )
-    fake_optimal.index_journal_entry.assert_awaited_once()
+    mock_enqueue.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -734,11 +734,10 @@ async def test_index_lifecycle_event_swallows_errors(
     task_setup: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc = task_setup["svc"]
-
-    async def _bad() -> None:
-        raise RuntimeError("oops")
-
-    monkeypatch.setattr("roboco.services.optimal.get_optimal_service", _bad)
+    monkeypatch.setattr(
+        "roboco.services.optimal_brain.indexer_worker.enqueue_index_request",
+        AsyncMock(side_effect=RuntimeError("oops")),
+    )
     await svc._index_lifecycle_event_background(
         uuid4(), "cancel", "title", task_team=None
     )

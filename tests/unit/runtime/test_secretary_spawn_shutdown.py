@@ -168,7 +168,8 @@ async def test_secretary_spawn_adds_compose_labels_before_image(
         return ["--label", f"com.docker.compose.service={service}"]
 
     monkeypatch.setattr(
-        "roboco.runtime.orchestrator.compose_label_args", _fake_label_args
+        "roboco.runtime.engines.interactive_sessions.compose_label_args",
+        _fake_label_args,
     )
 
     await orch.spawn_secretary_session("sess-labels", initial_message=None)
@@ -200,7 +201,9 @@ async def test_secretary_spawn_omits_compose_labels_outside_compose(
     async def _no_labels(_service: str) -> list[str]:
         return []
 
-    monkeypatch.setattr("roboco.runtime.orchestrator.compose_label_args", _no_labels)
+    monkeypatch.setattr(
+        "roboco.runtime.engines.interactive_sessions.compose_label_args", _no_labels
+    )
 
     await orch.spawn_secretary_session("sess-no-labels", initial_message=None)
 

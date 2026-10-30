@@ -45,6 +45,10 @@ vi.mock("@/components/settings/github-app-credentials-card", () => ({
   GitHubAppCredentialsCard: () => null,
 }));
 
+vi.mock("@/components/settings/decisions-pilots-card", () => ({
+  DecisionsPilotsCard: () => null,
+}));
+
 const { toastSuccess } = vi.hoisted(() => ({ toastSuccess: vi.fn() }));
 vi.mock("sonner", () => ({ toast: { success: toastSuccess } }));
 

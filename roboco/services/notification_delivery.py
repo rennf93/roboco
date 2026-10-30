@@ -49,6 +49,7 @@ from roboco.services.notification_dedup import (
 )
 from roboco.services.notification_text import task_display
 from roboco.services.repositories.query_helpers import get_agent_by_role
+from roboco.services.uptime import UptimeLedger
 from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:
@@ -474,8 +475,17 @@ class NotificationDeliveryService(BaseService):
         auto-cancel because the notification is the record; rewriting status
         would be ambiguous. Returns the count of stale unacked items (not just
         the ones actually re-escalated this tick).
+
+        Fleet downtime (a CEO pause or outage) discounts both the SQL
+        `expires_at` gate (`_row_actually_expired`) and the backoff schedule
+        (`_backoff_now`): a notification minted right before a long pause
+        hasn't actually burned its TTL in active time, and a backoff
+        interval measured across a pause would otherwise fire the moment
+        the fleet wakes up. A ledger load failure falls back to today's
+        pure wall-clock behaviour.
         """
         now = datetime.now(UTC)
+        ledger = await self._load_uptime_ledger(now)
         result = await self.session.execute(
             select(NotificationTable).where(
                 and_(
@@ -485,7 +495,11 @@ class NotificationDeliveryService(BaseService):
                 )
             )
         )
-        stale = list(result.scalars().all())
+        stale = [
+            n
+            for n in result.scalars().all()
+            if self._row_actually_expired(n, ledger, now)
+        ]
 
         # Python mirror of the SQL `requires_ack.is_(True)` predicate: defense
         # in depth so a future query change can't silently re-escalate
@@ -515,7 +529,7 @@ class NotificationDeliveryService(BaseService):
                 n = await self.session.get(NotificationTable, nid)
                 if n is None:
                     continue
-                await self._maybe_reescalate(n, now)
+                await self._maybe_reescalate(n, now, ledger)
                 await self.session.commit()
             except Exception as e:
                 await self.session.rollback()
@@ -526,7 +540,55 @@ class NotificationDeliveryService(BaseService):
                 )
         return len(unacked)
 
-    async def _maybe_reescalate(self, n: NotificationTable, now: datetime) -> None:
+    async def _load_uptime_ledger(self, now: datetime) -> UptimeLedger | None:
+        """Best-effort per-sweep ledger load. ``None`` (fail open to wall
+        clock) on any failure, since a broken/missing audit trail must never
+        block the sweep."""
+        try:
+            return await UptimeLedger.load(self.session, since=now - timedelta(days=7))
+        except Exception as exc:
+            self.log.warning(
+                "Uptime ledger load failed; sweep uses wall clock", error=str(exc)
+            )
+            return None
+
+    @staticmethod
+    def _row_actually_expired(
+        n: NotificationTable, ledger: UptimeLedger | None, now: datetime
+    ) -> bool:
+        """SQL's `expires_at < now` is a wall-clock superset; discount fleet
+        downtime the same way the reaper does. No ledger, or a row whose
+        `created_at`/`expires_at` aren't real timestamps, keeps the SQL
+        result (fail open)."""
+        if ledger is None:
+            return True
+        created_at, expires_at = n.created_at, n.expires_at
+        if not isinstance(created_at, datetime) or not isinstance(expires_at, datetime):
+            return True
+        return ledger.active_elapsed(created_at, now) >= (expires_at - created_at)
+
+    @staticmethod
+    def _backoff_now(
+        n: NotificationTable, now: datetime, ledger: UptimeLedger | None
+    ) -> datetime:
+        """Shift `now` back by however much of the elapsed window since the
+        schedule's reference point (`last_reescalated_at`, or `expires_at`
+        for the first re-escalation) was fleet downtime, so
+        `reescalation_decision`'s wall-clock comparison reads active time
+        instead. No ledger, or a non-real anchor, keeps `now` (fail open)."""
+        if ledger is None:
+            return now
+        anchor = n.last_reescalated_at or n.expires_at
+        if not isinstance(anchor, datetime):
+            return now
+        return anchor + ledger.active_elapsed(anchor, now)
+
+    async def _maybe_reescalate(
+        self,
+        n: NotificationTable,
+        now: datetime,
+        ledger: UptimeLedger | None = None,
+    ) -> None:
         """Re-escalate `n` only when its backoff schedule says it's due.
 
         Neither of `_persist_and_deliver`'s two dedup guards backstops a
@@ -544,7 +606,7 @@ class NotificationDeliveryService(BaseService):
         so two sweep ticks racing the same row can never both deliver.
         """
         decision = reescalation_decision(
-            now=now,
+            now=self._backoff_now(n, now, ledger),
             expires_at=cast("datetime", n.expires_at),
             count=n.reescalation_count,
             last_reescalated_at=n.last_reescalated_at,

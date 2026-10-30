@@ -30,6 +30,7 @@ from roboco.models.optimal import (
     IndexType,
     QueryContext,
     RAGResponse,
+    SearchOutcome,
     SearchResult,
 )
 from roboco.services.optimal_brain.indexes import (
@@ -65,6 +66,59 @@ MAX_CONTENT_CHARS = 800
 # index_documentation, except any file under a "standards" subdir, which
 # routes to the standards indexer instead (see _index_doc_file).
 AUTO_INDEX_DIRS = ("rag", "map")
+
+# Per-index search timeout — INNER to the route-level 30s/60s timeout. Each
+# index plugin's search_with_embedding() call is bounded independently so a
+# single slow index can't discard results from every index that already
+# finished. On timeout the index is recorded in the gaps list and a failure
+# outcome is returned instead of propagating (evidence_legs.py pattern).
+_PER_INDEX_SEARCH_TIMEOUT = 15.0
+
+
+async def _bounded_index_search(
+    entry: tuple[IndexType, BaseIndexPlugin],
+    query_embedding: list[float],
+    query_text: str,
+    top_k: int,
+    gaps: list[str],
+    timeout: float = _PER_INDEX_SEARCH_TIMEOUT,
+) -> SearchOutcome:
+    """Wrap a single index search in a per-index timeout.
+
+    On timeout or unexpected failure, append the index name to ``gaps`` and
+    return a failure outcome instead of propagating — following the
+    degradation pattern from ``evidence_legs.run_bounded_leg``.
+    """
+    index_type, plugin = entry
+    try:
+        outcome = await asyncio.wait_for(
+            plugin.search_with_embedding(query_embedding, query_text, top_k=top_k),
+            timeout=timeout,
+        )
+        if not outcome.success:
+            # The plugin returned a failure outcome without raising — still a
+            # gap, or a total non-timeout outage reads as HTTP 200 total:0.
+            gaps.append(
+                f"{index_type.value} unavailable: failed: "
+                f"{outcome.error_message or 'unknown error'}"
+            )
+        return outcome
+    except TimeoutError:
+        gaps.append(f"{index_type.value} unavailable: timed out after {timeout:.0f}s")
+        return SearchOutcome(
+            results=[],
+            success=False,
+            error_message=f"Timed out after {timeout:.0f}s",
+            index_type=index_type,
+        )
+    except Exception as e:
+        gaps.append(f"{index_type.value} unavailable: failed: {type(e).__name__}")
+        return SearchOutcome(
+            results=[],
+            success=False,
+            error_message=f"failed: {type(e).__name__}: {e}",
+            index_type=index_type,
+        )
 
 
 @dataclass
@@ -258,8 +312,26 @@ class OptimalService:
         await self._warmup_embedder()
 
         # Auto-index code and documentation on startup (truly non-blocking)
-        # Run in background so API can start accepting requests immediately
-        self._indexing_task = asyncio.create_task(self._auto_index_on_startup_safe())
+        # Run in background so API can start accepting requests immediately.
+        # Role-gated: this is fleet-wide, once-per-KB re-index/re-embed work
+        # (plus the periodic file-change loop it kicks off), not per-request.
+        # 'api' and 'dispatcher' each run the full FastAPI lifespan (see
+        # roboco/api/app.py) and would otherwise both run it, doubling the
+        # CPU cost for no benefit; only 'all' (single-process) and 'indexer'
+        # (the dedicated KB worker role) own it. Plugins are still
+        # initialized above in every role, since routes query the KB
+        # regardless of who indexes it.
+        from roboco.config import settings
+
+        if settings.role in ("all", "indexer"):
+            self._indexing_task = asyncio.create_task(
+                self._auto_index_on_startup_safe()
+            )
+        else:
+            logger.info(
+                "Auto-index/periodic-update skipped for role",
+                role=settings.role,
+            )
 
     async def _warmup_embedder(self) -> None:
         """Warm up the embedding model to avoid cold start latency."""
@@ -455,6 +527,16 @@ class OptimalService:
     # =========================================================================
     # PERIODIC UPDATE (File Change Detection)
     # =========================================================================
+
+    async def ensure_periodic_update_running(self) -> None:
+        """Start the periodic RAG update loop if it isn't already running.
+
+        Called by the indexer worker (``ROBOCO_ROLE=indexer``) so that role
+        owns the periodic re-index sweep; idempotent against the auto-start
+        already inside ``initialize()``; never a second competing loop.
+        """
+        if self._periodic_update_task is None:
+            await self._start_periodic_update()
 
     async def _start_periodic_update(self) -> None:
         """Start periodic update task if enabled in config."""
@@ -819,6 +901,31 @@ class OptimalService:
             )
             return count
         return await plugin.add_sources(sources)
+
+    async def flip_docs_task_provenance(
+        self,
+        task_ids: list[str],
+        from_provenance: str = "live_write",
+        to_provenance: str = "repo_tree",
+    ) -> int:
+        """Flip chunk provenance on docs written by the given tasks.
+
+        The TaskService completion hook's flip path: docs a task wrote
+        mid-task were stamped ``provenance="live_write"`` + its task_id;
+        this updates the provenance on those chunks IN PLACE (queried by
+        the stamped task_id — no repo-tree re-derivation, no reindex of
+        unchanged docs). Returns the number of chunks flipped.
+        """
+        plugin = self._get_plugin(IndexType.DOCUMENTATION)
+        if isinstance(plugin, DocsIndexPlugin):
+            return await plugin.flip_task_provenance(
+                task_ids, from_provenance, to_provenance
+            )
+        logger.debug(
+            "Docs provenance flip skipped: no DocsIndexPlugin registered",
+            index_type=IndexType.DOCUMENTATION.value,
+        )
+        return 0
 
     async def _track_indexed_document(
         self,
@@ -1378,6 +1485,22 @@ class OptimalService:
         Returns:
             List of search results sorted by relevance
         """
+        results, _ = await self.search_with_gaps(query, context, top_k)
+        return results
+
+    async def search_with_gaps(
+        self,
+        query: str,
+        context: QueryContext | None = None,
+        top_k: int = 5,
+    ) -> tuple[list[SearchResult], list[str]]:
+        """Semantic search across knowledge base with per-index timeout.
+
+        Like ``search()`` but each index is bounded by
+        ``_PER_INDEX_SEARCH_TIMEOUT`` independently. Returns
+        ``(results, gaps)`` where ``gaps`` lists indexes that did not return
+        (timed out or failed) — empty when all completed.
+        """
         if not self._initialized:
             raise RuntimeError("OptimalService not initialized")
 
@@ -1386,7 +1509,7 @@ class OptimalService:
         )
         plugins = [(it, self._plugins[it]) for it in index_types if it in self._plugins]
         if not plugins:
-            return []
+            return [], []
 
         # Embed the query ONCE, then run every index's hybrid search
         # concurrently — instead of each index re-embedding in series.
@@ -1394,19 +1517,20 @@ class OptimalService:
             query_embedding = await plugins[0][1].compute_query_embedding(query)
         except Exception as e:
             logger.warning("Query embedding failed", error=str(e))
-            return []
+            return [], []
 
+        gaps: list[str] = []
         outcomes = await asyncio.gather(
             *(
-                plugin.search_with_embedding(query_embedding, query, top_k=top_k)
-                for _, plugin in plugins
+                _bounded_index_search(entry, query_embedding, query, top_k, gaps)
+                for entry in plugins
             ),
             return_exceptions=True,
         )
 
         results = self._collect_outcomes(plugins, outcomes)
         results.sort(key=lambda r: r.score, reverse=True)
-        return results[: top_k * len(index_types)]
+        return results[: top_k * len(index_types)], gaps
 
     async def _search_single_index(
         self,
@@ -1415,20 +1539,64 @@ class OptimalService:
         query_text: str,
         top_k: int,
         buf: _QueryAggregationBuffer,
+        gaps: list[str] | None = None,
     ) -> None:
-        """Search one index with a pre-computed embedding; update buf in place."""
+        """Search one index with a pre-computed embedding; update buf in place.
+
+        Bounded by ``_PER_INDEX_SEARCH_TIMEOUT`` — on timeout or unexpected
+        failure, the index is recorded in ``gaps`` (when provided) and an
+        error is logged in buf instead of propagating.
+        """
         index_type, plugin = entry
         if await plugin.count() == 0:
             logger.debug("Skipping empty index", index_type=index_type.value)
             return
 
-        outcome = await plugin.search_with_embedding(
-            query_embedding, query_text, top_k=top_k
-        )
+        try:
+            outcome = await asyncio.wait_for(
+                plugin.search_with_embedding(query_embedding, query_text, top_k=top_k),
+                timeout=_PER_INDEX_SEARCH_TIMEOUT,
+            )
+        except TimeoutError:
+            if gaps is not None:
+                gaps.append(
+                    f"{index_type.value} unavailable: timed out after "
+                    f"{_PER_INDEX_SEARCH_TIMEOUT:.0f}s"
+                )
+            buf.stats[index_type.value] = -1  # -1 indicates error
+            buf.errors[index_type.value] = (
+                f"Timed out after {_PER_INDEX_SEARCH_TIMEOUT:.0f}s"
+            )
+            logger.warning(
+                "RAG search timed out for index",
+                index_type=index_type.value,
+                timeout=_PER_INDEX_SEARCH_TIMEOUT,
+            )
+            return
+        except Exception as e:
+            if gaps is not None:
+                gaps.append(
+                    f"{index_type.value} unavailable: failed: {type(e).__name__}"
+                )
+            buf.stats[index_type.value] = -1  # -1 indicates error
+            buf.errors[index_type.value] = f"failed: {type(e).__name__}: {e}"
+            logger.warning(
+                "RAG search failed for index",
+                index_type=index_type.value,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return
+
         if outcome.success:
             buf.stats[index_type.value] = len(outcome.results)
             buf.citations.extend(outcome.results)
         else:
+            if gaps is not None:
+                gaps.append(
+                    f"{index_type.value} unavailable: failed: "
+                    f"{outcome.error_message or 'unknown error'}"
+                )
             buf.stats[index_type.value] = -1  # -1 indicates error
             buf.errors[index_type.value] = outcome.error_message or "Unknown"
             logger.warning(
@@ -1439,23 +1607,29 @@ class OptimalService:
 
     async def _aggregate_citations(
         self, index_types: list[IndexType], query: str, top_k: int
-    ) -> tuple[list[SearchResult], dict[str, int], dict[str, str]]:
-        """Embed once, then search the requested indexes concurrently."""
+    ) -> tuple[list[SearchResult], dict[str, int], dict[str, str], list[str]]:
+        """Embed once, then search the requested indexes concurrently.
+
+        Returns ``(citations, stats, errors, gaps)`` where ``gaps`` lists
+        indexes that did not return under the per-index timeout (timed out
+        or failed).
+        """
         buf = _QueryAggregationBuffer()
+        gaps: list[str] = []
         plugins = [(it, self._plugins[it]) for it in index_types if it in self._plugins]
         if not plugins:
-            return buf.citations, buf.stats, buf.errors
+            return buf.citations, buf.stats, buf.errors, gaps
 
         try:
             query_embedding = await plugins[0][1].compute_query_embedding(query)
         except Exception as e:
             logger.warning("RAG query embedding failed", error=str(e))
-            return buf.citations, buf.stats, buf.errors
+            return buf.citations, buf.stats, buf.errors, gaps
 
         await asyncio.gather(
             *(
                 self._search_single_index(
-                    (it, plugin), query_embedding, query, top_k, buf
+                    (it, plugin), query_embedding, query, top_k, buf, gaps
                 )
                 for it, plugin in plugins
             ),
@@ -1467,8 +1641,9 @@ class OptimalService:
             total_citations=len(buf.citations),
             by_index=buf.stats,
             errors=buf.errors if buf.errors else None,
+            gaps=gaps if gaps else None,
         )
-        return buf.citations, buf.stats, buf.errors
+        return buf.citations, buf.stats, buf.errors, gaps
 
     async def query(
         self,
@@ -1494,9 +1669,12 @@ class OptimalService:
             "RAG query starting", query=query[:50], num_indexes=len(index_types)
         )
 
-        all_citations, search_stats, search_errors = await self._aggregate_citations(
-            index_types, query, top_k
-        )
+        (
+            all_citations,
+            search_stats,
+            search_errors,
+            gaps,
+        ) = await self._aggregate_citations(index_types, query, top_k)
 
         all_citations.sort(key=lambda r: r.score, reverse=True)
         top_citations = all_citations[: top_k * 2]
@@ -1515,6 +1693,7 @@ class OptimalService:
                     context_used=len(top_citations),
                     search_stats=search_stats,
                     search_errors=search_errors,
+                    gaps=gaps,
                 )
 
         logger.warning("RAG query found no citations in any index")
@@ -1525,6 +1704,7 @@ class OptimalService:
             context_used=0,
             search_stats=search_stats,
             search_errors=search_errors,
+            gaps=gaps,
         )
 
     def _strip_think_tags(self, text: str) -> str:

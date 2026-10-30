@@ -62,9 +62,10 @@ export function TelegramCredentialsForm() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        The bot token from <span className="font-medium">@BotFather</span> and the
-        chat id to DM (your user/channel id). Stored encrypted server-side; agents
-        never see them and this panel never displays them again once saved.
+        The bot token from <span className="font-medium">@BotFather</span> and
+        the chat id to DM (your user/channel id). Stored encrypted server-side;
+        agents never see them and this panel never displays them again once
+        saved.
       </p>
 
       <div className="flex items-center gap-2 rounded-md border p-3">

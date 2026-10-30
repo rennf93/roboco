@@ -750,6 +750,35 @@ class CollisionMapResponse(BaseModel):
     siblings: list[CollisionSibling] = []
 
 
+class GateStageResponse(BaseModel):
+    """One stage in the quality-gate chain (conventions → self-verification →
+    QA → PR-gate → PM review → CEO approval).
+
+    ``status`` is ``passed``, ``failed``, ``pending`` (reached but not yet
+    evaluated), or ``not_reached`` (the task hasn't progressed far enough).
+    """
+
+    gate: str
+    status: str
+    timestamp: datetime | None = None
+    detail: str | None = None
+
+
+class TaskGovernanceReportResponse(BaseModel):
+    """The governance report for a task — surfaces the full quality-gate
+    chain, revision-findings summary, conventions verdict, and rework count
+    as one queryable artifact. Read-only feed for the panel's Governance tab.
+    """
+
+    task_id: str
+    task_status: str
+    revision_count: int
+    gate_chain: list[GateStageResponse]
+    findings_summary: list[TaskFindingsSummaryRow]
+    conventions_block_count: int
+    conventions_warn_count: int
+
+
 def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
     """Convert plan JSON dict to TaskPlanResponse.
 

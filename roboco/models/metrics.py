@@ -4,7 +4,7 @@ Metrics Models
 Data classes for metrics and analytics.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -524,6 +524,56 @@ class CeoScorecard:
 
 
 @dataclass
+class VerbLatencyStats:
+    """p50/p95 HTTP duration for one gateway verb over a time window.
+
+    Backed by ``PERCENTILE_CONT`` on ``verb_latency_samples``; one row per verb
+    sorted by p95 descending so the slowest verbs surface first.
+    """
+
+    verb: str
+    p50_ms: float
+    p95_ms: float
+    sample_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "verb": self.verb,
+            "p50_ms": round(self.p50_ms, 2),
+            "p95_ms": round(self.p95_ms, 2),
+            "sample_count": self.sample_count,
+        }
+
+
+@dataclass(frozen=True)
+class ReviewerChainEntry:
+    """One non-developer spawn session against a task: which role reviewed
+    it, on which model, and this session's 1-based position in the task's
+    non-developer spawn chronology (its "round").
+
+    Sourced straight from ``agent_spawn_sessions`` (agent_slug/role/model/
+    task_id are already captured columns) — exposure only, no new capture.
+    ``model`` is ``None`` for a session predating model capture rather than
+    a placeholder string.
+    """
+
+    round: int
+    role: str
+    model: str | None
+    agent_slug: str
+    started_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "round": self.round,
+            "role": self.role,
+            "model": self.model,
+            "agent_slug": self.agent_slug,
+            "started_at": self.started_at,
+        }
+
+
+@dataclass
 class TaskMetrics:
     """Granular per-task effort: real runtime vs wall-clock, turns, cost, rework.
 
@@ -553,6 +603,9 @@ class TaskMetrics:
     ceo_rejects: int = 0
     findings_open: int = 0
     findings_total: int = 0
+    # Additive: the non-developer (review-layer) spawn chain in chronological
+    # order — which role reviewed this task, per round, and on which model.
+    reviewer_chain: list[ReviewerChainEntry] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -572,4 +625,5 @@ class TaskMetrics:
             "stages": [s.to_dict() for s in self.stages],
             "findings_open": self.findings_open,
             "findings_total": self.findings_total,
+            "reviewer_chain": [r.to_dict() for r in self.reviewer_chain],
         }

@@ -1,6 +1,6 @@
 [project]
 name = "roboco"
-version = "0.29.0"
+version = "0.32.0"
 description = "AI Agents Company - A virtual organization of AI agents functioning as a software development workforce"
 authors = [
     {name = "Renzo Franceschini", email = "rennf93@users.noreply.github.com"}
@@ -51,11 +51,12 @@ dependencies = [
     "tree-sitter-python",
     "tree-sitter-typescript",
     "claude-agent-sdk",
-    "fastapi-guard>=7.6.0",  # HTTP security middleware + per-route decorators (import: guard); floor matches the guard-core pairing below
-    "guard-core[redis]>=3.12.0",  # SecurityConfig/decorator models + protocols; redis extra for enable_redis=True (build_security_config sets it unconditionally); floor: 3.12.0 rejects body-based return_pattern rules that 7.6.0 relies on to read the body at all
+    "fastapi-guard>=8.1.2",  # HTTP security middleware + per-route decorators (import: guard); security lib: floor tracks latest (CEO directive 2026-09-01)
+    "guard-core[redis]>=4.4.0",  # SecurityConfig/decorator models + protocols; redis extra for enable_redis=True (build_security_config sets it unconditionally); security lib: floor tracks latest (CEO directive 2026-09-01)
     "fastapi-users[sqlalchemy]",  # Cloud auth: cookie session for the seeded CEO login
     "fastapi-users-db-sqlalchemy",  # imported directly (SQLAlchemyUserDatabase); declare it
     "pyjwt",  # imported directly as `jwt` in the cloud-auth JWT strategy
+    "trafilatura",  # services/research.py: SearXNG provider's local content extraction for web_fetch
 ]
 
 [project.optional-dependencies]
@@ -114,8 +115,14 @@ allow-direct-references = true
 # pyjwt is pulled in transitively (by mcp and msal). 2.12.1 carries four
 # disclosed CVEs that are fixed in 2.13.0; constrain the floor so the resolver
 # picks a patched release while leaving the direct dependents' own ranges intact.
+#
+# rich is capped below 15.0.0: that release ships a self-inconsistent wheel
+# (rich/cells.py imports `load` from rich._unicode_data, which the same
+# release turned into a package no longer exporting it), breaking bandit's
+# import at startup. Drop the cap once bandit ships a release that tolerates
+# rich >= 15.
 [tool.uv]
-constraint-dependencies = ["pyjwt>=2.13.0"]
+constraint-dependencies = ["pyjwt>=2.13.0", "rich<15.0.0"]
 
 # =============================================================================
 # RUFF Configuration
@@ -123,7 +130,12 @@ constraint-dependencies = ["pyjwt>=2.13.0"]
 [tool.ruff]
 target-version = "py313"
 src = ["src"]
-exclude = ["vulture_whitelist.py", ".venv", "alembic"]
+# .decomp: the 2026-09-06 orchestrator god-class decomposition's own analysis
+# scripts + method_map.json (never imported by roboco/), kept for audit trail.
+# .worktrees: per-task worktrees under every agent clone root; the pre-submit
+# quality gate lints the clone root, so a stale sibling run's WIP here must
+# never fail a dev's gate (be-dev-2's 5db9054b, 2026-09-28).
+exclude = ["vulture_whitelist.py", ".venv", "alembic", ".decomp", ".worktrees"]
 
 [tool.ruff.lint]
 select = [
@@ -144,17 +156,57 @@ select = [
 
 # Lazy imports to avoid circular dependencies
 [tool.ruff.lint.per-file-ignores]
-# B010: the behavioral usage-rule redis-fail-open patch (see the module
-# docstring block) must use setattr, not a direct method assignment - mypy's
-# method-assign check rejects `BehavioralProcessor.process_usage_rules = ...`
-# outright, and a `# type: ignore` is not allowed in this codebase.
-"roboco/security.py" = ["B010"]
 # MCP tool surfaces ARE the LLM-facing contract — every parameter must be
 # top-level + typed so the SDK exposes it as a discrete schema field with
 # enum constraints. Bundling into a dataclass would hide enum hints from
 # the LLM and bring back invented values like nature='standard'.
 "roboco/mcp/**/*.py" = ["PLC0415", "PLR0913"]
+# The Decisions pilots carry the typed-state contract from the spec (each
+# pilot takes its caller's context as explicit named kwargs so the gate
+# state and the audit trail stay legible); bundling into a dataclass would
+# just relocate the same named fields behind one hop, same rationale as
+# roboco/mcp/** above.
+"roboco/services/decisions/**/*.py" = ["PLR0913"]
+# A2AService._decisions_steer_mode carries the steer-gate state contract
+# (conversation_id, sender, recipient, content, requires_response, purpose)
+# from the spec's question-state shape; bundling would hide the fields the
+# verdict is built from, same rationale as prompter.py above.
+"roboco/services/a2a.py" = ["PLR0913"]
+# The Decisions tests fake HTTP handlers that must accept (but not read)
+# the request object, fake session/service callables with unused args, and
+# assert against literal cap/threshold constants on purpose (the tests pin
+# the exact numbers); PLC0415 covers the call-time imports inside the bare
+# engine/mixin bodies under test.
+"tests/unit/services/test_decisions_*.py" = [
+    "ARG001",
+    "ARG005",
+    "ARG002",
+    "PLR2004",
+    "PLC0415",
+]
+# Same rationale as the decisions tests above: the B-row dispatch wiring
+# tests monkeypatch pilot entry points with fakes that accept (but do not
+# read) session/state kwargs, and pin exact floor constants.
+"tests/unit/runtime/test_decisions_b_dispatch.py" = [
+    "ARG001",
+    "ARG005",
+    "PLR2004",
+    "PLC0415",
+    "PLW0108",
+    "RUF059",
+]
+"tests/unit/runtime/test_decisions_parking.py" = ["ARG001", "PLR2004", "PLC0415"]
+"tests/unit/gateway/test_content_actions_preflight_triage.py" = ["ARG001", "PLR2004"]
+# hummin_live_config embeds the pi-extension TypeScript source as a raw
+# string asset: the TS lines cannot be reflowed without changing the
+# generated extension, so E501 is ignored for exactly that file.
+"roboco/llm/providers/hummin_live_config.py" = ["E501"]
 "roboco/services/*.py" = ["PLC0415"]
+# B010: the behavioral usage-rule redis-fail-open patch (see the module
+# docstring block) must use setattr, not a direct method assignment - mypy's
+# method-assign check rejects `BehavioralProcessor.process_usage_rules = ...`
+# outright, and a `# type: ignore` is not allowed in this codebase.
+"roboco/security.py" = ["B010"]
 # confirm_live_batch carries the MegaTask confirm contract (title, drafts,
 # agent_id, project_ids, route, session_id) — same >5-kwarg rationale as the
 # gateway verb surfaces below.
@@ -183,6 +235,15 @@ select = [
 # the supersede branch-cut path's skip of the 60s origin refresh-fetch;
 # bundling would just relocate the same named fields behind one hop.
 "roboco/services/workspace.py" = ["PLR0913"]
+# _bounded_index_search and _search_single_index carry the per-index search
+# contract (index entry, embedding, query text, top_k, buffer/gaps, timeout)
+# — bundling would just relocate the same named fields behind one hop.
+"roboco/services/optimal.py" = ["PLR0913", "PLR0917"]
+# OllamaEmbedder.__init__'s kwargs (model, base_url, timeout, max_concurrent,
+# cache_size, batch_size) are independently overridable tuning knobs, not a
+# single grouped concept; bundling into a dataclass would just relocate them
+# behind one hop, same rationale as roboco/services/optimal.py above.
+"roboco/services/optimal_brain/ollama_embedder.py" = ["PLR0913", "PLR0917"]
 # Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
 # verb contract (task title, description, acceptance criteria, assignee, etc.). Bundling
 # into a dataclass hides the field-by-field schema the LLM needs at the
@@ -236,13 +297,63 @@ select = [
 # and scoring call surfaces (task/spawner/role/timeout tuples), same
 # rationale as roboco/services/gateway/**.
 "roboco/eval/*.py" = ["PLC0415", "PLR0913"]
-# PTH119: _grok_usage_json sanitizes the agent id with os.path.basename — the
-# path-injection sanitizer CodeQL's query models; the pathlib equivalent
-# (Path(...).name) is not recognized by that query, so we keep os.path here.
+# E402: the engine-mixin imports (roboco.runtime.engines.*) sit right before
+# `class AgentOrchestrator(...)`, after every module-level constant/function
+# those mixins need — moving them to the top would be the actual circular
+# import (the engines import names defined further down in this same file).
+# TC001: SandboxInfo is annotation-only here now (its runtime uses moved into
+# roboco/runtime/engines/), but roboco.runtime.orchestrator.SandboxInfo is a
+# pre-existing public re-export this module has always provided — kept as a
+# real import, not TYPE_CHECKING-only, so it still resolves.
+# B010: same rationale as roboco/security.py above — binding AgentOrchestrator
+# into each dependent mixin module's globals (see the bottom-of-file comment)
+# must use setattr, not a direct attribute assignment, because mypy's
+# ModuleType has no static `AgentOrchestrator` member. All from the
+# 2026-09-06 god-class decomposition (roboco/runtime/engines/).
+"roboco/runtime/orchestrator.py" = ["E402", "TC001", "B010"]
+# TC004 (all four below): AgentOrchestrator is genuinely used beyond typing
+# here (verbatim moved method bodies call class-qualified static/classmethod
+# helpers by bare name, e.g. `AgentOrchestrator._foo(...)`, not
+# `self._foo(...)`), but a real top-level import would be a circular import —
+# orchestrator.py imports this engine module before its own AgentOrchestrator
+# class exists. It stays TYPE_CHECKING-only for static analysis;
+# orchestrator.py binds the live class into this module's globals at
+# runtime, right after the class is defined (see its bottom-of-file
+# comment). 2026-09-06 god-class decomposition.
+#
+# PTH119: _generate_mcp_config sanitizes the agent id with os.path.basename —
+# same CodeQL path-injection sanitizer rationale as spawn_exit.py below.
+# PLR0913: _append_role_scoped_mcp_servers carries the MCP-server-assembly
+# contract (server dict, agent id/role/uuid, env) — same bundling rationale
+# as spawn_launch.py below.
+"roboco/runtime/engines/spawn_config.py" = ["TC004", "PTH119", "PLR0913"]
+# PTH119: _read_usage_json_contained sanitizes the agent id with
+# os.path.basename — the path-injection sanitizer CodeQL's query models; the
+# pathlib equivalent (Path(...).name) is not recognized by that query, so we
+# keep os.path here.
+# UP037 (spawn_exit.py and every other engine file below carrying it): these
+# quoted forward-reference annotations (e.g. `svc: "TaskService"`) are
+# byte-for-byte verbatim from the original orchestrator.py, which never
+# flagged them — ruff's redundant-quote check apparently doesn't fire at
+# that file's ~20k-line scale, but does once the same unmodified lines live
+# in a smaller split-out file. Removing the quotes would be an unrequested
+# body/signature edit; see the 2026-09-06 god-class decomposition.
+"roboco/runtime/engines/spawn_exit.py" = ["TC004", "PTH119", "UP037"]
 # PLR0913: spawn_agent / _launch_spawn carry the spawn contract (task, model,
 # git context, spawner attribution) — a bundle dataclass would just relocate
 # the same six fields behind one hop at the fleet's hottest call surface.
-"roboco/runtime/orchestrator.py" = ["PTH119", "PLR0913"]
+"roboco/runtime/engines/spawn_launch.py" = ["TC004", "PLR0913", "UP037"]
+"roboco/runtime/engines/interactive_sessions.py" = ["TC004", "UP037"]
+# PLR0913: _is_earlier_live_lane_sibling carries the sequence-bar comparison
+# contract (sibling, owner, sequence, terminal set, creation time) — same
+# bundling rationale as spawn_launch.py above. Moved out of orchestrator.py,
+# see roboco/runtime/engines/ (2026-09-06 god-class decomposition).
+"roboco/runtime/engines/dispatch_claim.py" = ["PLR0913", "UP037"]
+"roboco/runtime/engines/_shared.py" = ["UP037"]
+"roboco/runtime/engines/dispatch_breaker.py" = ["UP037"]
+"roboco/runtime/engines/dispatch_work.py" = ["UP037"]
+"roboco/runtime/engines/reconcile.py" = ["UP037"]
+"roboco/runtime/engines/sweeps.py" = ["UP037"]
 # The intake driver/entrypoint lazily import the heavy `claude-agent-sdk` (and
 # uvicorn) so the modules import without those installed and don't pay the cost
 # until a live container runs them — same rationale as the dirs above.
@@ -263,6 +374,10 @@ select = [
 # startup; _rebuild()'s full service graph (Task/Journal/A2A/Agent services)
 # stays deferred so that startup path never pays for it.
 "roboco/vault.py" = ["PLC0415"]
+# ROBOCO_ROLE=indexer/=all import indexer_worker.run_indexer at call time so
+# the api and dispatcher roles never pay for the KB worker's import graph at
+# process start.
+"roboco/bootstrap.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior.
 # ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
 # for mypy's override check, so unused override-stub args can't be renamed.
@@ -283,6 +398,29 @@ select = [
 # count (a plain, no-defaults dataclass) — same rationale as the collision
 # builder above.
 "tests/unit/eval/test_scoring.py" = ["PLR0913"]
+# _seed_task mirrors test_review_findings_repository.py's helper plus the
+# governance-specific fields (self_verified, qa_verified, revision_count) —
+# same >5-kwarg seed-helper rationale. PLR2004: literal counts in test
+# assertions are idiomatic for DB-seeded expectations.
+"tests/unit/services/test_governance_service.py" = ["PLR0913", "PLR2004"]
+# OpenRouter CLI usage test: _step_finish carries the full 4-bucket token shape
+# (input, output, reasoning, cache_read, cache_write, cost) — the same named
+# fields the event carries, not reducible to fewer without dropping a bucket.
+"tests/unit/llm/providers/test_openrouter_cli_usage.py" = ["PLR0913", "PLR2004"]
+# Config test renders opencode.json inside a temp dir — tempfile imports are
+# deferred to the test bodies that need them.
+"tests/unit/llm/providers/test_openrouter_cli_config.py" = ["PLC0415"]
+# _config carries the spawn-config contract (agent_id, model, provider_type,
+# base_url, auth_token, mcp_config_path) — the model kwarg is how the
+# opencode model-ref prefixing tests hand over bare vs custom catalog ids.
+"tests/unit/llm/providers/test_openrouter_provider.py" = ["PLR0913"]
+# Nebius tests: line-for-line clones of the OpenRouter suites above, so the
+# same rule relaxations apply for the same reasons (usage 4-bucket event
+# shape, deferred tempfile imports in the config-render tests, the
+# spawn-config contract kwarg count).
+"tests/unit/llm/providers/test_nebius_cli_usage.py" = ["PLR0913", "PLR2004"]
+"tests/unit/llm/providers/test_nebius_cli_config.py" = ["PLC0415"]
+"tests/unit/llm/providers/test_nebius_provider.py" = ["PLR0913"]
 
 # =============================================================================
 # MyPy Configuration
@@ -349,6 +487,7 @@ core = "sysmon"
 # provision. They're covered by dedicated integration runs (smoke tests
 # on the NAS) rather than the unit-coverage threshold.
 omit = [
+    "roboco/runtime/engines/_types.py",  # TYPE_CHECKING-only Protocol, never imported at runtime
     # RAG / proactive context — needs Ollama + real embedding model.
     "roboco/services/proactive.py",
     "roboco/services/optimal.py",

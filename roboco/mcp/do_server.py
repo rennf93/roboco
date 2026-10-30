@@ -21,9 +21,16 @@ from typing import Any
 
 import httpx
 import structlog
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from roboco.agents_config import get_agent_team
+from roboco.mcp.utils import configure_stdio_logging, guard_blocked_envelope
+
+# See flow_server.py: __name__ is already "__main__" at this point when run
+# as the real stdio server, so this guards a plain in-process test import
+# from clobbering the ambient structlog config for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
@@ -54,6 +61,12 @@ _SANDBOX_TIMEOUT = 1080
 # ceiling is video_render_timeout_seconds (default 600s) plus its request
 # timeout for uploading the tarball — 660s gives that headroom.
 _RENDER_TIMEOUT = 660
+# run_sandbox_tests waits for a Token Factory Sandbox microVM run: the
+# in-VM ceiling (settings, default 900s, schema-capped at 3600s) plus
+# upload + poll margin. The per-call timeout below floors at the default
+# and stretches when the agent asks for a longer run (the tool computes
+# max(this, timeout_seconds + 600)).
+_SANDBOX_TESTS_TIMEOUT = 1500
 # Tight timeout for SDK loopback — local sidecar; gateway path must not stall.
 _SDK_TIMEOUT = 2.0
 # FastAPI's default missing-route status. Every /api/v1/do/* route returns
@@ -236,7 +249,7 @@ def _normalize_exception_envelope(
     return None
 
 
-mcp = FastMCP("roboco-do")
+mcp = MCPServer("roboco-do")
 log = structlog.get_logger()
 
 
@@ -264,6 +277,30 @@ def _build_headers() -> dict[str, str]:
     if token and token != "UNSIGNED":
         headers["X-Agent-Token"] = token
     return headers
+
+
+def _transport_error_or_guard_block(
+    response: httpx.Response, path: str
+) -> dict[str, Any]:
+    """Mirrors flow_server._transport_error_or_guard_block: no JSON body is
+    either roboco.security's guard blocking with plain text, or a genuine
+    transport failure. Split out of _post to keep its own complexity in
+    check."""
+    blocked = guard_blocked_envelope(response.status_code, response.text, path)
+    if blocked is not None:
+        return blocked
+    return {
+        "error": "transport_error",
+        "message": (
+            f"orchestrator returned HTTP {response.status_code}"
+            f" with no JSON body for {path}"
+        ),
+        "remediate": (
+            "check that the orchestrator is up and the route exists;"
+            " contact the human operator if this persists"
+        ),
+        "missing": [],
+    }
 
 
 def _post(
@@ -348,18 +385,7 @@ def _post(
         try:
             payload: dict[str, Any] = response.json()
         except (ValueError, json.JSONDecodeError):
-            return {
-                "error": "transport_error",
-                "message": (
-                    f"orchestrator returned HTTP {response.status_code}"
-                    f" with no JSON body for {path}"
-                ),
-                "remediate": (
-                    "check that the orchestrator is up and the route exists;"
-                    " contact the human operator if this persists"
-                ),
-                "missing": [],
-            }
+            return _transport_error_or_guard_block(response, path)
     # Outside the orchestrator client so the SDK call is its own connection.
     # A non-404 JSON body that is NOT a real Envelope (dict `error` from an
     # exception handler, or a 422 `detail` list) is normalized to the Envelope
@@ -1083,6 +1109,38 @@ def request_sandbox(
     )
 
 
+def run_sandbox_tests(
+    command: str,
+    image: str | None = None,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Run YOUR active task's tests inside a Token Factory Sandbox (Nebius).
+
+    Dev + QA only (no coordinator/board manifest carries it), default-off:
+    rejected until the CEO arms ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED and a
+    Nebius API key is saved. The committed workspace HEAD is git-archived
+    server-side, uploaded to the Sandboxes API, extracted inside a
+    disposable microVM (millisecond boot, destroyed after the run), and
+    ``command`` executes at the archive root - e.g. ``pytest -q`` or
+    ``make test``. ``image`` (default ``tag:python:3.13``) and
+    ``timeout_seconds`` (default 900, cap 3600) override the settings. The
+    envelope's ``evidence.sandbox`` carries ``exit_code``, ``stdout_tail``/
+    ``stderr_tail``, metered ``cost``/``elapsed_time``, and the sandbox
+    instance/operation uuids; the run is also journaled to the task. A
+    sandbox failure is an invalid_state envelope - fall back to your own
+    container shell, nothing about it changes.
+    """
+    return _post(
+        "/api/v1/do/run_sandbox_tests",
+        {
+            "command": command,
+            "image": image,
+            "timeout_seconds": timeout_seconds,
+        },
+        timeout=max(_SANDBOX_TESTS_TIMEOUT, (timeout_seconds or 0) + 600),
+    )
+
+
 def request_render(
     composition_id: str | None = None,
     orientation: str = "vertical",
@@ -1313,6 +1371,47 @@ def read_a2a() -> dict[str, Any]:
     return _post("/api/v1/do/read_a2a", {})
 
 
+def task_time(task_id: str) -> dict[str, Any]:
+    """Real, uptime-adjusted elapsed times for a task.
+
+    `active_seconds` excludes the hours the fleet was shut down or dispatch
+    was paused; `wall_seconds` is the naive clock. Use active_seconds
+    whenever you judge a task stale, stuck, blocked too long, or
+    unattended, and quote the downtime windows if they explain the gap.
+    """
+    return _post("/api/v1/do/task_time", {"task_id": task_id})
+
+
+def preflight_diff(task_id: str) -> dict[str, Any]:
+    """Pre-submit self-check before i_am_done (advisory, never a gate).
+
+    Sends nothing but your task context: the orchestrator reads the task's
+    acceptance criteria and your working diff, then returns per-criterion
+    plausibility verdicts plus a hygiene screen (debug leftovers, conflict
+    markers, hardcoded secrets, TODO stubs), each with confidence. Advisory
+    only: re-check anything flagged low-confidence; it never blocks or
+    waives the submit.
+    """
+    return _post("/api/v1/do/preflight_diff", {"task_id": task_id})
+
+
+def triage_failure(
+    task_id: str, test_name: str, error_excerpt: str = ""
+) -> dict[str, Any]:
+    """Triage a failed test before spending a debug turn (advisory).
+
+    Send the failing test's name and the error excerpt (tail). The
+    orchestrator adds your diff's changed files and retry state and returns
+    one of: my_regression, flaky, environment, or unknown (no confident
+    verdict: debug first, exactly as usual). A flaky verdict is a hint you
+    may cite in your submission evidence, never a waiver.
+    """
+    return _post(
+        "/api/v1/do/triage_failure",
+        {"task_id": task_id, "test_name": test_name, "error_excerpt": error_excerpt},
+    )
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -1342,6 +1441,7 @@ _TOOLS: dict[str, Any] = {
     "notify": notify,
     "evidence": evidence,
     "request_sandbox": request_sandbox,
+    "run_sandbox_tests": run_sandbox_tests,
     "request_render": request_render,
     "progress": progress,
     "notify_list": notify_list,
@@ -1350,6 +1450,9 @@ _TOOLS: dict[str, Any] = {
     "pr_update": pr_update,
     "read_messages": read_messages,
     "read_a2a": read_a2a,
+    "task_time": task_time,
+    "preflight_diff": preflight_diff,
+    "triage_failure": triage_failure,
     "draft_playbook": draft_playbook,
     "approve_playbook": approve_playbook,
     "reject_playbook": reject_playbook,

@@ -18,6 +18,74 @@ export interface GrokKeyStatus {
   enabled: boolean;
 }
 
+export interface OpenRouterKeyStatus {
+  has_key: boolean;
+  enabled: boolean;
+}
+
+/** Decisions-service tier status (GET /providers/decisions-status). Booleans
+ * only: the OpenRouter key itself never leaves the server. */
+export interface DecisionsStatus {
+  decisions_enabled: boolean;
+  openrouter_opted_in: boolean;
+  openrouter_key_present: boolean;
+}
+
+export interface NebiusKeyStatus {
+  has_key: boolean;
+  enabled: boolean;
+}
+
+/** One model entry returned by the OpenRouter model search endpoint:
+ * mirrors the backend's OpenRouterModelEntry schema (roboco/api/schemas/
+ * provider.py). `id` is the OpenRouter slug (e.g. "deepseek/deepseek-chat")
+ * used as the routing model_name; `name` is the display name. Prices are
+ * per-token USD floats (OpenRouter's "-1" unknown-price sentinel included;
+ * the UI formatter maps non-positive values to "—"). */
+export interface OpenRouterModel {
+  id: string;
+  name: string;
+  context_length: number | null;
+  prompt_price: number | null;
+  completion_price: number | null;
+}
+
+/** The Nebius search endpoint (GET /providers/nebius/models) reuses the
+ * backend's OpenRouterModelEntry schema verbatim; Token Factory's list
+ * carries the same fields, mostly null (name falls back to the id). */
+export type NebiusModel = OpenRouterModel;
+
+/** Payload for setting or clearing the OpenRouter API key. */
+export interface SetOpenRouterKeyRequest {
+  api_key: string;
+}
+
+/** Payload for setting or clearing the Nebius API key. */
+export interface SetNebiusKeyRequest {
+  api_key: string;
+}
+
+export interface ZaiKeyStatus {
+  has_key: boolean;
+  enabled: boolean;
+}
+
+/** Payload for setting or clearing the Z.ai API key. */
+export interface SetZaiKeyRequest {
+  api_key: string;
+}
+
+export interface HumminKeyStatus {
+  has_key: boolean;
+  enabled: boolean;
+}
+
+/** Payload for setting or clearing the hummin provider's Z.ai key (the GLM
+ * Coding Plan credential injected as ZAI_API_KEY at spawn). */
+export interface SetHumminKeyRequest {
+  api_key: string;
+}
+
 export interface ModelAssignment {
   id: string;
   scope: AssignmentScope;
@@ -38,6 +106,10 @@ export type RoutingMode =
   | "kimi"
   | "ollama"
   | "self_hosted"
+  | "openrouter"
+  | "nebius"
+  | "zai"
+  | "hummin"
   | "mix"
   | "cost_tiered";
 
@@ -104,7 +176,11 @@ export interface ComplexityOverride {
  * pr_reviewer, and board/CEO-facing roles are never offered a row here; tier
  * pinning for those is deliberate — cell_pm especially, since the org's
  * documented weak-model incidents were precisely a cheap model on a PM role. */
-export const COMPLEXITY_OVERRIDE_ROLES = ["developer", "qa", "documenter"] as const;
+export const COMPLEXITY_OVERRIDE_ROLES = [
+  "developer",
+  "qa",
+  "documenter",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Routing presets (named, full snapshots of the routing state)
@@ -154,6 +230,64 @@ export const providersApi = {
     return data;
   },
 
+  getOpenRouterKey: async (): Promise<OpenRouterKeyStatus> => {
+    const { data } = await api.get<OpenRouterKeyStatus>(
+      "/providers/openrouter-key",
+    );
+    return data;
+  },
+
+  getDecisionsStatus: async (): Promise<DecisionsStatus> => {
+    const { data } = await api.get<DecisionsStatus>(
+      "/providers/decisions-status",
+    );
+    return data;
+  },
+
+  setOpenRouterKey: async (apiKey: string): Promise<OpenRouterKeyStatus> => {
+    const { data } = await api.put<OpenRouterKeyStatus>(
+      "/providers/openrouter-key",
+      { api_key: apiKey } satisfies SetOpenRouterKeyRequest,
+    );
+    return data;
+  },
+
+  getNebiusKey: async (): Promise<NebiusKeyStatus> => {
+    const { data } = await api.get<NebiusKeyStatus>("/providers/nebius-key");
+    return data;
+  },
+
+  setNebiusKey: async (apiKey: string): Promise<NebiusKeyStatus> => {
+    const { data } = await api.put<NebiusKeyStatus>("/providers/nebius-key", {
+      api_key: apiKey,
+    });
+    return data;
+  },
+
+  getZaiKey: async (): Promise<ZaiKeyStatus> => {
+    const { data } = await api.get<ZaiKeyStatus>("/providers/zai-key");
+    return data;
+  },
+
+  setZaiKey: async (apiKey: string): Promise<ZaiKeyStatus> => {
+    const { data } = await api.put<ZaiKeyStatus>("/providers/zai-key", {
+      api_key: apiKey,
+    } satisfies SetZaiKeyRequest);
+    return data;
+  },
+
+  getHumminKey: async (): Promise<HumminKeyStatus> => {
+    const { data } = await api.get<HumminKeyStatus>("/providers/hummin-key");
+    return data;
+  },
+
+  setHumminKey: async (apiKey: string): Promise<HumminKeyStatus> => {
+    const { data } = await api.put<HumminKeyStatus>("/providers/hummin-key", {
+      api_key: apiKey,
+    } satisfies SetHumminKeyRequest);
+    return data;
+  },
+
   getMode: async (): Promise<ModeSnapshot> => {
     const { data } = await api.get<ModeSnapshot>("/providers");
     return data;
@@ -194,6 +328,21 @@ export const providersApi = {
     const { data } = await api.get<SelfHostedModel[]>(
       "/providers/self-hosted/models",
     );
+    return data;
+  },
+
+  searchOpenRouterModels: async (query: string): Promise<OpenRouterModel[]> => {
+    const { data } = await api.get<OpenRouterModel[]>(
+      "/providers/openrouter/models",
+      { params: { q: query } },
+    );
+    return data;
+  },
+
+  searchNebiusModels: async (query: string): Promise<NebiusModel[]> => {
+    const { data } = await api.get<NebiusModel[]>("/providers/nebius/models", {
+      params: { q: query },
+    });
     return data;
   },
 
@@ -246,6 +395,8 @@ export const providersApi = {
   applyPreset: async (id: string): Promise<RoutingPresetApplyResult> => {
     const { data } = await api.post<RoutingPresetApplyResult>(
       `/providers/presets/${id}/apply`,
+      // bodyless POST sends no Content-Type and trips the guard's content_type_filter (415)
+      {},
     );
     return data;
   },

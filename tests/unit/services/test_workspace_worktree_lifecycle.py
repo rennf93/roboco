@@ -199,6 +199,104 @@ async def test_ensure_worktree_for_resume_readds_pruned_worktree(clone: Path) ->
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/a3c40fe7"
 
 
+async def test_ensure_worktree_for_resume_recovers_missing_local_ref_from_origin(
+    tmp_path: Path,
+) -> None:
+    # Live wedge (2026-08-31): the worktree dir AND the local branch ref are
+    # gone (the commit/claim-time re-add path never recreates refs), while the
+    # pushed branch survives on origin. The re-add must recover the ref from
+    # origin and land the worktree on the pushed commits, not fatal with
+    # "invalid reference".
+    branch = "feature/recover-ref"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=True)
+    clone = _recloned_clone(tmp_path, remote, fetch_branch=branch)
+    assert not _ref_exists(clone, f"refs/heads/{branch}"), "precondition: no local ref"
+    assert _ref_exists(clone, f"refs/remotes/origin/{branch}"), (
+        "precondition: pushed branch recoverable from origin"
+    )
+
+    svc = _service()
+    wt = clone / ".worktrees" / "recover-ref"
+
+    with (
+        patch.object(
+            WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock
+        ) as fetch,
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_worktree_for_resume(clone, wt, branch, "proj")
+
+    assert fetch.await_count == 1, "missing local ref must trigger a fetch"
+    assert wt.exists()
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+    assert (wt / "work.txt").exists(), "pushed commit must survive recovery"
+
+
+async def test_ensure_worktree_for_resume_falls_back_to_origin_head_when_ref_missing(
+    tmp_path: Path,
+) -> None:
+    # Same missing-local-ref wedge, but the branch was never pushed: nothing
+    # to recover, so the re-add falls back to -b from origin/HEAD instead of
+    # fataling (no pushed work to lose by construction).
+    branch = "feature/never-pushed"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = _recloned_clone(tmp_path, remote)
+    assert not _ref_exists(clone, f"refs/heads/{branch}")
+
+    svc = _service()
+    wt = clone / ".worktrees" / "never-pushed"
+
+    with (
+        patch.object(WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock),
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_worktree_for_resume(clone, wt, branch, "proj")
+
+    assert wt.exists(), "fallback -b must break the wedge"
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+
+
+async def test_ensure_worktree_for_resume_prunes_stale_registration(
+    tmp_path: Path,
+) -> None:
+    # A checkout dir deleted out-of-band (rm -rf, not `worktree remove`) leaves
+    # the admin registration behind; `worktree add` then fatals "missing but
+    # already registered". The prune-first guard must clear it so the re-add
+    # succeeds off the surviving local ref.
+    remote = _bare_remote_with_branch(tmp_path, "feature/stale-reg", push_branch=True)
+    clone = _recloned_clone(tmp_path, remote, fetch_branch="feature/stale-reg")
+    svc = _service()
+    wt = clone / ".worktrees" / "stale-reg"
+    with (
+        patch.object(WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock),
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_worktree_for_resume(clone, wt, "feature/stale-reg", "proj")
+        shutil.rmtree(wt)  # dir gone, registration intact
+        assert not wt.exists()
+
+        await svc.ensure_worktree_for_resume(clone, wt, "feature/stale-reg", "proj")
+
+    assert wt.exists()
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/stale-reg"
+
+
+async def test_ensure_worktree_prunes_stale_registration(clone: Path) -> None:
+    # The fresh-claim path: a stale registration for the SAME path must not
+    # block the add ("missing but already registered").
+    svc = _service()
+    wt = clone / ".worktrees" / "a3c40fe7"
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
+        shutil.rmtree(wt)  # dir gone, registration intact
+        assert not wt.exists()
+
+        await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
+
+    assert wt.exists()
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/a3c40fe7"
+
+
 async def test_remove_worktree_cleans_up_and_prunes(clone: Path) -> None:
     svc = _service()
     wt = clone / ".worktrees" / "a3c40fe7"

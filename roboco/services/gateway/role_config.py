@@ -59,10 +59,18 @@ _DEV_DO = (
     # On-demand sandbox DB/Redis/Mongo — carried unconditionally (declarative
     # manifest), gated for real by request_sandbox's project opt-in check.
     "request_sandbox",
+    # Token Factory Sandbox test run — devs verify their own suites before
+    # opening the PR (PR-before-QA), same runtime gates as QA's copy.
+    "run_sandbox_tests",
     # Render the video composition to preview frames (dev's own working
     # tree); manifest carries it unconditionally, gated for real by
     # request_render's active-video-task + flag checks.
     "request_render",
+    # Decisions agent lane (spec 6.4/6.5): the pre-submit self-check and
+    # red-test triage. Advisory only; the server composes the state, and
+    # the decisions master flag + per-pilot mode gate for real.
+    "preflight_diff",
+    "triage_failure",
     *_NOTIFY_RECEIVER,
 )
 
@@ -73,9 +81,16 @@ _QA_DO = (
     "evidence",
     "draft_playbook",
     "request_sandbox",
+    # Token Factory Sandbox test run — dev + QA are the two roles that run
+    # test suites (dev pre-PR, QA verification); gated for real by the
+    # verb's own flag + Nebius-key checks. Coordinators/board never get a
+    # credit-spending surface.
+    "run_sandbox_tests",
     # QA's render source is a read-only branch export, never a working tree
     # (see request_render/_render_qa_source); gated the same way as above.
     "request_render",
+    # Decisions agent lane (spec 6.5): red-test triage for the verifier too.
+    "triage_failure",
     *_NOTIFY_RECEIVER,
 )
 
@@ -99,6 +114,8 @@ _CELL_PM_DO = (
     "evidence",
     "pr_update",
     "draft_playbook",
+    # Real, uptime-adjusted elapsed times, so PMs report on task age/staleness.
+    "task_time",
     *_NOTIFY_RECEIVER,
 )
 
@@ -110,6 +127,8 @@ _MAIN_PM_DO = (
     "evidence",
     "pr_update",
     "draft_playbook",
+    # Real, uptime-adjusted elapsed times, so PMs report on task age/staleness.
+    "task_time",
     *_NOTIFY_RECEIVER,
 )
 
@@ -127,6 +146,9 @@ _BOARD_DO = (
     # below), the runtime role-vs-program check in content_actions.py does
     # the real gating.
     "nothing_to_propose",
+    # Real, uptime-adjusted elapsed times, so Board roles cite this instead
+    # of wall-clock hours when a report calls a task stale/stuck/unattended.
+    "task_time",
     *_NOTIFY_RECEIVER,
 )
 
@@ -188,6 +210,9 @@ _AUDITOR_DO = (
     "evidence",
     "dm",
     "read_a2a",
+    # Real, uptime-adjusted elapsed times, so the Auditor cites this instead
+    # of wall-clock hours before calling a task stale/stuck/unattended.
+    "task_time",
     "approve_playbook",
     "reject_playbook",
     "archive_playbook",
@@ -215,7 +240,35 @@ _AUDITOR_DO = (
 # in-thread; its only INITIATION target stays its owning cell_pm/main_pm
 # (agents_config._check_pr_reviewer_a2a).
 _PR_REVIEWER_FLOW = spec.intents_for_role(spec.Role.PR_REVIEWER)
-_PR_REVIEWER_DO = ("note", "evidence", "dm", "read_a2a", "notify_list", "notify_get")
+_PR_REVIEWER_DO = (
+    "note",
+    "evidence",
+    "dm",
+    "read_a2a",
+    "notify_list",
+    "notify_get",
+    "task_time",
+)
+
+# DevOps: the floating infra author + second PR-gate reviewer. Unlike the
+# read-only pr_reviewer it AUTHORS infra changes in clones (commit; RBAC in
+# content_actions._COMMIT_ALLOWED_ROLES), and it carries the full notify
+# receiver set INCLUDING notify_ack: it is a delivery author who must be able
+# to clear ack-required notification gates, which the silent observer roles
+# (auditor, pr_reviewer) can never satisfy (see role_carries_notify_ack).
+_DEVOPS_FLOW = spec.intents_for_role(spec.Role.DEVOPS)
+_DEVOPS_DO = (
+    "commit",
+    "note",
+    "evidence",
+    "dm",
+    "read_messages",
+    "read_a2a",
+    "notify_list",
+    "notify_get",
+    "notify_ack",
+    "task_time",
+)
 
 _PROMPTER_FLOW = spec.intents_for_role(
     spec.Role.PROMPTER
@@ -231,7 +284,7 @@ _PROMPTER_DO = ("note", "evidence")
 # bridge). Its gated CEO-authority directive tools are layered on separately by
 # the secretary authority surface, not registered as generic do-tools here.
 _SECRETARY_FLOW = spec.intents_for_role(spec.Role.SECRETARY)  # none — human-only
-_SECRETARY_DO = ("note", "evidence")
+_SECRETARY_DO = ("note", "evidence", "task_time")
 
 
 ROLE_CONFIGS: dict[str, RoleConfig] = {
@@ -308,6 +361,17 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         description=(
             "Reviews inbound external/fork PRs and posts one change-request. "
             "Read-only; never writes code or merges."
+        ),
+    ),
+    "devops": RoleConfig(
+        role="devops",
+        flow_tools=_DEVOPS_FLOW,
+        do_tools=_DEVOPS_DO,
+        allows_write=True,
+        allows_subagent=False,
+        description=(
+            "Floating infra author + second PR-gate reviewer. Authors infra "
+            "changes in any project's clone; never merges or deploys."
         ),
     ),
     "prompter": RoleConfig(

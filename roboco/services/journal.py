@@ -39,17 +39,20 @@ from roboco.models.journal import (
 )
 from roboco.models.optimal import IndexJournalEntryParams
 from roboco.services.base import BaseService
+from roboco.services.optimal_brain.indexer_worker import enqueue_index_request
 from roboco.utils.converters import require_uuid, to_python_uuid
 
-# Fire-and-forget RAG index tasks. asyncio holds only a weak ref to a bare task,
-# so a module-level strong ref keeps a scheduled index alive until it finishes;
-# the done-callback removes it. `drain_rag_index_tasks` lets tests await the
-# pending indexing deterministically.
+# Legacy fire-and-forget registry for _schedule_rag_index. It now awaits its
+# own enqueue calls directly (see below) so index-then-unindex ordering on
+# the same entry is preserved, so this set stays empty in normal operation;
+# kept only so `drain_rag_index_tasks` remains a safe no-op for existing
+# test callers.
 _RAG_INDEX_TASKS: set[asyncio.Task[None]] = set()
 
 
 async def drain_rag_index_tasks() -> None:
-    """Await all in-flight background journal RAG index tasks (test helper)."""
+    """Await all in-flight background journal RAG index tasks (test helper;
+    a no-op in normal operation, see `_RAG_INDEX_TASKS`)."""
     await asyncio.gather(*list(_RAG_INDEX_TASKS), return_exceptions=True)
 
 
@@ -279,18 +282,21 @@ class JournalService(BaseService):
             type=entry_create.type,
         )
 
-        # Index in RAG — fire-and-forget. The entry is already committed above, so
-        # indexing is pure best-effort enrichment; it embeds via Ollama, which is
-        # CPU-bound and slows under concurrent load. Awaiting it inline (the old
-        # code, despite the "non-blocking" comment) blocked the journal write and
-        # made the `note` gateway tool time out under load. Schedule it instead so
-        # the write returns immediately.
+        # Index in RAG. The entry is already committed above, so indexing is
+        # pure best-effort enrichment. The enqueue itself (a single Redis XADD,
+        # or the enqueue helper's own backgrounded inline fallback when the
+        # stream is down/disabled) is cheap and awaited directly here, only
+        # the actual Ollama embedding, which is CPU-bound and can be slow, ever
+        # runs off this path. Awaiting the enqueue (not scheduling this whole
+        # call as a background task, the old design) keeps this entry's index
+        # request ordered ahead of a same-entry unindex request a caller
+        # awaits right after (see delete_entry).
         agent_id_for_index = (
             require_uuid(journal_row.agent_id)
             if journal_row
             else entry_create.journal_id
         )
-        self._schedule_rag_index(
+        await self._schedule_rag_index(
             IndexJournalEntryParams(
                 entry_id=require_uuid(entry_row.id),
                 agent_id=agent_id_for_index,
@@ -365,68 +371,61 @@ class JournalService(BaseService):
                 error=str(e),
             )
 
-    def _schedule_rag_index(
+    async def _schedule_rag_index(
         self, params: IndexJournalEntryParams, *, is_private: bool
     ) -> None:
-        """Index a journal entry in RAG off the critical path (fire-and-forget).
+        """Enqueue a journal entry for RAG indexing.
 
-        Embedding goes through Ollama, which is CPU-bound and slows under load;
-        awaiting it inline made the `note` gateway tool time out. The entry is
-        already persisted, so indexing is best-effort enrichment — schedule it on
-        the event loop and return. Errors are logged, never raised; a strong ref
-        in ``_RAG_INDEX_TASKS`` keeps the task alive until it finishes.
+        The entry is already persisted, so indexing is best-effort
+        enrichment: enqueue it for the indexer worker. The enqueue call
+        itself is a single Redis XADD (or, when the stream is down/disabled,
+        ``enqueue_index_request``'s own backgrounded inline fallback, with
+        its own dead-letter handling), cheap enough to await directly, so
+        this method is awaited by the caller rather than scheduled as a
+        background task itself. That preserves ordering: `delete_entry`
+        awaits its own unindex enqueue right after, so two calls on the same
+        entry hit the stream in call order instead of racing.
         """
-
-        async def _index() -> None:
-            try:
-                optimal = await self._get_optimal_service()
-                # Private reflections stay OUT of the shared RAG corpus — the
-                # JOURNALS index is searchable across agents, so indexing a
-                # private entry would leak it. A private learning, if any, is
-                # still recorded below as non-shareable (shareable=not is_private).
-                if not is_private:
-                    await optimal.index_journal_entry(params)
-                if params.entry_type == JournalEntryType.LEARNING.value:
-                    from roboco.services.optimal_brain.indexes.learnings import (
-                        RecordLearningParams,
-                    )
-
-                    await optimal.record_learning(
-                        RecordLearningParams(
-                            content=params.content,
-                            category="journal_learning",
-                            agent_id=params.agent_id,
-                            task_id=params.task_id,
-                            shareable=not is_private,
-                            tags=params.tags or [],
-                        )
-                    )
-            except Exception as e:
-                self.log.warning(
-                    "Failed to index journal entry in RAG (best-effort)",
-                    entry_id=str(params.entry_id),
-                    error=str(e),
-                )
-                # Persist to the dead-letter so a janitor can re-index later;
-                # never blocks the caller's commit (own session, best-effort).
-                from roboco.services.rag_index_failures import (
-                    _serialize_journal_payload,
-                    persist_failure,
-                )
-
-                await persist_failure(
-                    "journal_entry",
-                    _serialize_journal_payload(params, is_private=is_private),
-                    e,
-                )
-
+        agent_id = str(params.agent_id) if params.agent_id else None
+        task_id = str(params.task_id) if params.task_id else None
+        tags = list(params.tags) if params.tags else []
         try:
-            task = asyncio.create_task(_index())
-        except RuntimeError:
-            # No running event loop (sync context) — skip best-effort indexing.
-            return
-        _RAG_INDEX_TASKS.add(task)
-        task.add_done_callback(_RAG_INDEX_TASKS.discard)
+            # Private reflections stay OUT of the shared RAG corpus, the
+            # JOURNALS index is searchable across agents, so indexing a
+            # private entry would leak it. A private learning, if any, is
+            # still recorded below as non-shareable (shareable=not is_private).
+            if not is_private:
+                await enqueue_index_request(
+                    "journal_entry",
+                    {
+                        "content": params.content,
+                        "entry_type": params.entry_type,
+                        "entry_id": str(params.entry_id),
+                        "agent_id": agent_id,
+                        "task_id": task_id,
+                        "tags": tags,
+                    },
+                    optimal_resolver=self._get_optimal_service,
+                )
+            if params.entry_type == JournalEntryType.LEARNING.value:
+                await enqueue_index_request(
+                    "learning",
+                    {
+                        "content": params.content,
+                        "category": "journal_learning",
+                        "agent_id": agent_id,
+                        "task_id": task_id,
+                        "shareable": not is_private,
+                        "tags": tags,
+                    },
+                    optimal_resolver=self._get_optimal_service,
+                )
+        except Exception as e:
+            self.log.warning(
+                "Failed to enqueue journal entry for RAG indexing (best-effort)",
+                entry_id=str(params.entry_id),
+                error=str(e),
+            )
 
     async def get_entry(self, entry_id: UUID) -> JournalEntry | None:
         """Get a journal entry by ID."""
@@ -580,10 +579,7 @@ class JournalService(BaseService):
         # bleeding into claim-time briefings. Best-effort — a delete never
         # errors on the index side (the row is already gone).
         try:
-            from roboco.services.optimal import get_optimal_service
-
-            optimal = await get_optimal_service()
-            await optimal.unindex_journal_entry(entry_id)
+            await enqueue_index_request("journal_unindex", {"entry_id": str(entry_id)})
         except Exception as exc:
             self.log.warning(
                 "Journal de-index failed; entry row still deleted",

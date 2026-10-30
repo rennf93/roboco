@@ -9,6 +9,7 @@ import type {
   CEOOverview as CEOOverviewType,
   Task,
   StalledTask,
+  PortfolioCard,
 } from "@/types";
 import {
   isMockMode,
@@ -57,6 +58,27 @@ export interface AgentMetric {
   idle: number;
   waiting: number;
   errors: number;
+}
+
+// One review-role (qa/pr_reviewer/cell_pm/main_pm) spawn session against a
+// task — `round` numbered identically to the revision-findings ledger
+// (roboco/services/metrics.py `_reviewer_chain_for_task`).
+export interface TaskMetricsReviewerChainEntry {
+  round: number;
+  role: string;
+  agent_slug: string;
+  model: string;
+  started_at: string;
+}
+
+// GET /dashboard/metrics/task/{task_id} — TaskMetrics.to_dict()
+// (roboco/models/metrics.py). Only `reviewer_chain` is modeled/consumed
+// today (useReviewerChain); the endpoint returns a larger per-task effort
+// payload (tokens/cost/stages/rework counts) not typed here since nothing
+// reads it yet.
+export interface TaskMetrics {
+  task_id: string;
+  reviewer_chain: TaskMetricsReviewerChainEntry[];
 }
 
 // =============================================================================
@@ -578,6 +600,29 @@ export const dashboardApi = {
       return createMockKanbanBoard(teamTasks);
     }
     const { data } = await api.get<KanbanBoard>(`/dashboard/kanban/${team}`);
+    return data;
+  },
+
+  // Per-task effort + reviewer-chain metrics — GET
+  // /dashboard/metrics/task/{task_id}. Backs useReviewerChain (@/hooks/
+  // use-verification), which reads only `reviewer_chain` off the result.
+  getTaskMetrics: async (taskId: string): Promise<TaskMetrics> => {
+    if (isMockMode()) {
+      return { task_id: taskId, reviewer_chain: [] };
+    }
+    const { data } = await api.get<TaskMetrics>(
+      `/dashboard/metrics/task/${taskId}`,
+    );
+    return data;
+  },
+
+  // CEO-gated cross-project portfolio: per-project delivery, rework, open
+  // findings, and this month's budget burn — most active first.
+  getPortfolio: async (): Promise<PortfolioCard[]> => {
+    if (isMockMode()) {
+      return [];
+    }
+    const { data } = await api.get<PortfolioCard[]>("/dashboard/portfolio");
     return data;
   },
 

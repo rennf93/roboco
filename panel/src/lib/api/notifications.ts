@@ -46,10 +46,12 @@ export const notificationsApi = {
         ).length,
       };
     }
-    // Backend uses type_filter, priority_filter parameter names
+    // Backend params: unread_only, pending_ack_only, type_filter, limit
+    // (ListNotificationsParams in roboco/api/schemas/notifications.py).
+    // There is NO priority filter server-side; a filters.priority value is
+    // honored by the mock-mode list above only.
     const params: Record<string, unknown> = {};
     if (filters?.type) params.type_filter = filters.type;
-    if (filters?.priority) params.priority_filter = filters.priority;
     if (filters?.unread_only) params.unread_only = filters.unread_only;
     if (filters?.pending_ack_only)
       params.pending_ack_only = filters.pending_ack_only;

@@ -52,6 +52,20 @@ class TeamHealthData:
 
 
 @dataclass
+class ProjectPortfolioMetricsData:
+    """Per-project row of the CEO's cross-fleet portfolio view."""
+
+    project_id: UUID
+    project_slug: str
+    project_name: str
+    active_task_count: int
+    median_lead_time_hours: float | None
+    rework_rate: float
+    open_findings_count: int
+    monthly_budget_burn_usd: float
+
+
+@dataclass
 class AuditQueueItem:
     """Item in the audit queue."""
 

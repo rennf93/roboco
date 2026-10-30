@@ -1,25 +1,14 @@
 # RoboCo
 
-AI Agents Company - A virtual organization of 25 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
+AI Agents Company - A virtual organization of 26 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
 
-<table align="center">
-<tr>
-<td width="50%" align="center">
-  <a href="https://www.youtube.com/watch?v=t1QNqJgBmkM">
-    <img src="https://img.youtube.com/vi/t1QNqJgBmkM/maxresdefault.jpg" alt="Watch the 26-minute RoboCo intro on YouTube — what it is, a walkthrough, and how to use it" width="100%">
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=qB5fXv5LeHc">
+    <img src="https://img.youtube.com/vi/qB5fXv5LeHc/maxresdefault.jpg" alt="Watch the Quick Guide to RoboCo on YouTube - how to set up a 25-agent autonomous AI workforce" width="70%">
   </a>
   <br>
-  <sub>▶ <b><a href="https://www.youtube.com/watch?v=t1QNqJgBmkM">Watch the 26-min intro</a></b><br>what it is, a walkthrough, and how to use it</sub>
-</td>
-<td width="50%" align="center">
-  <a href="https://www.youtube.com/watch?v=xige_EUIjIA">
-    <img src="https://img.youtube.com/vi/xige_EUIjIA/maxresdefault.jpg" alt="Watch the 2.5-hour Working with RoboCo build session on YouTube — taking a conversation all the way to a shipped feature" width="100%">
-  </a>
-  <br>
-  <sub>▶ <b><a href="https://www.youtube.com/watch?v=xige_EUIjIA">Watch the 2.5-hour build session</a></b><br>a conversation → a shipped feature</sub>
-</td>
-</tr>
-</table>
+  <sub>▶ <b><a href="https://www.youtube.com/watch?v=qB5fXv5LeHc">Quick Guide to RoboCo: Setup a 25-Agent Autonomous AI Workforce</a></b></sub>
+</p>
 
 <p align="center">
   <img src="https://docs.roboco.tech/docs/videos/panel-teaser.gif" alt="Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue." width="80%">
@@ -56,7 +45,7 @@ CEO (You, the human)
                    └── UX/UI Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
 ```
 
-The 25 agents = Intake + Secretary + PR Reviewer + the Board (3) + Main PM + the three 6-agent cells (18). Agents run on Anthropic Claude by default, or on xAI Grok, OpenAI Codex, Google Gemini, or Moonshot Kimi K3 (each on its own official CLI and subscription, no metered API key) — see the provider note under Configuration.
+The 26 agents = Intake + Secretary + PR Reviewer + DevOps + the Board (3) + Main PM + the three 6-agent cells (18). Agents run on Anthropic Claude by default, or on xAI Grok, OpenAI Codex, Google Gemini, or Moonshot Kimi K3 (each on its own official CLI and subscription, no metered API key) — see the provider note under Configuration.
 
 ## How it works
 
@@ -118,6 +107,8 @@ You need **Docker** + **Docker Compose** and a Claude Code auth directory on the
 **Optional — run agents on xAI Grok instead of Claude.** RoboCo can spawn agents on xAI's official `grok` CLI authenticated by a SuperGrok subscription (no metered API key). Run `grok login` once on the host and point `ROBOCO_HOST_GROK_DIR` at the resulting `~/.grok` so it mounts into Grok agents; the orchestrator keeps the ~6h token refreshed for you. See the Grok block in `.env.example` (`ROBOCO_HOST_GROK_DIR`, `ROBOCO_GROK_AGENT_IMAGE`, `ROBOCO_GROK_CLI_MODEL`, `ROBOCO_GROK_REASONING_EFFORT`).
 
 **Optional — run agents on Moonshot Kimi K3 instead of Claude.** RoboCo can spawn agents on Moonshot's official `kimi` (kimi-code) CLI authenticated by a Kimi subscription (OAuth device-code login, no metered API key). Run `kimi login` once on the host; `ROBOCO_HOST_KIMI_DIR` points at the resulting `~/.kimi-code` (optional — defaults sensibly) and mounts read-write, since every Kimi agent shares the host's one rotating credential chain. See the Kimi block in `.env.example` (`ROBOCO_HOST_KIMI_DIR`, `ROBOCO_KIMI_CLI_MODEL` — default `kimi-code/k3`, `kimi-code/kimi-for-coding` is the cheaper lever).
+
+**Optional: run agents on Nebius Token Factory (NVIDIA Nemotron).** RoboCo can route the whole fleet through [Nebius Token Factory](https://tokenfactory.nebius.com), an OpenAI-compatible inference API serving 60+ open models (NVIDIA Nemotron, DeepSeek, Qwen, Llama) behind one metered API key. No host login or env var is needed: save the key in the panel under **Settings -> AI Routing -> Nebius API key** (stored Fernet-encrypted server-side), then click the **Nebius** mode button. The fleet-wide default model is NVIDIA's open-source **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`); the searchable picker can narrow it to the rest of the Token Factory catalog. Agents spawn on the opencode CLI with rate-limit parking and per-agent token/cost metering. This is the path judged in the Nebius x NVIDIA hackathon; see [`HACKATHON.md`](./HACKATHON.md) for what was built for it.
 
 ### Option 1 — Run the pre-built images (quickest)
 
@@ -198,7 +189,7 @@ ROBOCO_WORKSPACE_AUTO_CLONE=true
 
 # RAG/LLM
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
-ROBOCO_LOCAL_LLM_MODEL=glm-5.2:cloud
+ROBOCO_LOCAL_LLM_MODEL=glm-5.3:cloud
 
 # Feature flags (default-off unless noted; toggle from Settings → Feature Flags)
 ROBOCO_CONVENTIONS_ENABLED=false        # per-project architectural conventions standard
@@ -355,7 +346,7 @@ uv run mypy roboco/
 | Cache/Queue | Redis |
 | RAG Engine | in-house (asyncpg + pgvector, hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (Ollama) |
-| Local LLM | Ollama (glm-5.2:cloud) |
+| Local LLM | Ollama (glm-5.3:cloud) |
 | Cloud LLM | Claude API (Anthropic) + xAI Grok (official `grok` CLI, SuperGrok subscription) + OpenAI (official `codex` CLI, ChatGPT subscription) + Google Gemini (official `gemini` CLI, OAuth login) + Moonshot Kimi K3 (official `kimi` CLI, Kimi subscription) |
 | Package Manager | uv |
 
@@ -366,7 +357,7 @@ uv run mypy roboco/
 - [x] Database ORM (SQLAlchemy async)
 - [x] Task lifecycle state machine
 - [x] Multi-agent workspace management
-- [x] Agent prompts (25 agents)
+- [x] Agent prompts (26 agents)
 - [x] Messaging API
 - [x] Task API with full lifecycle
 - [x] Git operations API
@@ -410,6 +401,10 @@ uv run mypy roboco/
 **WebSocket streams.** Token enforcement is currently REST-only. The `/ws/*` endpoints authenticate by `agent_id` query param at most and do not yet validate `X-Agent-Token`, even in secure mode — nginx injects the token so the panel works, but a direct WebSocket connection that bypasses nginx is not rejected. In particular the operator stream `/ws/system` (rate-limit lifecycle + token-usage snapshots for the dashboard) is unauthenticated. These streams are read-only — no control surface, secrets, or task content — but treat the orchestrator port as trusted-network-only until WebSocket auth lands.
 
 **Secrets** (the Fernet `ROBOCO_ENCRYPTION_KEY`, GitHub PATs) live encrypted in the database and in gitignored env files — never in the repo. Per-project git tokens are Fernet-encrypted at rest and never returned by the API.
+
+## Nebius x NVIDIA hackathon
+
+RoboCo is entering the Nebius x NVIDIA hackathon (submission window August 26 to October 30, 2026): the whole agent fleet runs on Nebius Token Factory with NVIDIA's open-source Nemotron 3 Super as the default model. [`HACKATHON.md`](./HACKATHON.md) is the submission notes doc: it isolates exactly what was significantly updated during the window (the Nebius provider integration, the v0.30.0 platform release, the post-release panel fixes) for the Stage One review, and walks through the judge path from `make quickstart` to a Nemotron-routed fleet.
 
 ## License
 

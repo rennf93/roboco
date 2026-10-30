@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version tag (e.g. 0.31.0). Empty on dispatch = the short SHA."
+        required: false
+        type: string
 
 jobs:
   publish-images:
@@ -21,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Free up runner disk space
         run: |
@@ -31,14 +36,14 @@ jobs:
           df -h /
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4.6.0
+        uses: docker/login-action@v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4.6.0
+        uses: docker/login-action@v4.7.0
         with:
           username: renzof93
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -46,12 +51,17 @@ jobs:
       - name: Derive version tag
         id: ver
         run: |
-          # release → the tag (v0.1.0 → 0.1.0). Any manual dispatch runs against a
-          # branch whose name can contain "/" (e.g. feature/x) — not a valid image
-          # tag — so use the short SHA, which always is one.
+          # release → the tag (v0.1.0 → 0.1.0). A manual dispatch carries an
+          # optional explicit version (the re-release path: the release event
+          # already fired, so a rebuild for the same tag must be dispatched by
+          # hand). Any other dispatch runs against a branch whose name can
+          # contain "/" (e.g. feature/x) — not a valid image tag — so use the
+          # short SHA, which always is one.
           if [ "${{ github.event_name }}" = "release" ]; then
             RAW="${{ github.event.release.tag_name }}"
             VERSION="${RAW#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
           else
             VERSION="$(git rev-parse --short HEAD)"
           fi
@@ -103,6 +113,16 @@ jobs:
             [roboco-orchestrator]=docker/orchestrator.Dockerfile
             [roboco-panel]=docker/panel.Dockerfile
             [roboco-video-renderer]=docker/video-renderer.Dockerfile
+            # Decisions sidecar (the self-hosted tiers of the Decisions
+            # service): CPU-only llama.cpp, two backends behind one proxy
+            # (Clef 27B sweet-spot default + Laya 421M cheap option). The
+            # Clef GGUF is 19GB, which is not CI-feasible (runner disk), so
+            # the published image bakes the LAYA tier only (FETCH_CLEF_WEIGHTS
+            # carve-out in the build loop below): clef-routed decisions
+            # degrade to the healthy Laya backend through /health. The
+            # Clef-baked default image is a NAS/Mac-side build (docker build
+            # --build-arg FETCH_CLEF_WEIGHTS=true, the Dockerfile default).
+            [roboco-decisions]=docker/decisions.Dockerfile
             [roboco-sandbox-pg]=docker/sandbox-pg.Dockerfile
             [roboco-agent-pm]=docker/agent-pm.Dockerfile
             [roboco-agent-dev-be]=docker/agent-dev-be.Dockerfile
@@ -110,6 +130,11 @@ jobs:
             [roboco-agent-qa-be]=docker/agent-qa-be.Dockerfile
             [roboco-agent-qa-fe]=docker/agent-qa-fe.Dockerfile
             [roboco-agent-ux]=docker/agent-ux.Dockerfile
+            # DevOps (infra authoring toolchain), plain FROM agent-base,
+            # same tier as the other role images above. Missing from this
+            # map would ship the release without the image (the
+            # kimi/openrouter class of failure below).
+            [roboco-agent-devops]=docker/agent-devops.Dockerfile
             [roboco-agent-doc]=docker/agent-doc.Dockerfile
             [roboco-agent-prompter]=docker/agent-prompter.Dockerfile
             [roboco-agent-secretary]=docker/agent-secretary.Dockerfile
@@ -128,10 +153,54 @@ jobs:
             # image; pull-smoke went red on exactly that pull. Every new
             # docker/agent-*.Dockerfile MUST land here in the same PR.
             [roboco-agent-kimi]=docker/agent-kimi.Dockerfile
+            # OpenRouter (aggregated catalog, via the official opencode CLI) —
+            # same shape as kimi/gemini: one-shot delivery roles only, plain
+            # FROM agent-base. Missing from this map on v0.30.0 shipped the
+            # release without the image — the same class as kimi on v0.28.0.
+            [roboco-agent-openrouter]=docker/agent-openrouter.Dockerfile
+            [roboco-agent-hummin]=docker/agent-hummin.Dockerfile
+            [roboco-agent-nebius]=docker/agent-nebius.Dockerfile
           )
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"
-            docker build -f "${IMAGES[$name]}" $(regtags "${name}") .
+            if [ "${name}" = "roboco-decisions" ]; then
+              # See the map comment above: the 19GB Clef GGUF is not
+              # CI-feasible; the published image bakes the Laya tier only.
+              docker build -f "${IMAGES[$name]}" \
+                --build-arg FETCH_CLEF_WEIGHTS=false $(regtags "${name}") .
+            else
+              docker build -f "${IMAGES[$name]}" $(regtags "${name}") .
+            fi
+            echo "::endgroup::"
+          done
+
+          # Interactive live-chat images (hummin/codex/gemini/kimi/
+          # openrouter/nebius). They build FROM the delivery provider images
+          # above, so they build in a SECOND pass after that loop, never
+          # inside it (array iteration order is undefined).
+          #
+          # Every live Dockerfile does a BARE `FROM roboco-agent-gemini` (and
+          # siblings). Pass 1 tagged those images only with fully-qualified
+          # registry refs, and BuildKit resolves an unqualified FROM against
+          # docker.io/library when no bare local tag exists, where these
+          # repos don't exist (pull denied, the v0.31.0 release failure). So
+          # put each delivery image's bare tag in the daemon first (the same
+          # reason roboco-agent-base and roboco-agent-grok carry bare tags
+          # above).
+          declare -A LIVE_IMAGES=(
+            [roboco-agent-hummin-live]=docker/agent-hummin-live.Dockerfile
+            [roboco-agent-codex-live]=docker/agent-codex-live.Dockerfile
+            [roboco-agent-gemini-live]=docker/agent-gemini-live.Dockerfile
+            [roboco-agent-kimi-live]=docker/agent-kimi-live.Dockerfile
+            [roboco-agent-openrouter-live]=docker/agent-openrouter-live.Dockerfile
+            [roboco-agent-nebius-live]=docker/agent-nebius-live.Dockerfile
+          )
+          for name in "${!LIVE_IMAGES[@]}"; do
+            docker tag "${GHCR}/${name%-live}:${VERSION}" "${name%-live}"
+          done
+          for name in "${!LIVE_IMAGES[@]}"; do
+            echo "::group::build ${name}"
+            docker build -f "${LIVE_IMAGES[$name]}" $(regtags "${name}") .
             echo "::endgroup::"
           done
 
@@ -144,6 +213,11 @@ jobs:
           pushall roboco-agent-grok
           echo "::endgroup::"
           for name in "${!IMAGES[@]}"; do
+            echo "::group::push ${name}"
+            pushall "${name}"
+            echo "::endgroup::"
+          done
+          for name in "${!LIVE_IMAGES[@]}"; do
             echo "::group::push ${name}"
             pushall "${name}"
             echo "::endgroup::"
@@ -179,7 +253,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Free up runner disk space
         run: |
@@ -189,7 +263,7 @@ jobs:
           df -h /
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4.6.0
+        uses: docker/login-action@v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

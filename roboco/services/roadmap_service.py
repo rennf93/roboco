@@ -30,7 +30,7 @@ from roboco.foundation.policy.board_programs import PROGRAMS, project_participat
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus, Team
 from roboco.services.base import BaseService
-from roboco.services.board_programs import learn_ref
+from roboco.services.board_programs import learn_ref, resolve_materialize_target
 from roboco.services.task import ROADMAP_ITEM_SOURCE, ROADMAP_SOURCE, get_task_service
 
 if TYPE_CHECKING:
@@ -233,6 +233,22 @@ class RoadmapService(BaseService):
             "priority": item.get("priority", 2),
             "source": ROADMAP_ITEM_SOURCE,
         }
+        # DevOps lane (flag-gated): an infra-shaped item's target_agent hint
+        # pre-assigns the task to devops-1 as a NORMAL delivery task: the
+        # Main-PM coordination-root override (both the assignee and the
+        # team_override) must NOT apply, or the dev dispatcher would never
+        # see it (it filters on cell teams) and the task would look like a
+        # root rather than executable work.
+        target_slug = resolve_materialize_target(item)
+        if target_slug is not None:
+            from roboco.seeds.initial_data import AGENT_UUIDS as _ALL_UUIDS
+
+            return await get_prompter_service(self.session).create_task_from_draft(
+                draft,
+                created_by,
+                status=TaskStatus.PENDING,
+                assigned_to=UUID(_ALL_UUIDS[target_slug]),
+            )
         return await get_prompter_service(self.session).create_task_from_draft(
             draft,
             created_by,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,14 +19,18 @@ from roboco.db.tables import AgentTable, AuditLogTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     Complexity,
+    StalledReason,
     TaskNature,
     TaskStatus,
     TaskType,
 )
 from roboco.models.task import TaskCreateRequest
 from roboco.services.base import ConflictError
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import select, text
+
+from tests.integration.conftest import cleanup_project_durable_rows
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -35,7 +40,7 @@ if TYPE_CHECKING:
 
 @pytest_asyncio.fixture
 async def task_setup(
-    db_session: AsyncSession,
+    db_session: AsyncSession, _test_database_url: str
 ) -> AsyncIterator[dict]:
     agent = AgentTable(
         id=uuid4(),
@@ -62,12 +67,19 @@ async def task_setup(
     )
     db_session.add(project)
     await db_session.flush()
-    yield {
-        "svc": TaskService(db_session),
-        "agent_id": agent.id,
-        "project_id": project.id,
-        "db": db_session,
-    }
+    agent_id, project_id = agent.id, project.id
+    try:
+        yield {
+            "svc": TaskService(db_session),
+            "agent_id": agent_id,
+            "project_id": project_id,
+            "db": db_session,
+        }
+    finally:
+        # claim() now commits durably, so rows outlive the session rollback;
+        # roll back first (release locks), then delete on a fresh connection.
+        await db_session.rollback()
+        await cleanup_project_durable_rows(_test_database_url, project_id, [agent_id])
 
 
 def _req(setup: dict[str, Any], **overrides: Any) -> TaskCreateRequest:
@@ -158,6 +170,29 @@ async def test_list_by_team(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_by_team_still_orders_by_priority_not_fifo(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Panel/API listing, not work selection (the FIFO fix must not
+    touch it): priority still outranks creation order."""
+    svc = task_setup["svc"]
+    low_pri_older = await svc.create(
+        _req(task_setup, team=Team.BACKEND, title="low-pri-older", priority=3)
+    )
+    high_pri_newer = await svc.create(
+        _req(task_setup, team=Team.BACKEND, title="high-pri-newer", priority=0)
+    )
+    now = datetime.now(UTC)
+    low_pri_older.created_at = now - timedelta(days=2)
+    high_pri_newer.created_at = now - timedelta(days=1)
+    await db_session.flush()
+
+    rows = await svc.list_by_team(Team.BACKEND)
+    ids = [t.id for t in rows]
+    assert ids.index(high_pri_newer.id) < ids.index(low_pri_older.id)
+
+
+@pytest.mark.asyncio
 async def test_list_by_assignee(task_setup: dict) -> None:
     svc = task_setup["svc"]
     aid = task_setup["agent_id"]
@@ -167,11 +202,185 @@ async def test_list_by_assignee(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_by_assignee_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Feeds _own_review_hint's ready[0] pick: FIFO, not priority, decides
+    which of the agent's own tasks surfaces first."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    newer_high_pri = await svc.create(
+        _req(task_setup, assigned_to=aid, title="newer-high-pri", priority=0)
+    )
+    older_low_pri = await svc.create(
+        _req(task_setup, assigned_to=aid, title="older-low-pri", priority=3)
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_by_assignee(aid)
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
+
+
+@pytest.mark.asyncio
 async def test_list_by_status(task_setup: dict) -> None:
     svc = task_setup["svc"]
     pending = await svc.create(_req(task_setup))
     rows = await svc.list_by_status(TaskStatus.PENDING)
     assert pending.id in {t.id for t in rows}
+
+
+@pytest.mark.asyncio
+async def test_list_by_status_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Backs list_pending and every orchestrator dispatch scan: oldest
+    eligible task wins, priority no longer overrides it."""
+    svc = task_setup["svc"]
+    newest = await svc.create(_req(task_setup, title="newest", priority=0))
+    middle = await svc.create(_req(task_setup, title="middle", priority=2))
+    oldest = await svc.create(_req(task_setup, title="oldest", priority=3))
+    now = datetime.now(UTC)
+    newest.created_at = now - timedelta(minutes=1)
+    middle.created_at = now - timedelta(hours=1)
+    oldest.created_at = now - timedelta(days=1)
+    await db_session.flush()
+
+    rows = await svc.list_by_status(TaskStatus.PENDING)
+    ids = [t.id for t in rows]
+    assert ids.index(oldest.id) < ids.index(middle.id) < ids.index(newest.id)
+
+
+@pytest.mark.asyncio
+async def test_fifo_orders_by_root_age_before_leaf_age(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The root drives: a fresh leaf under an old root is handed out
+    before an older leaf under a young root."""
+    svc = task_setup["svc"]
+    now = datetime.now(UTC)
+
+    root_a = await svc.create(_req(task_setup, title="root-a"))
+    cell_a = await svc.create(
+        _req(task_setup, title="cell-a", parent_task_id=root_a.id)
+    )
+    leaf_a = await svc.create(
+        _req(task_setup, title="leaf-a", parent_task_id=cell_a.id)
+    )
+    root_b = await svc.create(_req(task_setup, title="root-b"))
+    leaf_b = await svc.create(
+        _req(task_setup, title="leaf-b", parent_task_id=root_b.id)
+    )
+
+    root_a.created_at = now - timedelta(days=15)
+    leaf_a.created_at = now - timedelta(hours=1)
+    root_b.created_at = now - timedelta(days=4)
+    leaf_b.created_at = now - timedelta(hours=10)
+    await db_session.flush()
+
+    rows = await svc.list_by_status(TaskStatus.PENDING, Team.BACKEND)
+    ids = [t.id for t in rows]
+    assert ids.index(leaf_a.id) < ids.index(leaf_b.id), (
+        "leaf-a's 15-day-old root must outrank leaf-b's own younger created_at"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fifo_same_root_falls_back_to_created_sequence_id(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Same root: order still falls back to the leaf's own created_at,
+    then sequence, unchanged from before the root fix."""
+    svc = task_setup["svc"]
+    root = await svc.create(_req(task_setup, title="root"))
+    now = datetime.now(UTC)
+
+    older = await svc.create(
+        _req(task_setup, title="older", parent_task_id=root.id, sequence=1)
+    )
+    newer = await svc.create(
+        _req(task_setup, title="newer", parent_task_id=root.id, sequence=0)
+    )
+    tie_seq_low = await svc.create(
+        _req(task_setup, title="tie-seq-low", parent_task_id=root.id, sequence=0)
+    )
+    tie_seq_high = await svc.create(
+        _req(task_setup, title="tie-seq-high", parent_task_id=root.id, sequence=1)
+    )
+
+    older.created_at = now - timedelta(hours=2)
+    newer.created_at = now - timedelta(hours=1)
+    tie_seq_low.created_at = now
+    tie_seq_high.created_at = now
+    await db_session.flush()
+
+    rows = await svc.list_by_status(TaskStatus.PENDING, Team.BACKEND)
+    ids = [t.id for t in rows]
+    assert ids.index(older.id) < ids.index(newer.id)
+    assert ids.index(tie_seq_low.id) < ids.index(tie_seq_high.id)
+
+
+@pytest.mark.asyncio
+async def test_fifo_orphan_still_listed(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A task whose parent_task_id points at a row that does not exist
+    (legacy/corrupt data, past the create()-time depth check) still shows
+    up, sorted by its own created_at (proves the outer join + coalesce).
+    The FK is ON DELETE SET NULL so this can't arise through normal
+    deletes; triggers are disabled for one insert to force the state."""
+    svc = task_setup["svc"]
+    now = datetime.now(UTC)
+
+    sibling = await svc.create(_req(task_setup, title="sibling"))
+    sibling.created_at = now
+    await db_session.flush()
+
+    await db_session.execute(text("ALTER TABLE tasks DISABLE TRIGGER ALL"))
+    try:
+        orphan = TaskTable(
+            id=uuid4(),
+            title="orphan",
+            description="d",
+            acceptance_criteria=["ac"],
+            team=Team.BACKEND,
+            created_by=task_setup["agent_id"],
+            project_id=task_setup["project_id"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            status=TaskStatus.PENDING,
+            parent_task_id=uuid4(),
+            created_at=now - timedelta(hours=1),
+        )
+        db_session.add(orphan)
+        await db_session.flush()
+    finally:
+        await db_session.execute(text("ALTER TABLE tasks ENABLE TRIGGER ALL"))
+
+    rows = await svc.list_by_status(TaskStatus.PENDING, Team.BACKEND)
+    ids = [t.id for t in rows]
+    assert orphan.id in ids
+    assert ids.index(orphan.id) < ids.index(sibling.id)
+
+
+@pytest.mark.asyncio
+async def test_fifo_no_duplicate_rows(task_setup: dict) -> None:
+    """A 3-level tree plus an unrelated root: the root-ages CTE has one
+    row per reachable task id, so the outer join never duplicates a row."""
+    svc = task_setup["svc"]
+    root = await svc.create(_req(task_setup, title="root"))
+    cell = await svc.create(_req(task_setup, title="cell", parent_task_id=root.id))
+    leaf = await svc.create(_req(task_setup, title="leaf", parent_task_id=cell.id))
+    other_root = await svc.create(_req(task_setup, title="other-root"))
+
+    rows = await svc.list_by_status(TaskStatus.PENDING, Team.BACKEND)
+    ids = [t.id for t in rows]
+    for expected in (root.id, cell.id, leaf.id, other_root.id):
+        assert ids.count(expected) == 1
 
 
 @pytest.mark.asyncio
@@ -419,12 +628,84 @@ async def test_list_paused_for_agent_empty(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_paused_for_agent_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """give_me_work's paused fallback offers the longest-paused task
+    first, not the highest-priority one."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    newer_high_pri = await svc.create(
+        _req(
+            task_setup,
+            assigned_to=aid,
+            status=TaskStatus.PAUSED,
+            title="newer-high-pri",
+            priority=0,
+        )
+    )
+    older_low_pri = await svc.create(
+        _req(
+            task_setup,
+            assigned_to=aid,
+            status=TaskStatus.PAUSED,
+            title="older-low-pri",
+            priority=3,
+        )
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_paused_for_agent(aid)
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
+
+
+@pytest.mark.asyncio
 async def test_list_assigned_for_agent(task_setup: dict) -> None:
     svc = task_setup["svc"]
     aid = task_setup["agent_id"]
     task = await svc.create(_req(task_setup, assigned_to=aid))
     rows = await svc.list_assigned_for_agent(aid)
     assert task.id in {t.id for t in rows}
+
+
+@pytest.mark.asyncio
+async def test_list_assigned_for_agent_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """give_me_work's assigned fallback walks this list top-down:
+    oldest-created wins, priority no longer overrides it."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    newer_high_pri = await svc.create(
+        _req(
+            task_setup,
+            assigned_to=aid,
+            status=TaskStatus.IN_PROGRESS,
+            title="newer-high-pri",
+            priority=0,
+        )
+    )
+    older_low_pri = await svc.create(
+        _req(
+            task_setup,
+            assigned_to=aid,
+            status=TaskStatus.IN_PROGRESS,
+            title="older-low-pri",
+            priority=3,
+        )
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_assigned_for_agent(aid)
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
 
 
 @pytest.mark.asyncio
@@ -442,6 +723,42 @@ async def test_list_strategic_for_board(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_strategic_for_board_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """board_triage picks strategic[0]: oldest strategic root wins."""
+    svc = task_setup["svc"]
+    newer_high_pri = await svc.create(
+        _req(
+            task_setup,
+            title="newer-high-pri-strategic",
+            parent_task_id=None,
+            status=TaskStatus.AWAITING_PM_REVIEW,
+            nature=TaskNature.NON_TECHNICAL,
+            priority=0,
+        )
+    )
+    older_low_pri = await svc.create(
+        _req(
+            task_setup,
+            title="older-low-pri-strategic",
+            parent_task_id=None,
+            status=TaskStatus.AWAITING_PM_REVIEW,
+            nature=TaskNature.NON_TECHNICAL,
+            priority=3,
+        )
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_strategic_for_board()
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
+
+
+@pytest.mark.asyncio
 async def test_list_long_running_blocked(task_setup: dict) -> None:
     svc = task_setup["svc"]
     rows = await svc.list_long_running_blocked()
@@ -449,10 +766,150 @@ async def test_list_long_running_blocked(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_long_running_blocked_staleness_still_wins_priority_dropped(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Most-stale-first is a deliberate anomaly signal, left as-is, but
+    priority must no longer tiebreak equally-stale blockers; created_at does."""
+    svc = task_setup["svc"]
+    now = datetime.now(UTC)
+    same_staleness = now - timedelta(hours=2)
+    high_pri_newer = await svc.create(
+        _req(
+            task_setup,
+            title="high-pri-newer-blocked",
+            status=TaskStatus.BLOCKED,
+            priority=0,
+        )
+    )
+    low_pri_older = await svc.create(
+        _req(
+            task_setup,
+            title="low-pri-older-blocked",
+            status=TaskStatus.BLOCKED,
+            priority=3,
+        )
+    )
+    high_pri_newer.updated_at = same_staleness
+    high_pri_newer.created_at = now - timedelta(days=1)
+    low_pri_older.updated_at = same_staleness
+    low_pri_older.created_at = now - timedelta(days=2)
+    # list_long_running_blocked self-loads an uptime ledger when it has a
+    # candidate to score; a fresh heartbeat here says the fleet is currently
+    # up, so active time reduces to the wall-clock staleness this test is
+    # actually about (an empty audit_log over the lookback would otherwise
+    # read as one long outage and zero out active_elapsed for every row).
+    db_session.add(
+        AuditLogTable(event_type="dispatcher.alive", details={"dispatch_paused": False})
+    )
+    await db_session.flush()
+
+    rows = await svc.list_long_running_blocked()
+    ids = [t.id for t in rows]
+    assert ids.index(low_pri_older.id) < ids.index(high_pri_newer.id), (
+        "equal staleness must tiebreak by created_at, not priority"
+    )
+
+
+class _FakeLedger:
+    """Reports a fixed `active_elapsed`/`active_seconds` for any start/end -
+    a stand-in for a real `UptimeLedger` carrying a known downtime window."""
+
+    def __init__(self, active: timedelta) -> None:
+        self._active = active
+
+    def active_elapsed(self, start: datetime, end: datetime | None = None) -> timedelta:
+        del start, end
+        return self._active
+
+    def active_seconds(self, start: datetime, end: datetime | None = None) -> float:
+        return self.active_elapsed(start, end).total_seconds()
+
+
+@pytest.mark.asyncio
+async def test_list_long_running_blocked_excludes_row_young_by_active_time(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A row blocked 2h ago by wall clock (past the default 30-minute
+    threshold) but only 5 minutes old in active time per an explicit ledger
+    (a long CEO pause in between) must be excluded."""
+    svc = task_setup["svc"]
+    blocked = await svc.create(
+        _req(task_setup, title="blocked-young-active", status=TaskStatus.BLOCKED)
+    )
+    blocked.updated_at = datetime.now(UTC) - timedelta(hours=2)
+    await db_session.flush()
+
+    rows = await svc.list_long_running_blocked(
+        ledger=cast("Any", _FakeLedger(timedelta(minutes=5)))
+    )
+
+    assert blocked.id not in {t.id for t in rows}
+
+
+@pytest.mark.asyncio
+async def test_list_stalled_tasks_stalled_seconds_honours_ledger(
+    task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stalled_seconds` reports the ledger's active time, not raw wall-clock
+    elapsed, when a self-loaded ledger is available."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup, title="stalled-task"))
+    await svc.mark_stalled(task.id, reason=StalledReason.BREAKER_TRIPPED.value)
+    task.stalled_since = datetime.now(UTC) - timedelta(hours=3)
+    await db_session.flush()
+
+    monkeypatch.setattr(
+        svc,
+        "_load_uptime_ledger",
+        AsyncMock(return_value=_FakeLedger(timedelta(minutes=20))),
+    )
+
+    entries = await svc.list_stalled_tasks()
+
+    ours = next(e for e in entries if e.task_id == task.id)
+    assert ours.stalled_seconds == timedelta(minutes=20).total_seconds()
+
+
+@pytest.mark.asyncio
 async def test_list_awaiting_main_pm_all(task_setup: dict) -> None:
     svc = task_setup["svc"]
     rows = await svc.list_awaiting_main_pm_all()
     assert isinstance(rows, list)
+
+
+@pytest.mark.asyncio
+async def test_list_awaiting_main_pm_all_orders_oldest_created_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Main PM triage_all() picks awaiting[0]: oldest escalated root wins."""
+    svc = task_setup["svc"]
+    newer_high_pri = await svc.create(
+        _req(
+            task_setup,
+            title="newer-high-pri-root",
+            parent_task_id=None,
+            status=TaskStatus.AWAITING_PM_REVIEW,
+            priority=0,
+        )
+    )
+    older_low_pri = await svc.create(
+        _req(
+            task_setup,
+            title="older-low-pri-root",
+            parent_task_id=None,
+            status=TaskStatus.AWAITING_PM_REVIEW,
+            priority=3,
+        )
+    )
+    now = datetime.now(UTC)
+    newer_high_pri.created_at = now - timedelta(days=1)
+    older_low_pri.created_at = now - timedelta(days=2)
+    await db_session.flush()
+
+    rows = await svc.list_awaiting_main_pm_all()
+    ids = [t.id for t in rows]
+    assert ids.index(older_low_pri.id) < ids.index(newer_high_pri.id)
 
 
 @pytest.mark.asyncio
@@ -1038,8 +1495,8 @@ async def test_unblock_restores_to_in_progress(
     # Owner restored into both fields so the dev dispatcher respawns it.
     assert unblocked.assigned_to == task_setup["agent_id"]
     assert unblocked.claimed_by == task_setup["agent_id"]
-    # A real resume with no fresh claim() call — unblock must flip the
-    # owner's fleet marker itself (mirrors _finalize_claim/_qa_or_doc_claim).
+    # A real resume with no fresh claim() call, unblock must flip the
+    # owner's fleet marker itself (mirrors _apply_claim_fields/_qa_or_doc_claim).
     owner_row = await db_session.get(AgentTable, task_setup["agent_id"])
     assert owner_row is not None
     assert owner_row.status == AgentStatus.ACTIVE
@@ -1502,10 +1959,11 @@ async def test_claim_pending_with_unmet_dependency_returns_none(
 async def test_claim_sets_agent_active_and_current_task(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """_finalize_claim is the one production chokepoint every claim verb
-    routes through — before this fix, nothing ever wrote agent.status=ACTIVE
-    or current_task_id, so the fleet/Today-brief breakdown could never show
-    a real "active" agent or populate "working[]"."""
+    """_apply_claim_fields is the one production chokepoint every claim
+    verb routes through: before this fix, nothing ever wrote
+    agent.status=ACTIVE or current_task_id, so the fleet/Today-brief
+    breakdown could never show a real "active" agent or populate
+    "working[]"."""
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.branch_name = "feature/backend/abcd1234"
@@ -1717,6 +2175,180 @@ async def test_claim_blocked_by_sequence_names_distinct_reason(
     reason = await svc._claim_blocked_by_sequence(seq1)
     assert reason is not None
     assert "seq-0 blocker" in reason
+
+
+@pytest.mark.asyncio
+async def test_cancel_leaf_zero_diff_sibling_never_blocks_sequence(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """`cancel_leaf`'s mechanical path (`TaskService.cancel`) must not leave
+    a lower-sequence sibling stranded: the sequence bar's candidate query
+    already excludes CANCELLED/COMPLETED siblings (2026-09-05 de9379cc
+    incident - a zero-diff fix leaf with no mechanical close path forced a
+    manual CEO cancel; `cancel_leaf` gives the PM the same `TaskService.cancel`
+    call, so this asserts the cancel actually clears the hold)."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    zero_diff_leaf = await svc.create(
+        _req(task_setup, title="zero-diff leaf", parent_task_id=parent.id, sequence=0)
+    )
+    sibling = await svc.create(
+        _req(task_setup, title="sibling", parent_task_id=parent.id, sequence=1)
+    )
+    zero_diff_leaf.status = TaskStatus.IN_PROGRESS
+    await db_session.flush()
+
+    assert await svc._claim_blocked_by_sequence(sibling) is not None
+
+    await svc.cancel(
+        zero_diff_leaf.id,
+        agent_role="cell_pm",
+        cancellation_note="[CANCELLED by cell_pm] sibling PR already fixed this",
+    )
+
+    assert await svc._claim_blocked_by_sequence(sibling) is None
+
+
+def _evidence_repo_stub() -> AsyncMock:
+    repo = AsyncMock()
+    for method in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
+        getattr(repo, method).return_value = []
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_cancel_leaf_refuses_target_with_children(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """2026-09-06 finding: `cancel_leaf` checked only the target's own
+    PR/branch/ahead-count, never whether it had children of its own, so
+    `TaskService.cancel`'s force-cascade could close out a whole live
+    subtree through the one verb meant for a childless zero-diff task.
+    Repro: a PM-owned parent -> a branch-less `mid` task -> a `child`
+    task carrying an open PR in `awaiting_qa`. `cancel_leaf(mid)` must
+    refuse before it ever reaches `TaskService.cancel`, and the child
+    must stay exactly where it was."""
+    svc = task_setup["svc"]
+    pm = _pm("Cancel-Leaf PM")
+    db_session.add(pm)
+    await db_session.flush()
+
+    parent = await svc.create(_req(task_setup, title="parent"))
+    parent.assigned_to = pm.id
+    mid = await svc.create(_req(task_setup, title="mid", parent_task_id=parent.id))
+    mid.status = TaskStatus.IN_PROGRESS
+    mid.branch_name = None
+    child = await svc.create(_req(task_setup, title="child", parent_task_id=mid.id))
+    child.status = TaskStatus.AWAITING_QA
+    child.pr_number = 999
+    child.branch_name = "feature/backend/mid--child"
+    await db_session.flush()
+
+    deps = ChoreographerDeps(
+        task=svc,
+        work_session=AsyncMock(),
+        git=AsyncMock(),
+        a2a=AsyncMock(),
+        journal=AsyncMock(),
+        audit=AsyncMock(),
+        evidence_repo=_evidence_repo_stub(),
+    )
+    c = Choreographer(deps)
+
+    env = await c.cancel_leaf(
+        cast("UUID", pm.id),
+        cast("UUID", mid.id),
+        "attempting to close a leaf with children",
+    )
+
+    assert env.error == "invalid_state"
+    assert "has 1 children" in (env.message or "")
+    deps.git.is_behind_base.assert_not_awaited()
+    refreshed_child = await svc.get(child.id)
+    assert refreshed_child is not None
+    assert refreshed_child.status == TaskStatus.AWAITING_QA
+    refreshed_mid = await svc.get(mid.id)
+    assert refreshed_mid is not None
+    assert refreshed_mid.status == TaskStatus.IN_PROGRESS
+
+
+# ---------------------------------------------------------------------------
+# list_pending_for_agent: FIFO order among eligible tasks; the sequence
+# bar still excludes an ineligible sibling even if it is the oldest.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_pending_for_agent_oldest_eligible_first(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Three pre-assigned pending tasks created out of order: give_me_work's
+    pre_assigned[0] must land on the oldest, not the highest-priority one."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    newest = await svc.create(
+        _req(task_setup, assigned_to=aid, title="newest", priority=0)
+    )
+    middle = await svc.create(
+        _req(task_setup, assigned_to=aid, title="middle", priority=2)
+    )
+    oldest = await svc.create(
+        _req(task_setup, assigned_to=aid, title="oldest", priority=3)
+    )
+    now = datetime.now(UTC)
+    newest.created_at = now - timedelta(minutes=1)
+    middle.created_at = now - timedelta(hours=1)
+    oldest.created_at = now - timedelta(days=1)
+    await db_session.flush()
+
+    available = await svc.list_pending_for_agent(aid)
+    ids = [t.id for t in available]
+    assert ids.index(oldest.id) < ids.index(middle.id) < ids.index(newest.id)
+
+
+@pytest.mark.asyncio
+async def test_list_pending_for_agent_sequence_bar_still_excludes_oldest(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The oldest pre-assigned task is sequence-held behind a non-terminal
+    lower-sequence sibling: it must NOT be offered, even though it is
+    oldest. The eligibility filter still wins over FIFO ordering."""
+    svc = task_setup["svc"]
+    aid = task_setup["agent_id"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    blocker = await svc.create(
+        _req(task_setup, title="seq-0 blocker", parent_task_id=parent.id, sequence=0)
+    )
+    blocked = await svc.create(
+        _req(
+            task_setup,
+            title="seq-2 blocked",
+            parent_task_id=parent.id,
+            sequence=2,
+            assigned_to=aid,
+        )
+    )
+    eligible = await svc.create(
+        _req(task_setup, title="unrelated eligible", assigned_to=aid)
+    )
+    blocker.status = TaskStatus.IN_PROGRESS
+    now = datetime.now(UTC)
+    blocked.created_at = now - timedelta(days=2)  # oldest, but sequence-held
+    eligible.created_at = now - timedelta(days=1)
+    await db_session.flush()
+
+    available = await svc.list_pending_for_agent(aid)
+    ids = [t.id for t in available]
+    assert blocked.id not in ids, "sequence-held sibling must not be offered"
+    assert ids == [eligible.id]
 
 
 # ---------------------------------------------------------------------------

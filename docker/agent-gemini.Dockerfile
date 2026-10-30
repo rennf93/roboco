@@ -31,8 +31,8 @@ RUN npm install -g @google/gemini-cli \
 # Entrypoint: copy the staged OAuth credential into a writable ~/.gemini,
 # render settings.json + policy TOML, then run gemini headless (overrides the
 # base image's `claude` entrypoint). Owned by agent (mirrors the grok image).
-COPY docker/scripts/gemini-cli-agent-entrypoint.sh /app/scripts/gemini-cli-agent-entrypoint.sh
-RUN chmod 0755 /app/scripts/gemini-cli-agent-entrypoint.sh \
+COPY docker/scripts/entrypoints/gemini-cli-agent-entrypoint.sh /app/scripts/entrypoints/gemini-cli-agent-entrypoint.sh
+RUN chmod 0755 /app/scripts/entrypoints/gemini-cli-agent-entrypoint.sh \
     && mkdir -p /home/agent/.gemini \
     && chown -R agent:agent /home/agent/.gemini
 
@@ -47,4 +47,4 @@ LABEL gemini.cli.pinned="false"
 # explicitly instead. Tunable per-deploy without a rebuild.
 ENV NODE_OPTIONS="--max-old-space-size=2048"
 
-ENTRYPOINT ["/app/scripts/gemini-cli-agent-entrypoint.sh"]
+ENTRYPOINT ["/app/scripts/entrypoints/gemini-cli-agent-entrypoint.sh"]

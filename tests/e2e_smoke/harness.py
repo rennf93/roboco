@@ -350,6 +350,7 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.routes.v1 import flow_board as fb
     from roboco.api.routes.v1 import flow_cell_pm as fcp
     from roboco.api.routes.v1 import flow_dev as fd
+    from roboco.api.routes.v1 import flow_devops as fdv
     from roboco.api.routes.v1 import flow_doc as fdoc
     from roboco.api.routes.v1 import flow_main_pm as fmp
     from roboco.api.routes.v1 import flow_pr_reviewer as fpr
@@ -358,7 +359,7 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     app = FastAPI(title="roboco-e2e-smoke")
     setup_middleware(app)
     app.include_router(health_router)
-    for module in (fd, fq, fdoc, fcp, fmp, fb, fa, fpr):
+    for module in (fd, fq, fdoc, fcp, fmp, fb, fa, fpr, fdv):
         app.include_router(module.router)
     app.include_router(do_module.router)
     # The REST task surface — scenario 3 drives the real CEO

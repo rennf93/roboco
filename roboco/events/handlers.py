@@ -9,6 +9,7 @@ from typing import Any
 
 import structlog
 
+from roboco.config import settings
 from roboco.events.bus import Event, EventType, get_event_bus
 from roboco.models.events import (
     EventContext,
@@ -349,11 +350,23 @@ async def handle_auditor_spawn(event: Event) -> None:
 
 
 def register_default_handlers(bus: Any = None) -> None:
-    """Register all default event handlers."""
+    """Register all default event handlers.
+
+    Fleet-side-effect handlers (waiting-record resolution, auditor spawn)
+    read/write AgentOrchestrator in-memory state that only exists where the
+    real fleet runs (``get_waiting_agents()``'s backing dict, ``spawn_agent``)
+    - see roboco/runtime/orchestrator.py's role gate on ``start()``. In
+    role='api' that dict is always empty and a stray auditor spawn there
+    would be invisible to the dispatcher that actually manages the fleet, so
+    those handlers are dispatcher/all-only. Pure DB/notification handlers
+    register in every role: a consumer group delivers each event to exactly
+    one subscriber, so skipping one here would silently drop the event
+    fleet-wide whenever delivery happened to land on the api process.
+    """
     if bus is None:
         bus = get_event_bus()
 
-    # Task status handlers
+    # Task status handlers (pure notification, every role)
     task_events = [
         EventType.TASK_BLOCKED,
         EventType.TASK_AWAITING_QA,
@@ -363,31 +376,32 @@ def register_default_handlers(bus: Any = None) -> None:
     for event_type in task_events:
         bus.subscribe(event_type, handle_task_status_change)
 
-    # Handoff handlers
+    # Handoff handlers (pure notification, every role)
     bus.subscribe(EventType.HANDOFF_CREATED, handle_handoff_created)
 
-    # QA result handlers
-    bus.subscribe(EventType.TASK_QA_PASSED, handle_qa_result)
-    bus.subscribe(EventType.TASK_QA_FAILED, handle_qa_result)
+    if settings.role != "api":
+        # QA result handlers - resolve a waiting developer's in-memory record
+        bus.subscribe(EventType.TASK_QA_PASSED, handle_qa_result)
+        bus.subscribe(EventType.TASK_QA_FAILED, handle_qa_result)
 
-    # Blocker handlers
-    bus.subscribe(EventType.BLOCKER_RESOLVED, handle_blocker_resolved)
+        # Blocker handlers - resolve a waiting agent's in-memory record
+        bus.subscribe(EventType.BLOCKER_RESOLVED, handle_blocker_resolved)
 
-    # Question handlers
-    bus.subscribe(EventType.QUESTION_ANSWERED, handle_question_answered)
+        # Question handlers - resolve a waiting agent's in-memory record
+        bus.subscribe(EventType.QUESTION_ANSWERED, handle_question_answered)
 
-    # Auditor spawn handlers.
-    # Auditor observes exceptional task lifecycle events only; routine
-    # progress events (claimed, started, in_progress) do not trigger it.
-    auditor_events = [
-        EventType.TASK_BLOCKED,
-        EventType.TASK_CANCELLED,
-        EventType.TASK_AWAITING_CEO_APPROVAL,
-    ]
-    for event_type in auditor_events:
-        bus.subscribe(event_type, handle_auditor_spawn)
+        # Auditor spawn handlers - fleet spawn_agent() side effect.
+        # Auditor observes exceptional task lifecycle events only; routine
+        # progress events (claimed, started, in_progress) do not trigger it.
+        auditor_events = [
+            EventType.TASK_BLOCKED,
+            EventType.TASK_CANCELLED,
+            EventType.TASK_AWAITING_CEO_APPROVAL,
+        ]
+        for event_type in auditor_events:
+            bus.subscribe(event_type, handle_auditor_spawn)
 
     # NOTE: A2A routing is now handled by SDK Server directly
     # Orchestrator dispatcher handles fallback spawning via notification polling
 
-    logger.info("Default event handlers registered")
+    logger.info("Default event handlers registered", role=settings.role)

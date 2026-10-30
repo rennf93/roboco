@@ -26,6 +26,14 @@ roboco_kb_search(
 roboco_rag_query(query="How does authentication work?", top_k=5)
 ```
 
+Both `roboco_kb_search` and `roboco_rag_query` fan out across every registered index concurrently with a **per-index 15s timeout** (inner to the route's 30s outer bound). If an index does not finish, the others still return their results and the response carries a `gaps` list naming the timed-out indexes (e.g. `["journals unavailable: timed out after 15s"]`), empty when all indexes completed. A slow index no longer discards the whole result set.
+
+When `gaps` is non-empty, the MCP tool response includes the `gaps` list and a `hint` string: `"Partial results: N index(es) timed out (name1, ...). Results may be incomplete."` (or "Answer may be incomplete" for `roboco_rag_query`). When there are no gaps, both are omitted — the response is identical to the pre-change shape. The "No results / try mentor" hint is suppressed on a partial-results response so it isn't mistaken for a no-match query.
+
+At the HTTP level, a **total outage** (every index timed out, no results returned) returns a 504 error envelope, not HTTP 200 — partial degradation never masks a total outage. A search that completes with zero results and no gaps is still a 200 (a legitimate "nothing matched", not a failure).
+
+See `docs/backend/services/optimal-per-index-timeout.md` for the service contract and `docs/backend/api/optimal-gaps-surface.md` for the route/schema/ MCP surface.
+
 ## Mentor (Conversational)
 
 ```python
@@ -62,7 +70,9 @@ roboco_docs_read(path="backend/api/endpoints.md")
 
 **LIVE-WRITE PROVENANCE**: a doc indexed via `roboco_docs_write` (or captured from your workspace at `i_documented`) is written mid-task, before your task's PR merges — it may describe an API/contract that doesn't exist yet on the deployed tree. It's indexed with `provenance: "live_write"`, and any `roboco_kb_search` / `roboco_ask_mentor` / `roboco_rag_query` hit built from it comes back with an appended line: `[caveat: written during in-flight work — verify the contract exists on the deployed tree/git before relying on it]`. Docs picked up by the repo-tree scan (`docs/rag`, `docs/map`, or a manual/startup reindex) carry `provenance: "repo_tree"` instead and render with no caveat.
 
-**The caveat does NOT auto-clear on merge.** There is no lifecycle hook wiring a task's PR merge back into the KB, and the periodic re-scan only walks `docs/rag` + `docs/map` — siblings of the team dirs `roboco_docs_write` actually targets, so it never revisits a `live_write` doc. The marker persists until that doc's content is re-indexed from the repo tree — a startup reindex, or the operator-only `roboco_reindex_all` escape hatch — merged or not. So read a caveated hit as "verify against git", not "this is unmerged": don't assume a caveat's absence means merged, and don't assume its presence means still-open. Check the referenced PR/branch before building against it either way.
+**Indexing runs off a Redis stream, not inline.** A write that would embed content (a journal entry, a doc write, a de-index) is enqueued onto the `roboco:stream:index` stream rather than embedded on the spot; the consumer runs in the standalone `ROBOCO_ROLE=indexer` process, or in-process under `ROBOCO_ROLE=all`, so the embedding CPU/GPU cost never lands on the process that served your tool call (in `all` mode it still runs off the request path, just in the same process). When Redis is unreachable or the stream is disabled, the write still happens, just inline in that process, so nothing is silently dropped. The backlog check measures the indexer consumer group's lag (entries never yet delivered), not raw stream length, so already-processed history never counts against the cap; past the configured lag cap, the oldest UNDELIVERED entries shed to a dead-letter stream rather than growing unbounded, except a de-index request, which is never shed. A message a handler keeps failing on is dead-lettered as a poison message only once it is both past the retry cap and idle past the reclaim threshold, so a handler still actively working a message is never dead-lettered out from under it. None of this changes tool behavior or response shape, it only changes where the embedding work actually runs.
+
+**The caveat is temporary now.** When the writing task's ROOT chain reaches terminal `completed` (PR merge precedes completion in this system, so this fires after the merge), `TaskService`'s completion hook flips those chunks' provenance to `provenance: "repo_tree"` in place — queried by the stamped `task_id`, no reindex — and the caveat disappears from every subsequent KB hit. The guard is the root chain: a leaf or cell task completing while its root is still in flight does NOT flip, so a caveat outlives its own task but never outlives the merge to master. Before the flip lands, the marker persists even after merge — so a stale caveat still reads as "verify against git", not "this is unmerged". See `docs/backend/services/kb-provenance-flip.md` for the full lifecycle.
 
 ## Bulk Indexing
 

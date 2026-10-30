@@ -39,6 +39,14 @@ import { toast } from "sonner";
 
 // One-line blurb per flag so the operator knows what each master switch gates.
 const FLAG_DESCRIPTIONS: Record<string, string> = {
+  decisions_enabled:
+    "Master switch for the Decisions service (typed System One verdicts: choice / score / noul with calibrated confidence). Off = every decision point does exactly what it did before this service existed; nothing else decisions-related has any effect until this is on.",
+  decisions_tier_clef_enabled:
+    "Serve decisions from the self-hosted sidecar's Clef backend (27B llama.cpp, roboco-decisions container) when it is healthy: the built-in sweet-spot default tier, no key, no spend. Inert until that container exists and decisions_enabled above is on.",
+  decisions_tier_laya_enabled:
+    "Serve decisions from the self-hosted sidecar's Laya backend (421M, the cheap option) when the Clef backend is disabled or unhealthy: no key, no spend. Inert until that container exists and decisions_enabled above is on.",
+  decisions_tier_openrouter_enabled:
+    "Opt-in fallback tier: serve decisions through the OpenRouter Decisions API when the sidecar is disabled or unhealthy. Opting in is deliberate spend and requires an OpenRouter key on the AI Providers screen (a warning banner appears there while the key is missing).",
   external_pr_enabled:
     "Discover and review inbound external/fork pull requests.",
   internal_pr_enabled:
@@ -57,6 +65,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "When a task's work is already done (commits + open PR + all acceptance criteria addressed + no open findings), submit it for QA in one i_am_done call instead of 3-6 turns — skips the retroactive plan, journal tracing, and local quality (CI-green proxy) gates. Off by default: the standard path is unchanged until you arm this.",
   task_budgets_enabled:
     "Enforce per-project monthly and per-task cost caps (USD). A claim is refused once a project's monthly budget is reached; an active task whose own explicitly-set budget is breached is stopped and blocked, and you're notified. Set the caps on the project edit dialog and a task's detail page — a project/task with no cap set is never capped.",
+  devops_enabled:
+    "Routes infra tasks to the floating DevOps agent (devops-1): PM delegation + board materialization pre-assignment spawn it, and it authors through the normal developer lifecycle (PR before QA). Off by default: the agent is seeded but inert: nothing spawns it.",
   rag_auto_update_enabled:
     "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled:
@@ -77,6 +87,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Close the learn→reuse loop: distill a lesson at task completion, index journal reflections, and auto-inject similar past lessons + approved playbooks into an agent's briefing on claim.",
   sandbox_db_enabled:
     "Provision a throwaway Postgres/Redis sibling container per agent spawn (per-project opt-in) instead of injecting RoboCo's own production DB credentials into the agent's gate.",
+  token_factory_sandboxes_enabled:
+    "Lets developers and QA run a task's test suite inside a Token Factory Sandbox microVM on Nebius (millisecond boot, destroyed after the run) instead of the agent's own container. Needs a Nebius API key; when off, agents keep their local shells.",
   routing_strict:
     "Fail-closed model routing: refuse to silently downgrade an agent to the legacy Anthropic path when its configured provider is disabled (raise instead). Off => graceful degradation with a warning.",
   x_engine_enabled:
@@ -113,6 +125,14 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
 // FLAG_DESCRIPTIONS' always-visible paragraph above. Keyed by settings-key,
 // not label text, since label text alone is sometimes ambiguous.
 const FLAG_TOOLTIPS: Record<string, string> = {
+  decisions_enabled:
+    "Master switch for typed System One verdicts; off = tier 3 everywhere.",
+  decisions_tier_clef_enabled:
+    "Default self-hosted Clef tier (no key, no spend).",
+  decisions_tier_laya_enabled:
+    "Cheap self-hosted Laya fallback when Clef is down.",
+  decisions_tier_openrouter_enabled:
+    "Falls back to the paid OpenRouter Decisions API when the sidecar is down.",
   external_pr_enabled:
     "Reviews inbound external/fork pull requests before merge.",
   internal_pr_enabled: "Safety-reviews internal PRs before merge.",
@@ -128,8 +148,9 @@ const FLAG_TOOLTIPS: Record<string, string> = {
   conventions_enabled: "Enforces each project's architectural placement rules.",
   possibilities_matrix_enabled:
     "Fast-paths work that's already been done elsewhere.",
-  task_budgets_enabled:
-    "Caps agent spend per project (monthly) and per task.",
+  task_budgets_enabled: "Caps agent spend per project (monthly) and per task.",
+  devops_enabled:
+    "Spawns the floating DevOps agent (devops-1) for assigned infra work.",
   rag_auto_update_enabled:
     "Keeps the RAG knowledge index automatically refreshed.",
   transcript_prune_enabled:
@@ -149,6 +170,8 @@ const FLAG_TOOLTIPS: Record<string, string> = {
     "Captures task learnings and re-injects them into future briefings.",
   sandbox_db_enabled:
     "Gives agents on-demand disposable DB/Redis sandboxes for testing.",
+  token_factory_sandboxes_enabled:
+    "Runs QA test suites in Nebius Token Factory Sandbox microVMs.",
   routing_strict:
     "Fails closed instead of silently falling back on a disabled provider.",
   x_engine_enabled: "Drafts X posts for CEO review; nothing auto-posts.",

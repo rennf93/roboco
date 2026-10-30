@@ -83,7 +83,8 @@ def test_no_deleted_tool_names_in_runtime_sources() -> None:
 # graph + mypy. A deleted tool name or a deleted SDK endpoint referenced in a
 # hook script breaks silently in the agent container (the traceability-hook
 # regression: it kept curling a /traceability/remind endpoint deleted from the
-# SDK, 404ing on every gateway tool call). These guards scan docker/scripts/*.sh.
+# SDK, 404ing on every gateway tool call). These guards scan the
+# docker/scripts/{entrypoints,hooks} trees.
 # ---------------------------------------------------------------------------
 
 _HOOK_DIR = _ROOT / "docker" / "scripts"

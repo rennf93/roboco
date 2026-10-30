@@ -12,10 +12,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
-from roboco.billing import pricing as p
 from roboco.billing.pricing import (
     CostResult,
     _is_anthropic_model,
@@ -43,11 +40,13 @@ _SONNET_OUTPUT = 15.00
 _SONNET_CACHE_READ = 0.30
 _SONNET_CACHE_WRITE = 0.75
 
-# Sonnet 5 — promotional pricing (33% off Sonnet 4.6, pay 67%) through 2026-08-31
-_SONNET5_INPUT = 2.01
-_SONNET5_OUTPUT = 10.05
-_SONNET5_CACHE_READ = 0.201
-_SONNET5_CACHE_WRITE = 0.5025
+# Sonnet 5 - the permanent standard price (the previously scheduled
+# increase to $3/$15 was cancelled per Anthropic's pricing page,
+# verified 2026-09-16; $2/$10 is not a promo).
+_SONNET5_INPUT = 2.00
+_SONNET5_OUTPUT = 10.00
+_SONNET5_CACHE_READ = 0.20
+_SONNET5_CACHE_WRITE = 0.50
 
 _HAIKU_INPUT = 1.00
 _HAIKU_OUTPUT = 5.00
@@ -69,13 +68,19 @@ _CODEX_OUTPUT = 14.00
 _CODEX_CACHE_READ = 0.175
 _CODEX_CACHE_WRITE = 1.75
 
-# Z.ai GLM-5.2 — priced non-Anthropic (Ollama Cloud's `glm-5.2:cloud` tag,
+# Z.ai GLM-5.3 — priced non-Anthropic (Ollama Cloud's `glm-5.3:cloud` tag,
 # subscription-billed but attributed at the API-equivalent rate). Source:
-# https://docs.z.ai/guides/overview/pricing (fetched 2026-07-23).
+# https://docs.z.ai/guides/overview/pricing (re-verified 2026-09-16);
+# ollama.com/pricing lists glm-5.3 at the same API-equivalent rate.
 _GLM_INPUT = 1.40
 _GLM_OUTPUT = 4.40
 _GLM_CACHE_READ = 0.26
 _GLM_CACHE_WRITE = 1.40
+
+_GLM_FLASH_INPUT = 0.15
+_GLM_FLASH_OUTPUT = 0.50
+_GLM_FLASH_CACHE_READ = 0.03
+_GLM_FLASH_CACHE_WRITE = 0.15
 
 # Moonshot Kimi — priced non-Anthropic (kimi-code CLI subscription, priced
 # here for cost attribution like grok-build/gpt-5.3-codex).
@@ -213,9 +218,10 @@ class TestSonnetTier:
         assert abs(cost - _SONNET_INPUT) < _TOL
 
 
-class TestSonnet5PromoTier:
-    """claude-sonnet-5 promotional pricing — 33% off Sonnet 4.6 (through
-    2026-08-31). A dedicated table entry wins over the bare 'sonnet' fragment."""
+class TestSonnet5Tier:
+    """claude-sonnet-5 pricing - the permanent standard $2/$10 rate (the
+    previously scheduled increase to $3/$15 was cancelled; this is not a
+    promo and has no date gate)."""
 
     def test_input_only(self) -> None:
         cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
@@ -254,13 +260,13 @@ class TestSonnet5PromoTier:
         assert abs(cost - expected) < _TOL
 
     def test_cheaper_than_sonnet4(self) -> None:
-        """The promo must actually be cheaper than full Sonnet 4.6."""
+        """The cancelled increase leaves Sonnet 5 strictly below Sonnet 4.6."""
         five = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=_M)
         four = calculate_cost("claude-sonnet-4-6", tokens_input=_M, tokens_output=_M)
         assert five < four
 
-    def test_dated_variant_matches_promo(self) -> None:
-        """A dated 'claude-sonnet-5-*' id still resolves to the promo entry."""
+    def test_dated_variant_matches_tier(self) -> None:
+        """A dated 'claude-sonnet-5-*' id still resolves to the tier entry."""
         cost = calculate_cost(
             "claude-sonnet-5-20260930", tokens_input=_M, tokens_output=0
         )
@@ -485,37 +491,37 @@ class TestKimiTier:
 
 
 # ---------------------------------------------------------------------------
-# GLM-5.2 tier (Ollama Cloud — priced non-Anthropic, grounded in a citable
+# GLM-5.3 tier (Ollama Cloud — priced non-Anthropic, grounded in a citable
 # published rate; see the module's pricing-table comment for the source).
 # ---------------------------------------------------------------------------
 
 
 class TestGlmTier:
-    """glm-5.2:cloud pricing — Ollama Cloud, priced like grok-build/codex."""
+    """glm-5.3:cloud pricing — Ollama Cloud, priced like grok-build/codex."""
 
     def test_input_only(self) -> None:
-        cost = calculate_cost("glm-5.2:cloud", tokens_input=_M, tokens_output=0)
+        cost = calculate_cost("glm-5.3:cloud", tokens_input=_M, tokens_output=0)
         assert abs(cost - _GLM_INPUT) < _TOL
 
     def test_output_only(self) -> None:
-        cost = calculate_cost("glm-5.2:cloud", tokens_input=0, tokens_output=_M)
+        cost = calculate_cost("glm-5.3:cloud", tokens_input=0, tokens_output=_M)
         assert abs(cost - _GLM_OUTPUT) < _TOL
 
     def test_cached_input(self) -> None:
         cost = calculate_cost(
-            "glm-5.2:cloud", tokens_input=0, tokens_output=0, tokens_cache_read=_M
+            "glm-5.3:cloud", tokens_input=0, tokens_output=0, tokens_cache_read=_M
         )
         assert abs(cost - _GLM_CACHE_READ) < _TOL
 
     def test_cache_write(self) -> None:
         cost = calculate_cost(
-            "glm-5.2:cloud", tokens_input=0, tokens_output=0, tokens_cache_write=_M
+            "glm-5.3:cloud", tokens_input=0, tokens_output=0, tokens_cache_write=_M
         )
         assert abs(cost - _GLM_CACHE_WRITE) < _TOL
 
     def test_all_token_types(self) -> None:
         cost = calculate_cost(
-            "glm-5.2:cloud",
+            "glm-5.3:cloud",
             tokens_input=_M,
             tokens_output=_M,
             tokens_cache_read=_M,
@@ -525,14 +531,41 @@ class TestGlmTier:
         assert abs(cost - expected) < _TOL
 
     def test_glm_is_not_treated_as_anthropic(self) -> None:
-        assert _is_anthropic_model("glm-5.2:cloud") is False
-        assert calculate_cost("glm-5.2:cloud", tokens_input=_M, tokens_output=0) > 0.0
+        assert _is_anthropic_model("glm-5.3:cloud") is False
+        assert calculate_cost("glm-5.3:cloud", tokens_input=_M, tokens_output=0) > 0.0
 
     def test_bare_glm_tag_without_cloud_suffix_still_prices(self) -> None:
-        """The fragment match is on 'glm-5.2', independent of the ':cloud'
+        """The fragment match is on 'glm-5.3', independent of the ':cloud'
         tag suffix — a differently-tagged variant still resolves."""
-        cost = calculate_cost("glm-5.2", tokens_input=_M, tokens_output=0)
+        cost = calculate_cost("glm-5.3", tokens_input=_M, tokens_output=0)
         assert abs(cost - _GLM_INPUT) < _TOL
+
+
+class TestGlmFlashTier:
+    """glm-5.3-flash pricing - Z.ai's cheaper Flash tier, its own entry
+    (longest-fragment-wins must resolve it away from the glm-5.3 rate)."""
+
+    def test_flash_prices_below_base_glm(self) -> None:
+        flash = calculate_cost("glm-5.3-flash", tokens_input=_M, tokens_output=0)
+        base = calculate_cost("glm-5.3", tokens_input=_M, tokens_output=0)
+        assert abs(flash - _GLM_FLASH_INPUT) < _TOL
+        assert flash < base
+
+    def test_flash_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "glm-5.3-flash",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = (
+            _GLM_FLASH_INPUT
+            + _GLM_FLASH_OUTPUT
+            + _GLM_FLASH_CACHE_READ
+            + _GLM_FLASH_CACHE_WRITE
+        )
+        assert abs(cost - expected) < _TOL
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +662,7 @@ class TestProviderAwareness:
     """Genuinely-free local Ollama costs 0.0 per token; an ungrounded Ollama
     Cloud model also costs 0.0 (we have no rate for it — see
     ``is_ollama_cloud_model`` for the caller-side distinction from "free"). A
-    GROUNDED Ollama Cloud model (glm-5.2) is priced for real — see
+    GROUNDED Ollama Cloud model (glm-5.3) is priced for real — see
     ``TestGlmTier``."""
 
     def test_ollama_prefixed_model_returns_zero(self) -> None:
@@ -655,7 +688,7 @@ class TestProviderAwareness:
             assert _is_anthropic_model(name) is True, name
 
     def test_is_anthropic_model_false_for_non_claude_names(self) -> None:
-        for name in ("ollama/llama3", "glm-5.2:cloud", "qwen3-embedding", "gpt-4o"):
+        for name in ("ollama/llama3", "glm-5.3:cloud", "qwen3-embedding", "gpt-4o"):
             assert _is_anthropic_model(name) is False, name
 
 
@@ -729,34 +762,12 @@ class TestCostResult:
         assert result.unpriced is False
 
 
-# ---------------------------------------------------------------------------
-# Sonnet-5 promo date gate — promo on/ before 2026-08-31, list rate after.
-# ---------------------------------------------------------------------------
-
-
-def test_sonnet5_promo_active_on_or_before_2026_08_31(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _D:
-        @staticmethod
-        def today() -> date:
-            return date(2026, 8, 31)
-
-    monkeypatch.setattr(p, "date", _D)
-    assert p._lookup_prices("claude-sonnet-5") == (
-        _SONNET5_INPUT,
-        _SONNET5_OUTPUT,
-        _SONNET5_CACHE_READ,
-        _SONNET5_CACHE_WRITE,
-    )
-
-
 class TestIsOllamaCloudModel:
     """The ':cloud' tag convention, shared by pricing.py's own attribution
     logic and external callers (the TG cockpit's spend label)."""
 
     def test_cloud_tagged_model_is_cloud(self) -> None:
-        assert is_ollama_cloud_model("glm-5.2:cloud") is True
+        assert is_ollama_cloud_model("glm-5.3:cloud") is True
         assert is_ollama_cloud_model("SOME-MODEL:CLOUD") is True
 
     def test_local_model_is_not_cloud(self) -> None:
@@ -768,23 +779,6 @@ class TestIsOllamaCloudModel:
 
     def test_empty_string_is_not_cloud(self) -> None:
         assert is_ollama_cloud_model("") is False
-
-
-def test_sonnet5_reverts_to_list_rate_after_2026_08_31(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _D:
-        @staticmethod
-        def today() -> date:
-            return date(2026, 9, 1)
-
-    monkeypatch.setattr(p, "date", _D)
-    assert p._lookup_prices("claude-sonnet-5") == (
-        _SONNET_INPUT,
-        _SONNET_OUTPUT,
-        _SONNET_CACHE_READ,
-        _SONNET_CACHE_WRITE,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -823,9 +817,9 @@ class TestInputPricePerMillion:
         assert input_price_per_million("my-custom-self-hosted-model:7b") == 0.0
 
     def test_grounded_ollama_cloud_model_has_real_rate(self) -> None:
-        """GLM-5.2 is now grounded in a real published rate, unlike an
+        """GLM-5.3 is now grounded in a real published rate, unlike an
         unpriced Ollama Cloud model."""
-        assert input_price_per_million("glm-5.2:cloud") == _GLM_INPUT
+        assert input_price_per_million("glm-5.3:cloud") == _GLM_INPUT
 
     def test_empty_model_returns_zero(self) -> None:
         assert input_price_per_million("") == 0.0

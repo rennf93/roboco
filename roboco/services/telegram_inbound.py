@@ -573,18 +573,122 @@ class TelegramInboundEngine(BaseService):
                 return
         cmd, args = parse_command(text)
         if not cmd:
-            await self._route_free_text(chat_id, text, client)
+            await self._route_free_text(chat_id, text, client, creds)
             return
         await self._dispatch_command(cmd, args, client, chat_id=chat_id, creds=creds)
 
     async def _route_free_text(
-        self, chat_id: str, text: str, client: TelegramClient
+        self,
+        chat_id: str,
+        text: str,
+        client: TelegramClient,
+        creds: TelegramCredentialsData | None = None,
     ) -> None:
         """While a bridged /secretary or /newtask session is live, plain
-        messages ARE the conversation; otherwise free text stays ignored."""
+        messages ARE the conversation; otherwise free text stays ignored
+        unless the B3/B21 Decisions pilots (armed + confident) route or
+        surface it (``_decisions_route_unrouted_text``)."""
         routed = await bridge.deliver_text(chat_id, text)
         if routed:
             await client.send_message(_esc(routed), parse_mode="HTML")
+            return
+        await self._decisions_route_unrouted_text(chat_id, text, client, creds)
+
+    async def _decisions_route_unrouted_text(
+        self,
+        chat_id: str,
+        text: str,
+        client: TelegramClient,
+        creds: TelegramCredentialsData | None,
+    ) -> None:
+        """The B3 intake_preroute + B21 tg_freetext_gate seam: no live
+        bridge session, so the baseline behavior is to drop the text
+        silently. Both pilots fail open to that drop; neither can touch a
+        live-session delivery (this only runs after ``deliver_text``
+        returned None).
+
+        B3 (confident) routes like the CEO's own verbs: ``intake_chat``
+        mirrors ``/newtask`` (including its project-picker), and
+        ``secretary_directive`` mirrors ``/secretary`` with the utterance
+        as the opening message. ``quick_answer``/``noise`` spawn nothing.
+        B21 (confident) only ADDS delivery: an in-chat ack plus a row on
+        the CEO notification path that already carries escalations.
+        """
+        from roboco.services.decisions import pilots_content
+
+        route: pilots_content.IntakeRoute | None = None
+        try:
+            route = await pilots_content.intake_preroute(
+                self.session, text=text, ref=chat_id
+            )
+        except Exception as exc:
+            self.log.warning(
+                "telegram: intake preroute pilot failed (fail-open)",
+                error=str(exc),
+            )
+        if route is pilots_content.IntakeRoute.INTAKE_CHAT and creds is not None:
+            await self._cmd_newtask(chat_id, text, creds, client)
+            return
+        if (
+            route is pilots_content.IntakeRoute.SECRETARY_DIRECTIVE
+            and creds is not None
+        ):
+            await client.send_message(
+                _esc(await bridge.start_secretary(chat_id, text, creds)),
+                parse_mode="HTML",
+            )
+            return
+        if route in (
+            pilots_content.IntakeRoute.NOISE,
+            pilots_content.IntakeRoute.QUICK_ANSWER,
+        ):
+            # Suppressed (the quick_answer verdict has no cheap local-LLM
+            # reply machinery to route to; the pilot's log line is the
+            # audit trail). B21 never runs against a confident suppression.
+            return
+
+        gate = False
+        try:
+            gate = await pilots_content.tg_freetext_gate(
+                self.session, chat_id=chat_id, text=text
+            )
+        except Exception as exc:
+            self.log.warning(
+                "telegram: free-text gate pilot failed (fail-open)",
+                error=str(exc),
+            )
+        if not gate:
+            return
+        excerpt = text.strip()[:400]
+        self.log.info(
+            "telegram: free text surfaced to the CEO (no live session)",
+            chat_id=chat_id,
+        )
+        await client.send_message(
+            "No live chat session, but this looked worth keeping. Use "
+            f"/secretary or /newtask to act on it.\n\n{_esc(excerpt)}",
+            parse_mode="HTML",
+        )
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_ack_notification(
+                from_agent="secretary-1",
+                to_agent="ceo",
+                body=(
+                    "[telegram] Free text worth an answer arrived while no "
+                    "chat session was live:\n\n"
+                    f"{excerpt}"
+                ),
+                db_session=self.session,
+            )
+        except Exception as exc:
+            # Best-effort: the in-chat ack above already delivered; a
+            # notification failure never breaks the poll cycle.
+            self.log.warning(
+                "telegram: free-text surface notification failed (best-effort)",
+                error=str(exc),
+            )
 
     async def _dispatch_command(
         self,
@@ -1348,11 +1452,31 @@ class TelegramInboundEngine(BaseService):
     async def _dispatch_reject(
         self, kind: str, id8: str, extra: str, reason: str
     ) -> tuple[bool, str]:
+        min_chars = _REJECT_MIN_CHARS.get(kind, _DEFAULT_REJECT_MIN_CHARS)
+        if len(reason.strip()) < min_chars:
+            # B26 decision_note_sufficiency: consulted ONLY for notes below
+            # the char floor, so it can only RELAX the floor for a
+            # confidently substantive note (score 2); a long note never
+            # reaches this and can never be rejected by the pilot.
+            try:
+                from roboco.services.decisions import pilots_content
+
+                substantive = await pilots_content.decision_note_sufficiency(
+                    self.session, kind=kind, reason=reason
+                )
+            except Exception:
+                substantive = False
+            if substantive:
+                self.log.info(
+                    "telegram: below-min reject note accepted as substantive",
+                    kind=kind,
+                )
+                min_chars = 1
         try:
             clean_reason = reject_trivial(
                 reason,
                 field="reason",
-                min_chars=_REJECT_MIN_CHARS.get(kind, _DEFAULT_REJECT_MIN_CHARS),
+                min_chars=min_chars,
             )
         except ValueError as exc:
             return False, f"Rejection not recorded: {exc}"

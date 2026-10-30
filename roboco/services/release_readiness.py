@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 BumpKind = Literal["major", "minor", "patch"]
 
 # Kinds that must carry a CHANGELOG line; pure chore/docs/test noise is exempt
@@ -44,8 +46,20 @@ _SECTION_ORDER = ("Added", "Changed", "Fixed", "Security")
 _PR_REF_RE = re.compile(r"\(#(\d+)\)")
 _REVISION_RE = re.compile(r"^revision\s*[:=].*$", re.MULTILINE)
 _DOWN_REVISION_RE = re.compile(r"^down_revision\s*[:=].*$", re.MULTILINE)
+# The real release-commit subject shape: ``chore(release): X.Y.Z`` (an
+# optional ``v`` prefix tolerated). A ``chore(release):``-typed commit whose
+# subject carries NO version is a mistyped non-release chore, never a
+# release record.
+_RELEASE_SUBJECT_RE = re.compile(r"^chore\(release\): ?v?\d+\.\d+\.\d+")
 _QUOTED_RE = re.compile(r"""["']([^"']+)["']""")
 _DECLARED_AGENTS_RE = re.compile(r"(\d+)\s+AI\s+agents", re.IGNORECASE)
+
+# Seats that share another seat's head. CEO headcount ruling (2026-09-17):
+# cell-pr-reviewer-2 is an extra hand backing the three cell PR reviewers,
+# not a 26th seat - the org is 25 seats + 1 human CEO. The docs-drift check
+# compares roboco/__init__.py's declared seat count with the registry, so the
+# shared hand must stay out of the count.
+_SHARED_SEAT_SLUGS = frozenset({"cell-pr-reviewer-2"})
 
 # Conventional-commit type -> normalized kind. Non-release-shaping types
 # (test/build/ci/style) collapse to "chore" so they count only as a patch.
@@ -542,8 +556,12 @@ def _canonical_bump_files(root: Path, version: str) -> list[str]:
     # ``chore(release):`` type (e.g. a fix commit explaining the derivation). A
     # newer such commit would shadow the real release commit and the bump plan
     # would list the fix's files instead of the release's. Filter to the
-    # candidate whose SUBJECT (``%s``) starts with ``chore(release):`` — the
-    # real release-commit shape ``chore(release): X.Y.Z``. ``%x01`` separates
+    # candidate whose SUBJECT matches the real release-commit shape
+    # ``chore(release): X.Y.Z`` — the version number is what separates a
+    # release commit from a mistyped non-release ``chore(release):`` subject
+    # (2026-10-05: one real `chore(release): published decisions image ...`
+    # commit shadowed release 0.31.0's derivation and the bump plan listed
+    # release plumbing instead of pyproject/CHANGELOG). ``%x01`` separates
     # sha from subject so a subject may contain spaces unambiguously.
     raw = _run_git(
         root,
@@ -553,7 +571,7 @@ def _canonical_bump_files(root: Path, version: str) -> list[str]:
         if "\x01" not in line:
             continue
         sha, subject = line.split("\x01", 1)
-        if subject.startswith("chore(release):"):
+        if _RELEASE_SUBJECT_RE.match(subject):
             files_raw = _run_git(root, ["show", "--name-only", "--format=", sha])
             return sorted(
                 line.strip() for line in files_raw.splitlines() if line.strip()
@@ -624,7 +642,10 @@ def _actual_agent_count() -> int | None:
         from roboco.foundation.identity import AGENTS
 
         return sum(
-            1 for row in AGENTS.values() if row.role.value not in {"system", "ceo"}
+            1
+            for slug, row in AGENTS.items()
+            if slug not in _SHARED_SEAT_SLUGS
+            and row.role.value not in {"system", "ceo"}
         )
     except Exception:
         # Best-effort drift signal; a failure here must never block a release.
@@ -713,4 +734,29 @@ def report_from_dict(data: dict[str, Any]) -> ReleaseReadinessReport:
         ],
         migration_notes=list(data.get("migration_notes", [])),
         gate_state=data.get("gate_state", "unknown"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# B19 advisory risk screen (Decisions pilot, spec 7.1): one score over the
+# whole release. ADVISES the CEO and NEVER decides, blocks, or gates a
+# release: the deterministic classification + gap heuristics above stay the
+# only gating inputs, and off/shadow/below-floor means the output is
+# unchanged.
+# --------------------------------------------------------------------------- #
+
+
+async def decisions_risk_advisory(
+    session: AsyncSession, report: ReleaseReadinessReport
+) -> str | None:
+    """The advisory release-risk line for ``report``, or None (output
+    unchanged). Async only because the screen is; ``assess`` above stays
+    pure and untouched."""
+    from roboco.services.decisions.pilots_infra import release_risk_advisory
+
+    return await release_risk_advisory(
+        session,
+        change_summary=report.change_summary,
+        bump_kind=report.bump_kind,
+        gap_count=len(report.gaps),
     )

@@ -213,7 +213,7 @@ def test_registry_carries_barfly() -> None:
     assert b.default_interval_seconds == 2 * 24 * 3600
 
 
-def test_registry_carries_fourteen_programs() -> None:
+def test_registry_carries_fifteen_programs() -> None:
     """Locks the union so a future addition/removal is deliberate — matches
     the count-whatever-your-base-has-plus-war_room shape the other
     registry-parity tests already exercise per-key."""
@@ -232,6 +232,7 @@ def test_registry_carries_fourteen_programs() -> None:
         "war_room",
         "barfly",
         "dogfood",
+        "decisions_audit",
     }
 
 
@@ -362,3 +363,12 @@ def test_validate_board_programs_field_allows_plain_project_scoped_key() -> None
     assert validate_board_programs_field(["pest_control"], programs=registry) == [
         "pest_control"
     ]
+
+
+def test_complete_at_note_contract_is_decisions_audit_only() -> None:
+    """``completes_on_note`` must be armed ONLY on the one self-contained
+    review-pass program. Auto-completing a proposal program's exploration task
+    on a note would close a cycle the CEO still has to review item by item."""
+    assert PROGRAMS["decisions_audit"].completes_on_note is True
+    for key in ("roadmap", "scales", "pest_control", "periscope", "librarian"):
+        assert PROGRAMS[key].completes_on_note is False, key

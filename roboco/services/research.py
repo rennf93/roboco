@@ -8,10 +8,13 @@ an agent container — and the agent never egresses: the provider's own API does
 Design:
 
 * ``SearchProvider`` is the abstract adapter. Concrete adapters
-  (``TavilyProvider``, ``BraveProvider``, ``ExaProvider``) translate a query
-  into the provider's wire format and normalise the response into our
-  dataclasses. ``NullProvider`` is the graceful-degradation stub returned when
-  no key is configured — it never raises and always yields empty results.
+  (``TavilyProvider``, ``BraveProvider``, ``ExaProvider``, ``SearXNGProvider``)
+  translate a query into the provider's wire format and normalise the response
+  into our dataclasses. ``SearXNGProvider`` is the keyless self-hosted default:
+  search via the instance's JSON endpoint, fetch via a local trafilatura
+  extraction guarded against internal-network SSRF. ``NullProvider`` is the
+  graceful-degradation stub returned when no provider is configured; it never
+  raises and always yields empty results.
 * ``ResearchService`` selects an adapter from settings, clamps result/byte
   caps defensively, and is the single entry point the route uses.
 
@@ -20,11 +23,16 @@ Swapping providers is a config change (``ROBOCO_RESEARCH_PROVIDER``) only.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+import socket
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
+import trafilatura
 
 from roboco.config import settings
 
@@ -285,6 +293,84 @@ class ExaProvider(SearchProvider):
         return _truncated_fetch(url, content, max_chars, self.name)
 
 
+class SearXNGProvider(SearchProvider):
+    """SearXNG: self-hosted metasearch aggregator, no API key.
+
+    Search talks to a private instance's JSON endpoint
+    (``/search?format=json``), which must list ``json`` in the
+    instance's ``search.formats``. Configuration is the base URL only;
+    ``configured`` keys off the URL, not an API key.
+
+    SearXNG has no content-extraction endpoint, so ``fetch`` downloads the
+    page directly and extracts readable text locally with trafilatura. The
+    fetch targets a URL chosen by an agent, so it refuses anything that does
+    not resolve to a public address: the orchestrator is multi-homed and an
+    agent-supplied URL must never become a probe of the internal network
+    (DB, Redis, cloud metadata).
+    """
+
+    name = "searxng"
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        super().__init__(api_key=None, timeout=timeout, client=client)
+        self._base_url = base_url.rstrip("/")
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._base_url)
+
+    async def search(self, query: str, max_results: int) -> SearchOutcome:
+        body = await self._request_json(
+            "GET",
+            f"{self._base_url}/search",
+            params={"q": query, "format": "json"},
+        )
+        hits = [
+            SearchHit(
+                title=str(item.get("title", "")),
+                url=str(item.get("url", "")),
+                snippet=str(item.get("content", "") or item.get("snippet", "")),
+                score=_as_float(item.get("score")),
+            )
+            for item in body.get("results", [])
+            if isinstance(item, dict)
+        ]
+        answers = body.get("answers")
+        answer = (
+            next((str(a) for a in answers if a), None)
+            if isinstance(answers, list)
+            else None
+        )
+        # SearXNG has no result-count request parameter, so the cap is
+        # applied client-side after the fetch.
+        return SearchOutcome(
+            query=query, hits=hits[:max_results], answer=answer, provider=self.name
+        )
+
+    async def fetch(self, url: str, max_chars: int) -> FetchOutcome:
+        await _assert_public_http_url(url)
+        client = await self._http()
+        try:
+            response = await client.get(
+                url, timeout=self._timeout, follow_redirects=True
+            )
+        except httpx.HTTPError as exc:
+            msg = f"{self.name}: request failed: {exc}"
+            raise ResearchError(msg) from exc
+        if not response.is_success:
+            detail = response.text[:200] if response.text else "no body"
+            msg = f"{self.name}: HTTP {response.status_code}: {detail}"
+            raise ResearchError(msg)
+        html = response.text
+        extracted = await asyncio.to_thread(_extract_readable_text, html)
+        return _truncated_fetch(url, extracted or "", max_chars, self.name)
+
+
 class NullProvider(SearchProvider):
     """Graceful stub used when no provider key is configured.
 
@@ -319,8 +405,20 @@ def build_provider(
     api_key: str | None,
     timeout: float,
     client: httpx.AsyncClient | None = None,
+    searxng_base_url: str | None = None,
 ) -> SearchProvider:
-    """Construct the adapter for ``name`` — NullProvider when unconfigured."""
+    """Construct the adapter for ``name``: NullProvider when unconfigured.
+
+    SearXNG is the keyless exception: it needs a base URL instead of an API
+    key, so it is constructed (and gated on that URL) before the shared
+    ``api_key`` path below.
+    """
+    if name == "searxng":
+        if searxng_base_url:
+            return SearXNGProvider(
+                base_url=searxng_base_url, timeout=timeout, client=client
+            )
+        return NullProvider(api_key=None, timeout=timeout, client=client)
     if name == "null" or not api_key:
         return NullProvider(api_key=None, timeout=timeout, client=client)
     provider_cls = _PROVIDERS.get(name)
@@ -397,6 +495,7 @@ def get_research_service(
         settings.research_api_key,
         settings.research_timeout_seconds,
         client=client,
+        searxng_base_url=settings.research_searxng_base_url,
     )
     return ResearchService(
         provider,
@@ -418,6 +517,46 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _extract_readable_text(html: str) -> str | None:
+    """Extract the readable main content of a page (sync, thread-offloaded)."""
+    try:
+        return trafilatura.extract(
+            html, include_links=False, include_comments=False, include_tables=True
+        )
+    except Exception:  # a malformed page must degrade to empty, never raise
+        return None
+
+
+async def _assert_public_http_url(url: str) -> None:
+    """Refuse URLs that are not plain http(s) pointing at a public host.
+
+    ``web_fetch`` fetches agent-supplied URLs from the orchestrator process,
+    which is multi-homed and can reach the DB, Redis, and every internal
+    service. An agent-supplied URL must never become a probe of that network,
+    so the hostname must resolve to a globally-routable address (covers
+    loopback, RFC1918, link-local incl. cloud metadata, and ULA).
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        msg = f"refusing non-http(s) url: {url!r}"
+        raise ResearchError(msg)
+    host = parsed.hostname
+    if not host:
+        msg = f"refusing url without hostname: {url!r}"
+        raise ResearchError(msg)
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        msg = f"cannot resolve {host!r}"
+        raise ResearchError(msg) from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            msg = f"refusing url resolving to non-public address: {url!r}"
+            raise ResearchError(msg)
 
 
 def _truncated_fetch(

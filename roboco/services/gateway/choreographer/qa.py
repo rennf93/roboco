@@ -58,6 +58,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
 )
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+from roboco.utils.converters import to_python_uuid
 
 logger = structlog.get_logger()
 
@@ -105,6 +106,55 @@ def _extract_original_developer(task: Any) -> str | None:
 class QAMixin(_Base):
     """QA-role verbs."""
 
+    def _review_spec_context(self, agent: Any, qa_agent_id: UUID, t: Any) -> Any:
+        """The spec Context claim_review evaluates against: actor identity,
+        team, and the original developer the task came in from (used by the
+        spec's self-review block)."""
+        return spec_module.Context(
+            actor_id=qa_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+
+    async def _reclaim_warning_and_evidence(
+        self, qa_agent_id: UUID, t: Any, task_id: UUID
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Same-agent re-claim. Two shapes live here and the counter tells
+        them apart. Durability retry (count 1): the prior attempt
+        committed the claim but died before the agent could use the
+        evidence — re-attach it (that is what the retry is FOR, pinned by
+        test_claim_review_same_agent_retry_returns_evidence) with a
+        gentle steer. Loop re-claim (count 2+): the 2026-09-29 fleet
+        wedge, fe-qa re-claiming one task 385x — lean envelope, evidence
+        never rebuilt (the ~20k re-attach is the loop's fuel), firm
+        verdict steer."""
+        count = int(markers.get_marker(t, markers.QA_RECLAIM_COUNT, 0) or 0) + 1
+        markers.set_marker(t, markers.QA_RECLAIM_COUNT, count)
+        await self.task.session.commit()
+        if count == 1:
+            ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
+            return (
+                (
+                    "you ALREADY hold this review claim; the evidence below"
+                    " is re-attached in case your prior attempt was cut off."
+                    " Do NOT call claim_review again — issue the verdict:"
+                    " pass_review(...) to accept or fail_review(...) to"
+                    " request changes."
+                ),
+                ev.as_dict(),
+            )
+        return (
+            (
+                "claim_review ignored: you ALREADY hold this review claim"
+                f" (re-claim #{count}). No new review started, evidence"
+                " NOT rebuilt. Issue the verdict now — pass_review(...)"
+                " to accept or fail_review(...) to request changes — or"
+                " unclaim(...) to release the claim."
+            ),
+            None,
+        )
+
     async def claim_review(self, qa_agent_id: UUID, task_id: UUID) -> Envelope:
         """QA agent claims task in awaiting_qa for review.
 
@@ -147,12 +197,7 @@ class QAMixin(_Base):
                 task_id=task_id,
                 verb="claim_review",
             )
-        spec_ctx = spec_module.Context(
-            actor_id=qa_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
-            original_developer_slug=_extract_original_developer(t),
-        )
+        spec_ctx = self._review_spec_context(agent, qa_agent_id, t)
         decision = spec_module.can_invoke_intent(role, "claim_review", t, spec_ctx)
         if not decision.allowed:
             return await self._emit_rejection(
@@ -181,17 +226,89 @@ class QAMixin(_Base):
         # "start") but qa_claim is the runtime-correct specialized form
         # that keeps status at AWAITING_QA so qa_pass / qa_fail's source-
         # status requirement matches downstream. See module docstring.
-        t = await self.task.qa_claim(qa_agent_id, task_id)
-        await self.task.mark_evidence_inspected(task_id)
+        # Durability semantics (commit-before-assembly, same-agent retry
+        # skip, not-authorized rejection) live in ``_claim_for_review``.
+        t, claim_rejection, reclaimed = await self._claim_for_review(
+            qa_agent_id, task_id, t, briefing, role_str
+        )
+        if claim_rejection is not None:
+            return claim_rejection
 
-        ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
-        return Envelope.ok(
+        # Same-agent re-claim shaping (durability retry vs fleet-loop lean
+        # envelope) lives in ``_reclaim_warning_and_evidence``.
+        warning: str | None = None
+        evidence: dict[str, Any] | None
+        if reclaimed:
+            warning, evidence = await self._reclaim_warning_and_evidence(
+                qa_agent_id, t, task_id
+            )
+        else:
+            ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
+            evidence = ev.as_dict()
+
+        env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["claim_review"].next_hint(t),
-            evidence=ev.as_dict(),
+            evidence=evidence,
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+        if warning is not None:
+            env.warning = warning
+        return env
+
+    async def _claim_for_review(
+        self,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        briefing: Any,
+        role_str: str,
+    ) -> tuple[Any, Envelope | None, bool]:
+        """Durability-boundary claim for ``claim_review``.
+
+        Returns ``(task, rejection, reclaimed)`` — the (possibly re-fetched)
+        task, the first rejection (or ``None`` when the claim stands), and
+        whether the task was ALREADY claimed by this same agent (re-claim).
+
+        Durability boundary: commit the claim BEFORE the advisory evidence
+        assembly begins. The evidence legs can take the whole 120s verb
+        budget; if the request is cancelled mid-assembly, get_db catches
+        the CancelledError and invalidates the session. Without an explicit
+        commit the flushed-but-uncommitted claim would be discarded, and
+        the retry would re-race for the task — burning a review round +
+        a respawn (be-qa reported this on 2026-07-29). With the commit,
+        a cancelled request leaves the claim standing and the retry
+        resumes into an already-claimed task.
+
+        Same-agent retry: if the task is already claimed by THIS agent
+        (a prior attempt committed the claim but the evidence assembly
+        timed out), skip the re-claim and go straight to evidence rebuild.
+        A fresh claim resets the consecutive re-claim counter.
+        """
+        if to_python_uuid(t.active_claimant_id) != qa_agent_id:
+            claimed = await self.task.qa_claim(qa_agent_id, task_id)
+            if claimed is None:
+                return (
+                    t,
+                    await self._emit_rejection(
+                        Envelope.not_authorized(
+                            message="this review task is already claimed by another agent",  # noqa: E501
+                            remediate="give_me_work for the next available task",
+                            context_briefing=briefing,
+                        ).with_introspection(task=t, role=role_str),
+                        agent_id=qa_agent_id,
+                        task_id=task_id,
+                        verb="claim_review",
+                    ),
+                    False,
+                )
+            t = claimed
+            markers.clear_marker(t, markers.QA_RECLAIM_COUNT)
+            await self.task.mark_evidence_inspected(task_id)
+            await self.task.session.commit()
+            return t, None, False
+        return t, None, True
 
     async def _qa_convention_findings(
         self,
@@ -1048,6 +1165,53 @@ class QAMixin(_Base):
         self._store_qa_note(t, summary, None, passed=False, findings=validated)
         return summary
 
+    @staticmethod
+    def _fail_review_notify_failure_warning(exc: Exception) -> str:
+        """The warning string for a failed developer notification, shared
+        between the send-level catch inside ``_fail_review_developer_notify``
+        and the savepoint-level catch in ``fail_review`` so both failure
+        classes surface the identical message."""
+        return (
+            f"QA needs-changes transition committed but the developer "
+            f"notification failed ({type(exc).__name__}: {exc}). "
+            "Re-issue the notification via dm."
+        )
+
+    async def _fail_review_developer_notify(
+        self, qa_agent_id: UUID, task_id: UUID, t: Any, summary: str
+    ) -> str | None:
+        """Best-effort a2a-notify the original developer of the bounce.
+
+        Returns a warning string when the notification failed (the
+        needs_revision transition is already committed at this point), else
+        None. Mirrors ``_pass_review_documenter_handoff`` — a raise here
+        would surface as an opaque verb error, skip the sandbox teardown,
+        and poison the shared session before root commit, silently rolling
+        back the committed transition and the inserted findings rows. The
+        caller additionally wraps this call in a savepoint (see
+        ``fail_review``) because a raise caught here does not by itself
+        undo a mid-flush failure inside ``a2a.send`` — the session still
+        needs an explicit rollback-to-savepoint to become usable again for
+        the request's own commit.
+        """
+        try:
+            await self.a2a.send(
+                from_agent=qa_agent_id,
+                to_agent=t.assigned_to,
+                skill="code_review",
+                task_id=task_id,
+                body=f"QA needs changes.\n{summary}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "fail_review side-effect failed - transition committed, "
+                "developer notification did not fire",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return self._fail_review_notify_failure_warning(exc)
+        return None
+
     async def fail_review(
         self,
         qa_agent_id: UUID,
@@ -1141,21 +1305,68 @@ class QAMixin(_Base):
                 verb="fail_review",
             )
 
+        notify_warning: str | None = None
         if t.assigned_to is not None:
-            await self.a2a.send(
-                from_agent=qa_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"QA needs changes.\n{summary}",
-            )
+            try:
+                # Savepoint: a mid-flush failure inside a2a.send (not just
+                # send() raising) would otherwise leave the shared session
+                # rollback-only — the response commit (DbCommitMiddleware)
+                # reuses it right after this returns. Mirrors doc.py's
+                # _handoff_to_cell_pm savepoint shape.
+                async with self.task.session.begin_nested():
+                    notify_warning = await self._fail_review_developer_notify(
+                        qa_agent_id, task_id, t, summary
+                    )
+            except Exception as exc:
+                # The savepoint rollback on ANY exception here — not just a
+                # DB error, e.g. a2a.send failing — fully expires every
+                # attribute of `t`. Reading t.status / with_introspection(t)
+                # below without refreshing first raises MissingGreenlet,
+                # which propagates uncaught past this except and rolls back
+                # the WHOLE request — discarding the needs_revision
+                # transition this very warning claims survived.
+                await self.task.session.refresh(t)
+                logger.warning(
+                    "fail_review side-effect failed - transition committed, "
+                    "developer notification did not fire",
+                    task_id=str(task_id),
+                    error=repr(exc),
+                )
+                notify_warning = self._fail_review_notify_failure_warning(exc)
         await self._teardown_sandbox_best_effort(qa_agent_id)
+        return self._fail_review_success_env(
+            t,
+            task_id,
+            briefing,
+            role_str,
+            notify_warning=notify_warning,
+            validated=validated,
+        )
+
+    @staticmethod
+    def _fail_review_success_env(
+        t: Any,
+        task_id: UUID,
+        briefing: dict[str, Any],
+        role_str: str,
+        *,
+        notify_warning: str | None,
+        validated: list[Any],
+    ) -> Envelope:
+        """Compose fail_review's success envelope, folding the notify-failure
+        warning and the soft above-nudge findings-count hint into one
+        warning channel (both are optional, never blocking)."""
         env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["fail_review"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
-        if hint := findings_lib.findings_count_hint(validated):
-            env.warning = hint
+        warnings = [
+            w
+            for w in (notify_warning, findings_lib.findings_count_hint(validated))
+            if w
+        ]
+        if warnings:
+            env.warning = " ".join(warnings)
         return env

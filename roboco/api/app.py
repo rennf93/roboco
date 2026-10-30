@@ -46,6 +46,7 @@ from roboco.api.routes.project import router as project_router
 from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.release import router as release_router
+from roboco.api.routes.releases import router as releases_router
 from roboco.api.routes.research import router as research_router
 from roboco.api.routes.roadmap import router as roadmap_router
 from roboco.api.routes.scales import router as scales_router
@@ -65,6 +66,7 @@ from roboco.api.routes.v1 import flow_auditor as flow_auditor_module
 from roboco.api.routes.v1 import flow_board as flow_board_module
 from roboco.api.routes.v1 import flow_cell_pm as flow_cell_pm_module
 from roboco.api.routes.v1 import flow_dev as flow_dev_module
+from roboco.api.routes.v1 import flow_devops as flow_devops_module
 from roboco.api.routes.v1 import flow_doc as flow_doc_module
 from roboco.api.routes.v1 import flow_main_pm as flow_main_pm_module
 from roboco.api.routes.v1 import flow_pr_reviewer as flow_pr_reviewer_module
@@ -78,11 +80,16 @@ from roboco.config import settings
 from roboco.db.base import close_db, get_session_factory, init_db
 from roboco.logging import get_logger, setup_logging
 from roboco.security import apply_guard, guarded_lifespan
+from roboco.services.decisions.resolver import (
+    check_openrouter_fallback_at_startup,
+)
 from roboco.services.extraction import ExtractionPipeline, ExtractionService
 from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
-from roboco.services.playbook import PlaybookService
-from roboco.services.rag_index_failures import backfill_unindexed_journals, reclaim_due
+from roboco.services.optimal_brain.indexer_worker import (
+    log_reconcile_outcome,
+    reconcile_rag_indexes,
+)
 from roboco.services.settings import apply_persisted_feature_flags
 from roboco.services.transcription import TranscriptionService
 
@@ -98,85 +105,16 @@ class _AppServices:
     extraction: ExtractionPipeline | None = None
 
 
-async def _reconcile_unindexed_playbooks(app: FastAPI) -> None:
-    """Re-index APPROVED playbooks left ``indexed_ok=False`` by a failed
-    post-commit embed (e.g. an Ollama restart mid-approval-burst). Best-effort:
-    a failure here never blocks startup — rows stay unindexed and the next
-    startup retries them. Skipped when RAG is disabled (no optimal) or the
-    org-memory loop is off (the index is inert).
-    """
-    if app.state.optimal is None or not settings.org_memory_enabled:
-        return
-    try:
-        async with get_session_factory()() as session:
-            svc = PlaybookService(session)
-            reconciled = await svc.reconcile_unindexed_approved()
-        if reconciled:
-            logger.info(
-                "Playbook reconcile: re-indexed unindexed approved",
-                count=reconciled,
-            )
-    except Exception as e:
-        logger.warning("Playbook reconcile failed; continuing", error=str(e))
-
-
-async def _reclaim_rag_index_failures(app: FastAPI) -> None:
-    """Reclaim dead-lettered RAG index writes (embedder 429 after retries, etc.).
-
-    Best-effort: a failure here never blocks startup — due rows stay in the
-    dead-letter and the next startup retries them. Skipped when RAG is
-    disabled (no optimal).
-    """
-    if app.state.optimal is None:
-        return
-    try:
-        reclaimed = await reclaim_due(app.state.optimal)
-        if reclaimed:
-            logger.info(
-                "RAG index dead-letter reclaim: re-indexed rows",
-                count=reclaimed,
-            )
-    except Exception as e:
-        logger.warning("RAG index dead-letter reclaim failed; continuing", error=str(e))
-
-
-async def _backfill_unindexed_journals(app: FastAPI) -> None:
-    """Re-index journal/learning entries silently zero-chunked before the
-    per-index chunk-floor fix (see ``backfill_unindexed_journals``'s
-    docstring). Best-effort: a failure here never blocks startup — the rows
-    stay and the next startup retries them. Skipped when RAG is disabled.
-    """
-    if app.state.optimal is None:
-        return
-    try:
-        await backfill_unindexed_journals(app.state.optimal)
-    except Exception as e:
-        logger.warning("Journal/learning RAG backfill failed; continuing", error=str(e))
-
-
 async def _reconcile_rag_indexes(app: FastAPI) -> None:
-    """Run all RAG index reconcile passes: playbooks, dead-letter reclaim,
-    and the journals/learnings zero-chunk backfill."""
-    await _reconcile_unindexed_playbooks(app)
-    await _reclaim_rag_index_failures(app)
-    await _backfill_unindexed_journals(app)
-    logger.info("RAG index reconcile finished")
-
-
-def _log_reconcile_outcome(task: asyncio.Task[None]) -> None:
-    """Surface a background-reconcile crash; each pass already swallows its
-    own errors, so anything landing here is an unexpected bug, not a retry."""
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("Background RAG reconcile crashed", error=repr(exc))
+    """Boot-time RAG reconcile for the single-process role; the indexer role
+    runs the same passes from ``run_indexer`` (it never runs this lifespan)."""
+    await reconcile_rag_indexes(app.state.optimal)
 
 
 def _schedule_rag_reconcile(app: FastAPI) -> asyncio.Task[None]:
     """Schedule the reconcile without awaiting it (see lifespan comment)."""
     task = asyncio.create_task(_reconcile_rag_indexes(app))
-    task.add_done_callback(_log_reconcile_outcome)
+    task.add_done_callback(log_reconcile_outcome)
     app.state.rag_reconcile_task = task
     return task
 
@@ -200,6 +138,23 @@ async def _apply_flag_overrides() -> None:
             logger.info("Applied persisted feature-flag overrides", flags=applied_flags)
     except Exception as e:
         logger.warning("Feature-flag overlay failed; using env defaults", error=str(e))
+
+
+async def _check_decisions_openrouter_key_at_startup() -> None:
+    """Decisions spec 4 startup key check: OpenRouter fallback opted in but
+    no OpenRouter key on the AI Provider screen means ONE ack-required CEO
+    notification naming the fix screen, and the resolver stays on the
+    self-hosted tiers (Clef, then Laya) for the process lifetime.
+    Best-effort: a failure here must never block startup, the per-call lazy
+    check still exists as a backstop."""
+    try:
+        async with get_session_factory()() as decisions_db:
+            await check_openrouter_fallback_at_startup(decisions_db)
+    except Exception as e:
+        logger.warning(
+            "Decisions OpenRouter startup key check failed; ignoring",
+            error=str(e),
+        )
 
 
 @asynccontextmanager
@@ -237,6 +192,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await ensure_seed_user_startup()
 
     await _apply_flag_overrides()
+
+    # Decisions (spec 4): if the OpenRouter fallback is opted in but the AI
+    # Provider screen has no key, alert the CEO once now and resolve to the
+    # self-hosted tiers for the process lifetime. Best-effort: never blocks
+    # startup.
+    await _check_decisions_openrouter_key_at_startup()
 
     # Initialize Phase 2 services
     _AppServices.transcription = TranscriptionService()
@@ -278,10 +239,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # Reconcile RAG index state in the BACKGROUND: re-index APPROVED playbooks
     # left unindexed by a failed post-commit embed, reclaim dead-lettered
     # index writes, and backfill zero-chunk journals/learnings. Never awaited
-    # here — uvicorn binds the socket only after this lifespan completes, and
+    # here - uvicorn binds the socket only after this lifespan completes, and
     # a 200-entry backfill behind a busy Ollama held the API down for 30+
     # minutes when this was a blocking await (2026-07-09 deploy).
-    _schedule_rag_reconcile(app)
+    # Only 'all' (single-process) owns it here: 'api' and 'dispatcher' run this
+    # lifespan too (for /health) but the pass is fleet-wide, one-time KB work
+    # that neither serves, and 'indexer' never runs this lifespan at all
+    # (roboco/bootstrap.py runs only run_indexer), so run_indexer schedules the
+    # same passes itself for that role. OptimalService above still initializes
+    # in every role, since routes query the KB regardless.
+    if settings.role == "all":
+        _schedule_rag_reconcile(app)
 
     logger.info("All services initialized, API ready")
 
@@ -331,6 +299,7 @@ def _mount_v1_routers(app: FastAPI) -> None:
     app.include_router(flow_board_module.router)
     app.include_router(flow_auditor_module.router)
     app.include_router(flow_pr_reviewer_module.router)
+    app.include_router(flow_devops_module.router)
     app.include_router(do_module.router)
 
 
@@ -388,6 +357,21 @@ def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
     # friction-fix cycle. Approving materializes a BACKLOG task; nothing
     # auto-starts.
     app.include_router(dogfood_router, prefix=f"{api_prefix}/dogfood", tags=["Dogfood"])
+
+
+def _mount_release_routers(app: FastAPI, api_prefix: str) -> None:
+    """The release manager's CEO surface, singular and plural.
+
+    ``/release`` is the held-proposal approve/reject surface; ``/releases``
+    is the read-only per-version certificate export. Grouped into one helper
+    to keep ``create_app``'s own statement count bounded (same rationale as
+    ``_mount_board_program_routers``) — the two are one product surface, not
+    one router, so the plural path stays a distinct prefix.
+    """
+    app.include_router(release_router, prefix=f"{api_prefix}/release", tags=["Release"])
+    app.include_router(
+        releases_router, prefix=f"{api_prefix}/releases", tags=["Release"]
+    )
 
 
 def create_app() -> FastAPI:
@@ -509,12 +493,11 @@ def create_app() -> FastAPI:
         tags=["Cockpit"],
     )
 
-    # Release manager — the CEO approves/rejects a held release proposal.
-    app.include_router(
-        release_router,
-        prefix=f"{api_prefix}/release",
-        tags=["Release"],
-    )
+    # Release manager — the CEO approves/rejects a held release proposal, and
+    # exports one release's governance certificate. Grouped into one helper
+    # (mirrors ``_mount_board_program_routers`` above). See the helper's own
+    # note for why the certificate router is plural.
+    _mount_release_routers(app, api_prefix)
 
     # Playbooks — the Auditor (or CEO) curates the drafted playbook library.
     app.include_router(

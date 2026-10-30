@@ -16,7 +16,7 @@ from roboco.api.schemas.v1.flow import (
     TriageRequest,
     WaiveFindingRequest,
 )
-from roboco.security import guard_deco
+from roboco.security import guard_deco, mesh_scanned
 from roboco.services.gateway.choreographer import Choreographer
 
 _RUNAWAY_RULES = [
@@ -35,6 +35,7 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 
 @router.post("/triage")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -49,6 +50,7 @@ async def triage(
 
 
 @router.post("/waive_finding")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)
@@ -63,6 +65,7 @@ async def waive_finding(
 
 
 @router.post("/i_am_idle")
+@mesh_scanned
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.behavior_analysis(_RUNAWAY_RULES)

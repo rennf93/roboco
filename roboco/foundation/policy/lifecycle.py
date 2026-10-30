@@ -26,6 +26,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
+# Devops's org-wide exemption is flag-gated at the spec team-match gate too
+# (mirroring TaskService and the gateway access guard); config imports
+# nothing from roboco, so this stays cycle-free.
+from roboco.config import settings
+
 # Role enum is canonicalized in roboco/foundation/identity.py.
 # Re-exported here so callers can import `Role` from this module alongside
 # the lifecycle tables that depend on it. New consumers may also import
@@ -229,6 +234,12 @@ class StatusTransition:
 # Status transitions (predecessor canon: STATUS_TRANSITIONS.md)
 # ---------------------------------------------------------------------------
 
+# The PR-review-gate reviewer set: the PR reviewer plus the DevOps floater
+# (a full second reviewer on infra-matched PRs). Inert at Stage 0: nothing
+# dispatches gate work to devops-1 yet. Defined here (above the transition
+# table) because the gate's StatusTransition rows reference it.
+_DEVOPS_ROLES: frozenset[Role] = frozenset({Role.PR_REVIEWER, Role.DEVOPS})
+
 _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
     # PM setup
     StatusTransition(Status.BACKLOG, Status.PENDING, "activate", None),
@@ -310,19 +321,19 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         Status.AWAITING_PR_REVIEW,
         Status.CLAIMED,
         "claim",
-        frozenset({Role.PR_REVIEWER}),
+        _DEVOPS_ROLES,
     ),
     StatusTransition(
         Status.AWAITING_PR_REVIEW,
         Status.AWAITING_PM_REVIEW,
         "pr_pass",
-        frozenset({Role.PR_REVIEWER}),
+        _DEVOPS_ROLES,
     ),
     StatusTransition(
         Status.AWAITING_PR_REVIEW,
         Status.NEEDS_REVISION,
         "pr_fail",
-        frozenset({Role.PR_REVIEWER}),
+        _DEVOPS_ROLES,
     ),
     # PM completes / escalates
     StatusTransition(
@@ -423,6 +434,12 @@ STATUS_GRAPH: dict[Status, frozenset[Status]] = _build_status_graph()
 
 _PM_ROLES: frozenset[Role] = frozenset({Role.CELL_PM, Role.MAIN_PM})
 _DEV_ROLES: frozenset[Role] = frozenset({Role.DEVELOPER})
+# Stage-1 authoring lane: the DevOps agent authors infra changes through the
+# SAME claim -> plan -> open_pr -> i_am_done lifecycle a developer rides (same
+# TaskType.code, same PR-before-QA rule, same gates). It gains no QA or
+# reviewer verbs here; its gate-review surface is claim_gate_review/pr_pass/
+# pr_fail, and the infra-matched precondition is Stage 3.
+_DEVOPS_AUTHOR_ROLES: frozenset[Role] = frozenset({Role.DEVOPS})
 _QA_ROLES: frozenset[Role] = frozenset({Role.QA})
 _DOC_ROLES: frozenset[Role] = frozenset({Role.DOCUMENTER})
 
@@ -444,7 +461,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     "claim": ActionSpec(
         name="claim",
         allowed_roles=frozenset(
-            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | {Role.PR_REVIEWER}
+            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | _DEVOPS_ROLES
         ),
         source_statuses=frozenset(
             {
@@ -475,7 +492,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "set_plan": ActionSpec(
         name="set_plan",
-        allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES),
+        allowed_roles=frozenset(_DEV_ROLES | _PM_ROLES | _DEVOPS_AUTHOR_ROLES),
         source_statuses=frozenset({Status.CLAIMED}),
         target_status=None,
         allowed_task_types=None,
@@ -525,7 +542,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "submit_verification": ActionSpec(
         name="submit_verification",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         source_statuses=frozenset({Status.IN_PROGRESS}),
         target_status=Status.VERIFYING,
         allowed_task_types=None,
@@ -535,7 +552,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "submit_qa": ActionSpec(
         name="submit_qa",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         source_statuses=frozenset({Status.VERIFYING}),
         target_status=Status.AWAITING_QA,
         allowed_task_types=None,
@@ -587,7 +604,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     # reviewer passes or fails it. pr_pass/pr_fail mirror qa_pass/qa_fail.
     "submit_for_review": ActionSpec(
         name="submit_for_review",
-        allowed_roles=_PM_ROLES,
+        allowed_roles=frozenset(_PM_ROLES | {Role.DEVOPS}),
         source_statuses=frozenset({Status.IN_PROGRESS}),
         target_status=Status.AWAITING_PR_REVIEW,
         allowed_task_types=None,
@@ -597,7 +614,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "pr_pass": ActionSpec(
         name="pr_pass",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         source_statuses=frozenset({Status.AWAITING_PR_REVIEW}),
         target_status=Status.AWAITING_PM_REVIEW,
         allowed_task_types=None,
@@ -607,7 +624,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "pr_fail": ActionSpec(
         name="pr_fail",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         source_statuses=frozenset({Status.AWAITING_PR_REVIEW}),
         target_status=Status.NEEDS_REVISION,
         allowed_task_types=None,
@@ -745,8 +762,8 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     # owning PM's merge decision (complete / request_changes), not on
     # re-planning. A prior revision granted CELL_PM/MAIN_PM a claim from
     # AWAITING_PM_REVIEW so a respawned PM could "re-claim its own review-queue
-    # task", but claim composes into i_will_plan's (claim, set_plan, start)
-    # sequence: every respawn legally re-claimed the task, reset it to
+    # task", but claim composes into i_will_plan's (claim, set_plan)
+    # + start sequence: every respawn legally re-claimed the task, reset it to
     # in_progress, and re-ran the full submit_up -> pr_pass ->
     # awaiting_pm_review cycle — looping forever with no progress (one
     # production task cycled 11 times across 37 spawns in 4h before this was
@@ -760,6 +777,13 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     Role.HEAD_MARKETING: frozenset(),
     Role.AUDITOR: frozenset(),
     Role.PR_REVIEWER: frozenset({Status.PENDING, Status.AWAITING_PR_REVIEW}),
+    # DevOps claim edges: it authors through the developer lifecycle (PENDING
+    # for delegated/materialized work, NEEDS_REVISION to recover a QA-failed
+    # or bounced task, exactly the developer set) and claims gate reviews
+    # without transitioning (AWAITING_PR_REVIEW via claim_gate_review).
+    Role.DEVOPS: frozenset(
+        {Status.PENDING, Status.NEEDS_REVISION, Status.AWAITING_PR_REVIEW}
+    ),
     Role.CEO: frozenset(),
 }
 
@@ -794,6 +818,7 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "fe-pr-reviewer": "frontend",
     "ux-pr-reviewer": "ux_ui",
     "cell-pr-reviewer-2": None,  # shared cell-gate overflow, serves all cells
+    "devops-1": None,  # floating infra agent, serves any project
     "ceo": None,
 }
 
@@ -846,10 +871,22 @@ def _next_hint_continue_delegating(t: Any) -> str:
     )
 
 
-def _next_hint_qa_review(_t: Any) -> str:
+def _next_hint_qa_review(t: Any) -> str:
+    # Name the real verdict verbs with their real parameters and the exact
+    # task id: GLM-flash QA sessions pattern-match the short forms
+    # ("pass(notes)") onto whatever verb they last emitted and loop
+    # claim_review/give_me_work instead of ever issuing the verdict
+    # (2026-09-29 fleet wedge: 385 consecutive claim_review calls, zero
+    # pass_review calls). Spell the verdict call out in full.
+    task_id = getattr(t, "id", None)
     return (
-        "review the diff. Then call pass(notes) to accept or fail(issues) to"
-        " request changes."
+        "review the diff once, then issue ONE verdict (never re-claim):"
+        f" pass_review(task_id='{task_id}', notes='...',"
+        " criteria_verified=[{'criterion': '<AC id or exact text>',"
+        " 'evidence': '<how you verified it>'}, ...]) to accept, or"
+        f" fail_review(task_id='{task_id}',"
+        " findings=[{'file': '...', 'severity': '...', 'expected': '...',"
+        " 'actual': '...'}, ...]) to request changes"
     )
 
 
@@ -895,6 +932,15 @@ def _next_hint_pm_complete(_t: Any) -> str:
 
 def _next_hint_pm_idle(_t: Any) -> str:
     return "idle until subtasks finish"
+
+
+def _next_hint_cancel_leaf(t: Any) -> str:
+    parent_id = getattr(t, "parent_task_id", None)
+    parent_ref = f" ({parent_id})" if parent_id else ""
+    return (
+        f"leaf cancelled - submit_up (or submit_root) on its parent{parent_ref},"
+        " naming any already-fixed findings in resolved_findings, to roll up"
+    )
 
 
 def _next_hint_submit_up(t: Any) -> str:
@@ -1187,6 +1233,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
                 Role.CELL_PM,
                 Role.MAIN_PM,
                 Role.PR_REVIEWER,
+                Role.DEVOPS,
             }
         ),
         description="Return your most-actionable task or signal idle.",
@@ -1197,12 +1244,12 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "i_will_work_on": IntentSpec(
         name="i_will_work_on",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         description=(
             "Claim a task, set the plan, and transition to in_progress."
             " Atomic - preconditions checked before any state mutation."
         ),
-        composes=("claim", "set_plan", "start"),
+        composes=("claim", "set_plan"),
         extra_preconditions=(PRECONDITION_PLAN,),
         side_effects=(),
         next_hint=_next_hint_after_claim,
@@ -1214,7 +1261,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "PM mirror of i_will_work_on for parent tasks. Claim, plan,"
             " transition to in_progress; from there delegate subtasks."
         ),
-        composes=("claim", "set_plan", "start"),
+        composes=("claim", "set_plan"),
         extra_preconditions=(PRECONDITION_PLAN,),
         side_effects=(),
         next_hint=_next_hint_after_plan,
@@ -1237,7 +1284,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "open_pr": IntentSpec(
         name="open_pr",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         description=(
             "Push the branch and open a PR. Atomic - preconditions"
             " (assignee, >=1 commit, no prior PR) checked BEFORE any git"
@@ -1255,7 +1302,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "i_am_done": IntentSpec(
         name="i_am_done",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | {Role.DEVOPS}),
         description=(
             "Submit work for QA. Auto-runs in_progress->verifying then"
             " verifying->awaiting_qa. Strict - PR must be open (call"
@@ -1268,7 +1315,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "sync_branch": IntentSpec(
         name="sync_branch",
-        allowed_roles=_DEV_ROLES,
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         description=(
             "Rebase your task's branch onto its current base THROUGH the gate"
             " (raw git is denied). Use when your branch has fallen behind its"
@@ -1300,7 +1347,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     "unclaim": IntentSpec(
         name="unclaim",
         allowed_roles=frozenset(
-            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | {Role.PR_REVIEWER}
+            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | _DEVOPS_ROLES
         ),
         description=(
             "Voluntarily release a claim back to pending. The"
@@ -1374,6 +1421,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
                 Role.PROMPTER,
                 Role.SECRETARY,
                 Role.PR_REVIEWER,
+                Role.DEVOPS,
             }
         ),
         description=(
@@ -1444,7 +1492,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     # internal delivery task between docs/submit and the PM merge.
     "claim_gate_review": IntentSpec(
         name="claim_gate_review",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         description=(
             "Claim an assembled-PR review task (awaiting_pr_review) WITHOUT"
             " transitioning it — mirrors QA's claim_review. The assembled diff"
@@ -1457,7 +1505,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "pr_pass": IntentSpec(
         name="pr_pass",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         description=(
             "Pass the assembled-PR review. Transitions awaiting_pr_review ->"
             " awaiting_pm_review so the PM can merge."
@@ -1469,7 +1517,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "pr_fail": IntentSpec(
         name="pr_fail",
-        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        allowed_roles=_DEVOPS_ROLES,
         description=(
             "Fail the assembled-PR review with concrete issues. Transitions"
             " awaiting_pr_review -> needs_revision, routed back like a QA fail."
@@ -1478,6 +1526,19 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         extra_preconditions=(),
         side_effects=(),
         next_hint=_next_hint_pr_fail,
+    ),
+    "record_devops_review": IntentSpec(
+        name="record_devops_review",
+        allowed_roles=frozenset({Role.DEVOPS}),
+        description=(
+            "Record the DevOps infra-review verdict (pass) on an assembled-PR"
+            " gate task WITHOUT transitioning it: the primary reviewer's"
+            " pr_pass then composes. Use pr_fail instead to reject the PR."
+        ),
+        composes=(),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
     ),
     # Phase 3: documenter verbs
     "claim_doc_task": IntentSpec(
@@ -1607,6 +1668,25 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         extra_preconditions=(),
         side_effects=(),
         next_hint=lambda _t: "task restored; original assignee will resume",
+    ),
+    "cancel_leaf": IntentSpec(
+        name="cancel_leaf",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "Close a zero-diff leaf: a delegated child whose findings a"
+            " merged sibling already fixed, so no legitimate diff remains"
+            " and i_am_done/complete can never accept it. Refuses a target"
+            " with any children of its own (not a leaf), any commit ahead"
+            " of its base, or an open PR - those go through the normal"
+            " review path, not this. `reason` is recorded as your"
+            " journal:decision and on the task's audit trail. Cell PM:"
+            " only your own coordination task's children. Main PM: any"
+            " root's descendant."
+        ),
+        composes=(),  # special - the verb body owns ownership + zero-diff checks
+        extra_preconditions=(PRECONDITION_NON_TERMINAL,),
+        side_effects=(),
+        next_hint=_next_hint_cancel_leaf,
     ),
     "triage": IntentSpec(
         name="triage",
@@ -1882,6 +1962,7 @@ _ORG_WIDE_ROLES: frozenset[Role] = frozenset(
         Role.HEAD_MARKETING,
         Role.AUDITOR,
         Role.PR_REVIEWER,
+        Role.DEVOPS,
     }
 )
 
@@ -1895,12 +1976,18 @@ def _check_team_match(
     trusting the spec gate alone let a backend dev claim a frontend task. When
     the caller supplies the agent's team via Context, enforce it here; absent,
     defer to the service layer (backward compatible). Org-wide roles
-    (``_ORG_WIDE_ROLES``) are exempt.
+    (``_ORG_WIDE_ROLES``) are exempt — devops among them only while its lane
+    flag is on, the same gate TaskService's claim team exemption and the
+    gateway's project-access guard apply, so all three sites agree on who
+    crosses cells.
     """
     if not spec_action.needs_team_match:
         return None
     if role is not None and role in _ORG_WIDE_ROLES:
-        return None
+        if role is not Role.DEVOPS:
+            return None
+        if settings.devops_enabled:
+            return None
     agent_team = getattr(ctx, "agent_team", None)
     if agent_team is None:
         return None

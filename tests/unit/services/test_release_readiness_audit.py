@@ -9,21 +9,30 @@ the real repo at the bottom.
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
+from roboco.foundation import identity
 from roboco.services.release_readiness import (
     CommitInfo,
     ReleaseReadinessReport,
     ReleaseRepoSnapshot,
+    _actual_agent_count,
+    _canonical_bump_files,
     assess,
     gather_snapshot,
 )
 
+if TYPE_CHECKING:
+    import pytest
+
 _TODAY = "2026-06-25"
 _DECLARED = 25
 _DRIFTED = 26
+_SYNTHETIC_SEAT_COUNT = 2
 
 
 def _snap(**overrides: Any) -> ReleaseRepoSnapshot:
@@ -96,6 +105,29 @@ def test_stale_agent_count_is_docs_drift_gap() -> None:
     assert "docs_drift" in _categories(assess(snap, today=_TODAY))
 
 
+def test_actual_agent_count_excludes_shared_seats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared overflow reviewer is a hand, not a seat (CEO ruling,
+    2026-09-17): the headcount counts seats, not registry rows."""
+
+    def _row(role: str) -> Any:
+        return SimpleNamespace(role=SimpleNamespace(value=role))
+
+    monkeypatch.setattr(
+        identity,
+        "AGENTS",
+        {
+            "system": _row("system"),
+            "ceo": _row("ceo"),
+            "be-dev-1": _row("developer"),
+            "be-pr-reviewer": _row("pr_reviewer"),
+            "cell-pr-reviewer-2": _row("pr_reviewer"),
+        },
+    )
+    assert _actual_agent_count() == _SYNTHETIC_SEAT_COUNT
+
+
 def test_stale_verb_tables_is_docs_drift_gap() -> None:
     assert "docs_drift" in _categories(
         assess(_snap(verb_tables_stale=True), today=_TODAY)
@@ -154,6 +186,34 @@ def test_drafted_changelog_is_keepachangelog_and_single_line() -> None:
 
 
 # --- gather_snapshot: real-repo smoke (this repo is a git checkout at 0.12.0) ---
+
+
+def test_canonical_bump_ignores_non_version_chore_release_subjects(
+    tmp_path: Path,
+) -> None:
+    """A mistyped ``chore(release):``-typed commit whose subject carries no
+    version must NOT shadow the real release commit's bump derivation
+    (2026-10-05 slave incident: one such commit listed release plumbing
+    instead of pyproject.toml)."""
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(tmp_path), *args],
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "test@roboco.local")
+    git("config", "user.name", "test")
+    (tmp_path / "pyproject.toml").write_text('version = "1.2.3"\n')
+    git("add", "pyproject.toml")
+    git("commit", "-qm", "chore(release): 1.2.3")
+    (tmp_path / "release-notes.txt").write_text("mistyped non-release chore\n")
+    git("add", "release-notes.txt")
+    git("commit", "-qm", "chore(release): published decisions image bakes stuff")
+
+    assert _canonical_bump_files(tmp_path, "1.2.3") == ["pyproject.toml"]
 
 
 def test_gather_snapshot_reads_the_real_repo() -> None:

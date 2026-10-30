@@ -10,13 +10,22 @@ absent, or partial. Precedence, per field:
 - ``custom`` / ``waivers`` / ``version``: the file's when a file is present,
   else the derived value (the file is the curated replacement).
 - ``languages``: union (derived order, then file-only extras).
+- ``infra``: the file's declared globs when present (an explicit ``[]`` opts
+  out), else ``DEFAULT_INFRA_GLOBS``. The scan never derives infra, so the
+  shipped defaults are the fallback, not the derived value.
 
 Pure: no IO, no DB.
 """
 
 from __future__ import annotations
 
-from .models import BUILTIN_RULES, ConventionsStandard, Module, Rule
+from .models import (
+    BUILTIN_RULES,
+    DEFAULT_INFRA_GLOBS,
+    ConventionsStandard,
+    Module,
+    Rule,
+)
 
 
 def _merge_rules(
@@ -50,6 +59,19 @@ def _union_languages(
     return languages
 
 
+def _merge_infra(file: ConventionsStandard | None) -> list[str]:
+    """Curated-replaces: the file's declared globs win, defaults otherwise.
+
+    An explicit empty list is a real declaration (opt-out of the infra gate)
+    and must survive; only ``None`` (absent from the file) falls back to the
+    shipped defaults. The scan never derives infra, so there is no derived
+    value to fall back to, unlike ``custom`` / ``waivers``.
+    """
+    if file is not None and file.infra is not None:
+        return list(file.infra)
+    return list(DEFAULT_INFRA_GLOBS)
+
+
 def effective_map(
     derived: ConventionsStandard, file: ConventionsStandard | None
 ) -> ConventionsStandard:
@@ -62,4 +84,5 @@ def effective_map(
         rules=_merge_rules(derived, file),
         custom=curated.custom,
         waivers=curated.waivers,
+        infra=_merge_infra(file),
     )

@@ -18,6 +18,7 @@ TaskService are real — those are the layers Task 30 verifies.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,6 +40,10 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import UnauthorizedError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from tests.integration.conftest import cleanup_claim_durable_rows
 
 # A developer fresh claim must carry a substantive step checklist.
 _STEPS = [
@@ -412,6 +417,7 @@ def _build_task(
 @pytest_asyncio.fixture
 async def lifecycle_setup(
     db_session: AsyncSession,
+    _test_database_url: str,
 ) -> AsyncIterator[dict[str, Any]]:
     """Seed agents + project + a single PENDING task assigned to the dev."""
     seeded = await _seed_agents_and_project(db_session)
@@ -424,7 +430,32 @@ async def lifecycle_setup(
     db_session.add(task)
     await db_session.flush()
     seeded["task"] = task
-    yield seeded
+    ids = {
+        "task_id": task.id,
+        "project_id": seeded["project"].id,
+        "agent_ids": [
+            seeded["system_agent"].id,
+            seeded["dev_agent"].id,
+            seeded["qa_agent"].id,
+            seeded["doc_agent"].id,
+            seeded["cell_pm_agent"].id,
+        ],
+    }
+    try:
+        yield seeded
+    finally:
+        # Roll back db_session's OWN transaction FIRST. Fixture teardown is
+        # LIFO, so this finalizer runs BEFORE db_session's; a test verb
+        # called after the durable claim commit (i_am_idle, resume, ...)
+        # leaves a further uncommitted write on these same rows, holding a
+        # lock db_session's own (later) rollback would release. Without
+        # rolling back here first, the fresh-connection cleanup below waits
+        # on that lock forever while the session that would free it is
+        # itself waiting on this finalizer to return: a deadlock. This
+        # rollback also expires every ORM object in ``seeded``, which is
+        # exactly why ``ids`` was captured as plain UUIDs beforehand.
+        await db_session.rollback()
+        await cleanup_claim_durable_rows(_test_database_url, ids)
 
 
 # ---------------------------------------------------------------------------
@@ -1285,3 +1316,222 @@ async def test_pause_then_resume(
     assert resumed is not None
     assert str(resumed.status) == Status.IN_PROGRESS.value
     assert resumed.assigned_to == dev_agent.id
+
+
+# ---------------------------------------------------------------------------
+# 9. Claim durability boundary: provisioning releases the row locks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_releases_locks_during_provisioning(
+    db_session: AsyncSession,
+    lifecycle_setup: dict[str, Any],
+    _test_database_url: str,
+) -> None:
+    """Finding B: the composed claim/set_plan/start commits durably and
+    releases the task and agent row locks BEFORE branch creation's network
+    git work runs.
+
+    Drives the REAL ``i_will_work_on`` verb through the choreographer with
+    ``_ensure_branch_for_task`` patched to block on an event. While it is
+    blocked, a SECOND connection's ``SELECT ... FOR UPDATE NOWAIT`` on both
+    the task row and the agent row must succeed, proving neither the
+    explicit ``FOR UPDATE`` on the task nor the implicit update-lock on the
+    agent (from ``_mark_agent_active_for_claim``'s write) is still held.
+    Before the fix, ``_do_claim`` ran branch creation inside
+    ``_run_composed_actions``'s own savepoint, holding both locks for the
+    whole composed sequence including this network call.
+    """
+    task = lifecycle_setup["task"]
+    dev_agent = lifecycle_setup["dev_agent"]
+    task_service = TaskService(db_session)
+    c = _build_choreographer(db_session, task, task_service)
+
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_ensure_branch(_self: Any, _task: Any, _agent_id: Any) -> str:
+        blocked.set()
+        await release.wait()
+        _task.branch_name = _BRANCH
+        await db_session.flush()
+        return _BRANCH
+
+    engine = create_async_engine(_test_database_url, future=True)
+    try:
+        with patch.object(
+            TaskService, "_ensure_branch_for_task", blocking_ensure_branch
+        ):
+            verb_task = asyncio.create_task(
+                c.i_will_work_on(
+                    agent_id=dev_agent.id,
+                    task_id=task.id,
+                    plan=_GOOD_PLAN,
+                    steps=_STEPS,
+                    technical_considerations=_GOOD_TC,
+                    risks=_GOOD_RISKS,
+                )
+            )
+            try:
+                await asyncio.wait_for(blocked.wait(), timeout=5.0)
+
+                factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+                async with factory() as locker:
+                    await locker.execute(
+                        text("SELECT 1 FROM tasks WHERE id = :tid FOR UPDATE NOWAIT"),
+                        {"tid": str(task.id)},
+                    )
+                    await locker.execute(
+                        text("SELECT 1 FROM agents WHERE id = :aid FOR UPDATE NOWAIT"),
+                        {"aid": str(dev_agent.id)},
+                    )
+                    await locker.rollback()
+            finally:
+                release.set()
+
+            env = await verb_task
+    finally:
+        await engine.dispose()
+
+    assert env.error is None, f"i_will_work_on failed: {env.message}"
+    assert env.status == Status.IN_PROGRESS.value
+    completed = await task_service.get(task.id)
+    assert completed is not None
+    assert completed.branch_name == _BRANCH
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_provisioning_failure_reverts_and_rejects(
+    db_session: AsyncSession,
+    lifecycle_setup: dict[str, Any],
+    _test_database_url: str,
+) -> None:
+    """Finding B follow-through: a provisioning failure on the verb path
+    returns the error envelope and durably reverts the claim.
+
+    The composed claim/set_plan/start already committed durably by the
+    time ``_ensure_branch_for_task`` raises (patched here), so the runner's
+    own savepoint rollback cannot undo it; ``provision_claim`` must revert
+    the fields itself and commit that revert. The choreographer surfaces
+    the same "verb runner failed" rejection a savepoint-level failure
+    already returns. ``lifecycle_setup``'s task is pre-assigned-and-pending
+    (``assigned_to`` set before any claim), so the revert target for that
+    field is the dev, not None; ``claimed_by`` / ``active_claimant_id``
+    were never set pre-claim and revert to None.
+
+    Also pins the ``plan`` / ``started_at`` revert: the composed sequence
+    commits ``set_plan`` and ``start()`` before ``_ensure_branch_for_task``
+    ever runs, so without capturing and restoring those two fields the
+    reverted task would keep the failed attempt's plan and started_at,
+    corrupting cycle-time and showing a plan on a pending task.
+    """
+    task = lifecycle_setup["task"]
+    dev_agent = lifecycle_setup["dev_agent"]
+    task_service = TaskService(db_session)
+    c = _build_choreographer(db_session, task, task_service)
+
+    async def boom(_self: Any, _task: Any, _agent_id: Any) -> str:
+        raise RuntimeError("simulated: branch push rejected")
+
+    with patch.object(TaskService, "_ensure_branch_for_task", boom):
+        env = await c.i_will_work_on(
+            agent_id=dev_agent.id,
+            task_id=task.id,
+            plan=_GOOD_PLAN,
+            steps=_STEPS,
+            technical_considerations=_GOOD_TC,
+            risks=_GOOD_RISKS,
+        )
+
+    assert env.error == "invalid_state"
+    assert env.message is not None
+    assert "verb runner failed" in env.message
+    assert "simulated: branch push rejected" in env.message
+
+    # Fresh connection: proves the revert reached Postgres, not just this
+    # test's own session.
+    engine = create_async_engine(_test_database_url, future=True)
+    try:
+        factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+        async with factory() as fresh:
+            refreshed = await fresh.get(TaskTable, task.id)
+            assert refreshed is not None
+            assert refreshed.status == TaskStatus.PENDING
+            assert refreshed.claimed_by is None
+            assert refreshed.assigned_to == dev_agent.id, (
+                "pre-assigned-and-pending reverts assigned_to to the dev, not None"
+            )
+            assert refreshed.active_claimant_id is None
+            assert refreshed.plan is None, (
+                "revert must clear the plan set_plan committed pre-failure"
+            )
+            assert refreshed.started_at is None, (
+                "revert must clear started_at start() committed pre-failure"
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_claim_heals_missing_work_session_on_i_will_work_on(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """A dispatcher-path claim (``TaskService.claim`` with the default
+    ``provision=True``, what ``claim_task_for_agent`` uses) that fails in
+    ``_create_work_session_if_needed`` lands AFTER the branch's own commit
+    (Finding A), so the claim stands: CLAIMED + branch_name, no work
+    session. The same agent's next ``i_will_work_on`` finds the task
+    already CLAIMED and assigned to it, takes the ``_resume_from_claimed``
+    recovery path, and must heal the missing session there via
+    ``TaskService.ensure_work_session`` (idempotent, a no-op once a
+    session exists, so it is safe to call unconditionally on every
+    re-entry).
+    """
+    task = lifecycle_setup["task"]
+    dev_agent = lifecycle_setup["dev_agent"]
+    # Plain UUIDs, captured before the rollback below expires every
+    # attribute on these ORM objects (same reason lifecycle_setup's own
+    # teardown captures ``ids`` up front).
+    task_id = task.id
+    dev_agent_id = dev_agent.id
+    task_service = TaskService(db_session)
+
+    real_create = TaskService._create_work_session_if_needed
+    calls = {"n": 0}
+
+    async def flaky_create(self: TaskService, *args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated: work session creation failed")
+        return await real_create(self, *args, **kwargs)
+
+    with (
+        patch.object(TaskService, "_create_work_session_if_needed", flaky_create),
+        pytest.raises(RuntimeError, match="work session creation failed"),
+    ):
+        await task_service.claim(task_id, dev_agent_id)
+    # Mirrors get_db()'s exception handler.
+    await db_session.rollback()
+
+    claimed = await task_service.get(task_id)
+    assert claimed is not None
+    assert claimed.status == TaskStatus.CLAIMED, "the claim stands past the failure"
+    assert claimed.branch_name == _BRANCH
+    assert claimed.work_session_id is None, "the failed step never ran"
+
+    c = _build_choreographer(db_session, claimed, task_service)
+    with patch.object(TaskService, "_create_work_session_if_needed", flaky_create):
+        env = await c.i_will_work_on(
+            agent_id=dev_agent_id,
+            task_id=task_id,
+            plan=_GOOD_PLAN,
+            steps=_STEPS,
+            technical_considerations=_GOOD_TC,
+            risks=_GOOD_RISKS,
+        )
+
+    assert env.error is None, f"i_will_work_on failed: {env.message}"
+    healed = await task_service.get(task_id)
+    assert healed is not None
+    assert healed.work_session_id is not None, "re-entry must heal the missing session"

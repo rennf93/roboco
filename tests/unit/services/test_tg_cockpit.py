@@ -302,9 +302,9 @@ async def test_today_spend_not_subscription_billed_when_priced(
     db_session: AsyncSession,
 ) -> None:
     """A real per-token cost (even from a priced Ollama Cloud model like
-    GLM-5.2) is never mislabeled as an untracked subscription figure."""
+    GLM-5.3) is never mislabeled as an untracked subscription figure."""
     now = datetime.now(UTC)
-    db_session.add(_spawn_session(started_at=now, model="glm-5.2:cloud", cost=2.5))
+    db_session.add(_spawn_session(started_at=now, model="glm-5.3:cloud", cost=2.5))
     await db_session.flush()
 
     summary = await get_tg_cockpit_service(db_session).today_spend()

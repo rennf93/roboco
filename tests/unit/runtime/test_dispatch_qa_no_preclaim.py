@@ -51,3 +51,21 @@ async def test_unassigned_qa_dispatch_spawns_without_preclaim() -> None:
     assert spawn_call is not None
     assert spawn_call.kwargs["task_id"] == task["id"]
     assert spawn_call.kwargs["agent_id"] == "be-qa"
+
+
+@pytest.mark.asyncio
+async def test_unassigned_qa_dispatch_spawns_oldest_task_first() -> None:
+    """Two eligible awaiting_qa tasks, capacity for one spawn this tick:
+    _fetch_tasks (list_by_status, oldest-created first) puts the older
+    task first, and dispatch must take that one, not the newer task."""
+    orch, _claim, spawn = _orch()
+    older = {"id": str(uuid4()), "team": "backend", "assigned_to": None}
+    newer = {"id": str(uuid4()), "team": "backend", "assigned_to": None}
+    cast("Any", orch)._fetch_tasks = AsyncMock(return_value=[older, newer])
+
+    await orch._dispatch_qa_work(MagicMock())
+
+    spawn.assert_awaited_once()
+    spawn_call = spawn.await_args
+    assert spawn_call is not None
+    assert spawn_call.kwargs["task_id"] == older["id"]

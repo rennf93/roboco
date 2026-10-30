@@ -6,7 +6,7 @@ set -e
 
 cd "$(dirname "$0")/../.."
 
-HOOK=docker/scripts/bash-guard-hook.sh
+HOOK=docker/scripts/hooks/bash-guard-hook.sh
 
 # Count lines in the longest heredoc denial block (cat <<'EOF' ... EOF style).
 # The first git-network denial used a heredoc; awk counts echo-or-content

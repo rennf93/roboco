@@ -4,7 +4,7 @@ set -e
 
 cd "$(dirname "$0")/../.."
 
-HOOKS=(docker/scripts/stop-hook.sh docker/scripts/bash-guard-hook.sh)
+HOOKS=(docker/scripts/hooks/stop-hook.sh docker/scripts/hooks/bash-guard-hook.sh)
 
 OLD_VERBS=(
   roboco_agent_idle
@@ -28,7 +28,7 @@ for hook in "${HOOKS[@]}"; do
 done
 
 # stop-hook must mention at least one current terminal verb
-grep -qE "i_am_idle|unclaim|i_am_blocked|i_am_done|complete|escalate_up" docker/scripts/stop-hook.sh || {
+grep -qE "i_am_idle|unclaim|i_am_blocked|i_am_done|complete|escalate_up" docker/scripts/hooks/stop-hook.sh || {
   echo "FAIL: stop-hook.sh lists no current gateway terminal verb"
   exit 1
 }

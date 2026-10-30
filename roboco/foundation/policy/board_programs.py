@@ -46,6 +46,12 @@ class BoardProgram:
     # test programs stay one-liners.
     title: str = ""
     description: str = ""
+    # True for the complete-at-note contract: a note() addressed to the
+    # caller's own open exploration task COMPLETES it. Only for programs whose
+    # cycle is one self-contained review pass (decisions_audit) — proposal
+    # programs (roadmap/scales/…) stay open awaiting per-item CEO review and
+    # must never auto-complete on a note.
+    completes_on_note: bool = False
 
 
 PROGRAMS: dict[str, BoardProgram] = {
@@ -315,6 +321,31 @@ PROGRAMS: dict[str, BoardProgram] = {
                 "opted-in project's live surfaces like a user — browser tools, "
                 "panel, docs — and files UX-friction tasks for your per-item "
                 "approval."
+            ),
+        ),
+        BoardProgram(
+            key="decisions_audit",
+            role="auditor",
+            trigger=TriggerKind.CRON,
+            source="board_decisions_audit",
+            default_interval_seconds=DAY_SECONDS,
+            max_items_per_cycle=1,
+            # Org-scoped: it audits the Decisions service's own verdict
+            # history, not one repo.
+            scope="org",
+            # Complete-at-note: one review pass IS the cycle. Without this, a
+            # run WITH findings had no closing verb at all — note() only wrote
+            # journal entries, so the task pend- resp- looped until the
+            # breaker tripped (2026-09-27 auditor wedge); only the
+            # nothing_to_propose decline ever completed it.
+            completes_on_note=True,
+            title="Decisions Audit",
+            description=(
+                "Daily: the Auditor reviews the Decisions service's persisted "
+                "verdict log (per-pilot volume, confidence, actions, spend "
+                "vs. the trailing baseline) and files an adjustment "
+                "recommendation when the evidence shows a pilot miscalibrated "
+                "— thresholds and shadow/on flips stay CEO decisions."
             ),
         ),
     )

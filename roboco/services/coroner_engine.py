@@ -64,6 +64,8 @@ _INCIDENT_KIND_LABELS: dict[str, str] = {
     "bounced": "bounced into needs_revision 3+ times",
     "cancelled": "cancelled after work had started",
     "budget": "blocked on a budget breach",
+    "stranded": "blocked beyond the stranded threshold",
+    "wedged": "held for human attention by the respawn breaker",
 }
 
 
@@ -73,10 +75,20 @@ class CoronerEngine(BaseService):
     service_name = "coroner_engine"
 
     async def open_for_incident(
-        self, incident_task_id: UUID, *, kind: str
+        self,
+        incident_task_id: UUID,
+        *,
+        kind: str,
+        extra_context: dict[str, Any] | None = None,
     ) -> TaskTable | None:
-        """Autopsy ``incident_task_id`` (``kind`` in bounced|cancelled|budget),
-        or no-op — the EVENT-triggered entry point every hook calls directly.
+        """Autopsy ``incident_task_id`` (``kind`` in bounced|cancelled|budget|
+        stranded), or no-op — the EVENT-triggered entry point every hook calls
+        directly.
+
+        ``extra_context`` is merged into the coroner incident marker payload —
+        used by the stranded trigger to carry ``block_reason``,
+        ``time_blocked``, and ``escalation_history``. Existing callers
+        (bounce/cancel/budget) pass nothing and get the same behavior.
 
         No-ops when the program isn't armed, a ``board_programs`` maintenance
         pause is active, an autopsy is already open, or the incident task is
@@ -100,12 +112,67 @@ class CoronerEngine(BaseService):
         incident = await task_svc.get(incident_task_id)
         if incident is None:
             return None
-        task = await self._originate(task_svc, incident, kind)
+        task = await self._originate(task_svc, incident, kind, extra_context)
         await self._record_cycle(task)
         return task
 
+    async def open_for_incident_on_verdict(
+        self,
+        incident_task_id: UUID,
+        *,
+        kind: str,
+        extra_context: dict[str, Any] | None = None,
+    ) -> TaskTable | None:
+        """B16 decisions-gated entry point for hooks the fixed triggers
+        MISS (the 3+ bounce, cancel-after-start, and budget hooks keep
+        calling ``open_for_incident`` directly, unchanged).
+
+        Consults the "postmortem warranted" score screen and opens through
+        ``open_for_incident`` ONLY on an ON-mode confident verdict; the
+        screen may ADD a postmortem but can never suppress one (the fixed
+        hooks never route through here). Off/shadow/below-floor/backend
+        failure/no verdict returns None without touching dedup or the
+        ledger. Arming, maintenance pause, and the one-open-autopsy dedup
+        are enforced inside ``open_for_incident`` either way."""
+        from roboco.services.decisions.pilots_infra import (
+            coroner_postmortem_warranted,
+        )
+        from roboco.services.task import get_task_service
+
+        try:
+            incident = await get_task_service(self.session).get(incident_task_id)
+            if incident is None:
+                return None
+            warranted = await coroner_postmortem_warranted(
+                self.session,
+                incident_title=str(incident.title),
+                kind=kind,
+                context=str(extra_context or {}),
+            )
+        except Exception as exc:
+            self.log.warning(
+                "coroner decisions gate failed; no postmortem",
+                incident_task_id=str(incident_task_id),
+                error=str(exc),
+            )
+            return None
+        if not warranted:
+            return None
+        self.log.info(
+            "coroner: decisions verdict opens a postmortem the hooks missed",
+            incident_task_id=str(incident_task_id),
+            kind=kind,
+        )
+        return await self.open_for_incident(
+            incident_task_id, kind=kind, extra_context=extra_context
+        )
+
     async def _originate(
-        self, task_svc: TaskService, incident: TaskTable, kind: str
+        self,
+        task_svc: TaskService,
+        incident: TaskTable,
+        kind: str,
+        extra_context: dict[str, Any] | None = None,
     ) -> TaskTable:
         """Open ONE PENDING, HELD postmortem-exploration task assigned to the
         Auditor, naming the incident + kind. Project is the incident's own
@@ -120,6 +187,22 @@ class CoronerEngine(BaseService):
             "cause, then propose ONE process change via propose_postmortem(): "
             "a playbook draft, a prompt fix, or a conventions rule."
         )
+        if kind == "stranded" and extra_context:
+            description += (
+                "\n\nStranded-block context: "
+                f"block reason — {extra_context.get('block_reason', 'unknown')}; "
+                f"time blocked — {extra_context.get('time_blocked', 'unknown')}; "
+                "escalation history — "
+                f"{extra_context.get('escalation_history', 'none')}."
+            )
+        if kind == "wedged" and extra_context:
+            description += (
+                "\n\nWedged-spawn context: agent — "
+                f"{extra_context.get('agent', 'unknown')}; spawn attempts — "
+                f"{extra_context.get('spawn_attempts', 'unknown')}; statuses "
+                "seen — "
+                f"{extra_context.get('statuses_seen', 'none')}."
+            )
         project_id = incident.project_id or await self._roboco_project_id()
         task = await task_svc.create(
             TaskCreateRequest(
@@ -141,15 +224,15 @@ class CoronerEngine(BaseService):
                 confirmed_by_human=False,  # HELD; board-dispatched, not delivery
             )
         )
-        markers.set_coroner_incident(
-            task,
-            {
-                "incident_task_id": str(incident.id),
-                "kind": kind,
-                "revision_count": incident.revision_count or 0,
-                "title": incident.title,
-            },
-        )
+        marker_payload: dict[str, Any] = {
+            "incident_task_id": str(incident.id),
+            "kind": kind,
+            "revision_count": incident.revision_count or 0,
+            "title": incident.title,
+        }
+        if extra_context:
+            marker_payload.update(extra_context)
+        markers.set_coroner_incident(task, marker_payload)
         await self.session.flush()
         self.log.info(
             "coroner postmortem cycle opened (Auditor)",

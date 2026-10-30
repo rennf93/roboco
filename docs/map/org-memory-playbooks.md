@@ -24,7 +24,7 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 |---|---|---|---|
 | LessonInput | dataclass | roboco/services/memory_distiller.py:25 | Completed-task facts (title, ACs, dev/qa notes, commit messages) fed to the distiller |
 | _build_prompt | function | roboco/services/memory_distiller.py:40 | Render the fixed Problem/Approach/Gotcha <=120-word distillation prompt |
-| _chat | function | roboco/services/memory_distiller.py:62 | One OpenAI-compatible call to the local LLM (glm-5.2:cloud); None on non-success/empty |
+| _chat | function | roboco/services/memory_distiller.py:62 | One OpenAI-compatible call to the local LLM (glm-5.3:cloud); None on non-success/empty |
 | MemoryDistiller.distill | method | roboco/services/memory_distiller.py:87 | Return a <=120-word lesson or None (NONE sentinel, failure, or over-limit truncation) |
 | _slugify | function | roboco/services/playbook.py:35 | Derive a unique <=80-char slug from the playbook title |
 | PlaybookService.draft | method | roboco/services/playbook.py:45 | Create a DRAFT playbook; savepoint-isolates the insert to convert slug-UNIQUE TOCTOU into a clean ConflictError |
@@ -188,7 +188,7 @@ org-memory-playbooks
 - ROBOCO_ORG_MEMORY_ENABLED (default off) — gates the whole loop: distill-vs-legacy capture, index_approved/unindex_playbook no-op when off, _institutional_memory returns [] when off
 - ROBOCO_ORG_MEMORY_TOP_K (default 3, 1..10) — max institutional-memory items injected into a briefing
 - ROBOCO_ORG_MEMORY_MIN_SCORE (default 0.6, 0..1) — cosine-similarity floor; below it nothing is injected
-- ROBOCO_LOCAL_LLM_MODEL (default glm-5.2:cloud) + ROBOCO_LOCAL_LLM_BASE_URL — the distiller + RAG synthesis LLM endpoint
+- ROBOCO_LOCAL_LLM_MODEL (default glm-5.3:cloud) + ROBOCO_LOCAL_LLM_BASE_URL — the distiller + RAG synthesis LLM endpoint
 - ROBOCO_DEFAULT_EMBEDDING_MODEL (default qwen3-embedding:0.6b) + ROBOCO_EMBEDDING_DIMENSIONS — embedder for LEARNINGS/PLAYBOOKS chunks
 - ROBOCO_RAG_CHUNK_STRATEGY / ROBOCO_RAG_CHUNK_SIZE / ROBOCO_RAG_CHUNK_OVERLAP / ROBOCO_RAG_PERSIST_DIR / ROBOCO_RAG_STORE_URL — chunking + store DSN
 - ROBOCO_DATABASE_* (VectorStore.store_url derived) — required; missing store_url raises at plugin initialize()
@@ -223,7 +223,7 @@ org-memory-playbooks
 | 15effce0 | [fix] playbook de-index path | optimal.py added OptimalService.unindex_playbook (delete chunks + tracking row, best-effort); playbooks.py added PlaybooksIndexPlugin.delete_playbook; repositories/indexed_document.py added IndexedDocumentRepository.delete_by_source. reject/archive now actually remove a previously-approved playbook from the corpus. |
 | 15effce0 | [fix] atomic reindex (F108) | base.py replaced separate delete_by_source + add_chunks with VectorStore.replace_chunks (single connection, single tx) for replace_on_reingest plugins — closes concurrent-reindex duplicate-chunk race; failed insert now reverts the delete. |
 | 15effce0 | [fix] OptimalService.close() ordering | optimal.py: close() now cancels the startup _indexing_task FIRST (can be mid-flight writing through plugins) before the periodic task and plugin close — prevents writes against closed plugins. |
-| 15effce0 | [chore] glm-5 -> glm-5.2:cloud | memory_distiller.py docstring + IndexConfig.llm_model default bumped from glm-5:cloud to glm-5.2:cloud (matches the fleet LLM bump). No behavior change beyond the model name. |
+| 15effce0 | [chore] glm-5 -> glm-5.3:cloud | memory_distiller.py docstring + IndexConfig.llm_model default bumped from glm-5:cloud to glm-5.3:cloud (matches the fleet LLM bump). No behavior change beyond the model name. |
 
 > Post-snapshot updates (since 2026-06-29): commit 536bbb64 (Chore/all/logical gaps sweep, PR #286) touched three files in this slice: (1) roboco/services/playbook.py — archive() and reject() now write archived_by/archived_at (new columns, migration 053) instead of overwriting approved_by/approved_at; content_actions._curate_playbook wraps the gating session.commit() in a PendingRollbackError guard (#55) so a poisoned session returns a clean invalid_state and never falls through to index an uncommitted playbook. (2) roboco/services/optimal.py — record_learning reuses the plugin's returned doc_id for the tracking-row source URI, closing the lrn-/learn- mismatch (#182/#183). (3) roboco/services/optimal_brain/vector_store.py — replace_chunks skips the wipe when chunks is non-empty but all lack embeddings (#181), preserving existing rows on embedder failure.
 

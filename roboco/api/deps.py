@@ -43,6 +43,7 @@ from roboco.services.notification import NotificationService
 from roboco.services.notification_delivery import NotificationDeliveryService
 from roboco.services.permissions import AgentContext, PermissionService
 from roboco.services.product import ProductService
+from roboco.services.project import get_project_service
 from roboco.services.repositories import resolve_agent_identity, resolve_agent_uuid
 from roboco.services.task import TaskService
 from roboco.services.work_session import WorkSessionService
@@ -649,7 +650,13 @@ def require_developer_or_above(role: Any, action: str) -> None:
         )
 
 
-_GLOBAL_CELL_ACCESS_ROLES: frozenset[Role] = (BOARD_ROLES - {Role.HEAD_MARKETING}) | {
+# Cell scope is a different axis from _PM_OR_ABOVE_ROLES approval authority:
+# every org-wide role (lifecycle._ORG_WIDE_ROLES minus the flag-gated devops
+# lane) acts across ALL cells by design — head_marketing plans exploration
+# roots on any cell's project through the gateway, so refusing it here
+# 403'd the same project's routes the gateway directs it at (edge found in
+# the 2026-09-27 access-guard regression hunt).
+_GLOBAL_CELL_ACCESS_ROLES: frozenset[Role] = BOARD_ROLES | {
     Role.MAIN_PM,
     Role.CEO,
 }
@@ -748,6 +755,7 @@ async def get_choreographer(
             audit=get_audit_service(),
             evidence_repo=EvidenceRepo(db_session),
             product=ProductService(db_session),
+            project=get_project_service(db_session),
             orchestrator=orch,
             stream_bus=bus,
         )

@@ -736,6 +736,7 @@ async def test_handle_stopped_container_crash_finalizes_then_restarts() -> None:
 
     with (
         patch.object(orch, "_finalize_spawn_session", side_effect=_fake_finalize),
+        patch.object(orch, "_is_paused", AsyncMock(return_value=False)),
         patch.object(orch, "spawn_agent", AsyncMock()) as mock_spawn,
     ):
         await orch._handle_stopped_container(_AGENT_ID, instance, 1)

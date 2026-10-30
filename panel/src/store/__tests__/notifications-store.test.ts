@@ -24,11 +24,8 @@ function makeNotification(overrides: Partial<Notification> = {}): Notification {
     is_fully_acknowledged: false,
     is_read: false,
     related_task_id: null,
-    related_message_ids: [],
     timestamp: new Date().toISOString(),
     expires_at: null,
-    acked_by: [],
-    acked_at: {},
     ...overrides,
   };
 }

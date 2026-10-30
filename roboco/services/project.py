@@ -13,7 +13,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.config import settings
-from roboco.db.tables import ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.exceptions import ValidationError
 from roboco.foundation.policy.forge import detect_provider, validate_project_forge
 from roboco.models.base import TaskStatus, Team
@@ -648,16 +648,39 @@ class ProjectService(BaseService):
         """
         Add an agent to the allowed list for a project.
 
+        The list NARROWS within the assigned cell (check_agent_access
+        requires the cell match first), so a grant is only meaningful for
+        an agent already in that cell: a cross-cell or nonexistent id would
+        flip the project from whole-cell access to list-only while the
+        added agent gains nothing, locking out every legitimate cell
+        member with one call. Both are rejected here, at the services-layer
+        chokepoint, so the guard the list feeds cannot be undermined by its
+        own write path.
+
         Args:
             project_id: Project to update
             agent_id: Agent to allow
 
         Returns:
             The updated project or None if not found
+
+        Raises:
+            NotFoundError: If the agent does not exist
+            ValidationError: If the agent is outside the assigned cell
         """
         project = await self.get(project_id)
         if not project:
             return None
+
+        agent = await self.session.get(AgentTable, agent_id)
+        if agent is None:
+            raise NotFoundError("Agent", str(agent_id))
+        if agent.team != project.assigned_cell:
+            raise ValidationError(
+                f"agent {agent_id} is in the {agent.team} cell; project "
+                f"{project_id} is assigned to the {project.assigned_cell} "
+                "cell and the allowed-agents list only narrows within it"
+            )
 
         # Initialize list if None (means all agents in cell allowed)
         if project.allowed_agents is None:
@@ -688,9 +711,13 @@ class ProjectService(BaseService):
             return None
 
         if agent_id in project.allowed_agents:
-            project.allowed_agents = [
-                a for a in project.allowed_agents if a != agent_id
-            ]
+            remaining = [a for a in project.allowed_agents if a != agent_id]
+            # An emptied list is no restriction at all (rule 3: None = whole
+            # cell has access) -- collapse back to None so removing the last
+            # allowed agent actually restores cell-default access instead of
+            # denying everyone (check_agent_access treats a non-None empty
+            # list as "nobody is on the list", not "no restriction").
+            project.allowed_agents = remaining or None
 
         await self.session.flush()
         return project

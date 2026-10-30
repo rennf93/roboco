@@ -90,14 +90,14 @@ SYSTEM_PROMPT_PATH = Path(
 # same script the Claude/grok paths install (verified to accept kimi's
 # Claude-schema snake_case stdin payload unmodified).
 BASH_GUARD_HOOK = os.environ.get(
-    "ROBOCO_BASH_GUARD_HOOK", "/app/scripts/bash-guard-hook.sh"
+    "ROBOCO_BASH_GUARD_HOOK", "/app/scripts/hooks/bash-guard-hook.sh"
 )
 # A [[hooks]] entry has no `env` field (live-verified: one present drops the
 # WHOLE hooks section silently — see kimi_hooks_config below), so
 # ROBOCO_GUARD_SKIP_GIT=1 rides this wrapper's own export instead. Baked into
 # the kimi image alongside the entrypoint (docker/agent-kimi.Dockerfile).
 KIMI_BASH_GUARD_WRAPPER = os.environ.get(
-    "ROBOCO_KIMI_BASH_GUARD_WRAPPER", "/app/scripts/kimi-bash-guard-wrapper.sh"
+    "ROBOCO_KIMI_BASH_GUARD_WRAPPER", "/app/scripts/hooks/kimi-bash-guard-wrapper.sh"
 )
 # The entrypoint reads a small preflight ok/fail from `--check`'s exit code —
 # no args file handoff is needed for kimi (unlike grok/codex/gemini's

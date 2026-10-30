@@ -230,7 +230,42 @@ class PrompterService:
         )
         self._session.add(row)
         await self._session.commit()
+        if role == "user":
+            await self._log_intake_preroute_advisory(session_id, content)
         return row
+
+    async def _log_intake_preroute_advisory(
+        self, session_id: str, content: str
+    ) -> None:
+        """B3 intake_preroute advisory on the panel-side live intake path.
+
+        A live intake chat is a human-confirmed session, so the pilot's
+        route verdict here is a HINT, never a suppression or a redirect:
+        the turn is always recorded and the interview always continues
+        (fail-open doctrine - Decisions only adds behavior, never
+        subtracts). The confident verdict lands in the audit log as shadow
+        data for calibration; runs after the commit so a pilot failure
+        can never poison the persistence transaction.
+        """
+        from roboco.services.decisions import pilots_content
+
+        try:
+            route = await pilots_content.intake_preroute(
+                self._session, text=content, ref=session_id
+            )
+        except Exception as exc:
+            logger.debug(
+                "intake preroute advisory failed (best-effort)", error=str(exc)
+            )
+            with contextlib.suppress(Exception):
+                await self._session.rollback()
+            return
+        if route is not None:
+            logger.info(
+                "intake preroute advisory: user turn may not be intake material",
+                session_id=session_id,
+                route=route.value,
+            )
 
     async def _assignee_is_board(self, agent_id: UUID) -> bool:
         """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""

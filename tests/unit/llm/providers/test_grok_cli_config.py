@@ -150,12 +150,12 @@ def test_bash_roles_deny_the_full_git_mutation_set() -> None:
 
 
 def test_bash_guard_hook_config_skips_git() -> None:
-    handler = gc.bash_guard_hook_config("/app/scripts/bash-guard-hook.sh")["hooks"][
-        "PreToolUse"
-    ][0]
+    handler = gc.bash_guard_hook_config("/app/scripts/hooks/bash-guard-hook.sh")[
+        "hooks"
+    ]["PreToolUse"][0]
     assert handler["matcher"] == "Bash"
     inner = handler["hooks"][0]
-    assert inner["command"] == "/app/scripts/bash-guard-hook.sh"
+    assert inner["command"] == "/app/scripts/hooks/bash-guard-hook.sh"
     # Git is handled by graceful --deny, so the hook skips it (exfil only).
     assert inner["env"]["ROBOCO_GUARD_SKIP_GIT"] == "1"
 
@@ -186,7 +186,7 @@ def test_write_grok_fable_hooks_writes_honesty_nudge_when_enabled(
         patch("roboco.config.settings.fable_mode_enabled", True),
         patch(
             "roboco.llm.providers.grok_cli_config.FABLE_HONESTY_NUDGE_HOOK",
-            "/app/scripts/fable-honesty-nudge-hook.sh",
+            "/app/scripts/hooks/fable-honesty-nudge-hook.sh",
         ),
         patch("pathlib.Path.is_file", return_value=True),
     ):

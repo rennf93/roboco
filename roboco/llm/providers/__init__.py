@@ -20,6 +20,20 @@ Backends:
   (kimi-code) CLI on a Kimi subscription (mounted ``~/.kimi-code`` auth,
   one-shot delivery roles only — see :mod:`roboco.llm.providers.kimi` for the
   V1 scope).
+- :class:`OpenRouterProvider` — any of OpenRouter's models via the opencode
+  CLI, behind one metered API key (the Ollama shape — static key via env, no
+  ``~/.`` auth mount, no refresh loop; one-shot delivery roles only — see
+  :mod:`roboco.llm.providers.openrouter` for the V1 scope).
+- :class:`NebiusProvider` - Nebius Token Factory's open models (NVIDIA
+  Nemotron et al.) via the opencode CLI, behind one metered API key (the
+  same Ollama shape; one-shot delivery roles only - see
+  :mod:`roboco.llm.providers.nebius` for the V1 scope).
+- :class:`HumminCliProvider` — the GLM family via the GLM-native ``hummin``
+  CLI (pi-harness fork) headless in Docker, behind the operator's Z.ai GLM
+  Coding Plan key injected as ``ZAI_API_KEY`` (the OpenRouter shape — no
+  ``~/.`` auth mount; one-shot delivery roles only — see
+  :mod:`roboco.llm.providers.hummin` for the V1 scope, including the
+  no-MCP gap).
 """
 
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
@@ -27,7 +41,10 @@ from roboco.llm.providers.claude_code import ClaudeCodeProvider
 from roboco.llm.providers.codex import CodexCliProvider
 from roboco.llm.providers.gemini import GeminiCliProvider
 from roboco.llm.providers.grok import GrokCliProvider
+from roboco.llm.providers.hummin import HumminCliProvider
 from roboco.llm.providers.kimi import KimiCliProvider
+from roboco.llm.providers.nebius import NebiusProvider
+from roboco.llm.providers.openrouter import OpenRouterProvider
 from roboco.llm.providers.registry import ProviderNotRegisteredError, ProviderRegistry
 
 __all__ = [
@@ -36,7 +53,10 @@ __all__ = [
     "CodexCliProvider",
     "GeminiCliProvider",
     "GrokCliProvider",
+    "HumminCliProvider",
     "KimiCliProvider",
+    "NebiusProvider",
+    "OpenRouterProvider",
     "ProviderError",
     "ProviderNotRegisteredError",
     "ProviderRegistry",

@@ -31,6 +31,7 @@ from roboco.config import settings
 from roboco.db.tables import UserTable
 from roboco.models import AgentRole
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import create_async_engine
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -602,6 +603,17 @@ async def test_login_route_parses_oauth2_form_not_query_params(
     monkeypatch.setattr(settings, "cloud_auth_enabled", True)
     app = FastAPI()
     mount_cloud_auth(app, "/api/auth")
+    # The REAL router queries settings.database_url; do not depend on
+    # machine-state drift (a pre-provisioned "roboco" DB on the default
+    # localhost) - bootstrap the one table the login flow reads.
+    engine = create_async_engine(settings.database_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            UserTable.metadata.create_all,
+            tables=[UserTable.metadata.tables["users"]],
+            checkfirst=True,
+        )
+    await engine.dispose()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"

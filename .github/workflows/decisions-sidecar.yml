@@ -1,0 +1,280 @@
+name: Decisions sidecar
+
+# The self-hosted tiers' live contract: stand up the REAL stack (real
+# llama.cpp decision server running the pinned ggml-org/Laya-GGUF, real
+# FastAPI proxy from docker/decisions/server.py with clef disabled) and run
+# the orchestrator's own client + schemas against it. This is the layer unit
+# tests cannot give, and it has already earned its keep offline: a noul
+# emitted as a bare bool (and the missing confidence beside it) once
+# dead-ended the Laya tier - invisible to mocked adapters, caught live.
+#
+# Two jobs, both fail loudly:
+#   live-contract, venv-based: download the llama-b11361 ubuntu release
+#     binary, serve the pinned Laya-GGUF through llama-server on 8111, run
+#     the proxy with CLEF_ENABLED=false, drive
+#     tests/integration/test_decisions_sidecar_live.py: /health shows laya
+#     ok + clef disabled, a laya-routed POST returns a real inference, and a
+#     clef-routed POST 503s cleanly. NEVER fetches the 19GB clef GGUF.
+#   image-build, docker-based: builds docker/decisions.Dockerfile (validating the
+#     multi-stage llama.cpp build + weight fetch the NAS image build
+#     performs) with FETCH_CLEF_WEIGHTS=false and smokes the served
+#     container. Pushes only (not pull_request). The default-weight build
+#     (both GGUFs baked) stays NAS-side; it is not CI-feasible.
+
+on:
+  push:
+    branches:
+      - master
+      - slave
+    paths:
+      - 'docker/decisions/**'
+      - 'docker/decisions.Dockerfile'
+      - 'tests/integration/test_decisions_sidecar_live.py'
+      - '.github/workflows/decisions-sidecar.yml'
+  pull_request:
+    paths:
+      - 'docker/decisions/**'
+      - 'docker/decisions.Dockerfile'
+      - 'tests/integration/test_decisions_sidecar_live.py'
+      - '.github/workflows/decisions-sidecar.yml'
+  schedule:
+    # Weekly, Monday 04:23 UTC: the tiers drift upstream (llama.cpp tags,
+    # GGUF revisions) without any repo file changing.
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  # The llama.cpp pin MUST stay in lockstep with docker/decisions.Dockerfile's
+  # LLAMA_CPP_REF arg: the point of this workflow is to test what ships.
+  # b11361 is the first release tag carrying POST /v1/systemone (PR #29818;
+  # b11352 predates the merge), so both pins name it.
+  LLAMA_CPP_REF: b11361
+  # The GGUF pin MUST stay in lockstep with the Dockerfile's LAYA_HF_REVISION
+  # arg and the entrypoint's LAYA_GGUF_PATH default.
+  LAYA_HF_REVISION: 22265007700297ba9e128297e82540cf28c5d7d4
+  LAYA_GGUF_FILE: Laya-Q8_0.gguf
+
+jobs:
+  live-contract:
+    name: Live sidecar contract (real llama.cpp laya)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install repo dependencies
+        run: uv sync --extra dev
+
+      - name: Cache the Laya-GGUF weights
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: laya-gguf-${{ env.LAYA_HF_REVISION }}-${{ env.LAYA_GGUF_FILE }}
+
+      - name: Download the pinned Laya-GGUF (~449MB)
+        run: |
+          mkdir -p models
+          curl -fsSL --retry 3 -o "models/${LAYA_GGUF_FILE}" \
+            "https://huggingface.co/ggml-org/Laya-GGUF/resolve/${LAYA_HF_REVISION}/${LAYA_GGUF_FILE}"
+          [ -s "models/${LAYA_GGUF_FILE}" ]
+
+      - name: Download the llama-server release binary at the pin
+        run: |
+          mkdir -p llama-bin
+          curl -fsSL --retry 3 -o /tmp/llama.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_REF}/llama-${LLAMA_CPP_REF}-bin-ubuntu-x64.tar.gz"
+          tar -xzf /tmp/llama.tar.gz -C llama-bin
+          find llama-bin -maxdepth 2 -type f \( -name 'llama-server' -o -name '*.so' \) | head
+
+      - name: Start the laya llama-server (the cheap tier, for real)
+        run: |
+          # -mindepth 1: without it find matches the llama-bin root itself
+          # (it also globs llama-*), so LLAMA_DIR resolves to the wrong dir.
+          LLAMA_DIR="$(find llama-bin -mindepth 1 -maxdepth 1 -type d -name 'llama-*' | head -1)"
+          LD_LIBRARY_PATH="$LLAMA_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$LLAMA_DIR/llama-server" \
+            --model "models/${LAYA_GGUF_FILE}" \
+            --host 127.0.0.1 \
+            --port 8111 \
+            --ctx-size 4096 \
+            --threads 0 \
+            --alias ggml-org/Laya-GGUF \
+            --no-webui \
+            --metrics > /tmp/llama-laya.log 2>&1 &
+          echo $! > /tmp/llama-laya.pid
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8111/health > /tmp/llama-health.json 2>/dev/null; then
+              cat /tmp/llama-health.json
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::llama-server never became healthy"
+          cat /tmp/llama-laya.log
+          exit 1
+
+      - name: Start the sidecar proxy (clef disabled, no 19GB tier in CI)
+        run: |
+          CLEF_ENABLED=false \
+            uv run python docker/decisions/server.py > /tmp/sidecar.log 2>&1 &
+          echo $! > /tmp/sidecar.pid
+
+      - name: Wait for /health and assert the degraded shape
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8100/health > /tmp/health.json 2>/dev/null; then
+              break
+            fi
+            sleep 3
+          done
+          if [ ! -s /tmp/health.json ]; then
+            echo "::error::sidecar never became healthy"
+            cat /tmp/sidecar.log
+            exit 1
+          fi
+          cat /tmp/health.json
+          python3 - <<'EOF'
+          import json
+
+          with open("/tmp/health.json") as fh:
+              body = json.load(fh)
+          assert body["status"] == "degraded", body
+          assert body["clef"]["ok"] is False, body
+          assert "disabled" in body["clef"]["detail"], body
+          assert body["laya"]["ok"] is True, body
+          print("health shape: laya ok, clef disabled, degraded 200 - OK")
+          EOF
+
+      - name: A clef-routed request degrades cleanly (503, no silent reroute)
+        run: |
+          code=$(curl -s -o /tmp/clef-refusal.json -w '%{http_code}' \
+            http://127.0.0.1:8100/api/alpha/decisions \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "model": "ggml-org/Clef-GGUF:Q4_K_M",
+              "state": {"repo": "roboco"},
+              "questions": {
+                "gate": {"type": "noul", "instructions": "The tier is reachable."}
+              },
+              "session_id": "ci-clef-refusal"
+            }')
+          cat /tmp/clef-refusal.json
+          python3 - "$code" <<'EOF'
+          import json
+          import sys
+
+          code = int(sys.argv[1])
+          assert code == 503, f"clef-routed request must 503 while clef is disabled, got {code}"
+          body = json.load(open("/tmp/clef-refusal.json"))
+          assert "clef" in body["detail"], body
+          print("clef-routed refusal: 503 with remediation detail - OK")
+          EOF
+
+      - name: Run the live contract suite
+        run: |
+          ROBOCO_SIDECAR_LIVE_URL=http://127.0.0.1:8100 \
+            uv run pytest tests/integration/test_decisions_sidecar_live.py -v
+
+      - name: Stop the sidecar and llama-server
+        if: always()
+        run: |
+          for pidfile in /tmp/sidecar.pid /tmp/llama-laya.pid; do
+            if [ -f "$pidfile" ]; then kill "$(cat "$pidfile")" 2>/dev/null || true; fi
+          done
+
+      - name: Upload the logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sidecar-logs
+          path: |
+            /tmp/sidecar.log
+            /tmp/llama-laya.log
+            /tmp/health.json
+
+  image-build:
+    name: Sidecar image builds and serves
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # FETCH_CLEF_WEIGHTS=false: the 19GB clef GGUF stays NAS-side. This
+      # job validates the multi-stage build machinery (llama.cpp compile at
+      # the pin, weight fetch, proxy assembly) and smokes the laya tier.
+      - name: Build the sidecar image (llama.cpp build + weight fetch)
+        run: |
+          docker build -f docker/decisions.Dockerfile \
+            --build-arg "LLAMA_CPP_REF=${LLAMA_CPP_REF}" \
+            --build-arg "LAYA_HF_REVISION=${LAYA_HF_REVISION}" \
+            --build-arg "FETCH_CLEF_WEIGHTS=false" \
+            -t roboco-decisions:ci .
+
+      - name: Run the image
+        run: |
+          docker run -d --name sidecar -e CLEF_ENABLED=false -p 8100:8100 roboco-decisions:ci
+          for _ in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8100/health > /tmp/health.json 2>/dev/null; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::container never became healthy"
+          docker logs sidecar
+          exit 1
+
+      - name: Smoke a decisions POST through the laya tier
+        run: |
+          curl -fsS http://127.0.0.1:8100/api/alpha/decisions \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "model": "ggml-org/Laya-GGUF",
+              "state": {"repo": "roboco", "attempt_number": 1},
+              "questions": {
+                "gate": {
+                  "type": "noul",
+                  "instructions": "This failure is transient rather than a code regression."
+                }
+              },
+              "session_id": "ci-image-smoke"
+            }' | tee /tmp/decision.json
+          python3 - <<'EOF'
+          import json
+
+          with open("/tmp/decision.json") as fh:
+              body = json.load(fh)
+          gate = body["answers"]["gate"]
+          assert isinstance(gate["noul"], float), gate
+          assert not isinstance(gate["noul"], bool), gate
+          assert 0.0 <= gate["noul"] <= 1.0, gate
+          assert gate["confidence"] > 0.0, gate
+          assert body["usage"]["cost"] == 0.0, gate
+          print("image smoke: noul is a float probability with confidence, cost $0 - OK")
+          EOF
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f sidecar 2>/dev/null || true
+
+      - name: Upload the container log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-log
+          path: |
+            /tmp/health.json
+            /tmp/decision.json

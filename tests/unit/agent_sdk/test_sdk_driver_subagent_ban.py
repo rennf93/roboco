@@ -19,10 +19,13 @@ def test_intake_options_disallow_task() -> None:
         system_prompt="x", cwd="/tmp", session_id="s1", model="sonnet"
     )
     assert "Task" in opts.disallowed_tools
-    assert "Task" not in opts.allowed_tools
+    # No allowed_tools at all: a whole-tool entry auto-approves before the
+    # can_use_tool gate (CanUseToolShadowedWarning, live 2026-09-17), so the
+    # options must carry no allowlist and let the gate decide every call.
+    assert not opts.allowed_tools
 
 
 def test_secretary_options_disallow_task() -> None:
     opts = build_secretary_options(system_prompt="x", cwd="/tmp", model="sonnet")
     assert "Task" in opts.disallowed_tools
-    assert "Task" not in opts.allowed_tools
+    assert not opts.allowed_tools

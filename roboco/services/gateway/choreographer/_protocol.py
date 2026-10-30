@@ -123,6 +123,7 @@ class ChoreographerHelpers:
         role_str: str | None = None,
         skip_dev_guards: bool = False,
         check_project_budget: bool = False,
+        check_agent_access: bool = False,
     ) -> Envelope | None:
         raise NotImplementedError
 

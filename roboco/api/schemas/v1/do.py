@@ -402,7 +402,10 @@ class NothingToProposeRequest(BaseModel):
     (one board role can own several open cycles from different programs at
     once) — which program/role it resolves against comes from THAT task."""
 
-    task_id: UUID
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     reason: str = Field(..., min_length=1)
 
 
@@ -421,7 +424,12 @@ class NotifyRequest(BaseModel):
 
 
 class EvidenceRequest(BaseModel):
-    task_id: UUID
+    # str, NOT UUID: agents frequently pass the 8-char short id the prompts
+    # and task cards display (#372eac39 style); a UUID-typed field 422s those
+    # before any handler runs, and the failed-evidence loop is what wedged
+    # be-qa's review on 2026-09-28 (795 evidence errors, verdict never fired).
+    # The actions layer resolves the prefix against the tasks table.
+    task_id: str
 
 
 class RequestSandboxRequest(BaseModel):
@@ -431,6 +439,34 @@ class RequestSandboxRequest(BaseModel):
 
     services: list[str] | None = None
     extensions: dict[str, list[str]] | None = None
+
+
+class RunSandboxTestsRequest(BaseModel):
+    """Run the caller's test command for the ACTIVE task inside a Token
+    Factory Sandbox microVM (dev + QA verb, default-off flag). The workspace
+    archive is uploaded server-side; ``command`` runs at the archive root."""
+
+    command: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Shell command to run at the workspace root, e.g. 'pytest -q'",
+    )
+    image: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+        description=(
+            "Sandbox image ref (a 'tag:'-prefixed reference or an image "
+            "uuid); default = settings. Constrained to reference syntax - "
+            "no whitespace or shell metacharacters, it names an image, it "
+            "is never executed"
+        ),
+    )
+    timeout_seconds: int | None = Field(
+        default=None,
+        ge=30,
+        le=3600,
+        description="Per-run wall-clock ceiling; default = settings",
+    )
 
 
 class RequestRenderRequest(BaseModel):
@@ -455,7 +491,10 @@ class ProgressRequest(BaseModel):
     Populates the panel's Progress tab.
     """
 
-    task_id: UUID
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     message: str = Field(..., min_length=1)
     plan_step: str | None = Field(
         default=None,
@@ -484,6 +523,37 @@ class ReadMessagesRequest(BaseModel):
     """No params — clears the caller's unread A2A inbox (X-Agent-ID header)."""
 
 
+class TaskTimeRequest(BaseModel):
+    """Task to compute real, uptime-adjusted elapsed times for."""
+
+    # str, NOT UUID - same short-id rationale as EvidenceRequest.
+    task_id: str
+
+
+class PreflightDiffRequest(BaseModel):
+    """Task to pre-flight before i_am_done. The agent sends nothing but the
+    task context: the diff, criteria, and questions are composed
+    server-side (spec 6.4)."""
+
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
+
+
+class TriageFailureRequest(BaseModel):
+    """Failed test to triage (spec 6.5). The agent sends the test name and
+    the error excerpt; changed files, retry state, and flake history are
+    composed server-side."""
+
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
+    test_name: str
+    error_excerpt: str = ""
+
+
 class PRUpdateRequest(BaseModel):
     """Update an open PR's title/body and/or request reviewers.
 
@@ -500,7 +570,10 @@ class PRUpdateRequest(BaseModel):
     mapping, otherwise the slugs go through as-is.
     """
 
-    task_id: UUID
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     title: str | None = None
     body: str | None = None
     reviewers: list[str] | None = None
@@ -546,5 +619,8 @@ class ArchivePlaybookRequest(BaseModel):
 class CurateVaultRequest(BaseModel):
     """Auditor writes a root task-tree's vault narrative section."""
 
-    task_id: UUID
+    # str, NOT UUID: same short-id rationale as EvidenceRequest - task
+    # cards and prompts display 8-char hex prefixes; a UUID-typed field
+    # 422s them before any handler runs.
+    task_id: str
     narrative: str = Field(..., min_length=1)

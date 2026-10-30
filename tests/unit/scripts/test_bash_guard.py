@@ -17,7 +17,9 @@ from pathlib import Path
 #   parents[1] = unit
 #   parents[2] = tests
 #   parents[3] = <repo root>
-GUARD = Path(__file__).parents[3] / "docker" / "scripts" / "bash-guard-hook.sh"
+GUARD = (
+    Path(__file__).parents[3] / "docker" / "scripts" / "hooks" / "bash-guard-hook.sh"
+)
 
 _DENIED = 2
 _ALLOWED = 0

@@ -38,6 +38,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `TaskCellProjectTable` | class | tables.py:632 | Per-cell project map for a MegaTask root-subtask (052). |
 | `WaitingRecordTable` | class | tables.py:1872 | Persisted dispatcher waiting records (restore at start). |
 | `IndexedDocumentTable` | class | tables.py:1651 | RAG corpus docs (added to chain by 017). |
+| `VerbLatencySampleTable` | class | tables.py:~2698 | Per-verb HTTP duration samples persisted from `RequestLoggingMiddleware` for p50/p95 aggregation by `MetricsService.get_verb_latency_stats`. Migration 094; indexes on `verb`, `created_at`, composite `(verb, created_at)`. |
 | `UserTable` | class | tables.py:2603 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
 | `XCredentialsTable` | class | tables.py:2650 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
 | `XSeenMentionTable` | class | tables.py:2675 | X mentions-poll dedup ledger, keyed by mention id (059). |

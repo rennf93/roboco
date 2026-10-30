@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 from roboco.models.runtime import AgentInstance
-from roboco.runtime import orchestrator as orch_mod
+from roboco.runtime.engines import spawn_exit as usage_root_mod
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
@@ -111,13 +111,13 @@ async def test_resolve_active_tokens_routes_kimi_to_usage_json(
 def test_kimi_usage_dir_branches_compose_vs_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "")
     local = AgentOrchestrator._kimi_usage_dir("be-dev-1")
     assert "roboco-kimi-usage" in str(local)
     assert local.name == "be-dev-1"
 
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "/volume1/roboco")
-    monkeypatch.setattr(orch_mod, "KIMI_USAGE_DATA_DIR", "/data/kimi-usage")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "/volume1/roboco")
+    monkeypatch.setattr(usage_root_mod, "KIMI_USAGE_DATA_DIR", "/data/kimi-usage")
     assert str(AgentOrchestrator._kimi_usage_dir("be-dev-1")) == (
         "/data/kimi-usage/be-dev-1"
     )
@@ -135,7 +135,7 @@ def test_kimi_usage_dir_rejects_path_traversal(bad: str) -> None:
 def test_kimi_usage_json_reads_the_real_local_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    monkeypatch.setattr(usage_root_mod, "PROJECT_HOST_PATH", "")
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     udir = tmp_path / "roboco-kimi-usage" / "be-dev-1"
     udir.mkdir(parents=True)

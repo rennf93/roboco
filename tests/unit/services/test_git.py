@@ -25,7 +25,12 @@ from roboco.exceptions import (
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.forge import RepoRef
 from roboco.services.gateway.quality_gate import GateResult
-from roboco.services.git import GitService
+from roboco.services.git import (
+    _GH_PR_BODY_KEEP,
+    _GH_PR_BODY_LIMIT,
+    _GH_PR_TITLE_LIMIT,
+    GitService,
+)
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -1060,6 +1065,68 @@ async def test_create_pr_returns_pr_dict() -> None:
     assert out["pr_number"] == _EXPECTED_PR_NUMBER
     assert "github.com" in out["pr_url"]
     assert out["is_root_pr"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_pr_truncates_oversized_description_body() -> None:
+    """A task whose description blows past GitHub's 65536-char PR-body cap
+    (e.g. a root task with a whole changelog pasted in) must still open its
+    PR: _post_pr truncates the body safely under the cap and appends a
+    marker pointing at the task, instead of 422ing on every retry."""
+    project_id = uuid4()
+    huge_description = "C" * 70000
+    fake_task = MagicMock(
+        id=uuid4(),
+        project_id=project_id,
+        assigned_to=uuid4(),
+        title="T" * 300,  # also over the 256-char title cap
+        description=huge_description,
+    )
+    fake_project = MagicMock(slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(svc, "_record_pr_atomically", AsyncMock())
+    # parent == default → _ensure_base_on_remote short-circuits (no git call)
+    _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
+    _bind(svc, "_apply_pr_labels", AsyncMock())
+
+    fake_forge = MagicMock()
+    _sent: dict[object, object] = {}
+
+    async def _capture_create_pr(
+        _repo_ref: object, _token: str, **kwargs: object
+    ) -> MagicMock:
+        _sent.update(kwargs)
+        resp = MagicMock()
+        resp.is_success = True
+        resp.status_code = 201
+        resp.json.return_value = {
+            "number": _EXPECTED_PR_NUMBER,
+            "html_url": f"https://github.com/acme/repo/pull/{_EXPECTED_PR_NUMBER}",
+        }
+        return resp
+
+    fake_forge.create_pr = _capture_create_pr
+
+    with (
+        _patch_project_service(fake_project),
+        patch("roboco.services.git.ForgeRouter", return_value=fake_forge),
+    ):
+        await svc.create_pr(
+            "feature/backend/abc12345", parent="master", is_root_pr=True
+        )
+
+    sent_body = str(_sent["body"])
+    assert len(sent_body) <= _GH_PR_BODY_LIMIT
+    assert sent_body.startswith("C" * _GH_PR_BODY_KEEP)
+    assert sent_body.endswith(
+        f"... [truncated] PR body was {len(huge_description)} characters; "
+        "GitHub limit is 65536; full description lives on the task."
+    )
+    assert len(str(_sent["title"])) <= _GH_PR_TITLE_LIMIT
 
 
 @pytest.mark.asyncio

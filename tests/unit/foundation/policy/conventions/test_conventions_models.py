@@ -90,6 +90,31 @@ def test_builtin_rules_are_language_agnostic_hygiene_only() -> None:
     assert "no_helpers_in_routers" not in BUILTIN_RULES
 
 
+def test_infra_section_parses_declared_globs() -> None:
+    std = ConventionsStandard.parse_yaml('infra:\n  - "Dockerfile*"\n  - "docker/**"\n')
+    assert std.infra == ["Dockerfile*", "docker/**"]
+
+
+def test_infra_empty_list_is_explicit_optout_not_undeclared() -> None:
+    std = ConventionsStandard.parse_yaml("infra: []\n")
+    # [] and None are different declarations: [] opts out of the infra gate,
+    # None falls back to the shipped defaults.
+    assert std.infra == []
+
+
+def test_infra_absent_is_none() -> None:
+    std = ConventionsStandard.parse_yaml(_VALID_YAML)
+    assert std.infra is None
+    assert ConventionsStandard().infra is None
+
+
+def test_unknown_top_level_key_is_ignored_forward_compatible() -> None:
+    # extra="ignore": a new file read by an old binary must parse cleanly and
+    # silently drop the unknown section (and vice versa for infra itself).
+    std = ConventionsStandard.parse_yaml("some_future_section:\n  a: 1\n")
+    assert std.infra is None
+
+
 def test_models_construct_directly() -> None:
     mod = Module(path="app/services", purpose="logic", forbidden=["route"])
     assert mod.forbidden == ["route"]

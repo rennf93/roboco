@@ -92,6 +92,31 @@ class CEOOverview(BaseModel):
     )
 
 
+class PortfolioProjectMetrics(BaseModel):
+    """Per-project metrics row backing `GET /dashboard/portfolio`."""
+
+    project_id: UUID
+    project_slug: str
+    project_name: str
+    active_task_count: int
+    median_lead_time_hours: float | None = Field(
+        default=None,
+        description="Median completion lead time in hours over the window",
+    )
+    rework_rate: float = Field(
+        default=0.0,
+        description="reworked / completed in the window (0.0 with no completions)",
+    )
+    open_findings_count: int = Field(
+        default=0,
+        description="Open (unresolved) review findings on the project's tasks",
+    )
+    monthly_budget_burn_usd: float = Field(
+        default=0.0,
+        description="This calendar month's agent-spawn cost for the project's tasks",
+    )
+
+
 class CreateFlagRequest(BaseModel):
     """Request to create an auditor flag."""
 

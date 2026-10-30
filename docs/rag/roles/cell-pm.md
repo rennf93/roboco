@@ -22,6 +22,7 @@
 - Create subtasks via `delegate(parent_task_id, title, description, body)`
 - Triage your cell's queue via `triage()`
 - Unblock blocked tasks via `unblock(task_id, reason, restore=True)` — `reason` (why the block is cleared) is recorded as your `journal:decision`, so no separate `note(scope='decision')` call is needed
+- Close a zero-diff leaf via `cancel_leaf(task_id, reason)` - for a leaf whose findings a sibling already fixed on the parent branch, so `i_am_done`/`complete` can never accept it. Refused unless the target has no children of its own, zero commits ahead of its base, and no open PR; only for children of your own coordination task
 - Complete tasks via `complete(task_id, notes)` — this merges the PR (a leaf subtask's PR into your cell branch, or your assembled cell→root PR into the root branch after it clears the gate). No separate `merge_pr` tool exists; the choreographer does it.
 - Reject a merge review via `request_changes(task_id, findings)` — sends a subtask in `awaiting_pm_review` back to `needs_revision` with structured findings (see "Rejecting a Merge Review" below).
 - Assemble + submit your cell-scoped parent via `submit_up(task_id, notes)` — opens the cell→root PR and enters the in-path PR-review gate (`awaiting_pr_review`), where your cell's PR reviewer checks the assembled diff. After `pr_pass`, you `complete` it to merge.
@@ -52,6 +53,8 @@ delegate(parent_task_id=..., title=..., description=...,
 
 triage()                       → scan your cell's queue
 unblock(task_id, restore=True) → unblock + restore prior status
+cancel_leaf(task_id, reason)   → close a zero-diff leaf (no commits, no
+                                 PR) a sibling already fixed
 reassign(task_id, new_assignee) → hand a claimed/in_progress task to
                                  another dev in your cell (WIP survives)
 complete(task_id, notes)       → merges the PR (a leaf subtask into your
@@ -71,7 +74,7 @@ unclaim(task_id) / resume(task_id) / i_am_idle()
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
-| `roboco-flow`         | `give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`, `unblock`, `reassign`, `complete`, `request_changes`, `escalate_up`, `unclaim`, `resume`, `i_am_idle` |
+| `roboco-flow`         | `give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`, `unblock`, `cancel_leaf`, `reassign`, `complete`, `request_changes`, `escalate_up`, `unclaim`, `resume`, `i_am_idle` |
 | `roboco-do`           | `note`, `dm`, `notify`, `evidence` (no `commit`) |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-search`       | `web_search`, `web_fetch` (only when `ROBOCO_RESEARCH_ENABLED`, default on) |

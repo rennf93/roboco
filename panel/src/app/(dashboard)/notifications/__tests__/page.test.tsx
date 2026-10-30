@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { PageRefreshProvider } from "@/components/providers";
-import { NotificationType, NotificationPriority, type Notification } from "@/types";
+import {
+  NotificationType,
+  NotificationPriority,
+  type Notification,
+} from "@/types";
 
 const {
   useNotifications,
@@ -42,7 +46,9 @@ function withPageRefresh(ui: ReactNode) {
   return <PageRefreshProvider>{ui}</PageRefreshProvider>;
 }
 
-function buildNotification(overrides: Partial<Notification> = {}): Notification {
+function buildNotification(
+  overrides: Partial<Notification> = {},
+): Notification {
   return {
     id: "notif-1",
     type: NotificationType.TASK_ASSIGNMENT,
@@ -56,11 +62,8 @@ function buildNotification(overrides: Partial<Notification> = {}): Notification 
     is_fully_acknowledged: false,
     is_read: false,
     related_task_id: "11111111-2222-3333-4444-555555555555",
-    related_message_ids: [],
     timestamp: "2026-07-11T09:00:00Z",
     expires_at: null,
-    acked_by: [],
-    acked_at: {},
     ...overrides,
   };
 }
@@ -114,7 +117,12 @@ describe("NotificationsPage", () => {
     );
 
     useNotifications.mockReturnValue({
-      data: { items, total: items.length, unread_count: 0, pending_ack_count: 0 },
+      data: {
+        items,
+        total: items.length,
+        unread_count: 0,
+        pending_ack_count: 0,
+      },
       isLoading: false,
       error: null,
       refetch: vi.fn(),

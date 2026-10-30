@@ -85,7 +85,9 @@ describe("TelegramCredentialsForm", () => {
     await waitFor(() =>
       expect(
         (
-          screen.getByLabelText("Bot token (from @BotFather)") as HTMLInputElement
+          screen.getByLabelText(
+            "Bot token (from @BotFather)",
+          ) as HTMLInputElement
         ).value,
       ).toBe(""),
     );

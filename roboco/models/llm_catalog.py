@@ -69,7 +69,8 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     # --- Ollama Cloud (verbatim tags) ---
     # Pro plan active as of 2026-04-22. Drop any entry that stops working —
     # the catalog is the single source of truth the Settings dropdown renders from.
-    CatalogEntry("glm-5.2:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.2"),
+    CatalogEntry("glm-5.3:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.3"),
+    CatalogEntry("glm-5.3-flash:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.3 Flash"),
     CatalogEntry("kimi-k2.6:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.6"),
     CatalogEntry("kimi-k2.7-code:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.7 Code"),
     CatalogEntry("minimax-m3:cloud", ModelProvider.OLLAMA_CLOUD, "Minimax M3"),
@@ -110,6 +111,62 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
         ModelProvider.KIMI,
         "Kimi for Coding HighSpeed (K2.7)",
     ),
+    # --- Nebius Token Factory (OpenAI-compatible inference, opencode CLI) ---
+    # Routes to the NEBIUS provider -> NebiusCliProvider spawn
+    # (api.tokenfactory.nebius.com/v1, metered key). Ids LIVE-VERIFIED
+    # against GET /v1/models with the hackathon key (2026-09-14, 24-model
+    # catalog); before this block the catalog carried no NEBIUS rows, which
+    # kept Nemotron out of the Mix-mode per-agent picker and the
+    # complexity-override validator. No _PRICING rows exist (no grounded
+    # published per-token rates yet), so the cost-tier comparator ranks
+    # these cheapest-tier (0.0) - the same documented ceiling as OpenRouter;
+    # the downgrade-only guard therefore does NOT order Nano < Super < Ultra.
+    CatalogEntry(
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+        ModelProvider.NEBIUS,
+        "Nemotron 3 Nano (30B-A3B)",
+    ),
+    CatalogEntry(
+        "nvidia/nemotron-3-super-120b-a12b",
+        ModelProvider.NEBIUS,
+        "Nemotron 3 Super (120B-A12B)",
+    ),
+    CatalogEntry(
+        "nvidia/Nemotron-3-Ultra-550b-a55b",
+        ModelProvider.NEBIUS,
+        "Nemotron 3 Ultra (550B-A55B)",
+    ),
+    CatalogEntry(
+        "nvidia/Nemotron-3_5-Lightning",
+        ModelProvider.NEBIUS,
+        "Nemotron 3.5 Lightning",
+    ),
+    # --- HUMMIN (GLM-native hummin CLI, the GLM go-to) ---
+    # Routes to the HUMMIN provider → HumminCliProvider spawn (the GLM
+    # Coding Plan endpoint inside hummin, key injected as ZAI_API_KEY). The
+    # key is set via PUT /providers/hummin-key. Re-pointed from ZAI
+    # (2026-09-17): the hummin CLI is the go-to GLM runtime, while the ZAI
+    # Anthropic-protocol path stays enabled as a manual fallback (no ZAI
+    # catalog entries remain). glm-5.3:cloud / glm-5.3-flash:cloud stay on
+    # OLLAMA_CLOUD (subscription-billed, different endpoint + billing).
+    # glm-5.3-highspeed is the latency-optimized tier. No _PRICING row for
+    # the highspeed id yet — calculate_cost falls back to the glm-5.3 rates
+    # (over-attribution, the safe direction) until a published rate lands.
+    CatalogEntry("glm-5.3", ModelProvider.HUMMIN, "GLM 5.3"),
+    CatalogEntry("glm-5.3-flash", ModelProvider.HUMMIN, "GLM 5.3 Flash"),
+    # The high-thinking variant of flash: the hummin entrypoint passes the id
+    # verbatim as `--model zai/glm-5.3-flash:high` and Z.ai's catalog resolves
+    # the `:high` suffix server-side. The operator default (the fleet-wide
+    # Hummin mode lands here without any manual model pick).
+    CatalogEntry(
+        "glm-5.3-flash:high", ModelProvider.HUMMIN, "GLM 5.3 Flash (High Thinking)"
+    ),
+    # The low-thinking flagship variant: the delivery-cell tier of the hummin
+    # role split (developers, QA, documenters, cell PMs).
+    CatalogEntry(
+        "glm-5.3-flash:low", ModelProvider.HUMMIN, "GLM 5.3 Flash (Low Thinking)"
+    ),
+    CatalogEntry("glm-5.3-highspeed", ModelProvider.HUMMIN, "GLM 5.3 Highspeed"),
 )
 
 

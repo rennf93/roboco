@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from roboco.foundation.policy.content import markers
+
 BRIEFING_LIST_CAP = 10
 
 # EvidencePayload fields that are noise when empty — dropped from as_dict()
@@ -28,6 +30,7 @@ _EVIDENCE_OMIT_WHEN_EMPTY = (
     "collision_context",
     "video_context",
     "evidence_gaps",
+    "suggested_findings_mapping",
 )
 
 
@@ -75,6 +78,12 @@ class EvidencePayload:
     # hanging the verb — claim_review / claim_doc_task / claim_gate_review
     # only. Empty (and omitted) on the normal path.
     evidence_gaps: list[str] = field(default_factory=list)
+    # B31 findings_mapping (decisions pilot, default-off): the suggested
+    # finding-to-diff map (finding id -> plausible files/hunks +
+    # confidence) handed to the reviewer as a STARTING map. ADVISORY
+    # ONLY: it never closes, waives, or re-opens a finding. Empty (and
+    # omitted) when the pilot is off/below-floor/unavailable.
+    suggested_findings_mapping: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -180,6 +189,7 @@ def build_evidence_for_task(
     collision_context: list[dict[str, Any]] | None = None,
     video_context: dict[str, Any] | None = None,
     evidence_gaps: list[str] | None = None,
+    suggested_findings_mapping: list[dict[str, Any]] | None = None,
 ) -> EvidencePayload:
     """Compose an EvidencePayload from a Task model + supplemental data.
 
@@ -214,6 +224,7 @@ def build_evidence_for_task(
         collision_context=list(collision_context or []),
         video_context=video_context,
         evidence_gaps=list(evidence_gaps or []),
+        suggested_findings_mapping=list(suggested_findings_mapping or []),
     )
 
 
@@ -240,6 +251,7 @@ def _has_prior_work(
     open_findings: list,
     description: str | None = None,
     parent_context: list[dict[str, Any]] | None = None,
+    topology_issue: dict[str, Any] | None = None,
 ) -> bool:
     """True when any resumable prior-work signal — or the task spec itself —
     is present. The spec (``description``) and upstream ``parent_context`` count
@@ -259,6 +271,7 @@ def _has_prior_work(
             open_findings,
             description,
             parent_context,
+            topology_issue is not None,
         ]
     )
 
@@ -303,6 +316,12 @@ def build_task_handoff(
     qa_review = _extract_qa_review(notes_structured)
     pm_review = _extract_pm_review(notes_structured)
     open_findings = list(open_findings or [])
+    # Set by TaskService.recheck_topology_after_reparent when a re-parent
+    # strands this task's branch/PR on the wrong base (the 5612b225/PR #856
+    # incident class) — was write-only before this, with zero production
+    # consumers, so the assignee/PM never saw it until the terminal-verb
+    # CEO_ONLY refusal, days into review.
+    topology_issue = markers.get_topology_issue(task)
     if not _has_prior_work(
         commits=commits,
         acceptance=acceptance,
@@ -316,6 +335,7 @@ def build_task_handoff(
         open_findings=open_findings,
         description=description,
         parent_context=parent_context,
+        topology_issue=topology_issue,
     ):
         return None
     handoff: dict[str, Any] = {
@@ -341,6 +361,8 @@ def build_task_handoff(
         handoff["pm_review"] = pm_review
     if open_findings:
         handoff["revision_findings"] = render_findings(open_findings)
+    if topology_issue is not None:
+        handoff["topology_issue"] = topology_issue
     return handoff
 
 

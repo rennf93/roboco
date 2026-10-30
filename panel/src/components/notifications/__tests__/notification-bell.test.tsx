@@ -2,20 +2,29 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NotificationBell } from "../notification-bell";
-import { NotificationType, NotificationPriority, type Notification } from "@/types";
+import {
+  NotificationType,
+  NotificationPriority,
+  type Notification,
+} from "@/types";
 
 // tooltip-aria-label-spec.md §1a: the bell button's only visible content is
 // an icon — it needs a mandatory aria-label, plus a matching visible Tooltip
 // using the identical string per §2.
 
-const { useNotificationStream, useNotifications, useMarkNotificationRead, useAcknowledgeNotification, useMarkAllNotificationsRead } =
-  vi.hoisted(() => ({
-    useNotificationStream: vi.fn(),
-    useNotifications: vi.fn(),
-    useMarkNotificationRead: vi.fn(),
-    useAcknowledgeNotification: vi.fn(),
-    useMarkAllNotificationsRead: vi.fn(),
-  }));
+const {
+  useNotificationStream,
+  useNotifications,
+  useMarkNotificationRead,
+  useAcknowledgeNotification,
+  useMarkAllNotificationsRead,
+} = vi.hoisted(() => ({
+  useNotificationStream: vi.fn(),
+  useNotifications: vi.fn(),
+  useMarkNotificationRead: vi.fn(),
+  useAcknowledgeNotification: vi.fn(),
+  useMarkAllNotificationsRead: vi.fn(),
+}));
 
 vi.mock("@/hooks/use-websocket", () => ({
   useNotificationStream,
@@ -26,10 +35,16 @@ vi.mock("@/hooks/use-notifications", () => ({
   useMarkNotificationRead,
   useAcknowledgeNotification,
   useMarkAllNotificationsRead,
-  notificationKeys: { all: ["notifications"], list: (f: unknown) => ["notifications", "list", f], detail: (id: string) => ["notifications", "detail", id] },
+  notificationKeys: {
+    all: ["notifications"],
+    list: (f: unknown) => ["notifications", "list", f],
+    detail: (id: string) => ["notifications", "detail", id],
+  },
 }));
 
-function buildNotification(overrides: Partial<Notification> = {}): Notification {
+function buildNotification(
+  overrides: Partial<Notification> = {},
+): Notification {
   return {
     id: "notif-1",
     type: NotificationType.TASK_ASSIGNMENT,
@@ -43,11 +58,8 @@ function buildNotification(overrides: Partial<Notification> = {}): Notification 
     is_fully_acknowledged: false,
     is_read: false,
     related_task_id: null,
-    related_message_ids: [],
     timestamp: "2026-07-11T09:00:00Z",
     expires_at: null,
-    acked_by: [],
-    acked_at: {},
     ...overrides,
   };
 }
@@ -82,8 +94,12 @@ describe("NotificationBell — aria-label + tooltip (tooltip-aria-label-spec §1
   it("shows a matching visible tooltip once hovered", async () => {
     const user = userEvent.setup();
     render(<NotificationBell />);
-    await user.hover(screen.getByRole("button", { name: "View notifications" }));
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("View notifications");
+    await user.hover(
+      screen.getByRole("button", { name: "View notifications" }),
+    );
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "View notifications",
+    );
   });
 });
 
@@ -149,14 +165,20 @@ describe("NotificationBell — read/ack integration (W9-1)", () => {
     const user = userEvent.setup();
     render(<NotificationBell />);
     // Name now carries "(1 unread)" — match the stable prefix.
-    await user.click(screen.getByRole("button", { name: /^View notifications/ }));
-    const markReadBtn = await screen.findByRole("button", { name: /Mark Read/ });
+    await user.click(
+      screen.getByRole("button", { name: /^View notifications/ }),
+    );
+    const markReadBtn = await screen.findByRole("button", {
+      name: /Mark Read/,
+    });
     await user.click(markReadBtn);
     await waitFor(() => expect(markRead).toHaveBeenCalledWith("notif-1"));
   });
 
   it("acknowledges a notification when its 'Acknowledge' button is clicked", async () => {
-    const ack = vi.fn().mockResolvedValue(buildNotification({ is_acknowledged: true }));
+    const ack = vi
+      .fn()
+      .mockResolvedValue(buildNotification({ is_acknowledged: true }));
     useAcknowledgeNotification.mockReturnValue({ mutateAsync: ack });
     useNotifications.mockReturnValue({
       data: {
@@ -174,7 +196,9 @@ describe("NotificationBell — read/ack integration (W9-1)", () => {
     });
     const user = userEvent.setup();
     render(<NotificationBell />);
-    await user.click(screen.getByRole("button", { name: /^View notifications/ }));
+    await user.click(
+      screen.getByRole("button", { name: /^View notifications/ }),
+    );
     const ackBtn = await screen.findByRole("button", { name: /Acknowledge/ });
     await user.click(ackBtn);
     await waitFor(() => expect(ack).toHaveBeenCalledWith("notif-2"));
@@ -193,7 +217,9 @@ describe("NotificationBell — read/ack integration (W9-1)", () => {
     });
     const user = userEvent.setup();
     render(<NotificationBell />);
-    await user.click(screen.getByRole("button", { name: /^View notifications/ }));
+    await user.click(
+      screen.getByRole("button", { name: /^View notifications/ }),
+    );
     const allBtn = await screen.findByRole("button", { name: /Mark all read/ });
     await user.click(allBtn);
     await waitFor(() => expect(markAllRead).toHaveBeenCalled());

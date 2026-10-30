@@ -140,14 +140,39 @@ class VectorStore:
                 )
                 """
             )
-            # Index for fast cosine-distance queries (created only once).
+            # HNSW index matching the `<=>` cosine operator `search`/
+            # `hybrid_search` order by below. Replaces the ivfflat index this
+            # table used to also carry (dropped below): ivfflat's k-means
+            # clusters train on whatever rows exist at CREATE TIME -- nothing,
+            # on a brand-new table -- so it never gave the planner anything to
+            # trust. Production's chunks_journals: 196 seq scans / 6.1M tuples
+            # read against only 387 live rows. HNSW builds incrementally and
+            # stays accurate as rows are added. CONCURRENTLY so this never
+            # locks out writers on a table that already has rows; requires
+            # running outside an explicit transaction, which this bare
+            # `execute` on an otherwise-autocommit connection already is.
+            hnsw_index = f"{self._table_name}_embedding_hnsw_idx"
+            hnsw_valid = await conn.fetchval(
+                "SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)",
+                hnsw_index,
+            )
+            if hnsw_valid is False:
+                # A CONCURRENTLY build that failed partway (e.g. the process
+                # died mid-build) leaves an invalid index Postgres never
+                # retries on its own -- drop it so the create below rebuilds
+                # instead of silently no-oping on a dead index forever.
+                await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {hnsw_index}")
             await conn.execute(
                 f"""
-                CREATE INDEX IF NOT EXISTS {self._table_name}_embedding_idx
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS {hnsw_index}
                 ON {self._table_name}
-                USING ivfflat (embedding vector_cosine_ops)
-                WITH (lists = 100)
+                USING hnsw (embedding vector_cosine_ops)
                 """
+            )
+            # The old ivfflat index (see above) is now redundant; drop it once
+            # HNSW is confirmed valid so a fresh deploy never recreates it.
+            await conn.execute(
+                f"DROP INDEX CONCURRENTLY IF EXISTS {self._table_name}_embedding_idx"
             )
             # GIN index for the full-text (keyword) half of hybrid search.
             await conn.execute(
@@ -296,6 +321,44 @@ class VectorStore:
                     ),
                     records,
                 )
+
+    async def flip_provenance(
+        self,
+        *,
+        ids: list[str],
+        from_value: str,
+        to_value: str,
+    ) -> int:
+        """Targeted, in-place ``provenance`` flip over a stamped-task-id set.
+
+        Updates every chunk whose ``task_id`` metadata is one of *ids* AND
+        whose ``provenance`` metadata currently equals *from_value*, to
+        *to_value*. Returns the number of rows updated. The narrow
+        metadata-surgery path TaskService's completion hook drives — no
+        delete + re-embed, no reindex, no repo-tree re-derivation (those
+        would rewrite unchanged docs).
+        """
+        if not ids:
+            return 0
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                self._q(
+                    """
+                    UPDATE {table}
+                    SET metadata = jsonb_set(
+                        metadata, '{provenance}', to_jsonb($3::text)
+                    )
+                    WHERE metadata->>'task_id' = ANY($1::text[])
+                      AND metadata->>'provenance' = $2::text
+                    RETURNING id
+                    """
+                ),
+                ids,
+                from_value,
+                to_value,
+            )
+        return len(rows)
 
     # ------------------------------------------------------------------
     # Read

@@ -135,6 +135,56 @@ def test_flow_post_synthesizes_transport_error_when_body_unparseable(
     assert "remediate" in result
 
 
+def _fake_client_with_text(status: int, text: str) -> MagicMock:
+    """Like _fake_client_with, but for a plain-text (non-JSON) body: the
+    shape roboco.security's guard middleware actually blocks with (400/403/429,
+    no content-type header, response.json() raises)."""
+    fake_response = MagicMock()
+    fake_response.status_code = status
+    fake_response.text = text
+    fake_response.json.side_effect = ValueError("not json")
+    fake_client = MagicMock()
+    fake_client.__enter__ = MagicMock(return_value=fake_client)
+    fake_client.__exit__ = MagicMock(return_value=False)
+    fake_client.post.return_value = fake_response
+    return fake_client
+
+
+def test_flow_post_maps_guard_block_to_gateway_blocked(
+    flow_module: types.ModuleType,
+) -> None:
+    """A plain-text 403 (roboco.security's guard, not the orchestrator) must
+    not read as transport_error: the agent needs the gateway_blocked hint,
+    not a false "orchestrator looks down" signal."""
+    client = _fake_client_with_text(403, "Forbidden")
+    with patch("httpx.Client", return_value=client):
+        result = flow_module.give_me_work()
+    assert result["error"] == "gateway_blocked"
+    assert "403" in result["message"]
+    assert "free-text" in result["remediate"]
+
+
+def test_do_post_maps_guard_block_to_gateway_blocked(
+    do_module: types.ModuleType,
+) -> None:
+    """do_server mirrors flow_server: same plain-text-block mapping."""
+    client = _fake_client_with_text(400, "Suspicious activity detected")
+    with patch("httpx.Client", return_value=client):
+        result = do_module.commit("any message")
+    assert result["error"] == "gateway_blocked"
+    assert "400" in result["message"]
+
+
+def test_flow_post_429_maps_to_gateway_blocked_not_transport_error(
+    flow_module: types.ModuleType,
+) -> None:
+    """A rate-limit 429 is a guard block too, not a bare transport failure."""
+    client = _fake_client_with_text(429, "Too Many Requests")
+    with patch("httpx.Client", return_value=client):
+        result = flow_module.give_me_work()
+    assert result["error"] == "gateway_blocked"
+
+
 def test_do_post_returns_envelope_on_400(do_module: types.ModuleType) -> None:
     """do_server mirrors flow_server: envelope surfaces on rejection."""
     body = {

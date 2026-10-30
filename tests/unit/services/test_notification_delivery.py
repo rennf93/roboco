@@ -384,6 +384,58 @@ async def test_sweep_cas_claim_prevents_double_delivery_race() -> None:
 
 
 # =============================================================================
+# sweep_expired_notifications, uptime-aware expiry (_row_actually_expired)
+# =============================================================================
+
+
+class _FakeLedger:
+    """Reports a fixed `active_elapsed` for any start/end - a stand-in for a
+    real `UptimeLedger` carrying a known downtime window."""
+
+    def __init__(self, active_elapsed: timedelta) -> None:
+        self._active_elapsed = active_elapsed
+
+    def active_elapsed(self, start: datetime, end: datetime | None = None) -> timedelta:
+        del start, end
+        return self._active_elapsed
+
+
+@pytest.mark.asyncio
+async def test_sweep_row_stale_by_wall_clock_but_not_by_active_time_is_skipped() -> (
+    None
+):
+    """A row created 1h ago with a 55-minute TTL (`expires_at` = now - 5min,
+    past the SQL `expires_at < now` gate) but only 10 minutes of active time
+    since creation (a long CEO pause in between) has not actually burned its
+    TTL yet, so it must not be re-escalated, and must not count as stale."""
+    recipient = _agent("be-pm")
+    target = _agent("main-pm")
+    notif = _stale_notification(
+        requires_ack=True, acked=False, recipient_id=recipient.id
+    )
+    notif.created_at = datetime.now(UTC) - timedelta(hours=1)
+
+    session = _session_returning([notif])
+    svc = _svc_with_agents(session, recipient=recipient, escalation_target=target)
+    svc._load_uptime_ledger = AsyncMock(return_value=_FakeLedger(timedelta(minutes=10)))
+
+    with (
+        patch(
+            "roboco.services.notification_delivery.all_recipients_recently_notified",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "roboco.services.notification_delivery.get_escalation_target",
+            return_value="main-pm",
+        ),
+    ):
+        count = await svc.sweep_expired_notifications()
+
+    assert count == 0
+    session.add.assert_not_called()
+
+
+# =============================================================================
 # reescalation_decision — pure schedule math
 # =============================================================================
 

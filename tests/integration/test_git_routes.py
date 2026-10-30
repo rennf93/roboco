@@ -410,6 +410,35 @@ async def test_branches_with_remote(git_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_branches_commits_before_remote_prune(git_client: dict) -> None:
+    """The request's DB transaction must be closed out before the self-heal
+    prune's git subprocess (+ ownership repair) runs: holding it open across
+    that chown-heavy op is what starved every other writer into lock_timeout."""
+    branch_result = MagicMock()
+    branch_result.stdout = "refs/heads/main|abc123\n"
+    db = git_client["db"]
+    seen_in_transaction: list[bool] = []
+
+    async def _prune(_workspace: str) -> None:
+        seen_in_transaction.append(db.in_transaction())
+
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.get_current_branch = AsyncMock(return_value="main")
+        svc.prune_remote_best_effort = AsyncMock(side_effect=_prune)
+        svc._run_git = AsyncMock(return_value=branch_result)
+        mock_get.return_value = svc
+        response = await git_client["client"].get(
+            f"/api/git/branches?project_slug={git_client['project'].slug}"
+            "&include_remote=true",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    assert seen_in_transaction == [False]
+
+
+@pytest.mark.asyncio
 async def test_branches_skips_empty_lines(git_client: dict) -> None:
     """Line 246: empty line in branch output triggers continue."""
     branch_result = MagicMock()

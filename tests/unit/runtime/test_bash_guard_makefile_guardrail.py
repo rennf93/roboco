@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-HOOK = REPO_ROOT / "docker" / "scripts" / "bash-guard-hook.sh"
+HOOK = REPO_ROOT / "docker" / "scripts" / "hooks" / "bash-guard-hook.sh"
 
 # Hook exits 2 to deny, 0 to allow. Named (not magic) for ruff PLR2004.
 _DENIED = 2

@@ -755,6 +755,54 @@ class NotificationService:
             )
         )
 
+    async def send_stale_review_claim_released_notification(
+        self,
+        *,
+        task_id: str,
+        released_agent: str | None,
+        last_heartbeat: str | None = None,
+        from_agent: str = "system",
+        to_ceo: str = "ceo",
+        task_title: str | None = None,
+    ) -> None:
+        """Tell the released reviewer (+ CEO) its stale review claim moved.
+
+        Fired from the orchestrator's review-claim reaper sweep alongside
+        ``release_review_claim_for_reaper``. Distinct from
+        ``send_stale_claim_reaped_notification`` because the wording differs
+        factually: a review claim's release does NOT change the task status
+        (it stays awaiting_* in the review queue) - only the claimant lock
+        clears, so any QA / documenter / gate reviewer can re-claim.
+        """
+        recipients = list(dict.fromkeys(r for r in (released_agent, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending stale-review-claim-released notification",
+            task_id=task_id,
+            released_agent=released_agent,
+        )
+        display = task_display(task_title, task_id)
+        agent_label = await agent_display(released_agent)
+        body = (
+            f"Task {display}'s review claim went stale "
+            f"(last heartbeat: {last_heartbeat or 'unknown'}) and was released "
+            f"back to the review queue, clearing it from "
+            f"{agent_label or 'its holder'}. Status is unchanged; any eligible "
+            f"reviewer can re-claim."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.HIGH,
+                from_agent=from_agent,
+                to_agents=recipients,
+                subject=f"Task {display}: stale review claim released",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
     async def send_ack_notification(
         self,
         *,

@@ -19,7 +19,7 @@ and sniff THAT text. The model's own echoed stdout content can never reach
 the classifier, so it can never trigger a false park by construction.
 
 Patterns (mirroring grok's own proven, word-boundaried set — see
-``docker/scripts/grok-cli-agent-entrypoint.sh``):
+``docker/scripts/entrypoints/grok-cli-agent-entrypoint.sh``):
   - rate-limit: ``\\b429\\b``, ``rate.?limit``, "too many requests", "quota",
     "insufficient_quota".
   - auth failure: exact phrases only — "refresh token has expired", "not

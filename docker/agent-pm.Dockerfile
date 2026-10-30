@@ -33,8 +33,8 @@ RUN uv pip install --python /app/.venv/bin/python playwright \
 # instead of letting it download its own bundled browser.
 RUN npm install -g @playwright/mcp@0.0.78 \
     && npm cache clean --force
-COPY docker/scripts/playwright-mcp-entrypoint.sh /app/scripts/playwright-mcp-entrypoint.sh
-RUN chmod 0755 /app/scripts/playwright-mcp-entrypoint.sh
+COPY docker/scripts/entrypoints/playwright-mcp-entrypoint.sh /app/scripts/entrypoints/playwright-mcp-entrypoint.sh
+RUN chmod 0755 /app/scripts/entrypoints/playwright-mcp-entrypoint.sh
 
 USER agent
 

@@ -16,9 +16,16 @@ import os
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from roboco.agents_config import get_agent_team
+from roboco.mcp.utils import configure_stdio_logging
+
+# See flow_server.py: __name__ is already "__main__" at this point when run
+# as the real stdio server, so this guards a plain in-process test import
+# from clobbering the ambient structlog config for the whole process.
+if __name__ == "__main__":
+    configure_stdio_logging()
 
 ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
@@ -50,7 +57,7 @@ def _headers() -> dict[str, str]:
 
 _TIMEOUT = 15
 
-mcp = FastMCP("roboco-git-readonly")
+mcp = MCPServer("roboco-git-readonly")
 
 # Char cap for diff text returned into the agent's context (~5K tokens). Kept
 # local (not imported from the gateway) so this MCP stays dependency-light in

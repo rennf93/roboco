@@ -63,7 +63,7 @@ SYSTEM_PROMPT_PATH = Path(
 # ``--deny`` rules. The script is baked into the agent base image.
 GROK_HOOKS_DIR = Path.home() / ".grok" / "hooks"
 BASH_GUARD_HOOK = os.environ.get(
-    "ROBOCO_BASH_GUARD_HOOK", "/app/scripts/bash-guard-hook.sh"
+    "ROBOCO_BASH_GUARD_HOOK", "/app/scripts/hooks/bash-guard-hook.sh"
 )
 # The entrypoint reads the computed flags (one token per line) from this file.
 # Defaults under the system temp dir (not a hardcoded /tmp literal) — the
@@ -332,7 +332,7 @@ def write_grok_hooks(
 # without confirming a non-cancelling outcome exists would be disproportionate
 # for a benign habit like a bare `cat`).
 FABLE_HONESTY_NUDGE_HOOK = os.environ.get(
-    "ROBOCO_FABLE_HONESTY_NUDGE_HOOK", "/app/scripts/fable-honesty-nudge-hook.sh"
+    "ROBOCO_FABLE_HONESTY_NUDGE_HOOK", "/app/scripts/hooks/fable-honesty-nudge-hook.sh"
 )
 
 

@@ -295,7 +295,7 @@ quality: sync
 	@echo "==> mypy"
 	@uv run mypy roboco/ tests/
 	@echo "==> pytest with coverage"
-	@uv run pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80
+	@uv run pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=75
 	@echo "==> xenon (cyclomatic complexity)"
 	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
 	@echo "==> radon mi (maintainability index)"

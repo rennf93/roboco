@@ -18,10 +18,16 @@ COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
+# UV_COMPILE_BYTECODE: every spawn is a fresh container, so without shipped
+# .pyc each agent's four MCP gateway servers recompile the whole venv + roboco
+# in parallel at startup (a cold flow_server import measured 8.5s on the NAS,
+# 2026-10-15). opencode starts its model loop without waiting for them and
+# marked all four failed - the agent ran with no gateway tools.
 ENV UV_HTTP_TIMEOUT=300 \
     UV_CONCURRENT_DOWNLOADS=4 \
     UV_LINK_MODE=copy \
-    UV_PYTHON_PREFERENCE=only-system
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_COMPILE_BYTECODE=1
 
 # Use base-image Python so venv symlinks stay valid after COPY to runner
 # (uv's managed python at /root/.local/share/uv/python isn't carried across).
@@ -30,6 +36,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY roboco /app/roboco
 RUN uv sync --frozen --no-dev
+# The project installs editable (the runner copies /app/roboco itself), so
+# UV_COMPILE_BYTECODE skips it: compile it here. unchecked-hash keeps the .pyc
+# valid across the COPY --from below regardless of mtimes.
+RUN python -m compileall -q --invalidation-mode unchecked-hash /app/roboco
 
 # ---- Runner -----------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runner
@@ -75,21 +85,22 @@ COPY --from=builder --chown=agent:agent /app/roboco /app/roboco
 # Hook scripts: 0755 so the `agent` user (not root) can read+execute them.
 # SessionStart hook runs these as agent; stricter perms break the hook with
 # "Permission denied" (exit 126).
-COPY docker/scripts/sdk-startup-hook.sh /app/scripts/sdk-startup-hook.sh
-COPY docker/scripts/a2a-check-hook.sh /app/scripts/a2a-check-hook.sh
-COPY docker/scripts/bash-guard-hook.sh /app/scripts/bash-guard-hook.sh
-COPY docker/scripts/post-tool-budget-hook.sh /app/scripts/post-tool-budget-hook.sh
-COPY docker/scripts/usage-report-hook.sh /app/scripts/usage-report-hook.sh
-COPY docker/scripts/stop-hook.sh /app/scripts/stop-hook.sh
-COPY docker/scripts/user-prompt-hook.sh /app/scripts/user-prompt-hook.sh
-COPY docker/scripts/pre-compact-hook.sh /app/scripts/pre-compact-hook.sh
-COPY docker/scripts/session-end-hook.sh /app/scripts/session-end-hook.sh
-COPY docker/scripts/fable-stop-gate-hook.sh /app/scripts/fable-stop-gate-hook.sh
-COPY docker/scripts/fable-bash-discipline-hook.sh /app/scripts/fable-bash-discipline-hook.sh
-COPY docker/scripts/fable-honesty-nudge-hook.sh /app/scripts/fable-honesty-nudge-hook.sh
-COPY docker/scripts/fable-prompt-nudge-hook.sh /app/scripts/fable-prompt-nudge-hook.sh
-COPY docker/scripts/fable-precompact-hook.sh /app/scripts/fable-precompact-hook.sh
-RUN chmod 0755 /app/scripts/*.sh
+COPY docker/scripts/hooks/sdk-startup-hook.sh /app/scripts/hooks/sdk-startup-hook.sh
+COPY docker/scripts/hooks/a2a-check-hook.sh /app/scripts/hooks/a2a-check-hook.sh
+COPY docker/scripts/hooks/bash-guard-hook.sh /app/scripts/hooks/bash-guard-hook.sh
+COPY docker/scripts/hooks/post-tool-budget-hook.sh /app/scripts/hooks/post-tool-budget-hook.sh
+COPY docker/scripts/hooks/usage-report-hook.sh /app/scripts/hooks/usage-report-hook.sh
+COPY docker/scripts/hooks/stop-hook.sh /app/scripts/hooks/stop-hook.sh
+COPY docker/scripts/hooks/user-prompt-hook.sh /app/scripts/hooks/user-prompt-hook.sh
+COPY docker/scripts/hooks/pre-compact-hook.sh /app/scripts/hooks/pre-compact-hook.sh
+COPY docker/scripts/hooks/session-end-hook.sh /app/scripts/hooks/session-end-hook.sh
+COPY docker/scripts/hooks/fable-stop-gate-hook.sh /app/scripts/hooks/fable-stop-gate-hook.sh
+COPY docker/scripts/hooks/fable-bash-discipline-hook.sh /app/scripts/hooks/fable-bash-discipline-hook.sh
+COPY docker/scripts/hooks/fable-honesty-nudge-hook.sh /app/scripts/hooks/fable-honesty-nudge-hook.sh
+COPY docker/scripts/hooks/fable-prompt-nudge-hook.sh /app/scripts/hooks/fable-prompt-nudge-hook.sh
+COPY docker/scripts/hooks/fable-precompact-hook.sh /app/scripts/hooks/fable-precompact-hook.sh
+# This image copies ONLY hooks (entrypoint scripts live in the role images).
+RUN chmod 0755 /app/scripts/hooks/*.sh
 
 USER agent
 

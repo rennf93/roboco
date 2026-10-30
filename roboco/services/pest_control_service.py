@@ -32,7 +32,7 @@ from roboco.foundation.policy.board_programs import PROGRAMS, project_participat
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus, Team
 from roboco.services.base import BaseService
-from roboco.services.board_programs import learn_ref
+from roboco.services.board_programs import learn_ref, resolve_materialize_target
 from roboco.services.task import PEST_CONTROL_ITEM_SOURCE, PEST_CONTROL_SOURCE
 
 if TYPE_CHECKING:
@@ -219,6 +219,19 @@ class PestControlService(BaseService):
             "priority": item.get("priority", 2),
             "source": PEST_CONTROL_ITEM_SOURCE,
         }
+        # DevOps lane (flag-gated): see RoadmapService._materialize: a
+        # target_agent hint pre-assigns a normal delivery task to devops-1,
+        # dropping the Main-PM coordination-root shape.
+        target_slug = resolve_materialize_target(item)
+        if target_slug is not None:
+            from roboco.seeds.initial_data import AGENT_UUIDS as _ALL_UUIDS
+
+            return await get_prompter_service(self.session).create_task_from_draft(
+                draft,
+                created_by,
+                status=TaskStatus.PENDING,
+                assigned_to=UUID(_ALL_UUIDS[target_slug]),
+            )
         return await get_prompter_service(self.session).create_task_from_draft(
             draft,
             created_by,

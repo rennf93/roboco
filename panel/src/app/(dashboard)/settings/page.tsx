@@ -28,6 +28,7 @@ import { UserInfoCard } from "@/components/settings/user-info-card";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
 import { GitHubAppCredentialsCard } from "@/components/settings/github-app-credentials-card";
 import { FeatureFlagsCard } from "@/components/settings/feature-flags-card";
+import { DecisionsPilotsCard } from "@/components/settings/decisions-pilots-card";
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
@@ -286,6 +287,11 @@ export default function SettingsPage() {
           persisted server-side, applied on next restart). The X (Twitter)
           credentials form nests as a collapsible under the X-engine flag. */}
       <FeatureFlagsCard />
+
+      {/* Decisions Pilots - per-pilot tri-state (off | shadow | on) for the
+          Decisions service (full width; persisted server-side via the same
+          generic settings PUT, applied on next restart). */}
+      <DecisionsPilotsCard />
     </div>
   );
 }

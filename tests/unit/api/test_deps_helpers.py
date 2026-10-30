@@ -94,6 +94,14 @@ def test_require_cell_access_allows_ceo_cross_cell() -> None:
     require_cell_access(_ctx(AgentRole.CEO), Team.FRONTEND, "edit")
 
 
+def test_require_cell_access_allows_head_marketing_cross_cell() -> None:
+    """Org-wide doctrine: head_marketing plans exploration roots on any
+    cell's project through the gateway, so the API cell gate must not 403
+    the same projects (edge found in the 2026-09-27 access-guard hunt).
+    Approval authority is a different axis and stays PM-gated."""
+    require_cell_access(_ctx(AgentRole.HEAD_MARKETING), Team.BACKEND, "edit")
+
+
 def test_require_cell_access_allows_cell_member_in_own_team() -> None:
     require_cell_access(
         _ctx(AgentRole.DEVELOPER, team=Team.BACKEND), Team.BACKEND, "edit"

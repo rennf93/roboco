@@ -39,6 +39,8 @@ from roboco.services.repositories.review_findings import (
 from roboco.services.task import TaskService
 from sqlalchemy import select
 
+from tests.integration.conftest import cleanup_claim_durable_rows
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -352,7 +354,9 @@ def _build_task(
 
 
 @pytest_asyncio.fixture
-async def setup(db_session: AsyncSession) -> AsyncIterator[dict[str, Any]]:
+async def setup(
+    db_session: AsyncSession, _test_database_url: str
+) -> AsyncIterator[dict[str, Any]]:
     seeded = await _seed_agents_and_project(db_session)
     task = _build_task(
         project_id=seeded["project"].id,
@@ -363,7 +367,28 @@ async def setup(db_session: AsyncSession) -> AsyncIterator[dict[str, Any]]:
     db_session.add(task)
     await db_session.flush()
     seeded["task"] = task
-    yield seeded
+    ids = {
+        "task_id": task.id,
+        "project_id": seeded["project"].id,
+        "agent_ids": [
+            seeded["system_agent"].id,
+            seeded["dev_agent"].id,
+            seeded["qa_agent"].id,
+            seeded["cell_pm_agent"].id,
+            seeded["reviewer_agent"].id,
+            seeded["main_pm_agent"].id,
+        ],
+    }
+    try:
+        yield seeded
+    finally:
+        # test_i_am_done_full_chain_blocks_then_resolves drives a real
+        # i_will_work_on, which now commits the claim durably: roll back
+        # db_session's own transaction first (releases any lock a
+        # post-commit write still holds), then delete whatever landed for
+        # real on a fresh connection. See cleanup_claim_durable_rows.
+        await db_session.rollback()
+        await cleanup_claim_durable_rows(_test_database_url, ids)
 
 
 def _choreographer(db_session: AsyncSession, task: TaskTable) -> Choreographer:

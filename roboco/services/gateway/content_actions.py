@@ -14,14 +14,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import os
 import re
 import shutil
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urlparse
+from uuid import UUID
 
 import structlog
 
@@ -30,8 +33,14 @@ from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
-from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.injection_guard import (
+    screen_external_text_with_decisions,
+)
 from roboco.foundation.policy.journaling import Scope as _Scope
+from roboco.llm.providers.nebius_sandboxes import (
+    run_sandbox_command,
+    tail_for_evidence,
+)
 from roboco.models.base import TaskStatus
 from roboco.services.content_notes import content_type_for_role
 from roboco.services.gateway.choreographer import findings as findings_lib
@@ -42,17 +51,22 @@ from roboco.services.gateway.choreographer.evidence_legs import (
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+from roboco.services.uptime import UptimeLedger
 from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from uuid import UUID
 
+    from roboco.db.tables import TaskTable
     from roboco.foundation.identity import Team
     from roboco.foundation.policy.board_programs import BoardProgram
 
 
 logger = structlog.get_logger()
+
+# Shortest task reference the DO tools resolve (task cards render 8-char
+# prefixes); anything shorter is not identifiable.
+_MIN_TASK_REF_HEX_CHARS = 8
 
 
 def _merge_resumption_fields(
@@ -85,6 +99,36 @@ def _merge_resumption_fields(
     return merged or None
 
 
+def _task_time_seconds(
+    timestamps: dict[str, datetime | None],
+    *,
+    now: datetime,
+    ledger: UptimeLedger,
+) -> tuple[dict[str, float | None], dict[str, float | None]]:
+    """Wall-clock vs uptime-adjusted elapsed seconds for named timestamps.
+
+    Pure given an already-loaded ``ledger`` (no DB access), so it is
+    unit-testable without a session. A ``None`` timestamp maps to ``None``
+    in both returned dicts.
+    """
+    wall: dict[str, float | None] = {}
+    active: dict[str, float | None] = {}
+    for key, ts in timestamps.items():
+        if ts is None:
+            wall[key] = None
+            active[key] = None
+            continue
+        ts_utc = ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+        wall[key] = (now - ts_utc).total_seconds()
+        active[key] = ledger.active_seconds(ts_utc, now)
+    return wall, active
+
+
+def _iso(ts: datetime | None) -> str | None:
+    """ISO-8601 string, or ``None`` for an unset timestamp."""
+    return ts.isoformat() if ts is not None else None
+
+
 # Scope catalog is canonical in foundation.policy.journaling.
 # Derived here as a string frozenset for the existing call sites that
 # compare strings rather than the Scope enum.
@@ -102,7 +146,13 @@ _TASK_ID_PREFIX_RE = re.compile(r"^\s*\[[a-zA-Z0-9_-]+\]\s*")
 # Notification sender + priority allowlists are canonical in
 # foundation.policy.communications. Derived as string frozensets here so
 # the existing call sites that compare strings keep working.
-_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
+_COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter", "devops"})
+# Roles whose verb surface carries no claim verb: they are assigned tasks
+# but can never satisfy an active-claim gate. Journal notes from these
+# roles on a task with NO active claimant are allowed (see
+# ContentActions._active_claim_violation). Extend only for roles with that
+# same documented shape.
+_CLAIMLESS_NOTE_ROLES: frozenset[str] = frozenset({"auditor"})
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
@@ -267,6 +317,21 @@ def _ownership_violation(task_id: UUID) -> Envelope:
         ),
         context_briefing={},
     )
+
+
+def _preflight_ownership_violation(
+    t: Any, agent_id: UUID, task_id: UUID
+) -> Envelope | None:
+    """The ownership-violation envelope for a preflight caller who is not
+    the task's assignee, or None when the caller may preflight the task."""
+    if t.assigned_to is not None and t.assigned_to != agent_id:
+        return _ownership_violation(task_id)
+    return None
+
+
+def _preflight_criteria(t: Any) -> list[str]:
+    """The task's non-empty acceptance criteria as strings."""
+    return [str(c) for c in (t.acceptance_criteria or []) if str(c).strip()]
 
 
 def _not_active_claimant(task_id: UUID) -> Envelope:
@@ -804,7 +869,11 @@ class ContentActions:
             await self.task.heartbeat(task_id)
 
     async def _active_claim_violation(
-        self, agent_id: UUID, task: Any
+        self,
+        agent_id: UUID,
+        task: Any,
+        *,
+        allow_unclaimed: bool = False,
     ) -> Envelope | None:
         """Refuse a content write when the caller is not the active claimant.
 
@@ -813,13 +882,40 @@ class ContentActions:
         is cleared the moment its claim is released. Only the holder of the
         active claim may write. A board co-reviewer on a coordination task is
         exempt (it shares the task with the other board member by design).
+
+        ``allow_unclaimed`` narrows the strict rule for journal-style notes
+        to CLAIM-LESS ROLES (the auditor): dispatch assigns them tasks, but
+        they have no claim verb, so the claim gate is unsatisfiable by
+        construction and every note bounced forever (a9739b1c, 2026-09-29).
+        When no claimant exists there is no one to race. A REAPED assignee
+        is NOT covered — it had a claim and lost it, and the reap doctrine
+        says it must not keep posting; the caller's role decides.
         """
         claimant = getattr(task, "active_claimant_id", None)
         if claimant == agent_id:
             return None
+        if (
+            allow_unclaimed
+            and claimant is None
+            and task.assigned_to == agent_id
+            and await self._caller_is_claimless_role(agent_id)
+        ):
+            return None
         if await self._board_may_co_review(agent_id, task):
             return None
         return _not_active_claimant(task.id)
+
+    async def _caller_is_claimless_role(self, agent_id: UUID) -> bool:
+        """True for roles that can never hold a claim (read-only observers).
+
+        The auditor observes and journals but its verb surface carries no
+        claim verb, so demanding an active claim from it is demanding the
+        impossible. Extend ``_CLAIMLESS_NOTE_ROLES`` only for roles with
+        that same documented shape.
+        """
+        agent = await self.task.agent_for(agent_id)
+        role = str(getattr(agent, "role", "")) if agent is not None else ""
+        return role in _CLAIMLESS_NOTE_ROLES
 
     @staticmethod
     def _reject_soup(value: str, *, field: str, min_chars: int = 3) -> Envelope | None:
@@ -1019,7 +1115,11 @@ class ContentActions:
         return role in self._BOARD_ROLES
 
     async def _verify_explicit_task_ownership(
-        self, agent_id: UUID, task_id: UUID
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        *,
+        allow_unclaimed: bool = False,
     ) -> Envelope | None:
         """Gate Set D: refuse content posts on tasks the caller does not own.
 
@@ -1038,12 +1138,24 @@ class ContentActions:
         if t.assigned_to is not None and t.assigned_to != agent_id:
             if await self._board_may_co_review(agent_id, t):
                 return None
+            # DevOps gate co-claimant: devops-1 co-claims the assembled-PR
+            # gate task via the devops_gate_claimant marker (never ownership)
+            # and must still journal its review — the verdict verbs demand a
+            # learning entry. Found by the e2e devops gate arc.
+            from roboco.foundation.policy.content import markers
+
+            if markers.get_devops_gate_claimant(t) == str(agent_id):
+                return None
             return _ownership_violation(task_id)
         # assigned_to is stale across a reap/handoff (persists until
         # reassignment; active_claimant_id is cleared on release). Require
-        # the active claim so a reaped agent can't keep posting.
+        # the active claim so a reaped agent can't keep posting — except on
+        # the allow_unclaimed paths (journal notes from a claim-less
+        # assignee; see _active_claim_violation).
         if t.assigned_to == agent_id:
-            return await self._active_claim_violation(agent_id, t)
+            return await self._active_claim_violation(
+                agent_id, t, allow_unclaimed=allow_unclaimed
+            )
         return None
 
     async def note(
@@ -1098,7 +1210,7 @@ class ContentActions:
             # Section write (dev_notes / quick_context / auditor_notes / …), not
             # a journal entry. Content quality is enforced by the content model
             # (apply_structured_note), so skip the journal-text soup check.
-            return await self._record_section_handoff(
+            envelope = await self._record_section_handoff(
                 agent_id=agent_id,
                 text=text,
                 task_id=task_id,
@@ -1106,13 +1218,44 @@ class ContentActions:
                     section, done=done, next=next, where_to_look=where_to_look
                 ),
             )
-        return await self._write_journal_note(
-            agent_id=agent_id,
-            text=text,
-            scope=scope,
-            task_id=task_id,
-            structured=structured,
-        )
+        else:
+            envelope = await self._write_journal_note(
+                agent_id=agent_id,
+                text=text,
+                scope=scope,
+                task_id=task_id,
+                structured=structured,
+            )
+        if envelope.error is None:
+            await self._complete_note_completing_exploration(agent_id, task_id)
+        return envelope
+
+    async def _complete_note_completing_exploration(
+        self, agent_id: UUID, task_id: UUID | None
+    ) -> None:
+        """Complete the caller's own exploration task under the
+        complete-at-note contract (``BoardProgram.completes_on_note``).
+
+        Best-effort and narrow: the task must exist, be assigned to the
+        caller, be non-terminal, and its ``source`` must belong to a program
+        that declares the contract (decisions_audit — one review pass IS the
+        cycle). Proposal programs (roadmap/scales/…) stay open awaiting
+        per-item CEO review and are never touched here. A failed note never
+        completes anything (the caller gates on the envelope)."""
+        if task_id is None:
+            return
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task = await self.task.get(task_id)
+        if task is None or task.assigned_to != agent_id:
+            return
+        program = next((p for p in PROGRAMS.values() if p.source == task.source), None)
+        if program is None or not program.completes_on_note:
+            return
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
+            return
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
 
     async def _write_journal_note(
         self,
@@ -1138,7 +1281,12 @@ class ContentActions:
         if rej := self._reject_structured_soup(scope, structured):
             return rej
         if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+            # allow_unclaimed: journal notes are append-only observability;
+            # a claim-less assignee (read-only roles like the auditor) must
+            # still be able to record them. See _active_claim_violation.
+            if reject := await self._verify_explicit_task_ownership(
+                agent_id, task_id, allow_unclaimed=True
+            ):
                 return reject
         else:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
@@ -1379,7 +1527,7 @@ class ContentActions:
         )
 
     async def curate_vault(
-        self, *, agent_id: UUID, task_id: UUID, narrative: str
+        self, *, agent_id: UUID, task_id: UUID | str, narrative: str
     ) -> Envelope:
         """Auditor-only: write a root task-tree's vault narrative section.
 
@@ -1387,6 +1535,10 @@ class ContentActions:
         resolved fresh) with ``narrative`` filling the ``## Narrative``
         section a deterministic write otherwise leaves as a placeholder.
         """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         role = await self._caller_role(agent_id)
         if role not in _CURATE_VAULT_ROLES:
             return Envelope.not_authorized(
@@ -1465,7 +1617,12 @@ class ContentActions:
                 context_briefing={},
             )
         if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+            # allow_unclaimed: same rationale as the journal-note path —
+            # section writes are append-only, and a claim-less assignee
+            # (auditor) must still record its section.
+            if reject := await self._verify_explicit_task_ownership(
+                agent_id, task_id, allow_unclaimed=True
+            ):
                 return reject
         else:
             t = await self.task.get_journal_context_task_for_agent(agent_id)
@@ -3787,7 +3944,8 @@ class ContentActions:
         normalized_threats = [str(t).strip() for t in (threats or [])]
         normalized_opportunities = [str(o).strip() for o in (opportunities or [])]
         normalized_note = positioning_note.strip()
-        screened = screen_external_text(
+        screened = await screen_external_text_with_decisions(
+            self.task.session,
             _render_market_brief_for_screening(
                 headline,
                 normalized_findings,
@@ -5172,7 +5330,7 @@ class ContentActions:
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         reason: str,
     ) -> Envelope:
         """The explicit "this cycle found nothing worth proposing" exit for
@@ -5222,6 +5380,10 @@ class ContentActions:
                 context_briefing={},
             )
 
+        resolved_ref = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved_ref, Envelope):
+            return resolved_ref
+        task_id = resolved_ref
         resolved = await self._resolve_nothing_to_propose_task(agent_id, task_id)
         if isinstance(resolved, Envelope):
             return resolved
@@ -5505,11 +5667,96 @@ class ContentActions:
         assigned = await self.task.list_assigned_for_agent(agent_id)
         return any(task.id in (a.dependency_ids or []) for a in assigned)
 
+    async def _resolve_task_ref(self, task_ref: str) -> UUID | Envelope:
+        """Resolve a task reference to a full UUID, or return an error Envelope.
+
+        Agents are shown short ids everywhere (task cards, prompts, subjects
+        render ``#372eac39`` style) and pass them back to the DO tools. A
+        strict ``task_id: UUID`` schema 422s those before any handler runs -
+        the failed-evidence loop that wedged be-qa's review on 2026-09-28
+        (795 evidence errors, verdict never fired) was exactly this. Full
+        UUIDs pass through; a hex prefix of at least 8 chars resolves by
+        lookup; ambiguity and misses return the error Envelope the caller
+        must propagate.
+        """
+        ref = str(task_ref).strip()
+        try:
+            return UUID(ref)
+        except ValueError:
+            pass
+        hex_prefix = ref.removeprefix("#").strip()
+        if len(hex_prefix) < _MIN_TASK_REF_HEX_CHARS or any(
+            c not in "0123456789abcdefABCDEF" for c in hex_prefix
+        ):
+            return Envelope.incomplete_input(
+                missing=["task_id"],
+                field_hints={
+                    "task_id": (
+                        "pass the full UUID or the 8+ char hex prefix shown "
+                        "on the task card"
+                    )
+                },
+                remediate="retry with the full task UUID from the envelope",
+            )
+        from sqlalchemy import String, select
+
+        from roboco.db.tables import TaskTable
+
+        result = await self.task.session.execute(
+            select(TaskTable.id).where(
+                TaskTable.id.cast(String).ilike(f"{hex_prefix}%")
+            )
+        )
+        matches = [row[0] for row in result.all()]
+        if not matches:
+            return Envelope.not_found(message=f"no task matches {task_ref!r}")
+        if len(matches) > 1:
+            return Envelope.incomplete_input(
+                missing=["task_id"],
+                field_hints={
+                    "task_id": (
+                        f"{task_ref!r} is ambiguous: {len(matches)} tasks "
+                        "share this prefix - pass more characters or the "
+                        "full UUID"
+                    )
+                },
+                remediate="retry with the full task UUID from the envelope",
+            )
+        return cast("UUID", matches[0])
+
+    async def _evidence_task_or_error(
+        self, task_id: UUID | str, agent_id: UUID
+    ) -> TaskTable | Envelope:
+        """Resolve the evidence target and run its read-authorization checks.
+
+        Short-id resolution (``_resolve_task_ref``), existence, and the
+        ownership rule: reads are allowed for the assignee, an unassigned
+        task, a board co-reviewer of a shared coordination task, OR a caller
+        whose own work depends on this task - strict ownership only blocks
+        snooping an unrelated, actively-owned task. Returns the TaskTable or
+        the error Envelope to propagate.
+        """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        if (
+            t.assigned_to is not None
+            and t.assigned_to != agent_id
+            and not await self._board_may_co_review(agent_id, t)
+            and not await self._is_caller_dependency(agent_id, t)
+        ):
+            return _ownership_violation(task_id)
+        return cast("TaskTable", t)
+
     async def evidence(
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
     ) -> Envelope:
         """Inspect a task's PR diff, commits, files.
 
@@ -5518,6 +5765,9 @@ class ContentActions:
         unassigned, the caller co-reviews a shared board task, or the task is a
         dependency the caller is waiting on — strict ownership only blocks
         snooping an unrelated, actively-owned task.
+
+        ``task_id`` accepts the full UUID or the 8+ char hex prefix the task
+        cards display (``#372eac39`` style) - see ``_resolve_task_ref``.
 
         ``files_changed`` and ``pr_diff_summary`` are pulled from git (against
         the branch's parent — the authoritative source) rather than the latest
@@ -5544,20 +5794,11 @@ class ContentActions:
         reads were sequential before the pool-release commit was added),
         so latency is unchanged in practice.
         """
-        t = await self.task.get(task_id)
-        if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
-        # Reads are allowed for the assignee, an unassigned task, a board
-        # co-reviewer of a shared coordination task, OR a caller whose own work
-        # depends on this task. Strict ownership only blocks snooping an
-        # unrelated, actively-owned task.
-        if (
-            t.assigned_to is not None
-            and t.assigned_to != agent_id
-            and not await self._board_may_co_review(agent_id, t)
-            and not await self._is_caller_dependency(agent_id, t)
-        ):
-            return _ownership_violation(task_id)
+        task_or_error = await self._evidence_task_or_error(task_id, agent_id)
+        if isinstance(task_or_error, Envelope):
+            return task_or_error
+        t = task_or_error
+        task_id = cast("UUID", t.id)
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id, include_ancestors=True
         )
@@ -5870,6 +6111,381 @@ class ContentActions:
             task_id=str(t.id),
             next="use the returned creds for this session; call again anytime",
             evidence=filtered,
+            context_briefing={},
+        )
+
+    async def _sandbox_tests_nebius_key(self) -> tuple[str | None, Envelope | None]:
+        """run_sandbox_tests' key guard: the stored Nebius API key (Fernet-
+        decrypted server-side), or a clean invalid_state rejection. The
+        Sandboxes API authenticates with the SAME key as the inference
+        provider - no second credential exists."""
+        from roboco.models.base import ModelProvider
+        from roboco.services.provider import get_provider_service
+        from roboco.utils.converters import require_uuid
+
+        provider_svc = get_provider_service(self.task.session)
+        providers = await provider_svc.list_providers(include_disabled=True)
+        nebius = next((p for p in providers if p.type == ModelProvider.NEBIUS), None)
+        if nebius is None or not nebius.auth_token_encrypted:
+            return None, Envelope.invalid_state(
+                message="no Nebius API key is saved - the Sandboxes API "
+                "authenticates with it",
+                remediate=(
+                    "save the Nebius (Token Factory) API key in the panel's "
+                    "Settings -> AI Routing first"
+                ),
+                context_briefing={},
+            )
+        api_key = await provider_svc.get_decrypted_token(require_uuid(nebius.id))
+        if not api_key:
+            return None, Envelope.invalid_state(
+                message="the stored Nebius key could not be decrypted",
+                remediate="re-save the Nebius API key in the panel",
+                context_briefing={},
+            )
+        return api_key, None
+
+    @staticmethod
+    async def _git_capture(root: Path, *args: str) -> tuple[bool, str, str]:
+        """One git invocation in ``root``; (ok, stdout, stderr)."""
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            cwd=root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        return (
+            proc.returncode == 0,
+            out.decode(errors="replace").strip(),
+            err.decode(errors="replace").strip()[:300],
+        )
+
+    @staticmethod
+    async def _git_archive_workspace(
+        root: Path, archive: Path, ref: str = "HEAD"
+    ) -> tuple[bool, str]:
+        """One ``git archive`` attempt of the committed ``ref``; (ok, stderr)."""
+        ok, _, err = await ContentActions._git_capture(
+            root, "archive", "--format=tar.gz", f"-o{archive}", ref
+        )
+        return ok, err
+
+    async def _sandbox_tests_ref(
+        self, agent_id: UUID, root: Path, branch: str | None
+    ) -> tuple[Path, str, Envelope | None]:
+        """(archive root, ref). A developer's worktree sits on the task
+        branch, so HEAD is right. QA's clone root is never moved onto it
+        (claims leave HEAD alone), so when HEAD is on a different branch the
+        branch is fetched through the workspace service (project token,
+        agent ownership) and FETCH_HEAD of the clone it fetched into is
+        archived. No branch: HEAD."""
+        if not branch:
+            return root, "HEAD", None
+        ok, head, _ = await ContentActions._git_capture(
+            root, "rev-parse", "--abbrev-ref", "HEAD"
+        )
+        if ok and head == branch:
+            return root, "HEAD", None
+        fetched: Path | None = None
+        err = ""
+        try:
+            fetched = await self.workspace.fetch_branch_for_inspection(
+                agent_id=agent_id, branch_name=branch
+            )
+            # The helper only logs a non-zero fetch, so confirm FETCH_HEAD
+            # names this branch (a failed fetch leaves a stale one behind).
+            ok, fh, err = await ContentActions._git_capture(
+                fetched, "rev-parse", "--git-path", "FETCH_HEAD"
+            )
+            if ok:
+                fh_path = Path(fh) if Path(fh).is_absolute() else fetched / fh
+                ok = f"branch '{branch}' of" in fh_path.read_text()
+                err = err or "fetch did not update FETCH_HEAD"
+        except Exception as exc:
+            ok, err = False, str(exc)
+        if not ok or fetched is None:
+            return (
+                root,
+                "HEAD",
+                Envelope.invalid_state(
+                    message=f"could not fetch task branch {branch} from origin: {err}",
+                    remediate=(
+                        "the developer must push the branch (i_am_done pushes it); "
+                        "retry run_sandbox_tests once it is on origin"
+                    ),
+                    context_briefing={},
+                ),
+            )
+        return fetched, "FETCH_HEAD", None
+
+    async def _sandbox_tests_root(
+        self, agent_id: UUID, agent_slug: str, task: Any, project: Any
+    ) -> tuple[Path | None, Envelope | None]:
+        """run_sandbox_tests' workspace resolution: the per-task worktree
+        when one exists on disk, else the clone root (mirroring
+        _render_dev_source's choice). An unresolved project row or agent
+        team rejects here too."""
+        from roboco.services.workspace import WorkspaceError
+
+        if project is None:
+            return None, Envelope.invalid_state(
+                message="the task's project could not be resolved",
+                remediate="retry; escalate to your PM if it persists",
+                context_briefing={},
+            )
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or not agent.team:
+            return None, Envelope.invalid_state(
+                message="your team could not be resolved",
+                remediate="ensure your agent record has a team, then retry",
+                context_briefing={},
+            )
+        try:
+            clone_root = self.workspace.get_clone_root_path(
+                project.slug, agent.team, agent_slug
+            )
+            worktree = self.workspace.get_worktree_path(
+                project.slug, agent.team, agent_slug, task.id.hex[:8]
+            )
+        except WorkspaceError as exc:
+            return None, Envelope.invalid_state(
+                message=f"could not resolve your workspace path: {exc}",
+                remediate=(
+                    "retry run_sandbox_tests; escalate to your PM if it persists"
+                ),
+                context_briefing={},
+            )
+        root = worktree if worktree.exists() else clone_root
+        if not root.exists():
+            return None, Envelope.invalid_state(
+                message="no workspace found on disk for this task",
+                remediate=(
+                    "call give_me_work() to provision the clone first, then "
+                    "retry run_sandbox_tests"
+                ),
+                context_briefing={},
+            )
+        return root, None
+
+    @staticmethod
+    async def _sandbox_tests_archive(
+        root: Path, ref: str = "HEAD"
+    ) -> tuple[Path | None, Envelope | None]:
+        """Archive the committed ``ref`` of ``root`` into a random-named temp
+        tarball (mkstemp: unpredictable on the shared orchestrator host,
+        never cross-task colliding) and enforce the upload ceiling; the
+        caller owns unlinking the path."""
+        fd, archive_name = tempfile.mkstemp(prefix="roboco-sandbox-", suffix=".tar.gz")
+        os.close(fd)
+        archive = Path(archive_name)
+        ok, stderr = await ContentActions._git_archive_workspace(root, archive, ref)
+        if not ok:
+            with contextlib.suppress(OSError):
+                archive.unlink(missing_ok=True)
+            return None, Envelope.invalid_state(
+                message=f"git archive of the workspace failed: {stderr}",
+                remediate=(
+                    "commit your work first (an empty or unborn HEAD cannot "
+                    "be archived), then retry run_sandbox_tests"
+                ),
+                context_briefing={},
+            )
+        size = archive.stat().st_size
+        if size > settings.token_factory_sandboxes_max_archive_bytes:
+            with contextlib.suppress(OSError):
+                archive.unlink(missing_ok=True)
+            return None, Envelope.invalid_state(
+                message=(
+                    f"workspace archive is {size} bytes, above the "
+                    f"{settings.token_factory_sandboxes_max_archive_bytes} "
+                    "upload ceiling"
+                ),
+                remediate=(
+                    "prune large artifacts from the repo or raise "
+                    "ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES"
+                ),
+                context_briefing={},
+            )
+        return archive, None
+
+    async def _sandbox_tests_guards(
+        self, agent_id: UUID
+    ) -> tuple[tuple[Any, str] | None, Envelope | None]:
+        """run_sandbox_tests' prelude guards, in order: flag off; no
+        claimed/active project-bound task; no stored Nebius key. Returns
+        ((task, api_key), None) or (None, rejection) - the pairing is total,
+        so the caller needs a single None check."""
+        if not settings.token_factory_sandboxes_enabled:
+            return None, Envelope.invalid_state(
+                message="Token Factory Sandboxes are disabled",
+                remediate=(
+                    "ROBOCO_TOKEN_FACTORY_SANDBOXES_ENABLED is off - ask the "
+                    "CEO to arm it (Feature Flags card); until then run "
+                    "tests in your own container"
+                ),
+                context_briefing={},
+            )
+        t, rejection = await self._sandbox_active_task(agent_id)
+        if rejection is not None:
+            return None, rejection
+        api_key, rejection = await self._sandbox_tests_nebius_key()
+        if rejection is not None:
+            return None, rejection
+        # The key helper's contract: a non-rejection return is a usable str.
+        return (t, cast("str", api_key)), None
+
+    async def run_sandbox_tests(
+        self,
+        *,
+        agent_id: UUID,
+        command: str,
+        image: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> Envelope:
+        """Run the caller's test command inside a Token Factory Sandbox
+        microVM (dev + QA only, see role_config; default-off flag).
+
+        The hackathon-track workload: the "run and test code" leg of the
+        agent loop executes in Nebius's ephemeral Sandboxes service instead
+        of the agent container's own shell. The committed workspace HEAD is
+        git-archived server-side, uploaded to the Sandboxes API, extracted
+        inside a disposable microVM prebuilt from the requested image, and
+        ``command`` runs at the archive root; the microVM is destroyed after
+        the run. Nothing about the LOCAL path changes: the flag off, a
+        missing key, or any sandbox failure degrades to an envelope
+        rejection and dev/QA keep their container shells.
+
+        Guards, in order (the first three live in ``_sandbox_tests_guards``):
+        flag off; no claimed/active project-bound task; no stored Nebius
+        key (the Sandboxes API shares the inference key); then workspace/
+        project unresolvable, ``git archive`` failing, or the archive over
+        the upload ceiling. The
+        run's outcome rides in ``evidence`` (exit code, output tails, metered
+        cost/duration) and a journal entry records it; the caller's task is
+        heartbeated before and after the wait so a long suite never reads as
+        a stale claim.
+        """
+        pair, rejection = await self._sandbox_tests_guards(agent_id)
+        if pair is None:
+            return rejection or Envelope.invalid_state(
+                message="run_sandbox_tests preconditions failed",
+                remediate="retry run_sandbox_tests",
+                context_briefing={},
+            )
+        t, api_key = pair
+        from roboco.agents_config import _resolve_to_slug
+        from roboco.services.project import get_project_service
+
+        agent_slug = _resolve_to_slug(str(agent_id))
+        project = await get_project_service(self.task.session).get(t.project_id)
+        root, rejection = await self._sandbox_tests_root(
+            agent_id, agent_slug, t, project
+        )
+        if rejection is not None or root is None:
+            return rejection or Envelope.invalid_state(
+                message="workspace could not be resolved",
+                remediate="retry run_sandbox_tests",
+                context_briefing={},
+            )
+        root, ref, rejection = await self._sandbox_tests_ref(
+            agent_id, root, getattr(t, "branch_name", None)
+        )
+        if rejection is not None:
+            return rejection
+        archive, rejection = await self._sandbox_tests_archive(root, ref)
+        if rejection is not None or archive is None:
+            return rejection or Envelope.invalid_state(
+                message="workspace archive could not be created",
+                remediate="retry run_sandbox_tests",
+                context_briefing={},
+            )
+        await self._touch_heartbeat(t.id)
+        try:
+            result, error = await run_sandbox_command(
+                api_key,
+                command=command,
+                image=image,
+                archive_path=archive,
+                timeout_seconds=timeout_seconds,
+            )
+        finally:
+            with contextlib.suppress(OSError):
+                archive.unlink(missing_ok=True)
+        await self._touch_heartbeat(t.id)
+        return await self._sandbox_tests_envelope(
+            t, agent_id, command, image, result=result, error=error
+        )
+
+    async def _sandbox_tests_envelope(
+        self,
+        t: Any,
+        agent_id: UUID,
+        command: str,
+        image: str | None,
+        *,
+        result: dict[str, Any] | None,
+        error: str | None,
+    ) -> Envelope:
+        """run_sandbox_tests' outcome half: a run failure is a retryable
+        invalid_state; a completed run journals (best-effort - the run
+        already happened and must reach the agent even if the write fails,
+        hence suppressed, unlike `note`) and returns the evidence payload
+        with a next hint that points back into the QA flow."""
+        if error is not None or result is None:
+            return Envelope.invalid_state(
+                message=f"sandbox test run failed: {error}",
+                remediate=(
+                    "retry run_sandbox_tests; if it keeps failing run the "
+                    "suite in your own container and escalate the sandbox "
+                    "error to your PM"
+                ),
+                context_briefing={},
+            )
+        exit_code = result.get("exit_code")
+        outcome = "PASS" if exit_code == 0 else "FAIL"
+        stdout_tail = tail_for_evidence(result.get("stdout", ""))
+        stderr_tail = tail_for_evidence(result.get("stderr", ""))
+        with contextlib.suppress(Exception):
+            await self.journal.write_entry(
+                agent_id=agent_id,
+                task_id=t.id,
+                scope="note",
+                title=f"Token Factory sandbox test run: {outcome} (exit {exit_code})",
+                content=(
+                    f"ran in a Token Factory Sandbox microVM "
+                    f"(image={image or settings.token_factory_sandboxes_image}, "
+                    f"cost={result.get('cost')}, "
+                    f"elapsed={result.get('elapsed_time')}s)\n\n"
+                    f"command: {command}\n\n"
+                    f"stdout (tail):\n{stdout_tail}\n\n"
+                    f"stderr (tail):\n{stderr_tail}"
+                ),
+            )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(t.id),
+            next=(
+                "tests passed in the Token Factory sandbox - continue the QA "
+                "flow (pr_pass)"
+                if exit_code == 0
+                else "tests failed in the Token Factory sandbox - record "
+                "findings via fail_review"
+            ),
+            evidence={
+                "sandbox": {
+                    "exit_code": exit_code,
+                    "timed_out": result.get("timed_out"),
+                    "image": image or settings.token_factory_sandboxes_image,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                    "cost": result.get("cost"),
+                    "elapsed_time": result.get("elapsed_time"),
+                    "instance_uuid": result.get("instance_uuid"),
+                    "operation_uuid": result.get("operation_uuid"),
+                }
+            },
             context_briefing={},
         )
 
@@ -6353,11 +6969,35 @@ class ContentActions:
             )
         return None
 
+    async def _progress_precheck(
+        self, message: str, task_id: UUID | str
+    ) -> Envelope | UUID:
+        """The two early guards (soup check + short-ref resolution) folded
+        into one preflight so the verb body stays under the return bound.
+        Returns the rejection Envelope or the resolved task UUID."""
+        if rej := self._reject_soup(message, field="progress update", min_chars=5):
+            return rej
+        return await self._resolve_task_ref(str(task_id))
+
+    async def _pr_update_precheck(
+        self,
+        title: str | None,
+        body: str | None,
+        reviewers: list[str] | None,
+        task_id: UUID | str,
+    ) -> Envelope | UUID:
+        """The two early guards (input check + short-ref resolution) folded
+        into one preflight so the verb body stays under the return bound.
+        Returns the rejection Envelope or the resolved task UUID."""
+        if rej := self._pr_update_input_check(title, body, reviewers):
+            return rej
+        return await self._resolve_task_ref(str(task_id))
+
     async def progress(
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         message: str,
         plan_step: str | None = None,
         percentage: int | None = None,
@@ -6380,8 +7020,10 @@ class ContentActions:
         the single-claimant guard so a reaped/handed-off assignee cannot
         keep writing.
         """
-        if rej := self._reject_soup(message, field="progress update", min_chars=5):
-            return rej
+        guard = await self._progress_precheck(message, task_id)
+        if isinstance(guard, Envelope):
+            return guard
+        task_id = guard
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -6529,7 +7171,7 @@ class ContentActions:
         self,
         *,
         agent_id: UUID,
-        task_id: UUID,
+        task_id: UUID | str,
         title: str | None = None,
         body: str | None = None,
         reviewers: list[str] | None = None,
@@ -6553,8 +7195,10 @@ class ContentActions:
             invalid_state — schema-level check is the first line of
             defense; this guard catches direct gateway calls)
         """
-        if rej := self._pr_update_input_check(title, body, reviewers):
-            return rej
+        guard = await self._pr_update_precheck(title, body, reviewers, task_id)
+        if isinstance(guard, Envelope):
+            return guard
+        task_id = guard
         t = await self.task.get(task_id)
         if t is None:
             return Envelope.not_found(message=f"task {task_id} not found")
@@ -6672,6 +7316,300 @@ class ContentActions:
             task_id=None,
             next="act on the messages, then retry i_am_idle()",
             evidence={"messages": messages},
+            context_briefing={},
+        )
+
+    async def _task_time_root(self, task: Any, task_id: UUID) -> tuple[UUID, datetime]:
+        """Walk ``parent_task_id`` up to the root, bounded so a bad chain
+        (cycle, orphaned parent) can't hang the call."""
+        root_id, root = task_id, task
+        for _ in range(10):
+            if root.parent_task_id is None:
+                break
+            parent = await self.task.get(root.parent_task_id)
+            if parent is None:
+                break
+            root_id, root = root.parent_task_id, parent
+        return root_id, root.created_at
+
+    async def task_time(self, *, agent_id: UUID, task_id: UUID | str) -> Envelope:
+        """Real, uptime-adjusted elapsed times for a task.
+
+        Read-only telemetry, no ownership check, any allowed role may call
+        it for any task. Every "stale / stuck / blocked too long /
+        unattended" judgement in the fleet defaults to naive wall-clock
+        elapsed time, which counts the hours the CEO had the stack shut
+        down or dispatch paused as neglect. This returns both: ``wall_seconds``
+        (naive) and ``active_seconds`` (fleet-uptime-adjusted, via
+        ``UptimeLedger``), plus the downtime windows that explain the gap.
+
+        ``task_id`` accepts the full UUID or the 8+ char hex prefix the task
+        cards display - see ``_resolve_task_ref``.
+        """
+        del agent_id  # read-only telemetry, no ownership check
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+
+        root_task_id, root_created_at = await self._task_time_root(t, task_id)
+        now = datetime.now(UTC)
+        ledger = await UptimeLedger.load(
+            self.task.session, since=min(t.created_at, root_created_at)
+        )
+
+        timestamps = {
+            "age": t.created_at,
+            "root_age": root_created_at,
+            "in_state": t.updated_at,
+            "since_claim": t.claimed_at,
+            "since_heartbeat": t.last_heartbeat_at,
+            "stalled": t.stalled_since,
+        }
+        wall_seconds, active_seconds = _task_time_seconds(
+            timestamps, now=now, ledger=ledger
+        )
+        windows = ledger.downtime_windows(t.created_at, now)
+
+        evidence = {
+            "task_id": str(task_id),
+            "status": str(t.status),
+            "root_task_id": str(root_task_id),
+            "root_created_at": _iso(root_created_at),
+            "created_at": _iso(t.created_at),
+            "claimed_at": _iso(t.claimed_at),
+            "updated_at": _iso(t.updated_at),
+            "last_heartbeat_at": _iso(t.last_heartbeat_at),
+            "stalled_since": _iso(t.stalled_since),
+            "wall_seconds": wall_seconds,
+            "active_seconds": active_seconds,
+            "fleet_downtime_seconds": ledger.downtime(
+                t.created_at, now
+            ).total_seconds(),
+            "downtime_windows": [
+                {"start": _iso(w.start), "end": _iso(w.end), "kind": w.kind}
+                for w in windows
+            ],
+        }
+        return Envelope.ok(
+            status="measured",
+            task_id=str(task_id),
+            next=(
+                "cite active_seconds, not wall_seconds, when you call a "
+                "task stale or unattended"
+            ),
+            evidence=evidence,
+            context_briefing={},
+        )
+
+    async def preflight_diff(self, *, agent_id: UUID, task_id: UUID | str) -> Envelope:
+        """Decisions agent lane 6.4 (spec): the pre-submit self-check.
+
+        The Choreographer composes the whole state server-side from the task
+        record plus the working diff in the agent's own workspace, so the
+        verb cannot be used to smuggle arbitrary text past the budget or
+        the audit. Advisory by design: the agent decides; it never blocks
+        or waives ``i_am_done`` (self-review exclusion, spec 5).
+        """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        violation = _preflight_ownership_violation(t, agent_id, task_id)
+        if violation is not None:
+            return violation
+        criteria = _preflight_criteria(t)
+        if not criteria:
+            return Envelope.invalid_state(
+                message="the task has no acceptance criteria to pre-flight",
+                remediate="ask your PM to record acceptance criteria on the task",
+            )
+
+        # Release the request transaction before the git work (pool-exhaustion
+        # guard, mirrors evidence()).
+        await self._release_task_session_before_git()
+
+        diff = await self._preflight_working_diff(t, agent_id, task_id)
+        if not diff.strip():
+            return Envelope.invalid_state(
+                message="no working diff found on the task branch",
+                remediate=(
+                    "commit something to the task branch first, or use "
+                    "evidence to inspect state"
+                ),
+            )
+
+        return await self._preflight_verdict_envelope(task_id, criteria, diff)
+
+    async def _release_task_session_before_git(self) -> None:
+        """Commit (or roll back) the request transaction so the git work
+        below runs off the request's DB session (pool-exhaustion guard)."""
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.task.session.commit()
+        except PendingRollbackError:
+            await self.task.session.rollback()
+
+    async def _preflight_working_diff(
+        self, t: Any, agent_id: UUID, task_id: UUID
+    ) -> str:
+        """The working diff on the task branch; empty when the branch is
+        unset or the diff cannot be read."""
+        if not t.branch_name:
+            return ""
+        diff: str
+        try:
+            diff, _files = await self.git.diff_and_files(
+                branch_name=t.branch_name, actor_agent_id=agent_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "preflight_diff could not read the working diff",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return ""
+        return diff
+
+    async def _preflight_verdict_envelope(
+        self, task_id: UUID, criteria: list[str], diff: str
+    ) -> Envelope:
+        """Run the decisions preflight screen and wrap its verdict into the
+        advisory envelope (no_verdict pass-through when unavailable)."""
+        from roboco.services import decisions
+
+        result = await decisions.preflight_diff(
+            self.task.session,
+            task_id=str(task_id),
+            criteria=criteria,
+            diff=diff,
+        )
+        if result is None:
+            return Envelope.ok(
+                status="no_verdict",
+                task_id=str(task_id),
+                next=(
+                    "decisions unavailable: proceed exactly as usual "
+                    "(run your own check before i_am_done)"
+                ),
+                evidence={"advisory": True, "criteria": criteria},
+                context_briefing={},
+            )
+        low = [c["criterion"] for c in result["criteria"] if not c.get("addresses")]
+        hints: list[str] = []
+        if low:
+            hints.append(
+                "low-confidence criteria: re-check before i_am_done -> "
+                + "; ".join(low[:3])
+            )
+        if (result.get("hygiene") or {}).get("flagged"):
+            hints.append(
+                "hygiene flagged: sweep the diff for debug leftovers, "
+                "conflict markers, hardcoded secrets, or TODO stubs"
+            )
+        return Envelope.ok(
+            status="preflight",
+            task_id=str(task_id),
+            next=" | ".join(hints) or "all criteria plausible: submit when ready",
+            evidence={
+                "advisory": True,
+                "verdicts": result,
+                "tier": "see orchestrator decision log",
+            },
+            context_briefing={},
+        )
+
+    async def triage_failure(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID | str,
+        test_name: str,
+        error_excerpt: str = "",
+    ) -> Envelope:
+        """Decisions agent lane 6.5 (spec): red-test triage.
+
+        The agent sends only the test name and the error excerpt; the
+        orchestrator composes the rest of the state server-side. The lane
+        is advisory: a ``flaky`` verdict is a hint the agent may cite in
+        its submission evidence, never a waiver; below the confidence floor
+        the envelope says ``unknown`` and the agent proceeds exactly as
+        today (debug first).
+        """
+        resolved = await self._resolve_task_ref(str(task_id))
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
+        t = await self.task.get(task_id)
+        if t is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        from roboco.services import decisions
+
+        changed_files: list[str] = []
+        if t.branch_name:
+            try:
+                _diff, changed_files = await self.git.diff_and_files(
+                    branch_name=t.branch_name, actor_agent_id=agent_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "triage_failure could not read changed files",
+                    task_id=str(task_id),
+                    error=str(exc),
+                )
+                changed_files = []
+        is_retry = str(t.status) in ("needs_revision", "verifying")
+        lane = await decisions.triage_failure(
+            self.task.session,
+            task_id=str(task_id),
+            test_name=test_name,
+            error_excerpt=error_excerpt,
+            changed_files_in_diff=changed_files[:50],
+            is_retry=is_retry,
+            recent_flake_history_for_test=[],
+        )
+        if lane is decisions.TriageLane.UNKNOWN:
+            return Envelope.ok(
+                status="unknown",
+                task_id=str(task_id),
+                next=(
+                    "no confident triage: debug the failure first, exactly "
+                    "as you would without this verb"
+                ),
+                evidence={"advisory": True, "test_name": test_name},
+                context_briefing={},
+            )
+        next_by_lane = {
+            decisions.TriageLane.MY_REGRESSION: (
+                "likely your regression: fix it on this branch before submitting"
+            ),
+            decisions.TriageLane.FLAKY: (
+                "likely a flake: you may cite this verdict in your submission "
+                "evidence; it is a hint, not a waiver - QA can still fail the "
+                "review on the same test"
+            ),
+            decisions.TriageLane.ENVIRONMENT: (
+                "likely environment: consider a rerun or note the runner "
+                "failure in your submission evidence"
+            ),
+        }
+        return Envelope.ok(
+            status=lane.value,
+            task_id=str(task_id),
+            next=next_by_lane[lane],
+            evidence={
+                "advisory": True,
+                "test_name": test_name,
+                "changed_files_in_diff": changed_files[:50],
+                "is_retry": is_retry,
+            },
             context_briefing={},
         )
 

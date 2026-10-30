@@ -38,10 +38,40 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.29.0"
+    app_version: str = "0.32.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
+    )
+    role: Literal["all", "api", "dispatcher", "indexer"] = Field(
+        default="all",
+        description=(
+            "Which slice of the single roboco.cli entry point this process "
+            "runs (env ROBOCO_ROLE). 'all': today's behavior, byte-for-byte "
+            "(FastAPI + every Orchestrator background loop + the in-process "
+            "indexer, one process) - used by tests and `make quickstart`. "
+            "'api': serves stateless FastAPI request/response routes; its "
+            "background loops and startup reconciliation are skipped. It "
+            "keeps its own Orchestrator instance only for isolated "
+            "on-demand actions with no fleet-state dependency (the CEO's "
+            "external-PR-supersede branch cut, /api/tasks/{id}/"
+            "supersede-external-pr) - NOT the secretary/intake live chats, "
+            "which nginx routes to the dispatcher instead (see "
+            "docker/nginx.conf) because spawning them needs the SAME "
+            "process as the reconciliation/reaper loops that must see them. "
+            "'dispatcher': the fleet owner - runs the startup reconciliation "
+            "+ every Orchestrator loop, AND (via nginx) the /api/orchestrator/*, "
+            "/api/secretary/live/* and /api/prompter/live/* routes, so the "
+            "fleet's in-memory state (spawn/waiting-agent registries) is "
+            "never split across two processes. Its own task/notification "
+            "queries go over HTTP to its OWN uvicorn (internal_api_url "
+            "resolves to 127.0.0.1 because the property derives that from "
+            "role='dispatcher' in code, never the orchestrator/api-role "
+            "service). 'indexer': "
+            "runs only the KB/embedding worker. The split exists because "
+            "the single 'all' process pins one core under load (measured "
+            "113% CPU on a 12-core box) and every gateway verb starves."
+        ),
     )
     display_timezone: str = Field(
         default="UTC",
@@ -87,7 +117,11 @@ class Settings(BaseSettings):
     )
     api_url: str | None = Field(
         default=None,
-        description="Override API URL for containerized agents (e.g., http://roboco-orchestrator:8000)",
+        description=(
+            "Agent-facing API URL handed to spawned containers' MCP servers "
+            "(env ROBOCO_API_URL, e.g. http://roboco-orchestrator:8000) - "
+            "never used as the dispatcher's own URL, see internal_api_url."
+        ),
     )
     # CORS
     cors_origins: list[str] = Field(
@@ -104,12 +138,20 @@ class Settings(BaseSettings):
         """
         Internal API base URL for service-to-service communication.
 
-        Uses api_url if set (for containerized agents), otherwise builds from host/port.
-        Note: 0.0.0.0 is only valid for binding, not connecting - use 127.0.0.1 instead.
+        The dispatcher role always resolves to its own loopback uvicorn,
+        regardless of api_url (which is the agent-facing URL handed to
+        spawned containers, not the dispatcher's own address). Every other
+        role uses api_url if set, otherwise builds from host/port.
+        Note: 0.0.0.0 is only valid for binding, not connecting - use
+        127.0.0.1 instead.
         """
+        # String COMPARISON against the bind-all literal (not a bind call);
+        # the conditional maps 0.0.0.0 to loopback for connect URLs.
+        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
+        if self.role == "dispatcher":
+            return f"http://{connect_host}:{self.port}/api"
         if self.api_url:
             return f"{self.api_url.rstrip('/')}/api"
-        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
         return f"http://{connect_host}:{self.port}/api"
 
     # ==========================================================================
@@ -223,6 +265,25 @@ class Settings(BaseSettings):
     rag_auto_update_interval: int = Field(
         default=300, ge=60, description="Seconds between auto-updates"
     )
+    indexer_stream_enabled: bool = Field(
+        default=True,
+        description="Route index/embedding writes through the indexer stream worker",
+    )
+    indexer_max_backlog: int = Field(
+        default=500,
+        ge=1,
+        description="Max backlog on the index stream before oldest are dead-lettered",
+    )
+    indexer_embed_concurrency: int = Field(
+        default=1,
+        ge=1,
+        description="Max concurrent embed batches for the indexer's own embedder",
+    )
+    indexer_embed_batch_size: int = Field(
+        default=8,
+        ge=1,
+        description="Embed batch size for the indexer's own embedder",
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -250,7 +311,7 @@ class Settings(BaseSettings):
 
     # Local LLM for RAG answer synthesis
     local_llm_model: str = Field(
-        default="glm-5.2:cloud",
+        default="glm-5.3:cloud",
         description="Local LLM for RAG answer synthesis "
         "(non-thinking models are faster)",
     )
@@ -296,6 +357,179 @@ class Settings(BaseSettings):
             "legacy Anthropic path. Off (default) => graceful degradation "
             "with a warning, so a misconfigured provider never stalls a "
             "spawn; the warning still surfaces the bypass so it isn't silent."
+        ),
+    )
+
+    # ==========================================================================
+    # Decisions service (typed System One decisions, default-off)
+    # ==========================================================================
+    # A small orchestrator-side service that answers TYPED questions (choice /
+    # score / noul) with calibrated confidence at decision points that would
+    # otherwise be a full LLM call or a hardcoded heuristic. Three tiers behind
+    # one wire format, all served by the roboco-decisions sidecar or the
+    # OpenRouter Decisions API: Clef (self-hosted 27B, built-in sweet-spot
+    # default, no key, no spend), Laya (self-hosted 421M, the cheap option,
+    # fallback when the Clef backend is unhealthy) and Jev via OpenRouter
+    # (opt-in, the expensive option). With the master flag off, every call
+    # site does exactly what it did before this service existed; decisions
+    # can only add behavior, never subtract, and nothing ever materializes on
+    # a verdict alone. See docs/internal/decisions-spec.md.
+    decisions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the Decisions service. OFF = tier 3 everywhere "
+            "regardless of any other decisions setting: every pilot and verb "
+            "does exactly what it did before. ON = per-tier and per-pilot "
+            "settings decide what actually serves."
+        ),
+    )
+    decisions_model: str = Field(
+        default="ggml-org/Clef-GGUF:Q4_K_M",
+        description=(
+            "Model id reported to the Decisions backend for the default tier. "
+            "For the self-hosted sidecar this doubles as the routing hint: "
+            "the sidecar routes a request to its Clef or Laya llama.cpp "
+            "backend by the model id on the wire. Vendor-neutral by "
+            "doctrine: swapping model weights must never change anything "
+            "above the client."
+        ),
+    )
+    decisions_laya_model: str = Field(
+        default="ggml-org/Laya-GGUF",
+        description=(
+            "Model id reported to the Decisions backend for the cheap "
+            "self-hosted Laya tier (routed to the sidecar's Laya llama.cpp "
+            "backend)."
+        ),
+    )
+    decisions_base_url: str = Field(
+        default="http://roboco-decisions:8100",
+        description=(
+            "Base URL of the self-hosted Decisions sidecar (the roboco-decisions "
+            "container on the internal bridge). The sidecar mirrors the "
+            "OpenRouter Decisions wire shape at /api/alpha/decisions so the "
+            "client stays one implementation."
+        ),
+    )
+    decisions_tier_clef_enabled: bool = Field(
+        default=True,
+        description=(
+            "Serve decisions from the self-hosted sidecar's Clef backend "
+            "(27B llama.cpp, the BUILT-IN sweet-spot default tier) when it "
+            "is healthy. Inert until the roboco-decisions container exists "
+            "and the master flag is on."
+        ),
+    )
+    decisions_tier_laya_enabled: bool = Field(
+        default=True,
+        description=(
+            "Serve decisions from the self-hosted sidecar's Laya backend "
+            "(421M llama.cpp, the CHEAP option) when the Clef backend is "
+            "disabled or unhealthy. Inert until the roboco-decisions "
+            "container exists and the master flag is on."
+        ),
+    )
+    decisions_tier_openrouter_enabled: bool = Field(
+        default=False,
+        description=(
+            "OPT-IN fallback tier: serve decisions through the OpenRouter "
+            "Decisions API (typesafe/jev-1.13) when the sidecar is disabled "
+            "or unhealthy. Off by default - opting in is a deliberate spend "
+            "and requires an OpenRouter key on Settings -> AI Providers."
+        ),
+    )
+    decisions_timeout_s: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the cheap self-hosted Laya tier (single "
+            "attempt, no retries; sweep cadence is the natural backoff)."
+        ),
+    )
+    decisions_clef_timeout_s: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the default self-hosted Clef tier (single "
+            "attempt, no retries). The 27B forward pass over a capped state "
+            "is CPU prefill-bound: seconds on typical pilot states, tens of "
+            "seconds worst case. Measure on the real deploy before tuning."
+        ),
+    )
+    decisions_openrouter_timeout_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "Per-call timeout for the OpenRouter fallback tier (single "
+            "attempt, no retries)."
+        ),
+    )
+    decisions_cost_alert_usd: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Cumulative daily OpenRouter-fallback Decisions spend (USD, "
+            "summed from per-call usage.cost per UTC day) above which the "
+            "CEO gets one ack-required alert per day. The 402-twice-in-"
+            "an-hour alert is independent of this threshold."
+        ),
+    )
+    decisions_pilots_on: str = Field(
+        default="",
+        description=(
+            "Comma-separated pilot slugs armed ON via env (operator deploys "
+            "like the NAS). A settings-store row always wins over this "
+            "default; slugs in neither list stay OFF. Empty on user-facing "
+            "deploys: nothing acts until the CEO arms pilots from "
+            "Settings -> Decisions Pilots."
+        ),
+    )
+    decisions_pilots_shadow: str = Field(
+        default="",
+        description=(
+            "Comma-separated pilot slugs running in SHADOW via env "
+            "(verdicts logged, behavior unchanged). Settings-store rows "
+            "win; empty default keeps user-facing deploys fully off."
+        ),
+    )
+    decisions_log_retention_days: int = Field(
+        default=90,
+        ge=1,
+        description=(
+            "How long decision_log rows feed the Auditor's baseline history "
+            "before the decisions-audit board cycle prunes them. The daily "
+            "aggregates (verdict distributions, confidence, spend per "
+            "pilot) are computed from this window."
+        ),
+    )
+    decisions_labeler_interval_seconds: int = Field(
+        default=900,
+        ge=60,
+        description=(
+            "Seconds between trajectory-labeler passes over unlabeled "
+            "decision_log rows (spec 12.1). The labeler only writes "
+            "outcome columns; it gates nothing, so it rides the master "
+            "decisions flag with no separate switch."
+        ),
+    )
+    decisions_trajectory_grade_after_hours: int = Field(
+        default=48,
+        ge=1,
+        description=(
+            "Minimum age of a decision row before the trajectory labeler "
+            "grades it: ground truth needs time to exist (a submit must "
+            "have met QA or not, an idle's tasks must have gone somewhere "
+            "or rotted)."
+        ),
+    )
+    decisions_trajectory_rot_hours: int = Field(
+        default=168,
+        ge=1,
+        description=(
+            "Rot horizon for the trajectory labeler's stalled fates: an "
+            "in-progress task with zero activity since before the decision "
+            "is graded stranded/stalled only once THIS many hours have "
+            "passed since the decision."
         ),
     )
 
@@ -423,6 +657,31 @@ class Settings(BaseSettings):
             "recovers it — tolerates a transient probe miss (the gateway mid-call)."
         ),
     )
+    dispatch_claim_inflight_ttl_seconds: int = Field(
+        default=600,
+        ge=0,
+        description=(
+            "How long the dispatcher keeps an agent marked claim-in-flight after "
+            "a client-side timeout/exception on the claim POST, before treating "
+            "it as free again. The server may still be finishing the claim "
+            "(branch creation can outlast the client's own request timeout), so "
+            "a second pending task must not stack a claim onto the same agent "
+            "while the first is still uncertain."
+        ),
+    )
+    parent_branch_provisioning_grace_seconds: int = Field(
+        default=900,
+        ge=0,
+        description=(
+            "How long a claimed/in_progress parent task may sit with "
+            "branch_name NULL, measured in fleet-active time, before the "
+            "dispatcher auto-blocks a waiting child. Claim fields commit "
+            "(TaskService._apply_claim_fields) before branch creation "
+            "(_provision_claim), so a parent's branch can still be minutes "
+            "away under load; matches flow_verb_slow_timeout_seconds, the "
+            "same budget a slow claim/branch verb already gets server-side."
+        ),
+    )
 
     # ==========================================================================
     # Architectural Conventions (per-project placement + house-style standard)
@@ -430,14 +689,18 @@ class Settings(BaseSettings):
     # A repo-canonical .roboco/conventions.yml plus the roboco-conventions
     # validator gate i_am_done / pr_pass on block-level placement and hygiene
     # violations. Default-off; every hook (scaffold, ambient injection, baseline
-    # constraints, the gates) is inert when off.
+    # constraints, the gates) is inert when off. NOT inert when off: the
+    # effective-map READ (GET /api/projects/{id}/conventions, and the infra
+    # declaration consumed by the DevOps review gate) is per-project content,
+    # not enforcement, so it works regardless of this flag.
     conventions_enabled: bool = Field(
         default=False,
         description=(
             "Master switch for the architectural-conventions standard: "
             "auto-scaffold .roboco/conventions.yml, inject the architecture map, "
             "attach baseline constraints, and block gates on violations. Off => "
-            "fully inert."
+            "enforcement fully inert; the effective-map read (conventions API, "
+            "infra declaration) stays available."
         ),
     )
     possibilities_matrix_enabled: bool = Field(
@@ -463,6 +726,23 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # DevOps agent (floating infra role)
+    # ==========================================================================
+    # devops-1 (Role.DEVOPS, board-team floater) authors infra changes in any
+    # project's clone through the same claim-based delegation every other
+    # agent uses. Default-off: the agent exists on the panel but nothing
+    # spawns it and no materialization routes to it.
+    devops_enabled: bool = Field(
+        default=False,
+        description=(
+            "Routes infra tasks to the floating DevOps agent (devops-1): PM "
+            "delegation + board materialization pre-assignment spawn it, and "
+            "it authors through the normal developer lifecycle (PR before "
+            "QA). Off => the agent is seeded but inert: nothing spawns it."
+        ),
+    )
+
+    # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)
     # ==========================================================================
     # Calls go agent -> roboco-search MCP -> /api/research/* -> ResearchService
@@ -478,20 +758,34 @@ class Settings(BaseSettings):
         ),
     )
     research_provider: str = Field(
-        default="tavily",
-        pattern="^(tavily|brave|exa|null)$",
+        default="searxng",
+        pattern="^(tavily|brave|exa|searxng|null)$",
         description=(
-            "Web-search provider adapter. 'tavily' (LLM-native cited results "
-            "+ extract), 'brave' (independent index; no fetch), 'exa' "
-            "(neural search + contents), or 'null' (always-empty stub). "
-            "Swapping providers is a config change only."
+            "Web-search provider adapter. 'searxng' (DEFAULT: self-hosted "
+            "metasearch via the bundled roboco-searxng container, no API "
+            "key, needs research_searxng_base_url), 'tavily' (LLM-native "
+            "cited results + extract; opt-in paid fallback), 'brave' "
+            "(independent index; no fetch), 'exa' (neural search + "
+            "contents), or 'null' (always-empty stub). Swapping providers "
+            "is a config change only."
         ),
     )
     research_api_key: str | None = Field(
         default=None,
         description=(
             "API key for the selected research provider. Server-side only — "
-            "never reaches an agent container. Unset => NullProvider."
+            "never reaches an agent container. Unset => NullProvider. Not "
+            "used by 'searxng', which keys off research_searxng_base_url."
+        ),
+    )
+    research_searxng_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Base URL of the self-hosted SearXNG instance (e.g. "
+            "http://roboco-searxng:8080) for the 'searxng' provider. The "
+            "compose files default this to the bundled roboco-searxng "
+            "container so the stock stack is live out of the box. Server-"
+            "side only; set/unset together with research_provider."
         ),
     )
     research_max_results: int = Field(
@@ -792,7 +1086,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 7.6.0 / guard-core 3.12.0), DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 8.0.0 / guard-core 4.0.1), DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
@@ -841,6 +1135,16 @@ class Settings(BaseSettings):
     guard_project_id: str = Field(
         default="",
         description="guard-core project id for guard-agent telemetry (telemetry only).",
+    )
+    guard_dynamic_rules_cache_path: str = Field(
+        default="",
+        description=(
+            "Local JSON snapshot of the last-known dynamic rules (guard-core "
+            "4.0.0): a restart during a SaaS or redis outage restores the last "
+            "applied rules instead of base config. Redis is the primary store; "
+            "this file is the fallback. Empty disables the file layer. "
+            "Telemetry only."
+        ),
     )
     guard_emergency: bool = Field(
         default=False,
@@ -990,6 +1294,18 @@ class Settings(BaseSettings):
             " tick; the dedupe key expires after this window so a regression"
             " that clears and later recurs notifies again. Fail-open: a Redis"
             " outage in the check still lets the notify through."
+        ),
+    )
+    self_heal_outcome_window_hours: int = Field(
+        default=24,
+        ge=1,
+        description=(
+            "Ground-truth window for the transient-gate training corpus. A"
+            " breach the gate called transient that is STILL breaching this"
+            " long after the gate is labeled still_failing_after_window"
+            " (claim false); one whose latest CI run went green after the"
+            " gate is labeled cleared_after_gate (claim true). Short windows"
+            " label faster but mistake a slow flake for a regression."
         ),
     )
 
@@ -1459,7 +1775,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = Field(
         default="",
         description=(
-            "MinIO endpoint, e.g. http://roboco-minio:9000. Empty = disabled "
+            "S3 endpoint, e.g. http://roboco-rustfs:9000. Empty = disabled "
             "(FileResponse fallback)."
         ),
     )
@@ -1838,6 +2154,18 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)
     # ==========================================================================
+    agent_mcp_startup_timeout_ms: int = Field(
+        default=120000,
+        ge=1000,
+        description=(
+            "MCP_TIMEOUT (ms) injected into the Claude agent container env, "
+            "Claude Code's own MCP server connect-timeout budget, default "
+            "30000. Under a fleet-wide spawn burst, several stdio MCP "
+            "servers starting per container routinely exceed 30s, so every "
+            "verb tool goes 'failed' at init. Claude runtime only; the "
+            "grok/gemini/codex/kimi CLIs don't read this env var."
+        ),
+    )
     agent_tool_call_warn: int = Field(
         default=50,
         ge=1,
@@ -1999,6 +2327,24 @@ class Settings(BaseSettings):
         description=(
             "Reaper-only stale claim threshold (seconds); "
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
+        ),
+    )
+    # Reaper window for stale REVIEW claims (awaiting_qa / awaiting_doc /
+    # awaiting_pr_review rows whose active_claimant went silent). Deliberately
+    # MUCH longer than stale_claim_reap_seconds: a reviewer fires no gateway
+    # verb between claim_review and its pass/fail decision (the review itself
+    # is bash/gh inside the container), so the claim's heartbeat legitimately
+    # freezes at claim time for the whole review. 3600s aligns with
+    # claude_stuck_kill_seconds - a claimant silent that long while ACTIVE is
+    # wedged by the #73 doctrine anyway, and a dead run must not strand the
+    # single-claimant lock for hours (fe-qa held 99f61c8c 13.5h on 2026-09-28
+    # because the i_am_idle release only fires on a CLEAN exit).
+    review_claim_reap_seconds: int = Field(
+        default=3600,
+        ge=300,
+        description=(
+            "Reaper-only stale review-claim threshold (seconds); "
+            "override via ROBOCO_REVIEW_CLAIM_REAP_SECONDS"
         ),
     )
     # A GROK agent that wedges — an idle model call / stream with no gateway
@@ -2165,6 +2511,231 @@ class Settings(BaseSettings):
             "ROBOCO_KIMI_MAX_CONCURRENT only if you understand that risk"
         ),
     )
+    # The hummin CLI model id passed at spawn (`hummin --mode json --model
+    # zai/<id>`). Bare zai-catalog id — the entrypoint prefixes the provider.
+    # The `:high` suffix (Z.ai's high-thinking variant) is the operator
+    # default: selecting the Hummin mode lands the fleet on it with no manual
+    # model pick. See roboco.llm.providers.hummin for the no-MCP V1 caveats.
+    hummin_cli_model: str = Field(
+        default="glm-5.3-flash:high",
+        description=(
+            "hummin CLI model id passed to `hummin --mode json --model zai/<id>`; "
+            "override via ROBOCO_HUMMIN_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the HUMMIN provider (kimi's tunable
+    # Settings pattern). Flat retry_after (no repark backoff bookkeeping —
+    # add it only if hummin is observed re-parking in a tight cycle).
+    hummin_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the HUMMIN provider on a "
+            "Z.ai quota/rate-limit exit; override via "
+            "ROBOCO_HUMMIN_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    hummin_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the HUMMIN provider on a "
+            "missing/invalid Z.ai key (entrypoint preflight exit 78); "
+            "override via ROBOCO_HUMMIN_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
+    # No OAuth chain to protect (unlike kimi's shared refresh-token mount) —
+    # hummin auth is a static per-spawn env key. Uncapped by default; set a
+    # cap only if Z.ai throttles the GLM Coding Plan account in practice.
+    hummin_max_concurrent: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Max concurrent live HUMMIN agent containers (None = uncapped). "
+            "Override via ROBOCO_HUMMIN_MAX_CONCURRENT only if Z.ai throttles "
+            "the account in practice"
+        ),
+    )
+    # OpenRouter — the Ollama shape, not Grok. A static metered API key
+    # injected via env (OPENROUTER_API_KEY + OPENROUTER_BASE_URL), no ~/. auth
+    # mount and no refresh loop (see roboco.llm.providers.openrouter). The
+    # default base URL is OpenRouter's public endpoint; the operator's key is
+    # stored Fernet-encrypted by the routing service (set_openrouter_api_key).
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description=(
+            "OpenRouter API base URL injected as OPENROUTER_BASE_URL at "
+            "spawn. Override via ROBOCO_OPENROUTER_BASE_URL"
+        ),
+    )
+    # The default OpenRouter model id (provider/model form, e.g.
+    # "anthropic/claude-sonnet-5") passed to `opencode run --model` when the
+    # routing assignment does not pin a specific model. The live catalog is
+    # searched on demand (GET /providers/openrouter/models) and the picked
+    # model id is stored via provider_type_override — this is only the floor.
+    openrouter_cli_model: str = Field(
+        default="anthropic/claude-sonnet-5",
+        description=(
+            "Default OpenRouter model id (provider/model) passed to opencode "
+            "when no per-assignment model is pinned. Override via "
+            "ROBOCO_OPENROUTER_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the OPENROUTER provider (the kimi
+    # pattern: real Settings fields, not hardcoded module constants). An
+    # operator may want a different cadence for OpenRouter's metered credit
+    # pools than the flat 60s default. The rate-limit value backs
+    # _park_openrouter_rate_limited's exponential re-park backoff (429 -> exit
+    # 75); the auth value covers the missing/invalid API key preflight (401 ->
+    # exit 78).
+    openrouter_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the OPENROUTER provider "
+            "on a quota/rate-limit exit; override via "
+            "ROBOCO_OPENROUTER_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    openrouter_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the OPENROUTER provider on a "
+            "missing/invalid API key (entrypoint preflight exit 78); override "
+            "via ROBOCO_OPENROUTER_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
+    openrouter_http_referer: str = Field(
+        default="",
+        description=(
+            "Optional HTTP-Referer sent on OpenRouter requests (OpenRouter "
+            "surfaces it on the usage dashboard). Override via "
+            "ROBOCO_OPENROUTER_HTTP_REFERER"
+        ),
+    )
+    openrouter_x_title: str = Field(
+        default="RoboCo",
+        description=(
+            "Optional X-Title sent on OpenRouter requests (site name shown on "
+            "the OpenRouter usage dashboard). Override via "
+            "ROBOCO_OPENROUTER_X_TITLE"
+        ),
+    )
+    # Nebius Token Factory - the same Ollama shape as OpenRouter: a static
+    # metered API key injected via env (NEBIUS_API_KEY + NEBIUS_BASE_URL), no
+    # ~/. auth mount and no refresh loop (see roboco.llm.providers.nebius).
+    # The endpoint is OpenAI-compatible at
+    # https://api.tokenfactory.nebius.com/v1; the operator's key is stored
+    # Fernet-encrypted by the routing service (set_nebius_api_key). No
+    # attribution-header fields - Token Factory has no referer/title
+    # dashboard surface.
+    nebius_base_url: str = Field(
+        default="https://api.tokenfactory.nebius.com/v1",
+        description=(
+            "Nebius Token Factory API base URL injected as NEBIUS_BASE_URL at "
+            "spawn. Override via ROBOCO_NEBIUS_BASE_URL"
+        ),
+    )
+    # The default Nebius model id (provider/model form) passed to
+    # `opencode run --model` when the routing assignment does not pin a
+    # specific model. Defaults to NVIDIA's Nemotron 3 Super (the
+    # multi-agent-optimized Nemotron on Token Factory - the NVIDIA open model
+    # the provider must run to satisfy the Nebius x NVIDIA stack); the live
+    # catalog is searched on demand (GET /providers/nebius/models) and the
+    # picked model id is stored via provider_type_override - this is only
+    # the floor.
+    nebius_cli_model: str = Field(
+        default="nvidia/nemotron-3-super-120b-a12b",
+        description=(
+            "Default Nebius Token Factory model id (provider/model) passed to "
+            "opencode when no per-assignment model is pinned. Override via "
+            "ROBOCO_NEBIUS_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the NEBIUS provider (the openrouter
+    # pattern: real Settings fields, not hardcoded module constants). The
+    # rate-limit value backs _park_nebius_rate_limited's exponential re-park
+    # backoff (429 -> exit 75); the auth value covers the missing/invalid API
+    # key preflight (401 -> exit 78).
+    nebius_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the NEBIUS provider on a "
+            "quota/rate-limit exit; override via "
+            "ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    nebius_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the NEBIUS provider on a "
+            "missing/invalid API key (entrypoint preflight exit 78); override "
+            "via ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
+    # Token Factory Sandboxes (the Contree service at
+    # api.tokenfactory.nebius.com/sandboxes): ephemeral microVMs that run a
+    # command and are destroyed, used by the dev/QA-scoped run_sandbox_tests
+    # gateway verb to execute a task's test suite outside the agent
+    # container. Default-off like every autonomy surface; the sandbox calls
+    # authenticate with the SAME stored Nebius API key as the inference
+    # provider (bearer), plus an optional Project header
+    # (token_factory_sandboxes_project_id) when the account is scoped to a
+    # Nebius project id.
+    token_factory_sandboxes_enabled: bool = Field(
+        default=False,
+        description=(
+            "Arm the run_sandbox_tests gateway verb (dev/QA test runs in Token "
+            "Factory Sandbox microVMs); default off, also toggleable from "
+            "the panel's Feature Flags card"
+        ),
+    )
+    token_factory_sandboxes_base_url: str = Field(
+        default="https://api.tokenfactory.nebius.com/sandboxes",
+        description=(
+            "Contree Sandboxes API base (the client appends /v1); override "
+            "via ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL"
+        ),
+    )
+    token_factory_sandboxes_project_id: str = Field(
+        default="",
+        description=(
+            "Nebius project id sent as the Sandboxes API's REQUIRED "
+            "'Project' header (the API 400s without it; the hackathon "
+            "service-account id resolves). Override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID"
+        ),
+    )
+    token_factory_sandboxes_image: str = Field(
+        # 3.13: pyproject requires-python >=3.13, so a 3.12 sandbox cannot run
+        # this repo's own tests (tag listed in the console's Sandboxes > Images).
+        default="tag:python:3.13",
+        description=(
+            "Default sandbox image ref (the agent may override per call); "
+            "override via ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE"
+        ),
+    )
+    token_factory_sandboxes_timeout_seconds: int = Field(
+        default=900,
+        ge=30,
+        description=(
+            "Default per-run wall-clock ceiling inside the sandbox (the "
+            "sandbox kills the process at this); override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS"
+        ),
+    )
+    token_factory_sandboxes_max_archive_bytes: int = Field(
+        default=67108864,
+        ge=1048576,
+        description=(
+            "Max git-archive upload size for a sandbox test run (64 MiB "
+            "default); override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES"
+        ),
+    )
     # An interactive intake/secretary chat the human abandoned (closed the tab
     # without confirming/stopping) otherwise leaks its container until the
     # orchestrator restarts. The sweeper reaps a live session whose
@@ -2257,6 +2828,71 @@ class Settings(BaseSettings):
             "things",
         ),
         description="Banned single-word commit subjects",
+    )
+
+    # ==========================================================================
+    # Cross-vendor second review (in-path PR gate risk threshold) — DEFAULT OFF
+    # ==========================================================================
+    # Drives roboco/services/second_review.py's risk-threshold classifier: a
+    # high-stakes task gets its PR gate second review from a model provider
+    # that differs from the one that authored/QA'd it. Off by default; every
+    # threshold below is settings-driven, never hardcoded in the classifier.
+    cross_vendor_review_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the cross-vendor second-review risk threshold. "
+            "OFF by default; when off, is_high_stakes() always returns False."
+        ),
+    )
+    cross_vendor_review_max_priority: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        description=(
+            "A task at this priority value or more urgent (lower int; 0=P0) "
+            "qualifies as high-stakes. Default 1 covers P0+P1."
+        ),
+    )
+    cross_vendor_review_flag_migrations: bool = Field(
+        default=True,
+        description=(
+            "Whether a migration-adding task (Task.adds_migration) qualifies "
+            "as high-stakes."
+        ),
+    )
+    cross_vendor_review_flag_protected_surface: bool = Field(
+        default=True,
+        description=(
+            "Whether a task touching a widely-shared surface "
+            "(Task.touches_shared) qualifies as high-stakes."
+        ),
+    )
+    cross_vendor_review_flag_security: bool = Field(
+        default=True,
+        description=(
+            "Whether a security-relevant task (matched via "
+            "cross_vendor_review_security_keywords) qualifies as high-stakes."
+        ),
+    )
+    cross_vendor_review_security_keywords: tuple[str, ...] = Field(
+        default=(
+            "auth",
+            "security",
+            "credential",
+            "password",
+            "secret",
+            "token",
+            "encrypt",
+            "crypto",
+            "permission",
+            "vulnerab",
+            "cve",
+            "injection",
+        ),
+        description=(
+            "Case-insensitive keywords matched against a task's title + "
+            "description to derive security-relevance."
+        ),
     )
 
     # ==========================================================================

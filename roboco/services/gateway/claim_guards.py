@@ -129,6 +129,64 @@ def sequence_held_guard(target_task: Any, blocked_by: str | None) -> Envelope | 
     return Envelope.sequence_held(blocked_by=blocked_by, task_id=str(target_task.id))
 
 
+def agent_access_denied_guard(
+    target_task: Any,
+    project_id: UUID,
+    agent_id: UUID,
+    has_access: bool,
+    reason: str = "unknown",
+) -> Envelope | None:
+    """Refuse claim when the services-layer access rule denies the agent.
+
+    ``has_access`` is the caller-resolved verdict of
+    ``ProjectService.check_agent_access`` (project exists, assigned cell
+    matches, optional allowed_agents list) — the single source of the
+    allow/deny decision, so this predicate only shapes the refusal:
+    no DB IO, no rule logic, mirroring ``unmet_dependency_guard``.
+
+    ``reason`` is why the rule denies, resolved by the caller alongside the
+    verdict: "assigned_cell" (the project's assigned cell differs from the
+    agent's team — a cross-cell coordination actor; the access route cannot
+    fix this), "allowed_agents" (a same-cell agent left off the list — the
+    access route IS the fix), or "unknown" (generic). It picks the remediate
+    so the envelope never sends the agent down a path that cannot work.
+
+    Runs BEFORE the composed claim verb so a restriction set via
+    POST /projects/{id}/access/{agent_id} is enforced before any
+    task-status mutation.
+    """
+    if has_access:
+        return None
+    if reason == "assigned_cell":
+        return Envelope.not_authorized(
+            message=(
+                f"agent {agent_id} is not permitted to work on project "
+                f"{project_id} (task {target_task.id}): the agent's team is "
+                "outside the project's assigned cell."
+            ),
+            remediate=(
+                f"reassign task {target_task.id} to an agent in the "
+                f"project's assigned cell — POST "
+                f"/projects/{project_id}/access/{agent_id} cannot widen "
+                "the assigned cell"
+            ),
+        )
+    return Envelope.not_authorized(
+        message=(
+            f"agent {agent_id} is not permitted to work on project "
+            f"{project_id} (task {target_task.id}): the project's access "
+            "rule refuses this agent (assigned-cell mismatch, or the "
+            "project restricts work to an allowed-agents list the agent "
+            "is not on)."
+        ),
+        remediate=(
+            f"have the project's PM add the agent via POST "
+            f"/projects/{project_id}/access/{agent_id}, or reassign task "
+            f"{target_task.id} to an agent permitted on this project"
+        ),
+    )
+
+
 def unmet_dependency_guard(
     target_task: Any, unmet_dependency_ids: list[UUID]
 ) -> Envelope | None:

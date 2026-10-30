@@ -155,6 +155,19 @@ def _validate_embedder_protocol(embedder: Embedder, model: str) -> None:
         )
 
 
+def set_shared_embedder(embedder: "OllamaEmbedder") -> None:
+    """Seed this process's shared-embedder singleton with a pre-built instance.
+
+    Used by the indexer worker to install a lower-concurrency/batch embedder
+    for the ``ROBOCO_ROLE=indexer`` process before anything calls
+    ``get_shared_embedder()`` (ollama is a single shared server; a
+    default-concurrency indexing batch can starve concurrent query embeds).
+    The query-serving process's own singleton lives in a separate process and
+    is never touched by this.
+    """
+    _SharedEmbedderHolder.instance = embedder
+
+
 async def close_shared_embedder() -> None:
     """Release the shared embedder resources."""
     async with _SharedEmbedderHolder.get_lock():

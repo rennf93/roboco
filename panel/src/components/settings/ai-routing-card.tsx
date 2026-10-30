@@ -9,13 +9,19 @@ import {
   useDeleteComplexityOverride,
   useDeletePreset,
   useGrokKey,
+  useHumminKey,
+  useNebiusKey,
   useOllamaKey,
+  useOpenRouterKey,
   useRoutingMode,
   useRoutingPresets,
   useSavePreset,
+  useSearchNebiusModels,
+  useSearchOpenRouterModels,
   useSetComplexityOverride,
   useSetGrokKey,
   useSetOllamaKey,
+  useZaiKey,
   useSelfHostedModels,
 } from "@/hooks/use-providers";
 import {
@@ -41,9 +47,11 @@ import { Separator } from "@/components/ui/separator";
 import {
   AlertTriangle,
   Bot,
+  Cloud,
   Cpu,
   Gauge,
   Gem,
+  Globe,
   Key,
   KeyRound,
   Moon,
@@ -57,10 +65,18 @@ import { AssignmentScope, AgentRole, ModelProvider } from "@/types";
 import {
   COMPLEXITY_OVERRIDE_ROLES,
   type ComplexityLevel,
+  type NebiusModel,
+  type OpenRouterModel,
   type SelfHostedModel,
 } from "@/lib/api/providers";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
+import {
+  HumminProviderKeyRow,
+  NebiusProviderKeyRow,
+  OpenRouterProviderKeyRow,
+  ZaiProviderKeyRow,
+} from "@/components/settings/provider-key-card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -118,11 +134,9 @@ const AGENT_GROUP_DEFS: {
   },
 ];
 
-// Codex/Gemini/Kimi are V1 delivery-roles-only — no interactive Intake/
-// Secretary support (see roboco.llm.providers.codex / .gemini / .kimi). This
-// group's per-agent picker excludes all three providers below instead of
-// offering a route that would silently misroute the persistent Intake/
-// Secretary session at spawn.
+// Every provider powers the interactive Intake/Secretary chats since
+// 2026-09-17 (the provider-generic live driver), so this group's per-agent
+// picker renders the FULL catalog - no exclusions.
 const INTERACTIVE_ONLY_GROUP_TITLE = "Intake / Secretary / PR Review";
 
 // Stable within-group ordering (PM/lead first, devs, QA, doc, reviewer last)
@@ -158,6 +172,69 @@ const COMPLEXITY_ROLE_LABELS: Record<string, string> = {
   qa: "QA",
   documenter: "Documenter",
 };
+
+// OpenRouter models come from the shared contract in @/lib/api/providers
+// (OpenRouterModel, mirrored from the backend's OpenRouterModelEntry):
+// prompt_price / completion_price / context_length are all nullable because
+// OpenRouter's catalog genuinely contains unpriced models. The Nebius search
+// reuses the same shape (NebiusModel is an alias), mostly-null for Nebius.
+
+// Format a per-token price as human-readable per-million-token, e.g.
+// 0.000003 → "$3.00/1M". Null/undefined (both search endpoints leave prices
+// null when the catalog carries none) or zero/negative (OpenRouter's "-1"
+// unknown-price sentinel) → "—"; sub-cent per-million values keep a third
+// decimal so they don't render as "$0.00/1M".
+function formatPricePerMillion(price: number | null | undefined): string {
+  if (price == null) return "—";
+  const perMillion = price * 1_000_000;
+  if (isNaN(perMillion) || perMillion <= 0) return "—";
+  return perMillion < 0.01
+    ? `$${perMillion.toFixed(3)}/1M`
+    : `$${perMillion.toFixed(2)}/1M`;
+}
+
+// Surface specific OpenRouter failure reasons instead of a generic message
+// (HoM UX requirement c): 400 = no key, 401 = auth, 429 = rate limit, timeout.
+function openRouterSearchErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "response" in error) {
+    const status = (error as { response?: { status?: number } }).response
+      ?.status;
+    if (status === 400)
+      return "OpenRouter API key not set — save your key above first.";
+    if (status === 401)
+      return "OpenRouter auth failure — your API key may be invalid or expired.";
+    if (status === 429)
+      return "OpenRouter rate limit — too many requests, try again in a moment.";
+  }
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: string }).code;
+    if (code === "ECONNABORTED" || code === "ETIMEDOUT")
+      return "OpenRouter search timed out — try again in a moment.";
+  }
+  return "OpenRouter API is unavailable — try again in a moment.";
+}
+
+// Surface specific Nebius failure reasons instead of a generic message
+// (mirrors openRouterSearchErrorMessage above): 400 = no key, 401 = auth,
+// 429 = rate limit, timeout.
+function nebiusSearchErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "response" in error) {
+    const status = (error as { response?: { status?: number } }).response
+      ?.status;
+    if (status === 400)
+      return "Nebius API key not set - save your key above first.";
+    if (status === 401)
+      return "Nebius auth failure - your API key may be invalid or expired.";
+    if (status === 429)
+      return "Nebius rate limit - too many requests, try again in a moment.";
+  }
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: string }).code;
+    if (code === "ECONNABORTED" || code === "ETIMEDOUT")
+      return "Nebius search timed out - try again in a moment.";
+  }
+  return "Nebius API is unavailable - try again in a moment.";
+}
 
 export function AIRoutingCard() {
   const { data: catalog = [] } = useCatalog();
@@ -259,6 +336,52 @@ export function AIRoutingCard() {
     }
   };
 
+  // --- OpenRouter API key status + model search ---
+  const { data: openRouterKeyStatus } = useOpenRouterKey();
+  const hasOpenRouterKey = !!openRouterKeyStatus?.has_key;
+  // --- Z.ai API key status (key row lives in ZaiProviderKeyRow) ---
+  const { data: zaiKeyStatus } = useZaiKey();
+  const hasZaiKey = !!zaiKeyStatus?.has_key;
+  // --- hummin (GLM Coding Plan) key status (row lives in
+  // HumminProviderKeyRow) — the ZAI row's key does NOT carry over; the
+  // providers stay independent.
+  const { data: humminKeyStatus } = useHumminKey();
+  const hasHumminKey = !!humminKeyStatus?.has_key;
+  const [openRouterModel, setOpenRouterModel] = useState("");
+  const [openRouterSearch, setOpenRouterSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(openRouterSearch), 300);
+    return () => clearTimeout(timer);
+  }, [openRouterSearch]);
+
+  const {
+    data: openRouterModels,
+    isLoading: openRouterSearchLoading,
+    isError: openRouterSearchError,
+    error: openRouterSearchErr,
+  } = useSearchOpenRouterModels(debouncedSearch, hasOpenRouterKey);
+
+  // --- Nebius API key status + model search ---
+  const { data: nebiusKeyStatus } = useNebiusKey();
+  const hasNebiusKey = !!nebiusKeyStatus?.has_key;
+  const [nebiusModel, setNebiusModel] = useState("");
+  const [nebiusSearch, setNebiusSearch] = useState("");
+  const [debouncedNebiusSearch, setDebouncedNebiusSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedNebiusSearch(nebiusSearch), 300);
+    return () => clearTimeout(timer);
+  }, [nebiusSearch]);
+
+  const {
+    data: nebiusModels,
+    isLoading: nebiusSearchLoading,
+    isError: nebiusSearchError,
+    error: nebiusSearchErr,
+  } = useSearchNebiusModels(debouncedNebiusSearch, hasNebiusKey);
+
   // --- Mix mode state: agent_slug → model_name ---
   const initialMix = useMemo(() => {
     const map: Record<string, string> = {};
@@ -301,6 +424,14 @@ export function AIRoutingCard() {
   const catalogKimiOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.KIMI,
+  );
+  const catalogNebiusOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.NEBIUS,
+  );
+  const catalogHumminOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.HUMMIN,
   );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
@@ -353,15 +484,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Codex? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Codex has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Codex too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "codex" });
       toast.success(
-        "Role/global routing now on Codex — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Codex, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -373,15 +503,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Gemini? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Gemini has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Gemini too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "gemini" });
       toast.success(
-        "Role/global routing now on Gemini — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Gemini, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -393,15 +522,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Kimi? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Kimi has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Kimi too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "kimi" });
       toast.success(
-        "Role/global routing now on Kimi — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Kimi, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -424,6 +552,103 @@ export function AIRoutingCard() {
       await applyMode.mutateAsync({ mode: "ollama" });
       toast.success(
         "Role/global routing now on Ollama — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToOpenRouter = async () => {
+    if (!hasOpenRouterKey) {
+      toast.error("Save the OpenRouter API key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to OpenRouter? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced. " +
+          "V1: delivery roles only, not Intake/Secretary.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({
+        mode: "openrouter",
+        ...(openRouterModel ? { default_model: openRouterModel } : {}),
+      });
+      toast.success(
+        "Role/global routing now on OpenRouter — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToNebius = async () => {
+    if (!hasNebiusKey) {
+      toast.error("Save the Nebius API key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to Nebius? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced. " +
+          "V1: delivery roles only, not Intake/Secretary.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({
+        mode: "nebius",
+        ...(nebiusModel ? { default_model: nebiusModel } : {}),
+      });
+      toast.success(
+        "Role/global routing now on Nebius (per-agent pins and complexity overrides kept)",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToZai = async () => {
+    if (!hasZaiKey) {
+      toast.error("Save the Z.ai API key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to Z.ai GLM? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "zai" });
+      toast.success(
+        "Role/global routing now on Z.ai GLM — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToHummin = async () => {
+    if (!hasHumminKey) {
+      toast.error("Save the hummin (GLM Coding Plan) key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to GLM via the hummin CLI? Per-agent pins and " +
+          "complexity overrides are kept; other role/global assignments " +
+          "are replaced.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "hummin" });
+      toast.success(
+        "Role/global routing now on GLM (hummin) — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -544,20 +769,27 @@ export function AIRoutingCard() {
     }
   };
 
-  // --- Cost-tiered defaults (additive seed — never wipes existing routing) ---
+  // --- Cost-tiered routing (additive, never wipes existing routing) ---
   const flipToCostTiered = async () => {
     if (
       !confirm(
-        "Seed the day-1 cost-tiered default (developer:low → Haiku)? " +
-          "Unlike the other buttons this is additive — it does not clear " +
-          "any existing routing.",
+        "Apply cost-tiered routing? No rows are seeded automatically (the " +
+          "built-in day-1 seed was retired). Pin cheaper models per role and " +
+          "complexity in the Complexity overrides table below.",
       )
     )
       return;
     try {
-      await applyMode.mutateAsync({ mode: "cost_tiered" });
+      const result = await applyMode.mutateAsync({ mode: "cost_tiered" });
+      // The backend seeds nothing, so report the real post-state from the
+      // response snapshot: how many complexity override rows it carries.
+      const overrideCount = result.assignments.filter(
+        (a) => a.scope === AssignmentScope.ROLE && a.scope_value?.includes(":"),
+      ).length;
       toast.success(
-        "Cost-tiered default seeded (developer:low → Haiku)",
+        overrideCount === 0
+          ? "Cost-tiered mode applied. No rows seeded."
+          : `Cost-tiered mode applied. ${overrideCount} complexity override row${overrideCount === 1 ? "" : "s"} active.`,
       );
     } catch (e) {
       toast.error("Apply failed: " + errMsg(e));
@@ -659,7 +891,9 @@ export function AIRoutingCard() {
       toast.error("Pick a preset first");
       return;
     }
-    if (!confirm(`Delete preset "${selectedPreset?.name ?? selectedPresetId}"?`))
+    if (
+      !confirm(`Delete preset "${selectedPreset?.name ?? selectedPresetId}"?`)
+    )
       return;
     try {
       await deletePreset.mutateAsync(selectedPresetId);
@@ -671,10 +905,10 @@ export function AIRoutingCard() {
   };
 
   // The full per-agent model-picker option list, shared by every group's
-  // Select — factored out so the Codex/Gemini exclusion for the interactive
-  // group (`restrictInteractiveOnly`) doesn't require duplicating the whole
-  // catalog-grouped SelectContent tree.
-  const renderMixSelectOptions = (restrictInteractiveOnly: boolean) => (
+  // Select. `restrictInteractiveOnly` no longer excludes any provider:
+  // since 2026-09-17 every provider powers the interactive chats via the
+  // provider-generic live driver, so every group renders the full catalog.
+  const renderMixSelectOptions = () => (
     <>
       <SelectItem value="__clear__">(inherit global)</SelectItem>
 
@@ -712,8 +946,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Codex (OpenAI) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogOpenaiOnly.length > 0 && (
+      {/* Codex (OpenAI) models */}
+      {catalogOpenaiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="openai" />
@@ -729,8 +963,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Gemini (Google) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogGeminiOnly.length > 0 && (
+      {/* Gemini (Google) models */}
+      {catalogGeminiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="gemini" />
@@ -746,14 +980,48 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Kimi (Moonshot) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogKimiOnly.length > 0 && (
+      {/* Kimi (Moonshot) models */}
+      {catalogKimiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="kimi" />
             Kimi (Moonshot)
           </SelectLabel>
           {catalogKimiOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* Nebius (Token Factory) models */}
+      {catalogNebiusOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="nebius" />
+            Nebius (Token Factory)
+          </SelectLabel>
+          {catalogNebiusOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* hummin (GLM via the GLM-native CLI) models */}
+      {catalogHumminOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="hummin" />
+            GLM (hummin)
+          </SelectLabel>
+          {catalogHumminOnly.map(
             (c: { model_name: string; display_name: string }) => (
               <SelectItem key={c.model_name} value={c.model_name}>
                 {c.display_name}
@@ -815,153 +1083,161 @@ export function AIRoutingCard() {
         </CardTitle>
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
-          <code className="px-1"> ~/.claude </code> auth; Grok (xAI) and Ollama
-          Cloud use the API keys you save below; Codex, Gemini, and Kimi
-          authenticate via their own mounted CLI subscriptions (no key needed) —
-          V1: delivery roles only, not Intake/Secretary; Self-Hosted connects to
-          any OpenAI-compatible endpoint you run locally.
+          <code className="px-1"> ~/.claude </code> auth; Grok (xAI), Ollama
+          Cloud, OpenRouter, and Nebius use the API keys you save below; Codex,
+          Gemini, and Kimi authenticate via their own mounted CLI subscriptions
+          (no key needed) — V1: delivery roles only, not Intake/Secretary;
+          Self-Hosted connects to any OpenAI-compatible endpoint you run
+          locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* -------- Key cards band: Grok+Ollama (left) / Self-Hosted (right) -------- */}
-        <div className="grid grid-cols-1 gap-10 lg:grid-cols-2 lg:gap-14">
-          <div className="space-y-8">
-            {/* -------- Grok (xAI) key -------- */}
-            <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <HelpTip label="Stored encrypted server-side; never displayed once saved.">
-                  <Label className="text-sm font-medium">
-                    Grok (xAI) API key
-                  </Label>
-                </HelpTip>
-                {hasGrokKey ? (
-                  <HelpTip label="Enables the Grok mode button and any Grok row in Mix mode below.">
-                    <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                      <KeyRound className="h-3 w-3" /> key set
-                    </Badge>
-                  </HelpTip>
-                ) : (
-                  <HelpTip label="Required before any agent can route to a Grok model.">
-                    <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                      <Key className="h-3 w-3" /> not set
-                    </Badge>
-                  </HelpTip>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  type="password"
-                  value={grokKey}
-                  onChange={(e) => setGrokKey(e.target.value)}
-                  placeholder={
-                    hasGrokKey ? "•••••••••••• (leave blank to keep)" : "xai-…"
-                  }
-                  disabled={clearGrokKey}
-                />
-                <Button
-                  onClick={saveGrokKey}
-                  disabled={setGrokKeyMut.isPending}
-                >
-                  {setGrokKeyMut.isPending ? "Saving…" : "Save"}
-                </Button>
-              </div>
+        {/* -------- Key cards band: 2x2 provider keys, self-hosted full-width below -------- */}
+        <div className="grid grid-cols-1 items-start gap-x-10 gap-y-8 md:grid-cols-2">
+          {/* -------- Grok (xAI) key -------- */}
+          <section className="space-y-2">
+            <div className="flex items-center justify-between">
+              <HelpTip label="Stored encrypted server-side; never displayed once saved.">
+                <Label className="text-sm font-medium">
+                  Grok (xAI) API key
+                </Label>
+              </HelpTip>
               {hasGrokKey ? (
-                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                  <Checkbox
-                    checked={clearGrokKey}
-                    onCheckedChange={(checked: boolean) => {
-                      const next = checked === true;
-                      setClearGrokKey(next);
-                      if (next) setGrokKey("");
-                    }}
-                  />
-                  Clear the stored key
-                </label>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Used for grok-build-0.1 at api.x.ai/v1. Stored
-                  Fernet-encrypted server-side; never returned by the API.
-                </p>
-              )}
-            </section>
-
-            <Separator />
-
-            {/* -------- Ollama key -------- */}
-            <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <HelpTip label="Stored encrypted server-side; never displayed once saved.">
-                  <Label className="text-sm font-medium">
-                    Ollama Cloud API key
-                  </Label>
+                <HelpTip label="Enables the Grok mode button and any Grok row in Mix mode below.">
+                  <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                    <KeyRound className="h-3 w-3" /> key set
+                  </Badge>
                 </HelpTip>
-                {hasOllamaKey ? (
-                  <HelpTip label="Enables the Ollama mode button and any Ollama row in Mix mode below.">
-                    <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                      <KeyRound className="h-3 w-3" /> key set
-                    </Badge>
-                  </HelpTip>
-                ) : (
-                  <HelpTip label="Required before any agent can route to an Ollama Cloud model.">
-                    <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                      <Key className="h-3 w-3" /> not set
-                    </Badge>
-                  </HelpTip>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={
-                    hasOllamaKey
-                      ? "•••••••••••• (leave blank to keep)"
-                      : "ollama_xxx…"
-                  }
-                  disabled={clearKey}
-                />
-                <Button onClick={saveKey} disabled={setKey.isPending}>
-                  {setKey.isPending ? "Saving…" : "Save"}
-                </Button>
-              </div>
-              {hasOllamaKey ? (
-                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                  <Checkbox
-                    checked={clearKey}
-                    onCheckedChange={(checked: boolean) => {
-                      const next = checked === true;
-                      setClearKey(next);
-                      if (next) setApiKey("");
-                    }}
-                  />
-                  Clear the stored key
-                </label>
               ) : (
-                <p className="text-xs text-muted-foreground">
-                  Stored Fernet-encrypted server-side; never returned by the
-                  API.
-                </p>
+                <HelpTip label="Required before any agent can route to a Grok model.">
+                  <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                    <Key className="h-3 w-3" /> not set
+                  </Badge>
+                </HelpTip>
               )}
-            </section>
-          </div>
+            </div>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                value={grokKey}
+                onChange={(e) => setGrokKey(e.target.value)}
+                placeholder={
+                  hasGrokKey ? "•••••••••••• (leave blank to keep)" : "xai-…"
+                }
+                disabled={clearGrokKey}
+              />
+              <Button onClick={saveGrokKey} disabled={setGrokKeyMut.isPending}>
+                {setGrokKeyMut.isPending ? "Saving…" : "Save"}
+              </Button>
+            </div>
+            {hasGrokKey ? (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <Checkbox
+                  checked={clearGrokKey}
+                  onCheckedChange={(checked: boolean) => {
+                    const next = checked === true;
+                    setClearGrokKey(next);
+                    if (next) setGrokKey("");
+                  }}
+                />
+                Clear the stored key
+              </label>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Used for grok-build-0.1 at api.x.ai/v1. Stored Fernet-encrypted
+                server-side; never returned by the API.
+              </p>
+            )}
+          </section>
 
-          {/* -------- Self-Hosted LLM -------- */}
-          <SelfHostedSection
-            testResult={selfHostedTestResult}
-            onTestResult={handleSelfHostedTestResult}
-            onTestSuccess={() => undefined}
-          />
+          {/* -------- Ollama key -------- */}
+          <section className="space-y-2">
+            <div className="flex items-center justify-between">
+              <HelpTip label="Stored encrypted server-side; never displayed once saved.">
+                <Label className="text-sm font-medium">
+                  Ollama Cloud API key
+                </Label>
+              </HelpTip>
+              {hasOllamaKey ? (
+                <HelpTip label="Enables the Ollama mode button and any Ollama row in Mix mode below.">
+                  <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                    <KeyRound className="h-3 w-3" /> key set
+                  </Badge>
+                </HelpTip>
+              ) : (
+                <HelpTip label="Required before any agent can route to an Ollama Cloud model.">
+                  <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                    <Key className="h-3 w-3" /> not set
+                  </Badge>
+                </HelpTip>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={
+                  hasOllamaKey
+                    ? "•••••••••••• (leave blank to keep)"
+                    : "ollama_xxx…"
+                }
+                disabled={clearKey}
+              />
+              <Button onClick={saveKey} disabled={setKey.isPending}>
+                {setKey.isPending ? "Saving…" : "Save"}
+              </Button>
+            </div>
+            {hasOllamaKey ? (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <Checkbox
+                  checked={clearKey}
+                  onCheckedChange={(checked: boolean) => {
+                    const next = checked === true;
+                    setClearKey(next);
+                    if (next) setApiKey("");
+                  }}
+                />
+                Clear the stored key
+              </label>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Stored Fernet-encrypted server-side; never returned by the API.
+              </p>
+            )}
+          </section>
+
+          {/* -------- OpenRouter key -------- */}
+          <OpenRouterProviderKeyRow />
+
+          {/* -------- Z.ai key -------- */}
+          <ZaiProviderKeyRow />
+
+          {/* -------- Nebius key -------- */}
+          <NebiusProviderKeyRow />
+
+          {/* -------- hummin (GLM Coding Plan) key — independent of the
+             ZAI row's key on purpose (separate providers, separate keys) */}
+          <HumminProviderKeyRow />
         </div>
+
+        <Separator />
+
+        {/* -------- Self-Hosted LLM (full width) -------- */}
+        <SelfHostedSection
+          testResult={selfHostedTestResult}
+          onTestResult={handleSelfHostedTestResult}
+          onTestSuccess={() => undefined}
+        />
 
         <Separator />
 
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
+          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Nebius / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -1022,6 +1298,45 @@ export function AIRoutingCard() {
               disabled={applyMode.isPending || !hasOllamaKey}
             />
             <ModeButton
+              icon={<Globe className="h-4 w-4" />}
+              label="OpenRouter"
+              description={
+                hasOpenRouterKey
+                  ? "Every agent uses OpenRouter (pick a model below)."
+                  : "Save the OpenRouter key first."
+              }
+              active={currentMode === "openrouter"}
+              onClick={flipToOpenRouter}
+              disabled={applyMode.isPending || !hasOpenRouterKey}
+              labelHint="One key unlocks hundreds of models on OpenRouter — GLM, DeepSeek, Qwen, Claude, GPT and more. Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
+              icon={<Cloud className="h-4 w-4" />}
+              label="Nebius"
+              description={
+                hasNebiusKey
+                  ? "Every agent uses Nebius (pick a model below)."
+                  : "Save the Nebius key first."
+              }
+              active={currentMode === "nebius"}
+              onClick={flipToNebius}
+              disabled={applyMode.isPending || !hasNebiusKey}
+              labelHint="One key unlocks Nebius AI Studio's hosted open models (DeepSeek, Qwen, Llama and more). Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
+              icon={<Sparkles className="h-4 w-4" />}
+              label="Hummin (GLM)"
+              description={
+                hasHumminKey
+                  ? "Every agent uses GLM via the hummin CLI."
+                  : "Save the hummin (GLM Coding Plan) key first."
+              }
+              active={currentMode === "hummin"}
+              onClick={flipToHummin}
+              disabled={applyMode.isPending || !hasHumminKey}
+              labelHint="The GLM go-to: the GLM-native hummin CLI headless in Docker, key injected as ZAI_API_KEY. GLM 5.3 / 5.3 Flash / 5.3 Highspeed in the Mix picker. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
               icon={<Server className="h-4 w-4" />}
               label="Self-Hosted"
               description={
@@ -1048,11 +1363,11 @@ export function AIRoutingCard() {
             <ModeButton
               icon={<Gauge className="h-4 w-4" />}
               label="Cost-Tiered"
-              description="Seed developer:low → Haiku (see below)."
-              active={false}
+              description="Pin cheaper models per role and complexity in the Complexity overrides table below. No rows are seeded automatically."
+              active={currentMode === "cost_tiered"}
               onClick={flipToCostTiered}
               disabled={applyMode.isPending}
-              labelHint="Unlike every button to the left this never wipes existing routing — it's a one-time additive seed you can re-run anytime. Edit or remove individual rows in the Complexity overrides section below."
+              labelHint="Unlike every button to the left this never wipes existing routing: nothing is cleared and no rows are seeded automatically. Add, edit, or remove tier rows in the Complexity overrides section below."
             />
           </div>
           {pinnedCount > 0 ? (
@@ -1102,6 +1417,24 @@ export function AIRoutingCard() {
               Intake/Secretary.
             </p>
           ) : null}
+          {currentMode === "openrouter" || currentMode === "mix" ? (
+            <p className="text-xs text-muted-foreground">
+              OpenRouter agents run on the opencode CLI; one API key unlocks
+              hundreds of models (GLM, DeepSeek, Qwen, Claude, GPT and more).
+              The same command / secret-exfiltration guard, prompt-injection
+              guard, and per-agent cost cap all apply. V1: delivery roles only —
+              not available for Intake/Secretary.
+            </p>
+          ) : null}
+          {currentMode === "nebius" || currentMode === "mix" ? (
+            <p className="text-xs text-muted-foreground">
+              Nebius agents run on the opencode CLI; one API key unlocks Nebius
+              AI Studio&apos;s hosted open models (DeepSeek, Qwen, Llama and
+              more). The same command / secret-exfiltration guard,
+              prompt-injection guard, and per-agent cost cap all apply. V1:
+              delivery roles only, not available for Intake/Secretary.
+            </p>
+          ) : null}
         </section>
 
         {/* -------- Self-Hosted model picker (when self_hosted mode active) -------- */}
@@ -1145,6 +1478,170 @@ export function AIRoutingCard() {
           </>
         )}
 
+        {/* -------- OpenRouter model picker (when openrouter mode active) -------- */}
+        {currentMode === "openrouter" && (
+          <>
+            <Separator />
+            <section className="space-y-2">
+              <Label className="text-sm font-medium">
+                OpenRouter default model
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Search OpenRouter&apos;s catalog and pick a model for all agents
+                in OpenRouter mode. Pricing shown per million tokens.
+              </p>
+              <Input
+                type="text"
+                value={openRouterSearch}
+                onChange={(e) => setOpenRouterSearch(e.target.value)}
+                placeholder="Search models…"
+                className="w-full max-w-sm"
+                disabled={!hasOpenRouterKey}
+              />
+              {!hasOpenRouterKey ? (
+                <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  Save your OpenRouter API key above to search and pick models.
+                </p>
+              ) : openRouterSearchError && debouncedSearch ? (
+                <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  {openRouterSearchErrorMessage(openRouterSearchErr)}
+                </p>
+              ) : openRouterSearchLoading && debouncedSearch ? (
+                <p className="text-xs text-muted-foreground">Searching…</p>
+              ) : openRouterModels && openRouterModels.length > 0 ? (
+                <div className="max-h-64 overflow-y-auto rounded-md border">
+                  {openRouterModels.map((m: OpenRouterModel) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setOpenRouterModel(m.id)}
+                      className={
+                        "flex w-full items-center justify-between p-2 text-left text-xs hover:bg-muted/50 " +
+                        (openRouterModel === m.id ? "bg-primary/5" : "")
+                      }
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">{m.name}</div>
+                        <div className="text-muted-foreground font-mono truncate">
+                          {m.id}
+                        </div>
+                        {m.context_length != null && m.context_length > 0 && (
+                          <div className="text-muted-foreground">
+                            {m.context_length.toLocaleString()} ctx
+                          </div>
+                        )}
+                      </div>
+                      <div className="ml-2 shrink-0 text-right">
+                        <div>{formatPricePerMillion(m.prompt_price)} in</div>
+                        <div className="text-muted-foreground">
+                          {formatPricePerMillion(m.completion_price)} out
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : openRouterModels &&
+                openRouterModels.length === 0 &&
+                debouncedSearch &&
+                !openRouterSearchLoading ? (
+                <p className="rounded-md border p-3 text-xs text-muted-foreground">
+                  No models found for &quot;{debouncedSearch}&quot;. Try a
+                  different search.
+                </p>
+              ) : null}
+              {openRouterModel && (
+                <p className="text-xs text-muted-foreground">
+                  Selected: <span className="font-mono">{openRouterModel}</span>
+                </p>
+              )}
+            </section>
+          </>
+        )}
+
+        {/* -------- Nebius model picker (when nebius mode active) -------- */}
+        {currentMode === "nebius" && (
+          <>
+            <Separator />
+            <section className="space-y-2">
+              <Label className="text-sm font-medium">
+                Nebius default model
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Search Nebius AI Studio&apos;s catalog and pick a model for all
+                agents in Nebius mode. Pricing shown per million tokens.
+              </p>
+              <Input
+                type="text"
+                value={nebiusSearch}
+                onChange={(e) => setNebiusSearch(e.target.value)}
+                placeholder="Search models…"
+                className="w-full max-w-sm"
+                disabled={!hasNebiusKey}
+              />
+              {!hasNebiusKey ? (
+                <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  Save your Nebius API key above to search and pick models.
+                </p>
+              ) : nebiusSearchError && debouncedNebiusSearch ? (
+                <p className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  {nebiusSearchErrorMessage(nebiusSearchErr)}
+                </p>
+              ) : nebiusSearchLoading && debouncedNebiusSearch ? (
+                <p className="text-xs text-muted-foreground">Searching…</p>
+              ) : nebiusModels && nebiusModels.length > 0 ? (
+                <div className="max-h-64 overflow-y-auto rounded-md border">
+                  {nebiusModels.map((m: NebiusModel) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setNebiusModel(m.id)}
+                      className={
+                        "flex w-full items-center justify-between p-2 text-left text-xs hover:bg-muted/50 " +
+                        (nebiusModel === m.id ? "bg-primary/5" : "")
+                      }
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">{m.name}</div>
+                        <div className="text-muted-foreground font-mono truncate">
+                          {m.id}
+                        </div>
+                        {m.context_length != null && m.context_length > 0 && (
+                          <div className="text-muted-foreground">
+                            {m.context_length.toLocaleString()} ctx
+                          </div>
+                        )}
+                      </div>
+                      <div className="ml-2 shrink-0 text-right">
+                        <div>{formatPricePerMillion(m.prompt_price)} in</div>
+                        <div className="text-muted-foreground">
+                          {formatPricePerMillion(m.completion_price)} out
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : nebiusModels &&
+                nebiusModels.length === 0 &&
+                debouncedNebiusSearch &&
+                !nebiusSearchLoading ? (
+                <p className="rounded-md border p-3 text-xs text-muted-foreground">
+                  No models found for &quot;{debouncedNebiusSearch}&quot;. Try a
+                  different search.
+                </p>
+              ) : null}
+              {nebiusModel && (
+                <p className="text-xs text-muted-foreground">
+                  Selected: <span className="font-mono">{nebiusModel}</span>
+                </p>
+              )}
+            </section>
+          </>
+        )}
+
         {/* -------- Preset bar (compact, sits right above the per-agent table) -------- */}
         <Separator />
         <section className="space-y-2">
@@ -1152,7 +1649,10 @@ export function AIRoutingCard() {
             <Label className="text-sm font-medium">Routing presets</Label>
           </HelpTip>
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed p-2">
-            <Select value={selectedPresetId} onValueChange={setSelectedPresetId}>
+            <Select
+              value={selectedPresetId}
+              onValueChange={setSelectedPresetId}
+            >
               <SelectTrigger size="sm" className="w-48 text-xs">
                 <SelectValue
                   placeholder={
@@ -1255,7 +1755,11 @@ export function AIRoutingCard() {
               >
                 Clear all
               </Button>
-              <Button size="sm" onClick={saveMix} disabled={applyMode.isPending}>
+              <Button
+                size="sm"
+                onClick={saveMix}
+                disabled={applyMode.isPending}
+              >
                 {applyMode.isPending ? "Saving…" : "Save mix"}
               </Button>
             </div>
@@ -1286,8 +1790,6 @@ export function AIRoutingCard() {
           ) : (
             <div className="divide-y rounded-md border">
               {agentGroups.map((group) => {
-                const restrictInteractiveOnly =
-                  group.title === INTERACTIVE_ONLY_GROUP_TITLE;
                 return (
                   <div key={group.title} className="p-4">
                     <HelpTip label={group.titleHint}>
@@ -1295,13 +1797,6 @@ export function AIRoutingCard() {
                         {group.title}
                       </h4>
                     </HelpTip>
-                    {restrictInteractiveOnly ? (
-                      <p className="mb-2 text-[11px] text-muted-foreground">
-                        Codex, Gemini, and Kimi are delivery-roles-only (V1) —
-                        not offered here (no interactive Intake/Secretary
-                        support).
-                      </p>
-                    ) : null}
                     <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
                       {group.agents.map((a) => (
                         <div
@@ -1329,7 +1824,7 @@ export function AIRoutingCard() {
                               <SelectValue placeholder="(inherit)" />
                             </SelectTrigger>
                             <SelectContent>
-                              {renderMixSelectOptions(restrictInteractiveOnly)}
+                              {renderMixSelectOptions()}
                             </SelectContent>
                           </Select>
                         </div>
@@ -1351,9 +1846,7 @@ export function AIRoutingCard() {
         <Separator />
         <section className="space-y-3">
           <HelpTip label="Downgrade-only by policy: a role+complexity override can never point to a costlier tier than that role's baseline model — this lever only saves cost, it never spends more. Coordinator roles (cell_pm, main_pm), pr_reviewer, and board/CEO-facing roles aren't offered a row here at all; tier pinning for those is deliberate — cell_pm especially, since a coordinator is the last place to gamble a downgrade.">
-            <Label className="text-sm font-medium">
-              Complexity overrides
-            </Label>
+            <Label className="text-sm font-medium">Complexity overrides</Label>
           </HelpTip>
           <p className="text-xs text-muted-foreground">
             Pin a role to a cheaper model for LOW- or HIGH-complexity tasks
@@ -1493,8 +1986,11 @@ function ProviderBadge({
     | "openai"
     | "gemini"
     | "kimi"
+    | "nebius"
     | "ollama"
-    | "self-hosted";
+    | "self-hosted"
+    | "openrouter"
+    | "hummin";
 }) {
   const styles: Record<string, string> = {
     anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
@@ -1504,6 +2000,9 @@ function ProviderBadge({
     openai: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400",
     gemini: "bg-sky-500/20 text-sky-700 dark:text-sky-400",
     kimi: "bg-amber-500/20 text-amber-700 dark:text-amber-400",
+    nebius: "bg-lime-500/20 text-lime-700 dark:text-lime-400",
+    openrouter: "bg-indigo-500/20 text-indigo-700 dark:text-indigo-400",
+    hummin: "bg-rose-500/20 text-rose-700 dark:text-rose-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
@@ -1513,6 +2012,9 @@ function ProviderBadge({
     openai: "C",
     gemini: "Ge",
     kimi: "K",
+    nebius: "N",
+    openrouter: "OR",
+    hummin: "H",
   };
   return (
     <span

@@ -586,16 +586,12 @@ def build_intake_options(
         system_prompt=system_prompt,
         cwd=cwd,
         mcp_servers={"intake": server},
-        allowed_tools=[
-            *_INTAKE_BASE_TOOLS,
-            "mcp__intake__propose_draft",
-            "mcp__intake__propose_batch",
-            "mcp__intake__search_past_tasks",
-        ],
-        # `Task` is a default-permitted Claude Code built-in — omitting it from
-        # allowed_tools does NOT remove it (an allowlist auto-approves; it does
-        # not restrict), and permission_mode="dontAsk" never gates a
-        # pre-permitted built-in, so can_use_tool below never fires for it. The
+        # NO allowed_tools: a whole-tool entry auto-approves the call BEFORE
+        # can_use_tool is consulted (the SDK's CanUseToolShadowedWarning),
+        # so any entry here would shadow the gate below. Every tool call
+        # must flow through _gate, which allows exactly the intake set.
+        # `Task` is a default-permitted Claude Code built-in that
+        # permission_mode="dontAsk" never routes through the gate, so the
         # ONLY claude-code-level block that removes the subagent tool is an
         # explicit disallow → the fleet-wide subagent ban reaches intake here.
         disallowed_tools=["Task"],

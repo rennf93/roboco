@@ -4,10 +4,11 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
+from fastapi.responses import PlainTextResponse
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -15,6 +16,10 @@ from roboco.api.deps import (
     PermissionServiceDep,
     get_permission_service,
     require_pm_or_above,
+)
+from roboco.api.schemas.attestation import (
+    TaskAttestationResponse,
+    attestation_to_response,
 )
 from roboco.api.schemas.tasks import (
     BoardReviewEntry,
@@ -33,6 +38,7 @@ from roboco.api.schemas.tasks import (
     SubstituteRequest,
     TaskCountResponse,
     TaskFindingsResponse,
+    TaskGovernanceReportResponse,
     TaskResponse,
     TaskSummaryResponse,
     TaskUpdate,
@@ -54,6 +60,7 @@ from roboco.api.utils.tasks import (
     _pm_editor_scope,
     _pop_null_clears,
     _reassert_batch_shape,
+    _recheck_topology_after_detach,
     _resolve_assigned_to_slug,
     _resolve_project_for_merge,
     _StatusOverride,
@@ -70,9 +77,14 @@ from roboco.security import (
     prompt_injection_validator,
     secret_exfil_validator,
 )
+from roboco.services.attestation import (
+    assemble_task_attestation,
+    render_attestation_markdown,
+)
 from roboco.services.audit import get_audit_service
 from roboco.services.base import ServiceError
 from roboco.services.gateway.choreographer.collision import build_collision_context
+from roboco.services.governance import get_governance_service
 from roboco.services.journal import get_journal_service
 from roboco.services.notification_delivery import (
     EscalationError,
@@ -807,6 +819,10 @@ async def update_task(
     # the MegaTask shape here too — a cleared parent_task_id / project_id must not
     # turn a root-subtask into an umbrella-shaped-but-targeted spoof.
     _reassert_batch_shape(task)
+    # A detach-style re-parent (parent_task_id: null) bypasses update()'s own
+    # field-update loop, so the topology recheck must be re-run here too —
+    # see _recheck_topology_after_detach.
+    await _recheck_topology_after_detach(task, service, null_clears)
     if new_status is not None:
         task = await _apply_forced_status_override(
             _StatusOverride(
@@ -989,6 +1005,65 @@ async def get_task_collision_map(
             for s in (ctx or [])
         ],
     )
+
+
+@router.get("/{task_id}/governance", response_model=TaskGovernanceReportResponse)
+async def get_task_governance(
+    task_id: UUID,
+    db: DbSession,
+    _agent: CurrentAgentContext,
+) -> TaskGovernanceReportResponse:
+    """The governance report for a task — the full quality-gate chain
+    (conventions → self-verification → QA → PR-gate → PM review → CEO
+    approval), revision-findings summary, conventions verdict, and rework
+    count. Read-only feed for the panel's Governance tab.
+    """
+    service = get_governance_service(db)
+    report = await service.get_report(task_id)
+    if report is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    return report
+
+
+@router.get("/{task_id}/attestation", response_model=None)
+async def get_task_attestation(
+    task_id: UUID,
+    db: DbSession,
+    _agent: CurrentAgentContext,
+    format: Literal["json", "markdown", "md"] = Query("json"),
+) -> TaskAttestationResponse | PlainTextResponse:
+    """The full per-task verification attestation: every acceptance
+    criterion with its verified stamp, the findings ledger by round, the
+    CI verdict, conventions findings, and the reviewer/custody chain,
+    bound to commit and PR refs. ``format=markdown``/``format=md`` render
+    the SAME assembled object as a human-readable receipt — never a second
+    computation — so JSON and Markdown can never diverge. Delegates
+    entirely to ``assemble_task_attestation``/``render_attestation_markdown``
+    (roboco.services.attestation); no assembly logic lives here — project/
+    git-service resolution lives in the service too
+    (``resolve_attestation_service_context``).
+
+    ``response_model=None`` is required: the return type is a union
+    including a Starlette ``Response`` subclass (the markdown branch), and
+    FastAPI raises ``FastAPIError`` at decoration time trying to build a
+    response model for a non-Pydantic member of the union otherwise.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    attestation = await assemble_task_attestation(db, task)
+
+    if format in ("markdown", "md"):
+        return PlainTextResponse(
+            render_attestation_markdown(attestation), media_type="text/markdown"
+        )
+    return attestation_to_response(attestation)
 
 
 # =============================================================================

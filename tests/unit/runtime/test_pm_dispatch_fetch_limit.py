@@ -87,3 +87,20 @@ def test_pm_dispatch_fetch_limit_matches_api_declared_max() -> None:
     (Query(..., le=500)); asking for more would just 422 the request."""
     api_max = 500
     assert api_max == _PM_DISPATCH_FETCH_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_dispatch_dev_work_requests_the_raised_fetch_limit() -> None:
+    """_dispatch_dev_work filters team/source per-task, after the fetch, so
+    it is just as exposed to the same truncation as _dispatch_pm_work."""
+    orch = _orch()
+    cast("Any", orch)._fetch_tasks = AsyncMock(return_value=[])
+
+    client: Any = MagicMock()
+    await AgentOrchestrator._dispatch_dev_work(orch, client)
+
+    cast("Any", orch)._fetch_tasks.assert_awaited_once_with(
+        client,
+        ["pending", "claimed", "needs_revision", "in_progress", "blocked"],
+        limit=_PM_DISPATCH_FETCH_LIMIT,
+    )

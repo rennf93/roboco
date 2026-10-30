@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import type { StalledTask } from "@/types";
+import type { TaskMetrics } from "../dashboard";
 
 // Regression guard for the getStalledTasks/GET-/tasks/blocked mismatch: this
 // is the ONE test in the stalled-tasks suite that actually exercises the
@@ -33,6 +34,29 @@ describe("dashboardApi.getStalledTasks", () => {
     const result = await dashboardApi.getStalledTasks();
 
     expect(get).toHaveBeenCalledWith("/dashboard/stalled-tasks");
+    expect(result).toEqual(payload);
+  });
+});
+
+describe("dashboardApi.getTaskMetrics", () => {
+  it("requests GET /dashboard/metrics/task/{task_id} and returns the reviewer chain verbatim", async () => {
+    const payload: TaskMetrics = {
+      task_id: "task-1",
+      reviewer_chain: [
+        {
+          round: 1,
+          role: "qa",
+          agent_slug: "fe-qa",
+          model: "claude-sonnet-4-5",
+          started_at: "2026-09-01T00:00:00Z",
+        },
+      ],
+    };
+    get.mockResolvedValue({ data: payload });
+
+    const result = await dashboardApi.getTaskMetrics("task-1");
+
+    expect(get).toHaveBeenCalledWith("/dashboard/metrics/task/task-1");
     expect(result).toEqual(payload);
   });
 });

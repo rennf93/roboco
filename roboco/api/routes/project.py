@@ -27,10 +27,10 @@ from roboco.api.schemas.project import (
     ProjectUpdateRequest,
     SetWorkspaceRequest,
     SyncStateRequest,
-    project_to_response,
     project_to_summary,
 )
 from roboco.api.utils.project import action_response as _action_response
+from roboco.api.utils.project import build_project_response as _build_project_response
 from roboco.api.utils.project import get_project_or_404 as _get_project_or_404
 from roboco.foundation.policy.conventions.models import ConventionsStandard
 from roboco.models.base import Team
@@ -119,7 +119,7 @@ async def get_project(
             detail=f"Project not found: {project_id}",
         )
 
-    response = project_to_response(project)
+    response = await _build_project_response(db, project)
 
     # Gated the same as the budgets feature: an extra DB read, so only pay
     # for it when the panel can actually make use of it (ROBOCO_TASK_BUDGETS_ENABLED).
@@ -191,7 +191,7 @@ async def create_project(
     try:
         project = await service.create(create_data, created_by=agent.agent_id)
         await db.commit()
-        return project_to_response(project)
+        return await _build_project_response(db, project)
     except Exception as e:
         await db.rollback()
         if "already exists" in str(e):
@@ -261,7 +261,7 @@ async def update_project(
             detail="Failed to update project",
         )
 
-    return project_to_response(updated)
+    return await _build_project_response(db, updated)
 
 
 # =============================================================================
@@ -355,7 +355,7 @@ async def set_workspace(
             detail=f"Project not found: {project_id}",
         )
 
-    return project_to_response(updated)
+    return await _build_project_response(db, updated)
 
 
 @router.post("/{project_id}/sync", response_model=ProjectResponse)
@@ -395,7 +395,7 @@ async def update_sync_state(
             detail=f"Project not found: {project_id}",
         )
 
-    return project_to_response(updated)
+    return await _build_project_response(db, updated)
 
 
 # =============================================================================
@@ -415,7 +415,9 @@ async def add_agent_access(
     Add an agent to the project's allowed list (PM only).
 
     By default, all agents in the assigned cell have access.
-    This restricts access to specific agents.
+    This restricts access to specific agents. Only agents in the
+    project's assigned cell can be granted: the list narrows within
+    the cell, it cannot widen it.
     """
     require_pm_or_above(agent.role, "manage access")
 
@@ -441,7 +443,7 @@ async def add_agent_access(
             detail=f"Project not found: {project_id}",
         )
 
-    return project_to_response(updated)
+    return await _build_project_response(db, updated)
 
 
 @router.delete("/{project_id}/access/{agent_id}", response_model=ProjectResponse)
@@ -479,7 +481,7 @@ async def remove_agent_access(
             detail=f"Project not found: {project_id}",
         )
 
-    return project_to_response(updated)
+    return await _build_project_response(db, updated)
 
 
 # =============================================================================

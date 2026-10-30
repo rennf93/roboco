@@ -72,6 +72,9 @@ ROLE_READ_TIERS: dict[Role, ReadTier] = {
     # read developer / QA / cell-PM journals to understand the internal intent
     # behind a change — like QA does — without board-private access.
     Role.PR_REVIEWER: ReadTier.ALL_CELLS,
+    # DevOps is a floating reviewer + author (no fixed cell). Cross-cell tier
+    # so it can review any team's PR and author infra work in any project.
+    Role.DEVOPS: ReadTier.ALL_CELLS,
     Role.CEO: ReadTier.ALL,
 }
 
