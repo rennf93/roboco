@@ -1236,7 +1236,8 @@ class Choreographer:
             return build_collision_context(
                 task=t, siblings=siblings, actual_files=actual_files
             )
-        except Exception:  # best-effort: omit on any fetch/build failure
+        except Exception:
+            # Best-effort: omit on any fetch/build failure
             return None
 
     async def _with_collision_briefing(
@@ -4290,7 +4291,8 @@ class Choreographer:
                     agent_id=agent_id, task_id=task_id, content=text
                 )
                 return "wrote"
-        except Exception as exc:  # best-effort; caller's gate handles the fallout
+        except Exception as exc:
+            # Best-effort; caller's gate handles the fallout
             logger.warning(
                 "auto-record pm decision failed",
                 error=str(exc),
@@ -5729,7 +5731,8 @@ class Choreographer:
                 context_briefing=briefing,
             )
         if not getattr(t, "branch_name", None):
-            return None  # never claimed/started - trivially zero-diff
+            # Never claimed/started - trivially zero-diff
+            return None
         try:
             base_branch = await resolve_parent_branch(t, self.task)
             _behind, ahead = await self.git.is_behind_base(
