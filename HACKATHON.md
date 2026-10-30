@@ -88,7 +88,7 @@ The pattern also generalizes beyond one submission: the same provider skeleton s
 5. Create a task for any cell. Every spawned agent runs on the opencode CLI against Token Factory on Nemotron; the per-agent usage readers meter tokens and cost, and rate-limited agents park and retry on Nebius's own backoff instead of failing.
 6. To see the NVIDIA-model requirement met with your own eyes, open the **Usage** page after the task completes: the per-session rows and the per-model aggregation name `nvidia/nemotron-3-super-120b-a12b` as the model that executed the work.
 
-Run the **latest published tag**: the 2026-09-28 pre-demo verification pass caught a spawn-path defect in the v0.31.0 agent-image build (section 6); the fix is merged to the mainline and shipping in the next patch release, and the steps above are verified end to end against the fixed build.
+Run the **latest published tag** (v0.32.0 or newer): the 2026-09-28 pre-demo verification pass caught a spawn-path defect in the v0.31.0 agent-image build (section 6); the fix shipped in v0.32.0 (2026-10-16), and the steps above are verified end to end against the fixed build.
 
 ## License
 
