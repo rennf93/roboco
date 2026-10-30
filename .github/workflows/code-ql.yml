@@ -21,6 +21,7 @@ on:
       - 'tests/**'
       - '.github/scripts/**'
       - 'docker/decisions/**'
+      - 'docker/docker-gate/**'
       - 'vulture_whitelist.py'
       - 'pyproject.toml'
       - '.github/workflows/code-ql.yml'
@@ -84,6 +85,7 @@ jobs:
             tests/**
             .github/scripts/**
             docker/decisions/**
+            docker/docker-gate/**
             vulture_whitelist.py
             pyproject.toml
             .github/workflows/code-ql.yml

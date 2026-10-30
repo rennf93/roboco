@@ -84,6 +84,7 @@ _CODEQL_PYTHON_SCOPE = (
     "tests/**",
     ".github/scripts/**",
     "docker/decisions/**",
+    "docker/docker-gate/**",
     "vulture_whitelist.py",
     "pyproject.toml",
 )
