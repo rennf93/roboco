@@ -23,11 +23,7 @@ import { isTgDemoMode } from "@/lib/telegram/demo";
 import { useNotifications } from "@/hooks/use-notifications";
 import { cn } from "@/lib/utils";
 import { IconContext } from "@phosphor-icons/react";
-import {
-  ArrowSquareOut,
-  CircleNotch,
-  Warning,
-} from "@phosphor-icons/react";
+import { ArrowSquareOut, CircleNotch, Warning } from "@phosphor-icons/react";
 
 type BootstrapState =
   | { kind: "validating" }
@@ -116,7 +112,10 @@ export default function TelegramMiniAppPage() {
   if (state.kind === "validating") {
     return (
       <CenteredMessage>
-        <CircleNotch weight="bold" className="h-8 w-8 animate-spin text-muted-foreground" />
+        <CircleNotch
+          weight="bold"
+          className="h-8 w-8 animate-spin text-muted-foreground"
+        />
         <p className="text-sm text-muted-foreground">Connecting…</p>
       </CenteredMessage>
     );
@@ -125,7 +124,10 @@ export default function TelegramMiniAppPage() {
   if (state.kind === "not_in_telegram") {
     return (
       <CenteredMessage>
-        <ArrowSquareOut weight="duotone" className="h-10 w-10 text-muted-foreground" />
+        <ArrowSquareOut
+          weight="duotone"
+          className="h-10 w-10 text-muted-foreground"
+        />
         <h1 className="text-lg font-semibold">Open from Telegram</h1>
         <p className="text-sm text-muted-foreground">
           This cockpit only runs inside Telegram. Open it from the bot&apos;s
@@ -179,24 +181,24 @@ function CockpitShell() {
     <IconContext.Provider value={{ weight: "duotone" }}>
       <div className="p-3 pb-28">
         <header className="flex items-center justify-between px-1 pb-3 pt-1">
-        <span className="tg-brand text-[13px] tracking-[0.3em] text-foreground">
-          ROBOCO<span className="tg-cursor text-primary">_</span>
-        </span>
-        <button
-          type="button"
-          aria-label={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}
-          onClick={() => setInboxOpen(true)}
-          className={cn(
-            "relative flex h-10 w-10 items-center justify-center rounded-full bg-card text-muted-foreground",
-            TG_PRESS,
-          )}
-        >
-          <IconInbox className="h-5 w-5" />
-          {unread > 0 && (
-            <span className="absolute right-1 top-1 flex h-2 w-2 rounded-full bg-primary" />
-          )}
-        </button>
-      </header>
+          <span className="tg-brand text-[13px] tracking-[0.3em] text-foreground">
+            ROBOCO<span className="tg-cursor text-primary">_</span>
+          </span>
+          <button
+            type="button"
+            aria-label={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}
+            onClick={() => setInboxOpen(true)}
+            className={cn(
+              "relative flex h-10 w-10 items-center justify-center rounded-full bg-card text-muted-foreground",
+              TG_PRESS,
+            )}
+          >
+            <IconInbox className="h-5 w-5" />
+            {unread > 0 && (
+              <span className="absolute right-1 top-1 flex h-2 w-2 rounded-full bg-primary" />
+            )}
+          </button>
+        </header>
         {inboxOpen ? (
           <TgSubPage title="Inbox" onBack={() => setInboxOpen(false)}>
             <TgInboxTab />

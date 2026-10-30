@@ -602,17 +602,20 @@ describe("VideoPostQueue", () => {
       { status: "redis_unavailable", posted: {}, detail: "" },
       "Redis is unavailable — can't acquire the post lock.",
     ],
-  ])("shows distinct feedback for the %s status", async (_, result, message) => {
-    render(withQueryClient(<VideoPostQueue />));
-    await screen.findByText("release");
-    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
-    await waitFor(() => expect(approve).toHaveBeenCalled());
+  ])(
+    "shows distinct feedback for the %s status",
+    async (_, result, message) => {
+      render(withQueryClient(<VideoPostQueue />));
+      await screen.findByText("release");
+      fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+      await waitFor(() => expect(approve).toHaveBeenCalled());
 
-    resolveApproveRef.current?.(result);
+      resolveApproveRef.current?.(result);
 
-    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(message));
-    expect(toast.success).not.toHaveBeenCalled();
-  });
+      await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(message));
+      expect(toast.success).not.toHaveBeenCalled();
+    },
+  );
 
   it("shows a success toast for the posted status", async () => {
     render(withQueryClient(<VideoPostQueue />));

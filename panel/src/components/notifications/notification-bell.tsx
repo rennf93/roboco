@@ -43,9 +43,7 @@ export function NotificationBell() {
   // The badge caps its own display at "9+", hiding the exact count — surface
   // the real number here so it's never lost to sighted or AT users.
   const bellLabel =
-    unreadCount > 0
-      ? `${BELL_LABEL} (${unreadCount} unread)`
-      : BELL_LABEL;
+    unreadCount > 0 ? `${BELL_LABEL} (${unreadCount} unread)` : BELL_LABEL;
 
   const handleMarkRead = (id: string) => {
     void markRead.mutateAsync(id);
@@ -97,11 +95,17 @@ export function NotificationBell() {
               <h4 className="font-semibold">Notifications</h4>
               {isConnected ? (
                 <HelpTip label="Live update stream connected">
-                  <Wifi className="h-4 w-4 text-green-500" aria-label="connected" />
+                  <Wifi
+                    className="h-4 w-4 text-green-500"
+                    aria-label="connected"
+                  />
                 </HelpTip>
               ) : (
                 <HelpTip label="Live update stream disconnected — list may be stale">
-                  <WifiOff className="h-4 w-4 text-gray-400" aria-label="disconnected" />
+                  <WifiOff
+                    className="h-4 w-4 text-gray-400"
+                    aria-label="disconnected"
+                  />
                 </HelpTip>
               )}
             </div>

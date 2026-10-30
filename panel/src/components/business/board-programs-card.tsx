@@ -56,7 +56,9 @@ function DecisionRow({ decision }: { decision: BoardProgramDecision }) {
   return (
     <div className="border-t pt-2 text-sm first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant={decision.verdict === "approved" ? "default" : "secondary"}>
+        <Badge
+          variant={decision.verdict === "approved" ? "default" : "secondary"}
+        >
           {decision.verdict}
         </Badge>
         <span className="font-medium">{decisionSnapshotTitle(decision)}</span>
@@ -74,8 +76,8 @@ function CycleRow({ cycle }: { cycle: BoardProgramCycle }) {
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <span>{new Date(cycle.opened_at).toLocaleString()}</span>
         <span>
-          {cycle.items_proposed} proposed &middot; {cycle.items_approved} approved
-          &middot; {cycle.items_rejected} rejected
+          {cycle.items_proposed} proposed &middot; {cycle.items_approved}{" "}
+          approved &middot; {cycle.items_rejected} rejected
         </span>
       </div>
       {cycle.nothing_to_propose_reason && (
@@ -113,20 +115,20 @@ function ProgramHistoryDialog({ program }: { program: BoardProgram }) {
       </DialogTrigger>
       <DialogContent className={DIALOG_SIZES.lg}>
         <DialogHeader>
-          <DialogTitle>{program.title || program.key}: cycle history</DialogTitle>
+          <DialogTitle>
+            {program.title || program.key}: cycle history
+          </DialogTitle>
           <DialogDescription>
             Every recorded cycle and the CEO&apos;s per-item decisions, newest
-            first. Survives even after the exploration task behind an old
-            cycle is deleted.
+            first. Survives even after the exploration task behind an old cycle
+            is deleted.
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-[60vh] space-y-3 overflow-y-auto">
           {isLoading ? (
             <Skeleton className="h-16 w-full" />
           ) : isError ? (
-            <p className="text-sm text-destructive">
-              Failed to load history.
-            </p>
+            <p className="text-sm text-destructive">Failed to load history.</p>
           ) : cycles.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No cycles recorded yet.
@@ -169,8 +171,12 @@ function ProgramRow({ program }: { program: BoardProgram }) {
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <HelpTip label={program.description || `The ${program.key} program.`}>
-              <span className="font-medium">{program.title || program.key}</span>
+            <HelpTip
+              label={program.description || `The ${program.key} program.`}
+            >
+              <span className="font-medium">
+                {program.title || program.key}
+              </span>
             </HelpTip>
             <span className="font-mono text-xs text-muted-foreground">
               {program.key}

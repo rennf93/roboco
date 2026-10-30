@@ -130,7 +130,10 @@ export function FindingsByRoundList({
           </div>
           <ul className="mt-1.5 divide-y divide-border text-sm">
             {round.findings.map((f) => (
-              <li key={f.id} className="flex flex-wrap items-center gap-2 py-1.5">
+              <li
+                key={f.id}
+                className="flex flex-wrap items-center gap-2 py-1.5"
+              >
                 <Badge
                   className={SEVERITY_CLASS[f.severity] ?? SEVERITY_CLASS.nit}
                 >

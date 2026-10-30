@@ -29,11 +29,11 @@ The foundation hook for subscribing to any WebSocket endpoint. All other hooks (
 
 ### Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `endpoint` | string | — | Path after `/ws/`, e.g., `/notifications/{agentId}` or `/system` |
-| `queryParams` | `Record<string, string>` | `undefined` | Optional query string as an object, e.g., `{ viewer_id: "..." }` |
-| `enabled` | boolean | `true` | Enable/disable the connection (useful for conditional subscriptions) |
+| Parameter     | Type                     | Default     | Description                                                          |
+| ------------- | ------------------------ | ----------- | -------------------------------------------------------------------- |
+| `endpoint`    | string                   | —           | Path after `/ws/`, e.g., `/notifications/{agentId}` or `/system`     |
+| `queryParams` | `Record<string, string>` | `undefined` | Optional query string as an object, e.g., `{ viewer_id: "..." }`     |
+| `enabled`     | boolean                  | `true`      | Enable/disable the connection (useful for conditional subscriptions) |
 
 ### Return Value
 
@@ -122,6 +122,7 @@ The cached catch-up batch is placed **ahead** of live frames so live delivery ca
 ### Clearing Notifications
 
 Calling `clearMessages()` clears:
+
 - The live message buffer.
 - The cached catch-up batch.
 
@@ -154,8 +155,8 @@ Subscribes to live agent output (streaming work-in-progress) via `/ws/agents/{ag
 
 ### Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
+| Parameter | Type           | Description                             |
+| --------- | -------------- | --------------------------------------- |
 | `agentId` | string \| null | The agent UUID. Pass `null` to disable. |
 
 ### Return Value
@@ -343,11 +344,11 @@ pnpm test
 
 Three hooks were audited for reconnect message-loss risk:
 
-| Hook | Connection Type | Fallback | Status |
-|------|-----------------|----------|--------|
-| `useNotificationStream` | CEO notification stream | REST catch-up (`GET /notifications?unread_only=true`) | ✅ Hardened |
-| `useA2ALiveStream` | A2A + system stream | REST query invalidation (`a2a-view.tsx`) | ✅ Verified |
-| Rate-limit consumers | System stream (`/ws/system`) | REST resync (rate-limit-banner.tsx, usage-overview-panel.tsx) | ✅ Verified |
+| Hook                    | Connection Type              | Fallback                                                      | Status      |
+| ----------------------- | ---------------------------- | ------------------------------------------------------------- | ----------- |
+| `useNotificationStream` | CEO notification stream      | REST catch-up (`GET /notifications?unread_only=true`)         | ✅ Hardened |
+| `useA2ALiveStream`      | A2A + system stream          | REST query invalidation (`a2a-view.tsx`)                      | ✅ Verified |
+| Rate-limit consumers    | System stream (`/ws/system`) | REST resync (rate-limit-banner.tsx, usage-overview-panel.tsx) | ✅ Verified |
 
 No defects were found in `useA2ALiveStream` or rate-limit consumption; the REST polling fallbacks were already in place and tested.
 
@@ -402,7 +403,7 @@ Picking a fallback strategy for a new WS-consuming hook comes down to what kind 
 ### ConnectionState
 
 ```typescript
-type ConnectionState = 
+type ConnectionState =
   | "disconnected"  // Not connected; attempting to reconnect or no connection attempt yet
   | "connecting"    // Initial connection attempt
   | "reconnecting"  // Reconnection after a close (watchdog/network failure)
@@ -503,10 +504,10 @@ The PR CI verdict bound to the task's PR head commit. **Always reads unavailable
 
 Three sources in this data layer are permanently unavailable until a backend endpoint ships:
 
-| Gap | Needed to unblock | Where flagged |
-|-----|--------------------|----------------|
-| PR CI verdict | A REST route wrapping `GitService.get_pr_ci_status` | `PR_CI_VERDICT_UNAVAILABLE.reason` |
-| Reviewer-per-round model | `AgentResponse`/a dedicated endpoint exposing the model an `agent_spawn_sessions` row ran on | `ReviewerChainEntry.model` doc comment |
+| Gap                                | Needed to unblock                                                                                                              | Where flagged                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| PR CI verdict                      | A REST route wrapping `GitService.get_pr_ci_status`                                                                            | `PR_CI_VERDICT_UNAVAILABLE.reason`                                     |
+| Reviewer-per-round model           | `AgentResponse`/a dedicated endpoint exposing the model an `agent_spawn_sessions` row ran on                                   | `ReviewerChainEntry.model` doc comment                                 |
 | Release proposal's member task set | An endpoint exposing `task_id`/`pr_number` per release (today `ReleaseReport.change_summary` is free-text commit strings only) | `RELEASE_MEMBER_TASK_IDS_UNAVAILABLE.reason` — see `release-rollup.md` |
 
 A fourth, narrower gap: `parseAcVerificationStamps` matches by criterion text only, because `acceptance_criteria_ids` isn't on `TaskResponse`. An acceptance criterion edited in text after QA verified it will read as unverified in the receipt.

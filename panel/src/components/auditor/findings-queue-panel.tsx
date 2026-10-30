@@ -36,7 +36,8 @@ export function FindingsQueuePanel({
   // The API already returns blocking-first, but keep the sort stable client-side
   // in case a later re-fetch reorders.
   const sorted = [...(findings ?? [])].sort((a, b) => {
-    const diff = (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
+    const diff =
+      (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
     if (diff !== 0) return diff;
     return (b.created_at ?? "").localeCompare(a.created_at ?? "");
   });
@@ -105,7 +106,10 @@ export function FindingsQueuePanel({
                   </div>
                   <HelpTip label="Shows actual → expected → criterion text, whichever is available first">
                     <p className="text-sm text-muted-foreground mb-2">
-                      {finding.actual ?? finding.expected ?? finding.criterion ?? "—"}
+                      {finding.actual ??
+                        finding.expected ??
+                        finding.criterion ??
+                        "—"}
                     </p>
                   </HelpTip>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -117,10 +121,7 @@ export function FindingsQueuePanel({
                         </span>
                       </HelpTip>
                     )}
-                    <Link
-                      href={"/tasks/" + finding.task_id}
-                      prefetch={false}
-                    >
+                    <Link href={"/tasks/" + finding.task_id} prefetch={false}>
                       <HelpTip label="Short task ID — first 8 characters of the full task identifier">
                         <span className="text-primary hover:underline">
                           Task #{finding.task_id.slice(0, 8)}

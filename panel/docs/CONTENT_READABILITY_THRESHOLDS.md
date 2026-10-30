@@ -26,10 +26,12 @@ Content exceeding **either** threshold defaults to collapsed.
 A reusable collapsible section component that auto-applies the thresholds.
 
 **Props**:
+
 - `content: string` (optional) – Plain-text representation of the section body
 - `defaultOpen: boolean` (optional) – Explicit override (always respected)
 
 **Logic**:
+
 ```typescript
 // resolved default = explicit prop > content check > default to true
 const resolvedDefaultOpen =
@@ -38,6 +40,7 @@ const resolvedDefaultOpen =
 ```
 
 **Usage examples**:
+
 ```tsx
 // Acceptance criteria: auto-collapse if criteria list is long
 <CollapsibleSection
@@ -62,6 +65,7 @@ const resolvedDefaultOpen =
 Shows task progress entries (timestamped messages, percentage checkpoints) in reverse chronological order (newest first).
 
 **Dual-threshold logic**:
+
 ```typescript
 const RECENT_OPEN_COUNT = 2;
 
@@ -72,6 +76,7 @@ function defaultEntryOpen(idx: number, content: string): boolean {
 ```
 
 **Behavior**:
+
 - **2 most recent entries**: Start open if their individual content fits under thresholds; collapse if verbose
 - **Entries 3+**: Always start collapsed (user can expand any individual entry)
 
@@ -86,6 +91,7 @@ Shows saved checkpoints (state summaries, remaining work) using the same dual-th
 Lists all acceptance criteria (checkbox format).
 
 **Usage**:
+
 ```typescript
 const criteriaText = criteria.map((c) => parseCriterion(c).text).join("\n");
 
@@ -98,6 +104,7 @@ const criteriaText = criteria.map((c) => parseCriterion(c).text).join("\n");
 ```
 
 **Behavior**:
+
 - A short list (e.g., 2–5 criteria, <640 chars total) starts expanded
 - A long list (e.g., 20+ criteria, >640 chars total) starts collapsed
 - User can always click the section header to toggle
@@ -142,6 +149,7 @@ it("keeps a short acceptance-criteria list expanded", () => {
 ```
 
 Run tests:
+
 ```bash
 pnpm test task-detail-readability.test.tsx
 ```

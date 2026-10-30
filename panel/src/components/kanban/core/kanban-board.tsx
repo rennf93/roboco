@@ -440,7 +440,9 @@ export function KanbanBoard({
                   variant="outline"
                   size="icon"
                   className="min-h-11 min-w-11 shrink-0"
-                  onClick={() => setActiveColumnIndex((i) => Math.max(0, i - 1))}
+                  onClick={() =>
+                    setActiveColumnIndex((i) => Math.max(0, i - 1))
+                  }
                   disabled={activeColumnIndex === 0}
                   aria-label="Previous column"
                 >

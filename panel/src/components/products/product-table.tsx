@@ -45,7 +45,10 @@ export function CellsList({ cells }: { cells: ProductSummary["cells"] }) {
     <HelpTip label="Each cell (Backend/Frontend/UX-UI) works on the project listed beside it. A cell with no project mapped here does no work for this product.">
       <div className="flex flex-col gap-1">
         {cells.map((c) => (
-          <div key={`${c.team}-${c.project_id}`} className="flex items-center gap-2">
+          <div
+            key={`${c.team}-${c.project_id}`}
+            className="flex items-center gap-2"
+          >
             <Badge
               variant="outline"
               className="bg-blue-500/10 text-blue-500 text-xs"
@@ -85,10 +88,14 @@ export function ProgressCell({
         />
       </HelpTip>
       <div className="flex items-center gap-2 text-xs">
-        <span className="text-emerald-600 dark:text-emerald-400">{done} done</span>
+        <span className="text-emerald-600 dark:text-emerald-400">
+          {done} done
+        </span>
         <span className="text-muted-foreground">{active} active</span>
         {blocked > 0 && (
-          <span className="text-amber-600 dark:text-amber-400">{blocked} blocked</span>
+          <span className="text-amber-600 dark:text-amber-400">
+            {blocked} blocked
+          </span>
         )}
       </div>
     </div>
@@ -228,7 +235,8 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                           key={`${c.team}-${c.project_id}`}
                           className="text-xs text-muted-foreground"
                         >
-                          {TEAM_LABELS[c.team] ?? c.team}: {c.project_name || "—"}
+                          {TEAM_LABELS[c.team] ?? c.team}:{" "}
+                          {c.project_name || "—"}
                         </span>
                       ))}
                       {product.cells.length === 0 && (

@@ -322,7 +322,10 @@ export const projectsApi = {
   // the last agent is removed the backend keeps the empty restricted list.
   // Hits DELETE /projects/{id}/access/{agent_id}, responding with the
   // updated ProjectResponse.
-  revokeAccess: async (projectId: string, agentId: string): Promise<Project> => {
+  revokeAccess: async (
+    projectId: string,
+    agentId: string,
+  ): Promise<Project> => {
     if (isMockMode()) {
       const idx = mockProjects.findIndex((p) => p.id === projectId);
       if (idx === -1) throw new Error("Project not found");

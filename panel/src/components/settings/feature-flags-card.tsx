@@ -291,7 +291,10 @@ export function FeatureFlagsCard() {
                 key={flag.key}
                 className={cn(
                   "rounded-lg border p-4",
-                  (isXEngine || isVideoEngine || isTelegram || isEntireTrails) &&
+                  (isXEngine ||
+                    isVideoEngine ||
+                    isTelegram ||
+                    isEntireTrails) &&
                     "md:col-span-2",
                 )}
               >
@@ -425,7 +428,9 @@ export function FeatureFlagsCard() {
                         className="w-full justify-between px-2 text-muted-foreground"
                       >
                         <HelpTip label="The token and queue only matter once entire_trails_enabled above is on and a project has opted in.">
-                          <span className="text-sm">Entire token and queue</span>
+                          <span className="text-sm">
+                            Entire token and queue
+                          </span>
                         </HelpTip>
                         {entireTrailsOpen ? (
                           <ChevronDown className="h-4 w-4" />

@@ -372,10 +372,11 @@ gate: sync
 	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
 	@uv run lint-imports
 
-# Panel (Next.js) fast gate: lint + type-check + vitest.
+# Panel (Next.js) fast gate: format check + lint + type-check + vitest.
 # Run locally before submitting panel changes; mirrors the CI panel job exactly.
 .PHONY: panel-gate
 panel-gate:
+	@cd panel && pnpm format:check
 	@cd panel && pnpm lint
 	@cd panel && pnpm exec tsc --noEmit
 	@cd panel && pnpm test

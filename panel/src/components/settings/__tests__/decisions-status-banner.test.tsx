@@ -18,11 +18,13 @@ function withQueryClient(ui: ReactNode) {
   return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
 }
 
-function status(overrides: Partial<{
-  decisions_enabled: boolean;
-  openrouter_opted_in: boolean;
-  openrouter_key_present: boolean;
-}> = {}) {
+function status(
+  overrides: Partial<{
+    decisions_enabled: boolean;
+    openrouter_opted_in: boolean;
+    openrouter_key_present: boolean;
+  }> = {},
+) {
   return {
     decisions_enabled: true,
     openrouter_opted_in: false,
@@ -43,7 +45,10 @@ describe("DecisionsStatusBanner", () => {
 
   it("renders the warning when the OpenRouter tier is opted in but no key is stored", () => {
     useDecisionsStatus.mockReturnValue({
-      data: status({ openrouter_opted_in: true, openrouter_key_present: false }),
+      data: status({
+        openrouter_opted_in: true,
+        openrouter_key_present: false,
+      }),
     });
     render(withQueryClient(<DecisionsStatusBanner />));
 
@@ -54,7 +59,10 @@ describe("DecisionsStatusBanner", () => {
 
   it("stays hidden when the tier is not opted in", () => {
     useDecisionsStatus.mockReturnValue({
-      data: status({ openrouter_opted_in: false, openrouter_key_present: false }),
+      data: status({
+        openrouter_opted_in: false,
+        openrouter_key_present: false,
+      }),
     });
     render(withQueryClient(<DecisionsStatusBanner />));
 

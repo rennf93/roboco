@@ -28,7 +28,8 @@ interface WorkSessionCardProps {
 // WorkSession domain — a distinct lifecycle from TaskStatus.
 const SESSION_STATUS_DESCRIPTIONS: Record<string, string> = {
   [WorkSessionStatus.ACTIVE]: "This session's branch is still being worked on.",
-  [WorkSessionStatus.COMPLETED]: "The branch was merged and the session closed out.",
+  [WorkSessionStatus.COMPLETED]:
+    "The branch was merged and the session closed out.",
   [WorkSessionStatus.ABANDONED]: "The session was dropped without merging.",
 };
 
@@ -215,7 +216,9 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
                   {getPRStatusBadge(session.pr_status)}
                 </div>
                 {session.pr_created_at && (
-                  <HelpTip label={formatAbsoluteTimestamp(session.pr_created_at)}>
+                  <HelpTip
+                    label={formatAbsoluteTimestamp(session.pr_created_at)}
+                  >
                     <p className="text-xs text-muted-foreground w-fit">
                       Created{" "}
                       {formatDistanceToNow(new Date(session.pr_created_at), {

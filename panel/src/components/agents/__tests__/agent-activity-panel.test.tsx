@@ -27,17 +27,13 @@ describe("AgentActivityPanel", () => {
   });
 
   it("renders both card titles", () => {
-    render(
-      <AgentActivityPanel agentSlug="be-dev-1" agentUuid="uuid-1" />,
-    );
+    render(<AgentActivityPanel agentSlug="be-dev-1" agentUuid="uuid-1" />);
     expect(screen.getByText("Token Activity")).toBeInTheDocument();
     expect(screen.getByText("Recent Activity")).toBeInTheDocument();
   });
 
   it("shows empty states when there is no history", () => {
-    render(
-      <AgentActivityPanel agentSlug="be-dev-1" agentUuid="uuid-1" />,
-    );
+    render(<AgentActivityPanel agentSlug="be-dev-1" agentUuid="uuid-1" />);
     expect(
       screen.getByText("No token usage in the last 7 days"),
     ).toBeInTheDocument();
@@ -47,15 +43,11 @@ describe("AgentActivityPanel", () => {
   it("does not show the empty state while loading", () => {
     mockSeries.mockReturnValue({ data: [], isLoading: true });
     mockSessions.mockReturnValue({ data: [], isLoading: true });
-    render(
-      <AgentActivityPanel agentSlug="be-dev-1" agentUuid="uuid-1" />,
-    );
+    render(<AgentActivityPanel agentSlug="be-dev-1" agentUuid="uuid-1" />);
     expect(
       screen.queryByText("No token usage in the last 7 days"),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("No recent activity"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("No recent activity")).not.toBeInTheDocument();
   });
 
   it("renders a work-session timeline entry", () => {
@@ -72,9 +64,7 @@ describe("AgentActivityPanel", () => {
       ],
       isLoading: false,
     });
-    render(
-      <AgentActivityPanel agentSlug="be-dev-1" agentUuid="uuid-1" />,
-    );
+    render(<AgentActivityPanel agentSlug="be-dev-1" agentUuid="uuid-1" />);
     expect(screen.getByText("Task abcdef12")).toBeInTheDocument();
   });
 });

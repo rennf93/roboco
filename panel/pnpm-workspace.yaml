@@ -4,4 +4,4 @@ allowBuilds:
 overrides:
   # @tailwindcss/typography (latest 0.5.20) pins postcss-selector-parser to
   # exactly 6.0.10; 6.1.5 fixes GHSA-rj75-hqrm-r3gf within the same major.
-  '@tailwindcss/typography>postcss-selector-parser': ^6.1.5
+  "@tailwindcss/typography>postcss-selector-parser": ^6.1.5

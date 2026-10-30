@@ -175,9 +175,21 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
         desc: string;
       }
     > = {
-      0: { label: "P0", variant: "destructive", desc: "Critical priority — blocks all other work" },
-      1: { label: "P1", variant: "destructive", desc: "High priority — should be done soon" },
-      2: { label: "P2", variant: "secondary", desc: "Medium priority — normal scheduling" },
+      0: {
+        label: "P0",
+        variant: "destructive",
+        desc: "Critical priority — blocks all other work",
+      },
+      1: {
+        label: "P1",
+        variant: "destructive",
+        desc: "High priority — should be done soon",
+      },
+      2: {
+        label: "P2",
+        variant: "secondary",
+        desc: "Medium priority — normal scheduling",
+      },
       3: { label: "P3", variant: "outline", desc: "Low priority — can wait" },
     };
     const { label, variant, desc } = variants[priority] || {

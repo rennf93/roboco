@@ -36,7 +36,10 @@ vi.mock("@/hooks/use-agents", () => ({
 
 vi.mock("@/components/agents", () => ({
   OrchestratorStatusCards: ({ rosterCount }: { rosterCount: number }) => (
-    <div data-testid="orchestrator-status-cards" data-roster-count={rosterCount} />
+    <div
+      data-testid="orchestrator-status-cards"
+      data-roster-count={rosterCount}
+    />
   ),
   WaitingAgentsAlert: () => <div data-testid="waiting-agents-alert" />,
   AgentGrid: ({
@@ -46,9 +49,7 @@ vi.mock("@/components/agents", () => ({
     title: string;
     agents: AgentDefinition[];
   }) => (
-    <div data-testid={"grid-" + title}>
-      {agents.map((a) => a.id).join(",")}
-    </div>
+    <div data-testid={"grid-" + title}>{agents.map((a) => a.id).join(",")}</div>
   ),
 }));
 

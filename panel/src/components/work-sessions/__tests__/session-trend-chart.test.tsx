@@ -4,7 +4,9 @@ import { SessionTrendChart } from "../session-trend-chart";
 import { WorkSessionStatus } from "@/types";
 import type { WorkSessionSummary } from "@/types";
 
-function buildSession(overrides: Partial<WorkSessionSummary> = {}): WorkSessionSummary {
+function buildSession(
+  overrides: Partial<WorkSessionSummary> = {},
+): WorkSessionSummary {
   return {
     id: "session-1",
     task_id: "11111111-1111-1111-1111-111111111111",

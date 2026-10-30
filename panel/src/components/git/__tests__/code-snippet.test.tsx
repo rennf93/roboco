@@ -43,15 +43,17 @@ describe("CodeSnippet", () => {
       },
     });
     const { container } = render(
-      <CodeSnippet branch="feature/backend/abc" file="roboco/services/task.py" activeLine={42} />,
+      <CodeSnippet
+        branch="feature/backend/abc"
+        file="roboco/services/task.py"
+        activeLine={42}
+      />,
     );
     // Line numbers start at 40 for the 4 content lines.
     expect(screen.getByText("40")).toBeInTheDocument();
     expect(screen.getByText("43")).toBeInTheDocument();
     expect(screen.getByText("def x():")).toBeInTheDocument();
-    expect(
-      screen.getByText(/showing lines 40–43 of 200/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/showing lines 40–43 of 200/)).toBeInTheDocument();
     // Sanity: only one snippet block rendered.
     expect(container.querySelectorAll("pre")).toHaveLength(1);
   });

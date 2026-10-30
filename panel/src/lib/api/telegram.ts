@@ -13,8 +13,9 @@ export interface TelegramCredentialsStatus {
 
 export const telegramApi = {
   getCredentialsStatus: async (): Promise<TelegramCredentialsStatus> => {
-    const { data } =
-      await api.get<TelegramCredentialsStatus>("/telegram/credentials");
+    const { data } = await api.get<TelegramCredentialsStatus>(
+      "/telegram/credentials",
+    );
     return data;
   },
   setCredentials: async (creds: {

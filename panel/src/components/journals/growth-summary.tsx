@@ -120,7 +120,9 @@ export function GrowthSummary({
           <HelpTip label="Share of logged struggles that a later entry marked resolved">
             <div className="pt-3 border-t">
               <div className="flex items-center justify-between text-sm mb-2">
-                <span className="text-muted-foreground">Struggle Resolution</span>
+                <span className="text-muted-foreground">
+                  Struggle Resolution
+                </span>
                 <span className="font-medium">
                   {Math.round(growth.struggle_resolution_rate * 100)}%
                 </span>

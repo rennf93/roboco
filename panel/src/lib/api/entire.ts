@@ -36,7 +36,9 @@ export const entireApi = {
     return data;
   },
   retryTrails: async (): Promise<{ retried: number }> => {
-    const { data } = await api.post<{ retried: number }>("/entire/trails/retry");
+    const { data } = await api.post<{ retried: number }>(
+      "/entire/trails/retry",
+    );
     return data;
   },
 };

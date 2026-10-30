@@ -106,8 +106,7 @@ const COGNITION_LANE_PILOTS: PilotDef[] = [
   {
     slug: "context_pruning",
     label: "Context pruning (spawn detail)",
-    description:
-      "Drops stale task-detail entries at spawn (drop-only).",
+    description: "Drops stale task-detail entries at spawn (drop-only).",
   },
   {
     slug: "budget_wrapup",
@@ -123,8 +122,7 @@ const COGNITION_LANE_PILOTS: PilotDef[] = [
   {
     slug: "idle_legitimacy",
     label: "Idle legitimacy (activity check)",
-    description:
-      "Flags idle agents that are actually done or stranded.",
+    description: "Flags idle agents that are actually done or stranded.",
   },
   {
     slug: "review_queue_priority",
@@ -160,8 +158,7 @@ const TIER_B_PILOTS: PilotDef[] = [
   {
     slug: "injection_screen",
     label: "Injection screen (inbound text)",
-    description:
-      "Prompt-injection risk screen for inbound text (fail-closed).",
+    description: "Prompt-injection risk screen for inbound text (fail-closed).",
   },
   {
     slug: "intake_preroute",
@@ -172,8 +169,7 @@ const TIER_B_PILOTS: PilotDef[] = [
   {
     slug: "x_mention_triage",
     label: "X mention triage (draft call gate)",
-    description:
-      "Classifies X mentions before spending a draft call.",
+    description: "Classifies X mentions before spending a draft call.",
   },
   {
     slug: "collision_edge",
@@ -189,14 +185,12 @@ const TIER_B_PILOTS: PilotDef[] = [
   {
     slug: "heal_severity",
     label: "Heal severity (self-heal)",
-    description:
-      "Scores self-heal fix severity instead of hardcoded MEDIUM.",
+    description: "Scores self-heal fix severity instead of hardcoded MEDIUM.",
   },
   {
     slug: "release_worthy",
     label: "Release worthy (urgency score)",
-    description:
-      "Scores release urgency against the release threshold.",
+    description: "Scores release urgency against the release threshold.",
   },
   {
     slug: "second_review_eligibility",
@@ -248,8 +242,7 @@ const TIER_B_PILOTS: PilotDef[] = [
   {
     slug: "secretary_nl",
     label: "Secretary NL (directives)",
-    description:
-      "Resolves directive kind and assignee from natural language.",
+    description: "Resolves directive kind and assignee from natural language.",
   },
   {
     slug: "release_readiness",
@@ -259,14 +252,12 @@ const TIER_B_PILOTS: PilotDef[] = [
   {
     slug: "commit_intent",
     label: "Commit intent (diff mismatch)",
-    description:
-      "Hints when a commit message mismatches the diff intent.",
+    description: "Hints when a commit message mismatches the diff intent.",
   },
   {
     slug: "tg_freetext_gate",
     label: "TG free-text gate (Telegram)",
-    description:
-      "Surfaces free text that deserves an answer (add-only).",
+    description: "Surfaces free text that deserves an answer (add-only).",
   },
   {
     slug: "memory_distill_gate",
@@ -323,8 +314,7 @@ const TIER_B_PILOTS: PilotDef[] = [
   {
     slug: "pm_closure_confidence",
     label: "PM closure confidence (advisory)",
-    description:
-      "Advisory closure-safety score in the PM closure prompt.",
+    description: "Advisory closure-safety score in the PM closure prompt.",
   },
   {
     slug: "assembled_coherence",
@@ -432,8 +422,8 @@ export function DecisionsPilotsCard() {
           Per-pilot mode for the Decisions service. All pilots default to off.
           &quot;shadow&quot; logs verdicts without acting on them;
           &quot;on&quot; acts on them. Changes persist immediately and take
-          effect on the next backend restart. Needs the Decisions master flag
-          on (Feature Flags below).
+          effect on the next backend restart. Needs the Decisions master flag on
+          (Feature Flags below).
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -460,9 +450,8 @@ export function DecisionsPilotsCard() {
                   label={pilot.label}
                   description={pilot.description}
                   value={
-                    (storedModes[
-                      pilotSettingKey(pilot.slug)
-                    ] as PilotMode) ?? "off"
+                    (storedModes[pilotSettingKey(pilot.slug)] as PilotMode) ??
+                    "off"
                   }
                   onChange={(mode) =>
                     setModeMutation.mutate({ slug: pilot.slug, mode })

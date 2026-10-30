@@ -81,8 +81,8 @@ export function A2ADirectComposer({
         </HelpTip>
       </div>
       <p className="text-xs text-muted-foreground mt-2">
-        Your own direct thread with {getAgentDisplayName(otherAgent)} —
-        visible only to the two of you.
+        Your own direct thread with {getAgentDisplayName(otherAgent)} — visible
+        only to the two of you.
       </p>
     </form>
   );

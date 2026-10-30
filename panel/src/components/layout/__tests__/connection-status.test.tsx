@@ -14,10 +14,7 @@ describe("ConnectionStatus, icon-only badge with accessible name", () => {
   });
 
   it("renders no visible text once connected, exposing the state only via aria-label", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true } as Response),
-    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true } as Response));
 
     render(<ConnectionStatus />);
 
@@ -58,10 +55,7 @@ describe("ConnectionStatus, icon-only badge with accessible name", () => {
   });
 
   it("keeps the full state explanation available via the hover tooltip", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true } as Response),
-    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true } as Response));
     const user = userEvent.setup();
 
     render(<ConnectionStatus />);

@@ -42,8 +42,14 @@ export function EnvironmentLadderEditor({
     emit(items.filter((_, i) => i !== index));
   };
 
-  const handleUpdate = (index: number, field: keyof EnvironmentRung, value: string) => {
-    const next = items.map((r, i) => (i === index ? { ...r, [field]: value } : r));
+  const handleUpdate = (
+    index: number,
+    field: keyof EnvironmentRung,
+    value: string,
+  ) => {
+    const next = items.map((r, i) =>
+      i === index ? { ...r, [field]: value } : r,
+    );
     emit(next);
   };
 
@@ -95,99 +101,103 @@ export function EnvironmentLadderEditor({
                   </div>
                 )}
                 <div className="flex min-w-max items-center gap-2">
-                <div className="flex flex-col">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      {/* span-wrap: disabled Button has pointer-events-none,
+                  <div className="flex flex-col">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        {/* span-wrap: disabled Button has pointer-events-none,
                           so the tooltip needs a hoverable wrapper to fire
                           when isFirst disables the button. */}
-                      <span className="inline-block">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          disabled={isFirst}
-                          onClick={() => handleMove(index, -1)}
-                          aria-label="Move earlier in the flow"
-                        >
-                          <ArrowUp className="h-3.5 w-3.5" />
-                        </Button>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {isFirst
-                        ? "Already first — lands PRs, nothing to promote from."
-                        : "Move earlier in the flow"}
-                    </TooltipContent>
-                  </Tooltip>
+                        <span className="inline-block">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            disabled={isFirst}
+                            onClick={() => handleMove(index, -1)}
+                            aria-label="Move earlier in the flow"
+                          >
+                            <ArrowUp className="h-3.5 w-3.5" />
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {isFirst
+                          ? "Already first — lands PRs, nothing to promote from."
+                          : "Move earlier in the flow"}
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-block">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            disabled={isLast}
+                            onClick={() => handleMove(index, 1)}
+                            aria-label="Move later in the flow"
+                          >
+                            <ArrowDown className="h-3.5 w-3.5" />
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {isLast
+                          ? "Already last — the release target, nothing further to promote to."
+                          : "Move later in the flow"}
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <HelpTip
+                    label={
+                      role
+                        ? `This rung ${role === "PRs land" ? "is where PRs from this project land" : role === "release" ? "is where releases are cut and tagged" : "both receives PRs and is the release target (single-rung ladder)"}.`
+                        : "An intermediate rung — merged into from the rung above, promoted to the rung below."
+                    }
+                  >
+                    <span className="w-20 text-center text-[10px] font-medium uppercase text-muted-foreground">
+                      {role}
+                    </span>
+                  </HelpTip>
+                  <HelpTip label="Display label for this rung (e.g. 'dev', 'qa') — shown in the panel only, not matched against branch names.">
+                    <span className="flex-1">
+                      <Input
+                        value={rung.name}
+                        onChange={(e) =>
+                          handleUpdate(index, "name", e.target.value)
+                        }
+                        placeholder="Name (e.g. dev, qa, stag)"
+                        className="h-8"
+                      />
+                    </span>
+                  </HelpTip>
+                  <HelpTip label="The real git branch this rung maps to. Must be unique across rungs; saving rejects an empty or duplicate branch.">
+                    <span className="flex-1">
+                      <Input
+                        value={rung.branch}
+                        onChange={(e) =>
+                          handleUpdate(index, "branch", e.target.value)
+                        }
+                        placeholder="Branch (e.g. dev, master)"
+                        className="h-8"
+                      />
+                    </span>
+                  </HelpTip>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="inline-block">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          disabled={isLast}
-                          onClick={() => handleMove(index, 1)}
-                          aria-label="Move later in the flow"
-                        >
-                          <ArrowDown className="h-3.5 w-3.5" />
-                        </Button>
-                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="shrink-0"
+                        onClick={() => handleRemove(index)}
+                        aria-label="Remove this rung"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
                     </TooltipTrigger>
-                    <TooltipContent>
-                      {isLast
-                        ? "Already last — the release target, nothing further to promote to."
-                        : "Move later in the flow"}
-                    </TooltipContent>
+                    <TooltipContent>Remove this rung</TooltipContent>
                   </Tooltip>
-                </div>
-                <HelpTip
-                  label={
-                    role
-                      ? `This rung ${role === "PRs land" ? "is where PRs from this project land" : role === "release" ? "is where releases are cut and tagged" : "both receives PRs and is the release target (single-rung ladder)"}.`
-                      : "An intermediate rung — merged into from the rung above, promoted to the rung below."
-                  }
-                >
-                  <span className="w-20 text-center text-[10px] font-medium uppercase text-muted-foreground">
-                    {role}
-                  </span>
-                </HelpTip>
-                <HelpTip label="Display label for this rung (e.g. 'dev', 'qa') — shown in the panel only, not matched against branch names.">
-                  <span className="flex-1">
-                    <Input
-                      value={rung.name}
-                      onChange={(e) => handleUpdate(index, "name", e.target.value)}
-                      placeholder="Name (e.g. dev, qa, stag)"
-                      className="h-8"
-                    />
-                  </span>
-                </HelpTip>
-                <HelpTip label="The real git branch this rung maps to. Must be unique across rungs; saving rejects an empty or duplicate branch.">
-                  <span className="flex-1">
-                    <Input
-                      value={rung.branch}
-                      onChange={(e) => handleUpdate(index, "branch", e.target.value)}
-                      placeholder="Branch (e.g. dev, master)"
-                      className="h-8"
-                    />
-                  </span>
-                </HelpTip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="shrink-0"
-                      onClick={() => handleRemove(index)}
-                      aria-label="Remove this rung"
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Remove this rung</TooltipContent>
-                </Tooltip>
                 </div>
               </div>
             );

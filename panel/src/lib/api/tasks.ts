@@ -1233,12 +1233,15 @@ export const tasksApi = {
   getAttestationMarkdown: async (taskId: string): Promise<string> => {
     if (isMockMode())
       return "# Verification receipt\n\n(mock receipt for " + taskId + ")\n";
-    const { data } = await api.get<string>("/tasks/" + taskId + "/attestation", {
-      params: { format: "md" },
-      // text/markdown must not ride axios's JSON.parse attempt — pass the
-      // body through untouched.
-      transformResponse: (body) => body,
-    });
+    const { data } = await api.get<string>(
+      "/tasks/" + taskId + "/attestation",
+      {
+        params: { format: "md" },
+        // text/markdown must not ride axios's JSON.parse attempt — pass the
+        // body through untouched.
+        transformResponse: (body) => body,
+      },
+    );
     return data;
   },
 };

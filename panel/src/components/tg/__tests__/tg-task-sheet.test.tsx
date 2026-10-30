@@ -201,9 +201,7 @@ describe("TgTaskSheet — CEO action interactions", () => {
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     expect(ceoApprove).toHaveBeenCalledWith("t1");
-    await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith("Approved"),
-    );
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Approved"));
   });
 
   it("shows the error toast when approve's promise rejects", async () => {
@@ -253,7 +251,10 @@ describe("TgTaskSheet — CEO action interactions", () => {
 
     await userEvent.click(sendBack);
 
-    expect(ceoReject).toHaveBeenCalledWith("t1", "Please redo the retry backoff");
+    expect(ceoReject).toHaveBeenCalledWith(
+      "t1",
+      "Please redo the retry backoff",
+    );
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith("Sent back for revision"),
     );

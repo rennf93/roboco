@@ -95,7 +95,10 @@ export function WorkSessionsView() {
         />
       ) : (
         <>
-          <SessionTrendChart sessions={filteredSessions} isLoading={isLoading} />
+          <SessionTrendChart
+            sessions={filteredSessions}
+            isLoading={isLoading}
+          />
           <WorkSessionTable sessions={filteredSessions} isLoading={isLoading} />
         </>
       )}
