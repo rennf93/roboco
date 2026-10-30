@@ -229,15 +229,15 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 ```
 
 ## Dependencies
-- **Next.js 16.1.1** (App Router, `(dashboard)` route group) + React 19.2
+- **Next.js 16.4.3** (App Router, `(dashboard)` route group) + React 19.2
 - **Tailwind 4** + `@tailwindcss/typography` + `tw-animate-css`
 - **Radix UI** primitives (dialog, dropdown, select, tabs, switch, tooltip, popover, …) wrapped in `components/ui/*`
-- **TanStack React Query 5.90** for server state; **zustand 5** for client stores (usage, rate-limit, notifications, ui)
-- **axios 1.13** shared client; **react-hook-form 7** + **zod 4** + `@hookform/resolvers` for forms
+- **TanStack React Query 5.101** for server state; **zustand 5** for client stores (usage, rate-limit, notifications, ui)
+- **axios 1.20** shared client; **react-hook-form 7** + **zod 4** + `@hookform/resolvers` for forms
 - **@dnd-kit/core + sortable + utilities** for kanban drag
-- **recharts 3** for usage charts; **react-markdown 9** + remark-gfm for markdown render
+- **recharts 3** for usage charts; **react-markdown 10** + remark-gfm for markdown render
 - **sonner** toasts; **next-themes** dark mode; **date-fns**; **lucide-react** icons
-- **Vitest 4** + jsdom + @testing-library for tests; **pnpm 10.25** package manager
+- **Vitest 5** + jsdom + @testing-library (jest-dom 7) for tests; **ESLint 10** with `eslint-config-next` (same version as `next`) and **TypeScript 5** for lint and types; **pnpm 11.10** package manager
 
 ## Entry Points
 - **nginx :3000** single external entry; routes `/api/*`+`/ws/*`→orchestrator:8000, else→panel:3000

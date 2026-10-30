@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useRef } from "react";
-import ReactMarkdown, { Components } from "react-markdown";
+import { useCallback } from "react";
+import ReactMarkdown, { Components, ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -17,6 +17,38 @@ interface MarkdownProps {
   compact?: boolean;
 }
 
+type HastChildren = NonNullable<ExtraProps["node"]>["children"];
+
+/**
+ * Rehype plugin: tags every task-list checkbox with the source offset of its
+ * list item, so a toggle rewrites that item's own marker. Only the bullet,
+ * whitespace and blockquote markers can sit between a list item's start and
+ * its `[ ]`, so the marker is the first `[` from that offset, whatever else
+ * (fenced examples, inline code, other bullet styles) the markdown contains.
+ */
+function tagTaskCheckboxesWithListItemOffset() {
+  return (tree: { children: HastChildren }) => {
+    const visit = (
+      parent: { children: HastChildren },
+      listItemOffset?: number,
+    ) => {
+      for (const child of parent.children) {
+        if (child.type !== "element") continue;
+        if (child.tagName === "input" && child.properties.type === "checkbox") {
+          child.properties.dataListItemOffset = listItemOffset;
+        }
+        visit(
+          child,
+          child.tagName === "li"
+            ? child.position?.start.offset
+            : listItemOffset,
+        );
+      }
+    };
+    visit(tree);
+  };
+}
+
 /**
  * Renders markdown content with proper styling.
  * Uses Tailwind's prose classes for typography.
@@ -29,28 +61,16 @@ export function Markdown({
   disabled,
   compact,
 }: MarkdownProps) {
-  const checkboxIndexRef = useRef(0);
-
-  // Reset checkbox index on each render
-  checkboxIndexRef.current = 0;
-
-  // Toggle checkbox in markdown content
   const toggleCheckbox = useCallback(
-    (index: number, checked: boolean) => {
+    (listItemOffset: number, checked: boolean) => {
       if (!onCheckboxChange) return;
 
-      // Find and replace the nth checkbox in the markdown
-      let currentIndex = 0;
-      const newContent = children.replace(/- \[([ xX])\]/g, (match) => {
-        if (currentIndex === index) {
-          currentIndex++;
-          return checked ? "- [x]" : "- [ ]";
-        }
-        currentIndex++;
-        return match;
-      });
-
-      onCheckboxChange(newContent);
+      const marker = children.indexOf("[", listItemOffset);
+      onCheckboxChange(
+        children.slice(0, marker + 1) +
+          (checked ? "x" : " ") +
+          children.slice(marker + 2),
+      );
     },
     [children, onCheckboxChange],
   );
@@ -58,15 +78,15 @@ export function Markdown({
   // Custom components for ReactMarkdown
   const components: Components = onCheckboxChange
     ? {
-        input: ({ type, checked, ...props }) => {
+        input: ({ type, checked, node, ...props }) => {
           if (type === "checkbox") {
-            const index = checkboxIndexRef.current++;
+            const listItemOffset = Number(node?.properties.dataListItemOffset);
             return (
               <Checkbox
                 checked={!!checked}
                 disabled={disabled}
                 onCheckedChange={(newChecked) =>
-                  toggleCheckbox(index, !!newChecked)
+                  toggleCheckbox(listItemOffset, !!newChecked)
                 }
                 className="mr-2 align-middle"
               />
@@ -135,7 +155,13 @@ export function Markdown({
         className,
       )}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={
+          onCheckboxChange ? [tagTaskCheckboxesWithListItemOffset] : []
+        }
+        components={components}
+      >
         {children}
       </ReactMarkdown>
     </div>

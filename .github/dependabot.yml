@@ -27,13 +27,13 @@ updates:
     allow:
       - dependency-type: "all"
     ignore:
-      # next 16.2.x froze the panel in-browser (the "tab-hostage" bug) —
-      # pinned at 16.1.x until a verified-fixed release. eslint-config-next's
-      # peer ceiling also holds eslint/typescript majors back; see PR #560.
-      - dependency-name: "next"
-        versions: ["16.2.x"]
-      - dependency-name: "eslint-config-next"
-        versions: ["16.2.x"]
+      # TypeScript 7: typescript-eslint refuses to run on it ("typescript-eslint
+      # does not support TS 7.0", typescript-eslint/typescript-eslint#10940),
+      # so `pnpm lint` crashes. Hold the 5.x line until it supports TS 7; see
+      # #1204. (The old next/eslint-config-next 16.2.x holds are gone: the
+      # panel is on next 16.4.x.)
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # Exact versions of the npm CLIs the agent-base and orchestrator images
   # install globally (each Dockerfile reads its manifest; nothing installs

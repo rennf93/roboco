@@ -36,10 +36,13 @@ export function KBSearchBar({
     return () => clearTimeout(timer);
   }, [localValue, debounceMs, onChange, value]);
 
-  // Sync external value changes
-  useEffect(() => {
+  // Sync external value changes during render (a prevValue comparison), not
+  // in an effect, so the input never commits a frame showing the stale value.
+  const [prevValue, setPrevValue] = useState(value);
+  if (value !== prevValue) {
+    setPrevValue(value);
     setLocalValue(value);
-  }, [value]);
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && onSearch) {
