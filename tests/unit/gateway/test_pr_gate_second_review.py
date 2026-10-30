@@ -156,7 +156,8 @@ async def test_pr_pass_evidence_is_none_and_diff_never_fetched_when_flag_off() -
     t_after.status = "awaiting_pm_review"
     c = _make_choreographer()
     _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=t_after)
-    assert settings.cross_vendor_review_enabled is False  # default
+    # The flag's default.
+    assert settings.cross_vendor_review_enabled is False
 
     env = await c.pr_pass(reviewer_id, task_id, "Looks clean to me.")
 
@@ -184,7 +185,8 @@ async def test_pr_pass_inserts_second_review_finding_under_dedicated_origin(
     await _seed_task_row(db_session, task_id)
 
     reviewer_id = uuid4()
-    t_before = _t(task_id=task_id, priority=0)  # P0 — above the risk threshold
+    # P0: above the risk threshold.
+    t_before = _t(task_id=task_id, priority=0)
     t_after = _t(task_id=task_id)
     t_after.status = "awaiting_pm_review"
     c = _make_choreographer()
@@ -204,7 +206,7 @@ async def test_pr_pass_inserts_second_review_finding_under_dedicated_origin(
         return SecondReviewOutcome.ran(ModelProvider.GROK, [finding])
 
     monkeypatch.setattr(
-        "roboco.services.gateway.choreographer.pr_gate.run_second_review_for_gate",
+        "roboco.services.gateway.choreographer.pr_gate_pass.run_second_review_for_gate",
         _fake_run_second_review_for_gate,
     )
 

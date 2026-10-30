@@ -3127,7 +3127,7 @@ class Choreographer:
         distinguish "the local gate already decided" from "CI green, gate
         skipped" so it never double-gates.
         """
-        # ``_resolve_ci_status`` lives on ``PRGateMixin``; ``_LegacyChoreographer``
+        # ``_resolve_ci_status`` lives on ``PRGatePassMixin``; ``_LegacyChoreographer``
         # reaches it via the typed-helpers cast (same idiom as the pr_pass path).
         status = await cast("ChoreographerHelpers", self)._resolve_ci_status(
             ctx.task_id, ctx.task
@@ -3281,7 +3281,7 @@ class Choreographer:
         lacks) via ``_conventions_rejection(..., reviewer=True)``.
 
         ``preferred_parent`` is the assembled task's real parent branch (see
-        ``PRGateMixin._gate_diff_parent``) — the same cross-team-correct base
+        ``PRGateEvidenceMixin._gate_diff_parent``) — the same cross-team-correct base
         the gate's own diff evidence uses, so a misplaced-definition finding
         can't be raised against inherited base-branch content.
         """

@@ -474,7 +474,7 @@ class QaNote(_Content):
     rendering (built by the choreographer before the note is written), so
     ``render_markdown`` deliberately does not re-render ``findings`` into a
     second section — that would duplicate every line (mirrors the anti-
-    duplication precedent in ``PRGateMixin._gate_verdict_summary``).
+    duplication precedent in ``PRGateVerdictMixin._gate_verdict_summary``).
     """
 
     summary: str

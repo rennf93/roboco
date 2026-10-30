@@ -51,7 +51,7 @@ concurrency:
 jobs:
   analyze:
     # Master's ruleset requires a check with exactly this name, and the fleet's
-    # PR gate maps it to the scope it analyzes (pr_gate._CODEQL_CHECK_SCOPES).
+    # PR gate maps it to the scope it analyzes (pr_gate_pass._CODEQL_CHECK_SCOPES).
     name: code-ql
     runs-on: ubuntu-latest
     permissions:

@@ -2,7 +2,7 @@
 
 ## The gotcha
 
-Several Choreographer code paths wrap a DB write in a savepoint via `async with self.task.session.begin_nested():`. The drift guard's findings-ledger insertion (`pr_gate.py:_scope_relaxation_drift_guard`) is one; the completion-gate findings verify and CEO-approve stamps are others. When a gateway test's `_make_choreographer` (or equivalent fixture) does **not** set `session.begin_nested` as an async context manager mock, the `async with` silently fails on the protocol — `MagicMock` is not an async context manager — and the code inside the savepoint **never executes**. The test still passes because it asserts on the rejection envelope (which is produced before the savepoint), not on the side effect inside it. The findings-ledger write is skipped, and the test gives false confidence.
+Several Choreographer code paths wrap a DB write in a savepoint via `async with self.task.session.begin_nested():`. The drift guard's findings-ledger insertion (`pr_gate_pass.py:_scope_relaxation_drift_guard`) is one; the completion-gate findings verify and CEO-approve stamps are others. When a gateway test's `_make_choreographer` (or equivalent fixture) does **not** set `session.begin_nested` as an async context manager mock, the `async with` silently fails on the protocol — `MagicMock` is not an async context manager — and the code inside the savepoint **never executes**. The test still passes because it asserts on the rejection envelope (which is produced before the savepoint), not on the side effect inside it. The findings-ledger write is skipped, and the test gives false confidence.
 
 ## The pattern
 
