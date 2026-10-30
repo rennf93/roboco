@@ -6,8 +6,10 @@ Data constants are in roboco/seeds/, database operations in roboco/db/seed.py.
 """
 
 import asyncio
+import os
 import socket
 from http import HTTPStatus
+from pathlib import Path
 
 import httpx
 import structlog
@@ -25,6 +27,9 @@ from roboco.services.workspace_git import GitUserDropError, verify_git_user_drop
 
 logger = structlog.get_logger()
 
+# Mounted only into the Docker gate (docker-compose.yml's docker-gate-<color>).
+HOST_DOCKER_SOCKET = Path("/var/run/docker.sock")
+
 
 class _BootstrapHolder:
     """Holder for bootstrap singleton instances."""
@@ -39,7 +44,8 @@ async def _run_api_server() -> None:
         host=settings.host,
         port=settings.port,
         log_level="info",
-        reload=False,  # Don't reload in production/container
+        # Don't reload in production/container.
+        reload=False,
         # Cosmetic here — server.serve() (below) never reads Config.loop, it
         # only matters to Server.run()/uvicorn.run(). The real switch is
         # cli.py's asyncio.run(loop_factory=resolve_uvicorn_loop_factory(...)),
@@ -94,6 +100,25 @@ def _refuse_to_start_without_the_git_user_drop() -> None:
         raise SystemExit(1) from exc
 
 
+def _warn_when_docker_bypasses_the_gate() -> None:
+    """The api and dispatcher reach Docker through the Docker gate: DOCKER_HOST
+    names the gate's socket and the host socket is not mounted. A compose file
+    from before the gate mounts the host socket and sets no DOCKER_HOST. That
+    still works while the image runs as root, but the next release's non-root
+    image refuses to start on it. Only the compose files run the api and
+    dispatcher roles; a host run (``all``) uses its own host's daemon."""
+    if settings.role not in {"api", "dispatcher"}:
+        return
+    if os.environ.get("DOCKER_HOST") or not HOST_DOCKER_SOCKET.exists():
+        return
+    logger.warning(
+        "Docker is reached through the raw host socket, not the Docker gate. "
+        "The next release refuses to start this way: update the compose file "
+        "to this release's (the docker-gate service and DOCKER_HOST).",
+        socket=str(HOST_DOCKER_SOCKET),
+    )
+
+
 async def _wait_for_api_ready(max_wait: int = 120) -> None:
     """
     Wait for the API server to be ready to accept connections.
@@ -133,6 +158,7 @@ async def main(
     logger.info("RoboCo Bootstrap starting...")
 
     _refuse_to_start_without_the_git_user_drop()
+    _warn_when_docker_bypasses_the_gate()
 
     if not skip_db:
         await bootstrap_database()
@@ -153,7 +179,8 @@ async def main(
     # unchanged, so consumer-group delivery still balances events once each.
     event_bus = await init_event_bus(
         consumer_name=f"orchestrator-{settings.role}-{socket.gethostname()}",
-        recover_pending=True,  # Recover unacknowledged messages from previous run
+        # Recover unacknowledged messages from the previous run.
+        recover_pending=True,
     )
     register_default_handlers(event_bus)
 
