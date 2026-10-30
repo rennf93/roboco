@@ -385,11 +385,14 @@ export function AIRoutingCard() {
   }, [snapshot]);
 
   const [mixMap, setMixMap] = useState<Record<string, string>>(initialMix);
-  useEffect(() => {
-    // Reset local state when server returns a fresh snapshot (after save,
-    // mode switch, or initial load).
+  // Reset local state when server returns a fresh snapshot (after save, mode
+  // switch, or initial load), during render (a prevInitialMix comparison)
+  // rather than in an effect, so no frame renders the old snapshot's edits.
+  const [prevInitialMix, setPrevInitialMix] = useState(initialMix);
+  if (initialMix !== prevInitialMix) {
+    setPrevInitialMix(initialMix);
     setMixMap(initialMix);
-  }, [initialMix]);
+  }
 
   // Server-persisted pins (not local edits) — these outrank every mode
   // button, so the Routing-mode section warns when any exist.

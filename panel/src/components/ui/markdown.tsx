@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useRef } from "react";
-import ReactMarkdown, { Components } from "react-markdown";
+import { useCallback } from "react";
+import ReactMarkdown, { Components, ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -17,6 +17,29 @@ interface MarkdownProps {
   compact?: boolean;
 }
 
+type HastChildren = NonNullable<ExtraProps["node"]>["children"];
+
+/**
+ * Rehype plugin: numbers every task-list checkbox in document order, so each
+ * checkbox's index comes from the parsed markdown rather than from the order
+ * React happens to render the checkboxes in.
+ */
+function numberTaskCheckboxes() {
+  return (tree: { children: HastChildren }) => {
+    let index = 0;
+    const visit = (parent: { children: HastChildren }) => {
+      for (const child of parent.children) {
+        if (child.type !== "element") continue;
+        if (child.tagName === "input" && child.properties.type === "checkbox") {
+          child.properties.dataCheckboxIndex = index++;
+        }
+        visit(child);
+      }
+    };
+    visit(tree);
+  };
+}
+
 /**
  * Renders markdown content with proper styling.
  * Uses Tailwind's prose classes for typography.
@@ -29,11 +52,6 @@ export function Markdown({
   disabled,
   compact,
 }: MarkdownProps) {
-  const checkboxIndexRef = useRef(0);
-
-  // Reset checkbox index on each render
-  checkboxIndexRef.current = 0;
-
   // Toggle checkbox in markdown content
   const toggleCheckbox = useCallback(
     (index: number, checked: boolean) => {
@@ -58,9 +76,9 @@ export function Markdown({
   // Custom components for ReactMarkdown
   const components: Components = onCheckboxChange
     ? {
-        input: ({ type, checked, ...props }) => {
+        input: ({ type, checked, node, ...props }) => {
           if (type === "checkbox") {
-            const index = checkboxIndexRef.current++;
+            const index = Number(node?.properties.dataCheckboxIndex);
             return (
               <Checkbox
                 checked={!!checked}
@@ -135,7 +153,11 @@ export function Markdown({
         className,
       )}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={onCheckboxChange ? [numberTaskCheckboxes] : []}
+        components={components}
+      >
         {children}
       </ReactMarkdown>
     </div>

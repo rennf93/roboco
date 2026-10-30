@@ -498,8 +498,13 @@ export function usePrompter() {
   const streamingIdRef = useRef<string | null>(null);
   // Synchronous re-entry guard for launch — a double-click was creating two tasks.
   const launchingRef = useRef(false);
+  // Synced after commit, not during render: a ref written during render can
+  // hold a render React later discards. Declared before the persist effect
+  // below, so that effect reads this commit's scope.
   const scopeRef = useRef({ targetKind, projectId, productId, projectIds });
-  scopeRef.current = { targetKind, projectId, productId, projectIds };
+  useEffect(() => {
+    scopeRef.current = { targetKind, projectId, productId, projectIds };
+  }, [targetKind, projectId, productId, projectIds]);
 
   // -----------------------------------------------------------------------
   // Message helpers
@@ -759,12 +764,12 @@ export function usePrompter() {
   // sets a top-level project_id; the backend falls back to it). Without this
   // the review card shows empty Selects and blocks launch, forcing the human
   // to re-pick the very projects they scoped at intake. Idempotent: once every
-  // cell has a project_id it returns the same batch reference (no loop).
-  useEffect(() => {
-    if (!batch) return;
+  // cell has a project_id it returns the same batch reference (no loop). Done
+  // during render, not in an effect, so no frame renders the unfilled batch.
+  if (batch) {
     const filled = fillBatchProjects(batch, projectIds, allProjects);
     if (filled !== batch) setBatch(filled);
-  }, [batch, projectIds, allProjects]);
+  }
 
   // On mount, reconnect to a still-running session left behind by a reload.
   const didRestoreRef = useRef(false);

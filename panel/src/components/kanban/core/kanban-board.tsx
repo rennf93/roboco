@@ -108,9 +108,12 @@ export function KanbanBoard({
   // closure — React Query hands back a new array reference on every refetch
   // even when the underlying rows are unchanged, which would otherwise bust
   // handleAction's identity (and, through it, KanbanCard's memoization) every
-  // 30s regardless of whether anything actually changed.
+  // 30s regardless of whether anything actually changed. Synced after commit:
+  // a ref written during render can hold a render React later discards.
   const tasksRef = useRef<Task[]>([]);
-  tasksRef.current = tasks || [];
+  useEffect(() => {
+    tasksRef.current = tasks || [];
+  }, [tasks]);
 
   // useMutation's mutate/mutateAsync are bound once per observer and stay
   // referentially stable across renders (query-core binds them in the
