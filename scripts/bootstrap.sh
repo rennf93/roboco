@@ -250,7 +250,7 @@ docker compose -f "$COMPOSE_FILE" up -d \
 # --- Stage 3: doctor-style readiness sweep ----------------------------------
 
 DEADLINE=$(($(date +%s) + TIMEOUT_SECONDS))
-CORE_SERVICES="postgres redis ollama orchestrator dispatcher indexer panel nginx"
+CORE_SERVICES="postgres redis ollama docker-gate orchestrator dispatcher indexer panel nginx"
 
 check_services_running() {
     local running

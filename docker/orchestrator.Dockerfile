@@ -2,8 +2,8 @@
 # Orchestrator — multi-stage build
 # =============================================================================
 # Builder stage compiles the Python venv; runner stage is slim Debian with
-# docker-cli (needed to spawn agent containers over the mounted docker socket)
-# and the pre-built venv copied in.
+# docker-cli (needed to spawn agent containers through the Docker gate's
+# socket, docker/docker-gate/) and the pre-built venv copied in.
 #
 # apt pins follow agent-base.Dockerfile's scheme: the upstream series bookworm
 # ships for its whole life (never a Debian revision, which every point or

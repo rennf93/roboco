@@ -111,6 +111,10 @@ jobs:
           # `image:` values exactly, so compose can later pull instead of build.
           declare -A IMAGES=(
             [roboco-orchestrator]=docker/orchestrator.Dockerfile
+            # The Docker gate (trail #34): docker-compose.registry.yml's
+            # orchestrator and dispatcher reach Docker only through it, so a
+            # release without it cannot start.
+            [roboco-docker-gate]=docker/docker-gate.Dockerfile
             [roboco-panel]=docker/panel.Dockerfile
             [roboco-video-renderer]=docker/video-renderer.Dockerfile
             # Decisions sidecar (the self-hosted tiers of the Decisions
