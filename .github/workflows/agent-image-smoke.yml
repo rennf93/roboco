@@ -33,6 +33,14 @@ on:
     # `paths` job applies the push trigger's paths instead (see ci.yml).
   workflow_dispatch:
 
+# Every step runs under pipefail (`shell: bash` = bash -eo pipefail). The
+# checks below pipe `docker run ...` through `tee`; under the default
+# `bash -e` a failing check exited 0 through the pipe, and the wrapper
+# chromium-path assertion failed silently (seen 2026-10-28).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   paths:
     name: Match the PR's files against the push trigger's paths
@@ -146,19 +154,24 @@ jobs:
           for name in agent-qa-fe agent-ux; do
             echo "::group::${name} playwright-mcp binary"
             docker run --rm --entrypoint playwright-mcp "${name}:after" --version | tee -a /tmp/smoke-report.md
-            # Confirms the exact chromium-headless-shell path the wrapper
-            # entrypoint (docker/scripts/entrypoints/playwright-mcp-entrypoint.sh) will
-            # resolve and pass to `playwright-mcp --executable-path` is a
-            # real, executable file baked into this image — not a second,
-            # separately-downloaded browser.
+            # The exact chromium-headless-shell path the wrapper entrypoint
+            # (docker/scripts/entrypoints/playwright-mcp-entrypoint.sh) hands
+            # `playwright-mcp --executable-path`: the wrapper exits non-zero
+            # unless exactly one executable headless shell is baked into this
+            # image. Then launch a browser from that very binary, which is
+            # what the MCP server will do.
+            path=$(docker run --rm \
+              --entrypoint /app/scripts/entrypoints/playwright-mcp-entrypoint.sh \
+              "${name}:after" --print-executable-path)
+            echo "RESOLVED_HEADLESS_SHELL: ${path}" | tee -a /tmp/smoke-report.md
             docker run --rm --entrypoint /app/.venv/bin/python "${name}:after" -c '
-          import os
+          import sys
           from playwright.sync_api import sync_playwright
           with sync_playwright() as p:
-              path = p.chromium.executable_path
-              assert os.path.isfile(path) and os.access(path, os.X_OK), f"not executable: {path}"
-              print("RESOLVED_CHROMIUM_PATH_OK:", path)
-          ' | tee -a /tmp/smoke-report.md
+              browser = p.chromium.launch(executable_path=sys.argv[1])
+              browser.close()
+          print("MCP_EXECUTABLE_LAUNCH_OK")
+          ' "${path}" | tee -a /tmp/smoke-report.md
             echo "::endgroup::"
           done
 
