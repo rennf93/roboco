@@ -19,7 +19,7 @@ on:
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
       - 'docker/agent-devops.Dockerfile'
-      - 'docker/scripts/playwright-mcp-entrypoint.sh'
+      - 'docker/scripts/entrypoints/playwright-mcp-entrypoint.sh'
       - '.github/workflows/agent-image-smoke.yml'
   pull_request:
     # No `branches:` filter — this repo's task hierarchy opens dev-level
@@ -34,7 +34,7 @@ on:
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
       - 'docker/agent-devops.Dockerfile'
-      - 'docker/scripts/playwright-mcp-entrypoint.sh'
+      - 'docker/scripts/entrypoints/playwright-mcp-entrypoint.sh'
       - '.github/workflows/agent-image-smoke.yml'
   workflow_dispatch:
 
@@ -119,7 +119,7 @@ jobs:
             echo "::group::${name} playwright-mcp binary"
             docker run --rm --entrypoint playwright-mcp "${name}:after" --version | tee -a /tmp/smoke-report.md
             # Confirms the exact chromium-headless-shell path the wrapper
-            # entrypoint (docker/scripts/playwright-mcp-entrypoint.sh) will
+            # entrypoint (docker/scripts/entrypoints/playwright-mcp-entrypoint.sh) will
             # resolve and pass to `playwright-mcp --executable-path` is a
             # real, executable file baked into this image — not a second,
             # separately-downloaded browser.

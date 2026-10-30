@@ -30,7 +30,7 @@ Browser verification is a **verification aid** — use it when reading the diff 
 The QA image (`agent-qa-fe` for Frontend, `agent-ux` for UX) ships:
 - **Python 3.13** via `/app/.venv`, with the **Playwright** library (sync API) installed in the venv
 - **chromium-headless-shell** browser only (no firefox or webkit), plus system deps for headless rendering (via `playwright install --with-deps chromium-headless-shell`)
-- A **`playwright` MCP server** (`@playwright/mcp`, `mcp__playwright__*` tools) registered for the `fe-qa`/`ux-qa` roles only, wired to run against that same baked chromium-headless-shell via a wrapper entrypoint (`docker/scripts/playwright-mcp-entrypoint.sh`) — see `roboco/runtime/orchestrator.py`'s `_generate_mcp_config`
+- A **`playwright` MCP server** (`@playwright/mcp`, `mcp__playwright__*` tools) registered for the `fe-qa`/`ux-qa` roles only, wired to run against that same baked chromium-headless-shell via a wrapper entrypoint (`docker/scripts/entrypoints/playwright-mcp-entrypoint.sh`) — see `roboco/runtime/orchestrator.py`'s `_generate_mcp_config`
 
 Drive the browser through the structured `mcp__playwright__*` tools — hand-scripting the Python sync API against a live agent is fragile (multi-line `Bash -c` strings, no structured error surface); the MCP tools give you `browser_navigate`, `browser_snapshot`, `browser_evaluate`, `browser_take_screenshot`, and `browser_close` directly as first-class tool calls.
 
