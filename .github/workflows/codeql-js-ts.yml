@@ -8,8 +8,16 @@ on:
     # it's the redundant trigger for a required check that must not go
     # ABSENT on a fleet-authored PR revision.
     branches: [master, slave, 'feature/**', 'bug/**', 'chore/**', 'docs/**', 'hotfix/**']
+    # CodeQL analyzes every JavaScript/TypeScript and HTML file in the
+    # checkout, not only the files under these paths, so they list every
+    # directory that holds one: #1196's two motion/ alerts reached slave
+    # unseen because motion/ was missing. tests/unit/test_required_checks.py
+    # fails when a tracked file of these languages falls outside.
     paths:
       - 'panel/**'
+      - 'motion/**'
+      - 'video-renderer/**'
+      - 'docs-redirects/**'
       - '.github/workflows/codeql-js-ts.yml'
   pull_request:
     # Fleet PRs target the dev branch — see ci.yml's pull_request note.
@@ -66,6 +74,9 @@ jobs:
           # keeps the two lists equal).
           PATHS: |
             panel/**
+            motion/**
+            video-renderer/**
+            docs-redirects/**
             .github/workflows/codeql-js-ts.yml
         run: python3 .github/scripts/required_checks.py match-paths
 

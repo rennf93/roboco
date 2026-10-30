@@ -81,9 +81,18 @@ _CODEQL_PYTHON_SCOPE = (
     "agents/**",
     "alembic/**",
     "scripts/**",
+    "tests/**",
+    ".github/scripts/**",
+    "docker/decisions/**",
+    "vulture_whitelist.py",
     "pyproject.toml",
 )
-_CODEQL_JS_TS_SCOPE = ("panel/**",)
+_CODEQL_JS_TS_SCOPE = (
+    "panel/**",
+    "motion/**",
+    "video-renderer/**",
+    "docs-redirects/**",
+)
 _CODEQL_CHECK_SCOPES: dict[str, tuple[str, ...]] = {
     "code-ql": _CODEQL_PYTHON_SCOPE,
     "codeql-js-ts": _CODEQL_JS_TS_SCOPE,

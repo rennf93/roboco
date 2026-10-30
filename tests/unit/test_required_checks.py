@@ -62,6 +62,24 @@ _JOB_GATE = "needs.paths.outputs.relevant == 'true'"
 _FULL_HISTORY = 0
 _MERGE_AND_BASE = 2
 _USAGE_EXIT = 2
+# The files each CodeQL workflow's language covers. CodeQL analyzes every such
+# file in the checkout, whatever the workflow's paths say.
+_CODEQL_LANGUAGE_FILES = {
+    "code-ql.yml": (".py",),
+    "codeql-js-ts.yml": (
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts",
+        ".html",
+        ".htm",
+        ".vue",
+    ),
+}
 
 
 @cache
@@ -215,6 +233,30 @@ def test_pr_gate_maps_each_codeql_check_to_the_paths_its_workflow_analyzes(
     own_file = f".github/workflows/{workflow}"
     analyzed = tuple(p for p in _triggers(workflow)["push"]["paths"] if p != own_file)
     assert pr_gate._CODEQL_CHECK_SCOPES[check] == analyzed
+
+
+@cache
+def _tracked_files() -> list[str]:
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    return out.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("workflow", "suffixes"), sorted(_CODEQL_LANGUAGE_FILES.items())
+)
+def test_every_file_codeql_analyzes_is_under_its_workflows_paths(
+    workflow: str, suffixes: tuple[str, ...]
+) -> None:
+    # A change to a file outside the paths runs no analysis on its PR, so an
+    # alert it adds reaches slave unseen (#1196's two motion/ alerts did), and
+    # pr_gate's scope map, which mirrors the paths, would excuse it as out of
+    # scope.
+    patterns = [_script().github_glob(p) for p in _triggers(workflow)["push"]["paths"]]
+    files = [f for f in _tracked_files() if f.endswith(suffixes)]
+    assert files
+    assert [f for f in files if not any(p.match(f) for p in patterns)] == []
 
 
 # ---- the script
