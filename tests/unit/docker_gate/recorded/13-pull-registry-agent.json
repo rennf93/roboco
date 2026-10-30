@@ -1,0 +1,6 @@
+{
+  "body": null,
+  "method": "POST",
+  "source": "pull-registry:agent",
+  "target": "/v1.51/images/create?fromImage=ghcr.io%2Frennf93%2Froboco-agent-dev-be&tag=0.33.0"
+}
