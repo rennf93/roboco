@@ -184,13 +184,20 @@ def _remove_trees(trees: list[Path]) -> bool:
 
 
 def _private_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    global_config = Path(settings.git_support_dir) / "private.gitconfig"
     env = {
         "PATH": SAFE_PATH,
         "HOME": "/nonexistent",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": "/dev/null",
+        # safe.directory=* lives here: the private root is shared by both
+        # deploy colors, so its repositories need not be owned by the uid
+        # running git. Root-owned in the image; no agent and not the git
+        # user can write it.
+        "GIT_CONFIG_GLOBAL": str(global_config)
+        if global_config.is_file()
+        else "/dev/null",
         "GIT_ATTR_NOSYSTEM": "1",
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_ASKPASS": "false",
@@ -352,7 +359,8 @@ class GitRelay:
             # The repository by layout (its admin dir, so a worktree's own
             # HEAD), never by the clone's gitfile / commondir.
             source = workspace_repository(repo).git_dir
-            args.append(f"--upload-pack={_workspace_upload_pack(repo)}")
+            upload_pack = _workspace_upload_pack(repo, timeout=timeout)
+            args.append(f"--upload-pack={upload_pack}")
         args += [str(source), f"+{src_ref}:{incoming}"]
         with self._locked():
             self._ensure_repository(timeout)
@@ -450,10 +458,10 @@ def _thread_lock_for(project_slug: str) -> threading.Lock:
         return lock
 
 
-def _workspace_upload_pack(repo: Path) -> str:
+def _workspace_upload_pack(repo: Path, *, timeout: float) -> str:
     """``--upload-pack`` command: upload-pack as the git user, clean env,
     ``repo``'s common dir pinned (``GIT_COMMON_DIR`` wins over a planted
-    ``commondir`` file).
+    ``commondir`` file), bounded by the fetch's own ``timeout``.
 
     git runs it through the shell with the repository path appended.
     """
@@ -463,6 +471,7 @@ def _workspace_upload_pack(repo: Path) -> str:
         env["GIT_COMMON_DIR"] = pinned["GIT_COMMON_DIR"]
     env_pairs = [f"{key}={value}" for key, value in env.items()]
     argv = workspace_user_argv(
-        ["env", "-i", *env_pairs, "git", *workspace_git_overrides(), "upload-pack"]
+        ["env", "-i", *env_pairs, "git", *workspace_git_overrides(), "upload-pack"],
+        timeout=timeout,
     )
     return shlex.join(argv)

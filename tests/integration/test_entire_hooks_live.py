@@ -1,12 +1,14 @@
 """Live contract of Entire's commit hooks around RoboCo's commits (real Docker,
 the real Entire CLI the orchestrator image ships).
 
-Env-gated: run as root on a host whose Docker daemon this process can reach,
-with ROBOCO_ENTIRE_LIVE=1 and ROBOCO_WORKSPACE_CONTAINER_IMAGE=<the
-orchestrator image>. An agent's container is played by a container of the same
-image running Entire's session hooks as the agent uid (no ``stop`` before the
-commit: RoboCo commits in the middle of an agent's turn); the commit and push
-go through ``GitService`` exactly as in production.
+Env-gated: run inside the orchestrator image as root (workspace git then drops
+to the git user, as in production) with the host's Docker daemon reachable,
+ROBOCO_ENTIRE_LIVE=1 and ROBOCO_WORKSPACE_CONTAINER_IMAGE=<that image>;
+scripts/orchestrator_image_suites.sh does exactly that. An agent's container
+is played by a container of the same image running Entire's session hooks as
+the agent uid (no ``stop`` before the commit: RoboCo commits in the middle of
+an agent's turn); the commit and push go through ``GitService`` exactly as in
+production.
 """
 
 from __future__ import annotations
@@ -31,8 +33,9 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("ROBOCO_ENTIRE_LIVE") != "1"
     or not os.environ.get("ROBOCO_WORKSPACE_CONTAINER_IMAGE")
     or shutil.which("docker") is None
-    or os.geteuid() != 0,
-    reason="live Entire contract (opt-in: root, Docker, the orchestrator image)",
+    or os.geteuid() != 0
+    or settings.workspace_git_drop != "required",
+    reason="live Entire contract (opt-in: root in the orchestrator image, Docker)",
 )
 
 _REPO = Path(__file__).parents[2]

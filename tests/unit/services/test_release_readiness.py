@@ -110,7 +110,9 @@ def test_run_git_timeout_raises_runtime_error(
     def _hang(*_a: object, **_kw: object) -> object:
         raise subprocess.TimeoutExpired(cmd=["git"], timeout=30)
 
-    monkeypatch.setattr(subprocess, "run", _hang)
+    # tmp_path is not dispatcher-owned: the workspace runner serves it, and
+    # raises TimeoutExpired for a git it had to end.
+    monkeypatch.setattr("roboco.services.release_readiness.run_workspace_git", _hang)
     with pytest.raises(RuntimeError, match="timed out after 30s"):
         _run_git(tmp_path, ["log"])
 

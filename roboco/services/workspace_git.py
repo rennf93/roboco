@@ -10,9 +10,14 @@ holding the Docker socket.
 Workspace git now runs:
 
 - as ``settings.git_user_uid`` with primary gid ``settings.agent_gid`` and no
-  other groups, no capabilities, ``no_new_privs`` (``setpriv``), umask 002 —
-  never root, and never the agent uid (the host user owning the provider
-  credentials mounted into the orchestrator);
+  other groups, no capabilities, ``no_new_privs`` (the set-id helper
+  ``as-git-user``, ``docker/as-git-user/``), umask 002, under the helper's
+  deadline, which ends the command and everything it started — never root,
+  and never the agent uid (the host user owning the provider credentials
+  mounted into the orchestrator). With
+  ``workspace_git_drop=required`` (the orchestrator image) a missing or
+  refusing helper raises ``GitUserDropError``: nothing falls back to running
+  as this process;
 - with an environment built from scratch: no secret of this process reaches
   git or anything git starts;
 - with ``-c`` overrides for every setting that makes git start a program
@@ -41,14 +46,16 @@ relay (``roboco.services.git_relay``).
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import shutil
 import stat
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import IO, TYPE_CHECKING, Any, Literal, Protocol
 
 from roboco.config import settings
 from roboco.logging import get_logger
@@ -195,32 +202,111 @@ def workspace_repository_env(path: Path) -> dict[str, str]:
     }
 
 
-_SETPRIV = "setpriv"
+# --------------------------------------------------------------------------- #
+# Running as the git user
+# --------------------------------------------------------------------------- #
+
+# Set-user-id and set-group-id to the git user (docker/as-git-user/), mode
+# 6750: only root and the agent group may run it.
+GIT_USER_HELPER = "/usr/local/libexec/roboco/as-git-user"
+# The helper sends TERM at the deadline, KILL this much later.
+_KILL_GRACE_SECONDS = 10
+# A caller waits this much past deadline + grace before it gives up itself.
+_WAIT_MARGIN_SECONDS = 5
+# The helper exits 124 when the deadline came while the command still ran.
+_TIMED_OUT = 124
+# The helper's own refusal, told apart from the command's own 126 by the
+# helper's stderr prefix.
+_HELPER_REFUSED = 126
+_HELPER_PREFIX = "as-git-user: "
 
 
-def workspace_user_argv(argv: Sequence[str]) -> list[str]:
-    """``argv`` prefixed to run as the git user, when this process is root.
+class GitUserDropError(RuntimeError):
+    """The drop to the git user is required and cannot happen."""
 
-    An unprivileged process (dev, tests) has nothing to drop.
+
+class _Killable(Protocol):
+    def kill(self) -> None: ...
+
+
+def git_user_drop_required() -> bool:
+    """Whether workspace processes must run as the git user (the orchestrator
+    image) rather than as this process (``off``: dev and CI on the host)."""
+    return settings.workspace_git_drop == "required"
+
+
+def workspace_user_argv(argv: Sequence[str], *, timeout: float) -> list[str]:
+    """``argv`` as the git user, under the helper's deadline.
+
+    With the drop required: ``[as-git-user, --timeout, secs, --grace, grace,
+    --, *argv]``. The helper runs as the git user and is a subreaper: at the
+    deadline it ends the command and everything it started, including
+    processes that left its process group, even when this process may not
+    signal them (a non-root parent of a git-user child). A missing helper
+    raises ``GitUserDropError``. Off: ``argv`` unchanged, bounded by the
+    caller's own timeout.
     """
-    if os.geteuid() != 0:
+    if not git_user_drop_required():
         return list(argv)
     return [
-        _SETPRIV,
-        f"--reuid={settings.git_user_uid}",
-        f"--regid={settings.agent_gid}",
-        "--clear-groups",
-        "--no-new-privs",
-        "--inh-caps=-all",
+        _git_user_helper(),
+        "--timeout",
+        str(_deadline_seconds(timeout)),
+        "--grace",
+        str(_KILL_GRACE_SECONDS),
         "--",
         *argv,
     ]
 
 
 def workspace_user_executable(program: str) -> str:
-    """The program ``workspace_user_argv([program, ...])`` starts: ``setpriv``
-    when this process is root, else ``program`` itself."""
-    return _SETPRIV if os.geteuid() == 0 else program
+    """The program ``workspace_user_argv([program, ...])`` starts: the helper
+    when the drop is required, else ``program`` itself."""
+    return _git_user_helper() if git_user_drop_required() else program
+
+
+def workspace_user_wait_seconds(timeout: float) -> float:
+    """How long to wait for a ``workspace_user_argv(..., timeout=timeout)``
+    process: with the drop required, past the helper's deadline and its kill
+    grace, so the process is gone before the caller gives up on it."""
+    if not git_user_drop_required():
+        return timeout
+    return _deadline_seconds(timeout) + _KILL_GRACE_SECONDS + _WAIT_MARGIN_SECONDS
+
+
+def workspace_user_timed_out(
+    returncode: int | None, elapsed: float, timeout: float
+) -> bool:
+    """Whether the helper's deadline ended a ``workspace_user_argv`` process
+    (``elapsed`` measured from before it started)."""
+    return (
+        git_user_drop_required()
+        and returncode == _TIMED_OUT
+        and elapsed >= _deadline_seconds(timeout)
+    )
+
+
+def kill_workspace_user_process(process: _Killable) -> None:
+    """Kill a process that outlived its wait, when this process may. A
+    non-root parent may not signal a git-user child (``PermissionError``):
+    the helper's deadline ends it instead."""
+    with contextlib.suppress(PermissionError, ProcessLookupError):
+        process.kill()
+
+
+def _deadline_seconds(timeout: float) -> int:
+    """Whole seconds for ``timeout``, at least 1 (the helper refuses 0)."""
+    return max(1, math.ceil(timeout))
+
+
+def _git_user_helper() -> str:
+    if not os.access(GIT_USER_HELPER, os.X_OK):
+        raise GitUserDropError(
+            f"{GIT_USER_HELPER} is missing or not executable and "
+            "workspace_git_drop is required: refusing to run a workspace "
+            "process as this process"
+        )
+    return GIT_USER_HELPER
 
 
 def run_as_workspace_user(
@@ -236,20 +322,150 @@ def run_as_workspace_user(
     The program is named apart from its arguments and passed as
     ``executable``: arguments (paths, refs) never decide what runs. Without
     ``cwd`` the command runs from ``/``: the caller's own working directory
-    may be one the git user cannot even stat.
+    may be one the git user cannot even stat. A timeout raises
+    ``TimeoutExpired``; a missing or refusing helper ``GitUserDropError``.
     """
-    return subprocess.run(
-        workspace_user_argv([program, *args]),
-        executable=workspace_user_executable(program),
+    command = _GitUserCommand(
+        program=program,
+        args=args,
         cwd=str(cwd) if cwd is not None else "/",
         env=env if env is not None else workspace_git_env(),
-        input=input_text,
-        capture_output=True,
-        text=True,
         timeout=timeout,
-        check=False,
+    )
+    return _run_as_git_user(
+        command, input_data=input_text, stdout=subprocess.PIPE, text=True
+    )
+
+
+@dataclass(frozen=True)
+class _GitUserCommand:
+    """One process to start as the git user (``workspace_user_argv``)."""
+
+    program: str
+    args: Sequence[str]
+    cwd: str
+    env: dict[str, str]
+    timeout: float
+
+
+def _run_as_git_user(
+    command: _GitUserCommand,
+    *,
+    input_data: str | None,
+    stdout: int | IO[bytes],
+    text: bool,
+) -> subprocess.CompletedProcess[Any]:
+    """``subprocess.run`` for ``workspace_user_argv`` processes: waits
+    ``workspace_user_wait_seconds``, never blocks on a child it may not kill,
+    and reports the helper's deadline as ``TimeoutExpired``."""
+    argv = workspace_user_argv(
+        [command.program, *command.args], timeout=command.timeout
+    )
+    started = time.monotonic()
+    process = subprocess.Popen(
+        argv,
+        executable=workspace_user_executable(command.program),
+        cwd=command.cwd,
+        env=command.env,
+        stdin=subprocess.PIPE if input_data is not None else None,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        text=text,
         umask=0o002,
     )
+    try:
+        out, err = process.communicate(
+            input_data, timeout=workspace_user_wait_seconds(command.timeout)
+        )
+    except BaseException:
+        _give_up_on(process)
+        raise
+    if workspace_user_timed_out(
+        process.returncode, time.monotonic() - started, command.timeout
+    ):
+        raise subprocess.TimeoutExpired(argv, command.timeout, output=out, stderr=err)
+    _raise_if_the_helper_failed(process.returncode, err)
+    return subprocess.CompletedProcess(argv, process.returncode, out, err)
+
+
+def _give_up_on(process: subprocess.Popen[Any]) -> None:
+    """Kill (when permitted) and reap a process that outlived its wait, then
+    close this end of its pipes: a descendant that outlives it can hold them
+    open. One this process may not kill is left to the helper's deadline."""
+    kill_workspace_user_process(process)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=_KILL_GRACE_SECONDS)
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            stream.close()
+
+
+def _raise_if_the_helper_failed(returncode: int, stderr: str | bytes | None) -> None:
+    if not git_user_drop_required() or returncode != _HELPER_REFUSED:
+        return
+    message = (
+        stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr
+    ) or ""
+    if message.startswith(_HELPER_PREFIX):
+        raise GitUserDropError(message.strip()[:300])
+
+
+_IDLE_CAPABILITIES = "0" * 16
+_SELF_TEST_TIMEOUT_SECONDS = 30
+
+
+def verify_git_user_drop() -> None:
+    """Startup self-test of the drop (no-op when it is off).
+
+    Reads ``/proc/self/status`` of a process started through the helper: it
+    must be the git user (real, effective, saved and filesystem ids), with no
+    supplementary group but the agent group, ``no_new_privs`` and no
+    capability. Raises ``GitUserDropError`` otherwise.
+    """
+    if not git_user_drop_required():
+        return
+    result = run_as_workspace_user(
+        "cat", "/proc/self/status", timeout=_SELF_TEST_TIMEOUT_SECONDS
+    )
+    if result.returncode != 0:
+        raise GitUserDropError(
+            f"the git-user self-test exited {result.returncode}: "
+            f"{result.stderr.strip()[:200]}"
+        )
+    problems = _identity_problems(_status_fields(result.stdout))
+    if problems:
+        raise GitUserDropError(
+            "a process started as the git user is not one: " + "; ".join(problems)
+        )
+    logger.info(
+        "workspace processes drop to the git user",
+        uid=settings.git_user_uid,
+        gid=settings.agent_gid,
+    )
+
+
+def _status_fields(status: str) -> dict[str, str]:
+    fields = (line.partition(":") for line in status.splitlines())
+    return {name: value.strip() for name, _, value in fields}
+
+
+def _identity_problems(status: dict[str, str]) -> list[str]:
+    uid, gid = str(settings.git_user_uid), str(settings.agent_gid)
+    problems = []
+    if status.get("Uid", "").split() != [uid] * 4:
+        problems.append(f"Uid {status.get('Uid')!r}, expected {uid}")
+    if status.get("Gid", "").split() != [gid] * 4:
+        problems.append(f"Gid {status.get('Gid')!r}, expected {gid}")
+    if not set(status.get("Groups", "").split()) <= {gid}:
+        problems.append(f"Groups {status.get('Groups')!r}, expected at most {gid}")
+    if status.get("NoNewPrivs") != "1":
+        problems.append(f"NoNewPrivs {status.get('NoNewPrivs')!r}, expected 1")
+    problems.extend(
+        f"{name} {status.get(name)!r}, expected none"
+        for name in ("CapInh", "CapPrm", "CapEff", "CapAmb")
+        if status.get(name) != _IDLE_CAPABILITIES
+    )
+    return problems
 
 
 def workspace_git_argv(args: Sequence[str]) -> list[str]:
@@ -353,20 +569,14 @@ def archive_workspace_ref(repo: Path, ref: str, archive: Path) -> tuple[bool, st
     """
     audit_workspace_git_config(repo)
     with archive.open("wb") as handle:
-        result = subprocess.run(
-            workspace_user_argv(
-                workspace_git_argv(["archive", "--format=tar.gz", ref])
-            ),
-            executable=workspace_user_executable("git"),
+        command = _GitUserCommand(
+            program="git",
+            args=_workspace_git_arguments(["archive", "--format=tar.gz", ref]),
             cwd=str(repo),
             env=workspace_git_env() | workspace_repository_env(repo),
-            stdout=handle,
-            stderr=subprocess.PIPE,
-            text=False,
             timeout=_ARCHIVE_TIMEOUT_SECONDS,
-            check=False,
-            umask=0o002,
         )
+        result = _run_as_git_user(command, input_data=None, stdout=handle, text=False)
     return result.returncode == 0, result.stderr.decode(errors="replace").strip()[:300]
 
 
@@ -657,7 +867,7 @@ def _keys_of(keys: list[str], wanted: GitConfigClass) -> tuple[str, ...]:
 
 
 # --------------------------------------------------------------------------- #
-# Permission repair (root, fd-safe)
+# Permission repair (drop required, fd-safe)
 # --------------------------------------------------------------------------- #
 
 _OPEN_NO_FOLLOW = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
@@ -684,7 +894,8 @@ _regrouped_clones_guard = threading.Lock()
 
 def _regroup_clone_once(clone_root: Path) -> None:
     """Run the group-write repair on a clone the first time this process
-    touches it (root only, workspaces root only, no ``.git`` yet = no-op)."""
+    touches it (drop required only, workspaces root only, no ``.git`` yet =
+    no-op)."""
     key = str(clone_root)
     with _regrouped_clones_guard:
         if key in _regrouped_clones:
@@ -702,11 +913,11 @@ def _is_agent_writable(path: Path) -> bool:
 def _repair_clone_permissions(clone_root: Path) -> bool:
     """Give the agent group rw on a clone under the workspaces root, once.
 
-    Returns whether a repair ran (so the caller retries). Only root can, and
-    only inside the workspaces root: an operator-configured path elsewhere is
-    never touched.
+    Returns whether a repair ran (so the caller retries). Only with the drop
+    required (the orchestrator image), and only inside the workspaces root:
+    an operator-configured path elsewhere is never touched.
     """
-    if os.geteuid() != 0 or not _is_agent_writable(clone_root):
+    if not git_user_drop_required() or not _is_agent_writable(clone_root):
         return False
     make_clone_group_writable(clone_root)
     return True
@@ -722,11 +933,11 @@ def prepare_clone_parent(clone_root: Path) -> None:
     then an ``O_NOFOLLOW`` open — a component an agent swapped for a symlink
     is refused (``OSError``), never followed. Each directory gets group
     ``agent_gid`` with rwx, which the git user needs to create the clone;
-    agents already own these directories. Unprivileged (local dev, tests):
-    a plain ``mkdir -p``.
+    agents already own these directories. With the drop off (dev and CI on
+    the host): a plain ``mkdir -p``.
     """
     parent = Path(os.path.normpath(clone_root)).parent
-    if os.geteuid() != 0:
+    if not git_user_drop_required():
         parent.mkdir(parents=True, exist_ok=True)
         return
     if not _is_agent_writable(parent):
@@ -742,15 +953,16 @@ def remove_workspace_tree(path: Path, *, ignore_errors: bool = False) -> None:
     ``shutil.rmtree`` never follows a link inside the tree, but it resolves
     the path's ancestors like any open: an agent that swaps its project or
     team directory for a symlink would point root's delete at a same-named
-    directory anywhere. As root, the ancestors are opened by descriptor with
-    ``O_NOFOLLOW`` (a symlink is refused, ``OSError``) and the tree is
-    removed relative to its parent's descriptor; the tree itself being a
-    symlink is refused by ``rmtree``. Unprivileged, or outside the
-    workspaces root (the private root, which no agent mounts): a plain
+    directory anywhere. With the drop required (the orchestrator image), the
+    ancestors are opened by descriptor with ``O_NOFOLLOW`` (a symlink is
+    refused, ``OSError``) and the tree is removed relative to its parent's
+    descriptor; the tree itself being a symlink is refused by ``rmtree``.
+    With the drop off (dev and CI on the host), or outside the workspaces
+    root (the private root, which no agent mounts): a plain
     ``shutil.rmtree``.
     """
     normalized = Path(os.path.normpath(path))
-    if os.geteuid() != 0 or not _is_agent_writable(normalized.parent):
+    if not git_user_drop_required() or not _is_agent_writable(normalized.parent):
         shutil.rmtree(normalized, ignore_errors=ignore_errors)
         return
     try:

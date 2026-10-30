@@ -1,0 +1,75 @@
+name: Orchestrator image suites
+
+# Builds docker/orchestrator.Dockerfile and runs, inside the image and as
+# root, the suites that only mean something there (they skip on a runner's
+# host): the git-user helper's live contract (identity, --group-add,
+# no-new-privileges, a missing helper), the hostile-clone suite with the real
+# privilege drop (a hung git ended within its timeout and grace), and the
+# live throwaway workspace-container and Entire hook suites. The commands are
+# scripts/orchestrator_image_suites.sh, so a local run is the same run; it
+# fails when any of those tests skips.
+
+on:
+  push:
+    branches: [master, slave]
+    paths:
+      - 'roboco/**'
+      - 'tests/integration/test_git_user_helper_live.py'
+      - 'tests/integration/test_hostile_workspace_clone.py'
+      - 'tests/integration/test_workspace_container_live.py'
+      - 'tests/integration/test_entire_hooks_live.py'
+      - 'tests/unit/local_origin_relay.py'
+      - 'tests/conftest.py'
+      - 'docker/orchestrator.Dockerfile'
+      - 'docker/as-git-user/**'
+      - 'docker/git-support/**'
+      - 'docker/npm/orchestrator/**'
+      - '.entire/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/orchestrator_image_suites.sh'
+      - '.github/workflows/orchestrator-image.yml'
+  pull_request:
+    # Kept identical to the push paths above.
+    paths:
+      - 'roboco/**'
+      - 'tests/integration/test_git_user_helper_live.py'
+      - 'tests/integration/test_hostile_workspace_clone.py'
+      - 'tests/integration/test_workspace_container_live.py'
+      - 'tests/integration/test_entire_hooks_live.py'
+      - 'tests/unit/local_origin_relay.py'
+      - 'tests/conftest.py'
+      - 'docker/orchestrator.Dockerfile'
+      - 'docker/as-git-user/**'
+      - 'docker/git-support/**'
+      - 'docker/npm/orchestrator/**'
+      - '.entire/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/orchestrator_image_suites.sh'
+      - '.github/workflows/orchestrator-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  in-image-suites:
+    name: Build the orchestrator image, run its suites inside it as root
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the orchestrator image
+        run: docker build -f docker/orchestrator.Dockerfile -t roboco-orchestrator:in-image-suites .
+
+      - name: Run the in-image suites as root
+        run: scripts/orchestrator_image_suites.sh roboco-orchestrator:in-image-suites "$RUNNER_TEMP/in-image-suites"

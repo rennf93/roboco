@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from roboco.config import settings
-from roboco.services import git_relay
+from roboco.services import git_relay, workspace_git
 from roboco.services.git_origin import (
     OriginContext,
     UnsupportedOriginCommandError,
@@ -205,3 +206,54 @@ def test_pull_is_a_relay_fetch_plus_a_fast_forward_merge() -> None:
 def test_commands_roboco_never_issues_are_refused(args: list[str]) -> None:
     with pytest.raises(UnsupportedOriginCommandError):
         run_origin_command(_ctx(MagicMock(), SimpleNamespace()), args)
+
+
+def test_upload_pack_runs_as_the_git_user_under_the_fetch_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = tmp_path / "as-git-user"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr(settings, "workspace_git_drop", "required")
+    monkeypatch.setattr(workspace_git, "GIT_USER_HELPER", str(helper))
+    monkeypatch.setattr(settings, "workspaces_root", str(tmp_path / "workspaces"))
+
+    command = git_relay._workspace_upload_pack(
+        tmp_path / "workspaces" / "p" / "backend" / "be-dev-1", timeout=60
+    )
+
+    argv = shlex.split(command)
+    assert argv[:6] == [str(helper), "--timeout", "60", "--grace", "10", "--"]
+    assert argv[6:8] == ["env", "-i"]
+    assert argv[-1] == "upload-pack"
+
+
+def test_upload_pack_refuses_without_the_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "workspace_git_drop", "required")
+    monkeypatch.setattr(workspace_git, "GIT_USER_HELPER", str(tmp_path / "missing"))
+    with pytest.raises(workspace_git.GitUserDropError):
+        git_relay._workspace_upload_pack(tmp_path / "clone", timeout=60)
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_private_git_reads_the_private_gitconfig_when_the_image_has_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, present: bool
+) -> None:
+    monkeypatch.setattr(settings, "git_support_dir", str(tmp_path))
+    if present:
+        (tmp_path / "private.gitconfig").write_text("[safe]\n\tdirectory = *\n")
+    expected = str(tmp_path / "private.gitconfig") if present else "/dev/null"
+    assert git_relay._private_env()["GIT_CONFIG_GLOBAL"] == expected
+
+
+def test_the_shipped_private_gitconfig_trusts_every_private_repository() -> None:
+    shipped = Path(__file__).parents[3] / "docker" / "git-support" / "private.gitconfig"
+    listed = subprocess.run(
+        ["git", "config", "--file", str(shipped), "--get-all", "safe.directory"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert listed.stdout.split() == ["*"]

@@ -393,9 +393,10 @@ def build_e2e_stack(
 
     mp = pytest.MonkeyPatch()
     root = tmp_path_factory.mktemp("e2e")
-    if os.geteuid() == 0:
-        # As root (the orchestrator image), workspace git runs as the git
-        # user: let it traverse the 0700 temp dirs, as /data is in production.
+    if settings.workspace_git_drop == "required":
+        # With the drop required (the orchestrator image), workspace git runs
+        # as the git user: let it traverse the 0700 temp dirs, as /data is in
+        # production.
         for directory in (root, root.parent, root.parent.parent):
             directory.chmod(directory.stat().st_mode | 0o055)
     origin = _seed_origin(root)

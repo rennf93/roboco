@@ -123,9 +123,9 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Projec
     monkeypatch.setattr(settings, "private_data_root", str(tmp_path / "private"))
     monkeypatch.setattr(settings, "workspaces_root", str(tmp_path / "workspaces"))
     (tmp_path / "workspaces").mkdir()
-    if os.geteuid() == 0:
-        # As root, workspace git runs as the git user: let it traverse
-        # pytest's 0700 temp dirs, as /data is traversable in production.
+    if settings.workspace_git_drop == "required":
+        # With the drop required, workspace git runs as the git user: let it
+        # traverse pytest's 0700 temp dirs, as /data is in production.
         for directory in (tmp_path, tmp_path.parent, tmp_path.parent.parent):
             directory.chmod(directory.stat().st_mode | 0o055)
     repo = f"relay-e2e-{uuid4().hex[:8]}"

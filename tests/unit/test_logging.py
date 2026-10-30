@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -21,6 +22,9 @@ from roboco.logging import (
 
 if TYPE_CHECKING:
     import pytest
+
+_OWNER_ONLY_DIR = 0o700
+_WORLD_TRAVERSABLE_DIR = 0o755
 
 
 def test_redact_secrets_passes_through_non_strings() -> None:
@@ -158,6 +162,37 @@ def test_setup_logging_handles_log_dir_oserror() -> None:
         mock_settings.debug = False
         # Should not raise.
         setup_logging()
+
+
+def _setup_logging_into(log_dir: Path) -> None:
+    with (
+        patch("roboco.logging.settings") as mock_settings,
+        patch("roboco.logging._resolve_log_dir", return_value=log_dir),
+    ):
+        mock_settings.environment = "production"
+        mock_settings.app_version = "x"
+        mock_settings.debug = False
+        setup_logging()
+
+
+def test_setup_logging_closes_a_log_dir_this_process_owns(tmp_path: Path) -> None:
+    """Agent log dumps there carry tokens: the owner (root today, the
+    orchestrator's uid once it runs as one) makes it 0700, whatever uid."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(mode=0o755)
+    _setup_logging_into(log_dir)
+    assert stat.S_IMODE(log_dir.stat().st_mode) == _OWNER_ONLY_DIR
+
+
+def test_setup_logging_leaves_a_log_dir_it_does_not_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(mode=0o755)
+    log_dir.chmod(0o755)
+    monkeypatch.setattr("roboco.logging.os.geteuid", lambda: log_dir.stat().st_uid + 1)
+    _setup_logging_into(log_dir)
+    assert stat.S_IMODE(log_dir.stat().st_mode) == _WORLD_TRAVERSABLE_DIR
 
 
 # ---------------------------------------------------------------------------

@@ -2031,6 +2031,23 @@ class Settings(BaseSettings):
             "the image's ROBOCO_GIT_USER_UID build arg."
         ),
     )
+    workspace_git_drop: Literal["required", "off"] = Field(
+        default="off",
+        description=(
+            "Whether every process RoboCo starts in an agent workspace (git, "
+            "file reads/writes, the conventions validator, the relay's "
+            "upload-pack) must run as the git user through the image's "
+            "set-id helper /usr/local/libexec/roboco/as-git-user. "
+            "'required' (the orchestrator image sets it): a missing or "
+            "failing helper raises and nothing runs as this process instead; "
+            "the api and dispatcher refuse to start unless a process started "
+            "through it is uid git_user_uid with only agent_gid, no "
+            "capabilities and no_new_privs; the workspace permission repair, "
+            "clone-parent creation and tree removal take their descriptor-"
+            "based paths. 'off' (dev and CI on the host): processes run as "
+            "this one."
+        ),
+    )
     git_support_dir: str = Field(
         default="/opt/roboco/git",
         description=(
