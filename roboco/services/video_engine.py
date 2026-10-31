@@ -87,7 +87,8 @@ _CHANGELOG_BRIEF_CHARS = 4000
 # lock) keyed by occasion closes that window instead of letting a duplicate
 # authoring task slip through.
 _OCCASION_LOCK_PREFIX = "roboco:video_engine:occasion:"
-_OCCASION_LOCK_TTL_SECONDS = 60  # the check+insert completes in ms; crash backstop
+# The check+insert completes in ms; crash backstop
+_OCCASION_LOCK_TTL_SECONDS = 60
 
 # Shared by every open_video_task caller (release/spotlight/on-demand) so the
 # authoring dev always lands on the demo kit instead of a text card. The
@@ -215,7 +216,8 @@ def _scene_criterion(features: list[str]) -> str | None:
         if len(body) <= budget:
             return prefix + body
         kept.pop()
-    return prefix + "…"  # pathological: even one (huge) feature name overruns
+    # Pathological: even one (huge) feature name overruns
+    return prefix + "…"
 
 
 def _authoring_criteria(
@@ -453,7 +455,8 @@ class VideoEngine(BaseService):
         for existing in open_tasks:
             draft = markers.get_video_draft(existing)
             if draft is not None and draft.get("occasion") == occasion:
-                return None  # already drafted for this occasion
+                # Already drafted for this occasion
+                return None
         if len(open_tasks) >= settings.video_max_open_posts:
             self.log.warning(
                 "video-engine: open cap reached; not opening authoring task",
@@ -496,7 +499,8 @@ class VideoEngine(BaseService):
                         project_id=cast("UUID", project.id),
                         status=TaskStatus.PENDING,
                         source=VIDEO_SOURCE,
-                        confirmed_by_human=True,  # normal delivery, not CEO-held
+                        # Normal delivery, not CEO-held
+                        confirmed_by_human=True,
                     )
                 )
                 markers.set_video_draft(
@@ -671,7 +675,8 @@ class VideoEngine(BaseService):
                     project_id=cast("UUID", source_task.project_id),
                     status=TaskStatus.PENDING,
                     source=VIDEO_POST_SOURCE,
-                    confirmed_by_human=False,  # HELD for the CEO; never dispatched
+                    # HELD for the CEO; never dispatched
+                    confirmed_by_human=False,
                 )
             )
             markers.set_video_draft(

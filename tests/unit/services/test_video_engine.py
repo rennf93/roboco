@@ -40,7 +40,8 @@ THREE = 3
 FOUR = 4
 FIVE = 5
 SEVEN = 7
-_AC_ITEM_CHAR_CAP = 200  # mirrors task_completeness._AC_MAX_ITEM_CHARS
+# Mirrors task_completeness._AC_MAX_ITEM_CHARS
+_AC_ITEM_CHAR_CAP = 200
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -156,14 +157,17 @@ async def test_open_video_task_creates_assigned_authoring_task(
     )
     assert task is not None
     assert task.team == Team.UX_UI
-    assert task.assigned_to == UX_DEV_1_UUID  # deterministic first pick
+    # Deterministic first pick
+    assert task.assigned_to == UX_DEV_1_UUID
     assert task.source == VIDEO_SOURCE
     assert task.status == TS.PENDING
-    assert task.confirmed_by_human is True  # normal delivery task, not CEO-held
+    # Normal delivery task, not CEO-held
+    assert task.confirmed_by_human is True
     # LOW so it clears _check_dev_needs_subtasks; a medium/high root dev task
     # would auto-block for subtasks it never owns and deadlock.
     assert task.estimated_complexity == Complexity.LOW
-    assert task.acceptance_criteria  # non-empty
+    # Non-empty
+    assert task.acceptance_criteria
     # First AC line: both cuts render, the 9:16 inside TikTok's band.
     assert "between y 168 and 1330" in task.acceptance_criteria[0]
     # Third AC line: composition follows the design bar / demo-kit register.
@@ -185,9 +189,12 @@ async def test_open_video_task_creates_assigned_authoring_task(
     assert "motion/README.md" in draft["brief"]
     assert "motion/kit/README.md" in draft["brief"]
     assert "compositions/release-0.28.0/" in draft["brief"]
-    assert "request_render" in draft["brief"]  # verify-the-render pointer
-    assert "Brand voice" not in draft["brief"]  # unset -> omitted
-    assert draft["suggested_input_props"] == {}  # none supplied
+    # Verify-the-render pointer
+    assert "request_render" in draft["brief"]
+    # Unset -> omitted
+    assert "Brand voice" not in draft["brief"]
+    # None supplied
+    assert draft["suggested_input_props"] == {}
     assert task.description == draft["brief"]
 
 
@@ -207,7 +214,8 @@ async def test_open_video_task_balances_across_ux_devs(
     assert first is not None
     assert second is not None
     assert first.assigned_to == UX_DEV_1_UUID
-    assert second.assigned_to == UX_DEV_2_UUID  # balanced onto the less-loaded dev
+    # Balanced onto the less-loaded dev
+    assert second.assigned_to == UX_DEV_2_UUID
 
 
 @pytest.mark.asyncio
@@ -242,7 +250,8 @@ async def test_open_video_task_returns_none_when_occasion_lock_held(
             pass
 
         async def acquire(self) -> str | None:
-            return None  # another call already holds this occasion's lock
+            # Another call already holds this occasion's lock
+            return None
 
         async def release(self, _token: str) -> None:
             raise AssertionError("release must not be called when acquire failed")
@@ -567,11 +576,13 @@ async def test_originate_video_post_holds_draft_for_secretary(
     assert draft_task.assigned_to == SECRETARY_UUID
     assert draft_task.source == VIDEO_POST_SOURCE
     assert draft_task.status == TS.PENDING
-    assert draft_task.confirmed_by_human is False  # HELD; never dispatched
+    # HELD; never dispatched
+    assert draft_task.confirmed_by_human is False
 
     draft = markers.get_video_draft(draft_task)
     assert draft is not None
-    assert draft["occasion"] == "release v1.0.0"  # carried forward from the source
+    # Carried forward from the source
+    assert draft["occasion"] == "release v1.0.0"
     assert draft["script"] == "Here's what shipped"
     assert draft["mp4_paths"] == {
         "vertical": "/render/out/a-vertical.mp4",
@@ -581,7 +592,8 @@ async def test_originate_video_post_holds_draft_for_secretary(
     assert draft["tiktok_caption"] == "New release, check it out"
     assert draft["platforms"] == ["x", "tiktok"]
     assert draft["render_status"] == "rendered"
-    assert draft["source_task_id"] == str(source_task.id)  # traceability back-ref
+    # Traceability back-ref
+    assert draft["source_task_id"] == str(source_task.id)
 
 
 @pytest.mark.asyncio
@@ -774,7 +786,8 @@ async def test_draft_release_video_falls_back_to_template_on_empty_local_reply(
 ) -> None:
     await _seed(db_session)
     _enable(monkeypatch, video_on_release=True)
-    _mock_local_model(monkeypatch, None)  # non-success / empty local-model reply
+    # Non-success / empty local-model reply
+    _mock_local_model(monkeypatch, None)
     engine = video_engine_module.VideoEngine(db_session)
     task = await engine.draft_release_video(version="2.0.0", changelog="- no bullets")
     assert task is not None
@@ -835,7 +848,8 @@ async def test_draft_release_video_uses_project_name_when_set(
     )
     db_session.add(acme)
     await db_session.flush()
-    _mock_local_model(monkeypatch, None)  # force the deterministic fallback template
+    # Force the deterministic fallback template
+    _mock_local_model(monkeypatch, None)
     engine = video_engine_module.VideoEngine(db_session)
     task = await engine.draft_release_video(
         version="1.0.0", changelog=_CHANGELOG, project_id=cast("UUID", acme.id)
@@ -878,7 +892,8 @@ async def test_open_video_task_brief_carries_motion_pointer_no_brand_voice_by_de
     assert "motion/README.md" in draft["brief"]
     assert "motion/kit/README.md" in draft["brief"]
     assert "compositions/release-0.28.0/" in draft["brief"]
-    assert "Brand voice" not in draft["brief"]  # unset -> omitted
+    # Unset -> omitted
+    assert "Brand voice" not in draft["brief"]
     assert task.description == draft["brief"]
 
 
@@ -928,7 +943,8 @@ async def test_open_video_task_does_not_compress_spotlight_brief(
     assert task is not None
     draft = markers.get_video_draft(task)
     assert draft is not None
-    assert draft["brief"].startswith(feature_brief)  # not truncated/compressed
+    # Not truncated/compressed
+    assert draft["brief"].startswith(feature_brief)
     assert "motion/README.md" in draft["brief"]
 
 
@@ -1016,7 +1032,8 @@ async def test_rerender_clears_render_state_keeps_the_rest(
     assert "render_status" not in cleared
     assert "render_attempts" not in cleared
     assert "render_error" not in cleared
-    assert cleared["composition_id"] == "Intro"  # everything else preserved
+    # Everything else preserved
+    assert cleared["composition_id"] == "Intro"
 
 
 @pytest.mark.asyncio
@@ -1032,7 +1049,8 @@ async def test_rerender_none_for_non_completed_task(
     assert task is not None
     draft = markers.get_video_draft(task) or {}
     markers.set_video_draft(task, {**draft, "composition_id": "Intro"})
-    await db_session.flush()  # still PENDING, not COMPLETED
+    # Still PENDING, not COMPLETED
+    await db_session.flush()
 
     result = await engine.rerender(cast("UUID", task.id))
     assert result is None
@@ -1050,7 +1068,8 @@ async def test_rerender_none_without_composition_id(
     )
     assert task is not None
     task.status = TS.COMPLETED
-    await db_session.flush()  # no propose_video call yet -> no composition_id
+    # No propose_video call yet -> no composition_id
+    await db_session.flush()
 
     result = await engine.rerender(cast("UUID", task.id))
     assert result is None
@@ -1113,7 +1132,8 @@ async def test_reauthor_from_rejection_opens_revision_with_reason_and_pointer(
     assert revision.source == VIDEO_SOURCE
     revision_draft = markers.get_video_draft(revision)
     assert revision_draft is not None
-    assert revision_draft["occasion"] == "release v1.0.0"  # SAME occasion
+    # SAME occasion
+    assert revision_draft["occasion"] == "release v1.0.0"
     assert revision_draft["platforms"] == ["x", "tiktok"]
     assert "Logo is cut off in the second scene" in revision_draft["brief"]
     assert "motion/compositions/ReleaseIntro/" in revision_draft["brief"]
@@ -1131,7 +1151,8 @@ async def test_reauthor_from_rejection_missing_draft_returns_none(
         occasion="no-draft", script="s", platforms=["x"], brief="b"
     )
     assert task is not None
-    task.orchestration_markers = {}  # strip the video_draft marker
+    # Strip the video_draft marker
+    task.orchestration_markers = {}
     await db_session.flush()
 
     result = await engine.reauthor_from_rejection(task, "some reason")
@@ -1173,10 +1194,12 @@ async def test_open_video_task_no_highlights_keeps_ac_count_unchanged(
         script="s",
         platforms=["x"],
         brief="b",
-        suggested_input_props={"version": "1.0.0"},  # no "highlights" key
+        # No "highlights" key
+        suggested_input_props={"version": "1.0.0"},
     )
     assert task is not None
-    assert len(task.acceptance_criteria) == FOUR  # no scene criterion appended
+    # No scene criterion appended
+    assert len(task.acceptance_criteria) == FOUR
 
 
 @pytest.mark.asyncio
@@ -1284,4 +1307,5 @@ async def test_open_video_task_scene_criterion_truncates_pathological_feature_li
     assert len(task.acceptance_criteria) <= SEVEN
     scene_ac = task.acceptance_criteria[-1]
     assert len(scene_ac) <= _AC_ITEM_CHAR_CAP
-    assert "more)" in scene_ac  # truncated, not silently dropped
+    # Truncated, not silently dropped
+    assert "more)" in scene_ac
