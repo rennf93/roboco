@@ -1134,15 +1134,15 @@ async def test_b37_trip_consults_coroner_wedged_postmortem(
     engine = _bare(RespawnTripEngine)
     monkeypatch.setattr(engine, "_PM_RESPAWN_MAX_UNPRODUCTIVE", 3, raising=False)
     monkeypatch.setattr(engine, "_mark_task_stalled", AsyncMock())
-    # _schedule_respawn_persist and _notify_stuck_agent live on other
-    # orchestrator mixins, absent from the bare engine under test.
+    # _schedule_respawn_persist lives on another orchestrator mixin, absent
+    # from the bare engine under test.
     monkeypatch.setattr(
         engine,
         "_schedule_respawn_persist",
         MagicMock(return_value=None),
         raising=False,
     )
-    monkeypatch.setattr(engine, "_notify_stuck_agent", AsyncMock(), raising=False)
+    monkeypatch.setattr(engine, "_notify_stuck_agent", AsyncMock())
     coroner = AsyncMock(return_value=None)
     monkeypatch.setattr(engine, "_coroner_wedged_postmortem", coroner)
     record = {"count": 5, "seen_statuses": ["in_progress"], "notified": False}
