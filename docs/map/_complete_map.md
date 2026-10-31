@@ -9131,6 +9131,7 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | Path | Role | approx LOC |
 |------|------|-----------:|
 | `roboco/services/conventions.py` | `ConventionsService` — cache/render/scaffold/restore the effective conventions map; record + read findings | 586 |
+| `roboco/services/_conventions_service_types.py` | `ConventionsServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ConventionsService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_conventions_service_mixins.py` fails on a stray stub or a member defined twice | 33 |
 | `roboco/services/docs.py` | `DocsService` — write/read/list/delete docs, RAG dedup, commit doc to repo, path-traversal containment | 737 |
 | `roboco/conventions/__init__.py` | Package public API re-exports (`run`, `Finding`, `check_*`, `get_parser`, `GrammarUnavailable`, `ValidatorCouldNotRun`) | 30 |
 | `roboco/conventions/__main__.py` | argparse CLI entrypoint (`check --root <dir> --files ...`), JSONL output, exit-0/exit-3 fail-loud | 69 |
@@ -9149,28 +9150,29 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `_is_unique_violation` | fn | `services/conventions.py:76` | Narrow `IntegrityError` to UNIQUE constraint (SQLSTATE 23505); non-unique errors are re-raised, not swallowed |
-| `ConventionsService` | class | `services/conventions.py:114` | Cache/render/scaffold/restore a project's conventions standard |
-| `ConventionsService.get_map` | method | `services/conventions.py:117` | Return effective standard for a project at its HEAD (cache-first; degraded rows not trusted from cache) |
-| `ConventionsService.baseline_constraints` | method | `services/conventions.py:176` | Render block rules + module boundaries as per-task constraints |
-| `ConventionsService.render_ambient_block` | method | `services/conventions.py:194` | Bounded `## Architectural Standard` prompt block (2000-char cap) |
-| `ConventionsService.scaffold` | method | `services/conventions.py:236` | Open a PR adding the auto-scaffolded `.roboco/conventions.yml` |
-| `ConventionsService.restore` | method | `services/conventions.py:245` | Open a PR re-committing the file from the last-good map (or a scan) |
-| `ConventionsService.commit_standard` | method | `services/conventions.py:263` | Open a PR committing an externally-edited standard (panel save) |
-| `ConventionsService.health` | method | `services/conventions.py:275` | Report live file status at HEAD + last-good commit SHA (reads file, not cache) |
-| `ConventionsService.record_findings` | method | `services/conventions.py:306` | Replace a task's recorded findings (delete-then-insert); caller commits |
-| `ConventionsService.recent_findings` | method | `services/conventions.py:333` | Recent findings across the project (panel feed) |
-| `ConventionsService.resolve_workspace` | method | `services/conventions.py:376` | Ensure the project's read clone; None if unavailable (backfill path) |
-| `ConventionsService._resolve` | method | `services/conventions.py:392` | Resolve repo root + HEAD sha; persist clone path + sha back onto project |
-| `ConventionsService._head_sha_at` | method | `services/conventions.py:415` | `git rev-parse HEAD` in the clone (10s timeout), None if not a repo |
-| `ConventionsService._read_committed_standard` | method | `services/conventions.py:431` | Read/parse `.roboco/conventions.yml` → `(standard, status)` |
-| `ConventionsService._publish` | method | `services/conventions.py:448` | Open the conventions scaffold/restore PR via `GitService` |
-| `ConventionsService._cache_get` | method | `services/conventions.py:480` | Read cached effective map row by `(project_id, commit_sha)` |
-| `ConventionsService._cache_put` | method | `services/conventions.py:513` | Persist effective map in a savepoint (UNIQUE-violation-only swallow; non-unique IntegrityError re-raised) |
-| `ConventionsService._latest_ok_row` / `_latest_ok_map` | method | `services/conventions.py:563` / `:577` | Most recent `status="ok"` cached row (degraded fallback source) |
-| `ScaffoldResult` | dataclass | `services/conventions.py:59` | Outcome of a scaffold/restore: pr_number, branch, created |
-| `ConventionsHealth` | dataclass | `services/conventions.py:68` | status, head_sha, last_ok_sha |
-| `get_conventions_service` | fn | `services/conventions.py:584` | Construct `ConventionsService(session)` |
+| `_is_unique_violation` | fn | `services/conventions.py:83` | Narrow `IntegrityError` to UNIQUE constraint (SQLSTATE 23505); non-unique errors are re-raised, not swallowed |
+| `ConventionsService` | class | `services/conventions.py:351` | Cache/render/scaffold/restore a project's conventions standard |
+| `ConventionsMapResolution` | class | conventions.py:121 | Mixin of `ConventionsService` (13 methods): Resolving a project's conventions map: its workspace and head SHA, deriving or reading the committed standard, publishing it, and the per-SHA cache with its last good row. |
+| `ConventionsService.get_map` | method | `services/conventions.py:354` | Return effective standard for a project at its HEAD (cache-first; degraded rows not trusted from cache) |
+| `ConventionsService.baseline_constraints` | method | `services/conventions.py:413` | Render block rules + module boundaries as per-task constraints |
+| `ConventionsService.render_ambient_block` | method | `services/conventions.py:431` | Bounded `## Architectural Standard` prompt block (2000-char cap) |
+| `ConventionsService.scaffold` | method | `services/conventions.py:473` | Open a PR adding the auto-scaffolded `.roboco/conventions.yml` |
+| `ConventionsService.restore` | method | `services/conventions.py:482` | Open a PR re-committing the file from the last-good map (or a scan) |
+| `ConventionsService.commit_standard` | method | `services/conventions.py:500` | Open a PR committing an externally-edited standard (panel save) |
+| `ConventionsService.health` | method | `services/conventions.py:512` | Report live file status at HEAD + last-good commit SHA (reads file, not cache) |
+| `ConventionsService.record_findings` | method | `services/conventions.py:543` | Replace a task's recorded findings (delete-then-insert); caller commits |
+| `ConventionsService.recent_findings` | method | `services/conventions.py:570` | Recent findings across the project (panel feed) |
+| `ConventionsService.resolve_workspace` | method | `services/conventions.py:143` | Ensure the project's read clone; None if unavailable (backfill path) |
+| `ConventionsService._resolve` | method | `services/conventions.py:159` | Resolve repo root + HEAD sha; persist clone path + sha back onto project |
+| `ConventionsService._head_sha_at` | method | `services/conventions.py:182` | `git rev-parse HEAD` in the clone (10s timeout), None if not a repo |
+| `ConventionsService._read_committed_standard` | method | `services/conventions.py:198` | Read/parse `.roboco/conventions.yml` → `(standard, status)` |
+| `ConventionsService._publish` | method | `services/conventions.py:215` | Open the conventions scaffold/restore PR via `GitService` |
+| `ConventionsService._cache_get` | method | `services/conventions.py:247` | Read cached effective map row by `(project_id, commit_sha)` |
+| `ConventionsService._cache_put` | method | `services/conventions.py:280` | Persist effective map in a savepoint (UNIQUE-violation-only swallow; non-unique IntegrityError re-raised) |
+| `ConventionsService._latest_ok_row` / `_latest_ok_map` | method | `services/conventions.py:330` / `:344` | Most recent `status="ok"` cached row (degraded fallback source) |
+| `ScaffoldResult` | dataclass | `services/conventions.py:66` | Outcome of a scaffold/restore: pr_number, branch, created |
+| `ConventionsHealth` | dataclass | `services/conventions.py:75` | status, head_sha, last_ok_sha |
+| `get_conventions_service` | fn | `services/conventions.py:597` | Construct `ConventionsService(session)` |
 | `main` | fn | `conventions/__main__.py:57` | argparse CLI entrypoint; returns exit code |
 | `_run_check` | fn | `conventions/__main__.py:42` | Load file+scan, build effective map, run validator, print JSONL |
 | `_fail` | fn | `conventions/__main__.py:37` | Emit `{"error": ...}` on stderr + return exit 3 |
@@ -9377,6 +9379,8 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441`. One commit touched this sl
 No other logic-touching commits in the range.
 
 > Post-snapshot updates (since 2026-06-29): **536bbb64** "Chore/all/logical gaps sweep (#286)" touched five files in this slice:
+
+> **2026-10-31** (Planning trail #51, wave 3): `ConventionsService` splits in place into 1 mixins in `conventions.py`, every method body byte-identical: `ConventionsMapResolution` (13). `ConventionsService` keeps its public surface (`get_map`, the infra globs, baseline constraints, the ambient block, `scaffold`, `restore`, `commit_standard`, `health`, recording and reading findings), composes them, and is no longer a god class. Rows naming `ConventionsService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `ConventionsServiceSelf` (`roboco/services/_conventions_service_types.py`).
 > - `conventions/custom.py` (+14 lines): added `_KNOWN_LANGUAGES` frozenset and `unrecognized_rule_languages()` — surfaces typo language tags on custom rules.
 > - `conventions/runner.py` (+28 lines): imported `Finding` directly (not TYPE_CHECKING); added `_LANGUAGE_SCOPE_RULE`/`_LANGUAGE_SCOPE_FILE` constants and `_language_scope_findings()` helper; `run()` now prepends language-scope warn findings before per-file dispatch.
 > - `conventions/modularity.py` (+2 lines): added `"stream"` and `"stream_scalars"` to `_DB_METHODS` (SA 2.0 streaming gap, #35).
