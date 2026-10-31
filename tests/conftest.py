@@ -35,7 +35,6 @@ Redis isolation:
 
 from __future__ import annotations
 
-import contextlib
 import os
 import socket
 from typing import TYPE_CHECKING
@@ -89,19 +88,15 @@ os.environ.setdefault("GIT_CONFIG_SYSTEM", "/dev/null")
 
 @pytest_asyncio.fixture(autouse=True)
 async def _dispose_global_db_engine() -> AsyncIterator[None]:
-    """Never let the lazy global engine outlive the test that created it.
+    """Close the engines this test's loop opened before the loop ends.
 
-    Production code reaching ``get_db_context()``/``get_engine()`` creates
-    the process-global ``_DbHolder`` engine bound to the CURRENT event loop.
-    With function-scoped test loops, any later test touching that global
-    path inherits an engine from a dead loop and crashes with ``Future
-    attached to a different loop`` — an order-dependent failure class that
-    moves around whenever test collection shifts. Disposing after every
-    test keeps the global path loop-local; a no-op when nothing touched it.
+    Production code reaching ``get_db_context()``/``get_engine()`` opens an
+    engine of the test's own event loop (``roboco.db.base._PoolEngines``).
+    pytest-asyncio closes that loop after the test, and connections still
+    open then can never be closed. A no-op when nothing touched the DB.
     """
     yield
-    with contextlib.suppress(Exception):
-        await close_db()
+    await close_db()
 
 
 _TEST_FERNET_KEY = Fernet.generate_key().decode()

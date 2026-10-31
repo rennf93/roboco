@@ -72,15 +72,6 @@ def _chunk_dsn(db_url: str) -> str:
 
 @pytest.mark.asyncio
 async def test_c3_deleted_journal_unindexed(e2e_stack: E2EStack) -> None:
-    from roboco.db import base as db_base
-
-    # Rebind the app's lazy engine to this test's loop (see H12 for the
-    # rationale): unindex_journal_entry's tracking-row delete routes through
-    # get_db_context, whose lazy engine was bound to the e2e stack's uvicorn
-    # thread loop on import.
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
-
     entry_id = uuid4()
     source = f"roboco://journals/{entry_id}"
     source_hash = hashlib.sha256(source.encode()).hexdigest()
@@ -208,20 +199,10 @@ async def test_h12_dedup_does_not_drop_new_recipient(e2e_stack: E2EStack) -> Non
     """H12(a) end-to-end: a blocker sent to {be-pm, main-pm} after an unacked
     one to {be-pm} alone must STILL reach main-pm. Pre-fix the overlap
     predicate dropped the entire second notification for ALL recipients."""
-    from roboco.db import base as db_base
     from roboco.db.base import get_db_context
 
-    # Prior smoke tests in the same session (C3) call get_db_context, binding
-    # the app's lazy engine to their event loop. pytest-asyncio gives each
-    # test its own loop, so reusing that engine raises "attached to a
-    # different loop". Drop the holder so this test's first get_db_context
-    # binds a fresh engine to THIS loop.
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
-
-    # Seed the sender agent through the app's own DB context (same engine the
-    # service uses), so the lazy engine binds once and stays alive for the
-    # service calls below.
+    # Seed the sender agent through the app's own DB context (this test
+    # loop's engine, the one the service uses below).
     async with get_db_context() as session:
         sender_id = await _seed_sender(session)
         await session.commit()
@@ -275,12 +256,7 @@ async def test_m23_approved_unindexed_reconcile(e2e_stack: E2EStack) -> None:
     ``indexed_ok=True``/``indexed_at`` in the DB. Proves the cross-layer
     wiring (the reconcile query → the service → the durable flag) without a
     live embedder (the optimal service is stubbed)."""
-    from roboco.db import base as db_base
     from roboco.db.base import get_db_context
-
-    # Rebind the lazy engine to this test's loop (see H12 for the rationale).
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
 
     approver = uuid4()
     creator = uuid4()

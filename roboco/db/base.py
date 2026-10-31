@@ -6,8 +6,9 @@ import asyncio
 import weakref
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import Annotated, Literal
 
 import structlog
 from alembic import command
@@ -24,9 +25,6 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from roboco.config import settings
-
-if TYPE_CHECKING:
-    import concurrent.futures
 
 logger = structlog.get_logger()
 
@@ -46,57 +44,82 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=convention)
 
 
-class _DbHolder:
-    """Holder for the PRIMARY database engine and session factory singletons.
+@dataclass(frozen=True)
+class _LoopEngine:
+    """One event loop's engine for a pool, with its session factory."""
 
-    Backs FastAPI's request-scoped ``get_db`` / ``get_db_committed`` and every
-    other DB caller that doesn't explicitly ask for the background pool (see
-    ``_BackgroundDbHolder`` / ``get_engine(pool=...)``).
+    engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession]
 
-    ``loop`` weakly tracks the event loop the cached engine belongs to.
-    Pooled asyncpg connections are bound to the loop that created them, so
-    handing the cached engine to a DIFFERENT running loop (a second uvicorn
-    thread, a test's ``asyncio.run``, the eval bench's disposable stack)
-    eventually checks out a loop-foreign pooled connection and dies with
-    ``RuntimeError: ... Future attached to a different loop``. ``get_engine``
-    therefore discards and rebuilds the cache on a cross-loop access — the
-    automatic form of the manual ``_DbHolder`` resets the e2e harness used
-    to do between tests, now enforced at the single chokepoint every caller
-    routes through. In production exactly one loop exists, so the check
-    never fires and behavior is unchanged.
+
+class _PoolEngines:
+    """A connection pool's engines, one per event loop.
+
+    Pooled asyncpg connections belong to the loop that opened them: handing
+    one to another loop dies with ``RuntimeError: ... Future attached to a
+    different loop``. Production runs one loop, so this holds one engine. A
+    test process runs several at once (a uvicorn server thread, each test's
+    loop, each ``asyncio.run``), and each gets its own engine here instead of
+    taking over another loop's while that loop's work still holds its
+    connections. Whoever owns a loop closes its engines before the loop ends
+    (``close_db``): once the loop is gone, nothing can close them.
     """
 
-    engine: AsyncEngine | None = None
-    session_factory: async_sessionmaker[AsyncSession] | None = None
-    loop: "weakref.ref[asyncio.AbstractEventLoop] | None" = None
+    def __init__(self) -> None:
+        self._by_loop: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, _LoopEngine
+        ] = weakref.WeakKeyDictionary()
+        # Created with no loop running: no connection opens until a loop uses
+        # it, and the first loop to do so claims it.
+        self._unclaimed: _LoopEngine | None = None
+
+    def current(self) -> _LoopEngine | None:
+        """The running loop's engine, if it has one."""
+        loop = _running_loop()
+        if loop is None:
+            return self._unclaimed
+        owned = self._by_loop.get(loop)
+        if owned is None and self._unclaimed is not None:
+            owned, self._unclaimed = self._unclaimed, None
+            self._by_loop[loop] = owned
+        return owned
+
+    def install(self, owned: _LoopEngine) -> None:
+        """Make ``owned`` the running loop's engine."""
+        loop = _running_loop()
+        if loop is None:
+            self._unclaimed = owned
+        else:
+            self._by_loop[loop] = owned
+
+    def release(self) -> _LoopEngine | None:
+        """Forget the running loop's engine and return it, for disposal."""
+        loop = _running_loop()
+        if loop is None:
+            released, self._unclaimed = self._unclaimed, None
+            return released
+        return self._by_loop.pop(loop, None)
 
 
-class _BackgroundDbHolder:
-    """Twin of ``_DbHolder`` for the SEPARATE background pool.
-
-    The orchestrator's dormant/opt-in engine loops (self-heal, ci-watch,
-    dep-update, env-sync, release-manager, x-mentions, board-program,
-    video-render, the vault engines, telegram poll, strategy-engine) run
-    against this engine instead, sized independently
-    (``database_background_pool_size`` / ``_max_overflow``) so a long-held
-    background connection can never starve an agent-facing FastAPI request
-    queued on the primary pool (2026-07-29 pool-exhaustion incident class).
-    Both engines point at the SAME database; this splits the in-process
-    connection pool, not the data. Same event-loop rebind treatment as
-    ``_DbHolder``, see ``_rebind_holder_to_current_loop``, now parametrized
-    over which holder.
-    """
-
-    engine: AsyncEngine | None = None
-    session_factory: async_sessionmaker[AsyncSession] | None = None
-    loop: "weakref.ref[asyncio.AbstractEventLoop] | None" = None
+# PRIMARY backs FastAPI's request-scoped ``get_db`` / ``get_db_committed`` and
+# every caller that doesn't ask for the background pool. BACKGROUND is the
+# separate pool the orchestrator's dormant/opt-in engine loops (self-heal,
+# ci-watch, dep-update, env-sync, release-manager, x-mentions, board-program,
+# video-render, the vault engines, telegram poll, strategy-engine) run
+# against, sized independently (``database_background_pool_size`` /
+# ``_max_overflow``) so a long-held background connection can never starve an
+# agent-facing request queued on the primary pool (2026-07-29 pool-exhaustion
+# incident class). Both point at the SAME database: this splits the
+# in-process connection pool, not the data.
+_PRIMARY_ENGINES = _PoolEngines()
+_BACKGROUND_ENGINES = _PoolEngines()
 
 
 _DbPool = Literal["primary", "background"]
 
 
-def _holder_for(pool: _DbPool) -> type[_DbHolder] | type[_BackgroundDbHolder]:
-    return _DbHolder if pool == "primary" else _BackgroundDbHolder
+def _engines_for(pool: _DbPool) -> _PoolEngines:
+    return _PRIMARY_ENGINES if pool == "primary" else _BACKGROUND_ENGINES
 
 
 def _running_loop() -> asyncio.AbstractEventLoop | None:
@@ -106,121 +129,78 @@ def _running_loop() -> asyncio.AbstractEventLoop | None:
         return None
 
 
-def _rebind_holder_to_current_loop(
-    holder: type[_DbHolder] | type[_BackgroundDbHolder],
-) -> None:
-    """Discard ``holder``'s cached engine/factory when accessed from a
-    foreign loop.
-
-    Rules: no cached engine or no running loop — nothing to do; cached with
-    no loop stamp — claim it for the current loop (covers engines injected
-    directly by tests and sync-created engines); stamp matches the current
-    loop — keep; stamp names another loop, alive or dead — drop both caches
-    so this loop builds its own. The old pool cannot be awaited away from its
-    own loop, so its disposal is handed to that loop while it still runs (see
-    ``_dispose_on_its_loop``); a dead loop's connections are past closing.
-    Any in-flight session still holds its own reference to the engine, and
-    disposal leaves checked-out connections to close on checkin.
-    """
-    if holder.engine is None:
-        return
-    current = _running_loop()
-    if current is None:
-        return
-    if holder.loop is None:
-        holder.loop = weakref.ref(current)
-        return
-    if holder.loop() is current:
-        return
-    logger.debug(
-        "Discarding DB engine bound to a different event loop", pool=holder.__name__
+def _create_engine(pool: _DbPool) -> AsyncEngine:
+    # Server-side timeouts, applied per asyncpg connection: a transaction
+    # left idle (its coroutine parked on git I/O or an asyncio lock) is
+    # killed by Postgres itself, releasing its row locks and pool slot;
+    # a statement queued on someone else's row lock errors instead of
+    # holding a pool connection for the wait. Alembic's env.py builds its
+    # own engine, so migrations never carry these.
+    server_settings = {
+        key: str(value)
+        for key, value in (
+            (
+                "idle_in_transaction_session_timeout",
+                settings.database_idle_in_transaction_timeout_ms,
+            ),
+            ("lock_timeout", settings.database_lock_timeout_ms),
+        )
+        if value > 0
+    }
+    pool_size, max_overflow = (
+        (settings.database_pool_size, settings.database_max_overflow)
+        if pool == "primary"
+        else (
+            settings.database_background_pool_size,
+            settings.database_background_max_overflow,
+        )
     )
-    _dispose_on_its_loop(holder.engine, holder.loop())
-    holder.engine = None
-    holder.session_factory = None
-    holder.loop = None
+    return create_async_engine(
+        settings.database_url,
+        echo=settings.database_echo,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=settings.database_pool_timeout,
+        pool_recycle=settings.database_pool_recycle,
+        pool_pre_ping=True,
+        connect_args={"server_settings": server_settings} if server_settings else {},
+    )
 
 
-def _dispose_on_its_loop(
-    engine: AsyncEngine, loop: asyncio.AbstractEventLoop | None
-) -> "concurrent.futures.Future[None] | None":
-    """Hand ``engine``'s disposal to ``loop``, the loop its pooled connections
-    belong to, when that loop is still running (another thread's: a second
-    uvicorn server, a test's). Returns the disposal's future, or ``None``
-    when the loop is gone or stopped and nothing can close them.
-    """
-    if loop is None or loop.is_closed() or not loop.is_running():
-        return None
-    return asyncio.run_coroutine_threadsafe(engine.dispose(), loop)
+def _loop_engine(pool: _DbPool) -> _LoopEngine:
+    engines = _engines_for(pool)
+    owned = engines.current()
+    if owned is None:
+        engine = _create_engine(pool)
+        owned = _LoopEngine(
+            engine=engine,
+            session_factory=async_sessionmaker(
+                bind=engine,
+                class_=AsyncSession,
+                expire_on_commit=False,
+                autoflush=False,
+            ),
+        )
+        engines.install(owned)
+    return owned
 
 
 def get_engine(pool: _DbPool = "primary") -> AsyncEngine:
-    """Get or create ``pool``'s async engine (rebound per event loop, see holder).
+    """Get or create the running loop's async engine for ``pool``.
 
-    ``"primary"`` (default) is the shared engine every existing caller, and
+    ``"primary"`` (default) is the engine every existing caller, and
     FastAPI's request-scoped ``get_db`` / ``get_db_committed``, already used
-    before the background pool existed. ``"background"`` is a separate,
-    smaller engine reserved for the orchestrator's dormant/opt-in engine
-    loops (see ``_BackgroundDbHolder``); both connect to the same
-    ``database_url``, just through independent pools.
+    before the background pool existed. ``"background"`` is the separate,
+    smaller pool reserved for the orchestrator's engine loops (see
+    ``_BACKGROUND_ENGINES``); both connect to the same ``database_url``,
+    just through independent pools.
     """
-    holder = _holder_for(pool)
-    _rebind_holder_to_current_loop(holder)
-    if holder.engine is None:
-        # Server-side timeouts, applied per asyncpg connection: a transaction
-        # left idle (its coroutine parked on git I/O or an asyncio lock) is
-        # killed by Postgres itself, releasing its row locks and pool slot;
-        # a statement queued on someone else's row lock errors instead of
-        # holding a pool connection for the wait. Alembic's env.py builds its
-        # own engine, so migrations never carry these.
-        server_settings = {
-            key: str(value)
-            for key, value in (
-                (
-                    "idle_in_transaction_session_timeout",
-                    settings.database_idle_in_transaction_timeout_ms,
-                ),
-                ("lock_timeout", settings.database_lock_timeout_ms),
-            )
-            if value > 0
-        }
-        pool_size, max_overflow = (
-            (settings.database_pool_size, settings.database_max_overflow)
-            if pool == "primary"
-            else (
-                settings.database_background_pool_size,
-                settings.database_background_max_overflow,
-            )
-        )
-        holder.engine = create_async_engine(
-            settings.database_url,
-            echo=settings.database_echo,
-            pool_size=pool_size,
-            max_overflow=max_overflow,
-            pool_timeout=settings.database_pool_timeout,
-            pool_recycle=settings.database_pool_recycle,
-            pool_pre_ping=True,
-            connect_args={"server_settings": server_settings}
-            if server_settings
-            else {},
-        )
-        current = _running_loop()
-        holder.loop = weakref.ref(current) if current is not None else None
-    return holder.engine
+    return _loop_engine(pool).engine
 
 
 def get_session_factory(pool: _DbPool = "primary") -> async_sessionmaker[AsyncSession]:
-    """Get or create ``pool``'s async session factory (rebound with its engine)."""
-    holder = _holder_for(pool)
-    _rebind_holder_to_current_loop(holder)
-    if holder.session_factory is None:
-        holder.session_factory = async_sessionmaker(
-            bind=get_engine(pool),
-            class_=AsyncSession,
-            expire_on_commit=False,
-            autoflush=False,
-        )
-    return holder.session_factory
+    """Get or create the running loop's session factory for ``pool``."""
+    return _loop_engine(pool).session_factory
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
@@ -510,24 +490,11 @@ async def drop_db() -> None:
 
 
 async def close_db() -> None:
-    """Close the database connection(s): both the primary and background pools.
+    """Close the running loop's database engines: the primary and background pools.
 
-    An engine whose pooled connections belong to a loop still running in
-    another thread (a test's uvicorn server) is disposed on that loop; any
-    other is disposed here.
+    Another loop's engines are that loop's to close (see ``_PoolEngines``).
     """
-    for holder in (_DbHolder, _BackgroundDbHolder):
-        engine = holder.engine
-        if engine is None:
-            continue
-        loop = holder.loop() if holder.loop is not None else None
-        holder.engine = None
-        holder.session_factory = None
-        holder.loop = None
-        disposal = (
-            _dispose_on_its_loop(engine, loop) if loop is not _running_loop() else None
-        )
-        if disposal is not None:
-            await asyncio.wrap_future(disposal)
-        else:
-            await engine.dispose()
+    for engines in (_PRIMARY_ENGINES, _BACKGROUND_ENGINES):
+        released = engines.release()
+        if released is not None:
+            await released.engine.dispose()

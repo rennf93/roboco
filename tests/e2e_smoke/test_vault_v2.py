@@ -119,7 +119,7 @@ def _arm_vault(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 def _fresh_factory(
     db_url: str,
 ) -> tuple[async_sessionmaker[AsyncSession], AsyncEngine]:
-    """A PRIVATE engine bound to THIS test's loop — not the app's shared _DbHolder.
+    """A PRIVATE engine bound to THIS test's loop — not the app's own engine.
 
     The create/janitor seams use only the passed session (``assemble_task_note_data``
     / ``get_project_service`` / ``VaultJanitor`` never call ``get_session_factory``),

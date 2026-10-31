@@ -1017,12 +1017,7 @@ class NotificationService:
         """Create a notification via the database and deliver it.
 
         When ``db_session`` is provided, use it directly and skip the
-        internal commit — the caller owns the transaction. This is required
-        when the caller runs on a different event loop than the singleton
-        ``_DbHolder`` engine (e.g. ``TaskService`` called outside the FastAPI
-        request loop); opening ``get_db_context()`` there reuses an engine
-        whose asyncpg connections are bound to the server's loop, raising
-        ``Future attached to a different loop``.
+        internal commit — the caller owns the transaction.
         """
         if db_session is not None:
             await self._create_notification_with_session(params, db_session)

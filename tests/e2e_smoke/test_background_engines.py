@@ -216,17 +216,9 @@ async def test_m1_refresh_rotated_tokens_survive_caller_rollback(
     discard them (TikTok already invalidated the old refresh_token → a
     discard was a permanent credential lockout). Seeds a row, drives the
     real ``_refresh`` with a mocked TikTok token endpoint, rolls the caller
-    session back, and re-reads from a fresh session.
-
-    The lazy engine (``_DbHolder``) is reset first so ``_refresh``'s
-    internal ``get_session_factory()`` creates the engine in THIS test's
-    loop — without the reset, prior API requests in the uvicorn thread bind
-    the lazy engine to a different loop and asyncpg raises
-    "Future attached to a different loop"."""
+    session back, and re-reads from a fresh session."""
     from roboco.db import base as db_base
 
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
     factory = db_base.get_session_factory()
     try:
         await _seed_tiktok_row(factory)
@@ -385,10 +377,6 @@ async def test_m21_render_cycle_commits_per_task(
 
     monkeypatch.setattr(settings, "video_engine_enabled", True)
 
-    # Reset the lazy engine so ``get_db_context`` (used by the cycle) binds
-    # to THIS test's loop, not the uvicorn thread's.
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
     factory = db_base.get_session_factory()
     try:
         a_id, b_id = await _seed_video_render_stack(factory)
