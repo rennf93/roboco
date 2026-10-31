@@ -7483,6 +7483,7 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | Path | Role | approx LOC |
 |------|------|------------|
 | `roboco/services/work_session.py` | WorkSession CRUD, commit/file tracking, PR-lifecycle record, single-active invariant | 685 |
+| `roboco/services/_work_session_types.py` | `WorkSessionServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `WorkSessionService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_work_session_service_mixins.py` fails on a stray stub or a member defined twice | 43 |
 | `roboco/services/git.py` | Git subprocess execution, branch/commit/PR/rebase/merge/sync, GitHub REST API, conventions validator runner; `GitService` composed from 20 mixins defined above it | 6963 |
 | `roboco/services/_git_service_types.py` | `GitServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `GitService` mixins reach through `self` (`GitSurface` for `GitService` itself), stubs keeping each method's signature; `tests/unit/services/test_git_service_mixins.py` fails on a stray stub or a member defined twice | 297 |
 | `roboco/templates/git/__init__.py` | Package re-exports for branch/commit/PR templates | 48 |
@@ -7508,18 +7509,21 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `WorkSessionService` | class | work_session.py:31 | Session lifecycle + single-active invariant |
-| `WorkSessionService.create` | method | work_session.py:52 | Validate project/task, refuse duplicate, supersede stale ACTIVE, insert row |
-| `WorkSessionService.get_active_for_task` | method | work_session.py:211 | Most-recent ACTIVE row (resilient to dup-rows defect) |
-| `WorkSessionService.supersede_active_sessions_for_task` | method | work_session.py:274 | ABANDON every other ACTIVE session for a task (single-active) |
-| `WorkSessionService.add_commit` | method | work_session.py:390 | Append dedup'd commit SHA to session.commits |
-| `WorkSessionService.create_pr` | method | work_session.py:454 | Record pr_number/pr_url/pr_created_at |
-| `WorkSessionService.merge_pr` | method | work_session.py:515 | Record merge + COMPLETED; idempotent active-guard (F062) |
-| `WorkSessionService.close` | method | work_session.py:655 | Idempotent COMPLETED on task completion |
-| `WorkSessionService.abandon` | method | work_session.py:614 | ABANDONED + ended_at (non-active → warning + None) |
-| `WorkSessionService.has_unpushed_commits` | method | work_session.py:699 | PR-existence proxy for unpushed commit detection |
-| `WorkSessionService.task_team_for_session` | method | work_session.py:159 | Return the task's team (cell) for a given session; used by route layer's PM cell-ownership check on `merge_pr` |
-| `get_work_session_service` | factory | work_session.py:719 | Construct service from AsyncSession |
+| `WorkSessionService` | class | work_session.py:424 | Session lifecycle + single-active invariant |
+| `WorkSessionQueries` | class | work_session.py:36 | Mixin of `WorkSessionService` (6 methods): Finding work sessions: a task's active one (for an agent too), superseding a task's active sessions, and listing them by agent, by project, or all active. |
+| `WorkSessionCommits` | class | work_session.py:216 | Mixin of `WorkSessionService` (4 methods): A session's commits and files: recording them, the files it changed, and whether it has unpushed commits. |
+| `WorkSessionPRs` | class | work_session.py:302 | Mixin of `WorkSessionService` (3 methods): A session's pull request: recording it, its status, and its merge. |
+| `WorkSessionService.create` | method | work_session.py:447 | Validate project/task, refuse duplicate, supersede stale ACTIVE, insert row |
+| `WorkSessionService.get_active_for_task` | method | work_session.py:40 | Most-recent ACTIVE row (resilient to dup-rows defect) |
+| `WorkSessionService.supersede_active_sessions_for_task` | method | work_session.py:103 | ABANDON every other ACTIVE session for a task (single-active) |
+| `WorkSessionService.add_commit` | method | work_session.py:220 | Append dedup'd commit SHA to session.commits |
+| `WorkSessionService.create_pr` | method | work_session.py:305 | Record pr_number/pr_url/pr_created_at |
+| `WorkSessionService.merge_pr` | method | work_session.py:366 | Record merge + COMPLETED; idempotent active-guard (F062) |
+| `WorkSessionService.close` | method | work_session.py:697 | Idempotent COMPLETED on task completion |
+| `WorkSessionService.abandon` | method | work_session.py:656 | ABANDONED + ended_at (non-active → warning + None) |
+| `WorkSessionService.has_unpushed_commits` | method | work_session.py:287 | PR-existence proxy for unpushed commit detection |
+| `WorkSessionService.task_team_for_session` | method | work_session.py:554 | Return the task's team (cell) for a given session; used by route layer's PM cell-ownership check on `merge_pr` |
+| `get_work_session_service` | factory | work_session.py:740 | Construct service from AsyncSession |
 | `GitService` | class | git.py:6814 | All git operations + GitHub API, composed from 20 mixins (the rows below); keeps the `_run_git` / forge / origin / token core |
 | `GitQualityGate` | class | git.py:4502 | Mixin of `GitService` (10 methods): The pre-submit quality gate and codegen drift: the fast gate commands, the codegen run and commit, and a task's toolchain status. |
 | `GitAgentWorkspace` | class | git.py:4779 | Mixin of `GitService` (6 methods): Working in an agent's own workspace: finding it for a branch, checking a branch out there, and pushing the branch with its base. |
@@ -7884,11 +7888,13 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441` (master tip before the metr
 
 > **2026-10-31** (Planning trail #51, wave 3, `GitService` part 3 of 3): the gateway backfill moves into seven mixins in `git.py`, bodies byte-identical: `GitQualityGate` (10), `GitAgentWorkspace` (6), `GitGatewayPRs` (8, with the nested `_MergeContext`, which `GitService._MergeContext` still names through inheritance), `GitRebase` (10), `GitBranchState` (6), `GitDiffs` (11) and `GitConventions` (6). `GitService` keeps 9 methods (`_run_git`, `_forge`, `_warn_if_slow`, the origin, relay, project, repo-ref and token resolution, `get_workspace`) and `_PORCELAIN_STATUS_WIDTH`, which its reader names as `GitService._PORCELAIN_STATUS_WIDTH`; it composes 20 mixins and is no longer a god class.
 
+> **2026-10-31** (Planning trail #51, wave 3): `WorkSessionService` splits in place into 3 mixins in `work_session.py`, every method body byte-identical: `WorkSessionQueries` (6), `WorkSessionCommits` (4), `WorkSessionPRs` (3). `WorkSessionService` keeps its CRUD and lifecycle (`create`, `get`, `get_or_raise`, `task_team_for_session`, `update`, `complete`, `abandon`, `close`), composes them, and is no longer a god class. Rows naming `WorkSessionService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `WorkSessionServiceSelf` (`roboco/services/_work_session_types.py`).
+
 ## Regression Risks
 
 | Title | File:Line | Claim | Severity |
 |-------|-----------|-------|----------|
-| `merge_pr` idempotent guard silently drops retried merge attribution | work_session.py:517 | A retried merge after a successful-but-unconfirmed GitHub merge returns the *existing* COMPLETED row unchanged, so the retry's `merged_by`/`pr_merged_at` are NOT updated. Correct for audit-trail integrity, but a caller that relied on `merge_pr` returning a freshly-updated row (e.g. reading `pr_merged_at` as "now") now gets the original timestamp. Low risk but a behavior change worth a regression test. | low |
+| `merge_pr` idempotent guard silently drops retried merge attribution | work_session.py:368 | A retried merge after a successful-but-unconfirmed GitHub merge returns the *existing* COMPLETED row unchanged, so the retry's `merged_by`/`pr_merged_at` are NOT updated. Correct for audit-trail integrity, but a caller that relied on `merge_pr` returning a freshly-updated row (e.g. reading `pr_merged_at` as "now") now gets the original timestamp. Low risk but a behavior change worth a regression test. | low |
 | `pr_merge` CEO-only guard refuses default-branch target | git.py:5249 | If a non-root PR's target legitimately resolves to the repo default branch (e.g. a mis-configured `default_branch` or a single-branch repo), `pr_merge` now hard-fails with `UnauthorizedError`. Any cell that previously merged a leaf PR into master via this path (shouldn't happen per policy, but the route existed) is now blocked. Since the env-branches ladder (#534) the comparison target is the env-ladder **head** rung (`_project_default_branch` → `head_branch(project)`), not necessarily prod — a project that declares head != prod has this guard protect the head rung, not the CEO's actual prod branch. | medium |
 | `pr_merge` parent-row `SELECT FOR UPDATE` can deadlock | git.py:5249 | Two PMs merging sibling subtasks of *different* parents that share an ancestor, under并发 lock ordering, could deadlock if lock acquisition order diverges. Lock is only on the immediate parent, so risk is bounded, but a deadlock surfaces as a rollback (not a clean 409 retry). | medium |
 | `create_branch` `reset --hard` on zero-commit branch inside worktree | git.py:1250 | If `rev-list --count {base_ref}..{branch_name}` returns `0` for a branch that actually carries work (e.g. base_ref mis-resolved to a ref that already contains the work), the worktree is hard-reset and uncommitted work in the worktree is lost. The `unique==0` check is the only guard; a stale `base_ref` could trip it. | medium |

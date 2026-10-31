@@ -6,7 +6,7 @@ WorkSessions track branch management, commits, and PR lifecycle.
 """
 
 from datetime import UTC, datetime
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 from sqlalchemy import and_, select
@@ -27,8 +27,403 @@ from roboco.services.base import (
     ValidationError,
 )
 
+if TYPE_CHECKING:
+    from roboco.services._work_session_types import WorkSessionServiceSelf as _Base
+else:
+    _Base = object
 
-class WorkSessionService(BaseService):
+
+class WorkSessionQueries(_Base):
+    """Finding work sessions: a task's active one (for an agent too), superseding a
+    task's active sessions, and listing them by agent, by project, or all active."""
+
+    async def get_active_for_task(
+        self,
+        task_id: UUID,
+    ) -> WorkSessionTable | None:
+        """
+        Get the active work session for a task.
+
+        Args:
+            task_id: Task to find session for
+
+        Returns:
+            Active work session or None
+
+        Resilient to the historical duplicate-ACTIVE-rows defect: a task is
+        owned by one agent at a time, but a re-claim by a different agent used
+        to leave the prior holder's ACTIVE session open, so a task could carry
+        more than one ACTIVE row. ``scalar_one_or_none`` *raised*
+        ``MultipleResultsFound`` on those rows — the failure surfaced as the
+        cryptic ``'NoneType' object has no attribute 'id'`` that wedged
+        ``i_will_plan`` into an infinite respawn loop. Returning the most recent
+        ACTIVE session instead never raises; the invariant is now also enforced
+        at creation and by a partial unique index (migration 047).
+        """
+        result = await self.session.execute(
+            select(WorkSessionTable)
+            .where(
+                and_(
+                    WorkSessionTable.task_id == task_id,
+                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
+                )
+            )
+            .order_by(WorkSessionTable.started_at.desc())
+        )
+        return result.scalars().first()
+
+    async def get_active_for_task_and_agent(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+    ) -> WorkSessionTable | None:
+        """
+        Get active work session for a task by a specific agent.
+
+        Args:
+            task_id: Task ID
+            agent_id: Agent ID
+
+        Returns:
+            Active work session or None
+        """
+        result = await self.session.execute(
+            select(WorkSessionTable)
+            .where(
+                and_(
+                    WorkSessionTable.task_id == task_id,
+                    WorkSessionTable.agent_id == agent_id,
+                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
+                )
+            )
+            .order_by(WorkSessionTable.started_at.desc())
+        )
+        return result.scalars().first()
+
+    async def supersede_active_sessions_for_task(
+        self,
+        task_id: UUID,
+        keep_agent_id: UUID | None = None,
+    ) -> int:
+        """Abandon every ACTIVE work session for a task (single-active invariant).
+
+        A task is owned by exactly one agent at a time, so it must have at most
+        one ACTIVE work session. A re-claim by a different agent (pool release,
+        reaper unclaim, escalation redirect) used to leave the prior holder's
+        ACTIVE session open, accumulating duplicate ACTIVE rows;
+        ``get_active_for_task`` then hit ``MultipleResultsFound`` and the verb
+        flow crashed with ``'NoneType' object has no attribute 'id'`` —
+        wedging the task into an infinite respawn loop. Closing stale sessions
+        before a new claim keeps the invariant. Pass ``keep_agent_id`` to spare
+        the incoming claimant's own session. Returns the count superseded.
+        """
+        stmt = select(WorkSessionTable).where(
+            and_(
+                WorkSessionTable.task_id == task_id,
+                WorkSessionTable.status == WorkSessionStatus.ACTIVE,
+            )
+        )
+        if keep_agent_id is not None:
+            stmt = stmt.where(WorkSessionTable.agent_id != keep_agent_id)
+        result = await self.session.execute(stmt)
+        superseded = 0
+        for ws in result.scalars().all():
+            ws.status = WorkSessionStatus.ABANDONED
+            ws.ended_at = datetime.now(UTC)
+            superseded += 1
+        if superseded:
+            await self.session.flush()
+        return superseded
+
+    async def list_by_agent(
+        self,
+        agent_id: UUID,
+        status: WorkSessionStatus | None = None,
+    ) -> list[WorkSessionTable]:
+        """
+        List work sessions for an agent.
+
+        Args:
+            agent_id: Agent to list sessions for
+            status: Optional status filter
+
+        Returns:
+            List of work sessions
+        """
+        query = select(WorkSessionTable).where(WorkSessionTable.agent_id == agent_id)
+
+        if status:
+            query = query.where(WorkSessionTable.status == status)
+
+        query = query.order_by(WorkSessionTable.started_at.desc())
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_by_project(
+        self,
+        project_id: UUID,
+        status: WorkSessionStatus | None = None,
+    ) -> list[WorkSessionTable]:
+        """
+        List work sessions for a project.
+
+        Args:
+            project_id: Project to list sessions for
+            status: Optional status filter
+
+        Returns:
+            List of work sessions
+        """
+        query = select(WorkSessionTable).where(
+            WorkSessionTable.project_id == project_id
+        )
+
+        if status:
+            query = query.where(WorkSessionTable.status == status)
+
+        query = query.order_by(WorkSessionTable.started_at.desc())
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_active_sessions(
+        self,
+        project_id: UUID | None = None,
+    ) -> list[WorkSessionTable]:
+        """
+        List all active work sessions.
+
+        Args:
+            project_id: Optional project filter
+
+        Returns:
+            List of active work sessions
+        """
+        query = select(WorkSessionTable).where(
+            WorkSessionTable.status == WorkSessionStatus.ACTIVE
+        )
+
+        if project_id:
+            query = query.where(WorkSessionTable.project_id == project_id)
+
+        query = query.order_by(WorkSessionTable.started_at.desc())
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+
+class WorkSessionCommits(_Base):
+    """A session's commits and files: recording them, the files it changed, and
+    whether it has unpushed commits."""
+
+    async def add_commit(
+        self,
+        session_id: UUID,
+        commit_sha: str,
+    ) -> WorkSessionTable | None:
+        """
+        Add a commit to the work session.
+
+        Args:
+            session_id: Session to update
+            commit_sha: Git commit SHA
+
+        Returns:
+            The updated session or None if not found
+        """
+        work_session = await self.get(session_id)
+        if not work_session:
+            return None
+
+        if commit_sha not in (work_session.commits or []):
+            work_session.commits = [*(work_session.commits or []), commit_sha]
+            await self.session.flush()
+
+            self.log.debug(
+                "Commit added to session",
+                session_id=str(session_id),
+                commit_sha=commit_sha[:8],
+            )
+
+        return work_session
+
+    async def add_files_modified(
+        self,
+        session_id: UUID,
+        file_paths: list[str],
+    ) -> WorkSessionTable | None:
+        """
+        Add modified files to the work session.
+
+        Args:
+            session_id: Session to update
+            file_paths: List of file paths modified
+
+        Returns:
+            The updated session or None if not found
+        """
+        work_session = await self.get(session_id)
+        if not work_session:
+            return None
+
+        # Add new files (deduplicate)
+        existing_files = set(work_session.files_modified)
+        new_files = [f for f in file_paths if f not in existing_files]
+
+        if new_files:
+            work_session.files_modified = [*work_session.files_modified, *new_files]
+            await self.session.flush()
+
+        return work_session
+
+    async def files_changed(self, work_session_id: UUID) -> list[str]:
+        """Files modified during this work session (empty list if none/unknown)."""
+        work_session = await self.get(work_session_id)
+        if work_session is None:
+            return []
+        return list(work_session.files_modified or [])
+
+    async def has_unpushed_commits(self, work_session_id: UUID) -> bool:
+        """True iff the session has commits that haven't been pushed.
+
+        The schema doesn't track per-commit push state, so we use PR
+        existence as the proxy: a PR can only exist after a successful
+        push. Sessions with commits but no PR are treated as unpushed.
+        """
+        work_session = await self.get(work_session_id)
+        if work_session is None:
+            return False
+        if not work_session.commits:
+            return False
+        return work_session.pr_number is None
+
+
+class WorkSessionPRs(_Base):
+    """A session's pull request: recording it, its status, and its merge."""
+
+    async def create_pr(
+        self,
+        session_id: UUID,
+        pr_number: int,
+        pr_url: str,
+    ) -> WorkSessionTable | None:
+        """
+        Record PR creation for the work session.
+
+        Called when developer creates a PR for their branch.
+
+        Args:
+            session_id: Session to update
+            pr_number: GitHub/GitLab PR number
+            pr_url: Full URL to the PR
+
+        Returns:
+            The updated session or None if not found
+        """
+        work_session = await self.get(session_id)
+        if not work_session:
+            return None
+
+        work_session.pr_number = pr_number
+        work_session.pr_url = pr_url
+        work_session.pr_status = "open"
+        work_session.pr_created_at = datetime.now(UTC)
+        await self.session.flush()
+
+        self.log.info(
+            "PR created for session",
+            session_id=str(session_id),
+            pr_number=pr_number,
+            pr_url=pr_url,
+        )
+        return work_session
+
+    async def update_pr_status(
+        self,
+        session_id: UUID,
+        pr_status: str,
+    ) -> WorkSessionTable | None:
+        """
+        Update the PR status.
+
+        Args:
+            session_id: Session to update
+            pr_status: New PR status (open, merged, closed)
+
+        Returns:
+            The updated session or None if not found
+        """
+        work_session = await self.get(session_id)
+        if not work_session:
+            return None
+
+        work_session.pr_status = pr_status
+        await self.session.flush()
+
+        return work_session
+
+    async def merge_pr(
+        self,
+        session_id: UUID,
+        merged_by: UUID,
+    ) -> WorkSessionTable | None:
+        """
+        Record PR merge and complete the session.
+
+        Called when the PR is merged (by PM approval).
+
+        Args:
+            session_id: Session to update
+            merged_by: Agent who approved/merged the PR
+
+        Returns:
+            The updated session or None if not found
+        """
+        # Lock the row FOR UPDATE before the status check so two concurrent
+        # merge_pr calls (retried CEO double-click racing PM auto-complete)
+        # serialize — only one writes merged_by / pr_merged_at. `of=...` scopes
+        # the lock to WorkSessionTable because project/agent are lazy="joined",
+        # else Postgres rejects FOR UPDATE on the nullable join side.
+        lock_result = await self.session.execute(
+            select(WorkSessionTable)
+            .where(WorkSessionTable.id == session_id)
+            .with_for_update(of=WorkSessionTable)
+        )
+        work_session = lock_result.scalar_one_or_none()
+        if not work_session:
+            return None
+
+        # Idempotency + active-guard (F062), mirroring close(): a session that is
+        # already terminal (COMPLETED — a retried merge after a
+        # successful-but-unconfirmed GitHub merge; or ABANDONED — a superseded
+        # session) is returned unchanged. Without this, a retry overwrote
+        # merged_by / pr_merged_at with the retry's actor/timestamp (corrupting
+        # the merge audit trail) and an ABANDONED session was resurrected to
+        # COMPLETED (undoing the single-active abandonment). Not a warning
+        # because the caller may legitimately double-call on retry/idempotency.
+        if work_session.status != WorkSessionStatus.ACTIVE:
+            return work_session
+
+        work_session.pr_status = "merged"
+        work_session.pr_merged_at = datetime.now(UTC)
+        work_session.merged_by = cast("Any", merged_by)
+        work_session.status = WorkSessionStatus.COMPLETED
+        work_session.ended_at = datetime.now(UTC)
+        await self.session.flush()
+
+        self.log.info(
+            "PR merged, session completed",
+            session_id=str(session_id),
+            pr_number=work_session.pr_number,
+            merged_by=str(merged_by),
+        )
+        return work_session
+
+
+class WorkSessionService(
+    BaseService, WorkSessionCommits, WorkSessionPRs, WorkSessionQueries
+):
     """
     Service for managing git work sessions.
 
@@ -208,366 +603,13 @@ class WorkSessionService(BaseService):
     # QUERIES
     # =========================================================================
 
-    async def get_active_for_task(
-        self,
-        task_id: UUID,
-    ) -> WorkSessionTable | None:
-        """
-        Get the active work session for a task.
-
-        Args:
-            task_id: Task to find session for
-
-        Returns:
-            Active work session or None
-
-        Resilient to the historical duplicate-ACTIVE-rows defect: a task is
-        owned by one agent at a time, but a re-claim by a different agent used
-        to leave the prior holder's ACTIVE session open, so a task could carry
-        more than one ACTIVE row. ``scalar_one_or_none`` *raised*
-        ``MultipleResultsFound`` on those rows — the failure surfaced as the
-        cryptic ``'NoneType' object has no attribute 'id'`` that wedged
-        ``i_will_plan`` into an infinite respawn loop. Returning the most recent
-        ACTIVE session instead never raises; the invariant is now also enforced
-        at creation and by a partial unique index (migration 047).
-        """
-        result = await self.session.execute(
-            select(WorkSessionTable)
-            .where(
-                and_(
-                    WorkSessionTable.task_id == task_id,
-                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
-                )
-            )
-            .order_by(WorkSessionTable.started_at.desc())
-        )
-        return result.scalars().first()
-
-    async def get_active_for_task_and_agent(
-        self,
-        task_id: UUID,
-        agent_id: UUID,
-    ) -> WorkSessionTable | None:
-        """
-        Get active work session for a task by a specific agent.
-
-        Args:
-            task_id: Task ID
-            agent_id: Agent ID
-
-        Returns:
-            Active work session or None
-        """
-        result = await self.session.execute(
-            select(WorkSessionTable)
-            .where(
-                and_(
-                    WorkSessionTable.task_id == task_id,
-                    WorkSessionTable.agent_id == agent_id,
-                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
-                )
-            )
-            .order_by(WorkSessionTable.started_at.desc())
-        )
-        return result.scalars().first()
-
-    async def supersede_active_sessions_for_task(
-        self,
-        task_id: UUID,
-        keep_agent_id: UUID | None = None,
-    ) -> int:
-        """Abandon every ACTIVE work session for a task (single-active invariant).
-
-        A task is owned by exactly one agent at a time, so it must have at most
-        one ACTIVE work session. A re-claim by a different agent (pool release,
-        reaper unclaim, escalation redirect) used to leave the prior holder's
-        ACTIVE session open, accumulating duplicate ACTIVE rows;
-        ``get_active_for_task`` then hit ``MultipleResultsFound`` and the verb
-        flow crashed with ``'NoneType' object has no attribute 'id'`` —
-        wedging the task into an infinite respawn loop. Closing stale sessions
-        before a new claim keeps the invariant. Pass ``keep_agent_id`` to spare
-        the incoming claimant's own session. Returns the count superseded.
-        """
-        stmt = select(WorkSessionTable).where(
-            and_(
-                WorkSessionTable.task_id == task_id,
-                WorkSessionTable.status == WorkSessionStatus.ACTIVE,
-            )
-        )
-        if keep_agent_id is not None:
-            stmt = stmt.where(WorkSessionTable.agent_id != keep_agent_id)
-        result = await self.session.execute(stmt)
-        superseded = 0
-        for ws in result.scalars().all():
-            ws.status = WorkSessionStatus.ABANDONED
-            ws.ended_at = datetime.now(UTC)
-            superseded += 1
-        if superseded:
-            await self.session.flush()
-        return superseded
-
-    async def list_by_agent(
-        self,
-        agent_id: UUID,
-        status: WorkSessionStatus | None = None,
-    ) -> list[WorkSessionTable]:
-        """
-        List work sessions for an agent.
-
-        Args:
-            agent_id: Agent to list sessions for
-            status: Optional status filter
-
-        Returns:
-            List of work sessions
-        """
-        query = select(WorkSessionTable).where(WorkSessionTable.agent_id == agent_id)
-
-        if status:
-            query = query.where(WorkSessionTable.status == status)
-
-        query = query.order_by(WorkSessionTable.started_at.desc())
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def list_by_project(
-        self,
-        project_id: UUID,
-        status: WorkSessionStatus | None = None,
-    ) -> list[WorkSessionTable]:
-        """
-        List work sessions for a project.
-
-        Args:
-            project_id: Project to list sessions for
-            status: Optional status filter
-
-        Returns:
-            List of work sessions
-        """
-        query = select(WorkSessionTable).where(
-            WorkSessionTable.project_id == project_id
-        )
-
-        if status:
-            query = query.where(WorkSessionTable.status == status)
-
-        query = query.order_by(WorkSessionTable.started_at.desc())
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def list_active_sessions(
-        self,
-        project_id: UUID | None = None,
-    ) -> list[WorkSessionTable]:
-        """
-        List all active work sessions.
-
-        Args:
-            project_id: Optional project filter
-
-        Returns:
-            List of active work sessions
-        """
-        query = select(WorkSessionTable).where(
-            WorkSessionTable.status == WorkSessionStatus.ACTIVE
-        )
-
-        if project_id:
-            query = query.where(WorkSessionTable.project_id == project_id)
-
-        query = query.order_by(WorkSessionTable.started_at.desc())
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
     # =========================================================================
     # COMMIT TRACKING
     # =========================================================================
 
-    async def add_commit(
-        self,
-        session_id: UUID,
-        commit_sha: str,
-    ) -> WorkSessionTable | None:
-        """
-        Add a commit to the work session.
-
-        Args:
-            session_id: Session to update
-            commit_sha: Git commit SHA
-
-        Returns:
-            The updated session or None if not found
-        """
-        work_session = await self.get(session_id)
-        if not work_session:
-            return None
-
-        if commit_sha not in (work_session.commits or []):
-            work_session.commits = [*(work_session.commits or []), commit_sha]
-            await self.session.flush()
-
-            self.log.debug(
-                "Commit added to session",
-                session_id=str(session_id),
-                commit_sha=commit_sha[:8],
-            )
-
-        return work_session
-
-    async def add_files_modified(
-        self,
-        session_id: UUID,
-        file_paths: list[str],
-    ) -> WorkSessionTable | None:
-        """
-        Add modified files to the work session.
-
-        Args:
-            session_id: Session to update
-            file_paths: List of file paths modified
-
-        Returns:
-            The updated session or None if not found
-        """
-        work_session = await self.get(session_id)
-        if not work_session:
-            return None
-
-        # Add new files (deduplicate)
-        existing_files = set(work_session.files_modified)
-        new_files = [f for f in file_paths if f not in existing_files]
-
-        if new_files:
-            work_session.files_modified = [*work_session.files_modified, *new_files]
-            await self.session.flush()
-
-        return work_session
-
     # =========================================================================
     # PR LIFECYCLE
     # =========================================================================
-
-    async def create_pr(
-        self,
-        session_id: UUID,
-        pr_number: int,
-        pr_url: str,
-    ) -> WorkSessionTable | None:
-        """
-        Record PR creation for the work session.
-
-        Called when developer creates a PR for their branch.
-
-        Args:
-            session_id: Session to update
-            pr_number: GitHub/GitLab PR number
-            pr_url: Full URL to the PR
-
-        Returns:
-            The updated session or None if not found
-        """
-        work_session = await self.get(session_id)
-        if not work_session:
-            return None
-
-        work_session.pr_number = pr_number
-        work_session.pr_url = pr_url
-        work_session.pr_status = "open"
-        work_session.pr_created_at = datetime.now(UTC)
-        await self.session.flush()
-
-        self.log.info(
-            "PR created for session",
-            session_id=str(session_id),
-            pr_number=pr_number,
-            pr_url=pr_url,
-        )
-        return work_session
-
-    async def update_pr_status(
-        self,
-        session_id: UUID,
-        pr_status: str,
-    ) -> WorkSessionTable | None:
-        """
-        Update the PR status.
-
-        Args:
-            session_id: Session to update
-            pr_status: New PR status (open, merged, closed)
-
-        Returns:
-            The updated session or None if not found
-        """
-        work_session = await self.get(session_id)
-        if not work_session:
-            return None
-
-        work_session.pr_status = pr_status
-        await self.session.flush()
-
-        return work_session
-
-    async def merge_pr(
-        self,
-        session_id: UUID,
-        merged_by: UUID,
-    ) -> WorkSessionTable | None:
-        """
-        Record PR merge and complete the session.
-
-        Called when the PR is merged (by PM approval).
-
-        Args:
-            session_id: Session to update
-            merged_by: Agent who approved/merged the PR
-
-        Returns:
-            The updated session or None if not found
-        """
-        # Lock the row FOR UPDATE before the status check so two concurrent
-        # merge_pr calls (retried CEO double-click racing PM auto-complete)
-        # serialize — only one writes merged_by / pr_merged_at. `of=...` scopes
-        # the lock to WorkSessionTable because project/agent are lazy="joined",
-        # else Postgres rejects FOR UPDATE on the nullable join side.
-        lock_result = await self.session.execute(
-            select(WorkSessionTable)
-            .where(WorkSessionTable.id == session_id)
-            .with_for_update(of=WorkSessionTable)
-        )
-        work_session = lock_result.scalar_one_or_none()
-        if not work_session:
-            return None
-
-        # Idempotency + active-guard (F062), mirroring close(): a session that is
-        # already terminal (COMPLETED — a retried merge after a
-        # successful-but-unconfirmed GitHub merge; or ABANDONED — a superseded
-        # session) is returned unchanged. Without this, a retry overwrote
-        # merged_by / pr_merged_at with the retry's actor/timestamp (corrupting
-        # the merge audit trail) and an ABANDONED session was resurrected to
-        # COMPLETED (undoing the single-active abandonment). Not a warning
-        # because the caller may legitimately double-call on retry/idempotency.
-        if work_session.status != WorkSessionStatus.ACTIVE:
-            return work_session
-
-        work_session.pr_status = "merged"
-        work_session.pr_merged_at = datetime.now(UTC)
-        work_session.merged_by = cast("Any", merged_by)
-        work_session.status = WorkSessionStatus.COMPLETED
-        work_session.ended_at = datetime.now(UTC)
-        await self.session.flush()
-
-        self.log.info(
-            "PR merged, session completed",
-            session_id=str(session_id),
-            pr_number=work_session.pr_number,
-            merged_by=str(merged_by),
-        )
-        return work_session
 
     # =========================================================================
     # SESSION LIFECYCLE
@@ -688,27 +730,6 @@ class WorkSessionService(BaseService):
     # =========================================================================
     # GATEWAY (CHOREOGRAPHER) BACKFILL
     # =========================================================================
-
-    async def files_changed(self, work_session_id: UUID) -> list[str]:
-        """Files modified during this work session (empty list if none/unknown)."""
-        work_session = await self.get(work_session_id)
-        if work_session is None:
-            return []
-        return list(work_session.files_modified or [])
-
-    async def has_unpushed_commits(self, work_session_id: UUID) -> bool:
-        """True iff the session has commits that haven't been pushed.
-
-        The schema doesn't track per-commit push state, so we use PR
-        existence as the proxy: a PR can only exist after a successful
-        push. Sessions with commits but no PR are treated as unpushed.
-        """
-        work_session = await self.get(work_session_id)
-        if work_session is None:
-            return False
-        if not work_session.commits:
-            return False
-        return work_session.pr_number is None
 
 
 # =============================================================================
