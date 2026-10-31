@@ -1133,12 +1133,15 @@ async def test_b37_trip_consults_coroner_wedged_postmortem(
     followed by exactly one decisions-gated postmortem consult."""
     engine = _bare(RespawnTripEngine)
     monkeypatch.setattr(engine, "_PM_RESPAWN_MAX_UNPRODUCTIVE", 3, raising=False)
-    monkeypatch.setattr(
-        engine, "_schedule_respawn_persist", MagicMock(return_value=None)
-    )
     monkeypatch.setattr(engine, "_mark_task_stalled", AsyncMock())
-    # _notify_stuck_agent lives on another orchestrator mixin, absent from
-    # the bare breaker under test.
+    # _schedule_respawn_persist and _notify_stuck_agent live on other
+    # orchestrator mixins, absent from the bare engine under test.
+    monkeypatch.setattr(
+        engine,
+        "_schedule_respawn_persist",
+        MagicMock(return_value=None),
+        raising=False,
+    )
     monkeypatch.setattr(engine, "_notify_stuck_agent", AsyncMock(), raising=False)
     coroner = AsyncMock(return_value=None)
     monkeypatch.setattr(engine, "_coroner_wedged_postmortem", coroner)
