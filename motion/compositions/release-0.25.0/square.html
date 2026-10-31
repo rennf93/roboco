@@ -115,16 +115,28 @@
       .pk-intake { --pk-intake-top: 18px; }
       .pk-intake__field { height: 60px; font-size: 28px; }
       .pk-column { --pk-column-top: 130px; width: 560px; }
+      /* The square has 1080px for what the vertical spreads over 1920. With
+         the chip and the status pill on rows of their own, four cards ran
+         83px past the frame and under the toast and the outro. Here they
+         share one row, which gives the 164px card pitch the cursor's
+         waypoints and the camera's shots were authored for. */
       .pk-column .pk-card {
         position: static;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        column-gap: 12px;
         margin-bottom: 12px;
-        padding: 18px 24px;
+        padding: 16px 24px;
         /* Springy entrance (see vertical.html); flat fades read as slides. */
         animation-duration: 0.55s;
         animation-timing-function: cubic-bezier(0.34, 1.4, 0.64, 1);
       }
       .pk-card__title { font-size: 28px; }
       .r25-sub { font-size: 18px; }
+      .pk-card__title, .r25-sub { grid-column: 1 / -1; }
+      .pk-card__meta, .pk-card__status { margin-top: 14px; }
+      .pk-card__status { height: 48px; }
 
       .r25-stats {
         position: absolute;
@@ -153,7 +165,9 @@
       .r25-stats__line--accent { color: var(--pk-accent); }
       @keyframes r25-stats-out { to { opacity: 0; } }
 
-      .pk-toast { --pk-toast-bottom: 84px; width: 480px; }
+      /* The end band: the outro holds the left, the toast the right, both on
+         the frame's bottom margin and clear of the last card. */
+      .pk-toast { --pk-toast-bottom: 28px; width: 400px; }
 
       .pk-outro { --pk-outro-bottom: 28px; }
       .r25-outro__logo {

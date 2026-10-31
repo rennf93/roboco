@@ -121,8 +121,23 @@
 
       /* ---- Content placement --------------------------------------------- */
       .pk-intake { --pk-intake-top: 20px; }
-      .pk-column { --pk-column-top: 168px; width: 660px; }
-      .pk-column .pk-card { position: static; margin-bottom: 12px; padding: 18px 26px; }
+      .pk-column { --pk-column-top: 150px; width: 660px; }
+      /* With the chip and the status pill on rows of their own, the third
+         card ran to the frame's bottom edge, under the toast and the
+         closing lockup. Here they share one row, which leaves the toast a
+         band of its own between the last card and the lockup. */
+      .pk-column .pk-card {
+        position: static;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        column-gap: 12px;
+        margin-bottom: 12px;
+        padding: 14px 26px;
+      }
+      .pk-card__title, .rc-sub { grid-column: 1 / -1; }
+      .pk-card__meta, .pk-card__status { margin-top: 14px; }
+      .pk-card__status { height: 48px; }
       .rc-sub {
         margin-top: 8px;
         font-size: 18px;
@@ -173,7 +188,7 @@
         to   { opacity: 1; transform: translate(var(--pk-cursor-x1, 0px), var(--pk-cursor-y1, 0px)); }
       }
 
-      .pk-toast { --pk-toast-bottom: 84px; width: 480px; }
+      .pk-toast { --pk-toast-bottom: 104px; width: 480px; }
 
       /* Closing lockup: small tile + domain. */
       .pk-outro {
@@ -298,7 +313,7 @@
           <!-- One cursor, one glide, one click at the newest pill's edge.
                Base-hidden + a delayed animation (animation clock rule); see the
                local .pk-cursor override in <style> above for the fade. -->
-          <div data-hf-id="hf-p1ib" class="pk-cursor" style="--pk-cursor-delay: 11s; --pk-cursor-x0: 700px; --pk-cursor-y0: 340px; --pk-cursor-x1: 246px; --pk-cursor-y1: 920px;">
+          <div data-hf-id="hf-p1ib" class="pk-cursor" style="--pk-cursor-delay: 11s; --pk-cursor-x0: 700px; --pk-cursor-y0: 340px; --pk-cursor-x1: 341px; --pk-cursor-y1: 698px;">
             <div data-hf-id="hf-teu6" class="pk-cursor__glyph"></div>
             <div data-hf-id="hf-wrpp" class="pk-cursor__ring" style="--pk-click-delay: 12.4s;"></div>
           </div>
