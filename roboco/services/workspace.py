@@ -763,7 +763,8 @@ class WorkspaceWorktreeHealing(_Base):
             ).returncode
             != 0
         ):
-            return  # never pushed, or the fetch failed — nothing to compare to
+            # Never pushed, or the fetch failed — nothing to compare to
+            return
         ahead = self._worktree_git(
             clone_root, ["rev-list", "--count", f"{origin_ref}..{branch}"], check=False
         )
@@ -776,13 +777,16 @@ class WorkspaceWorktreeHealing(_Base):
         local_behind = behind.stdout.strip()
         if local_ahead == "0":
             if local_behind == "0":
-                return  # already in sync
+                # Already in sync
+                return
             if can_author and self._worktree_is_dirty(worktree):
-                return  # never discard an author's uncommitted edits
+                # Never discard an author's uncommitted edits
+                return
             self._reset_worktree_if_safe(worktree, branch, origin_ref)
             return
         if local_behind == "0":
-            return  # strictly ahead — someone's real unpushed work
+            # Strictly ahead — someone's real unpushed work
+            return
         # Diverged: only a pure reader's copy is disposable.
         if not can_author:
             self._reset_worktree_if_safe(worktree, branch, origin_ref)
