@@ -1,5 +1,7 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: dispatch_routing)."""
+"""How the dispatcher routes a task: the role that should own it, then the
+agent that fills that role.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -23,8 +25,10 @@ else:
     _Base = object
 
 
-class DispatchRoutingEngine(_Base):
-    """Mixin holding the "dispatch_routing" methods moved out of AgentOrchestrator."""
+class RoutingClassifierEngine(_Base):
+    """Which role should own a pending task: board, main_pm, cell_pm, dev or
+    marketing. Reads only the task and the orchestrator's keyword and team
+    tables."""
 
     def _has_board_keywords(self, text: str) -> bool:
         """Check if text contains board-level keywords."""
@@ -129,6 +133,12 @@ class DispatchRoutingEngine(_Base):
             return self._TEAM_ROUTING_MAP[team]
 
         return self._classify_code_task(task, has_children)
+
+
+class DispatchRoutingEngine(_Base):
+    """Which agent fills the routed role: the target slug, the cell PM for a
+    code task that would strand on main-pm, the creator-skip guard, and the
+    PM to dispatch for a review or a blocker."""
 
     def _resolve_routing_target(self, routing: str, task: dict[str, Any]) -> str | None:
         """

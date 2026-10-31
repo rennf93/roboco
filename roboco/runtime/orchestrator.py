@@ -1347,7 +1347,10 @@ from roboco.runtime.engines.dispatch_prompts_programs import (
     MarketingProgramPromptsEngine,
     ProductOwnerProgramPromptsEngine,
 )
-from roboco.runtime.engines.dispatch_routing import DispatchRoutingEngine
+from roboco.runtime.engines.dispatch_routing import (
+    DispatchRoutingEngine,
+    RoutingClassifierEngine,
+)
 from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
 from roboco.runtime.engines.entire_trails import EntireTrailsEngine
 from roboco.runtime.engines.env_sync import EnvSyncEngine
@@ -1389,6 +1392,7 @@ class AgentOrchestrator(
     RateLimitProbeEngine,
     ReconcileEngine,
     ReleaseManagerEngine,
+    RoutingClassifierEngine,
     SpawnConfigEngine,
     SpawnExitEngine,
     SpawnLaunchEngine,
