@@ -1333,7 +1333,20 @@ from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 from roboco.runtime.engines.dep_update import DepUpdateEngine
 from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
 from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
-from roboco.runtime.engines.dispatch_prompts import DispatchPromptsEngine
+from roboco.runtime.engines.dispatch_prompts import (
+    CellReviewPromptsEngine,
+    DevPromptContextEngine,
+    DispatchPromptsEngine,
+)
+from roboco.runtime.engines.dispatch_prompts_management import (
+    ManagementPromptsEngine,
+    NotificationPromptsEngine,
+)
+from roboco.runtime.engines.dispatch_prompts_programs import (
+    AuditorPromptsEngine,
+    MarketingProgramPromptsEngine,
+    ProductOwnerProgramPromptsEngine,
+)
 from roboco.runtime.engines.dispatch_routing import DispatchRoutingEngine
 from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
 from roboco.runtime.engines.entire_trails import EntireTrailsEngine
@@ -1355,9 +1368,12 @@ from roboco.runtime.engines.x_mentions import XMentionsEngine
 
 class AgentOrchestrator(
     SharedEngine,
+    AuditorPromptsEngine,
+    CellReviewPromptsEngine,
     CiWatchEngine,
     DecisionsLabelerEngine,
     DepUpdateEngine,
+    DevPromptContextEngine,
     DispatchBreakerEngine,
     DispatchClaimEngine,
     DispatchPromptsEngine,
@@ -1366,6 +1382,10 @@ class AgentOrchestrator(
     EntireTrailsEngine,
     EnvSyncEngine,
     InteractiveSessionsEngine,
+    ManagementPromptsEngine,
+    MarketingProgramPromptsEngine,
+    NotificationPromptsEngine,
+    ProductOwnerProgramPromptsEngine,
     RateLimitProbeEngine,
     ReconcileEngine,
     ReleaseManagerEngine,

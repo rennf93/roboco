@@ -22,7 +22,13 @@ import structlog
 from roboco.foundation.policy.content import markers as _markers
 from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
 from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
-from roboco.runtime.engines.dispatch_prompts import DispatchPromptsEngine
+from roboco.runtime.engines.dispatch_prompts import (
+    DevPromptContextEngine,
+    DispatchPromptsEngine,
+)
+from roboco.runtime.engines.dispatch_prompts_management import (
+    ManagementPromptsEngine,
+)
 from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
 from roboco.runtime.engines.spawn_exit import SpawnExitEngine
 from roboco.runtime.engines.sweeps import SweepsEngine
@@ -486,7 +492,7 @@ async def test_b30_engine_never_offers_protected_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchPromptsEngine)
+    engine = _bare(DevPromptContextEngine)
     engine._description_body = staticmethod(lambda text, **kw: text)
     description = (
         "Some rambling background about the weather.\n\n"
@@ -526,7 +532,7 @@ async def test_b30_engine_drops_only_offered_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchPromptsEngine)
+    engine = _bare(DevPromptContextEngine)
     engine._description_body = staticmethod(lambda text, **kw: text)
     description = (
         "Filler paragraph one about nothing.\n\n"
@@ -566,7 +572,7 @@ async def test_b30_engine_short_description_bypasses_pilot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchPromptsEngine)
+    engine = _bare(DevPromptContextEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "context_relevance_verdicts", mock)
     rendered = await engine._decisions_pruned_description(
@@ -802,7 +808,7 @@ async def test_b33_confident_delta_applies_with_depth(
 @pytest.mark.asyncio
 async def test_b33_engine_off_renders_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(DispatchPromptsEngine)
+    engine = _bare(DevPromptContextEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "delta_brief", mock)
     assert await engine._delta_brief_block({"id": "t"}) == ""
@@ -814,7 +820,7 @@ async def test_b33_engine_delta_renders_prior_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchPromptsEngine)
+    engine = _bare(DevPromptContextEngine)
     engine._parse_iso_dt = staticmethod(lambda _v: None)
 
     async def fake_delta(
@@ -839,7 +845,7 @@ async def test_b33_engine_fresh_start_renders_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchPromptsEngine)
+    engine = _bare(DevPromptContextEngine)
     engine._parse_iso_dt = staticmethod(lambda _v: None)
 
     async def fake_delta(
@@ -888,7 +894,8 @@ async def test_b35_confident_scores_apply(monkeypatch: pytest.MonkeyPatch) -> No
     verdicts = await pilots_dispatch.review_queue_verdicts(
         MagicMock(), tasks=[{"id": "1"}, {"id": "2"}]
     )
-    assert verdicts == [(2, 3), (0, 3)]  # out-of-band depth clamped to 3
+    # The out-of-band depth is clamped to 3.
+    assert verdicts == [(2, 3), (0, 3)]
 
 
 @pytest.mark.asyncio
@@ -935,8 +942,9 @@ async def test_b35_engine_keeps_tasks_beyond_the_scored_batch(
     async def fake_verdicts(
         session: object, *, tasks: list[dict[str, str]]
     ) -> list[tuple[int | None, int | None]]:
-        assert len(tasks) == 15  # the caller passes the whole queue
-        return [(2, None)] * 12  # the pilot only scored the first 12
+        # The caller passes the whole queue; the pilot scored only the first 12.
+        assert len(tasks) == 15
+        return [(2, None)] * 12
 
     monkeypatch.setattr(pilots_dispatch, "review_queue_verdicts", fake_verdicts)
 
@@ -1428,7 +1436,7 @@ async def test_b42_engine_off_skips_ask(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_b42_closure_prompt_renders_advisory_line() -> None:
-    engine = _bare(DispatchPromptsEngine)
+    engine = _bare(ManagementPromptsEngine)
     prompt = engine._build_pm_closure_prompt(
         {"id": "t", "title": "T", "team": "backend"},
         [],
