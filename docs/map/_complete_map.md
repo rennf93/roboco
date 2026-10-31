@@ -8246,6 +8246,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/events/bus.py` | Backward-compat shim: `EventBus = StreamEventBus`, `get_event_bus`, `init_event_bus` | 57 |
 | `roboco/events/handlers.py` | Workflow trigger handlers (task status → notifications, QA result, blocker, question, auditor spawn) + `register_default_handlers` | 419 |
 | `roboco/events/stream_bus.py` | `StreamEventBus`: Redis Streams durable event bus with consumer groups, ACK, pending recovery, periodic reclaim loop, dead-letter for undecodable messages | 604 |
+| `roboco/events/_stream_bus_types.py` | `StreamEventBusSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `StreamEventBus` mixins reach through `self`, plus its instance attributes; `tests/unit/events/test_stream_event_bus_mixins.py` fails on a stray stub or a member defined twice | 77 |
 | `roboco/seeds/__init__.py` | Re-exports seed constants | 17 |
 | `roboco/seeds/initial_data.py` | Static seed data (agents) derived from `foundation` catalogs | 114 |
 | `roboco/utils/__init__.py` | Re-exports crypto + converter helpers | 23 |
@@ -8325,14 +8326,16 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `SecondReviewService` | class | `services/second_review.py:186` | DB-backed entry point: `enabled_providers()` reads distinct enabled types via `ProviderService.list_providers(include_disabled=False)`; `resolve_second_reviewer_for_agent` resolves the authoring provider via `ModelRoutingService.resolve_for_agent` then delegates to the pure resolver; `is_high_stakes_with_decisions` delegates to `task_is_high_stakes_with_decisions` |
 | `task_is_high_stakes_with_decisions` | func | `services/second_review.py:113` | B9 decisions screen layered on `task_is_high_stakes`: may only ADD eligibility (a deterministic True short-circuits; with `cross_vendor_review_enabled` off it returns False without consulting the screen; any screen failure keeps the deterministic verdict) |
 | `get_second_review_service` | func | `services/second_review.py:229` | Factory mirroring the other `get_*_service` singletons in this package |
-| `StreamEventBus` | class | `events/stream_bus.py:35` | Redis Streams bus: `xadd` trim, `xreadgroup` block=5000, ACK-on-success, `xclaim` recovery, periodic `_reclaim_loop`, dead-letter for undecodable messages |
-| `DEAD_LETTER_STREAM` | class attr | `events/stream_bus.py:51` | `"roboco:stream:dead-letter"` — undecodable messages are parked here before ACK for operator inspection |
-| `publish` / `publish_task_event` | methods | `events/stream_bus.py:162,201` | `xadd` to category-grouped stream, returns message id |
-| `recover_pending` | method | `events/stream_bus.py:581` | Per stream: `xpending_range` (up to 100), then `xclaim` + `_handle_message` each message idle ≥ `idle_time_ms` (default 60s); a message delivered more than `MAX_DELIVERY_COUNT` (5) times is dead-lettered (`max_delivery_count_exceeded`) and ACKed instead of reclaimed; per-stream errors are logged, not raised. Called at startup and every 60s by `_reclaim_loop` |
-| `_reclaim_loop` | method | `events/stream_bus.py:263` | Background task spawned alongside `_listen_loop`; re-runs `recover_pending` every 60s so runtime handler failures are retried without waiting for a restart |
-| `_handle_message` | method | `events/stream_bus.py:451` | Decode (poison-pill: dead-letter+ACK on `Event.from_json` failure) → dispatch → ACK iff all handlers succeeded (else stays pending for reclaim) |
-| `_dead_letter` | method | `events/stream_bus.py:413` | Best-effort write to `DEAD_LETTER_STREAM`; never blocks ACK on publish failure |
-| `get_stream_event_bus` / `init_stream_event_bus` | funcs | `events/stream_bus.py:624,631` | Singleton + connect + optional startup pending recovery |
+| `StreamEventBus` | class | `events/stream_bus.py:427` | Redis Streams bus: `xadd` trim, `xreadgroup` block=5000, ACK-on-success, `xclaim` recovery, periodic `_reclaim_loop`, dead-letter for undecodable messages |
+| `StreamConsumer` | class | stream_bus.py:40 | Mixin of `StreamEventBus` (10 methods): Consuming the streams: the listen and reclaim loops, one listen tick, decoding an event, dispatching it to its handlers, and checking their results. |
+| `StreamRecovery` | class | stream_bus.py:279 | Mixin of `StreamEventBus` (6 methods): Recovering what consumers left behind: dead-lettering, claiming and handling pending messages, and the pending-recovery pass per stream. |
+| `DEAD_LETTER_STREAM` | class attr | `events/stream_bus.py:443` | `"roboco:stream:dead-letter"` — undecodable messages are parked here before ACK for operator inspection |
+| `publish` / `publish_task_event` | methods | `events/stream_bus.py:554,593` | `xadd` to category-grouped stream, returns message id |
+| `recover_pending` | method | `events/stream_bus.py:395` | Per stream: `xpending_range` (up to 100), then `xclaim` + `_handle_message` each message idle ≥ `idle_time_ms` (default 60s); a message delivered more than `MAX_DELIVERY_COUNT` (5) times is dead-lettered (`max_delivery_count_exceeded`) and ACKed instead of reclaimed; per-stream errors are logged, not raised. Called at startup and every 60s by `_reclaim_loop` |
+| `_reclaim_loop` | method | `events/stream_bus.py:72` | Background task spawned alongside `_listen_loop`; re-runs `recover_pending` every 60s so runtime handler failures are retried without waiting for a restart |
+| `_handle_message` | method | `events/stream_bus.py:222` | Decode (poison-pill: dead-letter+ACK on `Event.from_json` failure) → dispatch → ACK iff all handlers succeeded (else stays pending for reclaim) |
+| `_dead_letter` | method | `events/stream_bus.py:283` | Best-effort write to `DEAD_LETTER_STREAM`; never blocks ACK on publish failure |
+| `get_stream_event_bus` / `init_stream_event_bus` | funcs | `events/stream_bus.py:639,646` | Singleton + connect + optional startup pending recovery |
 | `handle_task_status_change` | func | `events/handlers.py:146` | Routes task.* events to PM/QA/Documenter/developer notifications |
 | `handle_auditor_spawn` | func | `events/handlers.py:310` | One-shot auditor spawn on blocked/cancelled/awaiting_ceo_approval; failures swallowed |
 | `register_default_handlers` | func | `events/handlers.py:352` | Subscribes all default handlers on the bus |
@@ -8579,6 +8582,8 @@ No logic-touching commits to list — IMPACT: none.
 > - `82642bea` (2026-07-18, PR #554, Telegram V3 Mini App) adds `roboco/utils/telegram_initdata.py` (new file, pure `validate_init_data`) — no other file in this slice's scope touched by the PR.
 
 > **2026-10-31** (Planning trail #51, wave 3): `ModelRoutingService` splits in place into 6 mixins in `llm.py`, every method body byte-identical: `ModelRouteResolution` (6), `ModelAssignments` (7), `ModelProviderKeys` (6), `ModelModeSwitch` (7), `ModelProviderModes` (8), `ModelRoutingPresets` (6). `ModelRoutingService` keeps its resolution core (`resolve_for_agent`, `_resolve_assignment`, `_route_from_resolved`, `_route_from_assignment`, the assignment and local-provider lookups, `_validate_scope`), composes them, and is no longer a god class. Rows naming `ModelRoutingService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `ModelRoutingServiceSelf` (`roboco/services/_model_routing_types.py`).
+
+> **2026-10-31** (Planning trail #51, wave 3): `StreamEventBus` splits in place into 2 mixins in `stream_bus.py`, every method body byte-identical: `StreamConsumer` (10), `StreamRecovery` (6). `StreamEventBus` keeps its connect, subscribe and publish core (`__init__`, `connect`, `is_connected`, `redis`, `disconnect`, `start_listening`, `subscribe`, `unsubscribe`, the stream names, the consumer group, `publish`, `publish_task_event`), composes them, and is no longer a god class. Rows naming `StreamEventBus.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `StreamEventBusSelf` (`roboco/events/_stream_bus_types.py`).
 
 ## Regression Risks
 
