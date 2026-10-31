@@ -18,22 +18,64 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 if TYPE_CHECKING:
+    import asyncio
     from datetime import datetime
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.db.tables import AgentTable, TaskTable
-    from roboco.models.base import TaskStatus, Team
+    from roboco.db.tables import AgentTable, TaskTable, WorkSessionTable
+    from roboco.models.base import AgentRole, TaskStatus, Team
     from roboco.models.task import TaskCreateRequest
     from roboco.services.task import _ClaimFieldSnapshot, _LineageCutContext
     from roboco.services.uptime import UptimeLedger
 
 
+class TaskAgentQueriesSurface(Protocol):
+    """``TaskAgentQueries``'s members that other classes reach."""
+
+    async def held_task_blocking_claim(
+        self, agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None: ...
+
+
 class TaskBranchesSurface(Protocol):
     """``TaskBranches``'s members that other classes reach."""
 
+    async def _create_work_session_if_needed(
+        self, task: TaskTable, agent_id: UUID, agent_role: str | None
+    ) -> WorkSessionTable | None: ...
+    async def _ensure_branch_for_task(self, task: TaskTable, agent_id: UUID) -> str: ...
     async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str: ...
+
+
+class TaskClaimSurface(Protocol):
+    """``TaskClaim``'s members that other classes reach."""
+
+    def _mark_agent_active_for_claim(
+        self, agent: AgentTable | None, task_id: Any
+    ) -> None: ...
+
+
+class TaskClaimRulesSurface(Protocol):
+    """``TaskClaimRules``'s members that other classes reach."""
+
+    def _set_original_developer_context(
+        self, task: TaskTable, agent: AgentTable | None
+    ) -> None: ...
+    async def _validate_claim_preconditions(
+        self,
+        task: TaskTable,
+        agent: AgentTable | None,
+        agent_id: UUID,
+        allow_reassign: bool,
+    ) -> bool: ...
+
+
+class TaskClaimSequenceSurface(Protocol):
+    """``TaskClaimSequence``'s members that other classes reach."""
+
+    async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None: ...
 
 
 class TaskCreationSurface(Protocol):
@@ -45,12 +87,19 @@ class TaskCreationSurface(Protocol):
     async def create(self, req: TaskCreateRequest) -> TaskTable: ...
 
 
+class TaskDependenciesSurface(Protocol):
+    """``TaskDependencies``'s members that other classes reach."""
+
+    async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]: ...
+
+
 class TaskLineageSurface(Protocol):
     """``TaskLineage``'s members that other classes reach."""
 
     async def _apply_dependency_lineage(
         self, task: TaskTable, ctx: _LineageCutContext
     ) -> None: ...
+    async def _inherit_upstream_base(self, task: TaskTable, agent_id: UUID) -> None: ...
 
 
 class TaskListQueriesSurface(Protocol):
@@ -73,8 +122,11 @@ class TaskSurface(Protocol):
     """``TaskService``'s members that other classes reach."""
 
     _AGENT_NON_TERMINAL_STATUSES: ClassVar[set[TaskStatus]]
+    _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]]
     _DEV_ACTIVE_STATUSES: ClassVar[set[TaskStatus]]
     _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]]
+    _MANAGEMENT_ROLES: frozenset[str]
+    _SINGLE_ACTIVE_TASK_ROLES: ClassVar[frozenset[AgentRole]]
 
     async def _admin_out_of_blocked(
         self,
@@ -93,7 +145,9 @@ class TaskSurface(Protocol):
         actor_id: str | UUID | None,
         actor_role: str | None,
     ) -> None: ...
-    async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None: ...
+
+    _background_tasks: ClassVar[set[asyncio.Task[None]]]
+
     async def _clear_agent_current_task(
         self, agent_id: UUID | None, task_id: UUID
     ) -> None: ...
@@ -105,9 +159,6 @@ class TaskSurface(Protocol):
         to_status: str,
         agent_role: str | None,
         audit_agent_id: str | UUID | None,
-    ) -> None: ...
-    def _mark_agent_active_for_claim(
-        self, agent: AgentTable | None, task_id: Any
     ) -> None: ...
     async def _materialize_vault_note(self, task: TaskTable) -> None: ...
     @staticmethod
@@ -130,9 +181,6 @@ class TaskSurface(Protocol):
         audit_agent_id: str | UUID | None = ...,
         extra_allowed_roles: tuple[str, ...] = ...,
     ) -> None: ...
-    async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]: ...
-    async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]: ...
-    async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]: ...
 
 
 class TaskStalledSurface(Protocol):
@@ -141,14 +189,27 @@ class TaskStalledSurface(Protocol):
     async def _load_uptime_ledger(self, now: datetime) -> UptimeLedger | None: ...
 
 
+class TaskTreeSurface(Protocol):
+    """``TaskTree``'s members that other classes reach."""
+
+    async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]: ...
+    async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]: ...
+
+
 class TaskServiceSelf(
+    TaskAgentQueriesSurface,
     TaskBranchesSurface,
+    TaskClaimSurface,
+    TaskClaimRulesSurface,
+    TaskClaimSequenceSurface,
     TaskCreationSurface,
+    TaskDependenciesSurface,
     TaskLineageSurface,
     TaskListQueriesSurface,
     TaskRecordsSurface,
     TaskSurface,
     TaskStalledSurface,
+    TaskTreeSurface,
     Protocol,
 ):
     """Every cross-class member a moved method body reaches via ``self``:
