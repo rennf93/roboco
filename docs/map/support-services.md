@@ -110,13 +110,13 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `StreamEventBus` | class | `events/stream_bus.py:427` | Redis Streams bus: `xadd` trim, `xreadgroup` block=5000, ACK-on-success, `xclaim` recovery, periodic `_reclaim_loop`, dead-letter for undecodable messages |
 | `StreamConsumer` | class | stream_bus.py:40 | Mixin of `StreamEventBus` (10 methods): Consuming the streams: the listen and reclaim loops, one listen tick, decoding an event, dispatching it to its handlers, and checking their results. |
 | `StreamRecovery` | class | stream_bus.py:279 | Mixin of `StreamEventBus` (6 methods): Recovering what consumers left behind: dead-lettering, claiming and handling pending messages, and the pending-recovery pass per stream. |
-| `DEAD_LETTER_STREAM` | class attr | `events/stream_bus.py:443` | `"roboco:stream:dead-letter"` — undecodable messages are parked here before ACK for operator inspection |
-| `publish` / `publish_task_event` | methods | `events/stream_bus.py:554,593` | `xadd` to category-grouped stream, returns message id |
+| `DEAD_LETTER_STREAM` | class attr | `events/stream_bus.py:444` | `"roboco:stream:dead-letter"` — undecodable messages are parked here before ACK for operator inspection |
+| `publish` / `publish_task_event` | methods | `events/stream_bus.py:555,594` | `xadd` to category-grouped stream, returns message id |
 | `recover_pending` | method | `events/stream_bus.py:395` | Per stream: `xpending_range` (up to 100), then `xclaim` + `_handle_message` each message idle ≥ `idle_time_ms` (default 60s); a message delivered more than `MAX_DELIVERY_COUNT` (5) times is dead-lettered (`max_delivery_count_exceeded`) and ACKed instead of reclaimed; per-stream errors are logged, not raised. Called at startup and every 60s by `_reclaim_loop` |
 | `_reclaim_loop` | method | `events/stream_bus.py:72` | Background task spawned alongside `_listen_loop`; re-runs `recover_pending` every 60s so runtime handler failures are retried without waiting for a restart |
 | `_handle_message` | method | `events/stream_bus.py:222` | Decode (poison-pill: dead-letter+ACK on `Event.from_json` failure) → dispatch → ACK iff all handlers succeeded (else stays pending for reclaim) |
 | `_dead_letter` | method | `events/stream_bus.py:283` | Best-effort write to `DEAD_LETTER_STREAM`; never blocks ACK on publish failure |
-| `get_stream_event_bus` / `init_stream_event_bus` | funcs | `events/stream_bus.py:639,646` | Singleton + connect + optional startup pending recovery |
+| `get_stream_event_bus` / `init_stream_event_bus` | funcs | `events/stream_bus.py:640,647` | Singleton + connect + optional startup pending recovery |
 | `handle_task_status_change` | func | `events/handlers.py:146` | Routes task.* events to PM/QA/Documenter/developer notifications |
 | `handle_auditor_spawn` | func | `events/handlers.py:310` | One-shot auditor spawn on blocked/cancelled/awaiting_ceo_approval; failures swallowed |
 | `register_default_handlers` | func | `events/handlers.py:352` | Subscribes all default handlers on the bus |

@@ -437,7 +437,8 @@ class StreamEventBus(StreamConsumer, StreamRecovery):
 
     STREAM_PREFIX = "roboco:stream:"
     DEFAULT_GROUP = "roboco-handlers"
-    MAX_STREAM_LENGTH = 10000  # Trim streams to this length
+    # Trim streams to this length
+    MAX_STREAM_LENGTH = 10000
     # Undecodable messages are parked here before ACK so an operator can
     # inspect a poison pill instead of losing it to a silent ACK.
     DEAD_LETTER_STREAM = "roboco:stream:dead-letter"
