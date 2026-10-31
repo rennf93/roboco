@@ -908,7 +908,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 973 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 708 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3311 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3312 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 64 |
@@ -7658,13 +7658,13 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:217 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2228 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2279 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2301 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2312 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:1992 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:1996 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2421 | Commit/PR template link base (`+ /api`) |
+| `settings.git_command_timeout_seconds` | config.py:2229 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2280 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2302 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2313 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:1993 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:1997 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2422 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
 | `settings.github_api_base_url` | config.py:1061 | GitHub REST API base (PR/CI/review) |
 | `settings.release_ci_workflow` | config.py:1537 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
@@ -9667,13 +9667,13 @@ product-strategy-research-pitch
 | `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1099 | Master switch — loop never starts when off |
 | `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1106 | Seconds between strategy assessment passes |
 | `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1111 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2352 | Denylist — `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2353 | Denylist — `ProjectService` rejects `git_url` containing any entry |
 | `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:871 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1889 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1899 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1904 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1909 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1922 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1890 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1900 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1905 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1910 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1923 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 

@@ -445,13 +445,13 @@ product-strategy-research-pitch
 | `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1099 | Master switch — loop never starts when off |
 | `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1106 | Seconds between strategy assessment passes |
 | `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1111 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2352 | Denylist — `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2353 | Denylist — `ProjectService` rejects `git_url` containing any entry |
 | `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:871 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1889 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1899 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1904 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1909 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1922 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1890 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1900 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1905 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1910 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1923 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 
