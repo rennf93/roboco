@@ -1753,22 +1753,12 @@ class WedgedAgentEngine(_Base):
 
 class ProviderUpkeepEngine(_Base):
     """Provider upkeep each dispatcher tick: the Grok cost budget (and the
-    agents' captured cost), and keeping the host Grok and Codex credentials
-    live."""
+    Grok agents' captured cost), and keeping the host Grok and Codex
+    credentials live."""
 
     def _grok_cost_usd(self, agent_id: str) -> float:
         """A GROK agent's captured notional cost from its ``usage.json`` (0 if none)."""
         data = self._grok_usage_json(agent_id)
-        if not data:
-            return 0.0
-        try:
-            return float(data.get("cost_usd", 0.0))
-        except (TypeError, ValueError):
-            return 0.0
-
-    def _gemini_cost_usd(self, agent_id: str) -> float:
-        """A GEMINI agent's captured cost from its ``usage.json`` (0 if none)."""
-        data = self._gemini_usage_json(agent_id)
         if not data:
             return 0.0
         try:

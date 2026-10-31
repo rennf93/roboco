@@ -301,7 +301,7 @@ External:
 - **HTTP routes** (`roboco/api/routes/tasks.py:253`): `get_git_service` for task-scoped git.
 - **Gateway Choreographer** (`roboco/services/gateway/choreographer/`):
   - `_verb_runner._do_pr_merge` → `pr_merge`
-  - `_impl` → `conventions_check_for_task` (i_am_done + pr_pass gates), `is_behind_base` (submit gate), `sync_task_branch` (sync_branch verb), `pr_merge` / `rebase_pr_for_task` / `close_pull_request` (merge-conflict resolution), `get_pr_head_sha` (submit_root re-submit guard), `toolchain_status_for_task` (broken-toolchain guard), `run_pre_submit_quality_gate` (pre-submit quality gate), `push_task_branch` (push before awaiting_qa), `unmerged_child_commits` (assembly-integrity guard), `list_changed_files` (i_am_done files_changed), `diff_and_files` (the Decisions overlap screen), `is_pr_merged_for_task` (cell_pm_complete)
+  - `_impl` / `dev` / `pm` → `conventions_check_for_task` (i_am_done + pr_pass gates), `is_behind_base` (submit gate), `sync_task_branch` (sync_branch verb), `pr_merge` / `rebase_pr_for_task` / `close_pull_request` (merge-conflict resolution), `get_pr_head_sha` (submit_root re-submit guard), `toolchain_status_for_task` (broken-toolchain guard), `run_pre_submit_quality_gate` (pre-submit quality gate), `push_task_branch` (push before awaiting_qa), `unmerged_child_commits` (assembly-integrity guard), `list_changed_files` (i_am_done files_changed), `diff_and_files` (the Decisions overlap screen), `is_pr_merged_for_task` (cell_pm_complete)
   - `pr_gate_evidence.py` → `diff` / `list_changed_files` (the gate reviewer's diff and touched files)
   - `pr_gate_pass.py` → `get_pr_ci_status` (pr_pass CI guard), `diff` (second-review diff)
   - `pr_gate_verdicts.py` → `get_pr_head_sha` (verdict head-SHA stamp), `post_pr_review` (the review posted on the PR)
@@ -314,16 +314,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:217 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2200 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2251 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2273 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2284 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:1964 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:1968 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2393 | Commit/PR template link base (`+ /api`) |
-| `settings.internal_api_url` | config.py:136 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1033 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1509 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.git_command_timeout_seconds` | config.py:2229 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2280 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2302 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2313 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:1993 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:1997 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2422 | Commit/PR template link base (`+ /api`) |
+| `settings.internal_api_url` | config.py:139 | Internal PR body link base |
+| `settings.github_api_base_url` | config.py:1061 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1537 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 

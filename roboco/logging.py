@@ -133,7 +133,12 @@ def setup_logging() -> None:
     # we have a persistent record that survives container restarts and
     # doesn't depend on docker's log driver rotation policy.
     root = logging.getLogger()
-    root.handlers.clear()
+    # Close what a previous call attached instead of only dropping it: each
+    # dropped rotating file handler kept its log file open.
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
     root.setLevel(log_level)
 
     stdout_handler = logging.StreamHandler(sys.stdout)
@@ -152,8 +157,10 @@ def setup_logging() -> None:
                 log_dir.chmod(0o700)
             file_handler = logging.handlers.RotatingFileHandler(
                 log_dir / "orchestrator.log",
-                maxBytes=50 * 1024 * 1024,  # 50 MB per file
-                backupCount=5,  # keep 5 rotations -> ~250 MB cap
+                # 50 MB per file
+                maxBytes=50 * 1024 * 1024,
+                # Keep 5 rotations -> ~250 MB cap
+                backupCount=5,
                 encoding="utf-8",
             )
             file_handler.setFormatter(logging.Formatter("%(message)s"))

@@ -1038,6 +1038,24 @@ class UsageTokensEngine(_Base):
         except (TypeError, ValueError):
             return None
 
+    def _gemini_usage_cost(self, agent_id: str) -> float | None:
+        """A GEMINI agent's priced spend from its ``usage.json``.
+
+        The entrypoint's capture prices each model's real input/output split
+        at that model's own rate (see ``gemini_cli_usage``). Re-pricing the
+        summed tokens under the session's one model name cannot reproduce a
+        multi-model run, nor a file that predates the split, whose whole total
+        folds into output. Returns ``None`` when absent/unreadable so the
+        caller can fall back to its default costing.
+        """
+        data = self._gemini_usage_json(agent_id)
+        if not data:
+            return None
+        try:
+            return float(data.get("cost_usd", 0.0))
+        except (TypeError, ValueError):
+            return None
+
     def _codex_usage_tokens(
         self, agent_id: str, warn_on_zero: bool = True
     ) -> tuple[int, int, int, int]:
@@ -1246,27 +1264,35 @@ class UsageTokensEngine(_Base):
     ) -> tuple[int, int, int, int]:
         """A GEMINI agent's token usage from its ``usage.json``.
 
-        The entrypoint's usage capture already priced each model's real
-        input/output split at its OWN rate (unlike grok's single-model
-        blanket), but flattens to one ``total_tokens`` for this shape — so,
-        like grok, the whole total folds into output here. A WARNING is
-        logged on a missing/zero read (a silent mount/uid failure is otherwise
-        indistinguishable from a genuine zero-cost run).
+        The entrypoint's usage capture records the run's real input/output
+        split summed over its models (see ``gemini_cli_usage``), returned here
+        like codex's and kimi's. A file written by an image that predates the
+        split carries only ``total_tokens``, which folds into output as grok's
+        does. A WARNING is logged on a missing/zero read (a silent mount/uid
+        failure is otherwise indistinguishable from a genuine zero-cost run).
         """
         data = self._gemini_usage_json(agent_id)
-        total = 0
+        tokens = (0, 0, 0, 0)
         if data:
             try:
-                total = int(data.get("total_tokens", 0))
+                if "tokens_input" in data or "tokens_output" in data:
+                    tokens = (
+                        int(data.get("tokens_input", 0)),
+                        int(data.get("tokens_output", 0)),
+                        0,
+                        0,
+                    )
+                else:
+                    tokens = (0, int(data.get("total_tokens", 0)), 0, 0)
             except (TypeError, ValueError):
-                total = 0
-        if warn_on_zero and not total:
+                tokens = (0, 0, 0, 0)
+        if warn_on_zero and not any(tokens):
             logger.warning(
                 "GEMINI agent finalized with no readable usage "
                 "(0 tokens / $0) — check the data dir mount",
                 agent_id=agent_id,
             )
-        return (0, total, 0, 0)
+        return tokens
 
 
 class SessionFinalizeEngine(_Base):
@@ -1417,26 +1443,28 @@ class SessionFinalizeEngine(_Base):
     ) -> float:
         """Resolve a finalize's ``estimated_cost_usd`` for one spawn session.
 
-        A metered-cost provider's usage.json IS the spend (OpenRouter bills
-        per model at its own rates and the CLI capture sums the per-step
-        metered cost) - recalculating from tokens via the static pricing
-        table cannot know that catalog, so the metered read wins whenever it
-        is present. Everyone else prices through the static pricing table.
-        Split out of ``_finalize_spawn_session`` (which supplies the token
-        buckets) to keep that function's xenon budget flat as metered-cost
-        providers accrete.
+        Where a provider's usage.json already carries the priced spend, that
+        read wins whenever it is present: a metered-cost provider's IS the
+        spend (OpenRouter and Nebius bill per model at their own rates and
+        the CLI capture sums the per-step metered cost), which the static
+        pricing table cannot know, and Gemini's capture priced each model's
+        real input/output split, which the summed token buckets lose.
+        Everyone else prices through the static pricing table. Split out of
+        ``_finalize_spawn_session`` (which supplies the token buckets) to keep
+        that function's xenon budget flat as captured-cost providers accrete.
         """
         from roboco.billing.pricing import calculate_cost
         from roboco.models.base import ModelProvider
 
-        metered_cost_readers = {
+        captured_cost_readers = {
             ModelProvider.OPENROUTER.value: self._openrouter_usage_cost,
             ModelProvider.NEBIUS.value: self._nebius_usage_cost,
+            ModelProvider.GEMINI.value: self._gemini_usage_cost,
         }
-        read_metered_cost = metered_cost_readers.get(provider) if provider else None
-        metered_cost = read_metered_cost(agent_id) if read_metered_cost else None
-        if metered_cost is not None:
-            return metered_cost
+        read_captured_cost = captured_cost_readers.get(provider) if provider else None
+        captured_cost = read_captured_cost(agent_id) if read_captured_cost else None
+        if captured_cost is not None:
+            return captured_cost
         tokens_input, tokens_output, tokens_cache_read, tokens_cache_write = tokens
         return calculate_cost(
             model=model,

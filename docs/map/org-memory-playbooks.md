@@ -8,12 +8,12 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | roboco/services/memory_distiller.py | Local-LLM distiller: turns a completed task into one <=120-word Problem/Approach/Gotcha lesson (best-effort, returns None on failure) | 131 |
 | roboco/services/playbook.py | PlaybookService: draft + Auditor curation state machine (draft/approve/reject/archive) + post-commit RAG index/de-index orchestration | 415 |
 | roboco/services/learning.py | LearningPropagationService: record a learning, index it, notify same-scope non-human agents, scope-filtered retrieval (legacy pre-distiller capture path) | 579 |
-| roboco/services/optimal.py | OptimalService: plugin-based RAG hub over pgvector; owns index_playbook/unindex_playbook/record_learning/search/search_learnings and the singleton accessor | 2454 |
+| roboco/services/optimal.py | OptimalService: plugin-based RAG hub over pgvector; owns index_playbook/unindex_playbook/record_learning/search/search_learnings and the singleton accessor | 2477 |
 | roboco/services/optimal_brain/indexes/base.py | BaseIndexPlugin ABC: chunk/filter/embed/store pipeline, hybrid search, 429-retried ask(); atomic replace_chunks reingest semantics | 1188 |
 | roboco/services/optimal_brain/indexes/learnings.py | LearningsIndexPlugin: record/search cross-agent learnings; forces shareable=True on shared retrieval so private reflections never leak into briefings | 253 |
 | roboco/services/optimal_brain/indexes/playbooks.py | PlaybooksIndexPlugin: index approved playbooks (title+when-to-use+procedure) and delete_playbook de-index | 97 |
 | roboco/services/optimal_brain/indexes/__init__.py | Plugin registry exports (LearningsIndexPlugin, PlaybooksIndexPlugin, etc.) | 34 |
-| roboco/services/optimal_brain/vector_store.py | VectorStore: asyncpg pool over chunks_<index> pgvector tables; add_chunks/delete_by_source/replace_chunks(hybrid_search) | 596 |
+| roboco/services/optimal_brain/vector_store.py | VectorStore: asyncpg pool over chunks_<index> pgvector tables; add_chunks/delete_by_source/replace_chunks(hybrid_search) | 607 |
 | roboco/services/repositories/base.py | BaseRepository: generic CRUD mixin used by IndexedDocumentRepository | 281 |
 | roboco/services/repositories/indexed_document.py | IndexedDocumentRepository: upsert/get/delete_by_source for the indexed_documents tracking table (used by playbook de-index) | 136 |
 | roboco/services/repositories/query_helpers.py | Generic SQLAlchemy query helpers (pagination/status/team/agent/timestamp filters, slug resolution) — not slice-specific | 294 |
@@ -58,17 +58,17 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | LearningPropagationService.get_learnings_for_agent | method | roboco/services/learning.py:357 | Role-shaped search_learnings + post-filter by scope visibility (personal/team) |
 | LearningPropagationService.search_similar_learnings | method | roboco/services/learning.py:538 | Similar-learnings search via OptimalService.search over LEARNINGS index |
 | get_learning_service | function | roboco/services/learning.py:575 | Process-wide singleton accessor for LearningPropagationService |
-| PLUGIN_REGISTRY | dict | roboco/services/optimal.py:198 | IndexType -> plugin class map (includes LEARNINGS, PLAYBOOKS) |
-| OptimalService.initialize | method | roboco/services/optimal.py:242 | Graceful-degradation init of all plugins; starts background auto-index + periodic tasks |
-| OptimalService.close | method | roboco/services/optimal.py:785 | Cancel _indexing_task FIRST, then periodic task, then close plugins (prevent writes to closed plugins) |
-| OptimalService._get_plugin | method | roboco/services/optimal.py:815 | Typed plugin lookup with a clear RuntimeError when missing/uninitialized |
-| OptimalService.index_playbook | method | roboco/services/optimal.py:1070 | Embed an approved playbook + write the indexed_documents tracking row |
-| OptimalService.unindex_playbook | method | roboco/services/optimal.py:1107 | Delete playbook chunks from vector store AND drop tracking row; both steps best-effort/idempotent |
-| OptimalService.record_learning | method | roboco/services/optimal.py:1387 | Embed a learning via LearningsIndexPlugin + write tracking row (source learn-{md5(full content)}) |
-| OptimalService.search | method | roboco/services/optimal.py:1471 | Embed-once fan-out: concurrent hybrid search across selected indexes; used by similar_memory |
-| OptimalService._aggregate_citations | method | roboco/services/optimal.py:1608 | Embed once + concurrent per-index search into an aggregation buffer for RAG query() |
-| OptimalService.search_learnings | method | roboco/services/optimal.py:1906 | LEARNINGS-only search with optional category/team filter (shareable_only=True default) |
-| get_optimal_service | function | roboco/services/optimal.py:2427 | Lock-guarded singleton: publish instance only after initialize() completes |
+| PLUGIN_REGISTRY | dict | roboco/services/optimal.py:200 | IndexType -> plugin class map (includes LEARNINGS, PLAYBOOKS) |
+| OptimalService.initialize | method | roboco/services/optimal.py:248 | Graceful-degradation init of all plugins; starts background auto-index + periodic tasks |
+| OptimalService.close | method | roboco/services/optimal.py:793 | Cancel _indexing_task FIRST, then periodic task, then close plugins (prevent writes to closed plugins) |
+| OptimalService._get_plugin | method | roboco/services/optimal.py:823 | Typed plugin lookup with a clear RuntimeError when missing/uninitialized |
+| OptimalService.index_playbook | method | roboco/services/optimal.py:1079 | Embed an approved playbook + write the indexed_documents tracking row |
+| OptimalService.unindex_playbook | method | roboco/services/optimal.py:1116 | Delete playbook chunks from vector store AND drop tracking row; both steps best-effort/idempotent |
+| OptimalService.record_learning | method | roboco/services/optimal.py:1396 | Embed a learning via LearningsIndexPlugin + write tracking row (source learn-{md5(full content)}) |
+| OptimalService.search | method | roboco/services/optimal.py:1480 | Embed-once fan-out: concurrent hybrid search across selected indexes; used by similar_memory |
+| OptimalService._aggregate_citations | method | roboco/services/optimal.py:1620 | Embed once + concurrent per-index search into an aggregation buffer for RAG query() |
+| OptimalService.search_learnings | method | roboco/services/optimal.py:1918 | LEARNINGS-only search with optional category/team filter (shareable_only=True default) |
+| get_optimal_service | function | roboco/services/optimal.py:2443 | Lock-guarded singleton: publish instance only after initialize() completes |
 | BaseIndexPlugin.ingest | method | roboco/services/optimal_brain/indexes/base.py:369 | Validate -> metadata -> source URI -> chunk/filter/embed/store pipeline |
 | BaseIndexPlugin._chunk_filter_embed_store | method | roboco/services/optimal_brain/indexes/base.py:447 | Chunk + quality-filter + embed + atomic replace_chunks/add_chunks; returns stored count |
 | BaseIndexPlugin._citations_to_results | method | roboco/services/optimal_brain/indexes/base.py:790 | Apply exact-match metadata filters to citations and cap to top_k SearchResults |
@@ -83,9 +83,9 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | PlaybooksIndexPlugin.index_playbook | method | roboco/services/optimal_brain/indexes/playbooks.py:55 | Embed title + when-to-use + procedure + tags; metadata status=approved |
 | PlaybooksIndexPlugin.delete_playbook | method | roboco/services/optimal_brain/indexes/playbooks.py:73 | Delete a playbook's chunks by source URI (idempotent no-op when none match) |
 | PlaybooksIndexPlugin.search_playbooks | method | roboco/services/optimal_brain/indexes/playbooks.py:86 | Optional team-scoped search over approved playbooks |
-| VectorStore.replace_chunks | method | roboco/services/optimal_brain/vector_store.py:264 | Atomic single-connection single-tx DELETE+INSERT replacing a source's chunks (closes concurrent reindex duplicate race) |
-| VectorStore.delete_by_source | method | roboco/services/optimal_brain/vector_store.py:250 | Delete every chunk row for a source URI (idempotent) |
-| VectorStore.hybrid_search | method | roboco/services/optimal_brain/vector_store.py:417 | pgvector + full-text hybrid retrieval returning Citation rows |
+| VectorStore.replace_chunks | method | roboco/services/optimal_brain/vector_store.py:275 | Atomic single-connection single-tx DELETE+INSERT replacing a source's chunks (closes concurrent reindex duplicate race) |
+| VectorStore.delete_by_source | method | roboco/services/optimal_brain/vector_store.py:261 | Delete every chunk row for a source URI (idempotent) |
+| VectorStore.hybrid_search | method | roboco/services/optimal_brain/vector_store.py:428 | pgvector + full-text hybrid retrieval returning Citation rows |
 | IndexedDocumentRepository.delete_by_source | method | roboco/services/repositories/indexed_document.py:111 | Drop the indexed_documents tracking row by (index_type, source_hash); idempotent bool return |
 | IndexedDocumentRepository.upsert_batch | method | roboco/services/repositories/indexed_document.py:24 | Bulk upsert tracking rows keyed by (index_type, source_hash) |
 | `reclaim_due` | function | `roboco/services/rag_index_failures.py:105` | Re-index due dead-letter rows: delete on success, bump on failure |
@@ -249,13 +249,15 @@ org-memory-playbooks
 
 > Post-snapshot updates (since 2026-06-29): commit 536bbb64 (Chore/all/logical gaps sweep, PR #286) touched three files in this slice: (1) roboco/services/playbook.py — archive() and reject() now write archived_by/archived_at (new columns, migration 053) instead of overwriting approved_by/approved_at; content_actions._curate_playbook wraps the gating session.commit() in a PendingRollbackError guard (#55) so a poisoned session returns a clean invalid_state and never falls through to index an uncommitted playbook. (2) roboco/services/optimal.py — record_learning reuses the plugin's returned doc_id for the tracking-row source URI, closing the lrn-/learn- mismatch (#182/#183). (3) roboco/services/optimal_brain/vector_store.py — replace_chunks skips the wipe when chunks is non-empty but all lack embeddings (#181), preserving existing rows on embedder failure.
 
+> 2026-10-31 (trail #32): a failed or cancelled RAG initialization no longer leaks asyncpg pools. `VectorStore.initialize` closes the pool it just opened when `_provision_table` (the pgvector, table and index DDL, moved out unchanged) fails, since the owning plugin is never registered. `get_optimal_service` closes an `OptimalService` whose `initialize` raised or was cancelled: unpublished, `close_optimal_service` could never reach the plugins it had already opened. Found as three unclosed connections at e2e shutdown, where a first request's background `_inject_proactive_context` was still initializing the service.
+
 ## Regression Risks
 
 | Title | File:Line | Claim | Severity |
 |---|---|---|---|
 | ~~archive() overwrites the original approver attribution~~ **FIXED 536bbb64** | roboco/services/playbook.py:132 | Migration 053 added archived_by/archived_at; archive() and reject() now write those columns, leaving approved_by/approved_at intact. | medium |
 | approve() index write contract is now caller-owned — a missed call silently skips indexing | roboco/services/playbook.py:109 | Before baseline, approve() called _index_approved inline. Now approve() flushes status ONLY and the caller must commit then call index_approved(). If any caller (current or future) calls approve() without the commit+index_approved pair, the playbook is APPROVED in DB but NEVER embedded — it will not surface in briefings. Today only api/routes/playbooks.py and content_actions._curate_playbook call it (both correct), but the contract is a footgun. | medium |
-| unindex_playbook returns early on vector-store failure, leaving tracking row stale | roboco/services/optimal.py:1107 | On a vector-store delete exception, unindex_playbook logs + `return`s before dropping the indexed_documents tracking row. If the VS delete partially succeeded (some chunks gone) but raised, the tracking row lingers referencing a partially-deleted source — inconsistent index/tracking state. Best-effort by design, but the divergence is silent. | low |
+| unindex_playbook returns early on vector-store failure, leaving tracking row stale | roboco/services/optimal.py:1116 | On a vector-store delete exception, unindex_playbook logs + `return`s before dropping the indexed_documents tracking row. If the VS delete partially succeeded (some chunks gone) but raised, the tracking row lingers referencing a partially-deleted source — inconsistent index/tracking state. Best-effort by design, but the divergence is silent. | low |
 | ~~Learnings tracking-row source URI never matches the embedded chunk source URI~~ **FIXED 536bbb64** | roboco/services/optimal.py:1078 | record_learning now reuses the plugin's returned doc_id: source = f"roboco://learnings/{doc_id}" — tracking row and chunk rows share the same URI. | low |
 | replace_chunks wipes a source when a re-ingest produces zero embedded chunks | roboco/services/optimal_brain/indexes/base.py:475 | **Embedder-failure case FIXED 536bbb64** (vector_store.py:272): when chunks is non-empty but no records have embeddings, replace_chunks now returns early, preserving existing rows. The deliberate-clear case (empty chunks list) still deletes by design. | low |
 | Forced shareable=True filter excludes any learning whose metadata lacks a shareable key | roboco/services/optimal_brain/indexes/learnings.py:70 | _citations_to_results applies filters as chunk_meta.get(k) == v. With forced shareable=True, any older learning chunk whose metadata has no 'shareable' key (get returns None) is excluded from briefings. If pre-fix rows exist without the shareable metadata field, they stop surfacing after this change — a silent recall regression for legacy learnings. | low |

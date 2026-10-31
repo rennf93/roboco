@@ -19,6 +19,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# RFC 7518 section 3.2: an HS256 key MUST be at least the hash's 256 bits.
+_MIN_SIGNING_SECRET_BYTES = 32
+
 
 class Settings(BaseSettings):
     """
@@ -1005,6 +1008,31 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_signing_secret_lengths(self) -> "Settings":
+        """Refuse to start with an HMAC signing secret shorter than its hash.
+
+        Both secrets key HMAC-SHA256: the login cookie's HS256 JWT, and the
+        agent tokens minted at spawn (and the panel's CEO token). A shorter
+        key can be brute-forced offline from one captured token, which
+        forges a CEO session or any agent's identity.
+        """
+        in_use = {
+            "ROBOCO_CLOUD_AUTH_SECRET": (
+                self.cloud_auth_secret if self.cloud_auth_enabled else None
+            ),
+            "ROBOCO_AGENT_AUTH_SECRET": os.environ.get("ROBOCO_AGENT_AUTH_SECRET"),
+        }
+        for name, secret in in_use.items():
+            if secret and len(secret.encode("utf-8")) < _MIN_SIGNING_SECRET_BYTES:
+                raise ValueError(
+                    f"{name} must be at least {_MIN_SIGNING_SECRET_BYTES} bytes "
+                    "(an HS256 key shorter than its 256-bit hash can be brute-"
+                    "forced from one token). Generate one with: python -c "
+                    "'import secrets; print(secrets.token_hex(32))'"
+                )
+        return self
+
     # ==========================================================================
     # GitHub repository provisioning (pitch -> approve -> auto-provision)
     # ==========================================================================
@@ -1698,11 +1726,12 @@ class Settings(BaseSettings):
         ),
     )
     x_feature_spotlight_interval_seconds: int = Field(
-        default=86400,  # 1 day — tunable; marketing cadence is a CEO call, not a
-        # technical constant. This is the BASE loop tick only: the engine's own
+        # 1 day — tunable; marketing cadence is a CEO call, not a technical
+        # constant. This is the BASE loop tick only: the engine's own
         # smart-cadence guard (XEngine._feature_activity_stretch_skip) stretches
         # the effective cadence to 3x this whenever nothing has shipped since
         # the last spotlight activity, so a quiet week doesn't fire daily.
+        default=86400,
         ge=3600,
         description="Seconds between feature-spotlight exploration cycles.",
     )

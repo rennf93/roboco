@@ -258,10 +258,13 @@ async def test_capture_transcript_notes_writes_journal_entries(
     db.execute = AsyncMock(
         return_value=MagicMock(scalar_one_or_none=MagicMock(return_value="agent-uuid"))
     )
+    db.commit = AsyncMock()
     written: list[Any] = []
+    authors: list[Any] = []
 
     class _FakeJournalSvc:
         async def add_general_entry(self, agent_uuid: Any, params: Any) -> None:
+            authors.append(agent_uuid)
             written.append(params)
 
         # get_or_create_journal is called inside add_general_entry; bypass by
@@ -274,7 +277,7 @@ async def test_capture_transcript_notes_writes_journal_entries(
             cm.__aexit__ = AsyncMock(return_value=False)
             return cm
 
-    monkeypatch.setattr(db_base, "get_session_factory", _FakeFactory())
+    monkeypatch.setattr(db_base, "get_session_factory", _FakeFactory)
     import roboco.services.decisions.pilots as pilots_mod
 
     monkeypatch.setattr(
@@ -292,5 +295,7 @@ async def test_capture_transcript_notes_writes_journal_entries(
     )
     await engine._capture_transcript_notes("backend-dev-1")
     assert len(written) == 1
+    assert authors == ["agent-uuid"]
     assert written[0].tags == ["auto-note"]
     assert "lowercase slugs" in written[0].content
+    db.commit.assert_awaited_once()

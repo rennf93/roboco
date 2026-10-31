@@ -123,11 +123,12 @@ class VectorStore:
             max_size=self._pool_max_size,
         )
 
-        async with self._pool.acquire() as conn:
-            # Enable pgvector — safe to call even if already installed.
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            await conn.execute(
-                f"""
+        try:
+            async with self._pool.acquire() as conn:
+                # Enable pgvector — safe to call even if already installed.
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                await conn.execute(
+                    f"""
                 CREATE TABLE IF NOT EXISTS {self._table_name} (
                     id         BIGSERIAL PRIMARY KEY,
                     content    TEXT        NOT NULL,
@@ -139,49 +140,59 @@ class VectorStore:
                                (to_tsvector('english', content)) STORED
                 )
                 """
-            )
-            # HNSW index matching the `<=>` cosine operator `search`/
-            # `hybrid_search` order by below. Replaces the ivfflat index this
-            # table used to also carry (dropped below): ivfflat's k-means
-            # clusters train on whatever rows exist at CREATE TIME -- nothing,
-            # on a brand-new table -- so it never gave the planner anything to
-            # trust. Production's chunks_journals: 196 seq scans / 6.1M tuples
-            # read against only 387 live rows. HNSW builds incrementally and
-            # stays accurate as rows are added. CONCURRENTLY so this never
-            # locks out writers on a table that already has rows; requires
-            # running outside an explicit transaction, which this bare
-            # `execute` on an otherwise-autocommit connection already is.
-            hnsw_index = f"{self._table_name}_embedding_hnsw_idx"
-            hnsw_valid = await conn.fetchval(
-                "SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)",
-                hnsw_index,
-            )
-            if hnsw_valid is False:
-                # A CONCURRENTLY build that failed partway (e.g. the process
-                # died mid-build) leaves an invalid index Postgres never
-                # retries on its own -- drop it so the create below rebuilds
-                # instead of silently no-oping on a dead index forever.
-                await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {hnsw_index}")
-            await conn.execute(
-                f"""
+                )
+                # HNSW index matching the `<=>` cosine operator `search`/
+                # `hybrid_search` order by below. Replaces the ivfflat index this
+                # table used to also carry (dropped below): ivfflat's k-means
+                # clusters train on whatever rows exist at CREATE TIME -- nothing,
+                # on a brand-new table -- so it never gave the planner anything to
+                # trust. Production's chunks_journals: 196 seq scans / 6.1M tuples
+                # read against only 387 live rows. HNSW builds incrementally and
+                # stays accurate as rows are added. CONCURRENTLY so this never
+                # locks out writers on a table that already has rows; requires
+                # running outside an explicit transaction, which this bare
+                # `execute` on an otherwise-autocommit connection already is.
+                hnsw_index = f"{self._table_name}_embedding_hnsw_idx"
+                hnsw_valid = await conn.fetchval(
+                    "SELECT indisvalid FROM pg_index "
+                    "WHERE indexrelid = to_regclass($1)",
+                    hnsw_index,
+                )
+                if hnsw_valid is False:
+                    # A CONCURRENTLY build that failed partway (e.g. the process
+                    # died mid-build) leaves an invalid index Postgres never
+                    # retries on its own -- drop it so the create below rebuilds
+                    # instead of silently no-oping on a dead index forever.
+                    await conn.execute(
+                        f"DROP INDEX CONCURRENTLY IF EXISTS {hnsw_index}"
+                    )
+                await conn.execute(
+                    f"""
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS {hnsw_index}
                 ON {self._table_name}
                 USING hnsw (embedding vector_cosine_ops)
                 """
-            )
-            # The old ivfflat index (see above) is now redundant; drop it once
-            # HNSW is confirmed valid so a fresh deploy never recreates it.
-            await conn.execute(
-                f"DROP INDEX CONCURRENTLY IF EXISTS {self._table_name}_embedding_idx"
-            )
-            # GIN index for the full-text (keyword) half of hybrid search.
-            await conn.execute(
-                f"""
+                )
+                # The old ivfflat index (see above) is now redundant; drop it once
+                # HNSW is confirmed valid so a fresh deploy never recreates it.
+                await conn.execute(
+                    "DROP INDEX CONCURRENTLY IF EXISTS "
+                    f"{self._table_name}_embedding_idx"
+                )
+                # GIN index for the full-text (keyword) half of hybrid search.
+                await conn.execute(
+                    f"""
                 CREATE INDEX IF NOT EXISTS {self._table_name}_tsv_idx
                 ON {self._table_name}
                 USING gin (tsv)
                 """
-            )
+                )
+        except BaseException:
+            # The index plugin that owns this store is registered only once
+            # its initialize succeeds, so after a failed or cancelled one
+            # nothing else would ever close this pool.
+            await self.close()
+            raise
 
         logger.info(
             "VectorStore initialised",

@@ -91,13 +91,13 @@ def test_usage_and_cost_prices_each_model_at_its_own_rate() -> None:
             "gemini-2.5-flash-lite": {"input_tokens": 0, "output_tokens": 1_000_000},
         }
     }
-    tokens, cost = gu.usage_and_cost(stats)
-    assert tokens == 2_000_000
+    tokens_input, tokens_output, cost = gu.usage_and_cost(stats)
+    assert (tokens_input, tokens_output) == (1_000_000, 1_000_000)
     assert cost == pytest.approx(1.25 + 0.40)
 
 
 def test_usage_and_cost_zero_for_empty_stats() -> None:
-    assert gu.usage_and_cost({}) == (0, 0.0)
+    assert gu.usage_and_cost({}) == (0, 0, 0.0)
 
 
 def test_stats_from_run_log_single_json(tmp_path: Path) -> None:
@@ -189,10 +189,11 @@ def test_capture_run_usage_writes_usage_json(tmp_path: Path) -> None:
     tokens = gu.capture_run_usage(
         run_log=log, fallback_model="gemini-2.5-pro", out_path=out
     )
-    assert tokens == 1500  # 1000 input + 500 output
+    assert tokens == 1500
     data = json.loads(out.read_text())
     assert data["model"] == "gemini-2.5-pro"
     assert data["total_tokens"] == 1500
+    assert (data["tokens_input"], data["tokens_output"]) == (1000, 500)
     assert data["cost_usd"] > 0.0
 
 
@@ -204,7 +205,12 @@ def test_capture_run_usage_zero_when_log_absent(tmp_path: Path) -> None:
         out_path=out,
     )
     assert tokens == 0
-    assert json.loads(out.read_text())["total_tokens"] == 0
+    data = json.loads(out.read_text())
+    assert (data["total_tokens"], data["tokens_input"], data["tokens_output"]) == (
+        0,
+        0,
+        0,
+    )
 
 
 def test_main_writes_usage_file(

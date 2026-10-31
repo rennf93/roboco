@@ -89,6 +89,9 @@ _DISARMED_SERVER_TIMEOUT_SECONDS = 1000.0
 # AFTER priming the per-agent flow_server reload (a pre-call patch is
 # clobbered by the reload on the first flow() call).
 _MCP_CLIENT_TIMEOUT_SECONDS = 3.0
+# The disarmed reproduction's last verb waits out verb-1's hang; its client
+# timeout sits well past _HANG_SECONDS.
+_DRAIN_CLIENT_TIMEOUT_SECONDS = 60.0
 
 
 def _seed_planning_root(
@@ -241,3 +244,19 @@ def test_flow_verb_holds_lock_when_timeout_disarmed(
         "not reproduced; either the hang injection broke or the server is "
         "cancelling despite the disarmed timeout"
     )
+
+    # verb-1 is still running on the server, its transaction holding the row
+    # lock until the sleep ends and it commits. verb-2 waits that out (a
+    # client timeout past the hang, then a re-entry once the lock frees), so
+    # the test never returns with verb-1 in flight: the per-test TRUNCATE in
+    # teardown would race its transaction, and Postgres can abort either one
+    # as a deadlock.
+    monkeypatch.setattr(flow_server, "_TIMEOUT", _DRAIN_CLIENT_TIMEOUT_SECONDS)
+    env2 = main_pm.flow(
+        "i_will_plan",
+        task_id=str(task_id),
+        plan=_PLAN,
+        approach=_APPROACH,
+        sub_tasks=_SUB_TASKS,
+    )
+    expect_ok(env2, "verb-2 completes once verb-1's hung transaction ends")

@@ -45,9 +45,207 @@ _PR_CREATION_SIDE_EFFECTS = frozenset({"create_pr", "create_root_pr"})
 _GATE_ENTRY_ACTION = "submit_for_review"
 
 
+class _RunnerServices:
+    """The two services every action reads: ``VerbRunner``'s dataclass fields,
+    declared here so the action mixins type-check on their own."""
+
+    task_service: Any
+    git_service: Any
+
+
+class WorkTransitionsMixin(_RunnerServices):
+    """The atomic actions of a task's own work: claim, plan, start, the
+    verification, QA and documentation hand-offs, completion, and creating a
+    sub-task."""
+
+    async def _do_claim(self, task: Any, agent: Any, _ctx: spec.Context) -> Any:
+        # provision=False: runs inside _run_composed_actions's begin_nested()
+        # savepoint, so branch creation must NOT run here (the runner's own
+        # module docstring says side effects run after the savepoint, never
+        # inside it, and _do_claim used to violate that). claim/set_plan
+        # still land or roll back together as one unit; the caller
+        # (Choreographer._claim_plan_start_run) calls TaskService.
+        # provision_claim once this savepoint closes, which itself commits
+        # that unit durably before running the deferred branch creation
+        # outside any savepoint, and only then start (its branch gate).
+        return await self.task_service.claim(task.id, agent.id, provision=False)
+
+    async def _do_set_plan(self, task: Any, _agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.set_plan(task.id, ctx.plan or "")
+
+    async def _do_start(self, task: Any, agent: Any, _ctx: spec.Context) -> Any:
+        return await self.task_service.start(task.id, agent.id)
+
+    async def _do_submit_verification(
+        self, task: Any, agent: Any, ctx: spec.Context
+    ) -> Any:
+        return await self.task_service.submit_verification(
+            agent.id, task.id, ctx.notes or ""
+        )
+
+    async def _do_submit_qa(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.submit_qa(agent.id, task.id, ctx.notes or "")
+
+    async def _do_qa_pass(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.qa_pass(agent.id, task.id, ctx.notes or "")
+
+    async def _do_qa_fail(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.qa_fail(
+            agent.id, task.id, ctx.notes or "", list(ctx.issues)
+        )
+
+    async def _do_docs_complete(self, task: Any, _agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.docs_complete(task.id, doc_notes=ctx.notes or "")
+
+    async def _do_complete(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.cell_pm_complete(
+            agent.id, task.id, ctx.notes or ""
+        )
+
+    async def _do_create_subtask(
+        self, _task: Any, _agent: Any, _ctx: spec.Context
+    ) -> Any:
+        raise NotImplementedError(
+            "create_subtask requires DelegateInputs; verb body owns dispatch"
+        )
+
+
+class ReviewTransitionsMixin(_RunnerServices):
+    """The atomic actions of review and holds: PM review and the PR gate,
+    requested changes, the CEO escalation, block, unblock and resume, and a
+    finished PR review."""
+
+    async def _do_submit_pm_review(
+        self, task: Any, agent: Any, ctx: spec.Context
+    ) -> Any:
+        return await self.task_service.submit_pm_review(
+            agent.id, task.id, ctx.notes or ""
+        )
+
+    async def _do_submit_for_review(
+        self, task: Any, agent: Any, ctx: spec.Context
+    ) -> Any:
+        return await self.task_service.submit_for_review(
+            agent.id, task.id, ctx.notes or ""
+        )
+
+    async def _do_pr_pass(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.pr_pass(agent.id, task.id, ctx.notes or "")
+
+    async def _do_pr_fail(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.pr_fail(
+            agent.id, task.id, ctx.notes or "", list(ctx.issues)
+        )
+
+    async def _do_request_changes(
+        self, task: Any, agent: Any, ctx: spec.Context
+    ) -> Any:
+        # Forward the actor's real role — cell_pm and main_pm both own this
+        # verb and the audit row must attribute the reject to the reviewer.
+        agent_role = str(agent.role) if agent is not None else "cell_pm"
+        return await self.task_service.request_changes(
+            agent.id,
+            task.id,
+            ctx.notes or "",
+            list(ctx.issues),
+            agent_role=agent_role,
+        )
+
+    async def _do_escalate_to_ceo(
+        self, task: Any, agent: Any, ctx: spec.Context
+    ) -> Any:
+        # Use the actor's real role — escalate_to_ceo is allow-listed for
+        # main_pm, product_owner, head_marketing in the spec, and the task
+        # service stamps the escalator's role into the audit trail. Forward
+        # the actor's UUID so the awaiting_ceo_approval audit row attributes
+        # the escalation to the specific PM/Board agent (every sibling
+        # transition forwards the actor; this branch was the only one that
+        # lost it, leaving a role-only record ambiguous across same-role PMs).
+        agent_role = str(agent.role) if agent is not None else "main_pm"
+        return await self.task_service.escalate_to_ceo(
+            task_id=task.id,
+            agent_role=agent_role,
+            notes=ctx.notes or "",
+            actor_agent_id=agent.id,
+        )
+
+    async def _do_block(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.escalate(agent.id, task.id, ctx.notes or "")
+
+    async def _do_unblock(self, task: Any, agent: Any, _ctx: spec.Context) -> Any:
+        return await self.task_service.unblock_with_restore(
+            agent.id, task.id, restore=True
+        )
+
+    async def _do_resume(self, task: Any, agent: Any, _ctx: spec.Context) -> Any:
+        return await self.task_service.resume_for_agent(task.id, agent.id)
+
+    async def _do_pr_review_done(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.complete_review(
+            agent.id, task.id, ctx.notes or ""
+        )
+
+
+class GitSideEffectsMixin(_RunnerServices):
+    """The side effects a verb runs after its savepoint commits: push the
+    branch, open the PR or the root PR, merge the PR."""
+
+    async def _do_push_branch(self, task: Any, agent: Any) -> Any:
+        # Forward the actor so the workspace resolves from the actor's clone
+        # (actor_agent_id wins over the assigned_to/created_by fallback) —
+        # matches _do_pr_merge. Without it, a verb on a task whose
+        # assigned_to was cleared before the side effect falls through to the
+        # wrong workspace and pushes from / opens a PR against it.
+        return await self.git_service.push_branch(
+            task.branch_name, actor_agent_id=agent.id
+        )
+
+    async def _do_create_pr(self, task: Any, agent: Any) -> Any:
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        parent = await resolve_parent_branch(task, self.task_service)
+        return await self.git_service.create_pr(
+            task.branch_name,
+            parent=parent,
+            is_root_pr=False,
+            actor_agent_id=agent.id,
+        )
+
+    async def _do_create_root_pr(self, task: Any, agent: Any) -> Any:
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        # Root PR for the in-path gate's root level (submit_root). The base
+        # is the project's head rung (panel-configured env ladder; "master"
+        # only as the no-project string fallback) and is_root_pr marks it
+        # for the CEO-merge path. The PM opening it is the
+        # assigned_to-may-be-None case create_pr's actor_agent_id exists for.
+        parent = await resolve_parent_branch(task, self.task_service)
+        return await self.git_service.create_pr(
+            task.branch_name,
+            parent=parent,
+            is_root_pr=True,
+            actor_agent_id=agent.id,
+        )
+
+    async def _do_pr_merge(self, task: Any, agent: Any) -> Any:
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        target = await resolve_parent_branch(task, self.task_service)
+        return await self.git_service.pr_merge(
+            task.pr_number,
+            target=target,
+            project_id=task.project_id,
+            actor_agent_id=agent.id,
+        )
+
+
 @dataclass(frozen=True)
-class VerbRunner:
-    """Lightweight composition runner; one instance per choreographer."""
+class VerbRunner(WorkTransitionsMixin, ReviewTransitionsMixin, GitSideEffectsMixin):
+    """Lightweight composition runner; one instance per choreographer.
+
+    Runs a verb's composed atomic actions inside a savepoint and its side
+    effects after it; the actions themselves live on the three mixins.
+    """
 
     task_service: Any
     git_service: Any
@@ -273,127 +471,6 @@ class VerbRunner:
 
     # -- Atomic handlers ---------------------------------------------------
 
-    async def _do_claim(self, task: Any, agent: Any, _ctx: spec.Context) -> Any:
-        # provision=False: runs inside _run_composed_actions's begin_nested()
-        # savepoint, so branch creation must NOT run here (the runner's own
-        # module docstring says side effects run after the savepoint, never
-        # inside it, and _do_claim used to violate that). claim/set_plan
-        # still land or roll back together as one unit; the caller
-        # (Choreographer._claim_plan_start_run) calls TaskService.
-        # provision_claim once this savepoint closes, which itself commits
-        # that unit durably before running the deferred branch creation
-        # outside any savepoint, and only then start (its branch gate).
-        return await self.task_service.claim(task.id, agent.id, provision=False)
-
-    async def _do_set_plan(self, task: Any, _agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.set_plan(task.id, ctx.plan or "")
-
-    async def _do_start(self, task: Any, agent: Any, _ctx: spec.Context) -> Any:
-        return await self.task_service.start(task.id, agent.id)
-
-    async def _do_submit_verification(
-        self, task: Any, agent: Any, ctx: spec.Context
-    ) -> Any:
-        return await self.task_service.submit_verification(
-            agent.id, task.id, ctx.notes or ""
-        )
-
-    async def _do_submit_qa(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.submit_qa(agent.id, task.id, ctx.notes or "")
-
-    async def _do_qa_pass(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.qa_pass(agent.id, task.id, ctx.notes or "")
-
-    async def _do_qa_fail(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.qa_fail(
-            agent.id, task.id, ctx.notes or "", list(ctx.issues)
-        )
-
-    async def _do_docs_complete(self, task: Any, _agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.docs_complete(task.id, doc_notes=ctx.notes or "")
-
-    async def _do_complete(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.cell_pm_complete(
-            agent.id, task.id, ctx.notes or ""
-        )
-
-    async def _do_submit_pm_review(
-        self, task: Any, agent: Any, ctx: spec.Context
-    ) -> Any:
-        return await self.task_service.submit_pm_review(
-            agent.id, task.id, ctx.notes or ""
-        )
-
-    async def _do_submit_for_review(
-        self, task: Any, agent: Any, ctx: spec.Context
-    ) -> Any:
-        return await self.task_service.submit_for_review(
-            agent.id, task.id, ctx.notes or ""
-        )
-
-    async def _do_pr_pass(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.pr_pass(agent.id, task.id, ctx.notes or "")
-
-    async def _do_pr_fail(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.pr_fail(
-            agent.id, task.id, ctx.notes or "", list(ctx.issues)
-        )
-
-    async def _do_request_changes(
-        self, task: Any, agent: Any, ctx: spec.Context
-    ) -> Any:
-        # Forward the actor's real role — cell_pm and main_pm both own this
-        # verb and the audit row must attribute the reject to the reviewer.
-        agent_role = str(agent.role) if agent is not None else "cell_pm"
-        return await self.task_service.request_changes(
-            agent.id,
-            task.id,
-            ctx.notes or "",
-            list(ctx.issues),
-            agent_role=agent_role,
-        )
-
-    async def _do_escalate_to_ceo(
-        self, task: Any, agent: Any, ctx: spec.Context
-    ) -> Any:
-        # Use the actor's real role — escalate_to_ceo is allow-listed for
-        # main_pm, product_owner, head_marketing in the spec, and the task
-        # service stamps the escalator's role into the audit trail. Forward
-        # the actor's UUID so the awaiting_ceo_approval audit row attributes
-        # the escalation to the specific PM/Board agent (every sibling
-        # transition forwards the actor; this branch was the only one that
-        # lost it, leaving a role-only record ambiguous across same-role PMs).
-        agent_role = str(agent.role) if agent is not None else "main_pm"
-        return await self.task_service.escalate_to_ceo(
-            task_id=task.id,
-            agent_role=agent_role,
-            notes=ctx.notes or "",
-            actor_agent_id=agent.id,
-        )
-
-    async def _do_block(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.escalate(agent.id, task.id, ctx.notes or "")
-
-    async def _do_unblock(self, task: Any, agent: Any, _ctx: spec.Context) -> Any:
-        return await self.task_service.unblock_with_restore(
-            agent.id, task.id, restore=True
-        )
-
-    async def _do_resume(self, task: Any, agent: Any, _ctx: spec.Context) -> Any:
-        return await self.task_service.resume_for_agent(task.id, agent.id)
-
-    async def _do_create_subtask(
-        self, _task: Any, _agent: Any, _ctx: spec.Context
-    ) -> Any:
-        raise NotImplementedError(
-            "create_subtask requires DelegateInputs; verb body owns dispatch"
-        )
-
-    async def _do_pr_review_done(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
-        return await self.task_service.complete_review(
-            agent.id, task.id, ctx.notes or ""
-        )
-
     @classmethod
     def _atomic_handlers(cls) -> dict[str, _AtomicHandler]:
         return {
@@ -420,54 +497,6 @@ class VerbRunner:
         }
 
     # -- Side-effect handlers ---------------------------------------------
-
-    async def _do_push_branch(self, task: Any, agent: Any) -> Any:
-        # Forward the actor so the workspace resolves from the actor's clone
-        # (actor_agent_id wins over the assigned_to/created_by fallback) —
-        # matches _do_pr_merge. Without it, a verb on a task whose
-        # assigned_to was cleared before the side effect falls through to the
-        # wrong workspace and pushes from / opens a PR against it.
-        return await self.git_service.push_branch(
-            task.branch_name, actor_agent_id=agent.id
-        )
-
-    async def _do_create_pr(self, task: Any, agent: Any) -> Any:
-        from roboco.services.gateway.merge_chain import resolve_parent_branch
-
-        parent = await resolve_parent_branch(task, self.task_service)
-        return await self.git_service.create_pr(
-            task.branch_name,
-            parent=parent,
-            is_root_pr=False,
-            actor_agent_id=agent.id,
-        )
-
-    async def _do_create_root_pr(self, task: Any, agent: Any) -> Any:
-        from roboco.services.gateway.merge_chain import resolve_parent_branch
-
-        # Root PR for the in-path gate's root level (submit_root). The base
-        # is the project's head rung (panel-configured env ladder; "master"
-        # only as the no-project string fallback) and is_root_pr marks it
-        # for the CEO-merge path. The PM opening it is the
-        # assigned_to-may-be-None case create_pr's actor_agent_id exists for.
-        parent = await resolve_parent_branch(task, self.task_service)
-        return await self.git_service.create_pr(
-            task.branch_name,
-            parent=parent,
-            is_root_pr=True,
-            actor_agent_id=agent.id,
-        )
-
-    async def _do_pr_merge(self, task: Any, agent: Any) -> Any:
-        from roboco.services.gateway.merge_chain import resolve_parent_branch
-
-        target = await resolve_parent_branch(task, self.task_service)
-        return await self.git_service.pr_merge(
-            task.pr_number,
-            target=target,
-            project_id=task.project_id,
-            actor_agent_id=agent.id,
-        )
 
     @classmethod
     def _side_effect_handlers(cls) -> dict[str, _SideEffectHandler]:

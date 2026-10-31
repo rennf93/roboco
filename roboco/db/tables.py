@@ -113,7 +113,14 @@ class AgentTable(Base):
     # Foreign key named by migration 001, not by the naming convention.
     current_task_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="SET NULL", name="fk_agents_current_task"),
+        # use_alter: agents and tasks reference each other. Added after both
+        # tables exist, so create_all/drop_all can order the cycle's DDL.
+        ForeignKey(
+            "tasks.id",
+            ondelete="SET NULL",
+            name="fk_agents_current_task",
+            use_alter=True,
+        ),
         nullable=True,
     )
 
@@ -250,7 +257,9 @@ class TaskTable(Base):
     branch_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     work_session_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("work_sessions.id", ondelete="SET NULL"),
+        # use_alter: tasks and work_sessions reference each other (see
+        # AgentTable.current_task_id).
+        ForeignKey("work_sessions.id", ondelete="SET NULL", use_alter=True),
         nullable=True,
     )
 
@@ -554,9 +563,8 @@ class ProjectTable(Base):
     environments: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSONB, nullable=True
     )
-    git_token_encrypted: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )  # Fernet-encrypted GitHub PAT
+    # Fernet-encrypted GitHub PAT
+    git_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Forge provider ("github" | "gitlab" | "gitea"). Null = auto-detect from
     # git_url host (github.com only today); a self-hosted/GHE host must set
     # this explicitly. Validated at the service layer (foundation/policy/
@@ -1444,9 +1452,8 @@ class IndexedDocumentTable(Base):
 
     # Source information
     source: Mapped[str] = mapped_column(String(1000), nullable=False)
-    source_hash: Mapped[str] = mapped_column(
-        String(64), nullable=False
-    )  # SHA256 for dedup
+    # SHA256 for dedup
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Document title (extracted or filename)
     title: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -2160,7 +2167,8 @@ class DailyUsageRollupTable(Base):
     id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
-    date: Mapped[Any] = mapped_column(Date, nullable=False)  # datetime.date
+    # Holds a datetime.date
+    date: Mapped[Any] = mapped_column(Date, nullable=False)
     agent_slug: Mapped[str] = mapped_column(String(100), nullable=False)
     team: Mapped[str] = mapped_column(String(50), nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -2212,7 +2220,8 @@ class MemberPerformanceDailyTable(Base):
     id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid4
     )
-    date: Mapped[Any] = mapped_column(Date, nullable=False)  # datetime.date
+    # Holds a datetime.date
+    date: Mapped[Any] = mapped_column(Date, nullable=False)
     member_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     agent_slug: Mapped[str] = mapped_column(
         String(100), nullable=False, default="", server_default=""

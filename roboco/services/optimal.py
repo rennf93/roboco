@@ -134,7 +134,8 @@ class IndexingReport:
     total_attempted: int = 0
     successful: int = 0
     failed: int = 0
-    skipped: int = 0  # Already indexed or filtered out
+    # Already indexed or filtered out
+    skipped: int = 0
     failed_sources: list[tuple[str, str]] = field(default_factory=list)
     duration_seconds: float = 0.0
 
@@ -160,7 +161,8 @@ class IndexingReport:
             "skipped": self.skipped,
             "success_rate": round(self.success_rate, 1),
             "has_failures": self.has_failures,
-            "failed_sources": self.failed_sources[:10],  # Limit for API
+            # Limit for API
+            "failed_sources": self.failed_sources[:10],
             "duration_seconds": round(self.duration_seconds, 2),
         }
 
@@ -234,10 +236,14 @@ class OptimalService:
         self._initialized = False
         self._plugins: dict[IndexType, BaseIndexPlugin] = {}
         self._prompt_templates: dict[str, dict[str, Any]] = {}
-        self._indexing_task: Any = None  # Background indexing task
-        self._periodic_update_task: Any = None  # Periodic update task
-        self._file_mtimes: dict[str, float] = {}  # Track file modification times
-        self._docs_root: Path | None = None  # Cached docs root path
+        # Background indexing task
+        self._indexing_task: Any = None
+        # Periodic update task
+        self._periodic_update_task: Any = None
+        # Track file modification times
+        self._file_mtimes: dict[str, float] = {}
+        # Cached docs root path
+        self._docs_root: Path | None = None
 
     async def initialize(self) -> None:
         """
@@ -400,7 +406,8 @@ class OptimalService:
             AutoIndexReport with detailed results for each index type
         """
         report = AutoIndexReport()
-        report.code = None  # Code indexing deprecated
+        # Code indexing deprecated
+        report.code = None
 
         # Index documentation
         docs_report = await self._auto_index_docs(force=force)
@@ -434,7 +441,8 @@ class OptimalService:
         for path in possible_docs_roots:
             if path.exists() and path.is_dir():
                 docs_root = path
-                self._docs_root = path  # Cache for periodic updates
+                # Cache for periodic updates
+                self._docs_root = path
                 break
 
         if docs_root is None:
@@ -858,7 +866,8 @@ class OptimalService:
         - Poor retrieval quality with current embedding model
         - Better results achieved by focusing on documentation/standards
         """
-        _ = sources, project, max_files  # Unused
+        # Unused
+        _ = sources, project, max_files
         logger.warning("index_code() is deprecated and does nothing")
         return 0
 
@@ -1563,7 +1572,8 @@ class OptimalService:
                     f"{index_type.value} unavailable: timed out after "
                     f"{_PER_INDEX_SEARCH_TIMEOUT:.0f}s"
                 )
-            buf.stats[index_type.value] = -1  # -1 indicates error
+            # -1 indicates error
+            buf.stats[index_type.value] = -1
             buf.errors[index_type.value] = (
                 f"Timed out after {_PER_INDEX_SEARCH_TIMEOUT:.0f}s"
             )
@@ -1578,7 +1588,8 @@ class OptimalService:
                 gaps.append(
                     f"{index_type.value} unavailable: failed: {type(e).__name__}"
                 )
-            buf.stats[index_type.value] = -1  # -1 indicates error
+            # -1 indicates error
+            buf.stats[index_type.value] = -1
             buf.errors[index_type.value] = f"failed: {type(e).__name__}: {e}"
             logger.warning(
                 "RAG search failed for index",
@@ -1597,7 +1608,8 @@ class OptimalService:
                     f"{index_type.value} unavailable: failed: "
                     f"{outcome.error_message or 'unknown error'}"
                 )
-            buf.stats[index_type.value] = -1  # -1 indicates error
+            # -1 indicates error
+            buf.stats[index_type.value] = -1
             buf.errors[index_type.value] = outcome.error_message or "Unknown"
             logger.warning(
                 "RAG search failed for index",
@@ -2053,7 +2065,8 @@ class OptimalService:
         from datetime import UTC, datetime
 
         stale_files: list[str] = []
-        for source in indexed_sources[:100]:  # Limit check to 100 files
+        # Limit check to 100 files
+        for source in indexed_sources[:100]:
             source_path = Path(source)
             if not source_path.exists():
                 continue
@@ -2062,7 +2075,8 @@ class OptimalService:
                 if mtime > last_indexed:
                     stale_files.append(source)
             except OSError:
-                pass  # Skip files we can't stat
+                # Skip files we can't stat
+                pass
         return stale_files
 
     @staticmethod
@@ -2181,7 +2195,8 @@ class OptimalService:
         Returns:
             Dict with counts: {"code": 0, "docs": M}
         """
-        _ = code_sources  # Deprecated
+        # Deprecated
+        _ = code_sources
         if not self._initialized:
             await self.initialize()
 
@@ -2193,7 +2208,8 @@ class OptimalService:
                     break
             docs_sources = docs_sources or ["docs/"]
 
-        result = {"code": 0, "docs": 0}  # code always 0 - deprecated
+        # Code always 0 - deprecated
+        result = {"code": 0, "docs": 0}
 
         # Check docs index
         docs_plugin = self._get_plugin(IndexType.DOCUMENTATION)
@@ -2440,7 +2456,14 @@ async def get_optimal_service() -> OptimalService:
         # we waited to acquire.
         if _OptimalServiceHolder.instance is None:
             service = OptimalService()
-            await service.initialize()
+            try:
+                await service.initialize()
+            except BaseException:
+                # Unpublished, so close_optimal_service can't reach it: release
+                # the stores of the plugins that did initialize. A shutdown
+                # that cancels a first request's initialize lands here too.
+                await service.close()
+                raise
             _OptimalServiceHolder.instance = service
     return _OptimalServiceHolder.instance
 

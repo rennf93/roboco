@@ -31,6 +31,12 @@ def _playbook_mock() -> Any:
     # guards both to DRAFT-only). The index/unindex ordering assertions below
     # are independent of the starting status.
     pb.status = "draft"
+    # A plain delivery-role draft: no Board Program drafted it, so approve and
+    # reject record no LEARN decision (that path is covered against a real DB in
+    # tests/integration/test_playbook_service.py). Left unset, the MagicMock's
+    # truthy attribute sent every test here through record_decision on the bare
+    # AsyncMock session, whose begin_nested() is an un-awaited coroutine.
+    pb.source_program = None
     pb.title = "T"
     pb.problem = "P"
     pb.procedure = "Pr"
