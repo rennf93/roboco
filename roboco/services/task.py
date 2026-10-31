@@ -4978,497 +4978,10 @@ class TaskStalled(_Base):
         return entries
 
 
-class TaskService(
-    BaseService,
-    TaskAgentQueries,
-    TaskBoardProgramCycles,
-    TaskBoardProgramOutputs,
-    TaskBranches,
-    TaskCreation,
-    TaskEngineListings,
-    TaskExternalPRReviews,
-    TaskLineage,
-    TaskListQueries,
-    TaskQueueQueries,
-    TaskRecords,
-    TaskRoleLookup,
-    TaskStalled,
-    TaskStatistics,
-    TaskSupersede,
-):
-    """
-    Service for managing tasks.
-
-    Provides:
-    - CRUD operations
-    - Status transitions with validation
-    - Assignment and claiming
-    - Queries by team, status, assignee
-    - Dependency management
-    """
-
-    service_name: ClassVar[str] = "task"
-    _background_tasks: ClassVar[set[asyncio.Task[None]]] = set()
-    # #216: consecutive FS/permission failures during terminal worktree
-    # cleanup. A systemic FS issue (stuck mount, perms) would otherwise leak
-    # per-task worktrees indefinitely with only a warning log; after this many
-    # consecutive OSError failures a CEO alert fires once (suppressed until a
-    # success resets the streak). Class-level so it spans all cleanup calls.
-    _worktree_cleanup_fail_streak: ClassVar[int] = 0
-    _worktree_cleanup_escalated: ClassVar[bool] = False
-    _WORKTREE_CLEANUP_ESCALATE_AFTER: ClassVar[int] = 3
-
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
-        # Bridges claim(provision=False)'s _apply_claim_fields to a LATER,
-        # separate provision_claim() call (the verb runner's composed
-        # claim/set_plan/start commits durably, then provisions outside any
-        # savepoint, see provision_claim's docstring). Per-instance and
-        # per-request: the gateway builds one TaskService per request, so
-        # this never survives past the request that populated it. Popped on
-        # use; an entry lingers only if the composed sequence never reaches
-        # provision_claim at all (set_plan/start raises, or returns None on
-        # a concurrent status change), bounded by this instance's request
-        # lifetime, so it never accumulates across requests.
-        self._pending_claim_snapshots: dict[UUID, _ClaimFieldSnapshot] = {}
-
-    # =========================================================================
-    # STATUS TRANSITION HELPER
-    # =========================================================================
-
-    def _validate_and_set_status(
-        self,
-        task: TaskTable,
-        new_status: TaskStatus,
-        agent_role: str | None = None,
-        audit_agent_id: str | UUID | None = None,
-        extra_allowed_roles: tuple[str, ...] = (),
-    ) -> None:
-        """
-        Validate and set task status with lifecycle enforcement.
-
-        This is the single point of truth for status changes. All transitions
-        are validated against VALID_TRANSITIONS, ROLE_RESTRICTED_TRANSITIONS,
-        and git requirements.
-
-        Args:
-            task: The task to update
-            new_status: Target status
-            agent_role: Optional role for role-restricted transitions
-            audit_agent_id: Optional explicit agent_id for the audit row.
-                Required for transitions where the caller has already
-                cleared ``task.claimed_by`` BEFORE invoking this method
-                (e.g. ``submit_for_qa`` clears claimed_by so QA can claim).
-                Without this, the audit writer reads the now-cleared value
-                and stores ``agent_id=NULL`` on rows that should attribute
-                the transition to the developer, QA, or PM who triggered it.
-
-        Raises:
-            TaskLifecycleError: If transition is invalid or role not permitted
-            GitRequirementError: If git requirements not met
-        """
-        current = (
-            task.status.value if isinstance(task.status, TaskStatus) else task.status
-        )
-        target = new_status.value if isinstance(new_status, TaskStatus) else new_status
-
-        # Validate the transition (raises TaskLifecycleError if invalid)
-        validate_task_transition(current, target, agent_role, extra_allowed_roles)
-
-        # Validate git requirements (raises GitRequirementError if not met)
-        git_ctx = GitContext(
-            docs_complete=bool(task.docs_complete),
-            pr_created=bool(task.pr_created),
-            pr_number=task.pr_number,
-            branch_name=str(task.branch_name) if task.branch_name else None,
-            # A branchless coordination task does no git and never gets a branch
-            # — exempt it from the branch gate so it can reach in_progress and
-            # delegate. Two shapes qualify: a product fan-out root (product, no
-            # repo) and a MegaTask umbrella (batch_id, top-level). All four are
-            # plain columns (no lazy load).
-            is_coordination=is_branchless_coordination(
-                project_id=task.project_id,
-                product_id=task.product_id,
-                batch_id=task.batch_id,
-                parent_task_id=task.parent_task_id,
-                has_cell_projects=bool(task.cell_projects),
-            ),
-            # An external-PR review task reviews someone else's PR read-only —
-            # no branch of its own — so it is branch-gate exempt.
-            is_external_review=(getattr(task, "source", "manual") in PR_REVIEW_SOURCES),
-            # A MegaTask umbrella assembles no PR of its own, so it is exempt
-            # from the awaiting_pm_review->awaiting_ceo_approval pr_number gate.
-            is_umbrella=is_batch_umbrella(
-                batch_id=task.batch_id, parent_task_id=task.parent_task_id
-            ),
-            # A PR-waived task (zero commits relative to its parent —
-            # report-only work the verb runner skipped create_pr for) is
-            # exempt from the pr_number CEO-escalation gate the same way an
-            # umbrella is, even though it carries a real branch.
-            is_pr_waived=markers.is_pr_waived(task),
-        )
-        validate_git_requirements(current, target, git_ctx)
-
-        # Apply the status change
-        task.status = new_status
-        self.log.info(
-            "Task status transition",
-            task_id=str(task.id),
-            from_status=current,
-            to_status=target,
-            agent_role=agent_role,
-        )
-
-        # Poke the orchestrator's dispatcher so it reacts immediately to
-        # this transition. Without this, agents wait up to 30 seconds for
-        # the next poll (10 minutes cumulative in the pathological case we
-        # saw on be-dev-1 spawn). Uses lazy import + silent fallback so
-        # code paths that don't have an orchestrator (tests, sync tools)
-        # don't break.
-        try:
-            from roboco.api.deps import get_orchestrator
-
-            get_orchestrator().trigger_dispatch()
-        except Exception as e:
-            # Swallow so task creation succeeds even when the
-            # orchestrator singleton isn't wired (e.g. tests, CLI
-            # scripts) — but log so a real regression is visible.
-            self.log.debug(
-                "Dispatch trigger skipped after task create",
-                error=str(e),
-            )
-
-        self._emit_status_transition_audit(
-            task,
-            from_status=current,
-            to_status=target,
-            agent_role=agent_role,
-            audit_agent_id=audit_agent_id,
-        )
-
-    def _emit_status_transition_audit(
-        self,
-        task: TaskTable,
-        *,
-        from_status: str,
-        to_status: str,
-        agent_role: str | None,
-        audit_agent_id: str | UUID | None,
-    ) -> None:
-        """Emit the ``task.<status>`` audit row for a status transition.
-
-        Extracted from ``_validate_and_set_status`` so transition paths that
-        set ``task.status`` directly — e.g. ``apply_escalation``, which blocks a
-        task without routing through the strict transition validator — record
-        the same audit event. No status change may bypass the audit log.
-
-        The row is written into the CALLER's session (``self.session.add``),
-        so it commits / rolls back ATOMICALLY with the status transition — the
-        audit journey can never diverge from real task state. This closes three
-        facets of the fire-and-forget decoupling gap:
-
-        * F061/F073 — the audit commit is no longer decoupled on a separate
-          connection whose failures were swallowed; a committed transition now
-          ALWAYS has its audit row (same transaction), and a persist failure
-          fails the transition (fail-closed for the metric source of truth)
-          instead of silently dropping the row.
-        * F075 — a transition rolled back inside a verb savepoint
-          (``_verb_runner`` wraps composed actions in ``begin_nested``) now
-          rolls its audit row back too — no phantom ``task.<status>`` row for a
-          transition that did not stick. (The claim-branch-failure rollback in
-          ``_provision_claim`` commits its own reversal explicitly instead,
-          since it runs outside any savepoint by design; the savepoint
-          rollback handles the general case.)
-
-        The ``revision_count`` rework counter is incremented synchronously
-        here (the single chokepoint every transition funnels through).
-
-        The explicit ``audit_agent_id`` (capture-before-mutate) wins: callers
-        like ``submit_for_qa`` clear ``task.claimed_by`` before transitioning
-        but still want the row attributed to the outgoing agent. Otherwise fall
-        back to ``task.claimed_by``. A structurally-invalid id coerces to
-        ``None`` (mirroring ``AuditService._coerce_uuid``) so the row still
-        lands unattributed rather than FK-violating; a valid-but-deleted agent
-        id is a real bug worth surfacing as a transition failure.
-        """
-        from roboco.db.tables import AuditLogTable
-
-        self._clear_stale_stalled_marker(task)
-
-        # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
-        # rework cycle. Incremented at this single chokepoint — every transition
-        # path funnels its audit through here exactly once — so the rework rate
-        # is an O(1) column read. Synchronous (part of this unit of work). The
-        # pre-block RESTORE path undoes this bump when it restores to a
-        # snapshotted needs_revision (same cycle resuming, not a new rejection).
-        if (
-            to_status == TaskStatus.NEEDS_REVISION.value
-            and from_status != TaskStatus.NEEDS_REVISION.value
-        ):
-            task.revision_count = (task.revision_count or 0) + 1
-            self._maybe_schedule_coroner_bounce_hook(task)
-
-        if audit_agent_id is not None:
-            resolved_audit_agent_id: str | None = str(audit_agent_id)
-        elif task.claimed_by is not None:
-            resolved_audit_agent_id = str(task.claimed_by)
-        else:
-            resolved_audit_agent_id = None
-
-        agent_uuid: UUID | None = None
-        if resolved_audit_agent_id:
-            try:
-                agent_uuid = UUID(resolved_audit_agent_id)
-            except (ValueError, AttributeError):
-                agent_uuid = None
-
-        details: dict[str, Any] = {
-            "from_status": from_status,
-            "to_status": to_status,
-            "agent_role": agent_role,
-            "team": (
-                task.team.value if hasattr(task.team, "value") else str(task.team)
-            ),
-        }
-        for event_type in self._audit_events_for(to_status, agent_role):
-            self.session.add(
-                AuditLogTable(
-                    event_type=event_type,
-                    agent_id=agent_uuid,
-                    target_type="task",
-                    target_id=task.id,
-                    severity="info",
-                    details=dict(details),
-                )
-            )
-        self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
-
-    @staticmethod
-    def _clear_stale_stalled_marker(task: TaskTable) -> None:
-        """Any status transition is genuine task movement, so a stale
-        breaker-tripped stalled marker (set by
-        ``AgentOrchestrator._pm_respawn_should_gate``) no longer applies —
-        clear it here unconditionally rather than relying solely on the
-        dispatcher's narrower same-key re-observation path
-        (``_respawn_status_change_resets`` -> ``_clear_task_stalled_marker``),
-        which never re-fires once the task's status leaves the dispatcher's
-        own fetch scope (e.g. a dev's task advancing to ``awaiting_qa``).
-        Direct attribute assignment (not the async ``clear_stalled_marker``
-        helper) since the caller is synchronous and already holds the ORM
-        object mid-transaction — it commits/rolls back atomically with the
-        transition itself. Split out of ``_emit_status_transition_audit`` to
-        keep its own complexity down (xenon budget)."""
-        if task.stalled_reason is not None:
-            task.stalled_reason = None
-            task.stalled_since = None
-
-    def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
-        """Coroner (Board Program) bounce trigger (spec §4): fire exactly
-        ONCE, at the 3rd bounce — not on every later re-bounce, which would
-        just re-hit CoronerEngine's own one-open-autopsy dedup for no reason.
-        Best-effort, fire-and-forget on a FRESH DB session (this method is
-        sync and runs mid-transaction — see ``_fire_coroner_bounce_hook``'s
-        docstring for the accepted small race this implies) so a hook
-        failure — or the enclosing transaction later rolling back — can
-        never fail the transition that got us here. Split out of
-        ``_emit_status_transition_audit`` to keep its own complexity down
-        (xenon budget)."""
-        if task.revision_count != _CORONER_BOUNCE_THRESHOLD:
-            return
-        try:
-            bg_task = asyncio.create_task(
-                _fire_coroner_bounce_hook(cast("UUID", task.id))
-            )
-            self._background_tasks.add(bg_task)
-            bg_task.add_done_callback(self._background_tasks.discard)
-        except Exception:
-            # Scheduling itself failing (e.g. no running event loop) must
-            # never break the transition already recorded above —
-            # _fire_coroner_bounce_hook's own body is already try/excepted
-            # for everything past this point.
-            _module_log.warning(
-                "coroner: bounce hook scheduling failed (best-effort)",
-                task_id=str(task.id),
-            )
-
-    def _touch_vault_frontmatter(
-        self, task: TaskTable, *, to_status: str, team: str
-    ) -> None:
-        """Best-effort, cheap Obsidian-vault frontmatter touch (event seam).
-
-        Only patches an EXISTING note's status/team/pr fields — no extra
-        queries (everything used here is already a plain column on ``task``).
-        A vault failure (or a not-yet-materialized note) never blocks the
-        transition; see ``VaultWriter.touch_task_frontmatter``.
-        """
-        from roboco.config import settings
-
-        if not settings.obsidian_vault_enabled:
-            return
-        try:
-            from roboco.services.vault_writer import get_vault_writer
-
-            get_vault_writer().touch_task_frontmatter(
-                task_id=str(task.id),
-                status=to_status,
-                team=team,
-                pr_number=task.pr_number,
-                pr_url=task.pr_url,
-            )
-        except Exception as e:
-            self.log.warning(
-                "Vault frontmatter touch failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    async def _materialize_vault_note(self, task: TaskTable) -> None:
-        """Best-effort Obsidian-vault materialize-on-create (event seam).
-
-        Deterministic template only — the ``## Narrative`` section stays
-        Auditor-owned (placeholder). Mirrors ``_touch_vault_frontmatter``'s
-        swallow-and-log posture: a vault failure never blocks task creation,
-        and boards stop showing only curated/rebuilt tasks.
-        """
-        from roboco.config import settings
-
-        if not settings.obsidian_vault_enabled:
-            return
-        try:
-            from roboco.services.project import get_project_service
-            from roboco.services.vault_assembly import assemble_task_note_data
-            from roboco.services.vault_writer import get_vault_writer
-
-            data = await assemble_task_note_data(
-                self, get_project_service(self.session), task
-            )
-            get_vault_writer().write_task(data)
-        except Exception as e:
-            self.log.warning(
-                "Vault materialize-on-create failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    def _emit_escalation_audit(
-        self, task: TaskTable, *, escalator_slug: str, target_slug: str
-    ) -> None:
-        """Emit a ``task.escalated`` audit row (per-member escalation metric).
-
-        Additive to the ``task.blocked`` / pool-release audit of an escalation —
-        it carries WHO escalated (``escalator_slug``) so the member scorecard can
-        charge the escalation to the escalator. Written in the caller's session
-        so it commits atomically with the escalation. Best-effort for metrics:
-        never gates the escalation itself.
-        """
-        from roboco.db.tables import AuditLogTable
-
-        self.session.add(
-            AuditLogTable(
-                event_type="task.escalated",
-                agent_id=None,
-                target_type="task",
-                target_id=task.id,
-                severity="info",
-                details={
-                    "escalator_slug": escalator_slug,
-                    "target_slug": target_slug,
-                },
-            )
-        )
-
-    @staticmethod
-    def _audit_events_for(to_status: str, agent_role: str | None) -> list[str]:
-        """Audit event types to emit for a transition.
-
-        Always the generic ``task.<status>``; plus a rejector-attributed
-        ``task.qa_fail`` / ``task.pr_fail`` / ``task.request_changes`` /
-        ``task.ceo_reject`` when a reviewer bounces a task to needs_revision —
-        so the per-agent rework scorecard can charge the rejection to whoever
-        made it (the audit row carries their agent_id), not the developer who
-        owns the task.
-        """
-        events = [f"task.{to_status}"]
-        if to_status == TaskStatus.NEEDS_REVISION.value:
-            if agent_role == "pr_reviewer":
-                events.append("task.pr_fail")
-            elif agent_role == "qa":
-                events.append("task.qa_fail")
-            elif agent_role in ("cell_pm", "main_pm"):
-                events.append("task.request_changes")
-            elif agent_role == "ceo":
-                events.append("task.ceo_reject")
-        return events
-
-    async def _alert_auditor_of_rework(
-        self,
-        task: TaskTable,
-        *,
-        reason: str,
-        actor_agent_id: UUID | None = None,
-        actor_role: str | None = None,
-    ) -> None:
-        """Best-effort auditor alert when a task bounces to needs_revision.
-
-        Mirrors the other best-effort notification seams in this service: a
-        delivery failure must never block the underlying transition. The
-        orchestrator's ``_dispatch_audit_work`` watches for ``ALERT``
-        notifications targeted at the auditor and spawns an audit pass.
-        """
-        try:
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-
-            delivery = get_notification_delivery_service(self.session)
-            await delivery.notify_auditor_of_rework(
-                task=task,
-                task_id=require_uuid(task.id),
-                reason=reason,
-                actor_agent_id=actor_agent_id,
-                actor_role=actor_role,
-            )
-        except Exception as e:
-            self.log.warning(
-                "Auditor rework alert failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    async def _alert_coroner_of_cancel(self, task: TaskTable) -> None:
-        """Coroner (Board Program) cancel-after-work-started trigger (spec §4).
-
-        Called on ``cancel()``'s own SESSION (unlike the sync-chokepoint
-        bounce hook, ``cancel`` is already async) right after the transition
-        flushes, for the top-level task the caller asked to cancel — not each
-        cascade-cancelled descendant, so a big-subtree cancel opens at most
-        one autopsy attempt. "Work started" is commits or a work session ever
-        having existed on this task; ``CoronerEngine.open_for_incident`` does
-        its own armed+dedup gating, so a false-positive call here is a cheap
-        no-op. Best-effort: never lets a hook failure break the cancel.
-        """
-        if not (task.commits or task.work_session_id is not None):
-            return
-        try:
-            from roboco.services.coroner_engine import get_coroner_engine
-
-            await get_coroner_engine(self.session).open_for_incident(
-                require_uuid(task.id), kind="cancelled"
-            )
-        except Exception as e:
-            self.log.warning(
-                "Coroner cancel-hook failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    # =========================================================================
-    # CRUD OPERATIONS
-    # =========================================================================
-
-    # =========================================================================
-    # STATUS TRANSITIONS
-    # =========================================================================
+class TaskClaimRules(_Base):
+    """Whether a task may be claimed: its status and team, self-review, unmet
+    dependencies, the sequence bar, an existing claimant, and the original
+    developer's context."""
 
     def _validate_claim_status(
         self,
@@ -5488,17 +5001,6 @@ class TaskService(
         if task.status not in valid_statuses:
             return "invalid status for role"
         return None
-
-    # Management roles that can claim tasks from any team. Derived from the
-    # spec's _ORG_WIDE_ROLES (devops subtracted: its cross-cell grant is the
-    # flag-gated branch below) so this set cannot drift from the doctrine
-    # source the spec team-match gate and the gateway's project-access guard
-    # both use. Until it was derived, this set silently lagged the spec
-    # (no ceo, no pr_reviewer) — latent, but one new claim caller away from
-    # a wedge.
-    _MANAGEMENT_ROLES: frozenset[str] = frozenset(
-        role.value for role in _SPEC_ORG_WIDE_ROLES - {Role.DEVOPS}
-    )
 
     def _validate_claim_team(
         self, task: TaskTable, agent: AgentTable | None
@@ -5573,21 +5075,6 @@ class TaskService(
         if task.assigned_to and str(task.assigned_to) != str(agent.id):
             markers.set_original_developer(task, task.assigned_to)
 
-    # Consulted inside _apply_claim_fields's target-status write and inside
-    # _provision_claim's branch-failure rollback's reversal-audit check,
-    # reached only via claim() -> _validate_claim_preconditions ->
-    # _get_valid_claim_statuses, which already screens the pre-claim status
-    # against _ROLE_CLAIM_STATUSES per role. AWAITING_PM_REVIEW is
-    # deliberately absent: no role's _ROLE_CLAIM_STATUSES grants it anymore
-    # (the i_will_plan re-claim loop fix), so claim() can never run with
-    # that pre-claim status; listing it here would be dead weight, not an
-    # independent gate.
-    _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]] = {
-        TaskStatus.PENDING,
-        TaskStatus.AWAITING_QA,
-        TaskStatus.AWAITING_DOCUMENTATION,
-    }
-
     async def _claim_blocked_by_dependencies(self, task: TaskTable) -> bool:
         """True when a PENDING task can't be claimed yet — a ``depends_on`` task
         is still non-terminal (the sequence guardrail).
@@ -5615,6 +5102,118 @@ class TaskService(
         if task.status != TaskStatus.PENDING or not task.dependency_ids:
             return []
         return await self.unmet_dependency_ids(list(task.dependency_ids))
+
+    async def _claim_blocked_by_sequencing(self, task: TaskTable) -> bool:
+        """True when either sequencing guard blocks this PENDING claim.
+
+        One call site for both `_claim_blocked_by_dependencies` (edges) and
+        `_claim_blocked_by_sequence` (sibling order) — keeps
+        `_validate_claim_preconditions` under the return-statement budget.
+        """
+        if await self._claim_blocked_by_dependencies(task):
+            return True
+        return await self._claim_blocked_by_sequence(task) is not None
+
+    async def is_pending_claim_blocked(self, task_id: UUID) -> bool:
+        """Public read-only probe: would a claim on ``task_id`` be refused
+        right now by the dependency/sequence guard?
+
+        Wraps the exact `_claim_blocked_by_sequencing` predicate the claim
+        chokepoint enforces (no duplicated SQL), so dispatch-time filtering
+        can't drift from claim-time enforcement. Meant for a dispatcher to
+        skip a doomed claim attempt on a held later-wave task instead of
+        round-tripping the claim endpoint every tick — the guard queries
+        here are the same cost either way; this just avoids the wasted
+        HTTP claim call and its logging noise. False (not blocked) on a
+        missing task — nothing to hold back, the caller's claim attempt
+        will get its own real error.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return False
+        # A probe, not a claim: the same guards without the "Cannot claim
+        # task" warning a refused claim logs. Every dispatch tick re-probes
+        # each held task (live 2026-10-28: 221 such warnings in 100 minutes,
+        # none of them a claim).
+        if await self._unmet_claim_dependencies(task):
+            return True
+        return await self._claim_blocked_by_sequence(task) is not None
+
+    async def _validate_claim_preconditions(
+        self,
+        task: TaskTable,
+        agent: AgentTable | None,
+        agent_id: UUID,
+        allow_reassign: bool,
+    ) -> bool:
+        """Run all per-claim validators; log + return False on failure."""
+        valid_statuses = _get_valid_claim_statuses(agent, allow_reassign)
+
+        if error := self._validate_claim_status(task, agent, valid_statuses):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+            return False
+
+        if await self._claim_blocked_by_sequencing(task):
+            return False
+
+        if error := self._validate_claim_team(task, agent):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+            return False
+
+        # Prevent pre-assigned theft: if the task is already assigned to a
+        # DIFFERENT agent and the claimant is not allowed to reassign, reject.
+        # PMs with allow_reassign=True can still take over (used for handoffs).
+        if (
+            task.assigned_to is not None
+            and str(task.assigned_to) != str(agent_id)
+            and not allow_reassign
+        ):
+            self.log.warning(
+                "Cannot claim task - assigned to another agent",
+                task_id=str(task.id),
+                assigned_to=str(task.assigned_to),
+                requesting_agent=str(agent_id),
+            )
+            return False
+
+        if error := await self._claimant_conflict(task, agent, agent_id):
+            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+            return False
+        return True
+
+    async def _claimant_conflict(
+        self, task: TaskTable, agent: AgentTable | None, agent_id: UUID
+    ) -> str | None:
+        """Why this claimant may not own ``task`` right now, or None: it
+        reviewed its own work, or it is a work author still holding another
+        task."""
+        if error := self._validate_not_self_review(task, agent, agent_id):
+            return error
+        return await self._work_author_still_holds_work(task, agent, agent_id)
+
+    async def _work_author_still_holds_work(
+        self, task: TaskTable, agent: AgentTable | None, agent_id: UUID
+    ) -> str | None:
+        """Refuse a work author a second task (the claimant may be the target of
+        a claim made on its behalf).
+
+        The gateway's ``already_active`` / ``paused`` guards only run on the
+        agent's own verbs. The dispatcher's on-behalf ``POST /tasks/{id}/claim``
+        never crosses them, so it kept claiming new tasks for developers that
+        still held claimed / blocked / paused work, which their own
+        ``i_will_work_on`` then refused (live 2026-10-28: be-dev-1 and be-dev-2
+        each ended up holding tasks they could neither start nor idle out of).
+        """
+        if agent is None or agent.role not in self._SINGLE_ACTIVE_TASK_ROLES:
+            return None
+        held = await self.held_task_blocking_claim(agent_id, require_uuid(task.id))
+        if held is None:
+            return None
+        return f"{agent.slug} still holds {held.status} task {held.id}"
+
+
+class TaskClaimSequence(_Base):
+    """The sequence bar: which lower-sequence sibling holds a task back, and why."""
 
     async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None:
         """Non-None (naming the blocking sibling) when a same-parent sibling
@@ -5773,117 +5372,79 @@ class TaskService(
         """
         return await self._claim_blocked_by_sequence(task)
 
-    async def _claim_blocked_by_sequencing(self, task: TaskTable) -> bool:
-        """True when either sequencing guard blocks this PENDING claim.
+    async def has_earlier_incomplete_code_sibling(self, task: TaskTable) -> bool:
+        """True if a lower-sequence, non-terminal, same-assignee code sibling exists.
 
-        One call site for both `_claim_blocked_by_dependencies` (edges) and
-        `_claim_blocked_by_sequence` (sibling order) — keeps
-        `_validate_claim_preconditions` under the return-statement budget.
+        Service-layer mirror of the orchestrator's per-dev lane dispatch barrier
+        (``_blocked_by_earlier_lane_sibling``). Used by the i_am_idle pending-work
+        guard so a developer can exit cleanly while the rest of its code queue is
+        still waiting its turn: a pre-delegated queue leaf (``pending``, assigned
+        to this dev) that sits behind an earlier non-terminal sibling in the same
+        lane should NOT pin the dev — the orchestrator spawns it once the lane
+        clears. Without this the dev can neither idle nor proceed without jumping
+        its own queue order. Only ``code`` queues sequence this way.
+
+        Equal sequences (wave ties) tie-break by ``created_at`` so a dev's
+        lane keeps a deterministic order now that independent siblings share
+        a wave instead of taking distinct ordinals.
         """
-        if await self._claim_blocked_by_dependencies(task):
-            return True
-        return await self._claim_blocked_by_sequence(task) is not None
-
-    async def is_pending_claim_blocked(self, task_id: UUID) -> bool:
-        """Public read-only probe: would a claim on ``task_id`` be refused
-        right now by the dependency/sequence guard?
-
-        Wraps the exact `_claim_blocked_by_sequencing` predicate the claim
-        chokepoint enforces (no duplicated SQL), so dispatch-time filtering
-        can't drift from claim-time enforcement. Meant for a dispatcher to
-        skip a doomed claim attempt on a held later-wave task instead of
-        round-tripping the claim endpoint every tick — the guard queries
-        here are the same cost either way; this just avoids the wasted
-        HTTP claim call and its logging noise. False (not blocked) on a
-        missing task — nothing to hold back, the caller's claim attempt
-        will get its own real error.
-        """
-        task = await self.get(task_id)
-        if task is None:
+        if str(getattr(task, "task_type", "")) != TaskType.CODE.value:
             return False
-        # A probe, not a claim: the same guards without the "Cannot claim
-        # task" warning a refused claim logs. Every dispatch tick re-probes
-        # each held task (live 2026-10-28: 221 such warnings in 100 minutes,
-        # none of them a claim).
-        if await self._unmet_claim_dependencies(task):
-            return True
-        return await self._claim_blocked_by_sequence(task) is not None
-
-    async def _validate_claim_preconditions(
-        self,
-        task: TaskTable,
-        agent: AgentTable | None,
-        agent_id: UUID,
-        allow_reassign: bool,
-    ) -> bool:
-        """Run all per-claim validators; log + return False on failure."""
-        valid_statuses = _get_valid_claim_statuses(agent, allow_reassign)
-
-        if error := self._validate_claim_status(task, agent, valid_statuses):
-            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+        parent_id = task.parent_task_id
+        owner = task.assigned_to
+        seq = task.sequence
+        if parent_id is None or owner is None or seq is None:
             return False
-
-        if await self._claim_blocked_by_sequencing(task):
-            return False
-
-        if error := self._validate_claim_team(task, agent):
-            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
-            return False
-
-        # Prevent pre-assigned theft: if the task is already assigned to a
-        # DIFFERENT agent and the claimant is not allowed to reassign, reject.
-        # PMs with allow_reassign=True can still take over (used for handoffs).
-        if (
-            task.assigned_to is not None
-            and str(task.assigned_to) != str(agent_id)
-            and not allow_reassign
-        ):
-            self.log.warning(
-                "Cannot claim task - assigned to another agent",
-                task_id=str(task.id),
-                assigned_to=str(task.assigned_to),
-                requesting_agent=str(agent_id),
+        result = await self.session.execute(
+            select(
+                TaskTable.id,
+                TaskTable.status,
+                TaskTable.sequence,
+                TaskTable.created_at,
+                TaskTable.dependency_ids,
+            ).where(
+                TaskTable.parent_task_id == parent_id,
+                TaskTable.assigned_to == owner,
+                TaskTable.task_type == TaskType.CODE,
+                TaskTable.id != task.id,
             )
-            return False
+        )
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        rows = list(result.all())
+        # Siblings that (transitively) depend on this task are ordered AFTER
+        # it by the dependency guard — counting them as "earlier" via the
+        # created-at tiebreak wedges the claim gate against the dispatch
+        # barrier (be-dev-2, 2026-09-27). See roboco.foundation.policy.lane.
+        dep_map = {
+            str(row.id): {str(d) for d in (row.dependency_ids or ())} for row in rows
+        }
+        dependents = transitive_dependents(dep_map, str(task.id))
+        return self._has_earlier_lane_row(
+            rows, seq, task.created_at, terminal, dependents
+        )
 
-        if error := await self._claimant_conflict(task, agent, agent_id):
-            self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
-            return False
-        return True
+    @staticmethod
+    def _has_earlier_lane_row(
+        rows: list[Any],
+        seq: int,
+        created_at: Any,
+        terminal: set[Any],
+        dependents: set[str],
+    ) -> bool:
+        """True if any lane row is an earlier (lower sequence, or an equal
+        sequence created first) non-terminal sibling outside ``dependents``."""
+        return any(
+            ((row.sequence or 0), row.created_at) < (seq, created_at)
+            and row.status not in terminal
+            and str(row.id) not in dependents
+            for row in rows
+        )
 
-    async def _claimant_conflict(
-        self, task: TaskTable, agent: AgentTable | None, agent_id: UUID
-    ) -> str | None:
-        """Why this claimant may not own ``task`` right now, or None: it
-        reviewed its own work, or it is a work author still holding another
-        task."""
-        if error := self._validate_not_self_review(task, agent, agent_id):
-            return error
-        return await self._work_author_still_holds_work(task, agent, agent_id)
 
-    _SINGLE_ACTIVE_TASK_ROLES: ClassVar[frozenset[AgentRole]] = frozenset(
-        {AgentRole.DEVELOPER, AgentRole.DEVOPS}
-    )
-
-    async def _work_author_still_holds_work(
-        self, task: TaskTable, agent: AgentTable | None, agent_id: UUID
-    ) -> str | None:
-        """Refuse a work author a second task (the claimant may be the target of
-        a claim made on its behalf).
-
-        The gateway's ``already_active`` / ``paused`` guards only run on the
-        agent's own verbs. The dispatcher's on-behalf ``POST /tasks/{id}/claim``
-        never crosses them, so it kept claiming new tasks for developers that
-        still held claimed / blocked / paused work, which their own
-        ``i_will_work_on`` then refused (live 2026-10-28: be-dev-1 and be-dev-2
-        each ended up holding tasks they could neither start nor idle out of).
-        """
-        if agent is None or agent.role not in self._SINGLE_ACTIVE_TASK_ROLES:
-            return None
-        held = await self.held_task_blocking_claim(agent_id, require_uuid(task.id))
-        if held is None:
-            return None
-        return f"{agent.slug} still holds {held.status} task {held.id}"
+class TaskClaim(_Base):
+    """Claiming a task: the claim and task locks, the claim fields and their
+    snapshot, provisioning the branch and worktree, the agent's active state, and
+    the proactive context injected on claim."""
 
     async def _apply_claim_fields(
         self,
@@ -6461,6 +6022,1078 @@ class TaskService(
                 task_id=str(task_id),
                 error=str(e),
             )
+
+
+class TaskDependencies(_Base):
+    """The dependency graph: adding edges without cycles, the sibling collision DAG
+    and wave chains, osmosis edges, sequence stamps, and unmet dependencies."""
+
+    async def add_dependency(self, task_id: UUID, depends_on_id: UUID) -> bool:
+        """Append a dependency to a task WITHOUT changing its status.
+
+        A PENDING task with unmet dependencies is held back by
+        `list_pending(filter_by_dependencies=True)` and released by
+        `_unblock_dependents` once the dependency reaches a terminal state.
+        Used for cross-cell sequencing — the frontend cell waits on the UX/UI
+        design before it dispatches.
+
+        Rejects a self-reference and any edge that would close a cycle (the
+        reverse path already reaches the dependent) — a cycle deadlocks both
+        tasks (`_unblock_dependents` never fires).
+
+        Returns ``True`` only when a new edge was actually inserted, ``False``
+        for an idempotent no-op (missing task, already-present edge) — lets
+        callers like `wire_sibling_collision_dag` tell a fresh wiring pass
+        from a repeat one without a separate membership check.
+        """
+        if depends_on_id == task_id:
+            raise ConflictError(
+                f"task {task_id} cannot depend on itself",
+                resource_type="task_dependency",
+            )
+        task = await self.get(task_id)
+        if task is None:
+            return False
+        if depends_on_id in (task.dependency_ids or []):
+            # Idempotent re-add
+            return False
+        if await self._would_create_cycle(task_id, depends_on_id):
+            raise ConflictError(
+                f"adding {depends_on_id} as a dependency of {task_id} would "
+                "close a dependency cycle",
+                resource_type="task_dependency",
+            )
+        task.dependency_ids = [*(task.dependency_ids or []), depends_on_id]
+        await self.session.flush()
+        return True
+
+    async def _would_create_cycle(self, task_id: UUID, depends_on_id: UUID) -> bool:
+        """True if ``depends_on_id`` already (transitively) depends on ``task_id``.
+
+        Adding ``task_id -> depends_on_id`` when ``depends_on_id -> ... -> task_id``
+        already exists would close a loop. BFS over ``dependency_ids`` edges.
+        # ponytail: O(V+E) per add_dependency; fine for current task-graph
+        # sizes. If a single parent ever carries thousands of siblings, move
+        # to an incremental dominator check.
+        """
+        seen: set[UUID] = set()
+        frontier: list[UUID] = [depends_on_id]
+        while frontier:
+            current = frontier.pop()
+            if current == task_id:
+                return True
+            if current in seen:
+                continue
+            seen.add(current)
+            row = await self.get(current)
+            if row is None:
+                continue
+            frontier.extend(row.dependency_ids or [])
+        return False
+
+    async def wire_sibling_collision_dag(self, parent_task_id: UUID) -> None:
+        """Wire the dev-task collision DAG (multi-level sequencing edge kind 3).
+
+        Runs the deterministic collision-sequencing analyzer over a parent's
+        surfaced siblings and wires each returned edge as a real
+        ``dependency_ids`` entry via :meth:`add_dependency`, so a dev task whose
+        surface collides with an earlier sibling's stays PENDING (held by the
+        ``list_pending(filter_by_dependencies=True)`` gate) until that sibling
+        completes and :meth:`_unblock_dependents` releases it — cross-dev and
+        cross-reroute, the ordering the assignee-keyed spawn barrier could not
+        guarantee (live 2026-06-27 out-of-order break).
+
+        Incremental + idempotent: re-run after each delegate. A surfaced
+        sibling (``intends_to_touch`` / ``adds_migration`` / ``touches_shared``)
+        joins the DAG scoped to its ``project_id`` (two repos never collide);
+        a no-surface / no-project sibling is parallel to everything and
+        contributes no edge. ``dev_task_collision_edges`` orders siblings by
+        ``(priority, sequence)`` so re-runs only ADD edges (never flip an
+        existing pair's order), and ``add_dependency`` dedupes.
+
+        B5 collision_edge: with the master flag on, the deterministic DAG
+        is computed FIRST and stays authoritative; the semantic screen is
+        consulted only for pairs it left unconnected, and its verdicts may
+        only ADD edges (merged acyclically) — flag off skips the ask
+        entirely and the result is byte-identical to the pure analyzer.
+        """
+        from roboco.config import settings
+        from roboco.services.sequencing import dev_task_collision_edges
+
+        siblings = await self.get_subtasks(parent_task_id)
+        siblings_by_id = {UUID(str(s.id)): s for s in siblings}
+        if settings.decisions_enabled:
+            from roboco.services.sequencing import semantic_collision_edges
+
+            edges = await semantic_collision_edges(self.session, siblings)
+        else:
+            edges = dev_task_collision_edges(siblings)
+        for depends_on_id, task_id in edges:
+            held_back_id = UUID(str(task_id))
+            blocking_id = UUID(str(depends_on_id))
+            created = await self.add_dependency(held_back_id, blocking_id)
+            if created:
+                held_back = siblings_by_id.get(held_back_id)
+                blocking = siblings_by_id.get(blocking_id)
+                owner = getattr(held_back, "assigned_to", None) if held_back else None
+                await self._notify_collision_sequencing(
+                    held_back_id,
+                    blocking_id,
+                    owner,
+                    getattr(held_back, "title", None),
+                    getattr(blocking, "title", None),
+                )
+
+    async def _notify_collision_sequencing(
+        self,
+        held_back_task_id: UUID,
+        blocking_task_id: UUID,
+        owner: Any,
+        held_back_title: str | None = None,
+        blocking_title: str | None = None,
+    ) -> None:
+        """Best-effort coordination notification for a newly-wired collision edge."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_collision_sequencing_notification(
+                held_back_task_id=str(held_back_task_id),
+                blocking_task_id=str(blocking_task_id),
+                held_back_assignee=str(owner) if owner is not None else None,
+                held_back_title=held_back_title,
+                blocking_title=blocking_title,
+                db_session=self.session,
+            )
+        except Exception as e:
+            self.log.warning("Collision-sequencing notify failed", error=str(e))
+
+    async def wire_cell_task_wave_chain(self, cell_task_id: UUID) -> None:
+        """Wire the cell-task wave chain (multi-level sequencing edge kind 2).
+
+        A new cell-task (under root-subtask ``UT_n``) depends on every cell-task
+        under every root-subtask ``UT_n`` itself depends on — ``UT_n`` 's
+        ``dependency_ids`` are the kind-1 wave-chain edges, so this chains the
+        cell-tasks of wave *k* onto the cell-tasks of wave *k-1*. A root-subtask
+        may fan to several cell-tasks (different cells), so the previous wave's
+        "cell-task" is a SET, not a single task, and the new cell-task waits for
+        the whole set so its branch carries the merged tail.
+
+        ``UT_n`` is held PENDING by ``list_pending(filter_by_dependencies=True)``
+        until its kind-1 predecessors are terminal, so by the time the Main PM
+        delegates ``UT_n`` 's cell-tasks the predecessor cell-tasks already exist
+        and are terminal — the edge is therefore a no-op gate in the common case
+        but documents the lineage and protects against any re-ordering.
+        Idempotent (``add_dependency`` dedupes) + best-effort (missing
+        predecessor / cell-task contributes no edge).
+        """
+        from roboco.services.sequencing import cell_task_wave_chain_depends_on
+
+        cell_task = await self.get(cell_task_id)
+        if cell_task is None or cell_task.parent_task_id is None:
+            return
+        root = await self.get(UUID(str(cell_task.parent_task_id)))
+        if root is None:
+            return
+        predecessor_root_ids = list(root.dependency_ids or [])
+        cell_tasks_by_root: dict = {}
+        for pred_root_id in predecessor_root_ids:
+            cell_tasks_by_root[pred_root_id] = await self.get_subtasks(
+                UUID(str(pred_root_id))
+            )
+        for dep_id in cell_task_wave_chain_depends_on(
+            predecessor_root_ids, cell_tasks_by_root
+        ):
+            await self.add_dependency(cell_task_id, UUID(str(dep_id)))
+
+    async def wire_by_osmosis_edge(self, dev_task_id: UUID) -> None:
+        """Wire the by-osmosis edge (multi-level sequencing edge kind 4).
+
+        The FIRST dev task (``sequence == 0``) under a cell-task depends on each
+        predecessor cell-task's tail (highest-``sequence``) dev task, so the new
+        wave's first branch carries the previous wave's fully-merged tail. The
+        predecessor cell-tasks are re-derived from the cell-task's root-subtask's
+        kind-1 ``dependency_ids`` (the same source :meth:`wire_cell_task_wave_chain`
+        uses), not from the cell-task's own ``dependency_ids`` — which also carry
+        UX/product-fanout deps the by-osmosis edge must not pick up.
+
+        Subsequent dev tasks (``sequence > 0``) inherit the tail via the kind-3
+        collision DAG or share the cell branch's already-merged base, so they
+        take no explicit edge. Idempotent + best-effort: a predecessor cell-task
+        with no dev tasks, or a missing predecessor, contributes no edge; a tail
+        already terminal is a no-op gate.
+        """
+        from roboco.services.sequencing import by_osmosis_tail_dev_tasks
+
+        dev_task = await self.get(dev_task_id)
+        if dev_task is None or dev_task.parent_task_id is None:
+            return
+        is_first = int(getattr(dev_task, "sequence", 0)) == 0
+        cell_task = await self.get(UUID(str(dev_task.parent_task_id)))
+        if cell_task is None or cell_task.parent_task_id is None:
+            return
+        root = await self.get(UUID(str(cell_task.parent_task_id)))
+        if root is None:
+            return
+        groups: list = []
+        for pred_root_id in list(root.dependency_ids or []):
+            for pred_ct in await self.get_subtasks(UUID(str(pred_root_id))):
+                groups.append(await self.get_subtasks(UUID(str(pred_ct.id))))
+        for dep_id in by_osmosis_tail_dev_tasks(is_first, groups):
+            await self.add_dependency(dev_task_id, UUID(str(dep_id)))
+
+    async def set_sequence(self, task_id: UUID, sequence: int) -> None:
+        """Set a task's sibling-ordering sequence (lower = first).
+
+        `sequence` orders siblings in `list_pending`, `list_for_team`, and the
+        panel, AND is claim-gated: `_claim_blocked_by_sequence` refuses to
+        claim a PENDING task while a same-parent sibling with a strictly
+        lower effective sequence is still non-terminal — independent of, and
+        stricter than, `dependency_ids`. Cross-cell fan-out uses it so an
+        upstream design task sorts ahead of the implementation tasks that
+        depend on it. No-op if the task is gone or already at `sequence`.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return
+        if task.sequence != sequence:
+            task.sequence = sequence
+            await self.session.flush()
+
+    async def stamp_wave_sequence(self, task_id: UUID) -> None:
+        """Stamp a freshly delegated subtask's sequence as its collision-DAG wave.
+
+        sequence = 1 + max(sequence of each SAME-PARENT dependency target), or
+        0 when the task depends on no sibling — so independent siblings tie
+        (parallel under `_claim_blocked_by_sequence`) and colliding / ordered
+        ones ascend. Replaces the raw per-sibling ordinal, which serialized
+        even fully independent siblings fleet-wide under the claim gate. Must
+        run POST-WIRING (after the collision DAG / explicit depends_on /
+        cross-cell edges land) so every edge source is reflected. Only the new
+        task is stamped — existing siblings' sequences (prompter batch waves,
+        API-authored values) are never rewritten here.
+        """
+        task = await self.get(task_id)
+        if task is None or task.parent_task_id is None:
+            return
+        wave = 0
+        dep_ids = list(task.dependency_ids or [])
+        if dep_ids:
+            result = await self.session.execute(
+                select(func.max(func.coalesce(TaskTable.sequence, 0))).where(
+                    TaskTable.id.in_(dep_ids),
+                    TaskTable.parent_task_id == task.parent_task_id,
+                )
+            )
+            max_seq = result.scalar()
+            if max_seq is not None:
+                wave = int(max_seq) + 1
+        await self.set_sequence(task_id, wave)
+
+    async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]:
+        """Return the subset of dependency IDs whose status is non-terminal.
+
+        A dependency is "met" only once it reaches a terminal state
+        (completed/cancelled). This is the single source of truth for the
+        "can a task that depends on these proceed?" question — reused by
+        `list_pending`, `list_pending_for_agent`, `inherit_unmet_dependencies`,
+        and the claim-time dependency guard. An empty input returns an empty
+        list (no dependencies = nothing unmet).
+        """
+        if not dependency_ids:
+            return []
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        dep_result = await self.session.execute(
+            select(TaskTable.id, TaskTable.status).where(
+                TaskTable.id.in_(dependency_ids)
+            )
+        )
+        return [
+            dep_id
+            for dep_id, dep_status in dep_result.all()
+            if dep_status not in terminal
+        ]
+
+    async def inherit_unmet_dependencies(
+        self, subtask_id: UUID, parent_id: UUID
+    ) -> None:
+        """Copy a parent's still-unresolved dependencies onto a subtask.
+
+        A subtask of a task that is itself waiting on a cross-cell dependency
+        (e.g. a frontend dev subtask under a frontend cell task that waits on
+        the UX/UI design) must be held until that dependency resolves — the
+        developer cannot code ahead of the design. Only non-terminal parent
+        dependencies are inherited; already-completed ones would never release
+        the subtask via `_unblock_dependents`. Reuses `add_dependency`, so the
+        subtask is held by `list_pending(filter_by_dependencies=True)`.
+        """
+        parent = await self.get(parent_id)
+        if parent is None or not parent.dependency_ids:
+            return
+        for dep_id in await self.unmet_dependency_ids(list(parent.dependency_ids)):
+            await self.add_dependency(subtask_id, dep_id)
+
+
+class TaskTree(_Base):
+    """A task's subtree: subtasks, descendants, child counts, terminal children, and
+    the required cells no subtask covers."""
+
+    async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
+        """Get all subtasks of a parent task."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.parent_task_id == parent_task_id)
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def uncovered_required_cells(self, parent_task_id: UUID) -> list[str]:
+        """Named cells (parent's ``required_cells:`` marker) with no subtask.
+
+        Inert ([]) when the parent carries no marker — legacy / un-named
+        decompositions are never blocked. Otherwise returns each named cell that
+        has no child subtask on that team, in marker order.
+        """
+        parent = await self.get(parent_task_id)
+        if parent is None:
+            return []
+        required = extract_required_cells(parent)
+        if not required:
+            return []
+        children = await self.get_subtasks(parent_task_id)
+        covered = {_normalize_cell(c.team) for c in children if c.team is not None}
+        return [cell for cell in required if cell not in covered]
+
+    async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]:
+        """Recursively get ALL descendant tasks (children, grandchildren, etc.).
+
+        Uses iterative BFS to avoid recursion limits and handle arbitrary depth.
+        """
+        descendants: list[TaskTable] = []
+        to_process: list[UUID] = [task_id]
+
+        while to_process:
+            current_id = to_process.pop(0)
+            children = await self.get_subtasks(current_id)
+            for child in children:
+                descendants.append(child)
+                # String-literal cast tells mypy the SQLAlchemy Mapped[UUID]
+                # resolves to uuid.UUID at runtime, without an inline suppression.
+                to_process.append(cast("UUID", child.id))
+
+        return descendants
+
+    async def all_subtasks_terminal(self, task_id: UUID) -> bool:
+        """True iff every direct subtask is in a terminal status.
+
+        Empty subtask list returns True (no children = vacuously terminal).
+        """
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        result = await self.session.execute(
+            select(TaskTable.status).where(TaskTable.parent_task_id == task_id)
+        )
+        statuses = result.scalars().all()
+        return all(s in terminal for s in statuses)
+
+    async def has_children(self, task_id: UUID) -> bool:
+        """True iff this task has at least one subtask, any status.
+
+        Distinguishes a coordination node from a leaf for the PM/dev routing
+        classifier (``AgentOrchestrator._classify_cell_code_task``).
+        """
+        result = await self.session.execute(
+            select(TaskTable.id).where(TaskTable.parent_task_id == task_id).limit(1)
+        )
+        return result.first() is not None
+
+    async def children_count(self, task_id: UUID) -> int:
+        """Count of direct subtasks, any status - the cancel_leaf leaf check.
+
+        A terminal child still counts: cancel_leaf's "leaf" means no
+        descendants at all, not "no active descendants".
+        """
+        result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                TaskTable.parent_task_id == task_id,
+            )
+        )
+        return result.scalar_one()
+
+    async def terminal_children_count(self, task_id: UUID) -> int:
+        """Count of direct subtasks in a terminal status (COMPLETED/CANCELLED).
+
+        One cheap COUNT query — feeds the oscillation breaker's progress
+        fingerprint, since a PM coordination root never commits itself (all
+        real progress lands on child rows); ``unblock`` is rare enough that
+        the extra query is fine.
+        """
+        result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                TaskTable.parent_task_id == task_id,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
+        return result.scalar_one()
+
+
+class TaskProgress(_Base):
+    """Recording progress on a task: progress notes, plan progress, checkpoints and
+    commits."""
+
+    async def add_progress(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        message: str,
+        percentage: int | None = None,
+    ) -> TaskTable | None:
+        """Add a progress update to a task."""
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        update = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "agent_id": str(agent_id),
+            "message": message,
+            "percentage": percentage,
+        }
+        task.progress_updates = [*(task.progress_updates or []), update]
+        await self.session.flush()
+
+        return task
+
+    async def record_plan_progress(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        message: str,
+        plan_step: str | None = None,
+        fallback_percentage: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Append a progress update whose % is DERIVED from the plan checklist.
+
+        The plan's sub_tasks ARE the progress skeleton. When
+        ``plan_step`` (a sub_task id, or 1-based order/index) is given,
+        that step is marked ``completed`` and the percentage is computed
+        as completed/total (equal weight) — the agent cannot game it.
+        Narrative entries (no plan_step) are allowed for documentation
+        and carry the CURRENT derived % so the bar never regresses. When
+        the task has no sub_task checklist the agent's
+        ``fallback_percentage`` is used (back-compat).
+
+        Returns ``None`` if the task is missing, else a dict:
+        ``{"task", "percentage", "step_resolved": bool | None,
+        "valid_steps": [str]}``. ``step_resolved`` is None when no
+        plan_step was requested; False when requested but unmatched (the
+        caller surfaces a remediation listing ``valid_steps``).
+        """
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        plan, sub_tasks = _plan_subtasks(task)
+        step_resolved: bool | None = None
+        if plan_step is not None:
+            step_resolved = _mark_subtask_complete(sub_tasks, plan_step)
+            if step_resolved:
+                # Reassign so the JSON column registers the mutation.
+                task.plan = {**plan, "sub_tasks": sub_tasks}
+
+        percentage = _derive_plan_pct(sub_tasks, fallback_percentage)
+        task.progress_updates = [
+            *(task.progress_updates or []),
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "agent_id": str(agent_id),
+                "message": message,
+                "percentage": percentage,
+            },
+        ]
+        await self.session.flush()
+        return {
+            "task": task,
+            "percentage": percentage,
+            "step_resolved": step_resolved,
+            "valid_steps": _valid_step_refs(sub_tasks),
+        }
+
+    async def add_checkpoint(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        state_summary: str,
+        remaining_work: list[str],
+        notes: str | None = None,
+    ) -> TaskTable | None:
+        """Add a checkpoint for state recovery."""
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        checkpoint = {
+            "id": str(UUID(int=len(task.checkpoints or []))),
+            "timestamp": datetime.now(UTC).isoformat(),
+            "agent_id": str(agent_id),
+            "state_summary": state_summary,
+            "remaining_work": remaining_work,
+            "notes": notes,
+        }
+        task.checkpoints = [*(task.checkpoints or []), checkpoint]
+        await self.session.flush()
+
+        return task
+
+    async def add_commit(
+        self,
+        task_id: UUID,
+        hash: str,
+        message: str,
+        agent_id: UUID | None = None,
+    ) -> TaskTable | None:
+        """Link a commit to a task."""
+        task = await self.get(task_id)
+        if not task:
+            return None
+
+        commit = {
+            "hash": hash,
+            "message": message,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "author_agent_id": str(agent_id) if agent_id else None,
+        }
+        task.commits = [*(task.commits or []), commit]
+        await self.session.flush()
+
+        return task
+
+
+class TaskService(
+    BaseService,
+    TaskAgentQueries,
+    TaskBoardProgramCycles,
+    TaskBoardProgramOutputs,
+    TaskBranches,
+    TaskClaim,
+    TaskClaimRules,
+    TaskClaimSequence,
+    TaskCreation,
+    TaskDependencies,
+    TaskEngineListings,
+    TaskExternalPRReviews,
+    TaskLineage,
+    TaskListQueries,
+    TaskProgress,
+    TaskQueueQueries,
+    TaskRecords,
+    TaskRoleLookup,
+    TaskStalled,
+    TaskStatistics,
+    TaskSupersede,
+    TaskTree,
+):
+    """
+    Service for managing tasks.
+
+    Provides:
+    - CRUD operations
+    - Status transitions with validation
+    - Assignment and claiming
+    - Queries by team, status, assignee
+    - Dependency management
+    """
+
+    service_name: ClassVar[str] = "task"
+    _background_tasks: ClassVar[set[asyncio.Task[None]]] = set()
+    # #216: consecutive FS/permission failures during terminal worktree
+    # cleanup. A systemic FS issue (stuck mount, perms) would otherwise leak
+    # per-task worktrees indefinitely with only a warning log; after this many
+    # consecutive OSError failures a CEO alert fires once (suppressed until a
+    # success resets the streak). Class-level so it spans all cleanup calls.
+    _worktree_cleanup_fail_streak: ClassVar[int] = 0
+    _worktree_cleanup_escalated: ClassVar[bool] = False
+    _WORKTREE_CLEANUP_ESCALATE_AFTER: ClassVar[int] = 3
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        # Bridges claim(provision=False)'s _apply_claim_fields to a LATER,
+        # separate provision_claim() call (the verb runner's composed
+        # claim/set_plan/start commits durably, then provisions outside any
+        # savepoint, see provision_claim's docstring). Per-instance and
+        # per-request: the gateway builds one TaskService per request, so
+        # this never survives past the request that populated it. Popped on
+        # use; an entry lingers only if the composed sequence never reaches
+        # provision_claim at all (set_plan/start raises, or returns None on
+        # a concurrent status change), bounded by this instance's request
+        # lifetime, so it never accumulates across requests.
+        self._pending_claim_snapshots: dict[UUID, _ClaimFieldSnapshot] = {}
+
+    # =========================================================================
+    # STATUS TRANSITION HELPER
+    # =========================================================================
+
+    def _validate_and_set_status(
+        self,
+        task: TaskTable,
+        new_status: TaskStatus,
+        agent_role: str | None = None,
+        audit_agent_id: str | UUID | None = None,
+        extra_allowed_roles: tuple[str, ...] = (),
+    ) -> None:
+        """
+        Validate and set task status with lifecycle enforcement.
+
+        This is the single point of truth for status changes. All transitions
+        are validated against VALID_TRANSITIONS, ROLE_RESTRICTED_TRANSITIONS,
+        and git requirements.
+
+        Args:
+            task: The task to update
+            new_status: Target status
+            agent_role: Optional role for role-restricted transitions
+            audit_agent_id: Optional explicit agent_id for the audit row.
+                Required for transitions where the caller has already
+                cleared ``task.claimed_by`` BEFORE invoking this method
+                (e.g. ``submit_for_qa`` clears claimed_by so QA can claim).
+                Without this, the audit writer reads the now-cleared value
+                and stores ``agent_id=NULL`` on rows that should attribute
+                the transition to the developer, QA, or PM who triggered it.
+
+        Raises:
+            TaskLifecycleError: If transition is invalid or role not permitted
+            GitRequirementError: If git requirements not met
+        """
+        current = (
+            task.status.value if isinstance(task.status, TaskStatus) else task.status
+        )
+        target = new_status.value if isinstance(new_status, TaskStatus) else new_status
+
+        # Validate the transition (raises TaskLifecycleError if invalid)
+        validate_task_transition(current, target, agent_role, extra_allowed_roles)
+
+        # Validate git requirements (raises GitRequirementError if not met)
+        git_ctx = GitContext(
+            docs_complete=bool(task.docs_complete),
+            pr_created=bool(task.pr_created),
+            pr_number=task.pr_number,
+            branch_name=str(task.branch_name) if task.branch_name else None,
+            # A branchless coordination task does no git and never gets a branch
+            # — exempt it from the branch gate so it can reach in_progress and
+            # delegate. Two shapes qualify: a product fan-out root (product, no
+            # repo) and a MegaTask umbrella (batch_id, top-level). All four are
+            # plain columns (no lazy load).
+            is_coordination=is_branchless_coordination(
+                project_id=task.project_id,
+                product_id=task.product_id,
+                batch_id=task.batch_id,
+                parent_task_id=task.parent_task_id,
+                has_cell_projects=bool(task.cell_projects),
+            ),
+            # An external-PR review task reviews someone else's PR read-only —
+            # no branch of its own — so it is branch-gate exempt.
+            is_external_review=(getattr(task, "source", "manual") in PR_REVIEW_SOURCES),
+            # A MegaTask umbrella assembles no PR of its own, so it is exempt
+            # from the awaiting_pm_review->awaiting_ceo_approval pr_number gate.
+            is_umbrella=is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            ),
+            # A PR-waived task (zero commits relative to its parent —
+            # report-only work the verb runner skipped create_pr for) is
+            # exempt from the pr_number CEO-escalation gate the same way an
+            # umbrella is, even though it carries a real branch.
+            is_pr_waived=markers.is_pr_waived(task),
+        )
+        validate_git_requirements(current, target, git_ctx)
+
+        # Apply the status change
+        task.status = new_status
+        self.log.info(
+            "Task status transition",
+            task_id=str(task.id),
+            from_status=current,
+            to_status=target,
+            agent_role=agent_role,
+        )
+
+        # Poke the orchestrator's dispatcher so it reacts immediately to
+        # this transition. Without this, agents wait up to 30 seconds for
+        # the next poll (10 minutes cumulative in the pathological case we
+        # saw on be-dev-1 spawn). Uses lazy import + silent fallback so
+        # code paths that don't have an orchestrator (tests, sync tools)
+        # don't break.
+        try:
+            from roboco.api.deps import get_orchestrator
+
+            get_orchestrator().trigger_dispatch()
+        except Exception as e:
+            # Swallow so task creation succeeds even when the
+            # orchestrator singleton isn't wired (e.g. tests, CLI
+            # scripts) — but log so a real regression is visible.
+            self.log.debug(
+                "Dispatch trigger skipped after task create",
+                error=str(e),
+            )
+
+        self._emit_status_transition_audit(
+            task,
+            from_status=current,
+            to_status=target,
+            agent_role=agent_role,
+            audit_agent_id=audit_agent_id,
+        )
+
+    def _emit_status_transition_audit(
+        self,
+        task: TaskTable,
+        *,
+        from_status: str,
+        to_status: str,
+        agent_role: str | None,
+        audit_agent_id: str | UUID | None,
+    ) -> None:
+        """Emit the ``task.<status>`` audit row for a status transition.
+
+        Extracted from ``_validate_and_set_status`` so transition paths that
+        set ``task.status`` directly — e.g. ``apply_escalation``, which blocks a
+        task without routing through the strict transition validator — record
+        the same audit event. No status change may bypass the audit log.
+
+        The row is written into the CALLER's session (``self.session.add``),
+        so it commits / rolls back ATOMICALLY with the status transition — the
+        audit journey can never diverge from real task state. This closes three
+        facets of the fire-and-forget decoupling gap:
+
+        * F061/F073 — the audit commit is no longer decoupled on a separate
+          connection whose failures were swallowed; a committed transition now
+          ALWAYS has its audit row (same transaction), and a persist failure
+          fails the transition (fail-closed for the metric source of truth)
+          instead of silently dropping the row.
+        * F075 — a transition rolled back inside a verb savepoint
+          (``_verb_runner`` wraps composed actions in ``begin_nested``) now
+          rolls its audit row back too — no phantom ``task.<status>`` row for a
+          transition that did not stick. (The claim-branch-failure rollback in
+          ``_provision_claim`` commits its own reversal explicitly instead,
+          since it runs outside any savepoint by design; the savepoint
+          rollback handles the general case.)
+
+        The ``revision_count`` rework counter is incremented synchronously
+        here (the single chokepoint every transition funnels through).
+
+        The explicit ``audit_agent_id`` (capture-before-mutate) wins: callers
+        like ``submit_for_qa`` clear ``task.claimed_by`` before transitioning
+        but still want the row attributed to the outgoing agent. Otherwise fall
+        back to ``task.claimed_by``. A structurally-invalid id coerces to
+        ``None`` (mirroring ``AuditService._coerce_uuid``) so the row still
+        lands unattributed rather than FK-violating; a valid-but-deleted agent
+        id is a real bug worth surfacing as a transition failure.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        self._clear_stale_stalled_marker(task)
+
+        # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
+        # rework cycle. Incremented at this single chokepoint — every transition
+        # path funnels its audit through here exactly once — so the rework rate
+        # is an O(1) column read. Synchronous (part of this unit of work). The
+        # pre-block RESTORE path undoes this bump when it restores to a
+        # snapshotted needs_revision (same cycle resuming, not a new rejection).
+        if (
+            to_status == TaskStatus.NEEDS_REVISION.value
+            and from_status != TaskStatus.NEEDS_REVISION.value
+        ):
+            task.revision_count = (task.revision_count or 0) + 1
+            self._maybe_schedule_coroner_bounce_hook(task)
+
+        if audit_agent_id is not None:
+            resolved_audit_agent_id: str | None = str(audit_agent_id)
+        elif task.claimed_by is not None:
+            resolved_audit_agent_id = str(task.claimed_by)
+        else:
+            resolved_audit_agent_id = None
+
+        agent_uuid: UUID | None = None
+        if resolved_audit_agent_id:
+            try:
+                agent_uuid = UUID(resolved_audit_agent_id)
+            except (ValueError, AttributeError):
+                agent_uuid = None
+
+        details: dict[str, Any] = {
+            "from_status": from_status,
+            "to_status": to_status,
+            "agent_role": agent_role,
+            "team": (
+                task.team.value if hasattr(task.team, "value") else str(task.team)
+            ),
+        }
+        for event_type in self._audit_events_for(to_status, agent_role):
+            self.session.add(
+                AuditLogTable(
+                    event_type=event_type,
+                    agent_id=agent_uuid,
+                    target_type="task",
+                    target_id=task.id,
+                    severity="info",
+                    details=dict(details),
+                )
+            )
+        self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    @staticmethod
+    def _clear_stale_stalled_marker(task: TaskTable) -> None:
+        """Any status transition is genuine task movement, so a stale
+        breaker-tripped stalled marker (set by
+        ``AgentOrchestrator._pm_respawn_should_gate``) no longer applies —
+        clear it here unconditionally rather than relying solely on the
+        dispatcher's narrower same-key re-observation path
+        (``_respawn_status_change_resets`` -> ``_clear_task_stalled_marker``),
+        which never re-fires once the task's status leaves the dispatcher's
+        own fetch scope (e.g. a dev's task advancing to ``awaiting_qa``).
+        Direct attribute assignment (not the async ``clear_stalled_marker``
+        helper) since the caller is synchronous and already holds the ORM
+        object mid-transaction — it commits/rolls back atomically with the
+        transition itself. Split out of ``_emit_status_transition_audit`` to
+        keep its own complexity down (xenon budget)."""
+        if task.stalled_reason is not None:
+            task.stalled_reason = None
+            task.stalled_since = None
+
+    def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
+        """Coroner (Board Program) bounce trigger (spec §4): fire exactly
+        ONCE, at the 3rd bounce — not on every later re-bounce, which would
+        just re-hit CoronerEngine's own one-open-autopsy dedup for no reason.
+        Best-effort, fire-and-forget on a FRESH DB session (this method is
+        sync and runs mid-transaction — see ``_fire_coroner_bounce_hook``'s
+        docstring for the accepted small race this implies) so a hook
+        failure — or the enclosing transaction later rolling back — can
+        never fail the transition that got us here. Split out of
+        ``_emit_status_transition_audit`` to keep its own complexity down
+        (xenon budget)."""
+        if task.revision_count != _CORONER_BOUNCE_THRESHOLD:
+            return
+        try:
+            bg_task = asyncio.create_task(
+                _fire_coroner_bounce_hook(cast("UUID", task.id))
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            # Scheduling itself failing (e.g. no running event loop) must
+            # never break the transition already recorded above —
+            # _fire_coroner_bounce_hook's own body is already try/excepted
+            # for everything past this point.
+            _module_log.warning(
+                "coroner: bounce hook scheduling failed (best-effort)",
+                task_id=str(task.id),
+            )
+
+    def _touch_vault_frontmatter(
+        self, task: TaskTable, *, to_status: str, team: str
+    ) -> None:
+        """Best-effort, cheap Obsidian-vault frontmatter touch (event seam).
+
+        Only patches an EXISTING note's status/team/pr fields — no extra
+        queries (everything used here is already a plain column on ``task``).
+        A vault failure (or a not-yet-materialized note) never blocks the
+        transition; see ``VaultWriter.touch_task_frontmatter``.
+        """
+        from roboco.config import settings
+
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.vault_writer import get_vault_writer
+
+            get_vault_writer().touch_task_frontmatter(
+                task_id=str(task.id),
+                status=to_status,
+                team=team,
+                pr_number=task.pr_number,
+                pr_url=task.pr_url,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Vault frontmatter touch failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    async def _materialize_vault_note(self, task: TaskTable) -> None:
+        """Best-effort Obsidian-vault materialize-on-create (event seam).
+
+        Deterministic template only — the ``## Narrative`` section stays
+        Auditor-owned (placeholder). Mirrors ``_touch_vault_frontmatter``'s
+        swallow-and-log posture: a vault failure never blocks task creation,
+        and boards stop showing only curated/rebuilt tasks.
+        """
+        from roboco.config import settings
+
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.project import get_project_service
+            from roboco.services.vault_assembly import assemble_task_note_data
+            from roboco.services.vault_writer import get_vault_writer
+
+            data = await assemble_task_note_data(
+                self, get_project_service(self.session), task
+            )
+            get_vault_writer().write_task(data)
+        except Exception as e:
+            self.log.warning(
+                "Vault materialize-on-create failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    def _emit_escalation_audit(
+        self, task: TaskTable, *, escalator_slug: str, target_slug: str
+    ) -> None:
+        """Emit a ``task.escalated`` audit row (per-member escalation metric).
+
+        Additive to the ``task.blocked`` / pool-release audit of an escalation —
+        it carries WHO escalated (``escalator_slug``) so the member scorecard can
+        charge the escalation to the escalator. Written in the caller's session
+        so it commits atomically with the escalation. Best-effort for metrics:
+        never gates the escalation itself.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="task.escalated",
+                agent_id=None,
+                target_type="task",
+                target_id=task.id,
+                severity="info",
+                details={
+                    "escalator_slug": escalator_slug,
+                    "target_slug": target_slug,
+                },
+            )
+        )
+
+    @staticmethod
+    def _audit_events_for(to_status: str, agent_role: str | None) -> list[str]:
+        """Audit event types to emit for a transition.
+
+        Always the generic ``task.<status>``; plus a rejector-attributed
+        ``task.qa_fail`` / ``task.pr_fail`` / ``task.request_changes`` /
+        ``task.ceo_reject`` when a reviewer bounces a task to needs_revision —
+        so the per-agent rework scorecard can charge the rejection to whoever
+        made it (the audit row carries their agent_id), not the developer who
+        owns the task.
+        """
+        events = [f"task.{to_status}"]
+        if to_status == TaskStatus.NEEDS_REVISION.value:
+            if agent_role == "pr_reviewer":
+                events.append("task.pr_fail")
+            elif agent_role == "qa":
+                events.append("task.qa_fail")
+            elif agent_role in ("cell_pm", "main_pm"):
+                events.append("task.request_changes")
+            elif agent_role == "ceo":
+                events.append("task.ceo_reject")
+        return events
+
+    async def _alert_auditor_of_rework(
+        self,
+        task: TaskTable,
+        *,
+        reason: str,
+        actor_agent_id: UUID | None = None,
+        actor_role: str | None = None,
+    ) -> None:
+        """Best-effort auditor alert when a task bounces to needs_revision.
+
+        Mirrors the other best-effort notification seams in this service: a
+        delivery failure must never block the underlying transition. The
+        orchestrator's ``_dispatch_audit_work`` watches for ``ALERT``
+        notifications targeted at the auditor and spawns an audit pass.
+        """
+        try:
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery = get_notification_delivery_service(self.session)
+            await delivery.notify_auditor_of_rework(
+                task=task,
+                task_id=require_uuid(task.id),
+                reason=reason,
+                actor_agent_id=actor_agent_id,
+                actor_role=actor_role,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Auditor rework alert failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    async def _alert_coroner_of_cancel(self, task: TaskTable) -> None:
+        """Coroner (Board Program) cancel-after-work-started trigger (spec §4).
+
+        Called on ``cancel()``'s own SESSION (unlike the sync-chokepoint
+        bounce hook, ``cancel`` is already async) right after the transition
+        flushes, for the top-level task the caller asked to cancel — not each
+        cascade-cancelled descendant, so a big-subtree cancel opens at most
+        one autopsy attempt. "Work started" is commits or a work session ever
+        having existed on this task; ``CoronerEngine.open_for_incident`` does
+        its own armed+dedup gating, so a false-positive call here is a cheap
+        no-op. Best-effort: never lets a hook failure break the cancel.
+        """
+        if not (task.commits or task.work_session_id is not None):
+            return
+        try:
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            await get_coroner_engine(self.session).open_for_incident(
+                require_uuid(task.id), kind="cancelled"
+            )
+        except Exception as e:
+            self.log.warning(
+                "Coroner cancel-hook failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    # =========================================================================
+    # CRUD OPERATIONS
+    # =========================================================================
+
+    # =========================================================================
+    # STATUS TRANSITIONS
+    # =========================================================================
+
+    # Management roles that can claim tasks from any team. Derived from the
+    # spec's _ORG_WIDE_ROLES (devops subtracted: its cross-cell grant is the
+    # flag-gated branch below) so this set cannot drift from the doctrine
+    # source the spec team-match gate and the gateway's project-access guard
+    # both use. Until it was derived, this set silently lagged the spec
+    # (no ceo, no pr_reviewer) — latent, but one new claim caller away from
+    # a wedge.
+    _MANAGEMENT_ROLES: frozenset[str] = frozenset(
+        role.value for role in _SPEC_ORG_WIDE_ROLES - {Role.DEVOPS}
+    )
+
+    # Consulted inside _apply_claim_fields's target-status write and inside
+    # _provision_claim's branch-failure rollback's reversal-audit check,
+    # reached only via claim() -> _validate_claim_preconditions ->
+    # _get_valid_claim_statuses, which already screens the pre-claim status
+    # against _ROLE_CLAIM_STATUSES per role. AWAITING_PM_REVIEW is
+    # deliberately absent: no role's _ROLE_CLAIM_STATUSES grants it anymore
+    # (the i_will_plan re-claim loop fix), so claim() can never run with
+    # that pre-claim status; listing it here would be dead weight, not an
+    # independent gate.
+    _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.PENDING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+    }
+
+    _SINGLE_ACTIVE_TASK_ROLES: ClassVar[frozenset[AgentRole]] = frozenset(
+        {AgentRole.DEVELOPER, AgentRole.DEVOPS}
+    )
 
     # =========================================================================
     # GIT WORK SESSION INTEGRATION
@@ -10667,553 +11300,9 @@ class TaskService(
     # PROGRESS AND CHECKPOINTS
     # =========================================================================
 
-    async def add_progress(
-        self,
-        task_id: UUID,
-        agent_id: UUID,
-        message: str,
-        percentage: int | None = None,
-    ) -> TaskTable | None:
-        """Add a progress update to a task."""
-        task = await self.get(task_id)
-        if not task:
-            return None
-
-        update = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "agent_id": str(agent_id),
-            "message": message,
-            "percentage": percentage,
-        }
-        task.progress_updates = [*(task.progress_updates or []), update]
-        await self.session.flush()
-
-        return task
-
-    async def record_plan_progress(
-        self,
-        task_id: UUID,
-        agent_id: UUID,
-        message: str,
-        plan_step: str | None = None,
-        fallback_percentage: int | None = None,
-    ) -> dict[str, Any] | None:
-        """Append a progress update whose % is DERIVED from the plan checklist.
-
-        The plan's sub_tasks ARE the progress skeleton. When
-        ``plan_step`` (a sub_task id, or 1-based order/index) is given,
-        that step is marked ``completed`` and the percentage is computed
-        as completed/total (equal weight) — the agent cannot game it.
-        Narrative entries (no plan_step) are allowed for documentation
-        and carry the CURRENT derived % so the bar never regresses. When
-        the task has no sub_task checklist the agent's
-        ``fallback_percentage`` is used (back-compat).
-
-        Returns ``None`` if the task is missing, else a dict:
-        ``{"task", "percentage", "step_resolved": bool | None,
-        "valid_steps": [str]}``. ``step_resolved`` is None when no
-        plan_step was requested; False when requested but unmatched (the
-        caller surfaces a remediation listing ``valid_steps``).
-        """
-        task = await self.get(task_id)
-        if not task:
-            return None
-
-        plan, sub_tasks = _plan_subtasks(task)
-        step_resolved: bool | None = None
-        if plan_step is not None:
-            step_resolved = _mark_subtask_complete(sub_tasks, plan_step)
-            if step_resolved:
-                # Reassign so the JSON column registers the mutation.
-                task.plan = {**plan, "sub_tasks": sub_tasks}
-
-        percentage = _derive_plan_pct(sub_tasks, fallback_percentage)
-        task.progress_updates = [
-            *(task.progress_updates or []),
-            {
-                "timestamp": datetime.now(UTC).isoformat(),
-                "agent_id": str(agent_id),
-                "message": message,
-                "percentage": percentage,
-            },
-        ]
-        await self.session.flush()
-        return {
-            "task": task,
-            "percentage": percentage,
-            "step_resolved": step_resolved,
-            "valid_steps": _valid_step_refs(sub_tasks),
-        }
-
-    async def add_checkpoint(
-        self,
-        task_id: UUID,
-        agent_id: UUID,
-        state_summary: str,
-        remaining_work: list[str],
-        notes: str | None = None,
-    ) -> TaskTable | None:
-        """Add a checkpoint for state recovery."""
-        task = await self.get(task_id)
-        if not task:
-            return None
-
-        checkpoint = {
-            "id": str(UUID(int=len(task.checkpoints or []))),
-            "timestamp": datetime.now(UTC).isoformat(),
-            "agent_id": str(agent_id),
-            "state_summary": state_summary,
-            "remaining_work": remaining_work,
-            "notes": notes,
-        }
-        task.checkpoints = [*(task.checkpoints or []), checkpoint]
-        await self.session.flush()
-
-        return task
-
-    async def add_commit(
-        self,
-        task_id: UUID,
-        hash: str,
-        message: str,
-        agent_id: UUID | None = None,
-    ) -> TaskTable | None:
-        """Link a commit to a task."""
-        task = await self.get(task_id)
-        if not task:
-            return None
-
-        commit = {
-            "hash": hash,
-            "message": message,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "author_agent_id": str(agent_id) if agent_id else None,
-        }
-        task.commits = [*(task.commits or []), commit]
-        await self.session.flush()
-
-        return task
-
     # =========================================================================
     # QUERIES
     # =========================================================================
-
-    async def add_dependency(self, task_id: UUID, depends_on_id: UUID) -> bool:
-        """Append a dependency to a task WITHOUT changing its status.
-
-        A PENDING task with unmet dependencies is held back by
-        `list_pending(filter_by_dependencies=True)` and released by
-        `_unblock_dependents` once the dependency reaches a terminal state.
-        Used for cross-cell sequencing — the frontend cell waits on the UX/UI
-        design before it dispatches.
-
-        Rejects a self-reference and any edge that would close a cycle (the
-        reverse path already reaches the dependent) — a cycle deadlocks both
-        tasks (`_unblock_dependents` never fires).
-
-        Returns ``True`` only when a new edge was actually inserted, ``False``
-        for an idempotent no-op (missing task, already-present edge) — lets
-        callers like `wire_sibling_collision_dag` tell a fresh wiring pass
-        from a repeat one without a separate membership check.
-        """
-        if depends_on_id == task_id:
-            raise ConflictError(
-                f"task {task_id} cannot depend on itself",
-                resource_type="task_dependency",
-            )
-        task = await self.get(task_id)
-        if task is None:
-            return False
-        if depends_on_id in (task.dependency_ids or []):
-            # Idempotent re-add
-            return False
-        if await self._would_create_cycle(task_id, depends_on_id):
-            raise ConflictError(
-                f"adding {depends_on_id} as a dependency of {task_id} would "
-                "close a dependency cycle",
-                resource_type="task_dependency",
-            )
-        task.dependency_ids = [*(task.dependency_ids or []), depends_on_id]
-        await self.session.flush()
-        return True
-
-    async def _would_create_cycle(self, task_id: UUID, depends_on_id: UUID) -> bool:
-        """True if ``depends_on_id`` already (transitively) depends on ``task_id``.
-
-        Adding ``task_id -> depends_on_id`` when ``depends_on_id -> ... -> task_id``
-        already exists would close a loop. BFS over ``dependency_ids`` edges.
-        # ponytail: O(V+E) per add_dependency; fine for current task-graph
-        # sizes. If a single parent ever carries thousands of siblings, move
-        # to an incremental dominator check.
-        """
-        seen: set[UUID] = set()
-        frontier: list[UUID] = [depends_on_id]
-        while frontier:
-            current = frontier.pop()
-            if current == task_id:
-                return True
-            if current in seen:
-                continue
-            seen.add(current)
-            row = await self.get(current)
-            if row is None:
-                continue
-            frontier.extend(row.dependency_ids or [])
-        return False
-
-    async def wire_sibling_collision_dag(self, parent_task_id: UUID) -> None:
-        """Wire the dev-task collision DAG (multi-level sequencing edge kind 3).
-
-        Runs the deterministic collision-sequencing analyzer over a parent's
-        surfaced siblings and wires each returned edge as a real
-        ``dependency_ids`` entry via :meth:`add_dependency`, so a dev task whose
-        surface collides with an earlier sibling's stays PENDING (held by the
-        ``list_pending(filter_by_dependencies=True)`` gate) until that sibling
-        completes and :meth:`_unblock_dependents` releases it — cross-dev and
-        cross-reroute, the ordering the assignee-keyed spawn barrier could not
-        guarantee (live 2026-06-27 out-of-order break).
-
-        Incremental + idempotent: re-run after each delegate. A surfaced
-        sibling (``intends_to_touch`` / ``adds_migration`` / ``touches_shared``)
-        joins the DAG scoped to its ``project_id`` (two repos never collide);
-        a no-surface / no-project sibling is parallel to everything and
-        contributes no edge. ``dev_task_collision_edges`` orders siblings by
-        ``(priority, sequence)`` so re-runs only ADD edges (never flip an
-        existing pair's order), and ``add_dependency`` dedupes.
-
-        B5 collision_edge: with the master flag on, the deterministic DAG
-        is computed FIRST and stays authoritative; the semantic screen is
-        consulted only for pairs it left unconnected, and its verdicts may
-        only ADD edges (merged acyclically) — flag off skips the ask
-        entirely and the result is byte-identical to the pure analyzer.
-        """
-        from roboco.config import settings
-        from roboco.services.sequencing import dev_task_collision_edges
-
-        siblings = await self.get_subtasks(parent_task_id)
-        siblings_by_id = {UUID(str(s.id)): s for s in siblings}
-        if settings.decisions_enabled:
-            from roboco.services.sequencing import semantic_collision_edges
-
-            edges = await semantic_collision_edges(self.session, siblings)
-        else:
-            edges = dev_task_collision_edges(siblings)
-        for depends_on_id, task_id in edges:
-            held_back_id = UUID(str(task_id))
-            blocking_id = UUID(str(depends_on_id))
-            created = await self.add_dependency(held_back_id, blocking_id)
-            if created:
-                held_back = siblings_by_id.get(held_back_id)
-                blocking = siblings_by_id.get(blocking_id)
-                owner = getattr(held_back, "assigned_to", None) if held_back else None
-                await self._notify_collision_sequencing(
-                    held_back_id,
-                    blocking_id,
-                    owner,
-                    getattr(held_back, "title", None),
-                    getattr(blocking, "title", None),
-                )
-
-    async def _notify_collision_sequencing(
-        self,
-        held_back_task_id: UUID,
-        blocking_task_id: UUID,
-        owner: Any,
-        held_back_title: str | None = None,
-        blocking_title: str | None = None,
-    ) -> None:
-        """Best-effort coordination notification for a newly-wired collision edge."""
-        try:
-            from roboco.services.notification import NotificationService
-
-            await NotificationService().send_collision_sequencing_notification(
-                held_back_task_id=str(held_back_task_id),
-                blocking_task_id=str(blocking_task_id),
-                held_back_assignee=str(owner) if owner is not None else None,
-                held_back_title=held_back_title,
-                blocking_title=blocking_title,
-                db_session=self.session,
-            )
-        except Exception as e:
-            self.log.warning("Collision-sequencing notify failed", error=str(e))
-
-    async def wire_cell_task_wave_chain(self, cell_task_id: UUID) -> None:
-        """Wire the cell-task wave chain (multi-level sequencing edge kind 2).
-
-        A new cell-task (under root-subtask ``UT_n``) depends on every cell-task
-        under every root-subtask ``UT_n`` itself depends on — ``UT_n`` 's
-        ``dependency_ids`` are the kind-1 wave-chain edges, so this chains the
-        cell-tasks of wave *k* onto the cell-tasks of wave *k-1*. A root-subtask
-        may fan to several cell-tasks (different cells), so the previous wave's
-        "cell-task" is a SET, not a single task, and the new cell-task waits for
-        the whole set so its branch carries the merged tail.
-
-        ``UT_n`` is held PENDING by ``list_pending(filter_by_dependencies=True)``
-        until its kind-1 predecessors are terminal, so by the time the Main PM
-        delegates ``UT_n`` 's cell-tasks the predecessor cell-tasks already exist
-        and are terminal — the edge is therefore a no-op gate in the common case
-        but documents the lineage and protects against any re-ordering.
-        Idempotent (``add_dependency`` dedupes) + best-effort (missing
-        predecessor / cell-task contributes no edge).
-        """
-        from roboco.services.sequencing import cell_task_wave_chain_depends_on
-
-        cell_task = await self.get(cell_task_id)
-        if cell_task is None or cell_task.parent_task_id is None:
-            return
-        root = await self.get(UUID(str(cell_task.parent_task_id)))
-        if root is None:
-            return
-        predecessor_root_ids = list(root.dependency_ids or [])
-        cell_tasks_by_root: dict = {}
-        for pred_root_id in predecessor_root_ids:
-            cell_tasks_by_root[pred_root_id] = await self.get_subtasks(
-                UUID(str(pred_root_id))
-            )
-        for dep_id in cell_task_wave_chain_depends_on(
-            predecessor_root_ids, cell_tasks_by_root
-        ):
-            await self.add_dependency(cell_task_id, UUID(str(dep_id)))
-
-    async def wire_by_osmosis_edge(self, dev_task_id: UUID) -> None:
-        """Wire the by-osmosis edge (multi-level sequencing edge kind 4).
-
-        The FIRST dev task (``sequence == 0``) under a cell-task depends on each
-        predecessor cell-task's tail (highest-``sequence``) dev task, so the new
-        wave's first branch carries the previous wave's fully-merged tail. The
-        predecessor cell-tasks are re-derived from the cell-task's root-subtask's
-        kind-1 ``dependency_ids`` (the same source :meth:`wire_cell_task_wave_chain`
-        uses), not from the cell-task's own ``dependency_ids`` — which also carry
-        UX/product-fanout deps the by-osmosis edge must not pick up.
-
-        Subsequent dev tasks (``sequence > 0``) inherit the tail via the kind-3
-        collision DAG or share the cell branch's already-merged base, so they
-        take no explicit edge. Idempotent + best-effort: a predecessor cell-task
-        with no dev tasks, or a missing predecessor, contributes no edge; a tail
-        already terminal is a no-op gate.
-        """
-        from roboco.services.sequencing import by_osmosis_tail_dev_tasks
-
-        dev_task = await self.get(dev_task_id)
-        if dev_task is None or dev_task.parent_task_id is None:
-            return
-        is_first = int(getattr(dev_task, "sequence", 0)) == 0
-        cell_task = await self.get(UUID(str(dev_task.parent_task_id)))
-        if cell_task is None or cell_task.parent_task_id is None:
-            return
-        root = await self.get(UUID(str(cell_task.parent_task_id)))
-        if root is None:
-            return
-        groups: list = []
-        for pred_root_id in list(root.dependency_ids or []):
-            for pred_ct in await self.get_subtasks(UUID(str(pred_root_id))):
-                groups.append(await self.get_subtasks(UUID(str(pred_ct.id))))
-        for dep_id in by_osmosis_tail_dev_tasks(is_first, groups):
-            await self.add_dependency(dev_task_id, UUID(str(dep_id)))
-
-    async def set_sequence(self, task_id: UUID, sequence: int) -> None:
-        """Set a task's sibling-ordering sequence (lower = first).
-
-        `sequence` orders siblings in `list_pending`, `list_for_team`, and the
-        panel, AND is claim-gated: `_claim_blocked_by_sequence` refuses to
-        claim a PENDING task while a same-parent sibling with a strictly
-        lower effective sequence is still non-terminal — independent of, and
-        stricter than, `dependency_ids`. Cross-cell fan-out uses it so an
-        upstream design task sorts ahead of the implementation tasks that
-        depend on it. No-op if the task is gone or already at `sequence`.
-        """
-        task = await self.get(task_id)
-        if task is None:
-            return
-        if task.sequence != sequence:
-            task.sequence = sequence
-            await self.session.flush()
-
-    async def stamp_wave_sequence(self, task_id: UUID) -> None:
-        """Stamp a freshly delegated subtask's sequence as its collision-DAG wave.
-
-        sequence = 1 + max(sequence of each SAME-PARENT dependency target), or
-        0 when the task depends on no sibling — so independent siblings tie
-        (parallel under `_claim_blocked_by_sequence`) and colliding / ordered
-        ones ascend. Replaces the raw per-sibling ordinal, which serialized
-        even fully independent siblings fleet-wide under the claim gate. Must
-        run POST-WIRING (after the collision DAG / explicit depends_on /
-        cross-cell edges land) so every edge source is reflected. Only the new
-        task is stamped — existing siblings' sequences (prompter batch waves,
-        API-authored values) are never rewritten here.
-        """
-        task = await self.get(task_id)
-        if task is None or task.parent_task_id is None:
-            return
-        wave = 0
-        dep_ids = list(task.dependency_ids or [])
-        if dep_ids:
-            result = await self.session.execute(
-                select(func.max(func.coalesce(TaskTable.sequence, 0))).where(
-                    TaskTable.id.in_(dep_ids),
-                    TaskTable.parent_task_id == task.parent_task_id,
-                )
-            )
-            max_seq = result.scalar()
-            if max_seq is not None:
-                wave = int(max_seq) + 1
-        await self.set_sequence(task_id, wave)
-
-    async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]:
-        """Return the subset of dependency IDs whose status is non-terminal.
-
-        A dependency is "met" only once it reaches a terminal state
-        (completed/cancelled). This is the single source of truth for the
-        "can a task that depends on these proceed?" question — reused by
-        `list_pending`, `list_pending_for_agent`, `inherit_unmet_dependencies`,
-        and the claim-time dependency guard. An empty input returns an empty
-        list (no dependencies = nothing unmet).
-        """
-        if not dependency_ids:
-            return []
-        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
-        dep_result = await self.session.execute(
-            select(TaskTable.id, TaskTable.status).where(
-                TaskTable.id.in_(dependency_ids)
-            )
-        )
-        return [
-            dep_id
-            for dep_id, dep_status in dep_result.all()
-            if dep_status not in terminal
-        ]
-
-    async def inherit_unmet_dependencies(
-        self, subtask_id: UUID, parent_id: UUID
-    ) -> None:
-        """Copy a parent's still-unresolved dependencies onto a subtask.
-
-        A subtask of a task that is itself waiting on a cross-cell dependency
-        (e.g. a frontend dev subtask under a frontend cell task that waits on
-        the UX/UI design) must be held until that dependency resolves — the
-        developer cannot code ahead of the design. Only non-terminal parent
-        dependencies are inherited; already-completed ones would never release
-        the subtask via `_unblock_dependents`. Reuses `add_dependency`, so the
-        subtask is held by `list_pending(filter_by_dependencies=True)`.
-        """
-        parent = await self.get(parent_id)
-        if parent is None or not parent.dependency_ids:
-            return
-        for dep_id in await self.unmet_dependency_ids(list(parent.dependency_ids)):
-            await self.add_dependency(subtask_id, dep_id)
-
-    async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
-        """Get all subtasks of a parent task."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(TaskTable.parent_task_id == parent_task_id)
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def uncovered_required_cells(self, parent_task_id: UUID) -> list[str]:
-        """Named cells (parent's ``required_cells:`` marker) with no subtask.
-
-        Inert ([]) when the parent carries no marker — legacy / un-named
-        decompositions are never blocked. Otherwise returns each named cell that
-        has no child subtask on that team, in marker order.
-        """
-        parent = await self.get(parent_task_id)
-        if parent is None:
-            return []
-        required = extract_required_cells(parent)
-        if not required:
-            return []
-        children = await self.get_subtasks(parent_task_id)
-        covered = {_normalize_cell(c.team) for c in children if c.team is not None}
-        return [cell for cell in required if cell not in covered]
-
-    async def has_earlier_incomplete_code_sibling(self, task: TaskTable) -> bool:
-        """True if a lower-sequence, non-terminal, same-assignee code sibling exists.
-
-        Service-layer mirror of the orchestrator's per-dev lane dispatch barrier
-        (``_blocked_by_earlier_lane_sibling``). Used by the i_am_idle pending-work
-        guard so a developer can exit cleanly while the rest of its code queue is
-        still waiting its turn: a pre-delegated queue leaf (``pending``, assigned
-        to this dev) that sits behind an earlier non-terminal sibling in the same
-        lane should NOT pin the dev — the orchestrator spawns it once the lane
-        clears. Without this the dev can neither idle nor proceed without jumping
-        its own queue order. Only ``code`` queues sequence this way.
-
-        Equal sequences (wave ties) tie-break by ``created_at`` so a dev's
-        lane keeps a deterministic order now that independent siblings share
-        a wave instead of taking distinct ordinals.
-        """
-        if str(getattr(task, "task_type", "")) != TaskType.CODE.value:
-            return False
-        parent_id = task.parent_task_id
-        owner = task.assigned_to
-        seq = task.sequence
-        if parent_id is None or owner is None or seq is None:
-            return False
-        result = await self.session.execute(
-            select(
-                TaskTable.id,
-                TaskTable.status,
-                TaskTable.sequence,
-                TaskTable.created_at,
-                TaskTable.dependency_ids,
-            ).where(
-                TaskTable.parent_task_id == parent_id,
-                TaskTable.assigned_to == owner,
-                TaskTable.task_type == TaskType.CODE,
-                TaskTable.id != task.id,
-            )
-        )
-        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
-        rows = list(result.all())
-        # Siblings that (transitively) depend on this task are ordered AFTER
-        # it by the dependency guard — counting them as "earlier" via the
-        # created-at tiebreak wedges the claim gate against the dispatch
-        # barrier (be-dev-2, 2026-09-27). See roboco.foundation.policy.lane.
-        dep_map = {
-            str(row.id): {str(d) for d in (row.dependency_ids or ())} for row in rows
-        }
-        dependents = transitive_dependents(dep_map, str(task.id))
-        return self._has_earlier_lane_row(
-            rows, seq, task.created_at, terminal, dependents
-        )
-
-    @staticmethod
-    def _has_earlier_lane_row(
-        rows: list[Any],
-        seq: int,
-        created_at: Any,
-        terminal: set[Any],
-        dependents: set[str],
-    ) -> bool:
-        """True if any lane row is an earlier (lower sequence, or an equal
-        sequence created first) non-terminal sibling outside ``dependents``."""
-        return any(
-            ((row.sequence or 0), row.created_at) < (seq, created_at)
-            and row.status not in terminal
-            and str(row.id) not in dependents
-            for row in rows
-        )
-
-    async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]:
-        """Recursively get ALL descendant tasks (children, grandchildren, etc.).
-
-        Uses iterative BFS to avoid recursion limits and handle arbitrary depth.
-        """
-        descendants: list[TaskTable] = []
-        to_process: list[UUID] = [task_id]
-
-        while to_process:
-            current_id = to_process.pop(0)
-            children = await self.get_subtasks(current_id)
-            for child in children:
-                descendants.append(child)
-                # String-literal cast tells mypy the SQLAlchemy Mapped[UUID]
-                # resolves to uuid.UUID at runtime, without an inline suppression.
-                to_process.append(cast("UUID", child.id))
-
-        return descendants
 
     # =========================================================================
     # STATISTICS
@@ -11959,58 +12048,6 @@ class TaskService(
         task.claimed_at = cast("Any", None)
         task.last_heartbeat_at = cast("Any", None)
         await self.session.flush()
-
-    async def all_subtasks_terminal(self, task_id: UUID) -> bool:
-        """True iff every direct subtask is in a terminal status.
-
-        Empty subtask list returns True (no children = vacuously terminal).
-        """
-        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
-        result = await self.session.execute(
-            select(TaskTable.status).where(TaskTable.parent_task_id == task_id)
-        )
-        statuses = result.scalars().all()
-        return all(s in terminal for s in statuses)
-
-    async def has_children(self, task_id: UUID) -> bool:
-        """True iff this task has at least one subtask, any status.
-
-        Distinguishes a coordination node from a leaf for the PM/dev routing
-        classifier (``AgentOrchestrator._classify_cell_code_task``).
-        """
-        result = await self.session.execute(
-            select(TaskTable.id).where(TaskTable.parent_task_id == task_id).limit(1)
-        )
-        return result.first() is not None
-
-    async def children_count(self, task_id: UUID) -> int:
-        """Count of direct subtasks, any status - the cancel_leaf leaf check.
-
-        A terminal child still counts: cancel_leaf's "leaf" means no
-        descendants at all, not "no active descendants".
-        """
-        result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                TaskTable.parent_task_id == task_id,
-            )
-        )
-        return result.scalar_one()
-
-    async def terminal_children_count(self, task_id: UUID) -> int:
-        """Count of direct subtasks in a terminal status (COMPLETED/CANCELLED).
-
-        One cheap COUNT query — feeds the oscillation breaker's progress
-        fingerprint, since a PM coordination root never commits itself (all
-        real progress lands on child rows); ``unblock`` is rare enough that
-        the extra query is fine.
-        """
-        result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                TaskTable.parent_task_id == task_id,
-                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-        )
-        return result.scalar_one()
 
     async def self_heal_ac_ids(self, parent: TaskTable) -> None:
         """Re-stamp ``acceptance_criteria_ids`` in place when it's empty or out
