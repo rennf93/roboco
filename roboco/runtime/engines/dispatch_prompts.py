@@ -589,9 +589,10 @@ start at 0 and run the full duration; a layer that appears later gets its
 entrance from animation-delay, not data-start; never give one element both
 data-start and a composition-time delay (they add: 2.6 + 2.6s = 5.2s).
 motion/compositions/animation-clock.test.js (pnpm test) enforces it.
-Read the vendored renderer doctrine in motion/skills/ (hyperframes-core,
--keyframes, -creative) before authoring. You have browser tools (playwright
-MCP) on this task, and they refuse file:// URLs: serve motion/ over HTTP in
+Read motion/skills/hyperframes/SKILL.md, the vendored HyperFrames skill,
+before authoring; its RoboCo house overrides on top win where they differ.
+You have browser tools (playwright MCP) on this task, and they refuse
+file:// URLs: serve motion/ over HTTP in
 the background (python3 -m http.server 8000 -d motion) and open
 http://127.0.0.1:8000/compositions/<id>/vertical.html to watch it while
 iterating — do not build blind between renders. That page loads the real
