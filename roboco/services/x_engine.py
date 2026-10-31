@@ -85,6 +85,11 @@ if TYPE_CHECKING:
     from roboco.db.tables import ProjectTable
     from roboco.services.task import TaskService
 
+if TYPE_CHECKING:
+    from roboco.services._x_engine_types import XEngineSelf as _Base
+else:
+    _Base = object
+
 _CHAT_TIMEOUT_SECONDS = 60.0
 _MIN_MENTION_CHARS = 3
 # system_settings key gating the one-time brand-voice nudge (see
@@ -587,180 +592,9 @@ _REDRAFT_MARKER_CARRIERS: dict[str, Callable[[TaskTable, TaskTable], None]] = {
 }
 
 
-class XEngine(BaseService):
-    """Draft release posts (event hook) + mention replies (poll), both held."""
-
-    service_name = "x_engine"
-
-    def __init__(self, session: AsyncSession, client: XClient | None = None) -> None:
-        super().__init__(session)
-        self._injected_client = client
-
-    async def _client(self) -> XClient:
-        if self._injected_client is not None:
-            return self._injected_client
-        creds = await get_x_credentials_service(self.session).get_decrypted()
-        return build_x_client(
-            creds,
-            account_user_id=settings.x_account_user_id,
-            timeout=settings.x_request_timeout_seconds,
-        )
-
-    async def _roboco_project(self) -> ProjectTable | None:
-        slug = (settings.self_heal_project_slug or "roboco-api").strip()
-        return await get_project_service(self.session).get_by_slug(slug)
-
-    async def _project_or_default(self, project_id: UUID | None) -> ProjectTable | None:
-        """The explicitly-targeted project, or the deployment-anchor fallback."""
-        if project_id is not None:
-            return await get_project_service(self.session).get(project_id)
-        return await self._roboco_project()
-
-    async def _voice_guide(self, product_name: str) -> str:
-        """Baseline house style plus the CEO's brand-voice sample, when set.
-
-        The CEO-supplied sample lives in the company charter (``company_goals.
-        brand_voice``, panel-editable) — a live DB read, never hardcoded, so an
-        edit takes effect on the next draft with no deploy. Falls back to the
-        baseline constant alone when unset, so this is additive, not required.
-        """
-        charter = await get_company_goals_service(self.session).get()
-        brand_voice = (charter.get("brand_voice") or "").strip()
-        hom_voice = _hom_voice(product_name)
-        if not brand_voice:
-            await self._maybe_nudge_brand_voice()
-            return hom_voice
-        return (
-            f"{hom_voice}\n\n"
-            f"Additional brand-voice direction from the CEO:\n{brand_voice}"
-        )
-
-    async def _maybe_nudge_brand_voice(self) -> None:
-        """One-time CEO nudge: no ``brand_voice`` charter sample is set, so
-        every X/video draft keeps running on the generic house voice with no
-        signal that setting one would help. Deduped durably via
-        ``system_settings`` (``_BRAND_VOICE_NUDGE_KEY``) — survives an
-        orchestrator restart, unlike an in-memory/Redis TTL guard — so this
-        fires at most once ever, not once per draft. Best-effort: a
-        settings-store or notification failure never blocks drafting.
-        """
-        try:
-            settings_svc = get_settings_service(self.session)
-            if await settings_svc.get_bool(_BRAND_VOICE_NUDGE_KEY, False):
-                return
-            await settings_svc.set(_BRAND_VOICE_NUDGE_KEY, "true")
-            await get_notification_delivery_service(
-                self.session
-            ).notify_ceo_of_brand_voice_unset()
-        except Exception as exc:
-            self.log.warning(
-                "x-engine: brand-voice nudge failed (best-effort)", error=str(exc)
-            )
-
-    # ---- release posts (event-driven hook) --------------------------------
-
-    async def draft_release_post(
-        self, *, version: str, highlights: list[str], project_id: UUID | None = None
-    ) -> TaskTable | None:
-        """Originate ONE held release-announcement draft, or None (no-op).
-
-        No-ops when the flag is off, no credentials are configured, a draft
-        for this version already exists (retry-safe), or the open-post cap is
-        reached. Called from ``ReleaseProposalService.approve()``'s publish
-        success branch — never invoked by the loop itself. ``project_id``
-        scopes the draft to the released project; omitted falls back to the
-        deployment-anchor project. Also no-ops while the ``engines``
-        maintenance-pause scope is active.
-        """
-        from roboco.services.maintenance_pause import PauseScope, is_paused
-
-        if not settings.x_engine_enabled or await is_paused(
-            self.session, PauseScope.ENGINES
-        ):
-            return None
-        client = await self._client()
-        if not client.configured:
-            return None
-        task_svc = get_task_service(self.session)
-        open_posts = await task_svc.list_open_x_posts()
-        if any(
-            task.source == X_POST_SOURCE
-            and markers.get_x_release_version(task) == version
-            for task in open_posts
-        ):
-            return None  # already drafted for this version
-        if len(open_posts) >= settings.x_max_open_posts:
-            self.log.warning(
-                "x-engine: open-post cap reached; not drafting release post",
-                version=version,
-            )
-            return None
-        project = await self._project_or_default(project_id)
-        if project is None or project.id is None:
-            self.log.warning(
-                "x-engine: target project not resolvable; skipping release post",
-                version=version,
-            )
-            return None
-        product_name = await get_company_goals_service(
-            self.session
-        ).resolve_product_name(project)
-        highlights = await self._decisions_top_highlight(
-            version, highlights, product_name
-        )
-        body = await self._draft_release_body(version, highlights, product_name)
-        task = await self._originate_post(
-            title=f"X post: release v{version}",
-            body=body,
-            source=X_POST_SOURCE,
-            project_id=cast("UUID", project.id),
-        )
-        markers.set_x_release_version(task, version)
-        await self.session.flush()
-        self.log.info("x-engine: release post drafted (held for CEO)", version=version)
-        return task
-
-    async def _decisions_top_highlight(
-        self, version: str, highlights: list[str], product_name: str | None
-    ) -> list[str]:
-        """B23 changelog_highlights: let the shared pilot pick which parsed
-        highlight leads the announcement (today the first bullet leads by
-        regex accident). Fail-open: any pilot error keeps the input order,
-        i.e. exactly the pre-B23 behavior."""
-        from roboco.services.decisions import pilots_content
-
-        try:
-            return await pilots_content.changelog_highlights_pick(
-                self.session,
-                version=version,
-                product_name=product_name,
-                highlights=highlights,
-            )
-        except Exception as exc:
-            self.log.warning(
-                "x-engine: changelog highlight pick failed (fail-open)",
-                error=str(exc),
-            )
-            return highlights
-
-    async def _draft_release_body(
-        self, version: str, highlights: list[str], product_name: str
-    ) -> str:
-        voice = await self._voice_guide(product_name)
-        try:
-            draft = await _chat(
-                _release_prompt(version, highlights, voice, product_name)
-            )
-        except Exception as exc:
-            self.log.warning(
-                "x-engine: local-model draft failed (fallback template)",
-                error=str(exc),
-            )
-            draft = None
-        body = (draft or "").strip() or _fallback_release_body(version, product_name)
-        return _clamp_tweet(body)
-
-    # ---- mentions (periodic poll) ------------------------------------------
+class XMentions(_Base):
+    """Answering X mentions: the gated poll, the per-cycle cap, skipping a mention,
+    the since-id watermark, and originating a reply draft."""
 
     async def _mentions_poll_gated(self) -> bool:
         """True when the mentions-poll cycle must no-op: the engine or the
@@ -772,33 +606,6 @@ class XEngine(BaseService):
         from roboco.services.maintenance_pause import PauseScope, is_paused
 
         return await is_paused(self.session, PauseScope.ENGINES)
-
-    async def run_cycle(self) -> list[TaskTable]:
-        """One mentions-poll pass: fetch, filter, dedup, draft, hold. No-op
-        list unless the engine AND the mention-reply sub-switch are on and
-        credentials are configured (release posting doesn't use this path),
-        or while the ``engines`` maintenance-pause scope is active."""
-        if await self._mentions_poll_gated():
-            return []
-        client = await self._client()
-        if not client.configured:
-            return []
-        task_svc = get_task_service(self.session)
-        open_count = len(await task_svc.list_open_x_posts())
-        if open_count >= settings.x_max_open_posts:
-            self.log.info("x-engine: open-post cap reached; skipping mentions cycle")
-            return []
-        since_id = await self._since_id_get()
-        mentions = await client.fetch_mentions(since_id=since_id, max_results=50)
-        if mentions:
-            # Snowflake ids are numeric; int max is correct across varying
-            # lengths (string max would mis-order "999" > "1000"). Non-numeric
-            # ids (test fixtures) leave the cursor untouched.
-            numeric = [int(m.id) for m in mentions if m.id and m.id.isdigit()]
-            if numeric:
-                await self._since_id_set(str(max(numeric)))
-        project = await self._roboco_project()
-        return await self._process_mentions(mentions, project, open_count)
 
     async def _process_mentions(
         self, mentions: list[XMention], project: ProjectTable | None, open_count: int
@@ -980,7 +787,11 @@ class XEngine(BaseService):
         self.session.add(XSeenMentionTable(mention_id=mention_id))
         await self.session.flush()
 
-    # ---- feature spotlight (periodic HoM investigation) --------------------
+
+class XFeatureSpotlight(_Base):
+    """Feature Spotlight: whether an exploration may open, the shipped sections and
+    rejected spotlights it weighs, its brief, and opening, cancelling or skipping
+    one."""
 
     async def open_feature_spotlight_exploration(self) -> TaskTable | None:
         """Originate ONE held exploration task for the Head of Marketing, or None.
@@ -1298,7 +1109,111 @@ class XEngine(BaseService):
         )
         return exploration_task
 
-    # ---- shared origination -------------------------------------------------
+
+class XPostMaterialization(_Base):
+    """Turning approved work into X post drafts: release posts, feature spotlights,
+    editorial and campaign posts, and Barfly replies."""
+
+    async def draft_release_post(
+        self, *, version: str, highlights: list[str], project_id: UUID | None = None
+    ) -> TaskTable | None:
+        """Originate ONE held release-announcement draft, or None (no-op).
+
+        No-ops when the flag is off, no credentials are configured, a draft
+        for this version already exists (retry-safe), or the open-post cap is
+        reached. Called from ``ReleaseProposalService.approve()``'s publish
+        success branch — never invoked by the loop itself. ``project_id``
+        scopes the draft to the released project; omitted falls back to the
+        deployment-anchor project. Also no-ops while the ``engines``
+        maintenance-pause scope is active.
+        """
+        from roboco.services.maintenance_pause import PauseScope, is_paused
+
+        if not settings.x_engine_enabled or await is_paused(
+            self.session, PauseScope.ENGINES
+        ):
+            return None
+        client = await self._client()
+        if not client.configured:
+            return None
+        task_svc = get_task_service(self.session)
+        open_posts = await task_svc.list_open_x_posts()
+        if any(
+            task.source == X_POST_SOURCE
+            and markers.get_x_release_version(task) == version
+            for task in open_posts
+        ):
+            return None  # already drafted for this version
+        if len(open_posts) >= settings.x_max_open_posts:
+            self.log.warning(
+                "x-engine: open-post cap reached; not drafting release post",
+                version=version,
+            )
+            return None
+        project = await self._project_or_default(project_id)
+        if project is None or project.id is None:
+            self.log.warning(
+                "x-engine: target project not resolvable; skipping release post",
+                version=version,
+            )
+            return None
+        product_name = await get_company_goals_service(
+            self.session
+        ).resolve_product_name(project)
+        highlights = await self._decisions_top_highlight(
+            version, highlights, product_name
+        )
+        body = await self._draft_release_body(version, highlights, product_name)
+        task = await self._originate_post(
+            title=f"X post: release v{version}",
+            body=body,
+            source=X_POST_SOURCE,
+            project_id=cast("UUID", project.id),
+        )
+        markers.set_x_release_version(task, version)
+        await self.session.flush()
+        self.log.info("x-engine: release post drafted (held for CEO)", version=version)
+        return task
+
+    async def _decisions_top_highlight(
+        self, version: str, highlights: list[str], product_name: str | None
+    ) -> list[str]:
+        """B23 changelog_highlights: let the shared pilot pick which parsed
+        highlight leads the announcement (today the first bullet leads by
+        regex accident). Fail-open: any pilot error keeps the input order,
+        i.e. exactly the pre-B23 behavior."""
+        from roboco.services.decisions import pilots_content
+
+        try:
+            return await pilots_content.changelog_highlights_pick(
+                self.session,
+                version=version,
+                product_name=product_name,
+                highlights=highlights,
+            )
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: changelog highlight pick failed (fail-open)",
+                error=str(exc),
+            )
+            return highlights
+
+    async def _draft_release_body(
+        self, version: str, highlights: list[str], product_name: str
+    ) -> str:
+        voice = await self._voice_guide(product_name)
+        try:
+            draft = await _chat(
+                _release_prompt(version, highlights, voice, product_name)
+            )
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: local-model draft failed (fallback template)",
+                error=str(exc),
+            )
+            draft = None
+        body = (draft or "").strip() or _fallback_release_body(version, product_name)
+        return _clamp_tweet(body)
 
     async def _originate_post(
         self, *, title: str, body: str, source: str, project_id: UUID
@@ -1479,7 +1394,10 @@ class XEngine(BaseService):
         )
         return task
 
-    # ---- reject -> redraft (CEO feedback loop) -----------------------------
+
+class XRedrafts(_Base):
+    """Redrafting a rejected post: the redraft lock, its identity and project, the
+    revision body and context, and the markers and Barfly link it carries over."""
 
     async def redraft_from_rejection(
         self, post_task: TaskTable, reason: str
@@ -1735,6 +1653,116 @@ class XEngine(BaseService):
         carrier = _REDRAFT_MARKER_CARRIERS.get(post_task.source or "")
         if carrier:
             carrier(new_task, post_task)
+
+
+class XEngine(
+    BaseService, XFeatureSpotlight, XMentions, XPostMaterialization, XRedrafts
+):
+    """Draft release posts (event hook) + mention replies (poll), both held."""
+
+    service_name = "x_engine"
+
+    def __init__(self, session: AsyncSession, client: XClient | None = None) -> None:
+        super().__init__(session)
+        self._injected_client = client
+
+    async def _client(self) -> XClient:
+        if self._injected_client is not None:
+            return self._injected_client
+        creds = await get_x_credentials_service(self.session).get_decrypted()
+        return build_x_client(
+            creds,
+            account_user_id=settings.x_account_user_id,
+            timeout=settings.x_request_timeout_seconds,
+        )
+
+    async def _roboco_project(self) -> ProjectTable | None:
+        slug = (settings.self_heal_project_slug or "roboco-api").strip()
+        return await get_project_service(self.session).get_by_slug(slug)
+
+    async def _project_or_default(self, project_id: UUID | None) -> ProjectTable | None:
+        """The explicitly-targeted project, or the deployment-anchor fallback."""
+        if project_id is not None:
+            return await get_project_service(self.session).get(project_id)
+        return await self._roboco_project()
+
+    async def _voice_guide(self, product_name: str) -> str:
+        """Baseline house style plus the CEO's brand-voice sample, when set.
+
+        The CEO-supplied sample lives in the company charter (``company_goals.
+        brand_voice``, panel-editable) — a live DB read, never hardcoded, so an
+        edit takes effect on the next draft with no deploy. Falls back to the
+        baseline constant alone when unset, so this is additive, not required.
+        """
+        charter = await get_company_goals_service(self.session).get()
+        brand_voice = (charter.get("brand_voice") or "").strip()
+        hom_voice = _hom_voice(product_name)
+        if not brand_voice:
+            await self._maybe_nudge_brand_voice()
+            return hom_voice
+        return (
+            f"{hom_voice}\n\n"
+            f"Additional brand-voice direction from the CEO:\n{brand_voice}"
+        )
+
+    async def _maybe_nudge_brand_voice(self) -> None:
+        """One-time CEO nudge: no ``brand_voice`` charter sample is set, so
+        every X/video draft keeps running on the generic house voice with no
+        signal that setting one would help. Deduped durably via
+        ``system_settings`` (``_BRAND_VOICE_NUDGE_KEY``) — survives an
+        orchestrator restart, unlike an in-memory/Redis TTL guard — so this
+        fires at most once ever, not once per draft. Best-effort: a
+        settings-store or notification failure never blocks drafting.
+        """
+        try:
+            settings_svc = get_settings_service(self.session)
+            if await settings_svc.get_bool(_BRAND_VOICE_NUDGE_KEY, False):
+                return
+            await settings_svc.set(_BRAND_VOICE_NUDGE_KEY, "true")
+            await get_notification_delivery_service(
+                self.session
+            ).notify_ceo_of_brand_voice_unset()
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: brand-voice nudge failed (best-effort)", error=str(exc)
+            )
+
+    # ---- release posts (event-driven hook) --------------------------------
+
+    # ---- mentions (periodic poll) ------------------------------------------
+
+    async def run_cycle(self) -> list[TaskTable]:
+        """One mentions-poll pass: fetch, filter, dedup, draft, hold. No-op
+        list unless the engine AND the mention-reply sub-switch are on and
+        credentials are configured (release posting doesn't use this path),
+        or while the ``engines`` maintenance-pause scope is active."""
+        if await self._mentions_poll_gated():
+            return []
+        client = await self._client()
+        if not client.configured:
+            return []
+        task_svc = get_task_service(self.session)
+        open_count = len(await task_svc.list_open_x_posts())
+        if open_count >= settings.x_max_open_posts:
+            self.log.info("x-engine: open-post cap reached; skipping mentions cycle")
+            return []
+        since_id = await self._since_id_get()
+        mentions = await client.fetch_mentions(since_id=since_id, max_results=50)
+        if mentions:
+            # Snowflake ids are numeric; int max is correct across varying
+            # lengths (string max would mis-order "999" > "1000"). Non-numeric
+            # ids (test fixtures) leave the cursor untouched.
+            numeric = [int(m.id) for m in mentions if m.id and m.id.isdigit()]
+            if numeric:
+                await self._since_id_set(str(max(numeric)))
+        project = await self._roboco_project()
+        return await self._process_mentions(mentions, project, open_count)
+
+    # ---- feature spotlight (periodic HoM investigation) --------------------
+
+    # ---- shared origination -------------------------------------------------
+
+    # ---- reject -> redraft (CEO feedback loop) -----------------------------
 
 
 def get_x_engine(session: AsyncSession, client: XClient | None = None) -> XEngine:
