@@ -47,7 +47,9 @@ if TYPE_CHECKING:
     from roboco.db.tables import ProjectTable, TaskTable
 
 _AUTHORING_ACCEPTANCE_CRITERIA = [
-    "Both 9:16 and 1:1 cuts render",
+    "Both 9:16 and 1:1 cuts render, and every word in the 9:16 stays between "
+    "y 168 and 1330, none right of x 900 below y 840 (TikTok's UI covers the "
+    "rest; motion/README.md)",
     "Captions within platform limits",
     "Composition follows motion/README.md's design bar and uses the "
     "panel-demo kit register where the occasion shows the product",
@@ -85,13 +87,16 @@ _CHANGELOG_BRIEF_CHARS = 4000
 # lock) keyed by occasion closes that window instead of letting a duplicate
 # authoring task slip through.
 _OCCASION_LOCK_PREFIX = "roboco:video_engine:occasion:"
-_OCCASION_LOCK_TTL_SECONDS = 60  # the check+insert completes in ms; crash backstop
+# The check+insert completes in ms; crash backstop
+_OCCASION_LOCK_TTL_SECONDS = 60
 
 # Shared by every open_video_task caller (release/spotlight/on-demand) so the
 # authoring dev always lands on the demo kit instead of a text card. The
-# template is release-0.28.0, not panel-demo: panel-demo's beats still double
-# their start (motion/README.md, "The animation clock"), so copying it fails
-# compositions/animation-clock.test.js.
+# template is release-0.28.0, not panel-demo: panel-demo is the kit's original
+# one-card demo, with no camera and a single-glide cursor, which the craft bar
+# (motion/README.md, "Cinematography & rhythm") sends back as a locked-off
+# camera. release-0.28.0 has the camera shots, the waypoint cursor and the
+# 9:16 band layout a release cut needs.
 _MOTION_DESIGN_POINTER = (
     "Before authoring: read motion/README.md's design bar and motion/kit/"
     "README.md. Build in the panel-demo register on motion/kit/ — model the "
@@ -213,7 +218,8 @@ def _scene_criterion(features: list[str]) -> str | None:
         if len(body) <= budget:
             return prefix + body
         kept.pop()
-    return prefix + "…"  # pathological: even one (huge) feature name overruns
+    # Pathological: even one (huge) feature name overruns
+    return prefix + "…"
 
 
 def _authoring_criteria(
@@ -451,7 +457,8 @@ class VideoEngine(BaseService):
         for existing in open_tasks:
             draft = markers.get_video_draft(existing)
             if draft is not None and draft.get("occasion") == occasion:
-                return None  # already drafted for this occasion
+                # Already drafted for this occasion
+                return None
         if len(open_tasks) >= settings.video_max_open_posts:
             self.log.warning(
                 "video-engine: open cap reached; not opening authoring task",
@@ -494,7 +501,8 @@ class VideoEngine(BaseService):
                         project_id=cast("UUID", project.id),
                         status=TaskStatus.PENDING,
                         source=VIDEO_SOURCE,
-                        confirmed_by_human=True,  # normal delivery, not CEO-held
+                        # Normal delivery, not CEO-held
+                        confirmed_by_human=True,
                     )
                 )
                 markers.set_video_draft(
@@ -669,7 +677,8 @@ class VideoEngine(BaseService):
                     project_id=cast("UUID", source_task.project_id),
                     status=TaskStatus.PENDING,
                     source=VIDEO_POST_SOURCE,
-                    confirmed_by_human=False,  # HELD for the CEO; never dispatched
+                    # HELD for the CEO; never dispatched
+                    confirmed_by_human=False,
                 )
             )
             markers.set_video_draft(

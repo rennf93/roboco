@@ -77,6 +77,20 @@ async def test_video_source_prompt_names_the_vendored_skill_that_exists() -> Non
 
 
 @pytest.mark.asyncio
+async def test_video_source_prompt_states_the_platform_band() -> None:
+    """TikTok draws its UI over a vertical outside y 168..1330 and down the
+    right-hand rail, so the brief gives the band, the kit window that keeps a
+    scene inside it, and the cut it is modelled on, which must exist."""
+    prompt = await _orch()._build_dev_prompt(_task(source=VIDEO_SOURCE))
+    assert "between y 168 and 1330" in prompt
+    assert "right of x 900 below y 840" in prompt
+    assert "pk-band" in prompt
+    model = "compositions/release-0.28.0/vertical.html"
+    assert model in prompt
+    assert (Path(__file__).parents[3] / "motion" / model).is_file()
+
+
+@pytest.mark.asyncio
 async def test_non_video_source_prompt_omits_request_render_instruction() -> None:
     prompt = await _orch()._build_dev_prompt(_task(source="code"))
     assert "request_render" not in prompt

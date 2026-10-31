@@ -283,6 +283,12 @@ start at 0 and run the full duration; a layer that appears later gets its
 entrance from animation-delay, not data-start; never give one element both
 data-start and a composition-time delay (they add: 2.6 + 2.6s = 5.2s).
 motion/compositions/animation-clock.test.js (pnpm test) enforces it.
+9:16 platform band (motion/README.md "The 9:16 platform band"): TikTok
+draws its UI over the vertical, so every word and the product stay
+between y 168 and 1330, and no word sits right of x 900 below y 840 (the
+action rail). Put the vertical's whole scene in kit's pk-band window, as
+compositions/release-0.28.0/vertical.html does, and check the band in
+its request_render frames.
 Read motion/skills/hyperframes/SKILL.md, the vendored HyperFrames skill,
 before authoring; its RoboCo house overrides on top win where they differ.
 You have browser tools (playwright MCP) on this task, and they refuse

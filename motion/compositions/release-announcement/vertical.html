@@ -9,13 +9,17 @@
   <body>
     <div data-hf-id="hf-s3gx" id="stage" data-composition-id="release-announcement" data-width="1080" data-height="1920" data-start="0" data-duration="10" data-fps="30">
       <!-- Scan line: thin hairline + travelling accent marker. The one
-           continuous ambient motion so the frame never goes fully static. -->
-      <div data-hf-id="hf-785o" id="scan" class="scan clip" data-start="0" data-duration="10" data-track-index="0" style="top: 104px;">
+           continuous ambient motion so the frame never goes fully static.
+           It sits 48px inside the platform band's top (y 168), below the
+           status and search bar the app draws over the clip. -->
+      <div data-hf-id="hf-785o" id="scan" class="scan clip" data-start="0" data-duration="10" data-track-index="0" style="top: 216px;">
         <div data-hf-id="hf-y1vz" class="scan__marker"></div>
       </div>
 
-      <!-- Content anchored in the lower two-thirds, left-aligned. -->
-      <div data-hf-id="hf-i9oc" class="content" style="--content-bottom: 148px;">
+      <!-- Content anchored in the lower two-thirds of the platform band
+           (y 168 to 1330), left-aligned, above the outro. Its right edge
+           stops at x 900, clear of the action rail. -->
+      <div data-hf-id="hf-i9oc" class="content" style="--content-bottom: 690px; right: 180px;">
         <div data-hf-id="hf-eqb1" id="kicker" class="kicker clip" data-start="0" data-duration="10" data-track-index="1">New release</div>
         <h1 data-hf-id="hf-zrsr" id="headline" class="headline clip" data-start="0.267" data-duration="9.733" data-track-index="2">v0.19.0</h1>
         <p data-hf-id="hf-0j13" id="script" class="script clip" data-start="0.8" data-duration="9.2" data-track-index="3">Ship day. Faster renders, sharper docs, one less thing to babysit.</p>
@@ -27,7 +31,8 @@
         </ul>
       </div>
 
-      <div data-hf-id="hf-d626" id="outro" class="outro clip" data-start="7.667" data-duration="2.333" data-track-index="5">roboco.tech</div>
+      <!-- The outro sits on the band's bottom margin (y 1330 is 590px up). -->
+      <div data-hf-id="hf-d626" id="outro" class="outro clip" data-start="7.667" data-duration="2.333" data-track-index="5" style="bottom: 622px;">roboco.tech</div>
     </div>
 
     <script>
