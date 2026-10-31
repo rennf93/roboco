@@ -579,7 +579,8 @@ class VideoPostService(BaseService, VideoPostPlatforms):
             logger.error("video-post reject lock unavailable (redis down): %s", exc)
             return None
         if token is None:
-            return None  # a concurrent approve is mid-post; refuse the reject
+            # A concurrent approve is mid-post; refuse the reject
+            return None
         try:
             # Re-read under the lock: a concurrent approve may have posted +
             # committed COMPLETED between the pre-lock check and here.
