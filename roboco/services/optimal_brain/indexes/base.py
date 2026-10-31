@@ -338,7 +338,8 @@ class IndexPluginIngestion(_Base):
     @staticmethod
     def _filter_good_chunks(raw_chunks: list[Any], doc: Document) -> list[Any]:
         """Drop tiny / formatting-only chunks and merge doc metadata in."""
-        MIN_CHUNK_LENGTH = 200  # Minimum meaningful content
+        # Minimum meaningful content
+        MIN_CHUNK_LENGTH = 200
         good_chunks: list[Any] = []
         for chunk in raw_chunks:
             text = chunk.text.strip()
