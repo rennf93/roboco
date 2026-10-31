@@ -210,7 +210,8 @@ async def test_megatask_root_wires_cross_cell_ux_dependency(
             acceptance_criteria=["fans out to ux + frontend cells"],
             team=Team.MAIN_PM,
             created_by=fanout_setup["creator"],
-            project_id=None,  # no product_id — the cell_projects model
+            # No product_id — the cell_projects model
+            project_id=None,
             parent_task_id=cast("UUID", umbrella.id),
             batch_id=batch_id,
             cell_projects=[

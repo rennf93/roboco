@@ -80,7 +80,8 @@ def _deny() -> MagicMock:
 def test_soup_or_decision_prefers_soup() -> None:
     soup = Envelope.invalid_state(message="soup", remediate="fix", context_briefing={})
     out = Choreographer._soup_or_decision_env(soup, _deny(), {})
-    assert out is soup  # soup wins even when the decision also rejects
+    # Soup wins even when the decision also rejects
+    assert out is soup
 
 
 def test_soup_or_decision_falls_back_to_decision() -> None:
