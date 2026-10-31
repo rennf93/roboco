@@ -8,7 +8,7 @@ Reusable plain-CSS/HTML building blocks that recreate the RoboCo control panel's
 <script src="../../kit/kit.js"></script>
 ```
 
-Every class is namespaced `pk-`. See `compositions/release-0.28.0/` for a full worked example (the intake types, cards enter and flip status, a cursor and camera follow the beats, a toast confirms it). `compositions/panel-demo/` is the original, smaller demo, but its beats still double their start, so don't copy its timing (`motion/README.md`, "The animation clock").
+Every class is namespaced `pk-`. See `compositions/release-0.28.0/` for a full worked example (the intake types, cards enter and flip status, a cursor and camera follow the beats, a toast confirms it). `compositions/panel-demo/` is the original, smaller demo: one card, no camera and a single-glide cursor, so a new cut starts from `release-0.28.0` instead.
 
 ## Pieces
 

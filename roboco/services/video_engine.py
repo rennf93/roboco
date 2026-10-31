@@ -92,9 +92,11 @@ _OCCASION_LOCK_TTL_SECONDS = 60
 
 # Shared by every open_video_task caller (release/spotlight/on-demand) so the
 # authoring dev always lands on the demo kit instead of a text card. The
-# template is release-0.28.0, not panel-demo: panel-demo's beats still double
-# their start (motion/README.md, "The animation clock"), so copying it fails
-# compositions/animation-clock.test.js.
+# template is release-0.28.0, not panel-demo: panel-demo is the kit's original
+# one-card demo, with no camera and a single-glide cursor, which the craft bar
+# (motion/README.md, "Cinematography & rhythm") sends back as a locked-off
+# camera. release-0.28.0 has the camera shots, the waypoint cursor and the
+# 9:16 band layout a release cut needs.
 _MOTION_DESIGN_POINTER = (
     "Before authoring: read motion/README.md's design bar and motion/kit/"
     "README.md. Build in the panel-demo register on motion/kit/ — model the "
