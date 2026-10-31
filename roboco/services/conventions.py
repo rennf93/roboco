@@ -123,6 +123,8 @@ class ConventionsMapResolution(_Base):
     or reading the committed standard, publishing it, and the per-SHA cache with its
     last good row."""
 
+    # -- internals ---------------------------------------------------------- #
+
     @staticmethod
     def _pid(project: ProjectTable) -> UUID:
         # ProjectTable.id is typed as the SQLAlchemy UUID column; normalize to a
@@ -590,8 +592,6 @@ class ConventionsService(BaseService, ConventionsMapResolution):
             }
             for row in result.scalars().all()
         ]
-
-    # -- internals ---------------------------------------------------------- #
 
 
 def get_conventions_service(session: AsyncSession) -> ConventionsService:

@@ -29,25 +29,25 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
 | `_is_unique_violation` | fn | `services/conventions.py:83` | Narrow `IntegrityError` to UNIQUE constraint (SQLSTATE 23505); non-unique errors are re-raised, not swallowed |
-| `ConventionsService` | class | `services/conventions.py:351` | Cache/render/scaffold/restore a project's conventions standard |
+| `ConventionsService` | class | `services/conventions.py:353` | Cache/render/scaffold/restore a project's conventions standard |
 | `ConventionsMapResolution` | class | conventions.py:121 | Mixin of `ConventionsService` (13 methods): Resolving a project's conventions map: its workspace and head SHA, deriving or reading the committed standard, publishing it, and the per-SHA cache with its last good row. |
-| `ConventionsService.get_map` | method | `services/conventions.py:354` | Return effective standard for a project at its HEAD (cache-first; degraded rows not trusted from cache) |
-| `ConventionsService.baseline_constraints` | method | `services/conventions.py:413` | Render block rules + module boundaries as per-task constraints |
-| `ConventionsService.render_ambient_block` | method | `services/conventions.py:431` | Bounded `## Architectural Standard` prompt block (2000-char cap) |
-| `ConventionsService.scaffold` | method | `services/conventions.py:473` | Open a PR adding the auto-scaffolded `.roboco/conventions.yml` |
-| `ConventionsService.restore` | method | `services/conventions.py:482` | Open a PR re-committing the file from the last-good map (or a scan) |
-| `ConventionsService.commit_standard` | method | `services/conventions.py:500` | Open a PR committing an externally-edited standard (panel save) |
-| `ConventionsService.health` | method | `services/conventions.py:512` | Report live file status at HEAD + last-good commit SHA (reads file, not cache) |
-| `ConventionsService.record_findings` | method | `services/conventions.py:543` | Replace a task's recorded findings (delete-then-insert); caller commits |
-| `ConventionsService.recent_findings` | method | `services/conventions.py:570` | Recent findings across the project (panel feed) |
-| `ConventionsService.resolve_workspace` | method | `services/conventions.py:143` | Ensure the project's read clone; None if unavailable (backfill path) |
-| `ConventionsService._resolve` | method | `services/conventions.py:159` | Resolve repo root + HEAD sha; persist clone path + sha back onto project |
-| `ConventionsService._head_sha_at` | method | `services/conventions.py:182` | `git rev-parse HEAD` in the clone (10s timeout), None if not a repo |
-| `ConventionsService._read_committed_standard` | method | `services/conventions.py:198` | Read/parse `.roboco/conventions.yml` → `(standard, status)` |
-| `ConventionsService._publish` | method | `services/conventions.py:215` | Open the conventions scaffold/restore PR via `GitService` |
-| `ConventionsService._cache_get` | method | `services/conventions.py:247` | Read cached effective map row by `(project_id, commit_sha)` |
-| `ConventionsService._cache_put` | method | `services/conventions.py:280` | Persist effective map in a savepoint (UNIQUE-violation-only swallow; non-unique IntegrityError re-raised) |
-| `ConventionsService._latest_ok_row` / `_latest_ok_map` | method | `services/conventions.py:330` / `:344` | Most recent `status="ok"` cached row (degraded fallback source) |
+| `ConventionsService.get_map` | method | `services/conventions.py:356` | Return effective standard for a project at its HEAD (cache-first; degraded rows not trusted from cache) |
+| `ConventionsService.baseline_constraints` | method | `services/conventions.py:415` | Render block rules + module boundaries as per-task constraints |
+| `ConventionsService.render_ambient_block` | method | `services/conventions.py:433` | Bounded `## Architectural Standard` prompt block (2000-char cap) |
+| `ConventionsService.scaffold` | method | `services/conventions.py:475` | Open a PR adding the auto-scaffolded `.roboco/conventions.yml` |
+| `ConventionsService.restore` | method | `services/conventions.py:484` | Open a PR re-committing the file from the last-good map (or a scan) |
+| `ConventionsService.commit_standard` | method | `services/conventions.py:502` | Open a PR committing an externally-edited standard (panel save) |
+| `ConventionsService.health` | method | `services/conventions.py:514` | Report live file status at HEAD + last-good commit SHA (reads file, not cache) |
+| `ConventionsService.record_findings` | method | `services/conventions.py:545` | Replace a task's recorded findings (delete-then-insert); caller commits |
+| `ConventionsService.recent_findings` | method | `services/conventions.py:572` | Recent findings across the project (panel feed) |
+| `ConventionsService.resolve_workspace` | method | `services/conventions.py:145` | Ensure the project's read clone; None if unavailable (backfill path) |
+| `ConventionsService._resolve` | method | `services/conventions.py:161` | Resolve repo root + HEAD sha; persist clone path + sha back onto project |
+| `ConventionsService._head_sha_at` | method | `services/conventions.py:184` | `git rev-parse HEAD` in the clone (10s timeout), None if not a repo |
+| `ConventionsService._read_committed_standard` | method | `services/conventions.py:200` | Read/parse `.roboco/conventions.yml` → `(standard, status)` |
+| `ConventionsService._publish` | method | `services/conventions.py:217` | Open the conventions scaffold/restore PR via `GitService` |
+| `ConventionsService._cache_get` | method | `services/conventions.py:249` | Read cached effective map row by `(project_id, commit_sha)` |
+| `ConventionsService._cache_put` | method | `services/conventions.py:282` | Persist effective map in a savepoint (UNIQUE-violation-only swallow; non-unique IntegrityError re-raised) |
+| `ConventionsService._latest_ok_row` / `_latest_ok_map` | method | `services/conventions.py:332` / `:346` | Most recent `status="ok"` cached row (degraded fallback source) |
 | `ScaffoldResult` | dataclass | `services/conventions.py:66` | Outcome of a scaffold/restore: pr_number, branch, created |
 | `ConventionsHealth` | dataclass | `services/conventions.py:75` | status, head_sha, last_ok_sha |
 | `get_conventions_service` | fn | `services/conventions.py:597` | Construct `ConventionsService(session)` |
