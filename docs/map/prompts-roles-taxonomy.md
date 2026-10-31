@@ -225,8 +225,8 @@ prompts-roles-taxonomy slice
 
 | Name | File | Trigger |
 |---|---|---|
-| SpawnConfigEngine._generate_composed_prompt | roboco/runtime/engines/spawn_config.py:821 | Called per agent spawn to compose + write the system-prompt .md file; calls compose_prompt |
-| SpawnConfigEngine._resolve_conventions_ambient | roboco/runtime/engines/spawn_config.py:873 | Async, called from the spawn path before _generate_composed_prompt to resolve the optional ambient block; calls conventions_ambient_layer |
+| SpawnConfigEngine._generate_composed_prompt | roboco/runtime/engines/spawn_config.py:888 | Called per agent spawn to compose + write the system-prompt .md file; calls compose_prompt |
+| SpawnConfigEngine._resolve_conventions_ambient | roboco/runtime/engines/spawn_config.py:940 | Async, called from the spawn path before _generate_composed_prompt to resolve the optional ambient block; calls conventions_ambient_layer |
 | IntakeDriver._run_turn | roboco/agent_sdk/intake_driver.py:380 | Per interactive turn (Intake/Secretary Claude-SDK and Grok sessions); calls detect_injection before forwarding to the model |
 | python -m roboco.agent_sdk.prompt_guard | roboco/agent_sdk/prompt_guard.py | CLI invoked by the grok one-shot entrypoint on ROBOCO_INITIAL_PROMPT; exit 1 denies start |
 | make lifecycle | scripts/build_lifecycle_artifacts.py | Developer/CI target regenerating _generated/lifecycle-*.md; CI gates on git diff --exit-code |

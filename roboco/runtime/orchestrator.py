@@ -1331,8 +1331,23 @@ from roboco.runtime.engines._shared import SharedEngine
 from roboco.runtime.engines.ci_watch import CiWatchEngine
 from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 from roboco.runtime.engines.dep_update import DepUpdateEngine
-from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
-from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
+from roboco.runtime.engines.dispatch_breaker import (
+    AgentWorkSignalEngine,
+    NotificationSpawnGuardEngine,
+    ProviderUpkeepEngine,
+    RespawnBreakerEngine,
+    RespawnTripEngine,
+    StaleClaimReaperEngine,
+    WedgedAgentEngine,
+)
+from roboco.runtime.engines.dispatch_claim import (
+    ClaimBarrierEngine,
+    DispatchClaimEngine,
+    DispatcherLoopEngine,
+    SpawnReadinessEngine,
+    StuckTaskEngine,
+)
+from roboco.runtime.engines.dispatch_closure import AutoSubmitEngine, PMClosureEngine
 from roboco.runtime.engines.dispatch_prompts import (
     CellReviewPromptsEngine,
     DevPromptContextEngine,
@@ -1347,19 +1362,82 @@ from roboco.runtime.engines.dispatch_prompts_programs import (
     MarketingProgramPromptsEngine,
     ProductOwnerProgramPromptsEngine,
 )
-from roboco.runtime.engines.dispatch_routing import DispatchRoutingEngine
-from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
+from roboco.runtime.engines.dispatch_routing import (
+    DispatchRoutingEngine,
+    RoutingClassifierEngine,
+)
+from roboco.runtime.engines.dispatch_work import (
+    AuditDispatchEngine,
+    AuditorExplorationsEngine,
+    BoardDispatchEngine,
+    BoardProgramContextEngine,
+    DevDispatchEngine,
+    DocDispatchEngine,
+    MarketingExplorationsEngine,
+    NotificationDispatchEngine,
+    PMDispatchEngine,
+    ProductOwnerExplorationsEngine,
+    PRReviewDispatchEngine,
+    QADispatchEngine,
+)
 from roboco.runtime.engines.entire_trails import EntireTrailsEngine
 from roboco.runtime.engines.env_sync import EnvSyncEngine
-from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngine
-from roboco.runtime.engines.rate_limit_probe import RateLimitProbeEngine
-from roboco.runtime.engines.reconcile import ReconcileEngine
+from roboco.runtime.engines.interactive_sessions import (
+    IntakeScopeEngine,
+    IntakeSessionEngine,
+    LiveChatContainerEngine,
+    SecretarySessionEngine,
+)
+from roboco.runtime.engines.rate_limit_probe import (
+    RateLimitProbeEngine,
+    WaitResolutionEngine,
+)
+from roboco.runtime.engines.reconcile import (
+    BoardProgramLoopEngine,
+    HealthLoopEngine,
+    StartupReconcileEngine,
+    StartupRestoreEngine,
+)
 from roboco.runtime.engines.release_manager import ReleaseManagerEngine
-from roboco.runtime.engines.spawn_config import SpawnConfigEngine
-from roboco.runtime.engines.spawn_exit import SpawnExitEngine
-from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
+from roboco.runtime.engines.spawn_config import (
+    AgentBriefingEngine,
+    AgentSettingsEngine,
+    SystemPromptEngine,
+)
+from roboco.runtime.engines.spawn_exit import (
+    AgentWaitingEngine,
+    ContainerExitEngine,
+    ProviderExitCodeEngine,
+    ProviderParkingEngine,
+    ProviderParkLanesEngine,
+    SessionFinalizeEngine,
+    TranscriptNotesEngine,
+    UsageDirsEngine,
+    UsageFilesEngine,
+    UsageTokensEngine,
+)
+from roboco.runtime.engines.spawn_launch import (
+    AgentImageEngine,
+    ContainerEnvEngine,
+    ContainerMountsEngine,
+    ProviderRouteEngine,
+    ReadinessGateEngine,
+    SpawnAgentEngine,
+    SpawnGitContextEngine,
+)
 from roboco.runtime.engines.strategy import StrategyEngine
-from roboco.runtime.engines.sweeps import SweepsEngine
+from roboco.runtime.engines.sweeps import (
+    AgentStopEngine,
+    BudgetWrapupEngine,
+    ExternalPRIntakeEngine,
+    IdleSessionReaperEngine,
+    MemberPerformanceEngine,
+    SandboxEngine,
+    SupersedeEngine,
+    SweeperLoopEngine,
+    TaskBudgetEngine,
+    UsageRollupEngine,
+)
 from roboco.runtime.engines.telegram_poll import TelegramPollEngine
 from roboco.runtime.engines.vault import VaultEngine
 from roboco.runtime.engines.video_render import VideoRenderEngine
@@ -1368,35 +1446,92 @@ from roboco.runtime.engines.x_mentions import XMentionsEngine
 
 class AgentOrchestrator(
     SharedEngine,
+    AgentBriefingEngine,
+    AgentImageEngine,
+    AgentSettingsEngine,
+    AgentStopEngine,
+    AgentWaitingEngine,
+    AgentWorkSignalEngine,
+    AuditDispatchEngine,
+    AuditorExplorationsEngine,
     AuditorPromptsEngine,
+    AutoSubmitEngine,
+    BoardDispatchEngine,
+    BoardProgramContextEngine,
+    BoardProgramLoopEngine,
+    BudgetWrapupEngine,
     CellReviewPromptsEngine,
     CiWatchEngine,
+    ClaimBarrierEngine,
+    ContainerEnvEngine,
+    ContainerExitEngine,
+    ContainerMountsEngine,
     DecisionsLabelerEngine,
     DepUpdateEngine,
+    DevDispatchEngine,
     DevPromptContextEngine,
-    DispatchBreakerEngine,
     DispatchClaimEngine,
     DispatchPromptsEngine,
     DispatchRoutingEngine,
-    DispatchWorkEngine,
+    DispatcherLoopEngine,
+    DocDispatchEngine,
     EntireTrailsEngine,
     EnvSyncEngine,
-    InteractiveSessionsEngine,
+    ExternalPRIntakeEngine,
+    HealthLoopEngine,
+    IdleSessionReaperEngine,
+    IntakeScopeEngine,
+    IntakeSessionEngine,
+    LiveChatContainerEngine,
     ManagementPromptsEngine,
+    MarketingExplorationsEngine,
     MarketingProgramPromptsEngine,
+    MemberPerformanceEngine,
+    NotificationDispatchEngine,
     NotificationPromptsEngine,
+    NotificationSpawnGuardEngine,
+    PMClosureEngine,
+    PMDispatchEngine,
+    PRReviewDispatchEngine,
+    ProductOwnerExplorationsEngine,
     ProductOwnerProgramPromptsEngine,
+    ProviderExitCodeEngine,
+    ProviderParkLanesEngine,
+    ProviderParkingEngine,
+    ProviderRouteEngine,
+    ProviderUpkeepEngine,
+    QADispatchEngine,
     RateLimitProbeEngine,
-    ReconcileEngine,
+    ReadinessGateEngine,
     ReleaseManagerEngine,
-    SpawnConfigEngine,
-    SpawnExitEngine,
-    SpawnLaunchEngine,
+    RespawnBreakerEngine,
+    RespawnTripEngine,
+    RoutingClassifierEngine,
+    SandboxEngine,
+    SecretarySessionEngine,
+    SessionFinalizeEngine,
+    SpawnAgentEngine,
+    SpawnGitContextEngine,
+    SpawnReadinessEngine,
+    StaleClaimReaperEngine,
+    StartupReconcileEngine,
+    StartupRestoreEngine,
     StrategyEngine,
-    SweepsEngine,
+    StuckTaskEngine,
+    SupersedeEngine,
+    SweeperLoopEngine,
+    SystemPromptEngine,
+    TaskBudgetEngine,
     TelegramPollEngine,
+    TranscriptNotesEngine,
+    UsageDirsEngine,
+    UsageFilesEngine,
+    UsageRollupEngine,
+    UsageTokensEngine,
     VaultEngine,
     VideoRenderEngine,
+    WaitResolutionEngine,
+    WedgedAgentEngine,
     XMentionsEngine,
 ):
     """

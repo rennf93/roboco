@@ -20,8 +20,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import structlog
 from roboco.foundation.policy.content import markers as _markers
-from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
-from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
+from roboco.runtime.engines.dispatch_breaker import RespawnTripEngine
+from roboco.runtime.engines.dispatch_closure import AutoSubmitEngine
 from roboco.runtime.engines.dispatch_prompts import (
     DevPromptContextEngine,
     DispatchPromptsEngine,
@@ -29,9 +29,17 @@ from roboco.runtime.engines.dispatch_prompts import (
 from roboco.runtime.engines.dispatch_prompts_management import (
     ManagementPromptsEngine,
 )
-from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
-from roboco.runtime.engines.spawn_exit import SpawnExitEngine
-from roboco.runtime.engines.sweeps import SweepsEngine
+from roboco.runtime.engines.dispatch_work import (
+    BoardProgramContextEngine,
+    PRReviewDispatchEngine,
+    QADispatchEngine,
+)
+from roboco.runtime.engines.spawn_exit import ContainerExitEngine
+from roboco.runtime.engines.sweeps import (
+    BudgetWrapupEngine,
+    ExternalPRIntakeEngine,
+    IdleSessionReaperEngine,
+)
 from roboco.services.decisions import pilots_dispatch
 from roboco.services.decisions.schemas import DecisionAnswer, DecisionResult
 
@@ -189,7 +197,7 @@ async def test_b14_engine_flags_marker_and_top_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(ExternalPRIntakeEngine)
 
     async def fake_triage(session: object, **kwargs: object) -> tuple[int | None, bool]:
         return 1, True
@@ -222,7 +230,7 @@ async def test_b14_engine_internal_pr_not_flagged(
     org-internal PR keeps its structural classification (its own flag bit
     is logged but the marker and priority-3 stamp never fire)."""
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(ExternalPRIntakeEngine)
 
     async def fake_triage(session: object, **kwargs: object) -> tuple[int | None, bool]:
         return None, True
@@ -250,7 +258,7 @@ async def test_b14_engine_internal_pr_not_flagged(
 @pytest.mark.asyncio
 async def test_b14_engine_off_touches_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(SweepsEngine)
+    engine = _bare(ExternalPRIntakeEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "external_pr_triage", mock)
     created = SimpleNamespace(
@@ -268,7 +276,7 @@ async def test_b14_queue_order_falls_back_to_fetch_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(QADispatchEngine)
     low = {"id": "low", "priority": 0}
     high = {"id": "high", "priority": 3}
     ordered, depths = await engine._decisions_order_qa_queue([low, high])
@@ -280,7 +288,7 @@ async def test_b14_queue_order_falls_back_to_fetch_order(
 async def test_b14_review_dispatch_sorts_by_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(PRReviewDispatchEngine)
     engine._is_agent_active = lambda _slug: False
     engine._fetch_tasks = AsyncMock(
         return_value=[
@@ -361,7 +369,7 @@ async def test_b25_engine_spares_only_confident_band(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(IdleSessionReaperEngine)
 
     due = [("a", "intake-1"), ("b", "intake-1"), ("c", "intake-1")]
 
@@ -398,7 +406,7 @@ async def test_b25_engine_failure_reaps_as_today(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(IdleSessionReaperEngine)
     due = [("a", "intake-1")]
 
     fake_registry = MagicMock()
@@ -653,7 +661,7 @@ async def test_b32_engine_abort_clean_stops_gracefully(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(BudgetWrapupEngine)
 
     async def fake_choice(
         session: object, **kwargs: object
@@ -681,7 +689,7 @@ async def test_b32_engine_abort_clean_stops_gracefully(
 @pytest.mark.asyncio
 async def test_b32_engine_off_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(SweepsEngine)
+    engine = _bare(BudgetWrapupEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "budget_wrapup_choice", mock)
     await engine._decisions_budget_wrapup_directive(
@@ -695,7 +703,7 @@ async def test_b32_engine_wrapup_fires_once_per_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(BudgetWrapupEngine)
 
     calls: list[dict[str, Any]] = []
 
@@ -731,7 +739,7 @@ async def test_b32_engine_wrapup_fires_once_per_task(
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
     monkeypatch.setattr(
-        SweepsEngine,
+        BudgetWrapupEngine,
         "_notify_budget_wrapup_directive",
         AsyncMock(return_value=None),
     )
@@ -903,7 +911,7 @@ async def test_b35_engine_orders_and_injects_depth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(QADispatchEngine)
     low = {"id": "low", "team": "backend"}
     high = {"id": "high", "team": "backend"}
 
@@ -936,7 +944,7 @@ async def test_b35_engine_keeps_tasks_beyond_the_scored_batch(
     made tasks 13+ invisible to the dispatcher while the same head of
     the queue was re-scored every tick)."""
     _flag_on(monkeypatch)
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(QADispatchEngine)
     candidates = [{"id": f"t{i}", "team": "backend"} for i in range(15)]
 
     async def fake_verdicts(
@@ -1018,7 +1026,7 @@ async def test_b36_empty_evidence_never_skips(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.asyncio
 async def test_b36_engine_off_spawns(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(BoardProgramContextEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "board_evidence_skip", mock)
     assert await engine._decisions_board_evidence_skip("coroner", "context") is False
@@ -1095,7 +1103,7 @@ async def test_b37_breaker_kill_and_amended_fall_back_to_spawn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
 
     async def fake_verdict(
         session: object, **kwargs: object
@@ -1127,15 +1135,18 @@ async def test_b37_trip_consults_coroner_wedged_postmortem(
     """B16 coroner_gate wiring: a breaker trip is an incident class the
     coroner's fixed hooks never see, so the one-shot stall mechanics are
     followed by exactly one decisions-gated postmortem consult."""
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
     monkeypatch.setattr(engine, "_PM_RESPAWN_MAX_UNPRODUCTIVE", 3, raising=False)
-    monkeypatch.setattr(
-        engine, "_schedule_respawn_persist", MagicMock(return_value=None)
-    )
     monkeypatch.setattr(engine, "_mark_task_stalled", AsyncMock())
-    # _notify_stuck_agent lives on another orchestrator mixin, absent from
-    # the bare breaker under test.
-    monkeypatch.setattr(engine, "_notify_stuck_agent", AsyncMock(), raising=False)
+    # _schedule_respawn_persist lives on another orchestrator mixin, absent
+    # from the bare engine under test.
+    monkeypatch.setattr(
+        engine,
+        "_schedule_respawn_persist",
+        MagicMock(return_value=None),
+        raising=False,
+    )
+    monkeypatch.setattr(engine, "_notify_stuck_agent", AsyncMock())
     coroner = AsyncMock(return_value=None)
     monkeypatch.setattr(engine, "_coroner_wedged_postmortem", coroner)
     record = {"count": 5, "seen_statuses": ["in_progress"], "notified": False}
@@ -1149,7 +1160,7 @@ async def test_b16_coroner_consult_failure_is_best_effort() -> None:
     """A coroner-side failure (here: an unparseable task id failing UUID
     construction inside the call) degrades to today's stall-notice-only
     behavior: swallowed, logged, never raised into the breaker tick."""
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
     await engine._coroner_wedged_postmortem(
         "be-pm", "not-a-uuid", "in_progress", {"count": 5, "seen_statuses": []}
     )
@@ -1164,7 +1175,7 @@ async def test_b37_breaker_no_verdict_keeps_trip(
     (the old mapping turned every no-verdict into spawn-anyway, silently
     disabling the wedged-agent protection fleet-wide)."""
     _flag_on(monkeypatch)
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
 
     async def fake_verdict(
         session: object, **kwargs: object
@@ -1191,7 +1202,7 @@ async def test_b37_breaker_hold_keeps_trip_mechanics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
 
     async def fake_verdict(
         session: object, **kwargs: object
@@ -1346,7 +1357,7 @@ async def test_b40_confident_cause_line_applies(
 @pytest.mark.asyncio
 async def test_b40_engine_off_records_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(SpawnExitEngine)
+    engine = _bare(ContainerExitEngine)
     engine._assistant_segments_from_transcript = staticmethod(lambda _a: [])
     await engine._decisions_record_exit_cause(
         "a", SimpleNamespace(current_task_id=None), 1
@@ -1359,7 +1370,7 @@ async def test_b40_engine_stashes_cause_for_notification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SpawnExitEngine)
+    engine = _bare(ContainerExitEngine)
     engine._assistant_segments_from_transcript = staticmethod(lambda _a: ["tail"])
 
     async def fake_cause(
@@ -1428,7 +1439,7 @@ async def test_b42_confident_line_logged_and_returned(
 @pytest.mark.asyncio
 async def test_b42_engine_off_skips_ask(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(DispatchClaimEngine)
+    engine = _bare(AutoSubmitEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "closure_safety", mock)
     assert await engine._decisions_closure_advisory({"id": "t"}) == ""

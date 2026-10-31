@@ -1,5 +1,9 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: sweeps)."""
+"""The background sweeper and the upkeep it runs: usage snapshots and
+rollups, member performance, task budgets and their wrap-up, superseded
+PRs, idle interactive sessions, image and transcript pruning, sandboxes,
+external-PR intake, and stopping an agent.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -30,21 +34,16 @@ from roboco.runtime.orchestrator import (
     _system_api_headers,
     logger,
 )
-from roboco.services.task import (
-    PR_REVIEW_SOURCES,
-)
+from roboco.services.task import PR_REVIEW_SOURCES
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.models.runtime import (
-        AgentInstance,
-    )
+    from roboco.models.runtime import AgentInstance
     from roboco.models.sandbox import SandboxInfo
     from roboco.services.task import TaskService
-
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
@@ -52,141 +51,199 @@ else:
     _Base = object
 
 
-class SweepsEngine(_Base):
-    """Mixin holding the "sweeps" methods moved out of AgentOrchestrator."""
+class SweeperLoopEngine(_Base):
+    """The background sweeper: its loop, one pass of every sweep, and the
+    throttled dangling-image and transcript-retention prunes."""
 
     # Re-declared (not just inherited from _Base above): mypy's Protocol
     # attribute inference cannot determine the type of an inherited member
     # that a method both reads AND assigns within the same method body
-    # (read-then-write in one scope; see _sweep_prune_dangling_images and
-    # _sweep_prune_transcripts below) without a bare re-declaration
+    # (read-then-write in one scope; see _sweep_dangling_images and
+    # _sweep_transcript_retention below) without a bare re-declaration
     # directly on the concrete class.
     if TYPE_CHECKING:
         _last_image_prune: datetime | None
         _last_transcript_prune: datetime | None
 
-    async def reap_intake_session(self, session_id: str) -> None:
-        """End a live chat: close the relay stream and stop the container."""
-        from roboco.services.prompter_live import get_live_registry
+    async def _sweeper_loop(self) -> None:
+        """Background sweeper for stale notifications + runtime maintenance.
 
-        get_live_registry().close(session_id)
-        await self.stop_agent(
-            INTAKE_AGENT_ID, graceful=True, stop_reason="intake_session_reaped"
-        )
-        logger.info("Intake session reaped", session_id=session_id)
+        Addresses a silent-failure surface (NotificationTable.expires_at existed
+        but no job ever acted on it) and drives the budget kill-switch, token
+        rollups, transcript retention, and dangling-image pruning.
 
-    async def reap_secretary_session(self, session_id: str) -> None:
-        """End a live Secretary chat: close the relay and stop the container."""
-        from roboco.services.prompter_live import get_live_registry
-
-        get_live_registry().close(session_id)
-        await self.stop_agent(
-            SECRETARY_AGENT_ID, graceful=True, stop_reason="secretary_session_reaped"
-        )
-        logger.info("Secretary session reaped", session_id=session_id)
-
-    async def _reap_idle_interactive_sessions(self) -> None:
-        """Retire live intake/secretary chats idle past the configured threshold.
-
-        An abandoned chat (the human closed the tab without confirming or
-        stopping) otherwise leaks its container until the orchestrator restarts.
-        Idle is measured by time-since-last-turn (push/deliver), NOT connection
-        state, so an active or page-reloaded chat that keeps exchanging turns is
-        never reaped; board-review-parked sessions are exempt. Provider-agnostic
-        (Claude + Grok interactive). Disabled when the threshold is 0.
-
-        B25 idle_reaping: when the pilot is ON, a chat in its first extension
-        window (between 1x and 2x the threshold) that the classifier confidently
-        judges NOT abandoned is spared this tick - the TTL effectively extends
-        one window. Past 2x it reaps regardless, and a below-floor/no verdict
-        reaps exactly as today: the verdict may only EXTEND life, never
-        shorten it.
+        Runs on its own interval so a slow sweep can't delay agent dispatch.
         """
-        from roboco.services.prompter_live import get_live_registry
-
-        threshold = float(settings.interactive_idle_reap_seconds)
-        due = get_live_registry().idle_session_ids(threshold)
-        if due and settings.decisions_enabled:
-            due = await self._decisions_spare_not_abandoned(due, threshold)
-        for session_id, agent_id in due:
+        # In seconds.
+        sweep_interval = 60
+        while self._running:
             try:
-                if agent_id == INTAKE_AGENT_ID:
-                    await self.reap_intake_session(session_id)
-                elif agent_id == SECRETARY_AGENT_ID:
-                    await self.reap_secretary_session(session_id)
-                else:
-                    continue
-                logger.info(
-                    "Reaped idle interactive session",
-                    session_id=session_id,
-                    agent_id=agent_id,
-                    idle_threshold_s=threshold,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Idle interactive reap failed",
-                    session_id=session_id,
-                    error=str(exc),
-                )
+                await asyncio.sleep(sweep_interval)
+                await self._run_sweep()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Sweeper loop error", error=str(e))
 
-    async def _decisions_spare_not_abandoned(
-        self, due: list[tuple[str, str]], threshold: float
-    ) -> list[tuple[str, str]]:
-        """B25 idle_reaping: drop confidently-not-abandoned chats from the
-        reap list (fail-open: any error reaps exactly as today)."""
+    async def _run_sweep(self) -> None:
+        """Run one pass of the notification sweeper + runtime maintenance."""
+        from roboco.db.base import get_session_factory
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            # This loop doesn't run through _dispatch_all_work, so it keeps
+            # the ledger warm on its own tick too (_refresh_uptime no-ops
+            # past its own throttle either way).
+            await self._refresh_uptime(db)
+            deliv_svc = get_notification_delivery_service(db)
+            try:
+                # Resolve terminal-task escalations FIRST: sweep_expired_
+                # notifications runs its own independent query right after,
+                # so a row acked here is already excluded from that query's
+                # unacked/re-escalation path in the same tick.
+                resolved = await deliv_svc.resolve_terminal_task_escalations()
+                expired = await deliv_svc.sweep_expired_notifications()
+                if resolved or expired:
+                    await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.warning("Notification sweep failed", error=str(e))
+
+        # Retire abandoned live intake/secretary chats (idle past the threshold)
+        # so a closed-tab session doesn't leak its container until restart.
+        await self._reap_idle_interactive_sessions()
+
+        # Budget kill-switch — runs every sweep. Any agent whose SDK reports
+        # halt=true has breached its per-session tool-call cap; terminate the
+        # container so the next dispatcher tick doesn't waste tokens on the
+        # same session.
+        await self._sweep_budget_exceeded()
+
+        # Token-usage instrumentation: snapshot active agents and roll up
+        # closed sessions into the daily aggregation table.
+        await self._sweep_token_snapshots()
+        await self._sweep_daily_rollup()
+        # Granular per-member performance rollup (own try/except inside).
+        await self._sweep_member_performance()
+
+        # Prune old agent transcripts (throttled internally to ~hourly) so the
+        # operator's bind-mounted ~/.claude doesn't grow without bound.
+        await self._sweep_transcript_retention()
+
+        # Prune dangling (<none>) Docker images left by agent-image rebuilds
+        # (throttled internally to ~6h) so deploys don't pile up orphaned layers.
+        await self._sweep_dangling_images()
+
+        # Close-on-land for landed supersedes — runs here (always-on sweeper)
+        # rather than the default-off external-PR poll loop, so a supersede that
+        # lands after external_pr_enabled is toggled off is still reconciled.
+        await self._sweep_superseded_prs()
+
+    async def _sweep_dangling_images(self) -> None:
+        """Prune dangling (<none>) Docker images left by agent-image rebuilds.
+
+        Each rebuild of an agent image orphans the prior build's layers as an
+        untagged ``<none>`` image; over many deploys these pile up (the operator
+        saw ~80). Pruning only DANGLING images is safe — a tagged image, or one
+        backing a running container, is never dangling. Throttled to
+        ``settings.image_prune_interval_seconds`` (default 6h) and gated by
+        ``settings.image_prune_enabled`` (default on). Best-effort: any failure
+        is logged, never raised into the sweeper.
+        """
+        if not settings.image_prune_enabled:
+            return
+        now = datetime.now(UTC)
+        last = self._last_image_prune
+        if (
+            last is not None
+            and (now - last).total_seconds() < settings.image_prune_interval_seconds
+        ):
+            return
+        self._last_image_prune = now
         try:
-            from roboco.services.prompter_live import get_live_registry
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "image",
+                "prune",
+                "-f",
+                "--filter",
+                "dangling=true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                summary = stdout.decode().strip().splitlines()[-1:] if stdout else []
+                logger.info(
+                    "pruned dangling images", reclaimed=summary[0] if summary else ""
+                )
+            else:
+                logger.warning("dangling-image prune returned non-zero")
+        except Exception as e:
+            logger.warning("dangling-image prune failed (best-effort)", error=str(e))
 
-            # Sessions already past 2x the threshold always reap; only the
-            # first extension window (1x..2x) gets the verdict.
-            past_extension = {
-                sid for sid, _aid in get_live_registry().idle_session_ids(threshold * 2)
-            }
-            band = [pair for pair in due if pair[0] not in past_extension]
-            if not band:
-                return due
-            verdicts = await self._idle_abandonment_verdicts(band)
-            if not verdicts:
-                return due
-            spares = self._spared_session_ids(band, verdicts)
+    async def _sweep_transcript_retention(self) -> None:
+        """Prune agent transcripts older than the retention window.
+
+        Throttled to ``settings.transcript_prune_interval_seconds``. Reads the
+        window from the ``system_settings`` store (panel-editable), falling back
+        to ``settings.transcript_retention_days``. Only agent-owned project dirs
+        (``-app`` + per-workspace dirs) are touched — never the operator's own
+        Claude sessions. Best-effort: any failure is logged, never raised.
+        """
+        if not settings.transcript_prune_enabled:
+            return
+        now = datetime.now(UTC)
+        last = self._last_transcript_prune
+        if (
+            last is not None
+            and (now - last).total_seconds()
+            < settings.transcript_prune_interval_seconds
+        ):
+            return
+        self._last_transcript_prune = now
+
+        retention_days = settings.transcript_retention_days
+        with contextlib.suppress(Exception):
+            from roboco.db.base import get_session_factory
+            from roboco.services.settings import get_settings_service
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                retention_days = await get_settings_service(db).get_int(
+                    "transcript_retention_days", settings.transcript_retention_days
+                )
+
+        from roboco.runtime.transcript_retention import select_prunable_transcripts
+
+        projects_root = Path.home() / ".claude" / "projects"
+        cutoff = (now - timedelta(days=retention_days)).timestamp()
+        prunable = select_prunable_transcripts(
+            projects_root, settings.workspaces_root, cutoff
+        )
+        pruned = 0
+        for transcript in prunable:
+            try:
+                transcript.unlink()
+                pruned += 1
+            except OSError as exc:
+                logger.debug(
+                    "Transcript prune failed", path=str(transcript), error=str(exc)
+                )
+        if pruned:
             logger.info(
-                "Idle reap extended for confident still-active chats",
-                spared=sorted(spares),
-                considered=len(band),
-            )
-            return [pair for pair in due if pair[0] not in spares]
-        except Exception as exc:
-            logger.warning(
-                "idle-reap decisions pass failed (best-effort)", error=str(exc)
-            )
-            return due
-
-    async def _idle_abandonment_verdicts(
-        self, band: list[tuple[str, str]]
-    ) -> list[bool] | None:
-        """Classifier verdicts for the first-extension-window sessions."""
-        from roboco.db import get_db_context
-        from roboco.services.decisions import pilots_dispatch
-
-        async with get_db_context() as db:
-            return await pilots_dispatch.idle_abandonment_verdicts(
-                db,
-                sessions=[
-                    {
-                        "session_id": sid,
-                        "agent_id": aid,
-                        "idle_band": "one_window_past_threshold",
-                    }
-                    for sid, aid in band
-                ],
+                "Pruned old agent transcripts",
+                count=pruned,
+                retention_days=retention_days,
             )
 
-    @staticmethod
-    def _spared_session_ids(
-        band: list[tuple[str, str]], verdicts: list[bool]
-    ) -> set[str]:
-        """Session ids the classifier confidently kept alive."""
-        return {sid for (sid, _aid), keep in zip(band, verdicts, strict=False) if keep}
+
+class AgentStopEngine(_Base):
+    """Stopping an agent's container, and releasing the claim it held unless
+    its provider is parked on a rate limit."""
 
     async def stop_agent(
         self,
@@ -348,6 +405,139 @@ class SweepsEngine(_Base):
                 task_id=task_id_str,
                 error=str(exc),
             )
+
+
+class IdleSessionReaperEngine(_Base):
+    """Ending live intake and Secretary chats: on request, or when idle past
+    the threshold, sparing the ones the B25 classifier confidently keeps."""
+
+    async def reap_intake_session(self, session_id: str) -> None:
+        """End a live chat: close the relay stream and stop the container."""
+        from roboco.services.prompter_live import get_live_registry
+
+        get_live_registry().close(session_id)
+        await self.stop_agent(
+            INTAKE_AGENT_ID, graceful=True, stop_reason="intake_session_reaped"
+        )
+        logger.info("Intake session reaped", session_id=session_id)
+
+    async def reap_secretary_session(self, session_id: str) -> None:
+        """End a live Secretary chat: close the relay and stop the container."""
+        from roboco.services.prompter_live import get_live_registry
+
+        get_live_registry().close(session_id)
+        await self.stop_agent(
+            SECRETARY_AGENT_ID, graceful=True, stop_reason="secretary_session_reaped"
+        )
+        logger.info("Secretary session reaped", session_id=session_id)
+
+    async def _reap_idle_interactive_sessions(self) -> None:
+        """Retire live intake/secretary chats idle past the configured threshold.
+
+        An abandoned chat (the human closed the tab without confirming or
+        stopping) otherwise leaks its container until the orchestrator restarts.
+        Idle is measured by time-since-last-turn (push/deliver), NOT connection
+        state, so an active or page-reloaded chat that keeps exchanging turns is
+        never reaped; board-review-parked sessions are exempt. Provider-agnostic
+        (Claude + Grok interactive). Disabled when the threshold is 0.
+
+        B25 idle_reaping: when the pilot is ON, a chat in its first extension
+        window (between 1x and 2x the threshold) that the classifier confidently
+        judges NOT abandoned is spared this tick - the TTL effectively extends
+        one window. Past 2x it reaps regardless, and a below-floor/no verdict
+        reaps exactly as today: the verdict may only EXTEND life, never
+        shorten it.
+        """
+        from roboco.services.prompter_live import get_live_registry
+
+        threshold = float(settings.interactive_idle_reap_seconds)
+        due = get_live_registry().idle_session_ids(threshold)
+        if due and settings.decisions_enabled:
+            due = await self._decisions_spare_not_abandoned(due, threshold)
+        for session_id, agent_id in due:
+            try:
+                if agent_id == INTAKE_AGENT_ID:
+                    await self.reap_intake_session(session_id)
+                elif agent_id == SECRETARY_AGENT_ID:
+                    await self.reap_secretary_session(session_id)
+                else:
+                    continue
+                logger.info(
+                    "Reaped idle interactive session",
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    idle_threshold_s=threshold,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Idle interactive reap failed",
+                    session_id=session_id,
+                    error=str(exc),
+                )
+
+    async def _decisions_spare_not_abandoned(
+        self, due: list[tuple[str, str]], threshold: float
+    ) -> list[tuple[str, str]]:
+        """B25 idle_reaping: drop confidently-not-abandoned chats from the
+        reap list (fail-open: any error reaps exactly as today)."""
+        try:
+            from roboco.services.prompter_live import get_live_registry
+
+            # Sessions already past 2x the threshold always reap; only the
+            # first extension window (1x..2x) gets the verdict.
+            past_extension = {
+                sid for sid, _aid in get_live_registry().idle_session_ids(threshold * 2)
+            }
+            band = [pair for pair in due if pair[0] not in past_extension]
+            if not band:
+                return due
+            verdicts = await self._idle_abandonment_verdicts(band)
+            if not verdicts:
+                return due
+            spares = self._spared_session_ids(band, verdicts)
+            logger.info(
+                "Idle reap extended for confident still-active chats",
+                spared=sorted(spares),
+                considered=len(band),
+            )
+            return [pair for pair in due if pair[0] not in spares]
+        except Exception as exc:
+            logger.warning(
+                "idle-reap decisions pass failed (best-effort)", error=str(exc)
+            )
+            return due
+
+    async def _idle_abandonment_verdicts(
+        self, band: list[tuple[str, str]]
+    ) -> list[bool] | None:
+        """Classifier verdicts for the first-extension-window sessions."""
+        from roboco.db import get_db_context
+        from roboco.services.decisions import pilots_dispatch
+
+        async with get_db_context() as db:
+            return await pilots_dispatch.idle_abandonment_verdicts(
+                db,
+                sessions=[
+                    {
+                        "session_id": sid,
+                        "agent_id": aid,
+                        "idle_band": "one_window_past_threshold",
+                    }
+                    for sid, aid in band
+                ],
+            )
+
+    @staticmethod
+    def _spared_session_ids(
+        band: list[tuple[str, str]], verdicts: list[bool]
+    ) -> set[str]:
+        """Session ids the classifier confidently kept alive."""
+        return {sid for (sid, _aid), keep in zip(band, verdicts, strict=False) if keep}
+
+
+class UsageRollupEngine(_Base):
+    """Token usage over time: a snapshot per active agent, and the daily
+    rollups from closed spawn sessions."""
 
     @staticmethod
     async def _fetch_agent_tokens(
@@ -713,6 +903,12 @@ class SweepsEngine(_Base):
             )
         else:
             db.add(DailyUsageRollupTable(id=uuid4(), **key, **values))
+
+
+class MemberPerformanceEngine(_Base):
+    """The member_performance_daily sweep: each metric's aggregate (spawn
+    effort, delivery, revisions caused, QA, escalations, blocking, idle and
+    blocked time, the CEO's dwell) merged per member and day."""
 
     async def _sweep_member_performance(self) -> None:
         """Upsert member_performance_daily from spawn sessions + audit_log.
@@ -1089,81 +1285,515 @@ class SweepsEngine(_Base):
                 )
             )
 
-    async def _sweeper_loop(self) -> None:
-        """Background sweeper for stale notifications + runtime maintenance.
 
-        Addresses a silent-failure surface (NotificationTable.expires_at existed
-        but no job ever acted on it) and drives the budget kill-switch, token
-        rollups, transcript retention, and dangling-image pruning.
+class TaskBudgetEngine(_Base):
+    """Budget enforcement: stop an agent whose session budget halted or whose
+    task's own dollar budget is breached, blocking the task, notifying the
+    CEO and firing the Coroner's budget hook."""
 
-        Runs on its own interval so a slow sweep can't delay agent dispatch.
+    @staticmethod
+    async def _fetch_budget_status(
+        client: httpx.AsyncClient, url: str, agent_id: str
+    ) -> dict[str, Any] | None:
+        """Read an agent's SDK budget status; None if unreachable/not-JSON.
+
+        The SDK being unreachable is benign (container not yet started, already
+        gone, or a transient blip) and the health loop covers genuine failures,
+        so the failure is swallowed — but logged at debug so it is observable
+        rather than silent (the bare try/except/continue it replaced was not).
         """
-        sweep_interval = 60  # seconds
-        while self._running:
-            try:
-                await asyncio.sleep(sweep_interval)
-                await self._run_sweep()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("Sweeper loop error", error=str(e))
+        try:
+            resp = await client.get(url)
+        except httpx.HTTPError as exc:
+            logger.debug(
+                "Budget status unreachable; skipping agent this sweep",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+            return None
+        if resp.status_code != http_status.HTTP_200_OK:
+            return None
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            logger.debug(
+                "Budget status not JSON; skipping agent this sweep",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+            return None
+        return data if isinstance(data, dict) else None
 
-    async def _run_sweep(self) -> None:
-        """Run one pass of the notification sweeper + runtime maintenance."""
-        from roboco.db.base import get_session_factory
+    async def _task_budget_breach(self, task_id_str: str) -> tuple[float, float] | None:
+        """``(cap_usd, spend_usd)`` if this task's own $ budget is breached.
+
+        ``None`` when unbreached, when the task carries no explicit
+        ``budget_usd`` (budgets are explicit-input only — an unset budget
+        means no cap; ``effective_task_budget_usd`` is the shared resolver
+        ``unblock``'s re-check uses), OR the task has already left claimed/
+        in_progress (a stale re-check racing the task's own progress — not a
+        breach). Spend is
+        ``TaskService.task_spend_usd`` (closed-session cost + open-session
+        live-token pricing via ``calculate_cost`` — a DB-only read off
+        ``_sweep_token_snapshots``'s periodically-refreshed token columns, no
+        fresh SDK round-trip needed for "cheaply available").
+        """
+        from roboco.db.base import get_db_context
+        from roboco.foundation.policy.agent_loop import effective_task_budget_usd
+        from roboco.models.base import TaskStatus
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
+
+        try:
+            task_id = require_uuid(task_id_str)
+        except InvalidIdentifierError:
+            return None
+        async with get_db_context() as db:
+            svc = TaskService(db)
+            task = await svc.get(task_id)
+            if task is None or task.status not in (
+                TaskStatus.CLAIMED,
+                TaskStatus.IN_PROGRESS,
+            ):
+                return None
+            cap_usd = effective_task_budget_usd(task)
+            if cap_usd is None:
+                return None
+            spend_usd = await svc.task_spend_usd(task_id)
+        if spend_usd < cap_usd:
+            return None
+        return cap_usd, spend_usd
+
+    async def _handle_task_budget_breach(
+        self, task_id_str: str, *, cap_usd: float, spend_usd: float
+    ) -> None:
+        """Block a task whose own $ budget is breached and notify the CEO.
+
+        Runs BEFORE ``stop_agent`` so its ``release_claim`` unclaim (which
+        only fires from claimed/in_progress — see ``_force_unclaim_to_pending``)
+        finds the task already ``BLOCKED`` and no-ops: the task never bounces
+        through ``pending`` for an instant re-claim to re-burn the same
+        budget. ``blocker_resolver_type=HUMAN`` keeps the dispatcher from ever
+        respawning onto it (``_is_hitl_blocked``) — only the CEO raising the
+        cap (or cancelling) moves it forward. Best-effort: a failure here logs
+        and lets the caller's ``stop_agent`` proceed regardless — one more
+        tick of a live over-budget agent is the safer failure mode than
+        crashing the sweep.
+        """
+        from roboco.db.base import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.models.base import BlockerResolverType, TaskStatus
         from roboco.services.notification_delivery import (
             get_notification_delivery_service,
         )
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
 
-        session_factory = get_session_factory()
-        async with session_factory() as db:
-            # This loop doesn't run through _dispatch_all_work, so it keeps
-            # the ledger warm on its own tick too (_refresh_uptime no-ops
-            # past its own throttle either way).
-            await self._refresh_uptime(db)
-            deliv_svc = get_notification_delivery_service(db)
-            try:
-                # Resolve terminal-task escalations FIRST: sweep_expired_
-                # notifications runs its own independent query right after,
-                # so a row acked here is already excluded from that query's
-                # unacked/re-escalation path in the same tick.
-                resolved = await deliv_svc.resolve_terminal_task_escalations()
-                expired = await deliv_svc.sweep_expired_notifications()
-                if resolved or expired:
-                    await db.commit()
-            except Exception as e:
-                await db.rollback()
-                logger.warning("Notification sweep failed", error=str(e))
+        try:
+            task_id = require_uuid(task_id_str)
+        except InvalidIdentifierError as exc:
+            logger.warning(
+                "task budget breach had malformed task id",
+                task_id_str=task_id_str,
+                error=str(exc),
+            )
+            return
+        try:
+            async with get_db_context() as db:
+                svc = TaskService(db)
+                task = await svc.get(task_id)
+                if task is None or task.status not in (
+                    TaskStatus.CLAIMED,
+                    TaskStatus.IN_PROGRESS,
+                ):
+                    return
+                task.blocker_resolver_type = BlockerResolverType.HUMAN
+                markers.mark_budget_blocked(task)
+                await svc.admin_set_status(
+                    task_id, TaskStatus.BLOCKED, actor_role="system"
+                )
+                delivery = get_notification_delivery_service(db)
+                await delivery.notify_ceo_of_budget_breach(
+                    task=task,
+                    task_id=task_id,
+                    cap_usd=cap_usd,
+                    spend_usd=spend_usd,
+                )
+                await self._fire_coroner_budget_hook(db, task_id)
+        except Exception as exc:
+            logger.warning(
+                "task budget-breach block/notify failed",
+                task_id=task_id_str,
+                error=str(exc),
+            )
 
-        # Retire abandoned live intake/secretary chats (idle past the threshold)
-        # so a closed-tab session doesn't leak its container until restart.
-        await self._reap_idle_interactive_sessions()
+    @staticmethod
+    async def _fire_coroner_budget_hook(db: Any, task_id: "UUID") -> None:
+        """Coroner (Board Program) budget-blocked trigger (spec §4).
 
-        # Budget kill-switch — runs every sweep. Any agent whose SDK reports
-        # halt=true has breached its per-session tool-call cap; terminate the
-        # container so the next dispatcher tick doesn't waste tokens on the
-        # same session.
-        await self._sweep_budget_exceeded()
+        Runs on the SAME already-open session as the rest of
+        ``_handle_task_budget_breach`` — ``get_db_context()`` commits on clean
+        ``async with`` exit and ROLLS BACK on any exception, so this catches
+        its OWN failures internally rather than letting them propagate and
+        undo the block/notify that already succeeded this call.
+        """
+        from roboco.services.coroner_engine import get_coroner_engine
 
-        # Token-usage instrumentation: snapshot active agents and roll up
-        # closed sessions into the daily aggregation table.
-        await self._sweep_token_snapshots()
-        await self._sweep_daily_rollup()
-        # Granular per-member performance rollup (own try/except inside).
-        await self._sweep_member_performance()
+        try:
+            await get_coroner_engine(db).open_for_incident(task_id, kind="budget")
+        except Exception as exc:
+            logger.warning(
+                "coroner: budget hook failed (best-effort)",
+                task_id=str(task_id),
+                error=str(exc),
+            )
 
-        # Prune old agent transcripts (throttled internally to ~hourly) so the
-        # operator's bind-mounted ~/.claude doesn't grow without bound.
-        await self._sweep_transcript_retention()
+    async def _sweep_budget_exceeded(self) -> None:
+        """Stop agents whose per-session SDK budget reports halt=true, OR
+        (when ``ROBOCO_TASK_BUDGETS_ENABLED`` is on) whose active task's own
+        $ budget is breached.
 
-        # Prune dangling (<none>) Docker images left by agent-image rebuilds
-        # (throttled internally to ~6h) so deploys don't pile up orphaned layers.
-        await self._sweep_dangling_images()
+        Tool-call halt: each agent's SDK server is reachable at
+        `http://roboco-agent-{agent_id}:9000/budget/status` on the shared
+        agent network; the task is already being auto-substituted by the
+        post-tool hook on the agent side, so a release_claim stop suffices.
 
-        # Close-on-land for landed supersedes — runs here (always-on sweeper)
-        # rather than the default-off external-PR poll loop, so a supersede that
-        # lands after external_pr_enabled is toggled off is still reconciled.
-        await self._sweep_superseded_prs()
+        Task $ budget: `_task_budget_breach` compares accumulated spend
+        (agent_spawn_sessions) against task.budget_usd / the TaskType
+        default. Unlike the tool-call path this explicitly BLOCKs the task
+        (see `_handle_task_budget_breach`) before the agent is stopped, and
+        notifies the CEO — a breached $ cap needs a human decision (raise
+        the cap or leave it blocked), not just a silent re-queue.
+        """
+        if not self._instances:
+            return
+        from roboco.config import settings as _settings
+
+        task_budgets_on = _settings.task_budgets_enabled
+        async with httpx.AsyncClient(
+            timeout=3.0, headers=_system_api_headers()
+        ) as client:
+            for agent_id, instance in list(self._instances.items()):
+                if instance.state not in (
+                    AgentState.ACTIVE,
+                    AgentState.WAITING_SHORT,
+                ):
+                    continue
+                await self._check_budget_for_agent(
+                    client, agent_id, instance, task_budgets_on
+                )
+
+    async def _check_budget_for_agent(
+        self,
+        client: httpx.AsyncClient,
+        agent_id: str,
+        instance: Any,
+        task_budgets_on: bool,
+    ) -> None:
+        """Stop one agent if its tool-call budget halted OR its task's $
+        budget breached. Extracted from ``_sweep_budget_exceeded`` (xenon
+        complexity budget) — see that method's docstring for the two triggers.
+        """
+        url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/budget/status"
+        data = await self._fetch_budget_status(client, url, agent_id)
+        task_breach = await self._maybe_task_budget_breach(instance, task_budgets_on)
+        tool_call_halt = bool(data and data.get("halt"))
+        if not tool_call_halt and task_breach is None:
+            # B32 budget_wrapup: the warn threshold is the last point where a
+            # graceful directive can still reach the agent's turn before the
+            # halt sweep's mid-air stop. Off/below-floor = today exactly (the
+            # hook's canned warn line, nothing orchestrator-side).
+            if data and data.get("warn"):
+                await self._decisions_budget_wrapup_directive(agent_id, instance, data)
+            return
+        await self._stop_budget_exceeded_agent(agent_id, instance, data, task_breach)
+
+    async def _maybe_task_budget_breach(
+        self, instance: Any, task_budgets_on: bool
+    ) -> tuple[float, float] | None:
+        """``_task_budget_breach`` for the instance's task, or None inert."""
+        if not task_budgets_on or not instance.current_task_id:
+            return None
+        return await self._task_budget_breach(instance.current_task_id)
+
+    async def _resolve_budget_stop_reason(
+        self,
+        agent_id: str,
+        instance: Any,
+        data: dict[str, Any] | None,
+        task_breach: tuple[float, float] | None,
+    ) -> str:
+        """Block + notify on a task breach, else log the tool-call halt.
+
+        Either way returns the ``stop_reason`` the caller passes to
+        ``stop_agent``.
+        """
+        if task_breach is None or not instance.current_task_id:
+            logger.warning(
+                "Agent budget exceeded; terminating container",
+                agent_id=agent_id,
+                total_calls=data.get("total") if data else None,
+                halt_threshold=data.get("halt_threshold") if data else None,
+            )
+            return "budget_sweep"
+        cap_usd, spend_usd = task_breach
+        logger.warning(
+            "Task budget exceeded; blocking task and terminating container",
+            agent_id=agent_id,
+            task_id=instance.current_task_id,
+            cap_usd=cap_usd,
+            spend_usd=round(spend_usd, 4),
+        )
+        await self._handle_task_budget_breach(
+            instance.current_task_id, cap_usd=cap_usd, spend_usd=spend_usd
+        )
+        return "budget_exceeded_task"
+
+    async def _stop_budget_exceeded_agent(
+        self,
+        agent_id: str,
+        instance: Any,
+        data: dict[str, Any] | None,
+        task_breach: tuple[float, float] | None,
+    ) -> None:
+        """Resolve the stop reason (blocking + notifying on a task breach
+        first) then gracefully stop the agent, releasing its claim.
+
+        release_claim=True mirrors the tool-call-halt path. On a task breach
+        the task is already BLOCKED (`_resolve_budget_stop_reason` ran the
+        block+notify first), so stop_agent's own release-to-pending unclaim
+        finds it out of claimed/in_progress and no-ops — it never bounces
+        through pending for an instant re-claim to re-burn the same budget.
+        """
+        stop_reason = await self._resolve_budget_stop_reason(
+            agent_id, instance, data, task_breach
+        )
+        try:
+            await self.stop_agent(
+                agent_id,
+                graceful=True,
+                release_claim=True,
+                stop_reason=stop_reason,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to stop budget-exceeded agent",
+                agent_id=agent_id,
+                error=str(e),
+            )
+
+
+class BudgetWrapupEngine(_Base):
+    """Decisions B32: at the budget warn threshold, ask for the wrap-up choice
+    and deliver it as the agent's next-turn directive, or release the task
+    cleanly."""
+
+    async def _decisions_budget_wrapup_directive(
+        self, agent_id: str, instance: Any, data: dict[str, Any]
+    ) -> None:
+        """B32 budget_wrapup: ask the wrap-up choice at the warn threshold and
+        act on it (graceful degradation instead of mid-air loss).
+
+        ``push-to-finish`` (and off/shadow/below-floor/no-verdict) does
+        nothing - today's behavior. The wrap-up choices render a directive
+        for the agent's next turn as a notification to the agent plus a
+        durable task marker (the next-tick directive), once per task.
+        ``abort-clean`` releases the task cleanly NOW via the existing
+        graceful stop path instead of letting the halt sweep drop WIP
+        mid-air. Everything is best-effort: a failure here must never turn
+        the warn sweep into a crash.
+        """
+        if not settings.decisions_enabled:
+            return
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            sent: dict[str, bool] = getattr(self, "_decisions_budget_directives", {})
+            self._decisions_budget_directives = sent
+            task_id = instance.current_task_id
+            if task_id and sent.get(str(task_id)):
+                return
+            task_state: dict[str, Any] = {}
+            async with get_db_context() as db:
+                if task_id:
+                    task_state = await self._budget_wrapup_task_state(db, task_id)
+                choice = await pilots_dispatch.budget_wrapup_choice(
+                    db,
+                    agent_id=agent_id,
+                    task_id=str(task_id) if task_id else None,
+                    total_calls=data.get("total"),
+                    halt_threshold=data.get("halt_threshold"),
+                    task_state=task_state,
+                )
+            if choice is pilots_dispatch.BudgetWrapup.PUSH_TO_FINISH:
+                return
+            if task_id:
+                sent[str(task_id)] = True
+            if choice is pilots_dispatch.BudgetWrapup.ABORT_CLEAN:
+                await self._budget_wrapup_abort_clean(agent_id, task_id)
+                return
+            directive = self._budget_wrapup_directive_text(choice)
+            await self._deliver_budget_wrapup_directive(
+                agent_id, task_id, choice, directive
+            )
+        except Exception as exc:
+            logger.warning(
+                "budget wrap-up decisions pass failed (best-effort)",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
+    async def _budget_wrapup_abort_clean(self, agent_id: str, task_id: Any) -> None:
+        """Release the task cleanly NOW via the graceful stop path instead of
+        letting the halt sweep drop WIP mid-air."""
+        logger.info(
+            "Budget wrap-up: aborting cleanly at warn threshold",
+            agent_id=agent_id,
+            task_id=str(task_id) if task_id else None,
+        )
+        await self.stop_agent(
+            agent_id,
+            graceful=True,
+            release_claim=True,
+            stop_reason="budget_wrapup_abort",
+        )
+
+    async def _deliver_budget_wrapup_directive(
+        self,
+        agent_id: str,
+        task_id: Any,
+        choice: Any,
+        directive: str,
+    ) -> None:
+        """Log the issued directive, stamp the task marker, and drop the
+        agent-addressed notification."""
+        logger.info(
+            "Budget wrap-up directive issued",
+            agent_id=agent_id,
+            task_id=str(task_id) if task_id else None,
+            choice=choice.value,
+        )
+        from roboco.db import get_db_context
+
+        async with get_db_context() as db:
+            await self._persist_budget_wrapup_directive(db, task_id, choice, directive)
+            await self._notify_budget_wrapup_directive(
+                db, agent_id, str(task_id) if task_id else None, directive
+            )
+
+    async def _budget_wrapup_task_state(self, db: Any, task_id: Any) -> dict[str, Any]:
+        """Commit/PR state of the wrapped task for the classifier payload."""
+        from uuid import UUID as _UUID
+
+        from roboco.services.task import get_task_service
+
+        task = await get_task_service(db).get(_UUID(str(task_id)))
+        if task is None:
+            return {}
+        return {
+            "commit_count": len(task.commits or []),
+            "pr_created": bool(task.pr_created),
+            "task_status": str(getattr(task, "status", "") or ""),
+        }
+
+    def _budget_wrapup_directive_text(self, choice: Any) -> str:
+        """The next-turn directive text for a wrap-up choice."""
+        from roboco.services.decisions import pilots_dispatch
+
+        if choice is pilots_dispatch.BudgetWrapup.WRAP_UP_AND_SUBMIT:
+            return (
+                "Your tool-call budget is nearly exhausted. Stop starting "
+                "new work: verify what you have and call "
+                "i_am_done(task_id, notes) now to submit it."
+            )
+        return (
+            "Your tool-call budget is nearly exhausted and real work "
+            "remains. Write a handoff note (note(scope='reflect', ...)) "
+            "describing exactly where the work stands, then stop "
+            "cleanly with i_am_idle()."
+        )
+
+    async def _persist_budget_wrapup_directive(
+        self, db: Any, task_id: Any, choice: Any, directive: str
+    ) -> None:
+        """Stamp the durable next-tick marker on the task (when it has one)."""
+        from uuid import UUID as _UUID
+
+        from roboco.foundation.policy.content import markers
+        from roboco.services.task import get_task_service
+
+        if not task_id:
+            return
+        task_service = get_task_service(db)
+        task = await task_service.get(_UUID(str(task_id)))
+        if task is None:
+            return
+        markers.set_marker(
+            task,
+            "budget_wrapup_directive",
+            {"choice": choice.value, "directive": directive},
+        )
+        await db.commit()
+
+    async def _notify_budget_wrapup_directive(
+        self, db: Any, agent_id: str, task_id: str | None, directive: str
+    ) -> None:
+        """Deliver the wrap-up directive as an agent-addressed notification.
+
+        The agent cannot be text-injected mid-turn orchestrator-side (the
+        live-registry deliver pattern only reaches interactive intake/
+        secretary chats), so the notification inbox plus the durable task
+        marker are the sanctioned next-tick channels. Best-effort.
+        """
+        try:
+            from uuid import UUID as _UUID
+
+            from roboco.db.tables import NotificationTable
+            from roboco.models.base import (
+                NotificationPriority,
+                NotificationType,
+            )
+            from roboco.seeds.initial_data import AGENT_UUIDS
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+            from roboco.services.repositories.query_helpers import get_agent_by_slug
+            from roboco.utils.converters import require_uuid
+
+            raw_uuid = AGENT_UUIDS.get(agent_id)
+            agent_uuid: _UUID | None = _UUID(raw_uuid) if raw_uuid else None
+            if agent_uuid is None:
+                agent_row = await get_agent_by_slug(db, agent_id)
+                agent_uuid = cast("_UUID", agent_row.id) if agent_row else None
+            if agent_uuid is None:
+                return
+            notification = NotificationTable(
+                type=NotificationType.ALERT,
+                priority=NotificationPriority.HIGH,
+                from_agent=_foundation.AGENTS["system"].uuid,
+                to_agents=[agent_uuid],
+                subject="Budget wrap-up directive",
+                body=directive + (f" Task: {task_id}." if task_id else ""),
+                requires_ack=False,
+            )
+            db.add(notification)
+            await db.flush()
+            delivery = get_notification_delivery_service(db)
+            await delivery.deliver(require_uuid(notification.id))
+            await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "budget wrap-up notification failed (best-effort)",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
+
+class SupersedeEngine(_Base):
+    """Superseding an external PR: the CEO-authorized takeover, the background
+    branch cut with its retry, and the sweep that reconciles umbrellas and
+    closes the contributor's PR once the replacement lands."""
 
     async def _sweep_superseded_prs(self) -> None:
         """Retire the contributor PR for any supersede umbrella that landed,
@@ -1400,596 +2030,6 @@ class SweepsEngine(_Base):
             cast("UUID", umbrella.project_id),
             umbrella.branch_name or "",
         )
-
-    async def _sweep_dangling_images(self) -> None:
-        """Prune dangling (<none>) Docker images left by agent-image rebuilds.
-
-        Each rebuild of an agent image orphans the prior build's layers as an
-        untagged ``<none>`` image; over many deploys these pile up (the operator
-        saw ~80). Pruning only DANGLING images is safe — a tagged image, or one
-        backing a running container, is never dangling. Throttled to
-        ``settings.image_prune_interval_seconds`` (default 6h) and gated by
-        ``settings.image_prune_enabled`` (default on). Best-effort: any failure
-        is logged, never raised into the sweeper.
-        """
-        if not settings.image_prune_enabled:
-            return
-        now = datetime.now(UTC)
-        last = self._last_image_prune
-        if (
-            last is not None
-            and (now - last).total_seconds() < settings.image_prune_interval_seconds
-        ):
-            return
-        self._last_image_prune = now
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "image",
-                "prune",
-                "-f",
-                "--filter",
-                "dangling=true",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await proc.communicate()
-            if proc.returncode == 0:
-                summary = stdout.decode().strip().splitlines()[-1:] if stdout else []
-                logger.info(
-                    "pruned dangling images", reclaimed=summary[0] if summary else ""
-                )
-            else:
-                logger.warning("dangling-image prune returned non-zero")
-        except Exception as e:
-            logger.warning("dangling-image prune failed (best-effort)", error=str(e))
-
-    async def _sweep_transcript_retention(self) -> None:
-        """Prune agent transcripts older than the retention window.
-
-        Throttled to ``settings.transcript_prune_interval_seconds``. Reads the
-        window from the ``system_settings`` store (panel-editable), falling back
-        to ``settings.transcript_retention_days``. Only agent-owned project dirs
-        (``-app`` + per-workspace dirs) are touched — never the operator's own
-        Claude sessions. Best-effort: any failure is logged, never raised.
-        """
-        if not settings.transcript_prune_enabled:
-            return
-        now = datetime.now(UTC)
-        last = self._last_transcript_prune
-        if (
-            last is not None
-            and (now - last).total_seconds()
-            < settings.transcript_prune_interval_seconds
-        ):
-            return
-        self._last_transcript_prune = now
-
-        retention_days = settings.transcript_retention_days
-        with contextlib.suppress(Exception):
-            from roboco.db.base import get_session_factory
-            from roboco.services.settings import get_settings_service
-
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                retention_days = await get_settings_service(db).get_int(
-                    "transcript_retention_days", settings.transcript_retention_days
-                )
-
-        from roboco.runtime.transcript_retention import select_prunable_transcripts
-
-        projects_root = Path.home() / ".claude" / "projects"
-        cutoff = (now - timedelta(days=retention_days)).timestamp()
-        prunable = select_prunable_transcripts(
-            projects_root, settings.workspaces_root, cutoff
-        )
-        pruned = 0
-        for transcript in prunable:
-            try:
-                transcript.unlink()
-                pruned += 1
-            except OSError as exc:
-                logger.debug(
-                    "Transcript prune failed", path=str(transcript), error=str(exc)
-                )
-        if pruned:
-            logger.info(
-                "Pruned old agent transcripts",
-                count=pruned,
-                retention_days=retention_days,
-            )
-
-    @staticmethod
-    async def _fetch_budget_status(
-        client: httpx.AsyncClient, url: str, agent_id: str
-    ) -> dict[str, Any] | None:
-        """Read an agent's SDK budget status; None if unreachable/not-JSON.
-
-        The SDK being unreachable is benign (container not yet started, already
-        gone, or a transient blip) and the health loop covers genuine failures,
-        so the failure is swallowed — but logged at debug so it is observable
-        rather than silent (the bare try/except/continue it replaced was not).
-        """
-        try:
-            resp = await client.get(url)
-        except httpx.HTTPError as exc:
-            logger.debug(
-                "Budget status unreachable; skipping agent this sweep",
-                agent_id=agent_id,
-                error=str(exc),
-            )
-            return None
-        if resp.status_code != http_status.HTTP_200_OK:
-            return None
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            logger.debug(
-                "Budget status not JSON; skipping agent this sweep",
-                agent_id=agent_id,
-                error=str(exc),
-            )
-            return None
-        return data if isinstance(data, dict) else None
-
-    async def _task_budget_breach(self, task_id_str: str) -> tuple[float, float] | None:
-        """``(cap_usd, spend_usd)`` if this task's own $ budget is breached.
-
-        ``None`` when unbreached, when the task carries no explicit
-        ``budget_usd`` (budgets are explicit-input only — an unset budget
-        means no cap; ``effective_task_budget_usd`` is the shared resolver
-        ``unblock``'s re-check uses), OR the task has already left claimed/
-        in_progress (a stale re-check racing the task's own progress — not a
-        breach). Spend is
-        ``TaskService.task_spend_usd`` (closed-session cost + open-session
-        live-token pricing via ``calculate_cost`` — a DB-only read off
-        ``_sweep_token_snapshots``'s periodically-refreshed token columns, no
-        fresh SDK round-trip needed for "cheaply available").
-        """
-        from roboco.db.base import get_db_context
-        from roboco.foundation.policy.agent_loop import effective_task_budget_usd
-        from roboco.models.base import TaskStatus
-        from roboco.services.task import TaskService
-        from roboco.utils.converters import InvalidIdentifierError, require_uuid
-
-        try:
-            task_id = require_uuid(task_id_str)
-        except InvalidIdentifierError:
-            return None
-        async with get_db_context() as db:
-            svc = TaskService(db)
-            task = await svc.get(task_id)
-            if task is None or task.status not in (
-                TaskStatus.CLAIMED,
-                TaskStatus.IN_PROGRESS,
-            ):
-                return None
-            cap_usd = effective_task_budget_usd(task)
-            if cap_usd is None:
-                return None
-            spend_usd = await svc.task_spend_usd(task_id)
-        if spend_usd < cap_usd:
-            return None
-        return cap_usd, spend_usd
-
-    async def _handle_task_budget_breach(
-        self, task_id_str: str, *, cap_usd: float, spend_usd: float
-    ) -> None:
-        """Block a task whose own $ budget is breached and notify the CEO.
-
-        Runs BEFORE ``stop_agent`` so its ``release_claim`` unclaim (which
-        only fires from claimed/in_progress — see ``_force_unclaim_to_pending``)
-        finds the task already ``BLOCKED`` and no-ops: the task never bounces
-        through ``pending`` for an instant re-claim to re-burn the same
-        budget. ``blocker_resolver_type=HUMAN`` keeps the dispatcher from ever
-        respawning onto it (``_is_hitl_blocked``) — only the CEO raising the
-        cap (or cancelling) moves it forward. Best-effort: a failure here logs
-        and lets the caller's ``stop_agent`` proceed regardless — one more
-        tick of a live over-budget agent is the safer failure mode than
-        crashing the sweep.
-        """
-        from roboco.db.base import get_db_context
-        from roboco.foundation.policy.content import markers
-        from roboco.models.base import BlockerResolverType, TaskStatus
-        from roboco.services.notification_delivery import (
-            get_notification_delivery_service,
-        )
-        from roboco.services.task import TaskService
-        from roboco.utils.converters import InvalidIdentifierError, require_uuid
-
-        try:
-            task_id = require_uuid(task_id_str)
-        except InvalidIdentifierError as exc:
-            logger.warning(
-                "task budget breach had malformed task id",
-                task_id_str=task_id_str,
-                error=str(exc),
-            )
-            return
-        try:
-            async with get_db_context() as db:
-                svc = TaskService(db)
-                task = await svc.get(task_id)
-                if task is None or task.status not in (
-                    TaskStatus.CLAIMED,
-                    TaskStatus.IN_PROGRESS,
-                ):
-                    return
-                task.blocker_resolver_type = BlockerResolverType.HUMAN
-                markers.mark_budget_blocked(task)
-                await svc.admin_set_status(
-                    task_id, TaskStatus.BLOCKED, actor_role="system"
-                )
-                delivery = get_notification_delivery_service(db)
-                await delivery.notify_ceo_of_budget_breach(
-                    task=task,
-                    task_id=task_id,
-                    cap_usd=cap_usd,
-                    spend_usd=spend_usd,
-                )
-                await self._fire_coroner_budget_hook(db, task_id)
-        except Exception as exc:
-            logger.warning(
-                "task budget-breach block/notify failed",
-                task_id=task_id_str,
-                error=str(exc),
-            )
-
-    @staticmethod
-    async def _fire_coroner_budget_hook(db: Any, task_id: "UUID") -> None:
-        """Coroner (Board Program) budget-blocked trigger (spec §4).
-
-        Runs on the SAME already-open session as the rest of
-        ``_handle_task_budget_breach`` — ``get_db_context()`` commits on clean
-        ``async with`` exit and ROLLS BACK on any exception, so this catches
-        its OWN failures internally rather than letting them propagate and
-        undo the block/notify that already succeeded this call.
-        """
-        from roboco.services.coroner_engine import get_coroner_engine
-
-        try:
-            await get_coroner_engine(db).open_for_incident(task_id, kind="budget")
-        except Exception as exc:
-            logger.warning(
-                "coroner: budget hook failed (best-effort)",
-                task_id=str(task_id),
-                error=str(exc),
-            )
-
-    async def _sweep_budget_exceeded(self) -> None:
-        """Stop agents whose per-session SDK budget reports halt=true, OR
-        (when ``ROBOCO_TASK_BUDGETS_ENABLED`` is on) whose active task's own
-        $ budget is breached.
-
-        Tool-call halt: each agent's SDK server is reachable at
-        `http://roboco-agent-{agent_id}:9000/budget/status` on the shared
-        agent network; the task is already being auto-substituted by the
-        post-tool hook on the agent side, so a release_claim stop suffices.
-
-        Task $ budget: `_task_budget_breach` compares accumulated spend
-        (agent_spawn_sessions) against task.budget_usd / the TaskType
-        default. Unlike the tool-call path this explicitly BLOCKs the task
-        (see `_handle_task_budget_breach`) before the agent is stopped, and
-        notifies the CEO — a breached $ cap needs a human decision (raise
-        the cap or leave it blocked), not just a silent re-queue.
-        """
-        if not self._instances:
-            return
-        from roboco.config import settings as _settings
-
-        task_budgets_on = _settings.task_budgets_enabled
-        async with httpx.AsyncClient(
-            timeout=3.0, headers=_system_api_headers()
-        ) as client:
-            for agent_id, instance in list(self._instances.items()):
-                if instance.state not in (
-                    AgentState.ACTIVE,
-                    AgentState.WAITING_SHORT,
-                ):
-                    continue
-                await self._check_budget_for_agent(
-                    client, agent_id, instance, task_budgets_on
-                )
-
-    async def _check_budget_for_agent(
-        self,
-        client: httpx.AsyncClient,
-        agent_id: str,
-        instance: Any,
-        task_budgets_on: bool,
-    ) -> None:
-        """Stop one agent if its tool-call budget halted OR its task's $
-        budget breached. Extracted from ``_sweep_budget_exceeded`` (xenon
-        complexity budget) — see that method's docstring for the two triggers.
-        """
-        url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/budget/status"
-        data = await self._fetch_budget_status(client, url, agent_id)
-        task_breach = await self._maybe_task_budget_breach(instance, task_budgets_on)
-        tool_call_halt = bool(data and data.get("halt"))
-        if not tool_call_halt and task_breach is None:
-            # B32 budget_wrapup: the warn threshold is the last point where a
-            # graceful directive can still reach the agent's turn before the
-            # halt sweep's mid-air stop. Off/below-floor = today exactly (the
-            # hook's canned warn line, nothing orchestrator-side).
-            if data and data.get("warn"):
-                await self._decisions_budget_wrapup_directive(agent_id, instance, data)
-            return
-        await self._stop_budget_exceeded_agent(agent_id, instance, data, task_breach)
-
-    async def _decisions_budget_wrapup_directive(
-        self, agent_id: str, instance: Any, data: dict[str, Any]
-    ) -> None:
-        """B32 budget_wrapup: ask the wrap-up choice at the warn threshold and
-        act on it (graceful degradation instead of mid-air loss).
-
-        ``push-to-finish`` (and off/shadow/below-floor/no-verdict) does
-        nothing - today's behavior. The wrap-up choices render a directive
-        for the agent's next turn as a notification to the agent plus a
-        durable task marker (the next-tick directive), once per task.
-        ``abort-clean`` releases the task cleanly NOW via the existing
-        graceful stop path instead of letting the halt sweep drop WIP
-        mid-air. Everything is best-effort: a failure here must never turn
-        the warn sweep into a crash.
-        """
-        if not settings.decisions_enabled:
-            return
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.decisions import pilots_dispatch
-
-            sent: dict[str, bool] = getattr(self, "_decisions_budget_directives", {})
-            self._decisions_budget_directives = sent
-            task_id = instance.current_task_id
-            if task_id and sent.get(str(task_id)):
-                return
-            task_state: dict[str, Any] = {}
-            async with get_db_context() as db:
-                if task_id:
-                    task_state = await self._budget_wrapup_task_state(db, task_id)
-                choice = await pilots_dispatch.budget_wrapup_choice(
-                    db,
-                    agent_id=agent_id,
-                    task_id=str(task_id) if task_id else None,
-                    total_calls=data.get("total"),
-                    halt_threshold=data.get("halt_threshold"),
-                    task_state=task_state,
-                )
-            if choice is pilots_dispatch.BudgetWrapup.PUSH_TO_FINISH:
-                return
-            if task_id:
-                sent[str(task_id)] = True
-            if choice is pilots_dispatch.BudgetWrapup.ABORT_CLEAN:
-                await self._budget_wrapup_abort_clean(agent_id, task_id)
-                return
-            directive = self._budget_wrapup_directive_text(choice)
-            await self._deliver_budget_wrapup_directive(
-                agent_id, task_id, choice, directive
-            )
-        except Exception as exc:
-            logger.warning(
-                "budget wrap-up decisions pass failed (best-effort)",
-                agent_id=agent_id,
-                error=str(exc),
-            )
-
-    async def _budget_wrapup_abort_clean(self, agent_id: str, task_id: Any) -> None:
-        """Release the task cleanly NOW via the graceful stop path instead of
-        letting the halt sweep drop WIP mid-air."""
-        logger.info(
-            "Budget wrap-up: aborting cleanly at warn threshold",
-            agent_id=agent_id,
-            task_id=str(task_id) if task_id else None,
-        )
-        await self.stop_agent(
-            agent_id,
-            graceful=True,
-            release_claim=True,
-            stop_reason="budget_wrapup_abort",
-        )
-
-    async def _deliver_budget_wrapup_directive(
-        self,
-        agent_id: str,
-        task_id: Any,
-        choice: Any,
-        directive: str,
-    ) -> None:
-        """Log the issued directive, stamp the task marker, and drop the
-        agent-addressed notification."""
-        logger.info(
-            "Budget wrap-up directive issued",
-            agent_id=agent_id,
-            task_id=str(task_id) if task_id else None,
-            choice=choice.value,
-        )
-        from roboco.db import get_db_context
-
-        async with get_db_context() as db:
-            await self._persist_budget_wrapup_directive(db, task_id, choice, directive)
-            await self._notify_budget_wrapup_directive(
-                db, agent_id, str(task_id) if task_id else None, directive
-            )
-
-    async def _budget_wrapup_task_state(self, db: Any, task_id: Any) -> dict[str, Any]:
-        """Commit/PR state of the wrapped task for the classifier payload."""
-        from uuid import UUID as _UUID
-
-        from roboco.services.task import get_task_service
-
-        task = await get_task_service(db).get(_UUID(str(task_id)))
-        if task is None:
-            return {}
-        return {
-            "commit_count": len(task.commits or []),
-            "pr_created": bool(task.pr_created),
-            "task_status": str(getattr(task, "status", "") or ""),
-        }
-
-    def _budget_wrapup_directive_text(self, choice: Any) -> str:
-        """The next-turn directive text for a wrap-up choice."""
-        from roboco.services.decisions import pilots_dispatch
-
-        if choice is pilots_dispatch.BudgetWrapup.WRAP_UP_AND_SUBMIT:
-            return (
-                "Your tool-call budget is nearly exhausted. Stop starting "
-                "new work: verify what you have and call "
-                "i_am_done(task_id, notes) now to submit it."
-            )
-        return (
-            "Your tool-call budget is nearly exhausted and real work "
-            "remains. Write a handoff note (note(scope='reflect', ...)) "
-            "describing exactly where the work stands, then stop "
-            "cleanly with i_am_idle()."
-        )
-
-    async def _persist_budget_wrapup_directive(
-        self, db: Any, task_id: Any, choice: Any, directive: str
-    ) -> None:
-        """Stamp the durable next-tick marker on the task (when it has one)."""
-        from uuid import UUID as _UUID
-
-        from roboco.foundation.policy.content import markers
-        from roboco.services.task import get_task_service
-
-        if not task_id:
-            return
-        task_service = get_task_service(db)
-        task = await task_service.get(_UUID(str(task_id)))
-        if task is None:
-            return
-        markers.set_marker(
-            task,
-            "budget_wrapup_directive",
-            {"choice": choice.value, "directive": directive},
-        )
-        await db.commit()
-
-    async def _notify_budget_wrapup_directive(
-        self, db: Any, agent_id: str, task_id: str | None, directive: str
-    ) -> None:
-        """Deliver the wrap-up directive as an agent-addressed notification.
-
-        The agent cannot be text-injected mid-turn orchestrator-side (the
-        live-registry deliver pattern only reaches interactive intake/
-        secretary chats), so the notification inbox plus the durable task
-        marker are the sanctioned next-tick channels. Best-effort.
-        """
-        try:
-            from uuid import UUID as _UUID
-
-            from roboco.db.tables import NotificationTable
-            from roboco.models.base import (
-                NotificationPriority,
-                NotificationType,
-            )
-            from roboco.seeds.initial_data import AGENT_UUIDS
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-            from roboco.services.repositories.query_helpers import get_agent_by_slug
-            from roboco.utils.converters import require_uuid
-
-            raw_uuid = AGENT_UUIDS.get(agent_id)
-            agent_uuid: _UUID | None = _UUID(raw_uuid) if raw_uuid else None
-            if agent_uuid is None:
-                agent_row = await get_agent_by_slug(db, agent_id)
-                agent_uuid = cast("_UUID", agent_row.id) if agent_row else None
-            if agent_uuid is None:
-                return
-            notification = NotificationTable(
-                type=NotificationType.ALERT,
-                priority=NotificationPriority.HIGH,
-                from_agent=_foundation.AGENTS["system"].uuid,
-                to_agents=[agent_uuid],
-                subject="Budget wrap-up directive",
-                body=directive + (f" Task: {task_id}." if task_id else ""),
-                requires_ack=False,
-            )
-            db.add(notification)
-            await db.flush()
-            delivery = get_notification_delivery_service(db)
-            await delivery.deliver(require_uuid(notification.id))
-            await db.commit()
-        except Exception as exc:
-            logger.warning(
-                "budget wrap-up notification failed (best-effort)",
-                agent_id=agent_id,
-                error=str(exc),
-            )
-
-    async def _maybe_task_budget_breach(
-        self, instance: Any, task_budgets_on: bool
-    ) -> tuple[float, float] | None:
-        """``_task_budget_breach`` for the instance's task, or None inert."""
-        if not task_budgets_on or not instance.current_task_id:
-            return None
-        return await self._task_budget_breach(instance.current_task_id)
-
-    async def _resolve_budget_stop_reason(
-        self,
-        agent_id: str,
-        instance: Any,
-        data: dict[str, Any] | None,
-        task_breach: tuple[float, float] | None,
-    ) -> str:
-        """Block + notify on a task breach, else log the tool-call halt.
-
-        Either way returns the ``stop_reason`` the caller passes to
-        ``stop_agent``.
-        """
-        if task_breach is None or not instance.current_task_id:
-            logger.warning(
-                "Agent budget exceeded; terminating container",
-                agent_id=agent_id,
-                total_calls=data.get("total") if data else None,
-                halt_threshold=data.get("halt_threshold") if data else None,
-            )
-            return "budget_sweep"
-        cap_usd, spend_usd = task_breach
-        logger.warning(
-            "Task budget exceeded; blocking task and terminating container",
-            agent_id=agent_id,
-            task_id=instance.current_task_id,
-            cap_usd=cap_usd,
-            spend_usd=round(spend_usd, 4),
-        )
-        await self._handle_task_budget_breach(
-            instance.current_task_id, cap_usd=cap_usd, spend_usd=spend_usd
-        )
-        return "budget_exceeded_task"
-
-    async def _stop_budget_exceeded_agent(
-        self,
-        agent_id: str,
-        instance: Any,
-        data: dict[str, Any] | None,
-        task_breach: tuple[float, float] | None,
-    ) -> None:
-        """Resolve the stop reason (blocking + notifying on a task breach
-        first) then gracefully stop the agent, releasing its claim.
-
-        release_claim=True mirrors the tool-call-halt path. On a task breach
-        the task is already BLOCKED (`_resolve_budget_stop_reason` ran the
-        block+notify first), so stop_agent's own release-to-pending unclaim
-        finds it out of claimed/in_progress and no-ops — it never bounces
-        through pending for an instant re-claim to re-burn the same budget.
-        """
-        stop_reason = await self._resolve_budget_stop_reason(
-            agent_id, instance, data, task_breach
-        )
-        try:
-            await self.stop_agent(
-                agent_id,
-                graceful=True,
-                release_claim=True,
-                stop_reason=stop_reason,
-            )
-        except Exception as e:
-            logger.warning(
-                "Failed to stop budget-exceeded agent",
-                agent_id=agent_id,
-                error=str(e),
-            )
 
     @staticmethod
     def _parse_supersede_pr(marker_line: str) -> int | None:
@@ -2235,68 +2275,142 @@ class SweepsEngine(_Base):
                 error=str(inner),
             )
 
-    async def _sweep_rate_limit_probes(self) -> None:
-        """One probe pass: check every rate-limited provider.
+    async def supersede_external_pr(self, review_task_id: "UUID") -> dict[str, Any]:
+        """CEO-authorized takeover of a reviewed external PR.
 
-        For each provider whose estimated_lift_at has passed:
-        - Call ``_do_probe(provider)`` to test connectivity.
-        - **Success**: clear the tracker, resolve all parked agents, publish
-          ``RATE_LIMIT_LIFTED``.
-        - **Failure**: increment probe_failures; if the count reaches 10 and
-          we haven't already sent a CEO notification for this episode, send
-          one now.
-
-        F045: the loop is tracker-driven, but an ``activate()`` failure in the
-        in-verb ``i_am_blocked(rate_limited)`` path (or a Redis hiccup) can
-        leave agents parked in ``_waiting_records`` for a provider the tracker
-        never learned about — so the tracker-listed loop above never probes it
-        and the parked agents strand in WAITING_LONG forever. After probing the
-        tracker-listed set, scan the in-memory records for any
-        ``rate_limit_lifted`` provider the loop did NOT cover and probe it via
-        the time-expiry fallback (empty state → ``_too_early_to_probe`` returns
-        False → probe now) so ``_on_probe_success`` can resume them. The
-        fallback reads only local memory, so it works even when Redis is down.
+        Confirms the review task (this CEO action is the human confirmation that
+        authorizes running the contributor's code), creates the supersede
+        umbrella (committed with a ``branch_pending`` marker), and returns
+        immediately. The branch cut (workspace resolve + fetch
+        ``refs/pull/{n}/head`` + push) runs in a background task so the CEO
+        does not hit the 60s client timeout. The dispatcher skips a
+        ``branch_pending`` umbrella so Main PM is not routed until the branch
+        is ready. On success the marker is cleared and the dispatcher is
+        woken; on failure the sweep retries with exponential backoff up to
+        ``_MAX_BRANCH_CUT_ATTEMPTS`` times, after which the umbrella is
+        BLOCKED (HUMAN resolver) and the CEO is notified with the recovery
+        action (unblock to re-run the cut, or cancel). A reconciliation sweep
+        on the sweep tick recovers umbrellas stranded by an orchestrator
+        restart and retries failed cuts after the backoff window.
         """
-        from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
+        from roboco.db import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.models.base import TaskStatus
+        from roboco.services.git import GitService
+        from roboco.services.project import get_project_service
+        from roboco.services.task import get_task_service
 
-        try:
-            providers = await RateLimitStateTracker.list_rate_limited_providers()
-        except Exception as e:
-            logger.warning("Failed to list rate-limited providers", error=str(e))
-            providers = []
-
-        probed_providers: set[str] = set()
-        for provider, state in providers:
-            probed_providers.add(provider)
+        # Serialize concurrent CEO calls (double-click) - the dedup check and
+        # the umbrella/branch creation are not atomic across DB sessions.
+        async with self._supersede_lock, get_db_context() as db:
+            task_service = get_task_service(db)
+            review = await task_service.get(review_task_id)
+            if review is None or getattr(review, "source", "") not in PR_REVIEW_SOURCES:
+                return {"ok": False, "error": "not a PR-review task"}
+            if not review.project_id or not review.pr_number:
+                return {
+                    "ok": False,
+                    "error": "review task missing project or pr_number",
+                }
+            # Review-first: only supersede a PR the org has actually reviewed.
+            if review.status != TaskStatus.COMPLETED:
+                return {
+                    "ok": False,
+                    "error": "review not complete - review the PR first",
+                }
+            project = await get_project_service(db).get(cast("UUID", review.project_id))
+            if project is None:
+                return {"ok": False, "error": "project not found"}
+            pr_number = int(review.pr_number)
+            project_id = cast("UUID", review.project_id)
+            # Idempotent: a repeat call returns the existing umbrella - no second
+            # branch cut, no duplicate cell takeover. Covers branch_pending
+            # umbrellas too (a retry during the cut short-circuits here).
+            existing = await task_service.find_supersede_umbrella(project_id, pr_number)
+            if existing is not None:
+                return {
+                    "ok": True,
+                    "supersede_task_id": str(existing.id),
+                    "branch": existing.branch_name,
+                    "already_superseded": True,
+                }
+            system_id = _foundation.AGENTS["system"].uuid
+            branch_name = f"feature/main_pm/supersede-pr-{pr_number}"
+            # The CEO authorized fetching + finishing the contributor's code.
+            review.confirmed_by_human = True
+            # Create the umbrella with branch_pending marker BEFORE any git op.
+            # The commit here is the point of no return - the umbrella exists
+            # and the dispatcher gate (branch_pending) holds it until the
+            # background branch cut clears the marker.
+            umbrella = await task_service.create_supersede_umbrella(
+                review_task_id=review_task_id,
+                branch_name=branch_name,
+                created_by=system_id,
+            )
+            # create_supersede_umbrella returns None only if the review task
+            # is missing or not a PR-review source - both already validated
+            # above. If a race deletes the review between the check and the
+            # create, the .id access raises (500, acceptable for that race).
+            umbrella = cast("Any", umbrella)
+            umbrella_id = str(umbrella.id)
+            markers.mark_branch_pending(umbrella)
+            await db.flush()
+            # Try the contributor comment in the fast path (skip_refresh: the
+            # comment only needs the remote URL, not fresh refs). If it fails
+            # (workspace not cloned yet, forge error), the background task
+            # retries via the supersede_comment_posted marker.
+            git = GitService(db)
             try:
-                await self._probe_one_provider(provider, state)
-            except Exception as e:
-                logger.error(
-                    "Unhandled error probing provider",
-                    provider=provider,
-                    error=str(e),
+                author = self._parse_supersede_author(
+                    markers.get_external_pr_supersede(umbrella) or ""
                 )
+                comment = _supersede_author_prefix(
+                    author
+                ) + SUPERSEDE_PR_COMMENT.format(branch=branch_name)
+                await git.comment_pull_request(
+                    pr_number,
+                    project_id=project_id,
+                    comment=comment,
+                )
+                markers.mark_supersede_comment_posted(umbrella)
+                await db.flush()
+            except Exception as exc:
+                logger.warning(
+                    "supersede: fast-path contributor comment failed, "
+                    "deferring to background task",
+                    pr_number=pr_number,
+                    error=str(exc),
+                )
+            await db.commit()
+            # Claim the in-flight slot BEFORE releasing the supersede lock so a
+            # reconciliation sweep tick landing between the commit and the
+            # spawn cannot double-spawn a concurrent branch cut.
+            self._supersede_cuts_in_flight.add(umbrella_id)
+        # Background the slow git ops (workspace clone up to 300s, fetch +
+        # checkout + push, each 30s). Fire-and-forget; the reconciliation
+        # sweep recovers on restart.
+        bg = asyncio.create_task(
+            self._cut_supersede_branch(
+                umbrella_id=umbrella_id,
+                project_slug=project.slug,
+                pr_number=pr_number,
+                project_id=project_id,
+                branch_name=branch_name,
+            )
+        )
+        self._bg_tasks.add(bg)
+        bg.add_done_callback(self._bg_tasks.discard)
+        return {
+            "ok": True,
+            "supersede_task_id": umbrella_id,
+            "branch": branch_name,
+            "status": "cutting_branch",
+        }
 
-        # Orphan fallback: resume agents parked for a provider the
-        # tracker-listed loop above did not cover (activate failed silently or
-        # Redis was down at park time). On probe success ``_on_probe_success``
-        # clears the tracker (self-healing) and resumes the parked agents.
-        orphan_providers: set[str] = set()
-        for record in self._waiting_records.values():
-            if record.waiting_for != "rate_limit_lifted":
-                continue
-            prov = record.context.get("provider")
-            if prov and prov not in probed_providers:
-                orphan_providers.add(prov)
-        for provider in orphan_providers:
-            try:
-                await self._probe_one_provider(provider, {})
-            except Exception as e:
-                logger.error(
-                    "Unhandled error probing orphaned rate-limited provider",
-                    provider=provider,
-                    error=str(e),
-                )
+
+class SandboxEngine(_Base):
+    """On-demand sandboxes: which services a spawn may request, provision and
+    release, and the janitor for containers whose owner is gone."""
 
     async def _sandbox_available_services(self, project_slug: str) -> list[str]:
         """Which sandbox services this project's spawn may request on-demand.
@@ -2438,6 +2552,12 @@ class SweepsEngine(_Base):
             live = getattr(self, "_instances", {})
             for slug in set(cache) - set(live):
                 cache.pop(slug, None)
+
+
+class ExternalPRIntakeEngine(_Base):
+    """Inbound PR discovery: poll each repo once, classify each open PR as
+    external or internal, apply the author allowlist and the B14 triage with
+    its injection screen, and open a review task."""
 
     async def _external_pr_poll_loop(self) -> None:
         """Engine 3: discover inbound PRs and open review tasks.
@@ -2736,135 +2856,3 @@ class SweepsEngine(_Base):
         trusted = {"OWNER", "MEMBER", "COLLABORATOR"}
         assoc = (pr.get("author_association") or "").upper()
         return assoc not in trusted
-
-    async def supersede_external_pr(self, review_task_id: "UUID") -> dict[str, Any]:
-        """CEO-authorized takeover of a reviewed external PR.
-
-        Confirms the review task (this CEO action is the human confirmation that
-        authorizes running the contributor's code), creates the supersede
-        umbrella (committed with a ``branch_pending`` marker), and returns
-        immediately. The branch cut (workspace resolve + fetch
-        ``refs/pull/{n}/head`` + push) runs in a background task so the CEO
-        does not hit the 60s client timeout. The dispatcher skips a
-        ``branch_pending`` umbrella so Main PM is not routed until the branch
-        is ready. On success the marker is cleared and the dispatcher is
-        woken; on failure the sweep retries with exponential backoff up to
-        ``_MAX_BRANCH_CUT_ATTEMPTS`` times, after which the umbrella is
-        BLOCKED (HUMAN resolver) and the CEO is notified with the recovery
-        action (unblock to re-run the cut, or cancel). A reconciliation sweep
-        on the sweep tick recovers umbrellas stranded by an orchestrator
-        restart and retries failed cuts after the backoff window.
-        """
-        from roboco.db import get_db_context
-        from roboco.foundation.policy.content import markers
-        from roboco.models.base import TaskStatus
-        from roboco.services.git import GitService
-        from roboco.services.project import get_project_service
-        from roboco.services.task import get_task_service
-
-        # Serialize concurrent CEO calls (double-click) - the dedup check and
-        # the umbrella/branch creation are not atomic across DB sessions.
-        async with self._supersede_lock, get_db_context() as db:
-            task_service = get_task_service(db)
-            review = await task_service.get(review_task_id)
-            if review is None or getattr(review, "source", "") not in PR_REVIEW_SOURCES:
-                return {"ok": False, "error": "not a PR-review task"}
-            if not review.project_id or not review.pr_number:
-                return {
-                    "ok": False,
-                    "error": "review task missing project or pr_number",
-                }
-            # Review-first: only supersede a PR the org has actually reviewed.
-            if review.status != TaskStatus.COMPLETED:
-                return {
-                    "ok": False,
-                    "error": "review not complete - review the PR first",
-                }
-            project = await get_project_service(db).get(cast("UUID", review.project_id))
-            if project is None:
-                return {"ok": False, "error": "project not found"}
-            pr_number = int(review.pr_number)
-            project_id = cast("UUID", review.project_id)
-            # Idempotent: a repeat call returns the existing umbrella - no second
-            # branch cut, no duplicate cell takeover. Covers branch_pending
-            # umbrellas too (a retry during the cut short-circuits here).
-            existing = await task_service.find_supersede_umbrella(project_id, pr_number)
-            if existing is not None:
-                return {
-                    "ok": True,
-                    "supersede_task_id": str(existing.id),
-                    "branch": existing.branch_name,
-                    "already_superseded": True,
-                }
-            system_id = _foundation.AGENTS["system"].uuid
-            branch_name = f"feature/main_pm/supersede-pr-{pr_number}"
-            # The CEO authorized fetching + finishing the contributor's code.
-            review.confirmed_by_human = True
-            # Create the umbrella with branch_pending marker BEFORE any git op.
-            # The commit here is the point of no return - the umbrella exists
-            # and the dispatcher gate (branch_pending) holds it until the
-            # background branch cut clears the marker.
-            umbrella = await task_service.create_supersede_umbrella(
-                review_task_id=review_task_id,
-                branch_name=branch_name,
-                created_by=system_id,
-            )
-            # create_supersede_umbrella returns None only if the review task
-            # is missing or not a PR-review source - both already validated
-            # above. If a race deletes the review between the check and the
-            # create, the .id access raises (500, acceptable for that race).
-            umbrella = cast("Any", umbrella)
-            umbrella_id = str(umbrella.id)
-            markers.mark_branch_pending(umbrella)
-            await db.flush()
-            # Try the contributor comment in the fast path (skip_refresh: the
-            # comment only needs the remote URL, not fresh refs). If it fails
-            # (workspace not cloned yet, forge error), the background task
-            # retries via the supersede_comment_posted marker.
-            git = GitService(db)
-            try:
-                author = self._parse_supersede_author(
-                    markers.get_external_pr_supersede(umbrella) or ""
-                )
-                comment = _supersede_author_prefix(
-                    author
-                ) + SUPERSEDE_PR_COMMENT.format(branch=branch_name)
-                await git.comment_pull_request(
-                    pr_number,
-                    project_id=project_id,
-                    comment=comment,
-                )
-                markers.mark_supersede_comment_posted(umbrella)
-                await db.flush()
-            except Exception as exc:
-                logger.warning(
-                    "supersede: fast-path contributor comment failed, "
-                    "deferring to background task",
-                    pr_number=pr_number,
-                    error=str(exc),
-                )
-            await db.commit()
-            # Claim the in-flight slot BEFORE releasing the supersede lock so a
-            # reconciliation sweep tick landing between the commit and the
-            # spawn cannot double-spawn a concurrent branch cut.
-            self._supersede_cuts_in_flight.add(umbrella_id)
-        # Background the slow git ops (workspace clone up to 300s, fetch +
-        # checkout + push, each 30s). Fire-and-forget; the reconciliation
-        # sweep recovers on restart.
-        bg = asyncio.create_task(
-            self._cut_supersede_branch(
-                umbrella_id=umbrella_id,
-                project_slug=project.slug,
-                pr_number=pr_number,
-                project_id=project_id,
-                branch_name=branch_name,
-            )
-        )
-        self._bg_tasks.add(bg)
-        bg.add_done_callback(self._bg_tasks.discard)
-        return {
-            "ok": True,
-            "supersede_task_id": umbrella_id,
-            "branch": branch_name,
-            "status": "cutting_branch",
-        }

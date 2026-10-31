@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 from roboco.llm.providers import grok_auth as ga_mod
 from roboco.models.runtime import AgentInstance
-from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
+from roboco.runtime.engines.dispatch_breaker import ProviderUpkeepEngine
 from roboco.runtime.orchestrator import (
     _GROK_AUTH_EXIT_CODE,
     _GROK_RATE_LIMIT_EXIT_CODE,
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 # aware of the call shape without a suppression comment.
 _refresh_grok_auth = cast(
     "Callable[[object], Awaitable[None]]",
-    DispatchBreakerEngine._refresh_grok_auth,
+    ProviderUpkeepEngine._refresh_grok_auth,
 )
 
 
@@ -136,7 +136,8 @@ async def test_park_grok_rate_limited_activates_and_offlines(
     orch._grok_last_park_at = None
     orch._grok_repark_count = 0
     inst = _grok_instance()
-    inst.error_count = 2  # pretend prior crashes — parking must NOT count one
+    # Pretend prior crashes — parking must NOT count one
+    inst.error_count = 2
     tracker = _FakeTracker()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
     finalize = AsyncMock()
@@ -148,7 +149,8 @@ async def test_park_grok_rate_limited_activates_and_offlines(
     finalize.assert_awaited_once()
     assert inst.state == AgentState.OFFLINE
     assert inst.container_id is None
-    assert inst.error_count == 0  # a 429 is not a crash
+    # A 429 is not a crash
+    assert inst.error_count == 0
     assert tracker.activated_with == {
         "retry_after": pytest.approx(60.0),
         "affected_agents": ["be-dev-1"],
@@ -219,7 +221,8 @@ async def test_park_grok_auth_unavailable_activates_with_auth_missing_kind(
     orch._waiting_records = {}
     orch._rate_limit_ceo_notified = set()
     inst = _grok_instance()
-    inst.error_count = 2  # prior crashes — parking must NOT count one
+    # Prior crashes — parking must NOT count one
+    inst.error_count = 2
     tracker = _FakeTracker()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
     monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
@@ -229,7 +232,8 @@ async def test_park_grok_auth_unavailable_activates_with_auth_missing_kind(
 
     assert inst.state == AgentState.OFFLINE
     assert inst.container_id is None
-    assert inst.error_count == 0  # an auth-missing exit is not a crash
+    # An auth-missing exit is not a crash
+    assert inst.error_count == 0
     assert tracker.activated_with == {
         "retry_after": pytest.approx(60.0),
         "affected_agents": ["be-dev-1"],
@@ -299,7 +303,8 @@ async def test_grok_repark_resets_after_episode_gap(
     """A re-park AFTER the episode gap is a fresh episode — the retry_after
     resets to the base 60s even if the prior episode had backed off."""
     orch = _backoff_orchestrator()
-    orch._grok_repark_count = 3  # pretend a prior episode backed off hard
+    # Pretend a prior episode backed off hard
+    orch._grok_repark_count = 3
     orch._grok_last_park_at = datetime.now(UTC) - timedelta(hours=2)
     tracker = _RecordingTracker()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)

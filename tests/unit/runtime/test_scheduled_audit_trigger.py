@@ -24,18 +24,15 @@ if TYPE_CHECKING:
 def _frozen_audit_now(now: datetime) -> Iterator[MagicMock]:
     """Freeze `datetime.now()` for the audit-dispatch path.
 
-    `_dispatch_audit_work` (dispatch_work.py) and `_audit_spawn_cooled` /
-    `_has_recent_delivery_activity` (dispatch_claim.py) each call
-    `datetime.now()` directly and neither is mocked via `patch.object` in
-    these tests, so both modules' `datetime` must be patched to the SAME
-    mock for a consistent frozen `now`.
+    `_dispatch_audit_work`, `_audit_spawn_cooled` and
+    `_has_recent_delivery_activity` (all in dispatch_work.py) call
+    `datetime.now()` directly and none is mocked via `patch.object` in
+    these tests, so that module's `datetime` is patched for a consistent
+    frozen `now`.
     """
     dt_mock = MagicMock(wraps=datetime)
     dt_mock.now.return_value = now
-    with (
-        patch("roboco.runtime.engines.dispatch_work.datetime", new=dt_mock),
-        patch("roboco.runtime.engines.dispatch_claim.datetime", new=dt_mock),
-    ):
+    with patch("roboco.runtime.engines.dispatch_work.datetime", new=dt_mock):
         yield dt_mock
 
 
@@ -204,9 +201,12 @@ async def test_reactive_alert_acks_so_it_cannot_rotate(
         patch.object(orch, "_is_agent_active", return_value=False),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn_mock,
     ):
-        await orch._dispatch_audit_work(client)  # tick 1: alert -> spawn + ack
-        await orch._dispatch_audit_work(client)  # tick 2: no alert -> scheduled
-    assert spawn_mock.await_count == 1  # not respawned on tick 2
+        # Tick 1: alert -> spawn + ack
+        await orch._dispatch_audit_work(client)
+        # Tick 2: no alert -> scheduled
+        await orch._dispatch_audit_work(client)
+    # Not respawned on tick 2
+    assert spawn_mock.await_count == 1
     assert ack_mock.await_count == 1
     # acked as the auditor saw it: (client, alert_id)
     ack_call = ack_mock.await_args

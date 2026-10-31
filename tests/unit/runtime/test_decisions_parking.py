@@ -7,16 +7,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from roboco.runtime.engines.spawn_exit import (
     _DECISIONS_RETRY_SOON_RETRY_AFTER_S,
-    SpawnExitEngine,
+    ProviderParkingEngine,
 )
 from roboco.services import decisions
 
 
-def _bare() -> SpawnExitEngine:
-    # SpawnExitEngine carries a TYPE_CHECKING-only Protocol base (abstract at
+def _bare() -> ProviderParkingEngine:
+    # ProviderParkingEngine carries a TYPE_CHECKING-only Protocol base (abstract at
     # type-check time), so route the class through a type[Any] intermediate.
-    cls: type[Any] = SpawnExitEngine
-    return cast("SpawnExitEngine", object.__new__(cls))
+    cls: type[Any] = ProviderParkingEngine
+    return cast("ProviderParkingEngine", object.__new__(cls))
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,8 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: spawn_config)."""
+"""What a spawned agent is configured with: its Claude Code settings and MCP
+servers, its composed system prompt, and the task briefing its SessionStart
+hook reads.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -24,7 +27,6 @@ from roboco.models import AgentRole, Team
 from roboco.runtime.orchestrator import (
     DATA_HOST_PATH,
     PROJECT_HOST_PATH,
-    UUID_TO_SLUG,
     AgentConfig,
     _resolve_agent_cli_model,
     _system_api_headers,
@@ -36,14 +38,7 @@ if TYPE_CHECKING:
     from roboco.models.runtime import (
         SpawnGitContext,
     )
-
-    # Also bound into this module's real (non-TYPE_CHECKING) globals at
-    # runtime by orchestrator.py, right after the class is defined -- see
-    # its bottom-of-file comment.
-    from roboco.runtime.orchestrator import (
-        AgentOrchestrator,
-    )
-
+    from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
@@ -51,8 +46,11 @@ else:
     _Base = object
 
 
-class SpawnConfigEngine(_Base):
-    """Mixin holding the "spawn_config" methods moved out of AgentOrchestrator."""
+class AgentSettingsEngine(_Base):
+    """The agent's Claude Code configuration: role-scoped tool permissions,
+    the Fable-mode hook groups, the per-agent settings file, the CLI model,
+    and the MCP config with its role-scoped servers (and which spawns get
+    playwright: a video-authoring ux dev, a dogfooding Product Owner)."""
 
     def _get_role_permissions(
         self, role: str, workspace_path: str, cell_workspace_path: str
@@ -295,7 +293,8 @@ class SpawnConfigEngine(_Base):
             "mcp__roboco-do__*",
             "mcp__roboco-optimal__*",
             "mcp__roboco-git-readonly__*",
-            "Read(*)",  # All agents can read any file
+            # All agents can read any file
+            "Read(*)",
         ]
 
         # Base denials for all agents - block native tools + sensitive reads.
@@ -544,20 +543,6 @@ class SpawnConfigEngine(_Base):
         )
 
         return settings_path
-
-    @staticmethod
-    def _default_spawn_prompt() -> str:
-        """Fallback prompt when the caller provided none."""
-        return (
-            "You may have been spawned without a specific task assignment. "
-            "Follow your standard workflow:\n\n"
-            "1. Call `give_me_work()` to find work for your role\n"
-            "2. Begin the assigned task (its details arrive in the "
-            "response): UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
-            "3. If no tasks available, call `i_am_idle()` "
-            "to shutdown gracefully\n\n"
-            "Start now by scanning for work."
-        )
 
     @staticmethod
     def _resolve_cli_model(config: AgentConfig) -> str:
@@ -818,6 +803,88 @@ class SpawnConfigEngine(_Base):
                 "args": [],
             }
 
+    async def _is_video_authoring_spawn(
+        self, agent_id: str, agent_role: str, task_id: str | None
+    ) -> bool:
+        """A ux_ui developer spawned onto a source=video task — the one
+        non-QA case that gets the playwright MCP, so the author can open the
+        composition HTML in a real browser while iterating instead of
+        shipping the first render blind. Gating-only: the agent-ux image
+        already bakes the browser + wrapper entrypoint. Fail-closed — any
+        lookup error means no browser, never a broken spawn."""
+        if agent_role != "developer" or not task_id:
+            return False
+        if get_agent_team(agent_id) != "ux_ui":
+            return False
+        try:
+            from uuid import UUID
+
+            from roboco.db.base import get_session_factory
+            from roboco.services.task import VIDEO_SOURCE, get_task_service
+
+            factory = get_session_factory()
+            async with factory() as db:
+                t = await get_task_service(db).get(UUID(task_id))
+            return t is not None and t.source == VIDEO_SOURCE
+        except Exception as exc:
+            logger.warning(
+                "video-authoring spawn probe failed; playwright not registered",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
+    async def _is_dogfood_spawn(
+        self, agent_id: str, agent_role: str, task_id: str | None
+    ) -> bool:
+        """A Product Owner spawned onto a source=board_dogfood task — the
+        ONLY board-role case that gets the playwright MCP, so the PO can walk
+        the product as a user (spec §4). Task-scoped, not role-blanket: a PO
+        spawned for roadmap/pest_control/scales/any other cycle must NOT get
+        browser tools. Mirrors ``_is_video_authoring_spawn``'s shape exactly
+        — fail-closed: any lookup error means no browser, never a broken
+        spawn."""
+        if agent_role != "product_owner" or not task_id:
+            return False
+        try:
+            from uuid import UUID
+
+            from roboco.db.base import get_session_factory
+            from roboco.services.task import DOGFOOD_SOURCE, get_task_service
+
+            factory = get_session_factory()
+            async with factory() as db:
+                t = await get_task_service(db).get(UUID(task_id))
+            return t is not None and t.source == DOGFOOD_SOURCE
+        except Exception as exc:
+            logger.warning(
+                "dogfood spawn probe failed; playwright not registered",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
+
+class SystemPromptEngine(_Base):
+    """The agent's prompts: the composed system prompt, its conventions
+    ambient layer with the projects in scope, and the fallback spawn prompt."""
+
+    @staticmethod
+    def _default_spawn_prompt() -> str:
+        """Fallback prompt when the caller provided none."""
+        return (
+            "You may have been spawned without a specific task assignment. "
+            "Follow your standard workflow:\n\n"
+            "1. Call `give_me_work()` to find work for your role\n"
+            "2. Begin the assigned task (its details arrive in the "
+            "response): UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
+            "3. If no tasks available, call `i_am_idle()` "
+            "to shutdown gracefully\n\n"
+            "Start now by scanning for work."
+        )
+
     def _generate_composed_prompt(
         self, agent_id: str, ambient: str | None = None
     ) -> Path:
@@ -998,6 +1065,11 @@ class SpawnConfigEngine(_Base):
         ids = await get_product_service(db).distinct_project_ids(UUID(product_id))
         resolved = [await project_service.get(pid) for pid in ids]
         return [p for p in resolved if p is not None]
+
+
+class AgentBriefingEngine(_Base):
+    """The task briefing the SessionStart hook reads: the current task block,
+    the tool-load note, the steering messages, and the B27 tool spotlight."""
 
     def _build_tool_load_block(self, role: str) -> str:
         """Briefing block affirming the role's built-in tools are ready.
@@ -1260,7 +1332,8 @@ class SpawnConfigEngine(_Base):
                 do_tools = list(get_role_config(role).do_tools)
             except KeyError:
                 return ""
-            if len(do_tools) < TOOL_SPOTLIGHT_MIN_VERBS:  # below the option band
+            # Below the option band
+            if len(do_tools) < TOOL_SPOTLIGHT_MIN_VERBS:
                 return ""
             verbs = await self._tool_spotlight_verbs(agent_id, task_id, do_tools)
             if not verbs:
@@ -1305,16 +1378,3 @@ class SpawnConfigEngine(_Base):
                 task_description=description,
                 verbs=do_tools,
             )
-
-    def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
-        """Resolve agent UUID to slug. Returns input if already a slug."""
-        # Check if it's a known UUID and convert to slug
-        if agent_id_or_uuid in UUID_TO_SLUG:
-            return UUID_TO_SLUG[agent_id_or_uuid]
-        # Already a slug or unknown UUID
-        return agent_id_or_uuid
-
-    def _mark_task_handled(self, task_id: str | None) -> None:
-        """Record that `task_id` was acted on earlier in this dispatch tick."""
-        if task_id:
-            self._tick_handled_tasks.add(task_id)

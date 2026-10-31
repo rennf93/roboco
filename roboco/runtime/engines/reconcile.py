@@ -1,5 +1,7 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: reconcile)."""
+"""What the orchestrator restores and reconciles at startup, and the health
+and Board Program loops it runs.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -8,13 +10,8 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from roboco.agents_config import (
-    get_agent_team,
-)
-from roboco.models.runtime import (
-    AgentInstance,
-    WaitingRecord,
-)
+from roboco.agents_config import get_agent_team
+from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
     _DOCKER_INSPECT_TIMEOUT_SECONDS,
     AGENT_IMAGES,
@@ -28,15 +25,15 @@ if TYPE_CHECKING:
 
     from roboco.services.task import TaskService
 
-
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
 
 
-class ReconcileEngine(_Base):
-    """Mixin holding the "reconcile" methods moved out of AgentOrchestrator."""
+class StartupRestoreEngine(_Base):
+    """Restoring persisted state at startup: the waiting records, and the
+    PM-respawn counters minus their stale rows."""
 
     async def _clear_respawn_record(self, agent_slug: str, task_id: str) -> None:
         """Delete one PM-respawn counter row (best-effort).
@@ -196,6 +193,12 @@ class ReconcileEngine(_Base):
         except Exception as e:
             logger.error("Failed to restore respawn records", error=str(e))
             return 0
+
+
+class StartupReconcileEngine(_Base):
+    """Reconciling with the world at startup: mark this process running, roll
+    back orphan claims, close orphan spawn sessions, kill containers whose
+    agent token no longer verifies, and re-adopt the running ones."""
 
     @staticmethod
     async def _resolve_container_id(container_name: str) -> str | None:
@@ -370,7 +373,8 @@ class ReconcileEngine(_Base):
 
         agent_uuid = AGENT_UUIDS.get(slug)
         if agent_uuid is None:
-            return False  # unknown slug owns nothing by definition
+            # Unknown slug owns nothing by definition
+            return False
         try:
             async with get_db_context() as db:
                 result = await db.execute(
@@ -562,6 +566,11 @@ class ReconcileEngine(_Base):
             )
         return readopted
 
+
+class HealthLoopEngine(_Base):
+    """The background health loop: each running agent's health, and whether
+    the orchestrator's own loops are still alive."""
+
     def _check_loop_liveness(self) -> None:
         now = time.monotonic()
         heartbeats = getattr(self, "_loop_heartbeats", {})
@@ -579,7 +588,8 @@ class ReconcileEngine(_Base):
         """Background health check loop."""
         while self._running:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
+                # Check every 30 seconds
+                await asyncio.sleep(30)
                 await self._check_health()
             except asyncio.CancelledError:
                 break
@@ -612,6 +622,11 @@ class ReconcileEngine(_Base):
             if not is_running:
                 await self._handle_stopped_container(agent_id, instance, exit_code)
         self._check_loop_liveness()
+
+
+class BoardProgramLoopEngine(_Base):
+    """The Board Program loop: on the shortest program cadence, originate a
+    cycle for every enabled, due program."""
 
     async def _board_program_loop(self) -> None:
         """Board Program engine: on an interval, originate a cycle for every
