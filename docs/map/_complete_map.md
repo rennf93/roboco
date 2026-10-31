@@ -6751,7 +6751,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `roboco_get_proactive_context` | tool | `optimal_server.py:1104` | Stored-then-fresh proactive context for a task. |
 | `normalize_index_types` | func | `optimal_server.py:60` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
 | `create_docs_mcp_server` | factory | `docs_server.py:166` | Build `roboco-docs-{agent_id}` server (write/read/list/delete). |
-| `DocsService.write_doc` | method | `services/docs.py:423` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
+| `DocsService.write_doc` | method | `services/docs.py:427` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
 | `_refused_doc_types` | func | `services/docs.py:90` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |
 | `WriteDocInput` | pydantic | `schemas/__init__.py:12` | Docs write input (task_id, filename, doc_type, title, content). |
 | `roboco_git_status` / `roboco_git_log` / `roboco_git_diff` / `roboco_git_branch_list` | tools | `git_readonly.py:45–119` | Read-only git views via `/api/git/*`. |
@@ -9220,15 +9220,15 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `_seed_rules` | fn | `conventions/scan.py:137` | Seed hygiene + placement + modularity rules (stack-scoped) |
 | `_lift_claude_md` | fn | `conventions/scan.py:220` | Lift imperative CLAUDE.md code-spans into warn custom rules |
 | `render_yaml` | fn | `conventions/scan.py:307` | Render a standard to commented YAML (round-trips via parse_yaml) |
-| `DocsService` | class | `services/docs.py:418` | Documentation file management |
+| `DocsService` | class | `services/docs.py:422` | Documentation file management |
 | `DocsFiles` | class | docs.py:193 | Mixin of `DocsService` (5 methods): The docs tree on disk: reading, writing and deleting a file off the event loop, listing a team's docs, and inferring a doc's type from its path. |
-| `DocsRecords` | class | docs.py:275 | Mixin of `DocsService` (4 methods): Where a doc is recorded besides its file: the RAG search for a similar doc, the task's documents list, and the RAG index. |
-| `DocsService.write_doc` | method | `services/docs.py:423` | Write/update a doc with RAG dedup + repo commit |
-| `DocsService.read_doc` | method | `services/docs.py:700` | Read a doc (role-gated, path-contained) |
-| `DocsService.list_docs` | method | `services/docs.py:736` | List docs (by task or by team filesystem scan) |
-| `DocsService.delete_doc` | method | `services/docs.py:775` | Delete a doc (role-gated, path-contained) |
-| `DocsService._commit_doc_to_repo` | method | `services/docs.py:523` | Best-effort commit the doc onto the task branch via `GitService` |
-| `DocsService._find_similar_doc` | method | `services/docs.py:279` | RAG content-similarity dedup (≥0.75, same team) |
+| `DocsRecords` | class | docs.py:279 | Mixin of `DocsService` (4 methods): Where a doc is recorded besides its file: the RAG search for a similar doc, the task's documents list, and the RAG index. |
+| `DocsService.write_doc` | method | `services/docs.py:427` | Write/update a doc with RAG dedup + repo commit |
+| `DocsService.read_doc` | method | `services/docs.py:704` | Read a doc (role-gated, path-contained) |
+| `DocsService.list_docs` | method | `services/docs.py:740` | List docs (by task or by team filesystem scan) |
+| `DocsService.delete_doc` | method | `services/docs.py:779` | Delete a doc (role-gated, path-contained) |
+| `DocsService._commit_doc_to_repo` | method | `services/docs.py:527` | Best-effort commit the doc onto the task branch via `GitService` |
+| `DocsService._find_similar_doc` | method | `services/docs.py:283` | RAG content-similarity dedup (≥0.75, same team) |
 | `_resolve_contained_path` | fn | `services/docs.py:162` | Containment-prove `base / rel` (anti path-traversal, absolute-escape) |
 | `_coerce_doc_ref` | fn | `services/docs.py:146` | Defensive DocRef coercion from str/dict/DocRef |
 | `WriteDocInput` | dataclass | `services/docs.py:40` | Route DTO for write_doc |

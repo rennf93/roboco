@@ -76,7 +76,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `roboco_get_proactive_context` | tool | `optimal_server.py:1104` | Stored-then-fresh proactive context for a task. |
 | `normalize_index_types` | func | `optimal_server.py:60` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
 | `create_docs_mcp_server` | factory | `docs_server.py:166` | Build `roboco-docs-{agent_id}` server (write/read/list/delete). |
-| `DocsService.write_doc` | method | `services/docs.py:423` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
+| `DocsService.write_doc` | method | `services/docs.py:427` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
 | `_refused_doc_types` | func | `services/docs.py:90` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |
 | `WriteDocInput` | pydantic | `schemas/__init__.py:12` | Docs write input (task_id, filename, doc_type, title, content). |
 | `roboco_git_status` / `roboco_git_log` / `roboco_git_diff` / `roboco_git_branch_list` | tools | `git_readonly.py:45–119` | Read-only git views via `/api/git/*`. |

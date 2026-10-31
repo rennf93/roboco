@@ -206,6 +206,10 @@ class DocsFiles(_Base):
             )
         return "readme"
 
+    # =========================================================================
+    # INTERNAL METHODS
+    # =========================================================================
+
     async def _write_file(self, path: Path, content: str) -> None:
         """Write file using thread pool."""
 
@@ -812,10 +816,6 @@ class DocsService(BaseService, DocsFiles, DocsRecords):
 
         self.log.info("Documentation deleted", agent_id=agent_id, path=path)
         return True
-
-    # =========================================================================
-    # INTERNAL METHODS
-    # =========================================================================
 
 
 # =============================================================================
