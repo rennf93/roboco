@@ -147,7 +147,8 @@ else:
 # Module-level HTTP helper — decoupled from the service so tests can patch it.
 # ---------------------------------------------------------------------------
 
-_OLLAMA_TAGS_TIMEOUT = 5.0  # seconds
+# Seconds
+_OLLAMA_TAGS_TIMEOUT = 5.0
 _log = structlog.get_logger(__name__)
 
 # Hummin (GLM) role tiers seeded by apply_mode('hummin') on top of the GLOBAL
@@ -512,7 +513,8 @@ class ModelRouteResolution(_Base):
         """
         base_url = resolved.provider.base_url or ""
         if not base_url:
-            return None  # unconfigured → fall through
+            # Unconfigured → fall through
+            return None
         _, error = await probe_ollama_tags(base_url)
         if error is not None:
             self.log.warning(
