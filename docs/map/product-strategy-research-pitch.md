@@ -9,6 +9,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | Path | Role | approx LOC |
 |------|------|------------|
 | `roboco/services/project.py` | CRUD + git-token encryption + cell access control for Projects (git repos) | 790 |
+| `roboco/services/_project_service_types.py` | `ProjectServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ProjectService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_project_service_mixins.py` fails on a stray stub or a member defined twice | 42 |
 | `roboco/services/product.py` | Product CRUD + per-cell `project_for` routing resolver + idempotent cell-map replace | 247 |
 | `roboco/services/kanban.py` | Role-specific kanban board views (dev/qa/documenter/pm/main-pm/board) from task data | 587 |
 | `roboco/services/company_goals.py` | CRUD for the singleton company charter (north star + objectives + constraints + policy + brand_voice + company_name); `resolve_product_name` is the shared product-name fallback chain `XEngine`/`VideoEngine` both call | 110 |
@@ -58,15 +59,19 @@ The product / strategy / research / pitch slice covers the "company layer" above
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `ProjectService` | class | project.py:36 | Project CRUD, slug lookup, cell listing, workspace path, git-token encrypt/decrypt, agent access control |
-| `ProjectService._assert_git_url_allowed` | method | project.py:53 | Reject `git_url` matching a protected/denylisted repo |
-| `ProjectService.create` | method | project.py:81 | Register project, encrypt token, best-effort conventions scaffold |
-| `ProjectService._maybe_scaffold_conventions` | method | project.py:163 | Lazy-imports conventions service; scaffold hiccup is non-fatal |
-| `ProjectService.update` | method | project.py:234 | Selective field apply; empty-string `git_token` clears, None leaves unchanged |
-| `ProjectService.delete` | method | project.py:311 | Abandons ACTIVE work sessions first; optional on-disk workspace cleanup; DB RESTRICT on tasks |
-| `ProjectService.get_decrypted_token` / `get_decrypted_token_by_slug` | method | project.py:612 / 638 | On-demand Fernet decrypt of git token (never cached) |
-| `ProjectService.check_agent_access` | method | project.py:745 | Cell membership + optional `allowed_agents` allowlist |
-| `get_project_service` | factory | project.py:788 | Session-bound constructor |
+| `ProjectService` | class | project.py:426 | Project CRUD, slug lookup, cell listing, workspace path, git-token encrypt/decrypt, agent access control |
+| `ProjectListings` | class | project.py:41 | Mixin of `ProjectService` (3 methods): Listing projects: all of them, by cell, and their task counts. |
+| `ProjectWorkspaceState` | class | project.py:144 | Mixin of `ProjectService` (2 methods): A project's workspace path and its sync state. |
+| `ProjectTokens` | class | project.py:211 | Mixin of `ProjectService` (3 methods): A project's git token: resolving it (a stored PAT or a GitHub App installation token) and decrypting it by id or slug. |
+| `ProjectAccess` | class | project.py:303 | Mixin of `ProjectService` (3 methods): Which agents may work on a project: adding, removing and checking one. |
+| `ProjectService._assert_git_url_allowed` | method | project.py:445 | Reject `git_url` matching a protected/denylisted repo |
+| `ProjectService.create` | method | project.py:473 | Register project, encrypt token, best-effort conventions scaffold |
+| `ProjectService._maybe_scaffold_conventions` | method | project.py:555 | Lazy-imports conventions service; scaffold hiccup is non-fatal |
+| `ProjectService.update` | method | project.py:626 | Selective field apply; empty-string `git_token` clears, None leaves unchanged |
+| `ProjectService.delete` | method | project.py:703 | Abandons ACTIVE work sessions first; optional on-disk workspace cleanup; DB RESTRICT on tasks |
+| `ProjectService.get_decrypted_token` / `get_decrypted_token_by_slug` | method | project.py:255 / 281 | On-demand Fernet decrypt of git token (never cached) |
+| `ProjectService.check_agent_access` | method | project.py:388 | Cell membership + optional `allowed_agents` allowlist |
+| `get_project_service` | factory | project.py:812 | Session-bound constructor |
 | `ProductService` | class | product.py:42 | Product CRUD + cell→project routing |
 | `ProductService.project_for` | method | product.py:182 | **Per-cell routing keystone** — resolve Project for (product, team); None → caller falls back to parent task's project |
 | `ProductService.distinct_project_ids` | method | product.py:198 | Distinct repos a product spans (one Main-PM integration branch each) |
@@ -507,6 +512,8 @@ product-strategy-research-pitch
 > - **Board Program registry (2026-07-24, #689/#699 + the Phase 2/3 program train).** The single largest addition to this slice since the baseline: `foundation/policy/board_programs.py` (`BoardProgram`/`PROGRAMS`/`program_due`/`project_participates`) + `services/board_programs.py` (`BoardProgramEngine`) + `api/routes/board_programs.py` generalize the roadmap/spotlight shape into one registry-driven engine (migrations `087` `board_program_cycles` LEARN ledger, `088` `projects.board_programs` scoping column), migrating `roadmap` and `x_feature` onto it byte-for-byte (Phase 1) before adding twelve new programs across all three Board roles (Phase 2/3): Pest Control/Spackle/Scales/Dogfood (`pest_control_engine.py`/`spackle_engine.py`/`scales_engine.py`/`dogfood_engine.py`, Product Owner), Periscope/Megaphone/Mirror/Barfly/War Room (`periscope_engine.py`/`megaphone_engine.py`/`mirror_engine.py`/`barfly_engine.py`/`war_room_engine.py`, Head of Marketing), and Coroner/Sentinel/Librarian (`coroner_engine.py`/`sentinel_engine.py`/`librarian_engine.py`, Auditor). Arming has no master flag — `program_armed` reads a per-program settings-store row exclusively, except `roadmap`/`x_feature`'s legacy env-flag fallback. `StrategyEngine.run_cycle`'s `idle` observation now also triggers a Printer cycle via `BoardProgramEngine.open_program_cycle("roadmap")` (the `stranded_blocked`→Coroner half of the same design shipped later, task f48ae410 — see Gotchas). Fourteen new `propose_*` do-verbs land in `content_actions.py` + `api/schemas/v1/do.py`; the Playwright MCP grant is task-scoped to Dogfood only, not a role-wide product_owner grant.
 
 > **2026-10-31** (Planning trail #51, wave 3): `XEngine` splits in place into 4 mixins in `x_engine.py`, every method body byte-identical: `XMentions` (11), `XFeatureSpotlight` (14), `XPostMaterialization` (8), `XRedrafts` (13). `XEngine` keeps its core (`__init__`, `_client`, `run_cycle`, the project and voice-guide lookups, the brand-voice nudge), composes them, and is no longer a god class. Rows naming `XEngine.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `XEngineSelf` (`roboco/services/_x_engine_types.py`).
+
+> **2026-10-31** (Planning trail #51, wave 3): `ProjectService` splits in place into 4 mixins in `project.py`, every method body byte-identical: `ProjectListings` (3), `ProjectWorkspaceState` (2), `ProjectTokens` (3), `ProjectAccess` (3). `ProjectService` keeps its CRUD (create with the git-URL and forge checks and conventions scaffold, the lookups, update, delete), composes them, and is no longer a god class. Rows naming `ProjectService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `ProjectServiceSelf` (`roboco/services/_project_service_types.py`).
 
 ## Regression Risks
 
