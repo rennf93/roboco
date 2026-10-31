@@ -136,7 +136,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `request_validation_handler` | fn | api/middleware.py:493 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
 | `_scrub_secrets` | fn | api/middleware.py:475 | Deep-redact known secret fields from logged 422 bodies. |
 | `StrList` | type | schemas/v1/flow.py:21 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
-| `Choreographer` | svc | services/gateway/choreographer/__init__.py:30 | Composes service intents behind every flow verb: the per-role mixins (board, doc, QA, PR reviewer, PR gate) over the legacy class in `choreographer/_impl.py`. |
+| `Choreographer` | svc | services/gateway/choreographer/__init__.py:59 | Composes service intents behind every flow verb: the per-role mixins (board, doc, QA, PR reviewer, PR gate) over the legacy class in `choreographer/_impl.py`. |
 | `ContentActions` | svc | services/gateway/content_actions.py:4145 | Composes do-verb content actions (commit/note/dm/...). |
 | `router` (do) | router | v1/do.py:67 | `/api/v1/do` router, `require_any_authenticated_agent` dep. |
 | `router` (flow_dev) | router | v1/flow_dev.py:29 | `/api/v1/flow/developer` router, `require_dev` dep. |

@@ -1,9 +1,10 @@
 """Gateway choreographer package.
 
-The single-file 2,540-line ``choreographer.py`` is being split into
-per-role mixins composed onto a single ``Choreographer`` class.
-``board.py`` is the first extraction (Board + Auditor verbs); the rest
-still live in ``_impl.py`` and will move incrementally.
+The single-file ``choreographer.py`` is split into mixins composed onto a
+single ``Choreographer`` class, none over the conventions check's 15-method
+limit: the per-role verbs (``board.py``, ``doc.py``, ``qa.py``,
+``pr_review.py``, ``pr_gate*.py``, ``dev.py``, ``pm.py``), and in ``_impl.py``
+``BaseChoreographer`` with the mixins every role shares.
 
 The public surface (``Choreographer``, ``ChoreographerDeps``,
 ``DelegateInputs``) is re-exported here so every caller's import path
@@ -14,30 +15,86 @@ continues to resolve.
 from __future__ import annotations
 
 from roboco.services.gateway.choreographer._impl import (
-    Choreographer as _LegacyChoreographer,
-)
-from roboco.services.gateway.choreographer._impl import (
+    BaseChoreographer,
+    BranchSyncMixin,
+    BriefingMixin,
     ChoreographerDeps,
+    ClaimGuardsMixin,
+    ClaimPlanMixin,
     DelegateInputs,
+    EscalationMixin,
+    IdleGuardsMixin,
+    IdleMixin,
+    LeafClosureMixin,
+    OwnershipMixin,
+    QualityGuardsMixin,
+    RejectionMixin,
+    ResolvedFindingsMixin,
+    TracingGatesMixin,
 )
 from roboco.services.gateway.choreographer.board import BoardMixin
+from roboco.services.gateway.choreographer.dev import (
+    DevClaimMixin,
+    DoneChecksMixin,
+    GiveMeWorkMixin,
+    IAmDoneMixin,
+    OpenPRMixin,
+)
 from roboco.services.gateway.choreographer.doc import DocMixin
+from roboco.services.gateway.choreographer.pm import (
+    CompleteMixin,
+    DelegateMixin,
+    PMReviewMixin,
+    PMWorkMixin,
+    SiblingDedupMixin,
+    SubmitRootMixin,
+    SubmitUpMixin,
+    SubtaskCreateMixin,
+)
 from roboco.services.gateway.choreographer.pr_gate import PRGateMixin
 from roboco.services.gateway.choreographer.pr_review import PRReviewerMixin
 from roboco.services.gateway.choreographer.qa import QAMixin
 
 
 class Choreographer(
-    BoardMixin, DocMixin, QAMixin, PRReviewerMixin, PRGateMixin, _LegacyChoreographer
+    BoardMixin,
+    DocMixin,
+    QAMixin,
+    PRReviewerMixin,
+    PRGateMixin,
+    DevClaimMixin,
+    DoneChecksMixin,
+    GiveMeWorkMixin,
+    IAmDoneMixin,
+    OpenPRMixin,
+    CompleteMixin,
+    DelegateMixin,
+    PMReviewMixin,
+    PMWorkMixin,
+    SiblingDedupMixin,
+    SubmitRootMixin,
+    SubmitUpMixin,
+    SubtaskCreateMixin,
+    BranchSyncMixin,
+    BriefingMixin,
+    ClaimGuardsMixin,
+    ClaimPlanMixin,
+    EscalationMixin,
+    IdleGuardsMixin,
+    IdleMixin,
+    LeafClosureMixin,
+    OwnershipMixin,
+    QualityGuardsMixin,
+    RejectionMixin,
+    ResolvedFindingsMixin,
+    TracingGatesMixin,
+    BaseChoreographer,
 ):
     """Composed choreographer.
 
-    MRO walks left-to-right: extracted mixins resolve first, then the
-    legacy class supplies everything not yet split out (helpers, deps,
-    __init__, all remaining role verbs). Future per-role splits add
-    mixins to the left of _LegacyChoreographer in this declaration;
-    once everything has moved out, _LegacyChoreographer becomes
-    ``BaseChoreographer`` (deps + helpers only).
+    MRO walks left-to-right: the mixins resolve first, then
+    ``BaseChoreographer`` supplies the deps, ``__init__`` and the service
+    properties. No two classes define the same method.
     """
 
 
