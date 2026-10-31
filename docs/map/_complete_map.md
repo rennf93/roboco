@@ -907,12 +907,12 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.yml | Byte-identical copy of docker-compose.yaml (kept for the canonical name compose picks up by default) | 1466 |
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 973 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
-| pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 708 |
+| pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 714 |
 | roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3312 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 64 |
-| roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 256 |
+| roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 261 |
 | roboco/exceptions.py | Exception hierarchy (RobocoError base + NotFound/Validation/InvalidState/Permission/Auth/Task/TaskLifecycle/Agent/Notification/Service/Database/Git/MergeConflict/GitCommand/GitTimeout); includes TaskLifecycle transition hints and git-secret scrubbing | 432 |
 | docker/npm/agent-base/package.json | Exact version of the npm CLI agent-base installs globally (`@anthropic-ai/claude-code`); the Dockerfile reads it and runs `npm install -g <name>@<version>`, Dependabot bumps it weekly (`.github/dependabot.yml`). Nothing installs from this directory | 9 |
 | docker/npm/orchestrator/package.json | Exact version of the npm CLI the orchestrator image installs globally (`pnpm`); read by orchestrator.Dockerfile, bumped by Dependabot like the agent-base pins | 9 |
@@ -1016,10 +1016,10 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | _redact_secrets | function | roboco/logging.py:59 | Regex-replace GitHub PAT / bearer / embedded-URL-credential shapes with <REDACTED> |
 | redact_event_dict | function | roboco/logging.py:69 | structlog processor running last; redacts every value in the event dict |
 | setup_logging | function | roboco/logging.py:85 | Configure structlog (dev ConsoleRenderer / prod JSONRenderer), stdlib root logger, rotating file handler under /data/logs, quiet noisy libs |
-| _resolve_log_dir | function | roboco/logging.py:174 | Resolve log dir: ROBOCO_LOG_DIR > /data/logs > ${ROBOCO_DATA_DIR:-./data}/logs > None |
-| get_logger | function | roboco/logging.py:197 | Return a configured structlog BoundLogger |
-| LogContext | class | roboco/logging.py:215 | Context manager binding/unbinding contextvars for scoped log context |
-| log_operation | function | roboco/logging.py:236 | Build a structured-log context dict for an operation |
+| _resolve_log_dir | function | roboco/logging.py:179 | Resolve log dir: ROBOCO_LOG_DIR > /data/logs > ${ROBOCO_DATA_DIR:-./data}/logs > None |
+| get_logger | function | roboco/logging.py:202 | Return a configured structlog BoundLogger |
+| LogContext | class | roboco/logging.py:220 | Context manager binding/unbinding contextvars for scoped log context |
+| log_operation | function | roboco/logging.py:241 | Build a structured-log context dict for an operation |
 | RobocoError | class | roboco/exceptions.py:13 | Base exception with message/code/details and to_dict() for API responses |
 | NotFoundError | class | roboco/exceptions.py:50 | Resource not found (code NOT_FOUND) |
 | ValidationError | class | roboco/exceptions.py:77 | Input validation failure (code VALIDATION_ERROR) |
@@ -5621,12 +5621,12 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `Base` | class | db/base.py:40 | DeclarativeBase + MetaData naming convention. |
-| `get_engine` | fn | db/base.py:138 | Lazy singleton async engine (pool_pre_ping). |
-| `get_db` | fn | db/base.py:207 | FastAPI async session dependency. |
+| `Base` | class | db/base.py:43 | DeclarativeBase + MetaData naming convention. |
+| `get_engine` | fn | db/base.py:157 | Lazy singleton async engine (pool_pre_ping). |
+| `get_db` | fn | db/base.py:226 | FastAPI async session dependency. |
 | `get_db_context` | fn | db/base.py | Out-of-request async session context. |
-| `init_db` | fn | db/base.py:415 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
-| `run_migrations` | fn | db/base.py:354 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
+| `init_db` | fn | db/base.py:434 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
+| `run_migrations` | fn | db/base.py:373 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
 | `bootstrap_database` | fn | db/seed.py:82 | `init_db` + seed default agents. |
 | `TaskTable` | class | tables.py:167 | Core task entity (largest table, drives lifecycle). |
 | `WorkSessionTable` | class | tables.py:975 | Per-claim session; single-active enforced by 047 partial-unique index. |
@@ -5990,6 +5990,8 @@ Migration chain 001..110
 > Delta 2026-07-18/19: `075_company_goals_company_name` adds `company_goals.company_name` (X/video product-branding fallback) and `076_project_git_provider` adds `projects.git_provider` (forge-providers Phase 0 — GitHub/Gitea/GitLab). Chain head is now 076 (062-072 remain the pre-existing table gap noted above — this delta only closes 073-076).
 >
 > Delta 2026-07-21/23 (10 migrations, 077-086): `077_github_app` (GitHub App credentials + `projects.github_installation_id`), `078_project_codegen_command` (`projects.codegen_command`, auto-regenerate-before-push), `079_notification_backoff` (re-escalation columns replacing the every-tick-forever sweep), `080_task_project_budgets` (`tasks.budget_usd` + `projects.monthly_budget_usd`), `081_doctrine_version` (`agent_spawn_sessions.doctrine_version`, the golden-task eval cohort stamp), `082_routing_presets` (named full-snapshot routing presets), `083_seed_openai_provider` + `084_modelprovider_gemini` + `085_seed_gemini_provider` + `086_enable_gemini_provider` (Codex + Gemini CLI provider rows — see `docs/map/runtime-providers.md`). Chain head is now 086.
+
+> Delta 2026-10-31 (trail #32): `roboco/db/base.py` disposes an engine on the loop that owns its pooled connections. `close_db` hands an engine bound to another thread's running loop to that loop (`_dispose_on_its_loop`, `asyncio.run_coroutine_threadsafe`) instead of awaiting `dispose()` on the wrong loop, and `_rebind_holder_to_current_loop` does the same with the engine it drops, which before was dropped un-disposed. Both leaked asyncpg connections that stayed open until garbage collection: 102 unclosed-connection `ResourceWarning`s in one e2e smoke run. The e2e conftest's `_reset_lazy_db_holder`, which dropped that engine between tests, is gone: the rebind and the root conftest's `close_db` cover it. `roboco/logging.py`'s `setup_logging` closes the file handlers it replaces. With both, `pyproject.toml`'s `filterwarnings` no longer exempts `ResourceWarning`.
 
 ## Regression Risks
 
@@ -10303,7 +10305,7 @@ The pytest test suite for RoboCo: 571 test_*.py files across tests/foundation, t
 | tests/fixtures/2026-05-08-smoke-trace.json | Synthesized 11-bug smoke trace fixture consumed by test_lifecycle_smoke_replay; pins (verb,role,task setup,expected envelope) per bug with a replay_kind taxonomy | 194 |
 | tests/integration/test_bash_guard_message.sh | Standalone bash smoke: asserts docker/scripts/bash-guard-hook.sh denial blocks are <=3 lines (token-budget guard) | 43 |
 | tests/integration/test_stop_hook_verb_names.sh | Standalone bash smoke: asserts stop-hook.sh + bash-guard-hook.sh list only current gateway verbs (no pre-gateway legacy verb names) | 36 |
-| pyproject.toml | [tool.pytest.ini_options] (asyncio_mode=auto, testpaths, cov addopts) + [tool.coverage.run] (sysmon core, omit list) — the coverage-architecture source of truth | 708 |
+| pyproject.toml | [tool.pytest.ini_options] (asyncio_mode=auto, testpaths, cov addopts) + [tool.coverage.run] (sysmon core, omit list) — the coverage-architecture source of truth | 714 |
 | Makefile | quality/quality-fast/panel-gate/test/test-3.10..3.14 targets wiring pytest+ruff+mypy+xenon+vulture into the merge gate | 628 |
 | tests/foundation/ | 21 structural/parity tests: agents_config parity, lifecycle consumer/generator parity, role-set parity, seed-orchestrator parity, tracing-verb parity, route-guard consolidation, smoke replay, lifecycle spec, pr_review_gate, identity, communications, journaling, cell_teams, agent_loop, validate, task_completeness |  |
 | tests/integration/ | 100 real-DB + FastAPI integration tests: full lifecycle real DB (_StubGit), task_service_*, *_routes, migrations 013-049, sequencing, conventions e2e, metrics, release, ci_watch, dep_update, prompter_live, secretary |  |

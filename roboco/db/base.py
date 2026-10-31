@@ -7,7 +7,7 @@ import weakref
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import structlog
 from alembic import command
@@ -24,6 +24,9 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from roboco.config import settings
+
+if TYPE_CHECKING:
+    import concurrent.futures
 
 logger = structlog.get_logger()
 
@@ -113,9 +116,11 @@ def _rebind_holder_to_current_loop(
     no loop stamp — claim it for the current loop (covers engines injected
     directly by tests and sync-created engines); stamp matches the current
     loop — keep; stamp names another loop, alive or dead — drop both caches
-    so this loop builds its own. The old engine is dropped un-disposed by
-    design: its pool cannot be awaited away from a foreign/dead loop, and
-    any in-flight session still holds its own reference to it.
+    so this loop builds its own. The old pool cannot be awaited away from its
+    own loop, so its disposal is handed to that loop while it still runs (see
+    ``_dispose_on_its_loop``); a dead loop's connections are past closing.
+    Any in-flight session still holds its own reference to the engine, and
+    disposal leaves checked-out connections to close on checkin.
     """
     if holder.engine is None:
         return
@@ -130,9 +135,23 @@ def _rebind_holder_to_current_loop(
     logger.debug(
         "Discarding DB engine bound to a different event loop", pool=holder.__name__
     )
+    _dispose_on_its_loop(holder.engine, holder.loop())
     holder.engine = None
     holder.session_factory = None
     holder.loop = None
+
+
+def _dispose_on_its_loop(
+    engine: AsyncEngine, loop: asyncio.AbstractEventLoop | None
+) -> "concurrent.futures.Future[None] | None":
+    """Hand ``engine``'s disposal to ``loop``, the loop its pooled connections
+    belong to, when that loop is still running (another thread's: a second
+    uvicorn server, a test's). Returns the disposal's future, or ``None``
+    when the loop is gone or stopped and nothing can close them.
+    """
+    if loop is None or loop.is_closed() or not loop.is_running():
+        return None
+    return asyncio.run_coroutine_threadsafe(engine.dispose(), loop)
 
 
 def get_engine(pool: _DbPool = "primary") -> AsyncEngine:
@@ -491,12 +510,24 @@ async def drop_db() -> None:
 
 
 async def close_db() -> None:
-    """Close the database connection(s): both the primary and background pools."""
-    if _DbHolder.engine is not None:
-        await _DbHolder.engine.dispose()
-        _DbHolder.engine = None
-        _DbHolder.session_factory = None
-    if _BackgroundDbHolder.engine is not None:
-        await _BackgroundDbHolder.engine.dispose()
-        _BackgroundDbHolder.engine = None
-        _BackgroundDbHolder.session_factory = None
+    """Close the database connection(s): both the primary and background pools.
+
+    An engine whose pooled connections belong to a loop still running in
+    another thread (a test's uvicorn server) is disposed on that loop; any
+    other is disposed here.
+    """
+    for holder in (_DbHolder, _BackgroundDbHolder):
+        engine = holder.engine
+        if engine is None:
+            continue
+        loop = holder.loop() if holder.loop is not None else None
+        holder.engine = None
+        holder.session_factory = None
+        holder.loop = None
+        disposal = (
+            _dispose_on_its_loop(engine, loop) if loop is not _running_loop() else None
+        )
+        if disposal is not None:
+            await asyncio.wrap_future(disposal)
+        else:
+            await engine.dispose()

@@ -501,13 +501,12 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
 ]
-# A warning fails the run. Each one the suite printed was a real defect (an
-# un-awaited coroutine from a mis-modelled session, a deprecated API, an FK
-# cycle SQLAlchemy could not order, a too-short HMAC key): fix the cause.
-# ResourceWarning stays hidden, as Python hides it by default, until the
-# unclosed log files and DB connections it reports are fixed; that change
-# also removes this exception.
-filterwarnings = ["error", "ignore::ResourceWarning"]
+# A warning fails the run, ResourceWarning included (Python hides that one by
+# default). Each one the suite printed was a real defect (an un-awaited
+# coroutine from a mis-modelled session, a deprecated API, an FK cycle
+# SQLAlchemy could not order, a too-short HMAC key, an unclosed log file or DB
+# connection): fix the cause.
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 # Coverage core. Python 3.12+ supports sys.monitoring; the legacy `pytrace`

@@ -133,7 +133,12 @@ def setup_logging() -> None:
     # we have a persistent record that survives container restarts and
     # doesn't depend on docker's log driver rotation policy.
     root = logging.getLogger()
-    root.handlers.clear()
+    # Close what a previous call attached instead of only dropping it: each
+    # dropped rotating file handler kept its log file open.
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
     root.setLevel(log_level)
 
     stdout_handler = logging.StreamHandler(sys.stdout)

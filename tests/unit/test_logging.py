@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
 import structlog
 from roboco.logging import (
     LogContext,
@@ -21,7 +22,7 @@ from roboco.logging import (
 )
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Iterator
 
 _OWNER_ONLY_DIR = 0o700
 _WORLD_TRAVERSABLE_DIR = 0o755
@@ -96,6 +97,42 @@ def test_redact_event_dict_preserves_non_string_values() -> None:
 # ---------------------------------------------------------------------------
 # setup_logging — covers both branches (development and production).
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_handlers() -> Iterator[None]:
+    """setup_logging replaces the root logger's handlers: put the test
+    session's back afterwards and close the file handlers a test attached,
+    so no log file under a test's tmp_path stays open into later tests."""
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    yield
+    for handler in root.handlers[:]:
+        if handler not in handlers and isinstance(handler, logging.FileHandler):
+            handler.close()
+    root.handlers[:] = handlers
+    root.setLevel(level)
+
+
+def test_setup_logging_closes_the_file_handler_it_replaces(tmp_path: Path) -> None:
+    """A second setup_logging closes the first call's log file instead of
+    dropping the open handle."""
+    with (
+        patch("roboco.logging.settings") as mock_settings,
+        patch("roboco.logging._resolve_log_dir", return_value=tmp_path),
+    ):
+        mock_settings.environment = "production"
+        mock_settings.app_version = "1.0.0"
+        mock_settings.debug = False
+        setup_logging()
+        (first,) = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.FileHandler)
+        ]
+        setup_logging()
+    assert first.stream is None
+    assert first not in logging.getLogger().handlers
 
 
 def test_setup_logging_development_branch(tmp_path: Path) -> None:

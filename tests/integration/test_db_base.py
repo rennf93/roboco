@@ -9,7 +9,9 @@ and drop/close.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+import weakref
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -629,6 +631,70 @@ async def test_close_db_disposes_and_clears_singletons() -> None:
     )
     assert engine_after is None
     assert factory_after is None
+
+
+class _LoopRecordingEngine:
+    """An engine stand-in whose dispose() records the loop it ran on."""
+
+    def __init__(self) -> None:
+        self.disposed_on: list[asyncio.AbstractEventLoop] = []
+
+    async def dispose(self) -> None:
+        self.disposed_on.append(asyncio.get_running_loop())
+
+
+class _LoopThread:
+    """A second event loop running in its own thread, as the e2e harness's
+    uvicorn server runs."""
+
+    def __enter__(self) -> asyncio.AbstractEventLoop:
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        return self.loop
+
+    def __exit__(self, *_exc: object) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(5)
+        self.loop.close()
+
+
+@pytest.mark.asyncio
+async def test_close_db_disposes_an_engine_on_its_own_running_loop() -> None:
+    """An engine bound to another thread's running loop is disposed there:
+    its pooled connections can't be closed from this loop, and dropping it
+    leaves them open."""
+    engine = _LoopRecordingEngine()
+    with _LoopThread() as other:
+        _DbHolder.engine = cast("AsyncEngine", engine)
+        _DbHolder.session_factory = MagicMock()
+        _DbHolder.loop = weakref.ref(other)
+        await close_db()
+    assert engine.disposed_on == [other]
+    engine_after = cast("AsyncEngine | None", _DbHolder.engine)
+    loop_after = cast("weakref.ref[asyncio.AbstractEventLoop] | None", _DbHolder.loop)
+    assert engine_after is None
+    assert loop_after is None
+
+
+@pytest.mark.asyncio
+async def test_rebind_hands_the_dropped_engine_to_its_own_loop() -> None:
+    """When another loop takes over the holder, the engine it drops is
+    disposed on the loop that owns its connections."""
+    engine = _LoopRecordingEngine()
+    replacement = MagicMock()
+    replacement.dispose = AsyncMock()
+    with _LoopThread() as other:
+        _DbHolder.engine = cast("AsyncEngine", engine)
+        _DbHolder.session_factory = MagicMock()
+        _DbHolder.loop = weakref.ref(other)
+        with patch("roboco.db.base.create_async_engine", return_value=replacement):
+            assert get_engine() is replacement
+        deadline = time.monotonic() + 5
+        while not engine.disposed_on and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+    assert engine.disposed_on == [other]
+    await close_db()
 
 
 @pytest.mark.asyncio
