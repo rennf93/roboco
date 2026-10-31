@@ -210,6 +210,10 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # generated extension, so E501 is ignored for exactly that file.
 "roboco/llm/providers/hummin_live_config.py" = ["E501"]
 "roboco/services/*.py" = ["PLC0415"]
+# The Docker gate's body recorder puts the host paths it records into the
+# environment first: the spawn modules read them when they are imported, so
+# every roboco import in it happens inside a function, after that setup.
+"scripts/record_docker_gate_bodies.py" = ["PLC0415"]
 # B010: the behavioral usage-rule redis-fail-open patch (see the module
 # docstring block) must use setattr, not a direct method assignment - mypy's
 # method-assign check rejects `BehavioralProcessor.process_usage_rules = ...`

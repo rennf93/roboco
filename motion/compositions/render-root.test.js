@@ -17,7 +17,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CUT_HEIGHTS = { "vertical.html": "1920", "square.html": "1080" };
 const COMPOSITION_ROOT_TAG = /<[a-z][a-z0-9-]*\b[^>]*\bdata-composition-id=[^>]*>/gi;
 
-const attr = (tag, name) => new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1];
+// An attribute name follows whitespace: a bare \b would also match inside
+// another name, reading data-hf-id="..." (which Studio stamps) as id="...".
+const attr = (tag, name) => new RegExp(`\\s${name}="([^"]*)"`).exec(tag)?.[1];
 
 const cuts = readdirSync(here, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())

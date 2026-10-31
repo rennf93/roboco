@@ -1,0 +1,125 @@
+{
+  "body": {
+    "AttachStderr": true,
+    "AttachStdin": false,
+    "AttachStdout": true,
+    "Cmd": [
+      "-c",
+      "[ \"$(stat -c %d:%i -- \"$ROBOCO_WORKSPACE_MOUNT\")\" = \"$ROBOCO_WORKSPACE_MOUNT_ID\" ] || { echo \"the mounted workspace is not the expected directory\" >&2; exit 125; }; [ -z \"$ROBOCO_EXTRA_MOUNT\" ] || [ \"$(stat -c %d:%i -- \"$ROBOCO_EXTRA_MOUNT\")\" = \"$ROBOCO_EXTRA_MOUNT_ID\" ] || { echo \"the read-only mount is not the expected directory\" >&2; exit 125; }; umask 002 && mkdir -p \"$HOME\" && exec timeout -k 10 60 env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT -u ROBOCO_WORKSPACE_GIT_DROP \"$@\"",
+      "sh",
+      "make",
+      "quality"
+    ],
+    "Domainname": "",
+    "Entrypoint": [
+      "/bin/sh"
+    ],
+    "Env": [
+      "HOME=<value>",
+      "ROBOCO_WORKSPACE_MOUNT=<value>",
+      "ROBOCO_WORKSPACE_MOUNT_ID=<value>",
+      "UV_CACHE_DIR=<value>"
+    ],
+    "Healthcheck": {
+      "Test": [
+        "NONE"
+      ]
+    },
+    "HostConfig": {
+      "AutoRemove": true,
+      "Binds": [
+        "/host/data/workspaces/proj/backend/be-dev-1:/host/data/workspaces/proj/backend/be-dev-1"
+      ],
+      "BlkioDeviceReadBps": [],
+      "BlkioDeviceReadIOps": [],
+      "BlkioDeviceWriteBps": [],
+      "BlkioDeviceWriteIOps": [],
+      "BlkioWeight": 0,
+      "BlkioWeightDevice": [],
+      "CapAdd": null,
+      "CapDrop": [
+        "ALL"
+      ],
+      "Cgroup": "",
+      "CgroupParent": "",
+      "CgroupnsMode": "",
+      "ConsoleSize": [
+        0,
+        0
+      ],
+      "ContainerIDFile": "",
+      "CpuCount": 0,
+      "CpuPercent": 0,
+      "CpuPeriod": 0,
+      "CpuQuota": 0,
+      "CpuRealtimePeriod": 0,
+      "CpuRealtimeRuntime": 0,
+      "CpuShares": 0,
+      "CpusetCpus": "",
+      "CpusetMems": "",
+      "DeviceCgroupRules": null,
+      "DeviceRequests": null,
+      "Devices": [],
+      "Dns": null,
+      "DnsOptions": [],
+      "DnsSearch": [],
+      "ExtraHosts": null,
+      "GroupAdd": null,
+      "IOMaximumBandwidth": 0,
+      "IOMaximumIOps": 0,
+      "IpcMode": "",
+      "Isolation": "",
+      "Links": null,
+      "LogConfig": {
+        "Config": {},
+        "Type": ""
+      },
+      "MaskedPaths": null,
+      "Memory": 4294967296,
+      "MemoryReservation": 0,
+      "MemorySwap": 0,
+      "MemorySwappiness": -1,
+      "NanoCpus": 2000000000,
+      "NetworkMode": "bridge",
+      "OomKillDisable": false,
+      "OomScoreAdj": 0,
+      "PidMode": "",
+      "PidsLimit": 4096,
+      "PortBindings": {},
+      "Privileged": false,
+      "PublishAllPorts": false,
+      "ReadonlyPaths": null,
+      "ReadonlyRootfs": false,
+      "RestartPolicy": {
+        "MaximumRetryCount": 0,
+        "Name": "no"
+      },
+      "SecurityOpt": [
+        "no-new-privileges"
+      ],
+      "ShmSize": 0,
+      "UTSMode": "",
+      "Ulimits": [],
+      "UsernsMode": "",
+      "VolumeDriver": "",
+      "VolumesFrom": null
+    },
+    "Hostname": "",
+    "Image": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "Labels": {
+      "roboco.workspace-container": "1"
+    },
+    "NetworkingConfig": {
+      "EndpointsConfig": {}
+    },
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Tty": false,
+    "User": "1000:1000",
+    "Volumes": {},
+    "WorkingDir": "/host/data/workspaces/proj/backend/be-dev-1"
+  },
+  "method": "POST",
+  "source": "workspace-container:online",
+  "target": "/v1.51/containers/create?name=roboco-wsx-000000000000"
+}

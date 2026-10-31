@@ -18,7 +18,8 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `roboco/services/content_notes.py` | `_MIRROR_COLUMN["pm_review"] = "pm_notes"` | (1-line addition within a shared file) |
 | `roboco/services/gateway/choreographer/findings.py` | Shared producer helpers: shim, count guard, criterion check, ledger insert/render, verify-stamp | 350 |
 | `roboco/services/gateway/choreographer/qa.py` | `fail_review` — QA-origin producer | (slice within a shared file) |
-| `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer; `pr_pass` — verify-stamp; `_run_second_review_pass` — advisory second_review-origin producer (no verify-stamp) | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/pr_gate_pass.py` | `_stamp_gate_findings_verified_or_rejection` — `pr_pass`'s verify-stamp; `_run_second_review_pass` — advisory second_review-origin producer (no verify-stamp) | (slice within a shared file) |
 | `roboco/services/gateway/choreographer/second_review_gate.py` | `SECOND_REVIEW_ORIGIN="second_review"`; `insert_second_review_findings` — thin wrapper over `findings_lib.insert_and_render` for this origin | 181 |
 | `roboco/services/gateway/choreographer/_impl.py` | `request_changes` — pm-origin producer; `i_am_done`/`submit_up`/`submit_root` — `resolved_findings` resolution; `complete` — verify-stamp | (slice within a shared file) |
 | `roboco/services/task.py` | `ceo_reject` — ceo-origin producer + reason validation; `ceo_approve` — best-effort verify-stamp; `_audit_events_for` — `task.request_changes`/`task.ceo_reject`; `qa_fail`/`request_changes` dev_notes-append removal | (slice within an 8.7k-line file) |
@@ -59,7 +60,7 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `request_changes` | async verb | `roboco/services/gateway/choreographer/_impl.py` | pm-origin producer, same shape; writes `PmReviewContent` → `pm_notes`. |
 | `ceo_reject` | method | `roboco/services/task.py` | ceo-origin producer — NOT a choreographer verb (no gateway wrapper; the CEO-approval route calls `TaskService.ceo_reject` directly). Validates `reason` via `reject_trivial` (previously an uncaught Pydantic `ValidationError` → 500 on empty/trivial input) and converts it into one `severity=blocker` Finding. |
 | `_bump_coordination_ceo_reject` | method | `roboco/services/task.py` | Manually bumps `revision_count` + inserts a `task.ceo_reject` audit row for a branchless-coordination reject, since that path routes to `PENDING` via `admin_set_status` and never reaches the normal `_emit_status_transition_audit` chokepoint. |
-| `_audit_events_for` | staticmethod | `roboco/services/task.py:1609` | Gains `task.request_changes` (agent_role `cell_pm`/`main_pm`) and `task.ceo_reject` (agent_role `ceo`) branches alongside the existing `task.qa_fail`/`task.pr_fail`. |
+| `_audit_events_for` | staticmethod | `roboco/services/task.py:1611` | Gains `task.request_changes` (agent_role `cell_pm`/`main_pm`) and `task.ceo_reject` (agent_role `ceo`) branches alongside the existing `task.qa_fail`/`task.pr_fail`. |
 | `Requirement.FINDINGS_ADDRESSED` / `_check_findings_addressed` | enum + checker | `roboco/foundation/policy/tracing.py` | `VERB_REQUIREMENTS["i_am_done"/"submit_up"/"submit_root"]` gain this — every still-OPEN finding id (computed by the choreographer AFTER applying this call's `resolved_findings`) must be resolved or the call rejects. |
 | `EvidencePayload.revision_findings` / `.prior_findings` | fields | `roboco/services/gateway/evidence_builder.py` | Open findings (any consumer) vs the FULL ledger (`claim_review`/`claim_gate_review` only, for round-2+ review). Both omitted from `as_dict()` when empty. |
 | `build_task_handoff` / `_extract_qa_review` / `_extract_pm_review` | functions | `roboco/services/gateway/evidence_builder.py` | `open_findings` param renders into `handoff["revision_findings"]`; `_extract_qa_review`/`_extract_pm_review` are new siblings of `_extract_pr_review`, each surfacing `{findings_count, verdict?, summary?}` from `notes_structured`. |
@@ -116,7 +117,7 @@ review-findings slice
 │   ├── pr_fail (pr_gate.py, origin=pr_gate)
 │   ├── request_changes (_impl.py, origin=pm) -> pm_notes
 │   ├── ceo_reject (task.py, origin=ceo) -> reason validation + coordination-root bump
-│   └── _run_second_review_pass (pr_gate.py + second_review_gate.py, origin=second_review) -> advisory, no transition/bump/verdict-note; inserts pre-STATUS_ADDRESSED, no verify-stamp call site (see Gotchas)
+│   └── _run_second_review_pass (pr_gate_pass.py + second_review_gate.py, origin=second_review) -> advisory, no transition/bump/verdict-note; inserts pre-STATUS_ADDRESSED, no verify-stamp call site (see Gotchas)
 ├── Resolution
 │   ├── i_am_done / submit_up / submit_root (resolved_findings)
 │   ├── Requirement.FINDINGS_ADDRESSED (tracing.py)

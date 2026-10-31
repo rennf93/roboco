@@ -1236,7 +1236,8 @@ class Choreographer:
             return build_collision_context(
                 task=t, siblings=siblings, actual_files=actual_files
             )
-        except Exception:  # best-effort: omit on any fetch/build failure
+        except Exception:
+            # Best-effort: omit on any fetch/build failure
             return None
 
     async def _with_collision_briefing(
@@ -3127,7 +3128,7 @@ class Choreographer:
         distinguish "the local gate already decided" from "CI green, gate
         skipped" so it never double-gates.
         """
-        # ``_resolve_ci_status`` lives on ``PRGateMixin``; ``_LegacyChoreographer``
+        # ``_resolve_ci_status`` lives on ``PRGatePassMixin``; ``_LegacyChoreographer``
         # reaches it via the typed-helpers cast (same idiom as the pr_pass path).
         status = await cast("ChoreographerHelpers", self)._resolve_ci_status(
             ctx.task_id, ctx.task
@@ -3281,7 +3282,7 @@ class Choreographer:
         lacks) via ``_conventions_rejection(..., reviewer=True)``.
 
         ``preferred_parent`` is the assembled task's real parent branch (see
-        ``PRGateMixin._gate_diff_parent``) — the same cross-team-correct base
+        ``PRGateEvidenceMixin._gate_diff_parent``) — the same cross-team-correct base
         the gate's own diff evidence uses, so a misplaced-definition finding
         can't be raised against inherited base-branch content.
         """
@@ -4290,7 +4291,8 @@ class Choreographer:
                     agent_id=agent_id, task_id=task_id, content=text
                 )
                 return "wrote"
-        except Exception as exc:  # best-effort; caller's gate handles the fallout
+        except Exception as exc:
+            # Best-effort; caller's gate handles the fallout
             logger.warning(
                 "auto-record pm decision failed",
                 error=str(exc),
@@ -5729,7 +5731,8 @@ class Choreographer:
                 context_briefing=briefing,
             )
         if not getattr(t, "branch_name", None):
-            return None  # never claimed/started - trivially zero-diff
+            # Never claimed/started - trivially zero-diff
+            return None
         try:
             base_branch = await resolve_parent_branch(t, self.task)
             _behind, ahead = await self.git.is_behind_base(

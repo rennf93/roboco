@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from roboco.config import settings
 from roboco.models.sandbox import (
     SANDBOX_ENGINE_FEATURES,
     SANDBOX_ENGINES,
@@ -62,6 +63,9 @@ _JANITOR_GRACE_SECONDS = 180.0
 SANDBOX_LABEL = "roboco.sandbox=1"
 _OWNER_LABEL_KEY = "roboco.sandbox.owner"
 _AGENT_CONTAINER_PREFIX = "roboco-agent-"
+# RoboCo builds its own sandbox images (the `roboco-sandbox-pg` kitchen sink,
+# docker/sandbox-pg.Dockerfile); every other engine image is upstream.
+_ROBOCO_IMAGE_PREFIX = "roboco-"
 
 
 async def _default_docker_run(
@@ -90,6 +94,22 @@ class SandboxProvisionError(RuntimeError):
 
 def _owner_label(agent_id: str) -> str:
     return f"{_AGENT_CONTAINER_PREFIX}{agent_id}"
+
+
+def _deployed_image(image: str) -> str:
+    """``image`` under the name this deploy runs it by.
+
+    The engines name RoboCo's own sandbox image as the build compose tags it
+    (``roboco-sandbox-pg:latest``). A registry deploy builds nothing: as for the
+    agent images, it runs the copy the release publishes,
+    ``{agent_image_registry}/roboco-sandbox-pg:{agent_image_tag}``, which
+    docker-compose.registry.yml pre-pulls. Upstream images keep their name.
+    """
+    registry = settings.agent_image_registry.rstrip("/")
+    if not registry or not image.startswith(_ROBOCO_IMAGE_PREFIX):
+        return image
+    name = image.partition(":")[0]
+    return f"{registry}/{name}:{settings.agent_image_tag or 'latest'}"
 
 
 @dataclass
@@ -185,7 +205,7 @@ class SandboxProvisioner:
         name = engine.container_name(agent_id)
         password = secrets.token_hex(16)
         run = self._run()
-        image = engine.image_for(features)
+        image = _deployed_image(engine.image_for(features))
         await self._ensure_image(image)
         args = [
             "run",

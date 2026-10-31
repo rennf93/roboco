@@ -411,7 +411,7 @@ async def test_pr_pass_stamp_verifies_both_origins_when_flag_on(
     _green_ci(c)
     stamp_mock = AsyncMock(return_value=0)
     monkeypatch.setattr(
-        "roboco.services.gateway.choreographer.pr_gate.findings_lib.stamp_addressed_verified",
+        "roboco.services.gateway.choreographer.pr_gate_pass.findings_lib.stamp_addressed_verified",
         stamp_mock,
     )
 

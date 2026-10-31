@@ -255,7 +255,8 @@ class DispatchClaimEngine(_Base):
             if err:
                 return err
 
-        return None  # All validations passed
+        # All validations passed
+        return None
 
     async def _check_spawn_task_shape(
         self, client: httpx.AsyncClient, task: dict[str, Any]
@@ -1712,7 +1713,8 @@ class DispatchClaimEngine(_Base):
 
         CEO-approved timeout: 10 minutes
         """
-        STUCK_THRESHOLD_MINUTES = 10  # CEO-approved threshold
+        # CEO-approved threshold
+        STUCK_THRESHOLD_MINUTES = 10
 
         tasks = await self._fetch_tasks(client, "pending")
 

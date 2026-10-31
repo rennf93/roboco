@@ -192,13 +192,16 @@ RUN git config --global --add safe.directory '*' \
 # clone warn ("VIRTUAL_ENV=/app/.venv does not match project .venv") on every
 # gate run. MCP/SDK pin to /app/.venv via UV_PROJECT_ENVIRONMENT (set in the
 # orchestrator + sdk-startup-hook), not VIRTUAL_ENV. PATH keeps gateway tools.
-# HYPERFRAMES_NO_TELEMETRY: no image installs the HyperFrames CLI, but an agent
-# authoring a video can run it (`npx hyperframes check`, as motion/skills/
-# says), and the CLI sends anonymous usage events to PostHog unless this is
-# "1". Set here so every agent image inherits it.
+# HYPERFRAMES_NO_TELEMETRY / HYPERFRAMES_NO_UPDATE_CHECK: no image installs
+# the HyperFrames CLI, but an agent authoring a video can run it
+# (`npx hyperframes check`, as motion/skills/ says). The CLI sends anonymous
+# usage events to PostHog unless the first is "1", and checks npm for its own
+# updates on every run unless the second is. Set here so every agent image
+# inherits both, as motion/package.json's scripts set them.
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    HYPERFRAMES_NO_TELEMETRY=1
+    HYPERFRAMES_NO_TELEMETRY=1 \
+    HYPERFRAMES_NO_UPDATE_CHECK=1
 
 # Claude Code uses mounted ~/.claude for auth.
 # System prompt mounted at /app/system-prompt.md at spawn time.

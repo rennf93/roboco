@@ -325,6 +325,28 @@ x-orchestrator-env: &orchestrator-env
   # panel feature-flags card).
   ROBOCO_TASK_BUDGETS_ENABLED: ${ROBOCO_TASK_BUDGETS_ENABLED:-true}
 
+# The Docker gate's settings, the same for both colors (docker-gate-<color>,
+# trail #34). GATE_BIND_ROOTS are the host paths RoboCo binds into agents,
+# chats, sandboxes and throwaway workspace containers: the same values the
+# orchestrator gets as ROBOCO_HOST_*. The volumes mount each one read-only at
+# its own path, so the gate can refuse a bind that goes through a symlink
+# (dockerd would follow it). tests/unit/test_compose_docker_gate.py keeps the
+# roots, the mounts and the orchestrator's values equal.
+x-docker-gate-env: &docker-gate-env
+  GATE_ALLOW_BUILD: "true"
+  GATE_BIND_ROOTS: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}:${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}/docs:${ROBOCO_HOST_CLAUDE_DIR:-/home/renzof/.claude}:${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}:${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}:${ROBOCO_HOST_KIMI_DIR:-/home/renzof/.kimi-code}
+
+x-docker-gate-volumes: &docker-gate-volumes
+  - /var/run/docker.sock:/var/run/docker.sock
+  - docker-gate:/run/roboco-docker
+  - ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}:${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}:ro
+  - ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}/docs:${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}/docs:ro
+  - ${ROBOCO_HOST_CLAUDE_DIR:-/home/renzof/.claude}:${ROBOCO_HOST_CLAUDE_DIR:-/home/renzof/.claude}:ro
+  - ${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:ro
+  - ${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}:${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}:ro
+  - ${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}:${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}:ro
+  - ${ROBOCO_HOST_KIMI_DIR:-/home/renzof/.kimi-code}:${ROBOCO_HOST_KIMI_DIR:-/home/renzof/.kimi-code}:ro
+
 x-orchestrator-volumes: &orchestrator-volumes
   # Docker only through the gate (docker-gate-<color>, trail #34): the gate
   # holds the host socket, and each service's DOCKER_HOST points the docker
@@ -1066,9 +1088,11 @@ services:
   # color's gate holds the host socket and serves that color's api and
   # dispatcher on /run/roboco-docker/<color>.sock (the docker-gate volume),
   # forwarding only the Engine API calls RoboCo makes
-  # (docker/docker-gate/gate.py). It runs as 0:0 because the host socket is
-  # root:docker 0660 and the docker group's gid differs per host; the image's
-  # own USER is 65534, and every capability but CHOWN is dropped. Builds pass
+  # (docker/docker-gate/gate.py), and only with what RoboCo asks for. It runs
+  # as 0:0 because the host socket is root:docker 0660 and the docker group's
+  # gid differs per host; the image's own USER is 65534, and every capability
+  # is dropped but CHOWN (the socket's owner) and DAC_READ_SEARCH (walking
+  # owner-only bind roots such as ~/.claude to refuse symlinks). Builds pass
   # here (GATE_ALLOW_BUILD) because this file builds agent images locally;
   # the registry file's gate refuses them.
   # ==========================================================================
@@ -1086,14 +1110,13 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_READ_SEARCH
     security_opt:
       - no-new-privileges:true
     environment:
+      <<: *docker-gate-env
       GATE_LISTEN: /run/roboco-docker/blue.sock
-      GATE_ALLOW_BUILD: "true"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - docker-gate:/run/roboco-docker
+    volumes: *docker-gate-volumes
 
   docker-gate-green:
     build:
@@ -1109,14 +1132,13 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_READ_SEARCH
     security_opt:
       - no-new-privileges:true
     environment:
+      <<: *docker-gate-env
       GATE_LISTEN: /run/roboco-docker/green.sock
-      GATE_ALLOW_BUILD: "true"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - docker-gate:/run/roboco-docker
+    volumes: *docker-gate-volumes
 
   orchestrator-blue:
     build:

@@ -18,56 +18,55 @@
     </style>
   </head>
   <body>
-    <div id="stage" data-composition-id="panel-demo" data-width="1080" data-height="1080" data-start="0" data-duration="12" data-fps="30">
-      <div class="pk-frame clip" data-start="0" data-duration="12" data-track-index="1">
-        <aside class="pk-frame__sidebar">
-          <div class="pk-frame__logo"></div>
-          <div class="pk-frame__navitem"></div>
-          <div class="pk-frame__navitem pk-frame__navitem--active"></div>
-          <div class="pk-frame__navitem"></div>
-          <div class="pk-frame__navitem"></div>
-          <div class="pk-frame__navitem"></div>
+    <div data-hf-id="hf-w8gb" id="stage" data-composition-id="panel-demo" data-width="1080" data-height="1080" data-start="0" data-duration="12" data-fps="30">
+      <div data-hf-id="hf-ky0p" class="pk-frame clip" data-start="0" data-duration="12" data-track-index="1">
+        <aside data-hf-id="hf-vf6m" class="pk-frame__sidebar">
+          <div data-hf-id="hf-7cu8" class="pk-frame__logo"></div>
+          <div data-hf-id="hf-f8th" class="pk-frame__navitem"></div>
+          <div data-hf-id="hf-x50o" class="pk-frame__navitem pk-frame__navitem--active"></div>
+          <div data-hf-id="hf-s2pl" class="pk-frame__navitem"></div>
+          <div data-hf-id="hf-t9mo" class="pk-frame__navitem"></div>
+          <div data-hf-id="hf-svbn" class="pk-frame__navitem"></div>
         </aside>
 
-        <header class="pk-frame__topbar">
-          <div class="pk-frame__search">Search tasks, agents...</div>
-          <div class="pk-frame__status clip" data-start="0" data-duration="12" data-track-index="0">
-            <span class="pk-frame__statusdot"></span>
-            <span>Live</span>
+        <header data-hf-id="hf-jd7p" class="pk-frame__topbar">
+          <div data-hf-id="hf-zsox" class="pk-frame__search">Search tasks, agents...</div>
+          <div data-hf-id="hf-d5z4" class="pk-frame__status clip" data-start="0" data-duration="12" data-track-index="0">
+            <span data-hf-id="hf-tl8v" class="pk-frame__statusdot"></span>
+            <span data-hf-id="hf-zhpv">Live</span>
           </div>
         </header>
 
-        <div class="pk-frame__content">
+        <div data-hf-id="hf-bp68" class="pk-frame__content">
           <!-- Intake: a task title typing out character-by-character. -->
-          <div class="pk-intake clip" data-start="0" data-duration="12" data-track-index="2" style="animation-delay: 0.4s;">
-            <div class="pk-intake__label">New task</div>
-            <div class="pk-intake__field"><span id="typeTitle">Ship the panel-demo kit</span><span class="pk-caret"></span></div>
+          <div data-hf-id="hf-jc75" class="pk-intake clip" data-start="0" data-duration="12" data-track-index="2" style="animation-delay: 0.4s;">
+            <div data-hf-id="hf-sstf" class="pk-intake__label">New task</div>
+            <div data-hf-id="hf-kbxq" class="pk-intake__field"><span data-hf-id="hf-xzdt" id="typeTitle">Ship the panel-demo kit</span><span data-hf-id="hf-txmw" class="pk-caret"></span></div>
           </div>
 
           <!-- Kanban column hosting the task card. -->
-          <div class="pk-column">
-            <div class="pk-column__header">Tasks</div>
-            <div class="pk-card clip" data-start="3.6" data-duration="8.4" data-track-index="3" style="animation-delay: 3.6s;">
-              <div class="pk-card__title" id="cardTitle">Ship the panel-demo kit</div>
-              <div class="pk-card__meta">
-                <span class="pk-chip pk-chip--purple" id="cardTeam">Frontend</span>
-                <span class="pk-chip pk-chip--blue" id="cardPriority">P1 - High</span>
-                <span class="pk-card__assignee" id="cardAssignee">@fe-dev-1</span>
+          <div data-hf-id="hf-vk0y" class="pk-column">
+            <div data-hf-id="hf-7i9n" class="pk-column__header">Tasks</div>
+            <div data-hf-id="hf-n9sk" class="pk-card clip" data-start="3.6" data-duration="8.4" data-track-index="3">
+              <div data-hf-id="hf-rcf9" class="pk-card__title" id="cardTitle">Ship the panel-demo kit</div>
+              <div data-hf-id="hf-rftz" class="pk-card__meta">
+                <span data-hf-id="hf-5wrg" class="pk-chip pk-chip--purple" id="cardTeam">Frontend</span>
+                <span data-hf-id="hf-scdj" class="pk-chip pk-chip--blue" id="cardPriority">P1 - High</span>
+                <span data-hf-id="hf-2qho" class="pk-card__assignee" id="cardAssignee">@fe-dev-1</span>
               </div>
-              <div class="pk-card__status">
-                <span
+              <div data-hf-id="hf-j9zq" class="pk-card__status">
+                <span data-hf-id="hf-tl2w"
                   class="pk-pill pk-pill--progress pk-pill--swap-out clip"
                   data-start="3.6"
                   data-duration="3.8"
                   data-track-index="4"
-                  style="--pk-pill-enter-delay: 3.6s; --pk-pill-exit-delay: 7s;"
+                  style="--pk-pill-exit-delay: 3.4s;"
                 >in progress</span>
-                <span
+                <span data-hf-id="hf-dsg3"
                   class="pk-pill pk-pill--completed pk-pill--swap-in clip"
                   data-start="7.4"
                   data-duration="4.6"
                   data-track-index="5"
-                  style="--pk-pill-enter-delay: 7.4s;"
                 >completed</span>
               </div>
             </div>
@@ -76,28 +75,28 @@
           <!-- Cursor glide to the card, then a click pulse on the pill. The
                ring is its own clip so its click delay counts from its own
                start: 6s + 1.2s = 7.2s, the click as shipped. -->
-          <div
+          <div data-hf-id="hf-9n43"
             class="pk-cursor clip"
             data-start="6"
             data-duration="6"
             data-track-index="6"
-            style="--pk-cursor-delay: 6s; --pk-cursor-x0: 620px; --pk-cursor-y0: 140px; --pk-cursor-x1: 152px; --pk-cursor-y1: 310px;"
+            style="--pk-cursor-x0: 620px; --pk-cursor-y0: 140px; --pk-cursor-x1: 152px; --pk-cursor-y1: 310px;"
           >
-            <div class="pk-cursor__glyph"></div>
-            <div class="pk-cursor__ring clip" data-start="6" data-duration="6" data-track-index="9" style="--pk-click-delay: 1.2s;"></div>
+            <div data-hf-id="hf-teu6" class="pk-cursor__glyph"></div>
+            <div data-hf-id="hf-oop4" class="pk-cursor__ring clip" data-start="6" data-duration="6" data-track-index="9" style="--pk-click-delay: 1.2s;"></div>
           </div>
 
           <!-- Toast: the completion notification. -->
-          <div class="pk-toast clip" data-start="8.6" data-duration="3.4" data-track-index="7" style="animation-delay: 8.6s;">
-            <div class="pk-toast__icon"></div>
-            <div class="pk-toast__body">
-              <div class="pk-toast__title" id="toastTitle">Task completed</div>
-              <div class="pk-toast__text" id="toastBody">fe-dev-1 merged the panel-demo kit PR.</div>
+          <div data-hf-id="hf-vcan" class="pk-toast clip" data-start="8.6" data-duration="3.4" data-track-index="7">
+            <div data-hf-id="hf-p9jw" class="pk-toast__icon"></div>
+            <div data-hf-id="hf-d4kz" class="pk-toast__body">
+              <div data-hf-id="hf-ywhg" class="pk-toast__title" id="toastTitle">Task completed</div>
+              <div data-hf-id="hf-84nb" class="pk-toast__text" id="toastBody">fe-dev-1 merged the panel-demo kit PR.</div>
             </div>
           </div>
 
           <!-- Outro headline moment. -->
-          <div class="pk-outro clip" data-start="10.2" data-duration="1.8" data-track-index="8" style="animation-delay: 10.2s;">roboco.tech</div>
+          <div data-hf-id="hf-rrjt" class="pk-outro clip" data-start="10.2" data-duration="1.8" data-track-index="8">roboco.tech</div>
         </div>
       </div>
     </div>

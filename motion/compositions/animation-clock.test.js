@@ -31,13 +31,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CUT_FILES = ["vertical.html", "square.html"];
 const RULE_POINTER = 'see motion/README.md, "The animation clock"';
 
-// Kept as shipped: these cuts double their beat timings today (panel-demo's
-// card, pills, cursor, toast and outro; release-announcement's headline,
-// script and outro), and repairing that is a visible change that needs the
-// CEO. Drop an entry once its composition is repaired; the test below fails
-// when an entry no longer violates R2, so the list cannot go stale.
-const R2_KEPT_AS_SHIPPED = new Set(["panel-demo", "release-announcement"]);
-
 // ---- HTML: a small tag-stack parser (compositions are plain, well-formed HTML)
 
 const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
@@ -486,22 +479,11 @@ describe("animation clock on every cut", () => {
     expect(cuts.length).toBeGreaterThan(0);
   });
 
-  it("allow-lists only compositions that exist", () => {
-    const compositions = new Set(cuts.map((cut) => cut.composition));
-    for (const id of R2_KEPT_AS_SHIPPED) expect(compositions.has(id)).toBe(true);
-  });
-
   it.each(cuts)("R1: $composition/$file starts every animated element on one clock", (cut) => {
     expect(analyseShippedCut(cut).r1).toEqual([]);
   });
 
   it.each(cuts)("R2: $composition/$file never doubles a start", (cut) => {
-    const { r2 } = analyseShippedCut(cut);
-    if (R2_KEPT_AS_SHIPPED.has(cut.composition)) {
-      // Still doubled as shipped; once repaired, drop it from R2_KEPT_AS_SHIPPED.
-      expect(r2.length).toBeGreaterThan(0);
-    } else {
-      expect(r2).toEqual([]);
-    }
+    expect(analyseShippedCut(cut).r2).toEqual([]);
   });
 });

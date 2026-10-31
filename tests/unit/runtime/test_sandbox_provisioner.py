@@ -213,7 +213,8 @@ async def test_provision_mongo_engine() -> None:
 
 @pytest.mark.asyncio
 async def test_provision_readiness_timeout_tears_down_and_raises() -> None:
-    runner = _FakeRunner(run_rc=0, exec_rc=1)  # container starts, never ready
+    # The container starts and is never ready.
+    runner = _FakeRunner(run_rc=0, exec_rc=1)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     with pytest.raises(SandboxProvisionError):
@@ -228,7 +229,8 @@ async def test_provision_readiness_timeout_tears_down_and_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_provision_run_failure_tears_down_and_raises() -> None:
-    runner = _FakeRunner(run_rc=1)  # docker run itself fails
+    # docker run itself fails.
+    runner = _FakeRunner(run_rc=1)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     with pytest.raises(SandboxProvisionError):
@@ -248,7 +250,8 @@ async def test_provision_rejects_unknown_service() -> None:
 
 @pytest.mark.asyncio
 async def test_teardown_idempotent_on_missing_container() -> None:
-    runner = _FakeRunner(teardown_rc=1)  # "no such container" for every verb
+    # "No such container" for every verb.
+    runner = _FakeRunner(teardown_rc=1)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     # Must not raise even though every teardown call reports failure.
@@ -468,7 +471,8 @@ async def test_provision_no_features_skips_enable_and_verify() -> None:
 
     assert info.services["postgres"].features == ()
     pg_execs = _exec_calls(runner, "pg_isready")
-    assert len(pg_execs) == 1  # readiness only
+    # Readiness only.
+    assert len(pg_execs) == 1
     assert _exec_calls(runner, "psql") == []
 
 
@@ -588,6 +592,63 @@ async def test_provision_redis_bare_uses_light_image() -> None:
     assert "redis/redis-stack-server:latest" not in joined
 
 
+@pytest.mark.asyncio
+async def test_registry_deploy_runs_the_published_kitchen_sink_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry deploy builds nothing: it pulls and runs the release's copy of
+    RoboCo's own image, the one docker-compose.registry.yml pre-pulls."""
+    monkeypatch.setattr(
+        sandbox_module.settings, "agent_image_registry", "ghcr.io/rennf93/"
+    )
+    monkeypatch.setattr(sandbox_module.settings, "agent_image_tag", "0.33.0")
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"vector\n"
+    runner.image_present = False
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision(
+        "dev-pgreg", ["postgres"], features={"postgres": ["vector"]}
+    )
+
+    published = "ghcr.io/rennf93/roboco-sandbox-pg:0.33.0"
+    assert ["pull", published] in runner.calls
+    assert published in _run_call(runner)
+    assert "roboco-sandbox-pg:latest" not in _run_call(runner)
+
+
+@pytest.mark.asyncio
+async def test_registry_deploy_keeps_upstream_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sandbox_module.settings, "agent_image_registry", "ghcr.io/rennf93"
+    )
+    monkeypatch.setattr(sandbox_module.settings, "agent_image_tag", "0.33.0")
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"search\n99999\n"
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision(
+        "dev-upstream", ["postgres", "redis"], features={"redis": ["search"]}
+    )
+
+    runs = [c for c in runner.calls if c[0] == "run"]
+    assert "postgres:16-alpine" in runs[0]
+    assert "redis/redis-stack-server:latest" in runs[1]
+
+
+def test_registry_without_a_tag_runs_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sandbox_module.settings, "agent_image_registry", "ghcr.io/rennf93"
+    )
+    monkeypatch.setattr(sandbox_module.settings, "agent_image_tag", "")
+    assert (
+        sandbox_module._deployed_image("roboco-sandbox-pg:latest")
+        == "ghcr.io/rennf93/roboco-sandbox-pg:latest"
+    )
+
+
 def test_engine_image_for_selects_kitchen_sink_iff_features() -> None:
     """Pure unit check on the registry: bare -> light image, features -> kitchen-sink;
     mongo (no activatable features) ignores features and returns its base image."""
@@ -630,7 +691,8 @@ async def test_provision_rejects_feature_for_unknown_service() -> None:
 async def test_provision_failed_enable_tears_down_and_raises() -> None:
     """A failed enable exec (e.g. typo'd module path) is fatal — the agent
     never receives creds for a db missing what it asked for."""
-    runner = _FakeRunner(run_rc=0, exec_rc=1)  # every exec fails (incl. ready probe)
+    # Every exec fails, the readiness probe included.
+    runner = _FakeRunner(run_rc=0, exec_rc=1)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     with pytest.raises(SandboxProvisionError):
