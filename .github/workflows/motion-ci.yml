@@ -1,0 +1,98 @@
+name: Motion CI
+
+# motion/ (the HyperFrames compositions) and video-renderer/ (the sidecar that
+# renders them) each carry a test suite, and motion/ a lint, that no other
+# workflow runs. This one runs them whenever either changes. It is not one of
+# master's required checks, so a change that touches neither simply skips it.
+on:
+  push:
+    branches:
+      - master
+      - slave
+      - 'feature/**'
+      - 'bug/**'
+      - 'chore/**'
+      - 'docs/**'
+      - 'hotfix/**'
+    paths:
+      - 'motion/**'
+      - 'video-renderer/**'
+      - '.github/workflows/motion-ci.yml'
+  pull_request:
+    branches:
+      - master
+      - slave
+    paths:
+      - 'motion/**'
+      - 'video-renderer/**'
+      - '.github/workflows/motion-ci.yml'
+  workflow_dispatch:
+
+# A branch that is also an open PR head gets a push and a pull_request run for
+# the same commit; both resolve to the same branch name here, so the older one
+# is cancelled (see panel-ci.yml).
+concurrency:
+  group: motion-ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  motion:
+    name: motion
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: motion
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          # pnpm 11 (motion/package.json's packageManager) needs Node >=22.13.
+          node-version: '22'
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test (vitest)
+        run: pnpm test
+
+      # Project mode: motion/index.html plus every cut. Fails on any error.
+      - name: Lint (hyperframes)
+        run: pnpm lint
+
+  video-renderer:
+    name: video-renderer
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: video-renderer
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          # @hyperframes/producer and pnpm 11 need Node >=22.13.
+          node-version: '22'
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      # The tests are pure (target resolution, tar extraction, field parsing)
+      # and launch no browser, so puppeteer's Chrome download is skipped.
+      - name: Install dependencies
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Test (node --test)
+        run: pnpm test
