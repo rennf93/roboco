@@ -1,5 +1,9 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: dispatch_breaker)."""
+"""The dispatcher's breakers and reapers: the notification-spawn guard, the
+respawn circuit breaker and what it does when it trips, the stale-claim
+reaper and the wedged agents it kills, and the providers' cost budget and
+credentials.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -22,6 +26,19 @@ from roboco.runtime.orchestrator import (
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
 
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    import httpx
+
+    from roboco.services.task import TaskService
+
+if TYPE_CHECKING:
+    from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
+else:
+    _Base = object
+
+
 # Work-signal window for the review-claim liveness check: how far back the
 # container log is scanned for tool activity. Generous enough to cover a
 # legitimate long edit/test cycle; far shorter than a review should ever
@@ -33,19 +50,6 @@ _WORK_SIGNAL_WINDOW_SECONDS = 1800
 _THRASH_SINGLE_TOOL_RATIO = 0.8
 _THRASH_ERROR_RATIO = 0.5
 _MIN_CALLS_FOR_RATIO = 8
-
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    import httpx
-
-    from roboco.services.task import TaskService
-
-
-if TYPE_CHECKING:
-    from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
-else:
-    _Base = object
 
 
 @dataclass(frozen=True)
@@ -60,19 +64,17 @@ class _OwnedClaimContext:
     candidates: list[Any]
 
 
-class DispatchBreakerEngine(_Base):
-    """Mixin holding the "dispatch_breaker" methods moved out of AgentOrchestrator."""
+class NotificationSpawnGuardEngine(_Base):
+    """Whether a notification may wake its recipient: the cross-tick cooldown,
+    the attempt cap (with its one-shot CEO alert), and whether any live work
+    stands behind the notification at all."""
 
     # Re-declared (not just inherited from _Base above): mypy's Protocol
     # attribute inference cannot determine the type of an inherited member
     # that a method both reads AND assigns within the same method body
-    # (read-then-write in one scope; see _prune_notification_spawn_maps and
-    # _emit_dispatcher_heartbeat below) without a bare re-declaration
-    # directly on the concrete class. Without it a fresh run rooted at
-    # orchestrator.py alone infers `datetime` from the heartbeat assignment
-    # and rejects __init__'s `datetime | None`.
+    # (read-then-write in one scope; see _prune_notification_spawn_maps
+    # below) without a bare re-declaration directly on the concrete class.
     if TYPE_CHECKING:
-        _last_dispatch_heartbeat: datetime | None
         _notification_spawn_at: dict[tuple[str, str], float]
         _notification_spawn_count: dict[tuple[str, str], int]
 
@@ -230,52 +232,12 @@ class DispatchBreakerEngine(_Base):
                     return False
         return True
 
-    def _is_parallel_phase_claim(
-        self, task: dict[str, Any], dev_uuid: str | None
-    ) -> bool:
-        """True if a `claimed` task is actually in the doc/PR parallel phase.
 
-        The `original_developer:` quick_context marker is set pre-QA by
-        `open_pr`, so it alone cannot distinguish a QA-claimed
-        awaiting_qa task (wrong) from a doc-claimed awaiting_documentation
-        task (right). Require the claimant to be a documenter.
-        """
-        if not dev_uuid:
-            return False
-        claimed_by = task.get("claimed_by")
-        if not claimed_by:
-            return False
-        claimed_slug = self._resolve_agent_slug(claimed_by)
-        return bool(claimed_slug) and "doc" in claimed_slug
-
-    async def _respawn_dev_for_pr_half(
-        self, task: dict[str, Any], dev_uuid: str | None
-    ) -> None:
-        """Respawn the original developer if they still owe the PR half.
-
-        `pr_number` is set by the PR-create handler as soon as GitHub
-        confirms the PR, even if the status-gated `pr_created` flag never
-        flips — without that second check we'd respawn the dev forever
-        after they've already created the PR (the handler refuses to set
-        pr_created=True when the doc's claim moved status out of
-        awaiting_documentation).
-        """
-        if not dev_uuid or task.get("pr_created") or task.get("pr_number"):
-            return
-        dev_slug = self._resolve_agent_slug(dev_uuid)
-        if dev_slug and await self._pm_respawn_should_gate(dev_slug, task):
-            # Respawn circuit breaker — the PR-half respawn loops exactly like
-            # the doc half when the dev can never finish (progress resets it).
-            return
-        if not dev_slug or self._is_agent_active(dev_slug):
-            return
-        await self.spawn_agent(
-            agent_id=dev_slug,
-            task_id=task["id"],
-            initial_prompt=await self._build_dev_prompt(task),
-            git_context=self._task_git_context(task),
-            spawned_by="_respawn_dev_for_pr_half",
-        )
+class RespawnBreakerEngine(_Base):
+    """The respawn circuit breaker: counts consecutive unproductive respawns
+    per (agent, task), resets on real progress (a status change, a
+    rule-following retry, a review producing work), self-heals after a
+    cooldown, and persists its counters."""
 
     def _schedule_respawn_persist(
         self, agent_slug: str, task_id: str, record: dict[str, Any]
@@ -366,249 +328,643 @@ class DispatchBreakerEngine(_Base):
                     error=str(e),
                 )
 
-    def _grok_cost_usd(self, agent_id: str) -> float:
-        """A GROK agent's captured notional cost from its ``usage.json`` (0 if none)."""
-        data = self._grok_usage_json(agent_id)
-        if not data:
-            return 0.0
-        try:
-            return float(data.get("cost_usd", 0.0))
-        except (TypeError, ValueError):
-            return 0.0
+    def _respawn_status_change_resets(
+        self,
+        key: tuple[str, Any],
+        record: dict[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool:
+        """Handle a status CHANGE; True when it resets the strike counter.
 
-    def _gemini_cost_usd(self, agent_id: str) -> float:
-        """A GEMINI agent's captured cost from its ``usage.json`` (0 if none)."""
-        data = self._gemini_usage_json(agent_id)
-        if not data:
-            return 0.0
-        try:
-            return float(data.get("cost_usd", 0.0))
-        except (TypeError, ValueError):
-            return 0.0
-
-    async def _enforce_grok_cost_budget(self) -> None:
-        """Kill a live GROK container whose captured cost exceeds the cap.
-
-        The grok CLI exposes no live token/budget hook, so the budget kill-switch
-        (Claude Code parity for runaway token burn — a loop that keeps firing
-        verbs evades the idle watchdog but still burns cost) reads each ACTIVE
-        GROK container's captured cost from its ``usage.json`` and kills + evicts
-        it past ``ROBOCO_GROK_MAX_COST_USD``. The reaper then releases the freed
-        task. This bites on the interactive sessions (the driver rewrites
-        usage.json every turn, so a runaway chat is caught between turns); a
-        one-shot ``grok -p`` writes usage.json only post-run and is bounded by its
-        ``--max-turns`` cap instead. Disabled (no-op) when the cap is <= 0.
+        A status never seen on this (agent, task) is genuine forward progress
+        and fully resets, exactly as before. A REVISITED status — the A<->B
+        oscillation (blocked <-> in_progress) that changes status on every
+        spawn while advancing nothing (2026-07-02: a dev looped 2h/8 spawns
+        without tripping the gate) — gets a bounded reset budget mirroring
+        tracing_resets, after which strikes accrue. seen_statuses is
+        in-memory only (not a tracker column): after a restart it rebuilds
+        from observed statuses, which can only under-gate briefly — never
+        over-gate.
         """
-        cap = getattr(self, "_grok_max_cost_usd", 0.0)
-        if cap <= 0:
-            return
-        from roboco.models.base import ModelProvider
-
-        for agent_id, instance in list(self._instances.items()):
-            config = instance.config
-            if (
-                config is None
-                or config.provider_type != ModelProvider.GROK.value
-                or instance.state != AgentState.ACTIVE
-            ):
-                continue
-            cost = self._grok_cost_usd(agent_id)
-            if cost <= cap:
-                continue
-            try:
-                await self._remove_container(
-                    f"roboco-agent-{agent_id}", stop_reason="grok_cost_cap"
-                )
-            except Exception as exc:
-                logger.error(
-                    "grok cost-cap kill failed; will retry next tick",
-                    agent_id=agent_id,
-                    error=str(exc),
-                )
-                continue
-            # Finalize the spawn session BEFORE popping the instance so the
-            # captured usage/cost is recorded; popping first would lose the
-            # model + usage_session_id and leave the session row open.
-            with contextlib.suppress(Exception):
-                await self._finalize_spawn_session(agent_id, exit_reason="cost_cap")
-            self._instances.pop(agent_id, None)
-            # Interactive roles (intake/secretary) have an open panel relay; a
-            # raw kill would leave the SSE hanging (frozen chat). Close it with a
-            # reason so the panel reports why the chat ended.
-            if agent_id in (INTAKE_AGENT_ID, SECRETARY_AGENT_ID):
-                from roboco.services.prompter_live import get_live_registry
-
-                get_live_registry().close_by_agent(
-                    agent_id, error="Chat ended: the Grok cost cap was exceeded."
-                )
-            logger.warning(
-                "grok container killed: cost ceiling exceeded",
-                agent_id=agent_id,
-                cost_usd=round(cost, 4),
-                cap_usd=cap,
+        agent_slug, task_id = key
+        seen = record.get("seen_statuses") or [record.get("last_status")]
+        if current_status not in seen:
+            self._pm_respawn_tracker[key] = {
+                "count": 1,
+                "last_status": current_status,
+                "last_check": now,
+                "seen_statuses": [*seen, current_status],
+            }
+            self._schedule_respawn_persist(
+                agent_slug, str(task_id), self._pm_respawn_tracker[key]
             )
+            # Genuine forward progress: clear any durable stalled marker set
+            # by a prior trip on this task. Fire-and-forget, same discipline
+            # as the counter write-through above — the hot dispatch path
+            # never blocks on this DB write.
+            self._schedule_bg(self._clear_task_stalled_marker(agent_slug, str(task_id)))
+            return True
+        record["last_status"] = current_status
+        revisits = record.get("revisit_resets", 0)
+        if revisits < self._PM_RESPAWN_MAX_REVISIT_RESETS:
+            record["revisit_resets"] = revisits + 1
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            return True
+        logger.warning(
+            "PM respawn status ping-pong budget exhausted — "
+            "revisited statuses no longer reset the strike counter",
+            agent_id=agent_slug,
+            task_id=str(task_id),
+            task_status=current_status,
+            revisit_resets=revisits,
+        )
+        return False
 
-    @staticmethod
-    async def _probe_gateway_health(slug: str) -> bool | None:
-        """Probe an agent container's gateway out-of-band: healthy / broken / unknown.
-
-        The heartbeat only proves a verb fired recently; it cannot tell a quiet-
-        but-healthy agent from one whose MCP gateway is broken (e.g. a corrupted
-        ``/app/.venv`` so every gateway tool import raises) yet whose container is
-        still up. This asks the container directly whether the gateway venv imports
-        its core deps. Returns True (healthy), False (the import failed => broken
-        gateway), or None when the probe itself could not run (no docker, container
-        gone) so the caller declines to act on an inconclusive probe.
-        """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "exec",
-                f"roboco-agent-{slug}",
-                "/app/.venv/bin/python",
-                "-c",
-                "import httpx, mcp",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except Exception:
-            return None
-        try:
-            rc = await asyncio.wait_for(
-                proc.wait(), timeout=_DOCKER_EXEC_TIMEOUT_SECONDS
-            )
-        except TimeoutError:
-            # A hung docker exec is inconclusive (the probe could not run to
-            # completion): kill the child and decline to act, matching the
-            # existing probe-failure contract. The next grace tick retries.
-            proc.kill()
-            return None
-        except Exception:
-            return None
-        return rc == 0
-
-    async def _emit_dispatcher_heartbeat(self) -> None:
-        """Periodic dispatcher.alive audit row — a dead loop becomes detectable.
-
-        The dispatch loop can die silently (task cancelled, unhandled exit) and
-        its stdout dies with the container; audit_log survives both. Absence of
-        a fresh heartbeat row = loop dead, distinguishable from "no work". The
-        `dispatch_paused` flag lets the uptime ledger treat a deliberate
-        maintenance pause as downtime instead of counting it as an outage.
-        """
-        now = datetime.now(UTC)
-        last = getattr(self, "_last_dispatch_heartbeat", None)
-        if last is not None and (now - last).total_seconds() < (
-            self._DISPATCH_HEARTBEAT_SECONDS
-        ):
-            return
-        self._last_dispatch_heartbeat = now
-        from roboco.services.maintenance_pause import PauseScope
-
-        paused = await self._is_paused(PauseScope.DISPATCH)
-        self._fire_audit(
-            event_type="dispatcher.alive",
-            agent_slug="orchestrator",
-            details={
-                "interval_seconds": self._DISPATCH_HEARTBEAT_SECONDS,
-                "dispatch_paused": paused,
-            },
+    def _init_respawn_record(
+        self,
+        agent_slug: str,
+        key: tuple[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> None:
+        """First-seen (agent, task): open the strike record at count 1."""
+        self._pm_respawn_tracker[key] = {
+            "count": 1,
+            "last_status": current_status,
+            "last_check": now,
+            "seen_statuses": [current_status],
+        }
+        self._schedule_respawn_persist(
+            agent_slug, str(key[1]), self._pm_respawn_tracker[key]
         )
 
-    async def _refresh_grok_auth(self) -> None:
-        """Keep the host SuperGrok token live so grok agents never mount a dead one.
+    async def _gate_should_skip_for_live_review(self, task: dict[str, Any]) -> bool:
+        """True when the spawn targets a review that is producing actual work.
 
-        The grok access token has a ~6h server-set TTL and headless grok cannot
-        self-refresh — on an expired token it hangs at an interactive login
-        prompt. The per-agent mount is read-only, so the orchestrator refreshes
-        the host ``auth.json`` itself (refresh-token grant) before expiry; agents
-        then mount a fresh credential. Best-effort, throttled, and serial (run
-        once per dispatch tick) so concurrent refreshes can't rotate the
-        refresh-token out from under each other. Never breaks the loop.
-
-        Failures back off exponentially (60s doubling, 1h cap) instead of
-        re-POSTing the same dead grant every tick — a revoked refresh token
-        (``rejected``) can never succeed again, and hammering auth.x.ai with
-        it every 60s is pure log noise (2026-09-29 fleet wedge). A
-        ``rejected`` status parks the check for an hour; a fresh ``grok
-        login`` on the host is picked up on the next unparked tick.
+        An awaiting_* task advances nothing until its pass/fail decision, so
+        spawns during a long review look unproductive to a status-only
+        counter. Whether the review is genuinely in progress is decided by
+        the claimant's TOOL ACTIVITY, not its heartbeat: a working reviewer
+        (varied successful tool calls - reading diffs, running tests, taking
+        notes) is spared, while a thrash loop (one verb repeated, errors
+        dominating - the 2026-09-29 be-qa evidence loop) or a silent
+        container accrues strikes and trips. The heartbeat is deliberately
+        NOT consulted: it freezes during long local work (false dead) and
+        advances under give_me_work spam (false alive). The task status
+        travels as a plain string in the dispatcher's task dicts.
         """
-        now = datetime.now(UTC)
-        next_check = getattr(self, "_grok_auth_next_check", None)
-        if next_check is not None and now < next_check:
-            return
-        streak = getattr(self, "_grok_auth_fail_streak", 0)
-        self._grok_auth_next_check = now + timedelta(seconds=60)
-        try:
-            from roboco.llm.providers import grok_auth
-            from roboco.llm.providers.grok import GROK_AUTH_HOST_PATH
+        status = str(getattr(task.get("status"), "value", task.get("status")))
+        if not status.startswith("awaiting_"):
+            return False
+        claimant = await self._review_claimant_slug(task.get("id"))
+        if claimant is None:
+            return False
+        return await self._agent_work_signal(claimant) == "working"
 
-            auth_path = Path(GROK_AUTH_HOST_PATH) / "auth.json"
-            status = await asyncio.to_thread(grok_auth.refresh_if_stale, auth_path)
-            if status in {"fresh", "refreshed"}:
-                self._grok_auth_fail_streak = 0
-                if status == "refreshed":
-                    logger.info("grok auth token refreshed")
-                return
-            self._grok_auth_fail_streak = streak + 1
-            if status == "rejected":
-                # Credential is dead: retry no more than hourly until a
-                # re-issued auth.json lands. The warning already fired once
-                # from grok_auth with the remediation.
-                self._grok_auth_next_check = now + timedelta(seconds=3600)
-            else:
-                backoff = min(60 * (2**self._grok_auth_fail_streak), 3600)
-                self._grok_auth_next_check = now + timedelta(seconds=backoff)
-            logger.warning(
-                "grok auth refresh failed; agents may hit an expired token",
-                status=status,
-                fail_streak=self._grok_auth_fail_streak,
-                retry_in_seconds=(3600 if status == "rejected" else backoff),
+    async def _review_claimant_slug(self, task_id: Any) -> str | None:
+        """The current claimant's agent slug for an awaiting_* task, or None.
+
+        Best-effort: a DB failure returns None so the breaker's strike logic
+        stays authoritative rather than silently disabling itself.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_session_factory
+        from roboco.db.tables import AgentTable, TaskTable
+
+        try:
+            from uuid import UUID as _UUID
+
+            task_uuid = task_id if isinstance(task_id, _UUID) else _UUID(str(task_id))
+            factory = get_session_factory()
+            async with factory() as db:
+                row = await db.execute(
+                    select(AgentTable.slug)
+                    .join(TaskTable, TaskTable.active_claimant_id == AgentTable.id)
+                    .where(TaskTable.id == task_uuid)
+                )
+                return row.scalar_one_or_none()
+        except Exception as e:
+            logger.error(
+                "review-claim claimant lookup failed; counting normally",
+                task_id=str(task_id),
+                error=str(e),
+            )
+            return None
+
+    async def _pm_tracing_gap_reset(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        record: dict[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool:
+        """Reset the strike counter when the PM made a rule-following retry.
+
+        A tracing_gap normally means the agent is advancing through a verb
+        chain, so reset — but only up to ``_PM_RESPAWN_MAX_TRACING_RESETS``.
+        A task whose every respawn trips the same gap is wedged, not
+        progressing, so cap the resets and let strikes accrue once the
+        budget is exhausted. Returns True when the counter was reset.
+        """
+        if not await self._pm_made_rule_following_retry(agent_slug, task_id, record):
+            return False
+        resets = record.get("tracing_resets", 0)
+        if resets < self._PM_RESPAWN_MAX_TRACING_RESETS:
+            record["tracing_resets"] = resets + 1
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            return True
+        logger.warning(
+            "PM respawn tracing_gap reset budget exhausted — "
+            "treating recurring gap as a stuck loop",
+            agent_id=agent_slug,
+            task_id=task_id,
+            task_status=current_status,
+            tracing_resets=resets,
+        )
+        return False
+
+    def _pm_cooldown_gate(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        record: dict[str, Any],
+        now: datetime,
+    ) -> bool | None:
+        """Self-heal a previously-tripped gate after a cooldown.
+
+        Returns True to keep gating, False to let the spawn through after a
+        cooldown reset, or None when the gate hasn't tripped yet (caller
+        continues to the increment path). last_check is frozen at the trip
+        tick; this branch returns before the increment below updates it.
+        """
+        if not (
+            record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
+            and record.get("notified")
+        ):
+            return None
+        elapsed: bool = (now - record["last_check"]).total_seconds() > (
+            self._PM_RESPAWN_TRIP_COOLDOWN_SECONDS
+        )
+        if elapsed:
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+        return not elapsed
+
+    async def _pm_respawn_should_gate(
+        self, agent_slug: str, task: dict[str, Any]
+    ) -> bool:
+        """Return True when the respawn should be skipped (loop detected).
+
+        Tracks (agent_slug, task_id) -> count of consecutive spawns where
+        the task's status did not advance. When the task status changes,
+        the counter resets. Once the count hits the threshold, the spawn
+        is skipped and a warning logged; operators must intervene.
+
+        Tracing-gap reset
+        -----------------
+        With the gateway claim-time gates installed, a rule-following PM
+        will hit ``PARENT_NOT_CLAIMED`` (a ``tracing_gap`` envelope) and
+        the prompt will tell it to call the prerequisite verb first.
+        Each retry leaves the task status unchanged but the agent IS
+        making progress through the verb chain. Counting that as a
+        strike kills rule-followers.
+
+        Solution: before incrementing on a same-status spawn, check
+        ``audit_log`` for a ``gateway.rejected`` row tagged
+        ``reason == "tracing_gap"`` from this (agent, task) since the
+        last check. If found, reset the counter — the agent followed
+        the rules, not stuck.
+
+        Audit lookup is best-effort: any failure falls through to the
+        legacy strike behavior so audit problems don't break the gate.
+        """
+        task_id = task.get("id")
+        if not task_id:
+            return False
+        key = (agent_slug, task_id)
+        current_status = task.get("status")
+        record = self._pm_respawn_tracker.get(key)
+        now = datetime.now(UTC)
+        if record is None:
+            self._init_respawn_record(agent_slug, key, current_status, now)
+            return False
+        verdict = await self._respawn_pre_increment_verdict(
+            task, record, key, current_status, now
+        )
+        if verdict is not None:
+            return verdict
+        record["count"] += 1
+        record["last_check"] = now
+        self._schedule_respawn_persist(agent_slug, str(task_id), record)
+        tripped: bool = record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
+        # B37 respawn_verdict: a confident "productive respawn" verdict
+        # overrides the trip (skipping the stall/notify below); None (hold,
+        # or below-floor/no verdict) falls through to today's trip behavior -
+        # the stall marker + one-shot overseer notification ARE the existing
+        # hold-for-human mechanics.
+        spawn_anyway = await self._pm_respawn_spawn_anyway(
+            agent_slug, task_id, current_status, record, tripped
+        )
+        if tripped and not spawn_anyway:
+            await self._pm_trip_stall_notice(
+                agent_slug, task_id, current_status, record
+            )
+        return tripped and not spawn_anyway
+
+    async def _respawn_pre_increment_verdict(
+        self,
+        task: dict[str, Any],
+        record: dict[str, Any],
+        key: tuple[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool | None:
+        """Verdicts decided BEFORE a strike accrues.
+
+        Returns True (skip the spawn entirely), False (allow the spawn
+        without counting a strike), or None (no pre-increment decision -
+        the caller counts the strike). Paths, in order:
+
+        - status changed with a reset budget left: forward progress, allow.
+        - live review claim: an awaiting_* task being actively reviewed
+          advances nothing until the pass/fail decision, so every spawn
+          during a long review otherwise accrues a strike and trips the
+          breaker mid-review (live 2026-09-29: fe-qa tripped on 372eac39
+          while actively reviewing with a fresh claim heartbeat). Skip
+          WITHOUT a strike while the claim is live.
+        - tracing_gap: a rule-following retry through the verb chain,
+          reset up to the tracing budget.
+        - cooldown: an already-tripped pair stays gated through its
+          cooldown window, then re-arms (a fixed task advances and the
+          status-change path fully resets the counter).
+        """
+        agent_slug, task_id = key
+        if record.get("last_status") != current_status and (
+            self._respawn_status_change_resets(key, record, current_status, now)
+        ):
+            return False
+        if await self._gate_should_skip_for_live_review(task):
+            return True
+        if await self._pm_tracing_gap_reset(
+            agent_slug, task_id, record, current_status, now
+        ):
+            return False
+        gate = self._pm_cooldown_gate(agent_slug, task_id, record, now)
+        if gate is not None:
+            return gate
+        return None
+
+    async def _pm_made_rule_following_retry(
+        self,
+        agent_slug: str,
+        task_id: str,
+        record: dict[str, Any],
+    ) -> bool:
+        """Did the agent emit a ``tracing_gap`` envelope since the last check?
+
+        Returns ``False`` for unknown slugs (defensive — the audit query
+        needs an agent UUID, and we'd rather fall through to the legacy
+        strike behavior than crash). Returns ``False`` if the audit
+        lookup raises — observability must never block the gate.
+        """
+        agent_uuid_str = AGENT_UUIDS.get(agent_slug)
+        if not agent_uuid_str:
+            return False
+        from uuid import UUID
+
+        try:
+            agent_uuid = UUID(agent_uuid_str)
+            task_uuid = UUID(task_id)
+        except (ValueError, TypeError):
+            return False
+        since = record.get("last_check") or datetime.now(UTC)
+
+        from roboco.services.audit import get_audit_service
+
+        audit = get_audit_service()
+        try:
+            return await audit.has_recent_tracing_gap(
+                agent_id=agent_uuid,
+                task_id=task_uuid,
+                since=since,
             )
         except Exception as exc:
-            logger.error("grok auth refresh hook error", error=str(exc))
-
-    async def _refresh_codex_auth(self) -> None:
-        """Keep the host Codex CLI credential live (parity with ``_refresh_grok_auth``).
-
-        Same rationale as the grok refresh: the per-agent mount is read-only,
-        so the orchestrator refreshes the host ``auth.json`` itself before the
-        access JWT expires. Best-effort, throttled, and serial (run once per
-        dispatch tick). Never breaks the loop. Same exponential backoff on
-        failure and hourly parking on a definitive ``rejected`` (dead
-        credential; see ``_refresh_grok_auth``).
-        """
-        now = datetime.now(UTC)
-        next_check = getattr(self, "_codex_auth_next_check", None)
-        if next_check is not None and now < next_check:
-            return
-        streak = getattr(self, "_codex_auth_fail_streak", 0)
-        self._codex_auth_next_check = now + timedelta(seconds=60)
-        try:
-            from roboco.llm.providers import codex_auth
-            from roboco.llm.providers.codex import CODEX_AUTH_HOST_PATH
-
-            auth_path = Path(CODEX_AUTH_HOST_PATH) / "auth.json"
-            status = await asyncio.to_thread(codex_auth.refresh_if_stale, auth_path)
-            if status in {"fresh", "refreshed"}:
-                self._codex_auth_fail_streak = 0
-                if status == "refreshed":
-                    logger.info("codex auth token refreshed")
-                return
-            self._codex_auth_fail_streak = streak + 1
-            if status == "rejected":
-                self._codex_auth_next_check = now + timedelta(seconds=3600)
-            else:
-                backoff = min(60 * (2**self._codex_auth_fail_streak), 3600)
-                self._codex_auth_next_check = now + timedelta(seconds=backoff)
-            logger.warning(
-                "codex auth refresh failed; agents may hit an expired token",
-                status=status,
-                fail_streak=self._codex_auth_fail_streak,
-                retry_in_seconds=(3600 if status == "rejected" else backoff),
+            logger.debug(
+                "audit.has_recent_tracing_gap failed; falling back to strike count",
+                agent_slug=agent_slug,
+                task_id=task_id,
+                error=str(exc),
             )
+            return False
+
+
+class AgentWorkSignalEngine(_Base):
+    """Is an agent's container doing work: scan its recent log for tool calls
+    and classify the run as work, thrash or idle."""
+
+    async def _container_log_text(self, agent_slug: str) -> str:
+        """The agent container's recent log stream, or "" on any failure.
+
+        Bounded to the work-signal window so a long-running agent's log
+        volume cannot stall the dispatch tick.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "logs",
+            "--since",
+            f"{_WORK_SIGNAL_WINDOW_SECONDS}s",
+            f"roboco-agent-{agent_slug}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_EXEC_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            return ""
+        return stdout.decode("utf-8", errors="replace")
+
+    async def _agent_work_signal(self, agent_slug: str) -> str:
+        """Classify the agent container's recent activity: work, thrash, idle.
+
+        Scans the container log's recent tool-call stream. "working" = varied
+        successful tool calls (a review reading diffs, running tests, noting
+        progress). "thrashing" = calls dominated by ONE tool or by errors -
+        a retry loop burning tokens while accomplishing nothing (the
+        2026-09-29 be-qa evidence loop: 976 give_me_work calls, 795 tool
+        errors, verdict never fired). "idle" = no container or zero tool
+        events in the window. A deliberate ``sleep`` is itself a tool event,
+        so a chosen wait inside an otherwise varied run still reads as
+        working-quietly. Best-effort: any docker failure yields "idle" so
+        the strike logic stays authoritative.
+        """
+        text = await self._container_log_text(agent_slug)
+        starts = text.count('"toolName":"')
+        if starts == 0:
+            return "idle"
+        tool_names = re.findall(r'"toolName":"([a-zA-Z_]+)"', text)
+        top_tool = max(set(tool_names), key=tool_names.count)
+        if (
+            starts >= _MIN_CALLS_FOR_RATIO
+            and tool_names.count(top_tool) / starts > _THRASH_SINGLE_TOOL_RATIO
+        ):
+            return "thrashing"
+        tool_errors = text.count("Error executing tool")
+        if (
+            starts >= _MIN_CALLS_FOR_RATIO
+            and tool_errors / starts > _THRASH_ERROR_RATIO
+        ):
+            return "thrashing"
+        return "working"
+
+
+class RespawnTripEngine(_Base):
+    """When the respawn breaker trips: the B37 verdict that can override it,
+    the stall marker and overseer notice, the B16 coroner post-mortem, and
+    clearing the marker on real progress."""
+
+    async def _pm_respawn_spawn_anyway(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+        tripped: bool,
+    ) -> bool:
+        """B37 respawn_verdict: True when a confident "productive respawn"
+        verdict overrides the trip. Short-circuits exactly as before: the
+        classifier is only consulted when decisions are enabled and the
+        counter actually tripped."""
+        return bool(
+            settings.decisions_enabled
+            and tripped
+            and (
+                await self._decisions_respawn_override(
+                    agent_slug, task_id, current_status, record
+                )
+                is False
+            )
+        )
+
+    async def _pm_trip_stall_notice(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> None:
+        """Log the trip and fire the one-shot stall marker + overseer
+        notification. A skipped spawn pauses the loop but can't advance the
+        task; alert an overseer once so a wedged agent isn't silently
+        stranded, and record a durable marker on the task itself (readable
+        without container logs) alongside that one-shot notification. Both
+        are one-shot per trip, gated by the same `notified` flag. A breaker
+        trip is also an incident class the coroner's fixed hooks (3+
+        bounces, cancel-after-start, budget, stranded) never see, so the
+        B16 decisions-gated postmortem entry is consulted here: it may only
+        ADD a postmortem (ON-mode confident verdict, coroner program armed)
+        and is best-effort to the core stall mechanics."""
+        logger.warning(
+            "PM respawn loop detected — skipping spawn",
+            agent_id=agent_slug,
+            task_id=task_id,
+            task_status=current_status,
+            spawn_attempts=record["count"],
+            threshold=self._PM_RESPAWN_MAX_UNPRODUCTIVE,
+            hint=(
+                "Agent repeatedly spawned without advancing task state. "
+                "Investigate prompt/schema drift or escalate manually."
+            ),
+        )
+        if not record.get("notified"):
+            record["notified"] = True
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            await self._mark_task_stalled(task_id)
+            await self._notify_stuck_agent(agent_slug, task_id, current_status)
+            await self._coroner_wedged_postmortem(
+                agent_slug, task_id, current_status, record
+            )
+
+    async def _coroner_wedged_postmortem(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> None:
+        """B16 coroner_gate: offer the wedged task to the coroner through
+        the decisions-gated entry point. The gate (pilot ON + confident +
+        coroner program armed + one-open-autopsy dedup) decides inside; a
+        failure here degrades to today's behavior (stall notice only) and
+        must never break the breaker tick."""
+        try:
+            from uuid import UUID
+
+            from roboco.db import get_db_context
+            from roboco.services.coroner_engine import CoronerEngine
+
+            async with get_db_context() as db:
+                await CoronerEngine(db).open_for_incident_on_verdict(
+                    UUID(str(task_id)),
+                    kind="wedged",
+                    extra_context={
+                        "agent": agent_slug,
+                        "task_status": current_status,
+                        "spawn_attempts": int(record.get("count") or 0),
+                        "statuses_seen": [
+                            str(s) for s in record.get("seen_statuses") or []
+                        ],
+                    },
+                )
         except Exception as exc:
-            logger.error("codex auth refresh hook error", error=str(exc))
+            logger.warning(
+                "coroner wedged-postmortem pass failed (best-effort)",
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                error=str(exc),
+            )
+
+    async def _decisions_respawn_override(
+        self,
+        agent_slug: str,
+        task_id: str,
+        current_status: str | None,
+        record: dict[str, Any],
+    ) -> bool | None:
+        """B37 respawn_verdict: refine the counters' approximate "wedged"
+        verdict at the trip point.
+
+        Returns False ONLY for an ON-mode, at-floor ``spawn`` verdict
+        (override the trip with one more spawn); every other outcome
+        returns None and keeps today's tripped behavior (the stall
+        marker + overseer notification are the existing hold-for-human
+        mechanics). ``hold-task-for-human`` keeps the trip by design;
+        ``spawn-with-amended-prompt`` and ``kill-task`` have NO breaker
+        mechanics, and re-spawning the identical prompt is exactly the
+        churn the trip exists to stop, so they keep the trip too (the
+        human the stall notice pages can amend or kill). NO_VERDICT
+        (off / shadow / no verdict / below floor) keeps the trip: the
+        pilot must never weaken the wedged-agent protection by default.
+        """
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
+
+            async with get_db_context() as db:
+                verdict = await pilots_dispatch.respawn_verdict(
+                    db,
+                    agent_slug=agent_slug,
+                    task_id=str(task_id),
+                    task_status=current_status,
+                    spawn_attempts=int(record.get("count") or 0),
+                    statuses_seen=[str(s) for s in record.get("seen_statuses") or []],
+                )
+            if verdict is pilots_dispatch.RespawnVerdict.SPAWN:
+                logger.info(
+                    "Respawn trip overridden to spawn by Decisions verdict",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return False
+            if verdict is pilots_dispatch.RespawnVerdict.SPAWN_WITH_AMENDED_PROMPT:
+                # No amended-prompt mechanic at the breaker: keep the trip
+                # (the stall notice names the task for a human to amend).
+                logger.info(
+                    "Respawn verdict spawn-with-amended-prompt has no breaker"
+                    " mechanic; keeping the trip (stall notice fired)",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return None
+            if verdict is pilots_dispatch.RespawnVerdict.KILL_TASK:
+                # No kill-task mechanic in the breaker: keep the trip (the
+                # stall notice is the human path to cancellation).
+                logger.info(
+                    "Respawn verdict kill-task has no kill mechanic; keeping"
+                    " the trip (stall notice fired)",
+                    agent_id=agent_slug,
+                    task_id=str(task_id),
+                )
+                return None
+            # hold-task-for-human and NO_VERDICT: the trip path IS the
+            # hold mechanic.
+            return None
+        except Exception as exc:
+            logger.warning(
+                "respawn verdict decisions pass failed (best-effort)",
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return None
+
+    async def _mark_task_stalled(self, task_id: str) -> None:
+        """Record a durable stalled marker on the task (breaker-tripped path).
+
+        Best-effort: a write failure must not wedge dispatch, so any error is
+        logged and swallowed — the CEO notification still fires regardless.
+        """
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.models.base import StalledReason
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                await TaskService(db).mark_stalled(
+                    UUID(task_id), reason=StalledReason.BREAKER_TRIPPED.value
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to record stalled marker",
+                task_id=task_id,
+                error=str(exc),
+            )
+
+    async def _clear_task_stalled_marker(self, agent_slug: str, task_id: str) -> None:
+        """Clear the durable stalled marker on genuine forward progress.
+
+        Fire-and-forget (scheduled via `_schedule_bg`) so the hot dispatch
+        path never blocks on this DB write — mirroring
+        `_schedule_respawn_persist`'s write-through discipline. Best-effort:
+        a write failure is logged and swallowed.
+        """
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                await TaskService(db).clear_stalled_marker(UUID(task_id))
+        except Exception as exc:
+            logger.warning(
+                "Failed to clear stalled marker",
+                agent_id=agent_slug,
+                task_id=task_id,
+                error=str(exc),
+            )
+
+
+class StaleClaimReaperEngine(_Base):
+    """The stale-claim reaper: release a claimed or in-progress task whose
+    holder stopped heart-beating, or a parked claim whose agent is busy
+    elsewhere, and send a stale review claim back to its queue, each with a
+    coordination notice."""
 
     async def _reap_stale_claims(self) -> None:
         """Release claimed/in_progress tasks whose holder hasn't heart-beat in TTL.
@@ -649,291 +1005,6 @@ class DispatchBreakerEngine(_Base):
             await self._reap_with_service(svc, dispatch_paused=dispatch_paused)
             await db.commit()
         await self._sandbox_janitor_sweep()
-
-    def _assignee_has_active_instance(self, task: Any) -> bool:
-        """True if the task's assignee currently holds a live (ACTIVE) container.
-
-        The heartbeat only approximates liveness. A developer deep in an
-        edit/test cycle can go longer than the heartbeat TTL between gateway
-        calls, so a heartbeat-only reaper releases claims out from under agents
-        that are alive and working — churning the task (and risking a double
-        spawn against the still-running container). The agent-instance registry
-        is the ground truth; defer to it when present. Defensive on missing
-        fields so a heartbeat-only caller (and the reaper's own unit tests)
-        behave exactly as before.
-        """
-        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
-        if not owner:
-            return False
-        instances = getattr(self, "_instances", None)
-        if not instances:
-            return False
-        instance = instances.get(self._resolve_agent_slug(str(owner)))
-        return instance is not None and instance.state == AgentState.ACTIVE
-
-    def _assignee_is_provider_parked(self, task: Any) -> bool:
-        """True if the task's assignee is parked waiting for a provider to recover.
-
-        A provider-parked agent (session-limit / overload / grok-429) is OFFLINE
-        with a dead container and a ``rate_limit_lifted`` WaitingRecord; the
-        probe-resume loop owns its recovery. The stale-claim reaper must skip it
-        so the claim survives until the probe revives the agent — reaping would
-        release the claim to pending and probe-success would then respawn the
-        agent on a task it no longer owns. Defensive on a missing registry.
-        """
-        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
-        if not owner:
-            return False
-        records = getattr(self, "_waiting_records", None)
-        if not records:
-            return False
-        slug = self._resolve_agent_slug(str(owner))
-        record = records.get(slug)
-        return record is not None and record.waiting_for == "rate_limit_lifted"
-
-    async def _assignee_container_running(self, task: Any) -> bool:
-        """Docker-liveness fallback for the reaper on an instance-registry MISS.
-
-        ``_assignee_has_active_instance`` reads the in-memory ``_instances``
-        registry, which is lost on an orchestrator restart while the agent's
-        container keeps running. Without a fallback the heartbeat-stale reaper
-        then releases a task out from under a live agent the orchestrator has
-        merely forgotten — registry amnesia, the over-reap that hit be-dev-1.
-        This asks Docker directly, but ONLY on a true registry miss: a known
-        instance (ACTIVE or stopped) is authoritative and not second-guessed,
-        and an uninitialised registry (``None`` — e.g. a unit-test harness) is
-        left to the existing behaviour. Any error (no docker binary, inspect
-        fails) yields False, so non-Docker test/dev contexts are unaffected.
-        """
-        instances = getattr(self, "_instances", None)
-        if instances is None:
-            return False
-        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
-        if not owner:
-            return False
-        slug = self._resolve_agent_slug(str(owner))
-        if slug in instances:
-            return False
-        try:
-            is_running, _ = await self._inspect_container_state(f"roboco-agent-{slug}")
-        except Exception:
-            return False
-        return is_running
-
-    def _wedged_grok_slug(
-        self, task: Any, last_heartbeat: "datetime | None"
-    ) -> str | None:
-        """Slug of an ACTIVE GROK container holding ``task`` and idle past the kill TTL.
-
-        ``_assignee_has_active_instance`` shields a live container from the
-        reaper — correct for a Claude agent quiet during a long edit/test cycle.
-        A wedged GROK container is the one case that breaks: ACTIVE *and*
-        silent (an idle model call fires no gateway verb), so its heartbeat never
-        advances and the skip would protect it forever. Returns the slug only for
-        a GROK instance idle past the grok-kill TTL — a recent heartbeat, no
-        owner, a non-GROK provider, or a non-ACTIVE instance all yield ``None``.
-        """
-        from roboco.models.base import ModelProvider
-
-        ttl = timedelta(seconds=getattr(self, "_grok_idle_kill_ttl", 900))
-        if last_heartbeat is not None and self._active_age(last_heartbeat) < ttl:
-            return None
-        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
-        if not owner:
-            return None
-        slug = self._resolve_agent_slug(str(owner))
-        instance = (getattr(self, "_instances", None) or {}).get(slug)
-        config = getattr(instance, "config", None)
-        is_active_grok = (
-            instance is not None
-            and instance.state == AgentState.ACTIVE
-            and config is not None
-            and config.provider_type == ModelProvider.GROK.value
-        )
-        return slug if is_active_grok else None
-
-    async def _maybe_kill_wedged_grok(
-        self, task: Any, last_heartbeat: "datetime | None"
-    ) -> bool:
-        """Kill + evict a wedged GROK container so this tick's reaper frees its task.
-
-        On a kill the container is removed (its logs dumped to disk first) and
-        dropped from ``_instances``. Returns True only when a container was
-        actually killed; see :meth:`_wedged_grok_slug` for the eligibility rule.
-        """
-        slug = self._wedged_grok_slug(task, last_heartbeat)
-        if slug is None:
-            return False
-        try:
-            await self._remove_container(
-                f"roboco-agent-{slug}", stop_reason="reaper_wedged_grok"
-            )
-        except Exception as exc:
-            logger.error(
-                "wedged-grok kill failed; will retry next tick",
-                agent_id=slug,
-                error=str(exc),
-            )
-            return False
-        self._instances.pop(slug, None)
-        logger.warning(
-            "wedged grok container killed and evicted",
-            agent_id=slug,
-            task_id=str(getattr(task, "id", "")),
-        )
-        return True
-
-    def _stuck_claude_slug(
-        self, task: Any, last_heartbeat: "datetime | None"
-    ) -> str | None:
-        """Slug of an ACTIVE non-GROK container holding ``task``, stuck past the TTL.
-
-        The reaper's live-container skip shields a quiet agent during a long
-        edit/test cycle — correct for a working agent (it fires gateway verbs
-        every few minutes, advancing its heartbeat). A non-GROK agent stuck in a
-        non-verb loop is ACTIVE yet silent, so the skip would protect its claim
-        forever (#73). Returns the slug only for a non-GROK ACTIVE instance whose
-        heartbeat has been stale longer than ``claude_stuck_kill_seconds`` — a
-        recent heartbeat, no owner, a GROK provider (handled by the wedged-grok
-        path), or a non-ACTIVE instance all yield ``None``. The bucket is
-        provider-agnostic by construction (it excludes GROK specifically, not
-        an allowlist of what it includes) — GEMINI (a one-shot CLI runtime with
-        no SDK server either) falls into this same generic "non-GROK" bucket
-        for free, with no dedicated wedge-kill path of its own.
-        """
-        from roboco.models.base import ModelProvider
-
-        ttl = timedelta(seconds=getattr(self, "_claude_stuck_kill_ttl", 3600))
-        if last_heartbeat is not None and self._active_age(last_heartbeat) < ttl:
-            return None
-        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
-        if not owner:
-            return None
-        slug = self._resolve_agent_slug(str(owner))
-        instance = (getattr(self, "_instances", None) or {}).get(slug)
-        config = getattr(instance, "config", None)
-        is_active_non_grok = (
-            instance is not None
-            and instance.state == AgentState.ACTIVE
-            and config is not None
-            and config.provider_type != ModelProvider.GROK.value
-        )
-        return slug if is_active_non_grok else None
-
-    async def _maybe_kill_stuck_claude(
-        self, task: Any, last_heartbeat: "datetime | None"
-    ) -> bool:
-        """Kill + evict a stuck non-GROK container so the reaper frees its task.
-
-        On a kill the container is removed and dropped from ``_instances``.
-        Returns True only when a container was actually killed; see
-        :meth:`_stuck_claude_slug` for the eligibility rule (#73).
-        """
-        slug = self._stuck_claude_slug(task, last_heartbeat)
-        if slug is None:
-            return False
-        try:
-            await self._remove_container(
-                f"roboco-agent-{slug}", stop_reason="reaper_stuck_claude"
-            )
-        except Exception as exc:
-            logger.error(
-                "stuck-claude kill failed; will retry next tick",
-                agent_id=slug,
-                error=str(exc),
-            )
-            return False
-        self._instances.pop(slug, None)
-        logger.warning(
-            "stuck non-grok container killed and evicted",
-            agent_id=slug,
-            task_id=str(getattr(task, "id", "")),
-        )
-        return True
-
-    async def _maybe_recover_broken_gateway(self, task: Any) -> bool:
-        """Kill + evict a live agent whose gateway is broken past the grace window.
-
-        The reaper's live-skip protects a running container from a stale-heartbeat
-        reap — right for a healthy agent quiet during a long edit/test cycle, but
-        it would shield a broken-but-alive agent (a corrupted gateway firing no
-        verb) forever. This probes the gateway out-of-band and, once it has been
-        broken longer than ``gateway_health_grace_seconds`` (so a transient probe
-        miss is tolerated), kills + evicts the container so the reaper falls
-        through to release + respawn. Returns True only on a kill; a healthy
-        gateway, an inconclusive probe, or a still-within-grace breakage returns
-        False (the live container is spared). Gated by ``gateway_health_enabled``.
-        """
-        if not settings.gateway_health_enabled:
-            return False
-        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
-        if not owner:
-            return False
-        slug = self._resolve_agent_slug(str(owner))
-        if not await self._gateway_broken_past_grace(slug):
-            return False
-        try:
-            await self._remove_container(
-                f"roboco-agent-{slug}", stop_reason="gateway_health_recovery"
-            )
-        except Exception as exc:
-            logger.error(
-                "broken-gateway kill failed; will retry next tick",
-                agent_id=slug,
-                error=str(exc),
-            )
-            return False
-        self._instances.pop(slug, None)
-        self._gateway_broken_since.pop(slug, None)
-        logger.warning(
-            "broken-gateway agent killed and evicted",
-            agent_id=slug,
-            task_id=str(getattr(task, "id", "")),
-        )
-        return True
-
-    async def _gateway_broken_past_grace(self, slug: str) -> bool:
-        """True when ``slug``'s gateway has probed broken longer than the grace.
-
-        Probe-inconclusive (None) or healthy clears the grace mark and returns
-        False; the first broken sighting records the mark and returns False (one
-        grace tick); a breakage older than ``gateway_health_grace_seconds`` (or a
-        test-injected ``_gateway_health_grace``) returns True.
-        """
-        healthy = await self._probe_gateway_health(slug)
-        if healthy is None or healthy:
-            self._gateway_broken_since.pop(slug, None)
-            return False
-        now = datetime.now(UTC)
-        first_seen = self._gateway_broken_since.get(slug)
-        if first_seen is None:
-            self._gateway_broken_since[slug] = now
-            return False
-        grace = getattr(self, "_gateway_health_grace", None)
-        if grace is None:
-            grace = settings.gateway_health_grace_seconds
-        return (now - first_seen).total_seconds() >= grace
-
-    async def _should_skip_live_reap(self, t: Any, ts: Any) -> bool:
-        """True when a live container should be spared from reaping.
-
-        A live container normally protects its task; on a registry MISS (e.g. the
-        orchestrator restarted and forgot a still-running container) fall back to
-        asking Docker. A live container is spared UNLESS it is wedged (grok) or
-        its gateway is broken-but-alive past the grace window — both checks kill +
-        evict it (returning False here) so the caller falls through to release +
-        respawn. Short-circuits like the original ``and``: when not live, neither
-        kill nor recovery check is awaited.
-        """
-        live = self._assignee_has_active_instance(
-            t
-        ) or await self._assignee_container_running(t)
-        return (
-            live
-            and not await self._maybe_kill_wedged_grok(t, ts)
-            and not await self._maybe_kill_stuck_claude(t, ts)
-            and not await self._maybe_recover_broken_gateway(t)
-        )
 
     async def _reap_with_service(
         self, svc: "TaskService", *, dispatch_paused: bool = False
@@ -1309,636 +1380,516 @@ class DispatchBreakerEngine(_Base):
                 error=str(exc),
             )
 
-    def _respawn_status_change_resets(
-        self,
-        key: tuple[str, Any],
-        record: dict[str, Any],
-        current_status: Any,
-        now: datetime,
-    ) -> bool:
-        """Handle a status CHANGE; True when it resets the strike counter.
 
-        A status never seen on this (agent, task) is genuine forward progress
-        and fully resets, exactly as before. A REVISITED status — the A<->B
-        oscillation (blocked <-> in_progress) that changes status on every
-        spawn while advancing nothing (2026-07-02: a dev looped 2h/8 spawns
-        without tripping the gate) — gets a bounded reset budget mirroring
-        tracing_resets, after which strikes accrue. seen_statuses is
-        in-memory only (not a tracker column): after a restart it rebuilds
-        from observed statuses, which can only under-gate briefly — never
-        over-gate.
+class WedgedAgentEngine(_Base):
+    """Is a claim's holder really alive: a live, parked or running container
+    spares its claim from the reaper, unless it is a wedged Grok, a stuck
+    Claude, or an agent whose gateway has been broken past the grace, which
+    are killed and evicted."""
+
+    @staticmethod
+    async def _probe_gateway_health(slug: str) -> bool | None:
+        """Probe an agent container's gateway out-of-band: healthy / broken / unknown.
+
+        The heartbeat only proves a verb fired recently; it cannot tell a quiet-
+        but-healthy agent from one whose MCP gateway is broken (e.g. a corrupted
+        ``/app/.venv`` so every gateway tool import raises) yet whose container is
+        still up. This asks the container directly whether the gateway venv imports
+        its core deps. Returns True (healthy), False (the import failed => broken
+        gateway), or None when the probe itself could not run (no docker, container
+        gone) so the caller declines to act on an inconclusive probe.
         """
-        agent_slug, task_id = key
-        seen = record.get("seen_statuses") or [record.get("last_status")]
-        if current_status not in seen:
-            self._pm_respawn_tracker[key] = {
-                "count": 1,
-                "last_status": current_status,
-                "last_check": now,
-                "seen_statuses": [*seen, current_status],
-            }
-            self._schedule_respawn_persist(
-                agent_slug, str(task_id), self._pm_respawn_tracker[key]
-            )
-            # Genuine forward progress: clear any durable stalled marker set
-            # by a prior trip on this task. Fire-and-forget, same discipline
-            # as the counter write-through above — the hot dispatch path
-            # never blocks on this DB write.
-            self._schedule_bg(self._clear_task_stalled_marker(agent_slug, str(task_id)))
-            return True
-        record["last_status"] = current_status
-        revisits = record.get("revisit_resets", 0)
-        if revisits < self._PM_RESPAWN_MAX_REVISIT_RESETS:
-            record["revisit_resets"] = revisits + 1
-            record["count"] = 1
-            record["last_check"] = now
-            record["notified"] = False
-            self._schedule_respawn_persist(agent_slug, str(task_id), record)
-            return True
-        logger.warning(
-            "PM respawn status ping-pong budget exhausted — "
-            "revisited statuses no longer reset the strike counter",
-            agent_id=agent_slug,
-            task_id=str(task_id),
-            task_status=current_status,
-            revisit_resets=revisits,
-        )
-        return False
-
-    def _init_respawn_record(
-        self,
-        agent_slug: str,
-        key: tuple[str, Any],
-        current_status: Any,
-        now: datetime,
-    ) -> None:
-        """First-seen (agent, task): open the strike record at count 1."""
-        self._pm_respawn_tracker[key] = {
-            "count": 1,
-            "last_status": current_status,
-            "last_check": now,
-            "seen_statuses": [current_status],
-        }
-        self._schedule_respawn_persist(
-            agent_slug, str(key[1]), self._pm_respawn_tracker[key]
-        )
-
-    async def _gate_should_skip_for_live_review(self, task: dict[str, Any]) -> bool:
-        """True when the spawn targets a review that is producing actual work.
-
-        An awaiting_* task advances nothing until its pass/fail decision, so
-        spawns during a long review look unproductive to a status-only
-        counter. Whether the review is genuinely in progress is decided by
-        the claimant's TOOL ACTIVITY, not its heartbeat: a working reviewer
-        (varied successful tool calls - reading diffs, running tests, taking
-        notes) is spared, while a thrash loop (one verb repeated, errors
-        dominating - the 2026-09-29 be-qa evidence loop) or a silent
-        container accrues strikes and trips. The heartbeat is deliberately
-        NOT consulted: it freezes during long local work (false dead) and
-        advances under give_me_work spam (false alive). The task status
-        travels as a plain string in the dispatcher's task dicts.
-        """
-        status = str(getattr(task.get("status"), "value", task.get("status")))
-        if not status.startswith("awaiting_"):
-            return False
-        claimant = await self._review_claimant_slug(task.get("id"))
-        if claimant is None:
-            return False
-        return await self._agent_work_signal(claimant) == "working"
-
-    async def _review_claimant_slug(self, task_id: Any) -> str | None:
-        """The current claimant's agent slug for an awaiting_* task, or None.
-
-        Best-effort: a DB failure returns None so the breaker's strike logic
-        stays authoritative rather than silently disabling itself.
-        """
-        from sqlalchemy import select
-
-        from roboco.db.base import get_session_factory
-        from roboco.db.tables import AgentTable, TaskTable
-
         try:
-            from uuid import UUID as _UUID
-
-            task_uuid = task_id if isinstance(task_id, _UUID) else _UUID(str(task_id))
-            factory = get_session_factory()
-            async with factory() as db:
-                row = await db.execute(
-                    select(AgentTable.slug)
-                    .join(TaskTable, TaskTable.active_claimant_id == AgentTable.id)
-                    .where(TaskTable.id == task_uuid)
-                )
-                return row.scalar_one_or_none()
-        except Exception as e:
-            logger.error(
-                "review-claim claimant lookup failed; counting normally",
-                task_id=str(task_id),
-                error=str(e),
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                f"roboco-agent-{slug}",
+                "/app/.venv/bin/python",
+                "-c",
+                "import httpx, mcp",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
+        except Exception:
             return None
-
-    async def _container_log_text(self, agent_slug: str) -> str:
-        """The agent container's recent log stream, or "" on any failure.
-
-        Bounded to the work-signal window so a long-running agent's log
-        volume cannot stall the dispatch tick.
-        """
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "logs",
-            "--since",
-            f"{_WORK_SIGNAL_WINDOW_SECONDS}s",
-            f"roboco-agent-{agent_slug}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
         try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=_DOCKER_EXEC_TIMEOUT_SECONDS
+            rc = await asyncio.wait_for(
+                proc.wait(), timeout=_DOCKER_EXEC_TIMEOUT_SECONDS
             )
         except TimeoutError:
+            # A hung docker exec is inconclusive (the probe could not run to
+            # completion): kill the child and decline to act, matching the
+            # existing probe-failure contract. The next grace tick retries.
             proc.kill()
-            return ""
-        return stdout.decode("utf-8", errors="replace")
-
-    async def _agent_work_signal(self, agent_slug: str) -> str:
-        """Classify the agent container's recent activity: work, thrash, idle.
-
-        Scans the container log's recent tool-call stream. "working" = varied
-        successful tool calls (a review reading diffs, running tests, noting
-        progress). "thrashing" = calls dominated by ONE tool or by errors -
-        a retry loop burning tokens while accomplishing nothing (the
-        2026-09-29 be-qa evidence loop: 976 give_me_work calls, 795 tool
-        errors, verdict never fired). "idle" = no container or zero tool
-        events in the window. A deliberate ``sleep`` is itself a tool event,
-        so a chosen wait inside an otherwise varied run still reads as
-        working-quietly. Best-effort: any docker failure yields "idle" so
-        the strike logic stays authoritative.
-        """
-        text = await self._container_log_text(agent_slug)
-        starts = text.count('"toolName":"')
-        if starts == 0:
-            return "idle"
-        tool_names = re.findall(r'"toolName":"([a-zA-Z_]+)"', text)
-        top_tool = max(set(tool_names), key=tool_names.count)
-        if (
-            starts >= _MIN_CALLS_FOR_RATIO
-            and tool_names.count(top_tool) / starts > _THRASH_SINGLE_TOOL_RATIO
-        ):
-            return "thrashing"
-        tool_errors = text.count("Error executing tool")
-        if (
-            starts >= _MIN_CALLS_FOR_RATIO
-            and tool_errors / starts > _THRASH_ERROR_RATIO
-        ):
-            return "thrashing"
-        return "working"
-
-    async def _pm_tracing_gap_reset(
-        self,
-        agent_slug: str,
-        task_id: Any,
-        record: dict[str, Any],
-        current_status: Any,
-        now: datetime,
-    ) -> bool:
-        """Reset the strike counter when the PM made a rule-following retry.
-
-        A tracing_gap normally means the agent is advancing through a verb
-        chain, so reset — but only up to ``_PM_RESPAWN_MAX_TRACING_RESETS``.
-        A task whose every respawn trips the same gap is wedged, not
-        progressing, so cap the resets and let strikes accrue once the
-        budget is exhausted. Returns True when the counter was reset.
-        """
-        if not await self._pm_made_rule_following_retry(agent_slug, task_id, record):
-            return False
-        resets = record.get("tracing_resets", 0)
-        if resets < self._PM_RESPAWN_MAX_TRACING_RESETS:
-            record["tracing_resets"] = resets + 1
-            record["count"] = 1
-            record["last_check"] = now
-            record["notified"] = False
-            self._schedule_respawn_persist(agent_slug, str(task_id), record)
-            return True
-        logger.warning(
-            "PM respawn tracing_gap reset budget exhausted — "
-            "treating recurring gap as a stuck loop",
-            agent_id=agent_slug,
-            task_id=task_id,
-            task_status=current_status,
-            tracing_resets=resets,
-        )
-        return False
-
-    def _pm_cooldown_gate(
-        self,
-        agent_slug: str,
-        task_id: Any,
-        record: dict[str, Any],
-        now: datetime,
-    ) -> bool | None:
-        """Self-heal a previously-tripped gate after a cooldown.
-
-        Returns True to keep gating, False to let the spawn through after a
-        cooldown reset, or None when the gate hasn't tripped yet (caller
-        continues to the increment path). last_check is frozen at the trip
-        tick; this branch returns before the increment below updates it.
-        """
-        if not (
-            record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
-            and record.get("notified")
-        ):
             return None
-        elapsed: bool = (now - record["last_check"]).total_seconds() > (
-            self._PM_RESPAWN_TRIP_COOLDOWN_SECONDS
-        )
-        if elapsed:
-            record["count"] = 1
-            record["last_check"] = now
-            record["notified"] = False
-            self._schedule_respawn_persist(agent_slug, str(task_id), record)
-        return not elapsed
+        except Exception:
+            return None
+        return rc == 0
 
-    async def _pm_respawn_should_gate(
-        self, agent_slug: str, task: dict[str, Any]
-    ) -> bool:
-        """Return True when the respawn should be skipped (loop detected).
+    def _assignee_has_active_instance(self, task: Any) -> bool:
+        """True if the task's assignee currently holds a live (ACTIVE) container.
 
-        Tracks (agent_slug, task_id) -> count of consecutive spawns where
-        the task's status did not advance. When the task status changes,
-        the counter resets. Once the count hits the threshold, the spawn
-        is skipped and a warning logged; operators must intervene.
-
-        Tracing-gap reset
-        -----------------
-        With the gateway claim-time gates installed, a rule-following PM
-        will hit ``PARENT_NOT_CLAIMED`` (a ``tracing_gap`` envelope) and
-        the prompt will tell it to call the prerequisite verb first.
-        Each retry leaves the task status unchanged but the agent IS
-        making progress through the verb chain. Counting that as a
-        strike kills rule-followers.
-
-        Solution: before incrementing on a same-status spawn, check
-        ``audit_log`` for a ``gateway.rejected`` row tagged
-        ``reason == "tracing_gap"`` from this (agent, task) since the
-        last check. If found, reset the counter — the agent followed
-        the rules, not stuck.
-
-        Audit lookup is best-effort: any failure falls through to the
-        legacy strike behavior so audit problems don't break the gate.
+        The heartbeat only approximates liveness. A developer deep in an
+        edit/test cycle can go longer than the heartbeat TTL between gateway
+        calls, so a heartbeat-only reaper releases claims out from under agents
+        that are alive and working — churning the task (and risking a double
+        spawn against the still-running container). The agent-instance registry
+        is the ground truth; defer to it when present. Defensive on missing
+        fields so a heartbeat-only caller (and the reaper's own unit tests)
+        behave exactly as before.
         """
-        task_id = task.get("id")
-        if not task_id:
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
             return False
-        key = (agent_slug, task_id)
-        current_status = task.get("status")
-        record = self._pm_respawn_tracker.get(key)
+        instances = getattr(self, "_instances", None)
+        if not instances:
+            return False
+        instance = instances.get(self._resolve_agent_slug(str(owner)))
+        return instance is not None and instance.state == AgentState.ACTIVE
+
+    def _assignee_is_provider_parked(self, task: Any) -> bool:
+        """True if the task's assignee is parked waiting for a provider to recover.
+
+        A provider-parked agent (session-limit / overload / grok-429) is OFFLINE
+        with a dead container and a ``rate_limit_lifted`` WaitingRecord; the
+        probe-resume loop owns its recovery. The stale-claim reaper must skip it
+        so the claim survives until the probe revives the agent — reaping would
+        release the claim to pending and probe-success would then respawn the
+        agent on a task it no longer owns. Defensive on a missing registry.
+        """
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return False
+        records = getattr(self, "_waiting_records", None)
+        if not records:
+            return False
+        slug = self._resolve_agent_slug(str(owner))
+        record = records.get(slug)
+        return record is not None and record.waiting_for == "rate_limit_lifted"
+
+    async def _assignee_container_running(self, task: Any) -> bool:
+        """Docker-liveness fallback for the reaper on an instance-registry MISS.
+
+        ``_assignee_has_active_instance`` reads the in-memory ``_instances``
+        registry, which is lost on an orchestrator restart while the agent's
+        container keeps running. Without a fallback the heartbeat-stale reaper
+        then releases a task out from under a live agent the orchestrator has
+        merely forgotten — registry amnesia, the over-reap that hit be-dev-1.
+        This asks Docker directly, but ONLY on a true registry miss: a known
+        instance (ACTIVE or stopped) is authoritative and not second-guessed,
+        and an uninitialised registry (``None`` — e.g. a unit-test harness) is
+        left to the existing behaviour. Any error (no docker binary, inspect
+        fails) yields False, so non-Docker test/dev contexts are unaffected.
+        """
+        instances = getattr(self, "_instances", None)
+        if instances is None:
+            return False
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return False
+        slug = self._resolve_agent_slug(str(owner))
+        if slug in instances:
+            return False
+        try:
+            is_running, _ = await self._inspect_container_state(f"roboco-agent-{slug}")
+        except Exception:
+            return False
+        return is_running
+
+    def _wedged_grok_slug(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> str | None:
+        """Slug of an ACTIVE GROK container holding ``task`` and idle past the kill TTL.
+
+        ``_assignee_has_active_instance`` shields a live container from the
+        reaper — correct for a Claude agent quiet during a long edit/test cycle.
+        A wedged GROK container is the one case that breaks: ACTIVE *and*
+        silent (an idle model call fires no gateway verb), so its heartbeat never
+        advances and the skip would protect it forever. Returns the slug only for
+        a GROK instance idle past the grok-kill TTL — a recent heartbeat, no
+        owner, a non-GROK provider, or a non-ACTIVE instance all yield ``None``.
+        """
+        from roboco.models.base import ModelProvider
+
+        ttl = timedelta(seconds=getattr(self, "_grok_idle_kill_ttl", 900))
+        if last_heartbeat is not None and self._active_age(last_heartbeat) < ttl:
+            return None
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return None
+        slug = self._resolve_agent_slug(str(owner))
+        instance = (getattr(self, "_instances", None) or {}).get(slug)
+        config = getattr(instance, "config", None)
+        is_active_grok = (
+            instance is not None
+            and instance.state == AgentState.ACTIVE
+            and config is not None
+            and config.provider_type == ModelProvider.GROK.value
+        )
+        return slug if is_active_grok else None
+
+    async def _maybe_kill_wedged_grok(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> bool:
+        """Kill + evict a wedged GROK container so this tick's reaper frees its task.
+
+        On a kill the container is removed (its logs dumped to disk first) and
+        dropped from ``_instances``. Returns True only when a container was
+        actually killed; see :meth:`_wedged_grok_slug` for the eligibility rule.
+        """
+        slug = self._wedged_grok_slug(task, last_heartbeat)
+        if slug is None:
+            return False
+        try:
+            await self._remove_container(
+                f"roboco-agent-{slug}", stop_reason="reaper_wedged_grok"
+            )
+        except Exception as exc:
+            logger.error(
+                "wedged-grok kill failed; will retry next tick",
+                agent_id=slug,
+                error=str(exc),
+            )
+            return False
+        self._instances.pop(slug, None)
+        logger.warning(
+            "wedged grok container killed and evicted",
+            agent_id=slug,
+            task_id=str(getattr(task, "id", "")),
+        )
+        return True
+
+    def _stuck_claude_slug(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> str | None:
+        """Slug of an ACTIVE non-GROK container holding ``task``, stuck past the TTL.
+
+        The reaper's live-container skip shields a quiet agent during a long
+        edit/test cycle — correct for a working agent (it fires gateway verbs
+        every few minutes, advancing its heartbeat). A non-GROK agent stuck in a
+        non-verb loop is ACTIVE yet silent, so the skip would protect its claim
+        forever (#73). Returns the slug only for a non-GROK ACTIVE instance whose
+        heartbeat has been stale longer than ``claude_stuck_kill_seconds`` — a
+        recent heartbeat, no owner, a GROK provider (handled by the wedged-grok
+        path), or a non-ACTIVE instance all yield ``None``. The bucket is
+        provider-agnostic by construction (it excludes GROK specifically, not
+        an allowlist of what it includes) — GEMINI (a one-shot CLI runtime with
+        no SDK server either) falls into this same generic "non-GROK" bucket
+        for free, with no dedicated wedge-kill path of its own.
+        """
+        from roboco.models.base import ModelProvider
+
+        ttl = timedelta(seconds=getattr(self, "_claude_stuck_kill_ttl", 3600))
+        if last_heartbeat is not None and self._active_age(last_heartbeat) < ttl:
+            return None
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return None
+        slug = self._resolve_agent_slug(str(owner))
+        instance = (getattr(self, "_instances", None) or {}).get(slug)
+        config = getattr(instance, "config", None)
+        is_active_non_grok = (
+            instance is not None
+            and instance.state == AgentState.ACTIVE
+            and config is not None
+            and config.provider_type != ModelProvider.GROK.value
+        )
+        return slug if is_active_non_grok else None
+
+    async def _maybe_kill_stuck_claude(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> bool:
+        """Kill + evict a stuck non-GROK container so the reaper frees its task.
+
+        On a kill the container is removed and dropped from ``_instances``.
+        Returns True only when a container was actually killed; see
+        :meth:`_stuck_claude_slug` for the eligibility rule (#73).
+        """
+        slug = self._stuck_claude_slug(task, last_heartbeat)
+        if slug is None:
+            return False
+        try:
+            await self._remove_container(
+                f"roboco-agent-{slug}", stop_reason="reaper_stuck_claude"
+            )
+        except Exception as exc:
+            logger.error(
+                "stuck-claude kill failed; will retry next tick",
+                agent_id=slug,
+                error=str(exc),
+            )
+            return False
+        self._instances.pop(slug, None)
+        logger.warning(
+            "stuck non-grok container killed and evicted",
+            agent_id=slug,
+            task_id=str(getattr(task, "id", "")),
+        )
+        return True
+
+    async def _maybe_recover_broken_gateway(self, task: Any) -> bool:
+        """Kill + evict a live agent whose gateway is broken past the grace window.
+
+        The reaper's live-skip protects a running container from a stale-heartbeat
+        reap — right for a healthy agent quiet during a long edit/test cycle, but
+        it would shield a broken-but-alive agent (a corrupted gateway firing no
+        verb) forever. This probes the gateway out-of-band and, once it has been
+        broken longer than ``gateway_health_grace_seconds`` (so a transient probe
+        miss is tolerated), kills + evicts the container so the reaper falls
+        through to release + respawn. Returns True only on a kill; a healthy
+        gateway, an inconclusive probe, or a still-within-grace breakage returns
+        False (the live container is spared). Gated by ``gateway_health_enabled``.
+        """
+        if not settings.gateway_health_enabled:
+            return False
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return False
+        slug = self._resolve_agent_slug(str(owner))
+        if not await self._gateway_broken_past_grace(slug):
+            return False
+        try:
+            await self._remove_container(
+                f"roboco-agent-{slug}", stop_reason="gateway_health_recovery"
+            )
+        except Exception as exc:
+            logger.error(
+                "broken-gateway kill failed; will retry next tick",
+                agent_id=slug,
+                error=str(exc),
+            )
+            return False
+        self._instances.pop(slug, None)
+        self._gateway_broken_since.pop(slug, None)
+        logger.warning(
+            "broken-gateway agent killed and evicted",
+            agent_id=slug,
+            task_id=str(getattr(task, "id", "")),
+        )
+        return True
+
+    async def _gateway_broken_past_grace(self, slug: str) -> bool:
+        """True when ``slug``'s gateway has probed broken longer than the grace.
+
+        Probe-inconclusive (None) or healthy clears the grace mark and returns
+        False; the first broken sighting records the mark and returns False (one
+        grace tick); a breakage older than ``gateway_health_grace_seconds`` (or a
+        test-injected ``_gateway_health_grace``) returns True.
+        """
+        healthy = await self._probe_gateway_health(slug)
+        if healthy is None or healthy:
+            self._gateway_broken_since.pop(slug, None)
+            return False
         now = datetime.now(UTC)
-        if record is None:
-            self._init_respawn_record(agent_slug, key, current_status, now)
+        first_seen = self._gateway_broken_since.get(slug)
+        if first_seen is None:
+            self._gateway_broken_since[slug] = now
             return False
-        verdict = await self._respawn_pre_increment_verdict(
-            task, record, key, current_status, now
-        )
-        if verdict is not None:
-            return verdict
-        record["count"] += 1
-        record["last_check"] = now
-        self._schedule_respawn_persist(agent_slug, str(task_id), record)
-        tripped: bool = record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
-        # B37 respawn_verdict: a confident "productive respawn" verdict
-        # overrides the trip (skipping the stall/notify below); None (hold,
-        # or below-floor/no verdict) falls through to today's trip behavior -
-        # the stall marker + one-shot overseer notification ARE the existing
-        # hold-for-human mechanics.
-        spawn_anyway = await self._pm_respawn_spawn_anyway(
-            agent_slug, task_id, current_status, record, tripped
-        )
-        if tripped and not spawn_anyway:
-            await self._pm_trip_stall_notice(
-                agent_slug, task_id, current_status, record
-            )
-        return tripped and not spawn_anyway
+        grace = getattr(self, "_gateway_health_grace", None)
+        if grace is None:
+            grace = settings.gateway_health_grace_seconds
+        return (now - first_seen).total_seconds() >= grace
 
-    async def _respawn_pre_increment_verdict(
-        self,
-        task: dict[str, Any],
-        record: dict[str, Any],
-        key: tuple[str, Any],
-        current_status: Any,
-        now: datetime,
-    ) -> bool | None:
-        """Verdicts decided BEFORE a strike accrues.
+    async def _should_skip_live_reap(self, t: Any, ts: Any) -> bool:
+        """True when a live container should be spared from reaping.
 
-        Returns True (skip the spawn entirely), False (allow the spawn
-        without counting a strike), or None (no pre-increment decision -
-        the caller counts the strike). Paths, in order:
-
-        - status changed with a reset budget left: forward progress, allow.
-        - live review claim: an awaiting_* task being actively reviewed
-          advances nothing until the pass/fail decision, so every spawn
-          during a long review otherwise accrues a strike and trips the
-          breaker mid-review (live 2026-09-29: fe-qa tripped on 372eac39
-          while actively reviewing with a fresh claim heartbeat). Skip
-          WITHOUT a strike while the claim is live.
-        - tracing_gap: a rule-following retry through the verb chain,
-          reset up to the tracing budget.
-        - cooldown: an already-tripped pair stays gated through its
-          cooldown window, then re-arms (a fixed task advances and the
-          status-change path fully resets the counter).
+        A live container normally protects its task; on a registry MISS (e.g. the
+        orchestrator restarted and forgot a still-running container) fall back to
+        asking Docker. A live container is spared UNLESS it is wedged (grok) or
+        its gateway is broken-but-alive past the grace window — both checks kill +
+        evict it (returning False here) so the caller falls through to release +
+        respawn. Short-circuits like the original ``and``: when not live, neither
+        kill nor recovery check is awaited.
         """
-        agent_slug, task_id = key
-        if record.get("last_status") != current_status and (
-            self._respawn_status_change_resets(key, record, current_status, now)
-        ):
-            return False
-        if await self._gate_should_skip_for_live_review(task):
-            return True
-        if await self._pm_tracing_gap_reset(
-            agent_slug, task_id, record, current_status, now
-        ):
-            return False
-        gate = self._pm_cooldown_gate(agent_slug, task_id, record, now)
-        if gate is not None:
-            return gate
-        return None
-
-    async def _pm_respawn_spawn_anyway(
-        self,
-        agent_slug: str,
-        task_id: Any,
-        current_status: str | None,
-        record: dict[str, Any],
-        tripped: bool,
-    ) -> bool:
-        """B37 respawn_verdict: True when a confident "productive respawn"
-        verdict overrides the trip. Short-circuits exactly as before: the
-        classifier is only consulted when decisions are enabled and the
-        counter actually tripped."""
-        return bool(
-            settings.decisions_enabled
-            and tripped
-            and (
-                await self._decisions_respawn_override(
-                    agent_slug, task_id, current_status, record
-                )
-                is False
-            )
+        live = self._assignee_has_active_instance(
+            t
+        ) or await self._assignee_container_running(t)
+        return (
+            live
+            and not await self._maybe_kill_wedged_grok(t, ts)
+            and not await self._maybe_kill_stuck_claude(t, ts)
+            and not await self._maybe_recover_broken_gateway(t)
         )
 
-    async def _pm_trip_stall_notice(
-        self,
-        agent_slug: str,
-        task_id: Any,
-        current_status: str | None,
-        record: dict[str, Any],
-    ) -> None:
-        """Log the trip and fire the one-shot stall marker + overseer
-        notification. A skipped spawn pauses the loop but can't advance the
-        task; alert an overseer once so a wedged agent isn't silently
-        stranded, and record a durable marker on the task itself (readable
-        without container logs) alongside that one-shot notification. Both
-        are one-shot per trip, gated by the same `notified` flag. A breaker
-        trip is also an incident class the coroner's fixed hooks (3+
-        bounces, cancel-after-start, budget, stranded) never see, so the
-        B16 decisions-gated postmortem entry is consulted here: it may only
-        ADD a postmortem (ON-mode confident verdict, coroner program armed)
-        and is best-effort to the core stall mechanics."""
-        logger.warning(
-            "PM respawn loop detected — skipping spawn",
-            agent_id=agent_slug,
-            task_id=task_id,
-            task_status=current_status,
-            spawn_attempts=record["count"],
-            threshold=self._PM_RESPAWN_MAX_UNPRODUCTIVE,
-            hint=(
-                "Agent repeatedly spawned without advancing task state. "
-                "Investigate prompt/schema drift or escalate manually."
-            ),
-        )
-        if not record.get("notified"):
-            record["notified"] = True
-            self._schedule_respawn_persist(agent_slug, str(task_id), record)
-            await self._mark_task_stalled(task_id)
-            await self._notify_stuck_agent(agent_slug, task_id, current_status)
-            await self._coroner_wedged_postmortem(
-                agent_slug, task_id, current_status, record
-            )
 
-    async def _coroner_wedged_postmortem(
-        self,
-        agent_slug: str,
-        task_id: Any,
-        current_status: str | None,
-        record: dict[str, Any],
-    ) -> None:
-        """B16 coroner_gate: offer the wedged task to the coroner through
-        the decisions-gated entry point. The gate (pilot ON + confident +
-        coroner program armed + one-open-autopsy dedup) decides inside; a
-        failure here degrades to today's behavior (stall notice only) and
-        must never break the breaker tick."""
+class ProviderUpkeepEngine(_Base):
+    """Provider upkeep each dispatcher tick: the Grok cost budget (and the
+    agents' captured cost), and keeping the host Grok and Codex credentials
+    live."""
+
+    def _grok_cost_usd(self, agent_id: str) -> float:
+        """A GROK agent's captured notional cost from its ``usage.json`` (0 if none)."""
+        data = self._grok_usage_json(agent_id)
+        if not data:
+            return 0.0
         try:
-            from uuid import UUID
+            return float(data.get("cost_usd", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
-            from roboco.db import get_db_context
-            from roboco.services.coroner_engine import CoronerEngine
+    def _gemini_cost_usd(self, agent_id: str) -> float:
+        """A GEMINI agent's captured cost from its ``usage.json`` (0 if none)."""
+        data = self._gemini_usage_json(agent_id)
+        if not data:
+            return 0.0
+        try:
+            return float(data.get("cost_usd", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
-            async with get_db_context() as db:
-                await CoronerEngine(db).open_for_incident_on_verdict(
-                    UUID(str(task_id)),
-                    kind="wedged",
-                    extra_context={
-                        "agent": agent_slug,
-                        "task_status": current_status,
-                        "spawn_attempts": int(record.get("count") or 0),
-                        "statuses_seen": [
-                            str(s) for s in record.get("seen_statuses") or []
-                        ],
-                    },
-                )
-        except Exception as exc:
-            logger.warning(
-                "coroner wedged-postmortem pass failed (best-effort)",
-                agent_id=agent_slug,
-                task_id=str(task_id),
-                error=str(exc),
-            )
+    async def _enforce_grok_cost_budget(self) -> None:
+        """Kill a live GROK container whose captured cost exceeds the cap.
 
-    async def _decisions_respawn_override(
-        self,
-        agent_slug: str,
-        task_id: str,
-        current_status: str | None,
-        record: dict[str, Any],
-    ) -> bool | None:
-        """B37 respawn_verdict: refine the counters' approximate "wedged"
-        verdict at the trip point.
-
-        Returns False ONLY for an ON-mode, at-floor ``spawn`` verdict
-        (override the trip with one more spawn); every other outcome
-        returns None and keeps today's tripped behavior (the stall
-        marker + overseer notification are the existing hold-for-human
-        mechanics). ``hold-task-for-human`` keeps the trip by design;
-        ``spawn-with-amended-prompt`` and ``kill-task`` have NO breaker
-        mechanics, and re-spawning the identical prompt is exactly the
-        churn the trip exists to stop, so they keep the trip too (the
-        human the stall notice pages can amend or kill). NO_VERDICT
-        (off / shadow / no verdict / below floor) keeps the trip: the
-        pilot must never weaken the wedged-agent protection by default.
+        The grok CLI exposes no live token/budget hook, so the budget kill-switch
+        (Claude Code parity for runaway token burn — a loop that keeps firing
+        verbs evades the idle watchdog but still burns cost) reads each ACTIVE
+        GROK container's captured cost from its ``usage.json`` and kills + evicts
+        it past ``ROBOCO_GROK_MAX_COST_USD``. The reaper then releases the freed
+        task. This bites on the interactive sessions (the driver rewrites
+        usage.json every turn, so a runaway chat is caught between turns); a
+        one-shot ``grok -p`` writes usage.json only post-run and is bounded by its
+        ``--max-turns`` cap instead. Disabled (no-op) when the cap is <= 0.
         """
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.decisions import pilots_dispatch
-
-            async with get_db_context() as db:
-                verdict = await pilots_dispatch.respawn_verdict(
-                    db,
-                    agent_slug=agent_slug,
-                    task_id=str(task_id),
-                    task_status=current_status,
-                    spawn_attempts=int(record.get("count") or 0),
-                    statuses_seen=[str(s) for s in record.get("seen_statuses") or []],
-                )
-            if verdict is pilots_dispatch.RespawnVerdict.SPAWN:
-                logger.info(
-                    "Respawn trip overridden to spawn by Decisions verdict",
-                    agent_id=agent_slug,
-                    task_id=str(task_id),
-                )
-                return False
-            if verdict is pilots_dispatch.RespawnVerdict.SPAWN_WITH_AMENDED_PROMPT:
-                # No amended-prompt mechanic at the breaker: keep the trip
-                # (the stall notice names the task for a human to amend).
-                logger.info(
-                    "Respawn verdict spawn-with-amended-prompt has no breaker"
-                    " mechanic; keeping the trip (stall notice fired)",
-                    agent_id=agent_slug,
-                    task_id=str(task_id),
-                )
-                return None
-            if verdict is pilots_dispatch.RespawnVerdict.KILL_TASK:
-                # No kill-task mechanic in the breaker: keep the trip (the
-                # stall notice is the human path to cancellation).
-                logger.info(
-                    "Respawn verdict kill-task has no kill mechanic; keeping"
-                    " the trip (stall notice fired)",
-                    agent_id=agent_slug,
-                    task_id=str(task_id),
-                )
-                return None
-            # hold-task-for-human and NO_VERDICT: the trip path IS the
-            # hold mechanic.
-            return None
-        except Exception as exc:
-            logger.warning(
-                "respawn verdict decisions pass failed (best-effort)",
-                agent_id=agent_slug,
-                task_id=str(task_id),
-                error=str(exc),
-            )
-            return None
-
-    async def _mark_task_stalled(self, task_id: str) -> None:
-        """Record a durable stalled marker on the task (breaker-tripped path).
-
-        Best-effort: a write failure must not wedge dispatch, so any error is
-        logged and swallowed — the CEO notification still fires regardless.
-        """
-        from uuid import UUID
-
-        from roboco.db.base import get_db_context
-        from roboco.models.base import StalledReason
-        from roboco.services.task import TaskService
-
-        try:
-            async with get_db_context() as db:
-                await TaskService(db).mark_stalled(
-                    UUID(task_id), reason=StalledReason.BREAKER_TRIPPED.value
-                )
-        except Exception as exc:
-            logger.warning(
-                "Failed to record stalled marker",
-                task_id=task_id,
-                error=str(exc),
-            )
-
-    async def _clear_task_stalled_marker(self, agent_slug: str, task_id: str) -> None:
-        """Clear the durable stalled marker on genuine forward progress.
-
-        Fire-and-forget (scheduled via `_schedule_bg`) so the hot dispatch
-        path never blocks on this DB write — mirroring
-        `_schedule_respawn_persist`'s write-through discipline. Best-effort:
-        a write failure is logged and swallowed.
-        """
-        from uuid import UUID
-
-        from roboco.db.base import get_db_context
-        from roboco.services.task import TaskService
-
-        try:
-            async with get_db_context() as db:
-                await TaskService(db).clear_stalled_marker(UUID(task_id))
-        except Exception as exc:
-            logger.warning(
-                "Failed to clear stalled marker",
-                agent_id=agent_slug,
-                task_id=task_id,
-                error=str(exc),
-            )
-
-    async def _pm_made_rule_following_retry(
-        self,
-        agent_slug: str,
-        task_id: str,
-        record: dict[str, Any],
-    ) -> bool:
-        """Did the agent emit a ``tracing_gap`` envelope since the last check?
-
-        Returns ``False`` for unknown slugs (defensive — the audit query
-        needs an agent UUID, and we'd rather fall through to the legacy
-        strike behavior than crash). Returns ``False`` if the audit
-        lookup raises — observability must never block the gate.
-        """
-        agent_uuid_str = AGENT_UUIDS.get(agent_slug)
-        if not agent_uuid_str:
-            return False
-        from uuid import UUID
-
-        try:
-            agent_uuid = UUID(agent_uuid_str)
-            task_uuid = UUID(task_id)
-        except (ValueError, TypeError):
-            return False
-        since = record.get("last_check") or datetime.now(UTC)
-
-        from roboco.services.audit import get_audit_service
-
-        audit = get_audit_service()
-        try:
-            return await audit.has_recent_tracing_gap(
-                agent_id=agent_uuid,
-                task_id=task_uuid,
-                since=since,
-            )
-        except Exception as exc:
-            logger.debug(
-                "audit.has_recent_tracing_gap failed; falling back to strike count",
-                agent_slug=agent_slug,
-                task_id=task_id,
-                error=str(exc),
-            )
-            return False
-
-    async def _respawn_dev_if_inactive(
-        self, task: dict[str, Any], agent_slug: str
-    ) -> None:
-        """Respawn a dev agent on an existing task when it isn't running."""
-        if self._is_agent_active(agent_slug):
+        cap = getattr(self, "_grok_max_cost_usd", 0.0)
+        if cap <= 0:
             return
-        await self.spawn_agent(
-            agent_id=agent_slug,
-            task_id=task["id"],
-            initial_prompt=await self._build_dev_prompt(task),
-            git_context=self._task_git_context(task),
-            spawned_by="_respawn_dev_if_inactive",
-        )
+        from roboco.models.base import ModelProvider
+
+        for agent_id, instance in list(self._instances.items()):
+            config = instance.config
+            if (
+                config is None
+                or config.provider_type != ModelProvider.GROK.value
+                or instance.state != AgentState.ACTIVE
+            ):
+                continue
+            cost = self._grok_cost_usd(agent_id)
+            if cost <= cap:
+                continue
+            try:
+                await self._remove_container(
+                    f"roboco-agent-{agent_id}", stop_reason="grok_cost_cap"
+                )
+            except Exception as exc:
+                logger.error(
+                    "grok cost-cap kill failed; will retry next tick",
+                    agent_id=agent_id,
+                    error=str(exc),
+                )
+                continue
+            # Finalize the spawn session BEFORE popping the instance so the
+            # captured usage/cost is recorded; popping first would lose the
+            # model + usage_session_id and leave the session row open.
+            with contextlib.suppress(Exception):
+                await self._finalize_spawn_session(agent_id, exit_reason="cost_cap")
+            self._instances.pop(agent_id, None)
+            # Interactive roles (intake/secretary) have an open panel relay; a
+            # raw kill would leave the SSE hanging (frozen chat). Close it with a
+            # reason so the panel reports why the chat ended.
+            if agent_id in (INTAKE_AGENT_ID, SECRETARY_AGENT_ID):
+                from roboco.services.prompter_live import get_live_registry
+
+                get_live_registry().close_by_agent(
+                    agent_id, error="Chat ended: the Grok cost cap was exceeded."
+                )
+            logger.warning(
+                "grok container killed: cost ceiling exceeded",
+                agent_id=agent_id,
+                cost_usd=round(cost, 4),
+                cap_usd=cap,
+            )
+
+    async def _refresh_grok_auth(self) -> None:
+        """Keep the host SuperGrok token live so grok agents never mount a dead one.
+
+        The grok access token has a ~6h server-set TTL and headless grok cannot
+        self-refresh — on an expired token it hangs at an interactive login
+        prompt. The per-agent mount is read-only, so the orchestrator refreshes
+        the host ``auth.json`` itself (refresh-token grant) before expiry; agents
+        then mount a fresh credential. Best-effort, throttled, and serial (run
+        once per dispatch tick) so concurrent refreshes can't rotate the
+        refresh-token out from under each other. Never breaks the loop.
+
+        Failures back off exponentially (60s doubling, 1h cap) instead of
+        re-POSTing the same dead grant every tick — a revoked refresh token
+        (``rejected``) can never succeed again, and hammering auth.x.ai with
+        it every 60s is pure log noise (2026-09-29 fleet wedge). A
+        ``rejected`` status parks the check for an hour; a fresh ``grok
+        login`` on the host is picked up on the next unparked tick.
+        """
+        now = datetime.now(UTC)
+        next_check = getattr(self, "_grok_auth_next_check", None)
+        if next_check is not None and now < next_check:
+            return
+        streak = getattr(self, "_grok_auth_fail_streak", 0)
+        self._grok_auth_next_check = now + timedelta(seconds=60)
+        try:
+            from roboco.llm.providers import grok_auth
+            from roboco.llm.providers.grok import GROK_AUTH_HOST_PATH
+
+            auth_path = Path(GROK_AUTH_HOST_PATH) / "auth.json"
+            status = await asyncio.to_thread(grok_auth.refresh_if_stale, auth_path)
+            if status in {"fresh", "refreshed"}:
+                self._grok_auth_fail_streak = 0
+                if status == "refreshed":
+                    logger.info("grok auth token refreshed")
+                return
+            self._grok_auth_fail_streak = streak + 1
+            if status == "rejected":
+                # Credential is dead: retry no more than hourly until a
+                # re-issued auth.json lands. The warning already fired once
+                # from grok_auth with the remediation.
+                self._grok_auth_next_check = now + timedelta(seconds=3600)
+            else:
+                backoff = min(60 * (2**self._grok_auth_fail_streak), 3600)
+                self._grok_auth_next_check = now + timedelta(seconds=backoff)
+            logger.warning(
+                "grok auth refresh failed; agents may hit an expired token",
+                status=status,
+                fail_streak=self._grok_auth_fail_streak,
+                retry_in_seconds=(3600 if status == "rejected" else backoff),
+            )
+        except Exception as exc:
+            logger.error("grok auth refresh hook error", error=str(exc))
+
+    async def _refresh_codex_auth(self) -> None:
+        """Keep the host Codex CLI credential live (parity with ``_refresh_grok_auth``).
+
+        Same rationale as the grok refresh: the per-agent mount is read-only,
+        so the orchestrator refreshes the host ``auth.json`` itself before the
+        access JWT expires. Best-effort, throttled, and serial (run once per
+        dispatch tick). Never breaks the loop. Same exponential backoff on
+        failure and hourly parking on a definitive ``rejected`` (dead
+        credential; see ``_refresh_grok_auth``).
+        """
+        now = datetime.now(UTC)
+        next_check = getattr(self, "_codex_auth_next_check", None)
+        if next_check is not None and now < next_check:
+            return
+        streak = getattr(self, "_codex_auth_fail_streak", 0)
+        self._codex_auth_next_check = now + timedelta(seconds=60)
+        try:
+            from roboco.llm.providers import codex_auth
+            from roboco.llm.providers.codex import CODEX_AUTH_HOST_PATH
+
+            auth_path = Path(CODEX_AUTH_HOST_PATH) / "auth.json"
+            status = await asyncio.to_thread(codex_auth.refresh_if_stale, auth_path)
+            if status in {"fresh", "refreshed"}:
+                self._codex_auth_fail_streak = 0
+                if status == "refreshed":
+                    logger.info("codex auth token refreshed")
+                return
+            self._codex_auth_fail_streak = streak + 1
+            if status == "rejected":
+                self._codex_auth_next_check = now + timedelta(seconds=3600)
+            else:
+                backoff = min(60 * (2**self._codex_auth_fail_streak), 3600)
+                self._codex_auth_next_check = now + timedelta(seconds=backoff)
+            logger.warning(
+                "codex auth refresh failed; agents may hit an expired token",
+                status=status,
+                fail_streak=self._codex_auth_fail_streak,
+                retry_in_seconds=(3600 if status == "rejected" else backoff),
+            )
+        except Exception as exc:
+            logger.error("codex auth refresh hook error", error=str(exc))

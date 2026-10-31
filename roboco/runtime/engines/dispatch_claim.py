@@ -42,10 +42,20 @@ else:
 
 
 class DispatcherLoopEngine(_Base):
-    """The dispatcher loop and each tick's run of every work dispatcher
-    (`_dispatch_all_work`), the reads they make (tasks, notifications, one
-    task's fields, descendants and children), and the handled-this-tick
-    check."""
+    """The dispatcher loop, its heartbeat, and each tick's run of every work
+    dispatcher (`_dispatch_all_work`), the reads they make (tasks,
+    notifications, one task's fields, descendants and children), and the
+    handled-this-tick check."""
+
+    # Re-declared (not just inherited from _Base above): mypy's Protocol
+    # attribute inference cannot determine the type of an inherited member
+    # that a method both reads AND assigns within the same method body
+    # (read-then-write in one scope; see _emit_dispatcher_heartbeat below)
+    # without a bare re-declaration directly on the concrete class. Without
+    # it a fresh run rooted at orchestrator.py alone infers `datetime` from
+    # the heartbeat assignment and rejects __init__'s `datetime | None`.
+    if TYPE_CHECKING:
+        _last_dispatch_heartbeat: datetime | None
 
     def _is_task_handled_this_tick(self, task_id: str | None) -> bool:
         """True if a prior dispatcher already handled this task this tick."""
@@ -335,6 +345,34 @@ class DispatcherLoopEngine(_Base):
                         dispatcher=name,
                         error=str(e),
                     )
+
+    async def _emit_dispatcher_heartbeat(self) -> None:
+        """Periodic dispatcher.alive audit row — a dead loop becomes detectable.
+
+        The dispatch loop can die silently (task cancelled, unhandled exit) and
+        its stdout dies with the container; audit_log survives both. Absence of
+        a fresh heartbeat row = loop dead, distinguishable from "no work". The
+        `dispatch_paused` flag lets the uptime ledger treat a deliberate
+        maintenance pause as downtime instead of counting it as an outage.
+        """
+        now = datetime.now(UTC)
+        last = getattr(self, "_last_dispatch_heartbeat", None)
+        if last is not None and (now - last).total_seconds() < (
+            self._DISPATCH_HEARTBEAT_SECONDS
+        ):
+            return
+        self._last_dispatch_heartbeat = now
+        from roboco.services.maintenance_pause import PauseScope
+
+        paused = await self._is_paused(PauseScope.DISPATCH)
+        self._fire_audit(
+            event_type="dispatcher.alive",
+            agent_slug="orchestrator",
+            details={
+                "interval_seconds": self._DISPATCH_HEARTBEAT_SECONDS,
+                "dispatch_paused": paused,
+            },
+        )
 
 
 class DispatchClaimEngine(_Base):

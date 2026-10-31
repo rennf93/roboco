@@ -1331,7 +1331,15 @@ from roboco.runtime.engines._shared import SharedEngine
 from roboco.runtime.engines.ci_watch import CiWatchEngine
 from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 from roboco.runtime.engines.dep_update import DepUpdateEngine
-from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
+from roboco.runtime.engines.dispatch_breaker import (
+    AgentWorkSignalEngine,
+    NotificationSpawnGuardEngine,
+    ProviderUpkeepEngine,
+    RespawnBreakerEngine,
+    RespawnTripEngine,
+    StaleClaimReaperEngine,
+    WedgedAgentEngine,
+)
 from roboco.runtime.engines.dispatch_claim import (
     ClaimBarrierEngine,
     DispatchClaimEngine,
@@ -1391,6 +1399,7 @@ from roboco.runtime.engines.x_mentions import XMentionsEngine
 
 class AgentOrchestrator(
     SharedEngine,
+    AgentWorkSignalEngine,
     AuditDispatchEngine,
     AuditorExplorationsEngine,
     AuditorPromptsEngine,
@@ -1404,7 +1413,6 @@ class AgentOrchestrator(
     DepUpdateEngine,
     DevDispatchEngine,
     DevPromptContextEngine,
-    DispatchBreakerEngine,
     DispatchClaimEngine,
     DispatchPromptsEngine,
     DispatchRoutingEngine,
@@ -1418,26 +1426,32 @@ class AgentOrchestrator(
     MarketingProgramPromptsEngine,
     NotificationDispatchEngine,
     NotificationPromptsEngine,
+    NotificationSpawnGuardEngine,
     PMClosureEngine,
     PMDispatchEngine,
     PRReviewDispatchEngine,
     ProductOwnerExplorationsEngine,
     ProductOwnerProgramPromptsEngine,
+    ProviderUpkeepEngine,
     QADispatchEngine,
     RateLimitProbeEngine,
     ReconcileEngine,
     ReleaseManagerEngine,
+    RespawnBreakerEngine,
+    RespawnTripEngine,
     RoutingClassifierEngine,
     SpawnConfigEngine,
     SpawnExitEngine,
     SpawnLaunchEngine,
     SpawnReadinessEngine,
+    StaleClaimReaperEngine,
     StrategyEngine,
     StuckTaskEngine,
     SweepsEngine,
     TelegramPollEngine,
     VaultEngine,
     VideoRenderEngine,
+    WedgedAgentEngine,
     XMentionsEngine,
 ):
     """

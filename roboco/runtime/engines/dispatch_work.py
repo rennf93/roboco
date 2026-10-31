@@ -1636,6 +1636,20 @@ class DevDispatchEngine(_Base):
             )
             break
 
+    async def _respawn_dev_if_inactive(
+        self, task: dict[str, Any], agent_slug: str
+    ) -> None:
+        """Respawn a dev agent on an existing task when it isn't running."""
+        if self._is_agent_active(agent_slug):
+            return
+        await self.spawn_agent(
+            agent_id=agent_slug,
+            task_id=task["id"],
+            initial_prompt=await self._build_dev_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_respawn_dev_if_inactive",
+        )
+
 
 class QADispatchEngine(_Base):
     """Waking QA: the assigned QA spawn, with the B35 queue order and review
@@ -1823,7 +1837,9 @@ class QADispatchEngine(_Base):
 
 
 class DocDispatchEngine(_Base):
-    """Waking the documenter: auto-assign a doc task, or respawn its assignee."""
+    """Waking the documenter: auto-assign a doc task, or respawn its assignee;
+    in the doc/PR parallel phase, respawn the original developer who still
+    owes the PR half."""
 
     async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -1956,6 +1972,53 @@ class DocDispatchEngine(_Base):
                 spawned_by="_respawn_doc_if_assigned",
             )
         return True
+
+    def _is_parallel_phase_claim(
+        self, task: dict[str, Any], dev_uuid: str | None
+    ) -> bool:
+        """True if a `claimed` task is actually in the doc/PR parallel phase.
+
+        The `original_developer:` quick_context marker is set pre-QA by
+        `open_pr`, so it alone cannot distinguish a QA-claimed
+        awaiting_qa task (wrong) from a doc-claimed awaiting_documentation
+        task (right). Require the claimant to be a documenter.
+        """
+        if not dev_uuid:
+            return False
+        claimed_by = task.get("claimed_by")
+        if not claimed_by:
+            return False
+        claimed_slug = self._resolve_agent_slug(claimed_by)
+        return bool(claimed_slug) and "doc" in claimed_slug
+
+    async def _respawn_dev_for_pr_half(
+        self, task: dict[str, Any], dev_uuid: str | None
+    ) -> None:
+        """Respawn the original developer if they still owe the PR half.
+
+        `pr_number` is set by the PR-create handler as soon as GitHub
+        confirms the PR, even if the status-gated `pr_created` flag never
+        flips — without that second check we'd respawn the dev forever
+        after they've already created the PR (the handler refuses to set
+        pr_created=True when the doc's claim moved status out of
+        awaiting_documentation).
+        """
+        if not dev_uuid or task.get("pr_created") or task.get("pr_number"):
+            return
+        dev_slug = self._resolve_agent_slug(dev_uuid)
+        if dev_slug and await self._pm_respawn_should_gate(dev_slug, task):
+            # Respawn circuit breaker — the PR-half respawn loops exactly like
+            # the doc half when the dev can never finish (progress resets it).
+            return
+        if not dev_slug or self._is_agent_active(dev_slug):
+            return
+        await self.spawn_agent(
+            agent_id=dev_slug,
+            task_id=task["id"],
+            initial_prompt=await self._build_dev_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_respawn_dev_for_pr_half",
+        )
 
 
 class PRReviewDispatchEngine(_Base):

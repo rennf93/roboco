@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import structlog
 from roboco.foundation.policy.content import markers as _markers
-from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
+from roboco.runtime.engines.dispatch_breaker import RespawnTripEngine
 from roboco.runtime.engines.dispatch_closure import AutoSubmitEngine
 from roboco.runtime.engines.dispatch_prompts import (
     DevPromptContextEngine,
@@ -1099,7 +1099,7 @@ async def test_b37_breaker_kill_and_amended_fall_back_to_spawn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
 
     async def fake_verdict(
         session: object, **kwargs: object
@@ -1131,7 +1131,7 @@ async def test_b37_trip_consults_coroner_wedged_postmortem(
     """B16 coroner_gate wiring: a breaker trip is an incident class the
     coroner's fixed hooks never see, so the one-shot stall mechanics are
     followed by exactly one decisions-gated postmortem consult."""
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
     monkeypatch.setattr(engine, "_PM_RESPAWN_MAX_UNPRODUCTIVE", 3, raising=False)
     monkeypatch.setattr(
         engine, "_schedule_respawn_persist", MagicMock(return_value=None)
@@ -1153,7 +1153,7 @@ async def test_b16_coroner_consult_failure_is_best_effort() -> None:
     """A coroner-side failure (here: an unparseable task id failing UUID
     construction inside the call) degrades to today's stall-notice-only
     behavior: swallowed, logged, never raised into the breaker tick."""
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
     await engine._coroner_wedged_postmortem(
         "be-pm", "not-a-uuid", "in_progress", {"count": 5, "seen_statuses": []}
     )
@@ -1168,7 +1168,7 @@ async def test_b37_breaker_no_verdict_keeps_trip(
     (the old mapping turned every no-verdict into spawn-anyway, silently
     disabling the wedged-agent protection fleet-wide)."""
     _flag_on(monkeypatch)
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
 
     async def fake_verdict(
         session: object, **kwargs: object
@@ -1195,7 +1195,7 @@ async def test_b37_breaker_hold_keeps_trip_mechanics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchBreakerEngine)
+    engine = _bare(RespawnTripEngine)
 
     async def fake_verdict(
         session: object, **kwargs: object
