@@ -32,6 +32,21 @@ if TYPE_CHECKING:
     from roboco.services.git_relay import GitRelay
 
 
+class GitAgentWorkspaceSurface(Protocol):
+    """``GitAgentWorkspace``'s members that other classes reach."""
+
+    async def _ensure_base_on_remote(
+        self, workspace: Path, base_branch: str, project_slug: str
+    ) -> str: ...
+    @staticmethod
+    def _resolve_workspace_agent_id(
+        task: Any, actor_agent_id: UUID | None
+    ) -> UUID | None: ...
+    async def _workspace_for_branch(
+        self, branch_name: str, *, actor_agent_id: UUID | None = ...
+    ) -> Path: ...
+
+
 class GitBranchCleanupSurface(Protocol):
     """``GitBranchCleanup``'s members that other classes reach."""
 
@@ -43,6 +58,9 @@ class GitBranchCleanupSurface(Protocol):
         project_slug: str | None = ...,
     ) -> None: ...
     async def _sync_target_branch(self, workspace: Path, target_branch: str) -> str: ...
+    async def _sync_target_branch_best_effort(
+        self, workspace: Path, target_branch: str
+    ) -> str | None: ...
 
 
 class GitBranchesSurface(Protocol):
@@ -57,19 +75,71 @@ class GitBranchesSurface(Protocol):
     ) -> frozenset[str] | None: ...
 
 
+class GitCheckoutPushSurface(Protocol):
+    """``GitCheckoutPush``'s members that other classes reach."""
+
+    async def checkout(self, workspace: Path, branch: str) -> None: ...
+    async def push(
+        self, workspace: Path, force: bool = ..., branch: str | None = ...
+    ) -> tuple[str, int]: ...
+
+
 class GitCommitsSurface(Protocol):
     """``GitCommits``'s members that other classes reach."""
 
+    async def _assert_on_task_branch(
+        self, workspace: Path, task_branch: str | None
+    ) -> None: ...
     async def _assert_task_owned_with_branch(
         self, task_id: UUID, agent_id: UUID
     ) -> TaskTable: ...
     async def _ensure_worktree_for_commit(
         self, clone_root: Path, worktree: Path, branch: str | None
     ) -> None: ...
+    async def _link_commit_to_task(
+        self, task_uuid: UUID, commit_hash: str, message: str, agent_id: UUID
+    ) -> None: ...
+    def _parse_commit_stats(self, stat_output: str) -> tuple[int, int, int]: ...
     @staticmethod
     def _parse_git_url(url: str) -> RepoRef: ...
     @staticmethod
     def _worktree_for_task(clone_root: Path, task_id: UUID) -> Path: ...
+
+
+class GitDiffsSurface(Protocol):
+    """``GitDiffs``'s members that other classes reach."""
+
+    async def _ref_exists(self, workspace: Any, ref: str) -> bool: ...
+    async def list_changed_files(
+        self,
+        *,
+        branch_name: str,
+        base: str | None = ...,
+        actor_agent_id: UUID | None = ...,
+        preferred_parent: str | None = ...,
+    ) -> list[str]: ...
+
+
+class GitGatewayPRsSurface(Protocol):
+    """``GitGatewayPRs``'s members that other classes reach."""
+
+    async def _get_pr_refs(
+        self, repo_ref: RepoRef, pr_number: int, git_token: str
+    ) -> tuple[str, str] | None: ...
+    async def _pr_is_merged(
+        self, repo_ref: RepoRef, pr_number: int, git_token: str
+    ) -> bool | None: ...
+
+
+class GitMergeSurface(Protocol):
+    """``GitMerge``'s members that other classes reach."""
+
+    async def _call_merge_api(
+        self, repo_ref: RepoRef, pr_number: int, git_token: str, merge_method: str
+    ) -> httpx.Response: ...
+    async def _first_allowed_merge_method(
+        self, repo_ref: RepoRef, git_token: str, *, exclude: str | None = ...
+    ) -> str | None: ...
 
 
 class GitPRContextSurface(Protocol):
@@ -98,6 +168,18 @@ class GitPRContextSurface(Protocol):
 class GitPRCreationSurface(Protocol):
     """``GitPRCreation``'s members that other classes reach."""
 
+    async def _adopt_entire_pr(
+        self,
+        repo_ref: RepoRef,
+        git_token: str,
+        found: dict[str, Any],
+        *,
+        title_body: tuple[str, str],
+        project: Any,
+    ) -> None: ...
+    async def _apply_pr_labels(
+        self, repo_ref: RepoRef, git_token: str, pr_number: int, labels: list[str]
+    ) -> None: ...
     async def _patch_pr_title_body(
         self,
         repo_ref: RepoRef,
@@ -123,26 +205,30 @@ class GitPRReviewAndCISurface(Protocol):
     ) -> None: ...
 
 
+class GitQualityGateSurface(Protocol):
+    """``GitQualityGate``'s members that other classes reach."""
+
+    async def _project_for_task(self, task: Any) -> Any | None: ...
+    async def _run_codegen_and_commit(
+        self, branch_name: str, workspace: Path, *, actor_agent_id: UUID | None = ...
+    ) -> None: ...
+    async def _task_for_branch(self, branch_name: str) -> TaskTable | None: ...
+
+
+class GitRebaseSurface(Protocol):
+    """``GitRebase``'s members that other classes reach."""
+
+    async def _rev_list_count(self, workspace: Path, range_spec: str) -> int: ...
+
+
 class GitSurface(Protocol):
     """``GitService``'s members that other classes reach."""
 
     @property
     def _forge(self) -> GitProvider: ...
     async def _origin_context(self, repo: Path, timeout: int) -> OriginContext: ...
-    async def _pr_is_merged(
-        self, repo_ref: RepoRef, pr_number: int, git_token: str
-    ) -> bool | None: ...
-    async def _project_for_task(self, task: Any) -> Any | None: ...
-    async def _ref_exists(self, workspace: Any, ref: str) -> bool: ...
     async def _relay_for_repo(self, repo: Path) -> GitRelay: ...
     async def _repo_ref_for_workspace(self, workspace: Path) -> RepoRef: ...
-    @staticmethod
-    def _resolve_workspace_agent_id(
-        task: Any, actor_agent_id: UUID | None
-    ) -> UUID | None: ...
-    async def _run_codegen_and_commit(
-        self, branch_name: str, workspace: Path, *, actor_agent_id: UUID | None = ...
-    ) -> None: ...
     async def _run_git(
         self,
         workspace: Path,
@@ -172,17 +258,31 @@ class GitStatusSurface(Protocol):
 class GitTaskPRsSurface(Protocol):
     """``GitTaskPRs``'s members that other classes reach."""
 
+    async def _record_pr_atomically(
+        self,
+        task_uuid: UUID,
+        pr_number: int,
+        pr_url: str,
+        audit_agent_id: UUID | None = ...,
+    ) -> None: ...
     @staticmethod
     def _status_value(task: Any) -> str: ...
 
 
 class GitServiceSelf(
+    GitAgentWorkspaceSurface,
     GitBranchCleanupSurface,
     GitBranchesSurface,
+    GitCheckoutPushSurface,
     GitCommitsSurface,
+    GitDiffsSurface,
+    GitGatewayPRsSurface,
+    GitMergeSurface,
     GitPRContextSurface,
     GitPRCreationSurface,
     GitPRReviewAndCISurface,
+    GitQualityGateSurface,
+    GitRebaseSurface,
     GitSurface,
     GitStatusSurface,
     GitTaskPRsSurface,
